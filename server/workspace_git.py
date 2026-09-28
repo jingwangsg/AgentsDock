@@ -51,6 +51,12 @@ class GitAction(BaseModel):
     confirmed: bool = False
 
 
+class CheckpointRestore(BaseModel):
+    run_id: str = Field(min_length=1, max_length=256)
+    expected_revision: str = Field(min_length=64, max_length=64)
+    confirmed: bool = False
+
+
 class Repository:
     def __init__(self, workspace: Path):
         self.deadline = time.monotonic() + DEADLINE_SECONDS
@@ -71,7 +77,8 @@ class Repository:
             fail("git_unsafe_index", "Git index is a symlink; use the terminal for this repository.")
 
     def git(self, *args: str, check: bool = True, input: bytes | None = None,
-            limit: int = MAX_OUTPUT, truncate: bool = False) -> tuple[bytes, int, bool]:
+            limit: int = MAX_OUTPUT, truncate: bool = False,
+            extra_env: dict[str, str] | None = None) -> tuple[bytes, int, bool]:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             fail("git_timeout", "Git exceeded its 30 second deadline. Refresh before trying again.", 504)
@@ -81,6 +88,7 @@ class Repository:
                    GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1", LC_ALL="C")
         if self.index_override is not None:
             env["GIT_INDEX_FILE"] = str(self.index_override)
+        env.update(extra_env or {})
         command = ["git", "--literal-pathspecs", "-c", "core.fsmonitor=false",
                    "-c", "core.untrackedCache=false", "-c", "gc.auto=0",
                    "-c", "maintenance.auto=false", "-c", "credential.interactive=false",
@@ -515,8 +523,52 @@ class Repository:
                     fail("git_invalid_action", "Unsupported Git action.", 400)
             return self.status()
 
+    def restore_checkpoint(self, commit: str, objects_dir: Path, expected_revision: str) -> dict[str, Any]:
+        """Make the worktree match ``commit`` (an AgentsDock turn checkpoint).
 
-def register_workspace_git_routes(app: Any, *, authorize: Callable, workspace_root: Callable) -> None:
+        The checkpoint's objects live only in ``objects_dir``, so the real
+        index is left untouched: publishing a tree whose blobs are absent from
+        the repository's own object database would break later ``diff
+        --cached``/``commit``. Files are written from a scratch index; tracked
+        or untracked-but-not-ignored files missing from the checkpoint are
+        deleted. Ignored files are never touched.
+        """
+        if not re.fullmatch(r"[0-9a-f]{40,64}", commit or ""):
+            fail("git_invalid_checkpoint", "The checkpoint reference is not a Git commit id.", 400)
+        alternates = {"GIT_ALTERNATE_OBJECT_DIRECTORIES": str(objects_dir)}
+
+        def listed(raw: bytes) -> set[str]:
+            return {os.fsdecode(entry) for entry in raw.split(b"\0") if entry}
+
+        with repository_lock(self.root, self.deadline):
+            with self.index_transaction() as temporary:
+                before = self.checked_status(expected_revision)
+                if before["operation"]:
+                    fail("git_operation_in_progress", "Finish or abort the current Git operation before restoring a checkpoint.")
+                tracked, _, _ = self.git("ls-files", "-z")
+                others, _, _ = self.git("ls-files", "--others", "--exclude-standard", "-z")
+                scratch = Path(str(temporary) + ".checkpoint")
+                try:
+                    self.index_override = scratch
+                    self.git("read-tree", commit, extra_env=alternates)
+                    self.git("checkout-index", "--all", "--force", extra_env=alternates)
+                    checkpoint_paths, _, _ = self.git("ls-files", "-z")
+                finally:
+                    self.index_override = None
+                    with suppress(FileNotFoundError):
+                        scratch.unlink()
+                for path in sorted((listed(tracked) | listed(others)) - listed(checkpoint_paths)):
+                    if any(part in ("", ".", "..") for part in path.split("/")):
+                        continue
+                    target = self.root / path
+                    with suppress(FileNotFoundError):
+                        if not stat.S_ISDIR(target.lstat().st_mode):
+                            target.unlink()
+            return self.status()
+
+
+def register_workspace_git_routes(app: Any, *, authorize: Callable, workspace_root: Callable,
+                                  checkpoint_restore: Callable) -> None:
     def repository(session_id: str, for_write: bool = False) -> Repository:
         _, root = workspace_root(session_id, for_write=for_write)
         return Repository(root)
@@ -543,3 +595,14 @@ def register_workspace_git_routes(app: Any, *, authorize: Callable, workspace_ro
     async def workspace_git_action(request: Request, session_id: str, req: GitAction) -> dict[str, Any]:
         authorize(request)
         return await asyncio.to_thread(lambda: repository(session_id, True).action(req.model_dump()))
+
+    @app.post("/api/sessions/{session_id}/workspace/git/checkpoint/restore")
+    async def restore_session_checkpoint(request: Request, session_id: str, req: CheckpointRestore) -> dict[str, Any]:
+        authorize(request)
+        if req.confirmed is not True:
+            fail("git_checkpoint_confirmation_required", "Confirm restoring this checkpoint before continuing.", 400)
+        # checkpoint_restore holds the chat lifecycle lock, requires an idle
+        # chat, resolves the commit, and records the restore event on exit.
+        async with checkpoint_restore(session_id, req.run_id) as (commit, objects_dir):
+            return await asyncio.to_thread(
+                lambda: repository(session_id, True).restore_checkpoint(commit, objects_dir, req.expected_revision))

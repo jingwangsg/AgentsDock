@@ -36,7 +36,7 @@ def projection():
     selected = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
     assert {node.name for node in selected} == names
     selected += [node for node in tree.body if isinstance(node, ast.Assign)
-                 and any(isinstance(target, ast.Name) and target.id == "LEADING_DECORATION_RE" for target in node.targets)]
+                 and any(isinstance(target, ast.Name) and target.id in ("LEADING_DECORATION_RE", "OAI_MEM_CITATION_RE") for target in node.targets)]
     module = ast.fix_missing_locations(ast.Module(body=[ast.ImportFrom(
         module="__future__", names=[ast.alias(name="annotations")], level=0,
     ), *selected], type_ignores=[]))

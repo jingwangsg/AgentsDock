@@ -79,6 +79,47 @@ def native_login_handoff_supported(env: dict[str, str], *, cwd: str) -> bool:
         return False
 
 
+def _native_login_identity(env: dict[str, str], cwd: str) -> tuple[Path, tuple] | None:
+    """Bounded read of the native credential store's account identity; None when unknown."""
+    root, config = _native_login_config(env, cwd)
+    if config.get("cli_auth_credentials_store", "file") != "file":
+        return None  # Never infer keyring/auto/ephemeral state from a leftover file.
+    if any(env.get(key) for key in ("CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_IDENTITY_TOKEN_FILE")):
+        return None
+    data = json.loads(_bounded_file(root / "auth.json"))
+    if not isinstance(data, dict):
+        return None
+    key = data.get("OPENAI_API_KEY")
+    if isinstance(key, str) and key:
+        identity = ("apiKey", key)
+    else:
+        tokens = data.get("tokens")
+        if not isinstance(tokens, dict) or data.get("auth_mode") not in (None, "chatgpt"):
+            return None
+        encoded = tokens.get("id_token")
+        if not isinstance(encoded, str) or len(encoded) > 32768:
+            return None
+        parts = encoded.split(".")
+        if len(parts) != 3:
+            return None
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+        if not isinstance(claims, dict):
+            return None
+        details = claims.get("https://api.openai.com/auth") or {}
+        if not isinstance(details, dict):
+            return None
+        account = tokens.get("account_id") or details.get("chatgpt_account_id")
+        subject = claims.get("sub")
+        if not isinstance(account, str) or not account or not isinstance(subject, str) or not subject:
+            return None
+        auth_time = claims.get("auth_time")
+        if auth_time is not None and (isinstance(auth_time, bool) or not isinstance(auth_time, int)):
+            return None
+        # Unverified claims are a change hint, never permission/account proof.
+        identity = ("chatgpt", account, subject, auth_time)
+    return root, identity
+
+
 def native_login_revision(env: dict[str, str], *, cwd: str) -> LoginRevision | None:
     """Conservative file-store signal; native Codex still owns all credentials.
 
@@ -90,44 +131,31 @@ def native_login_revision(env: dict[str, str], *, cwd: str) -> LoginRevision | N
     this bounded read except a process-keyed comparison digest.
     """
     try:
-        root, config = _native_login_config(env, cwd)
-        if config.get("cli_auth_credentials_store", "file") != "file":
-            return None  # Never infer keyring/auto/ephemeral state from a leftover file.
-        if any(env.get(key) for key in ("CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_IDENTITY_TOKEN_FILE")):
+        found = _native_login_identity(env, cwd)
+        if found is None:
             return None
-        data = json.loads(_bounded_file(root / "auth.json"))
-        if not isinstance(data, dict):
-            return None
-        key = data.get("OPENAI_API_KEY")
-        if isinstance(key, str) and key:
-            identity = ("apiKey", key)
-        else:
-            tokens = data.get("tokens")
-            if not isinstance(tokens, dict) or data.get("auth_mode") not in (None, "chatgpt"):
-                return None
-            encoded = tokens.get("id_token")
-            if not isinstance(encoded, str) or len(encoded) > 32768:
-                return None
-            parts = encoded.split(".")
-            if len(parts) != 3:
-                return None
-            claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
-            if not isinstance(claims, dict):
-                return None
-            details = claims.get("https://api.openai.com/auth") or {}
-            if not isinstance(details, dict):
-                return None
-            account = tokens.get("account_id") or details.get("chatgpt_account_id")
-            subject = claims.get("sub")
-            if not isinstance(account, str) or not account or not isinstance(subject, str) or not subject:
-                return None
-            auth_time = claims.get("auth_time")
-            if auth_time is not None and (isinstance(auth_time, bool) or not isinstance(auth_time, int)):
-                return None
-            # Unverified claims are a change hint, never permission/account proof.
-            identity = ("chatgpt", account, subject, auth_time)
+        root, identity = found
         raw = json.dumps((str(root.resolve()), identity), separators=(",", ":")).encode()
         return LoginRevision(hmac.new(_REVISION_KEY, raw, hashlib.sha256).digest())
+    except (OSError, ValueError, TypeError, RecursionError):
+        return None
+
+
+def native_account_identity(env: dict[str, str], *, cwd: str) -> list[str] | None:
+    """Restart-stable, non-secret account fingerprint for durable per-account caches.
+
+    Unlike native_login_revision this is meant to be persisted, so it drops
+    auth_time (same-account re-logins keep their cache) and reduces an API
+    key to a digest; the raw secret never leaves this module.
+    """
+    try:
+        found = _native_login_identity(env, cwd)
+        if found is None:
+            return None
+        root, identity = found
+        if identity[0] == "apiKey":
+            return [str(root.resolve()), "apiKey", hashlib.sha256(identity[1].encode()).hexdigest()]
+        return [str(root.resolve()), *(str(part) for part in identity[:3])]
     except (OSError, ValueError, TypeError, RecursionError):
         return None
 

@@ -708,7 +708,7 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
             agent_server.cached_codex_permission_profiles("/work", manager)
         )
 
-    async def test_new_sessions_and_null_resets_use_canonical_permission_defaults(
+    async def test_new_sessions_ignore_narrower_request_values_and_null_resets_use_defaults(
         self,
     ) -> None:
         store = agent_server.SessionStore()
@@ -731,6 +731,16 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
                     codex_approvals_reviewer="user",
                 )
             )
+            # The request fields stay validated for older clients, but every
+            # new chat starts with full access regardless of what they send.
+            narrowed = await store.create(
+                agent_server.CreateSessionRequest(
+                    backend=agent_server.BACKEND_CLAUDE,
+                    claude_permission_mode="plan",
+                    cursor_permission_mode="plan",
+                    opencode_permission_mode="plan",
+                )
+            )
             reset = await store.update(
                 explicit["id"],
                 {
@@ -741,6 +751,12 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
                 },
             )
 
+        self.assertEqual(explicit["codex_approval_policy"], "never")
+        self.assertEqual(explicit["codex_sandbox_mode"], "danger-full-access")
+        self.assertIsNone(explicit["codex_permission_profile"])
+        self.assertEqual(narrowed["claude_permission_mode"], "bypassPermissions")
+        self.assertEqual(narrowed["cursor_permission_mode"], "full_access")
+        self.assertEqual(narrowed["opencode_permission_mode"], "full_access")
         self.assertEqual(
             created["codex_approval_policy"],
             agent_server.CODEX_DEFAULT_APPROVAL_POLICY,
@@ -771,9 +787,11 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
             agent_server.CODEX_DEFAULT_APPROVALS_REVIEWER,
         )
 
-    async def test_session_load_defaults_missing_permissions_without_overwriting_choices(
+    async def test_session_load_forces_full_access_on_every_backend(
         self,
     ) -> None:
+        # Chats saved by a build that still offered permission controls load
+        # with full access; the single startup save persists the reset.
         with tempfile.TemporaryDirectory() as temp_dir:
             sessions_file = Path(temp_dir) / "sessions.json"
             sessions_file.write_text(
@@ -783,44 +801,66 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
                             "id": "missing",
                             "backend": agent_server.BACKEND_CODEX,
                         },
-                        "explicit": {
-                            "id": "explicit",
+                        "restricted": {
+                            "id": "restricted",
                             "backend": agent_server.BACKEND_CODEX,
-                            "codex_approval_policy": "never",
+                            "codex_approval_policy": "on-request",
                             "codex_sandbox_mode": "read-only",
                             "codex_permission_profile": ":read-only",
-                            "codex_approvals_reviewer": "user",
+                            "codex_approvals_reviewer": "auto_review",
+                        },
+                        "claude": {
+                            "id": "claude",
+                            "backend": agent_server.BACKEND_CLAUDE,
+                            "claude_permission_mode": "plan",
+                        },
+                        "cursor": {
+                            "id": "cursor",
+                            "backend": agent_server.BACKEND_CURSOR,
+                            "cursor_permission_mode": "plan",
+                        },
+                        "opencode": {
+                            "id": "opencode",
+                            "backend": agent_server.BACKEND_OPENCODE,
+                            "opencode_permission_mode": "default",
                         },
                     }
                 )
             )
             store = agent_server.SessionStore()
+            save = AsyncMock()
             with (
                 patch.object(agent_server, "SESSIONS_FILE", sessions_file),
                 patch.object(agent_server, "ensure_dirs"),
-                patch.object(store, "save", AsyncMock()),
+                patch.object(store, "save", save),
             ):
                 await store.load()
 
-        missing = store.sessions["missing"]
+        for session_id in ("missing", "restricted"):
+            session = store.sessions[session_id]
+            self.assertEqual(session["codex_approval_policy"], "never")
+            self.assertEqual(session["codex_sandbox_mode"], "danger-full-access")
+            self.assertIsNone(session["codex_permission_profile"])
         self.assertEqual(
-            missing["codex_approval_policy"],
-            agent_server.CODEX_DEFAULT_APPROVAL_POLICY,
+            store.sessions["missing"]["codex_approvals_reviewer"], "user"
+        )
+        # The reviewer is not a permission boundary; a saved choice survives.
+        self.assertEqual(
+            store.sessions["restricted"]["codex_approvals_reviewer"],
+            "auto_review",
         )
         self.assertEqual(
-            missing["codex_sandbox_mode"],
-            agent_server.CODEX_DEFAULT_SANDBOX_MODE,
+            store.sessions["claude"]["claude_permission_mode"],
+            "bypassPermissions",
         )
-        self.assertIsNone(missing["codex_permission_profile"])
         self.assertEqual(
-            missing["codex_approvals_reviewer"],
-            agent_server.CODEX_DEFAULT_APPROVALS_REVIEWER,
+            store.sessions["cursor"]["cursor_permission_mode"], "full_access"
         )
-        explicit = store.sessions["explicit"]
-        self.assertEqual(explicit["codex_approval_policy"], "never")
-        self.assertEqual(explicit["codex_sandbox_mode"], "read-only")
-        self.assertEqual(explicit["codex_permission_profile"], ":read-only")
-        self.assertEqual(explicit["codex_approvals_reviewer"], "user")
+        self.assertEqual(
+            store.sessions["opencode"]["opencode_permission_mode"],
+            "full_access",
+        )
+        save.assert_awaited()
 
     async def test_runtime_policy_reports_canonical_defaults_for_legacy_session(
         self,

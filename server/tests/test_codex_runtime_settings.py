@@ -78,5 +78,24 @@ class CodexRuntimeSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.sessions["chat"]["effort"], "ultra")
 
 
+
+    def test_runtime_default_model_follows_the_cli_default_row_unless_configured(self) -> None:
+        rows = [
+            {"value": "gpt-6-sol", "label": "GPT-6-Sol", "efforts": [{"value": "medium"}], "is_default": True},
+            {"value": "gpt-5.5", "label": "GPT-5.5", "efforts": [{"value": "xhigh"}]},
+        ]
+        with patch.object(agent_server, "codex_native_models", return_value=rows), patch.object(
+            agent_server, "codex_user_config_defaults", return_value=("", "", ""),
+        ), patch.object(agent_server, "CODEX_DEFAULT_EFFORT", "xhigh"):
+            with patch.object(agent_server, "CODEX_MODEL_SETTING", ""):
+                mirrored = agent_server.codex_runtime_settings({})
+            with patch.object(agent_server, "CODEX_MODEL_SETTING", "gpt-5.5"), patch.object(
+                agent_server, "CODEX_DEFAULT_MODEL", "gpt-5.5",
+            ):
+                configured = agent_server.codex_runtime_settings({})
+
+        self.assertEqual(mirrored[:2], ("gpt-6-sol", "medium"))
+        self.assertEqual(configured[:2], ("gpt-5.5", "xhigh"))
+
 if __name__ == "__main__":
     unittest.main()

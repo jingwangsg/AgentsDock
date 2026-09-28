@@ -2,6 +2,7 @@ import json
 import subprocess
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 
 import agent_server
+import codex_model_catalog
 
 
 def completed(args: list[str], returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
@@ -743,7 +745,7 @@ class RuntimeDiagnosticTests(unittest.TestCase):
 
     def test_claude_catalog_uses_native_versions_without_changing_alias_values(self) -> None:
         self.native_models.return_value = ([
-            {"value": "opus[1m]", "label": "Opus 5.5 (1M context)"},
+            {"value": "opus[1m]", "label": "Opus 5.5 (1M context)", "description": "Best for everyday, complex tasks"},
             {"value": "sonnet", "label": "Sonnet 5"},
         ], "success")
         with patch.object(agent_server, "run_catalog_command", return_value="--effort <level> (low, high)"), patch.object(
@@ -754,7 +756,7 @@ class RuntimeDiagnosticTests(unittest.TestCase):
             result = agent_server.parse_claude_help_catalog()
         self.assertEqual(result["models"], [
             {"value": "", "label": "Sonnet 5"},
-            {"value": "opus[1m]", "label": "Opus 5.5 (1M context)"},
+            {"value": "opus[1m]", "label": "Opus 5.5 (1M context)", "description": "Best for everyday, complex tasks"},
             {"value": "sonnet", "label": "Sonnet 5"},
         ])
         self.assertEqual(result["model_source"], "Cached Claude SDK initialize")
@@ -1285,7 +1287,10 @@ class SessionRuntimeValidationTests(unittest.IsolatedAsyncioTestCase):
                 await store.load()
 
         session = store.sessions["cursor-chat"]
-        self.assertEqual(session["cursor_permission_mode"], "default")
+        self.assertEqual(
+            session["cursor_permission_mode"],
+            agent_server.CURSOR_DEFAULT_PERMISSION_MODE,
+        )
         self.assertIsNone(session["session_id"])
         self.assertIsNone(session["cursor_session_id"])
         self.assertNotIn("cursor_instruction_hash", session)
@@ -1389,6 +1394,223 @@ class NativeModelDiscoveryIntegrationTests(unittest.TestCase):
         self.assertNotIn("private", str(logs.output))
         self.assertNotIn("secret", str(logs.output))
 
+
+
+class CodexNativeModelCatalogTests(unittest.TestCase):
+    """The default Codex picker mirrors the CLI's ``model/list``."""
+
+    ROWS = [
+        {"value": "gpt-6-sol", "label": "GPT-6-Sol",
+         "description": "Workhorse model for coding and everyday work.",
+         "efforts": [{"value": "low", "description": "Fast responses with lighter reasoning"},
+                     {"value": "medium", "description": "Balances speed and reasoning depth"},
+                     {"value": "ultra", "description": "Maximum reasoning with automatic task delegation"}],
+         "default_effort": "medium", "is_default": True},
+        {"value": "gpt-6-astra", "label": "GPT-6-Astra", "description": "Frontier reasoning.",
+         "efforts": [{"value": "low", "description": "Fast"}, {"value": "medium", "description": "Balanced"}],
+         "default_effort": "low"},
+        {"value": "gpt-5.6-sol", "label": "GPT-5.6-Sol", "description": "Previous generation.",
+         "efforts": [{"value": "high", "description": "Deep"}], "default_effort": "high",
+         "service_tier": "fast"},
+    ]
+
+    def setUp(self) -> None:
+        self.enterContext(patch.object(agent_server, "CODEX_MODEL_SETTING", ""))
+        self.enterContext(patch.object(agent_server, "CODEX_DEFAULT_MODEL", "gpt-5.5"))
+        self.enterContext(patch.object(agent_server, "CODEX_DEFAULT_EFFORT", "xhigh"))
+        self.enterContext(patch.object(
+            agent_server, "codex_user_config_defaults", return_value=("", "", ""),
+        ))
+        # A served mirror must never fall through to a ``codex debug models`` process.
+        self.enterContext(patch.object(
+            agent_server, "run_catalog_command",
+            side_effect=AssertionError("catalog read must not start a process"),
+        ))
+
+    def test_catalog_mirrors_model_list_rows_efforts_and_default(self) -> None:
+        with patch.object(agent_server, "codex_native_models", return_value=list(self.ROWS)):
+            catalog = agent_server.discover_codex_catalog()
+
+        self.assertEqual(catalog["model_source"], "codex app-server model/list")
+        self.assertEqual(
+            [option["value"] for option in catalog["models"]],
+            ["", "gpt-6-sol", "gpt-6-astra", "gpt-5.6-sol"],
+        )
+        self.assertEqual(catalog["models"][0]["label"], "Server default (GPT-6-Sol)")
+        sol = catalog["models"][1]
+        self.assertEqual(sol["label"], "GPT-6-Sol")
+        self.assertEqual(sol["description"], "Workhorse model for coding and everyday work.")
+        self.assertEqual(sol["default_effort"], "medium")
+        self.assertIsNone(sol["service_tier"])
+        self.assertEqual(sol["efforts"], [
+            {"value": "low", "label": "Low", "description": "Fast responses with lighter reasoning"},
+            {"value": "medium", "label": "Medium", "description": "Balances speed and reasoning depth"},
+            {"value": "ultra", "label": "Ultra", "description": "Maximum reasoning with automatic task delegation"},
+        ])
+        self.assertEqual(catalog["model_efforts"]["gpt-6-sol"], sol["efforts"])
+        self.assertEqual(catalog["models"][3]["service_tier"], "fast")
+        # No CODEX_MODEL setting: the CLI's isDefault row is the server default,
+        # and the server default effort is clamped to what that row supports.
+        self.assertEqual(catalog["default_model"], "gpt-6-sol")
+        self.assertEqual(catalog["default_effort"], "medium")
+        self.assertEqual(
+            [option["value"] for option in catalog["efforts"]],
+            ["", "low", "medium", "ultra", "high"],
+        )
+
+    def test_codex_model_setting_overrides_the_cli_default_row(self) -> None:
+        with patch.object(agent_server, "codex_native_models", return_value=list(self.ROWS)), \
+                patch.object(agent_server, "CODEX_MODEL_SETTING", "gpt-6-astra"), \
+                patch.object(agent_server, "CODEX_DEFAULT_MODEL", "gpt-6-astra"):
+            catalog = agent_server.discover_codex_catalog()
+            runtime_model, runtime_effort, _tier = agent_server.codex_runtime_settings(
+                {"id": "chat", "backend": agent_server.BACKEND_CODEX},
+            )
+
+        self.assertEqual(catalog["default_model"], "gpt-6-astra")
+        self.assertEqual(catalog["models"][0]["label"], "Server default (GPT-6-Astra)")
+        self.assertEqual((runtime_model, runtime_effort), ("gpt-6-astra", "medium"))
+
+    def test_effort_rules_follow_mirrored_rows_for_models_outside_the_static_table(self) -> None:
+        with patch.object(agent_server, "codex_native_models", return_value=list(self.ROWS)):
+            self.assertEqual(agent_server.clamp_codex_runtime_effort("gpt-6-astra", "ultra"), "medium")
+            self.assertEqual(agent_server.clamp_codex_runtime_effort("gpt-6-sol", "ultra"), "ultra")
+            # The CLI row wins over the static table for a model in both.
+            self.assertEqual(agent_server.clamp_codex_runtime_effort("gpt-5.6-sol", "ultra"), "high")
+            # A model in neither stays provider-owned, exactly as before.
+            self.assertEqual(agent_server.clamp_codex_runtime_effort("custom-model", "ultra"), "ultra")
+            with self.assertRaises(HTTPException) as raised:
+                agent_server.normalize_runtime_effort_for_model(
+                    agent_server.BACKEND_CODEX, "gpt-6-astra", "ultra", strict=True,
+                )
+            self.assertIn("gpt-6-astra", str(raised.exception.detail))
+            self.assertEqual(
+                agent_server.normalize_runtime_effort_for_model(
+                    agent_server.BACKEND_CODEX, "gpt-6-astra", "low", strict=True,
+                ),
+                "low",
+            )
+            self.assertEqual(agent_server.codex_default_service_tier("gpt-5.6-sol"), "fast")
+            self.assertEqual(agent_server.codex_default_service_tier("gpt-6-sol"), "")
+        # Without a mirror the static table still applies its priority tier.
+        with patch.object(agent_server, "codex_native_models", return_value=None):
+            self.assertEqual(agent_server.codex_default_service_tier("gpt-5.6-sol"), "priority")
+            self.assertEqual(agent_server.clamp_codex_runtime_effort("gpt-6-astra", "ultra"), "ultra")
+
+    def test_static_list_serves_when_no_mirror_and_debug_models_fail(self) -> None:
+        with patch.object(agent_server, "codex_native_models", return_value=None), \
+                patch.object(agent_server, "run_catalog_command", side_effect=RuntimeError("codex exited 1")):
+            catalog = agent_server.discover_codex_catalog()
+
+        self.assertIn("failed", catalog["model_source"])
+        self.assertEqual(
+            [option["value"] for option in catalog["models"]][1:],
+            [slug for slug, _label in agent_server.CODEX_FALLBACK_MODELS],
+        )
+        self.assertEqual(catalog["default_model"], "gpt-5.5")
+        self.assertEqual(catalog["default_effort"], "xhigh")
+        self.assertEqual(
+            [option["value"] for option in catalog["model_efforts"]["gpt-5.6-luna"]],
+            list(agent_server.CODEX_FALLBACK_MODEL_EFFORTS["gpt-5.6-luna"]),
+        )
+
+    def test_mirror_is_not_consulted_before_the_binary_identity_is_known(self) -> None:
+        with patch.object(agent_server, "CODEX_BINARY_IDENTITY", None), \
+                patch.object(codex_model_catalog, "cached_native_models",
+                             side_effect=AssertionError("no store read without an identity")), \
+                patch.object(agent_server.codex_auth, "native_account_identity",
+                             side_effect=AssertionError("no credential read without an identity")):
+            self.assertIsNone(agent_server.codex_native_catalog_key())
+            self.assertIsNone(agent_server.codex_native_models())
+            self.assertEqual(agent_server.codex_server_default_model(), "gpt-5.5")
+
+
+class CodexNativeModelRefreshTests(unittest.IsolatedAsyncioTestCase):
+    PAYLOAD = {"data": [
+        {"id": "gpt-6-sol", "model": "gpt-6-sol", "displayName": "GPT-6-Sol",
+         "description": "Workhorse model for coding and everyday work.", "hidden": False,
+         "supportedReasoningEfforts": [{"reasoningEffort": "medium", "description": "Balanced"}],
+         "defaultReasoningEffort": "medium", "isDefault": True},
+        {"id": "gpt-reserve", "model": "gpt-reserve", "displayName": "GPT-Reserve",
+         "description": "Reserved.", "hidden": True,
+         "supportedReasoningEfforts": [], "defaultReasoningEffort": "medium", "isDefault": False},
+    ], "nextCursor": None}
+    KEY = "f" * 64
+
+    async def asyncSetUp(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        previous = codex_model_catalog._STORE_PATH
+        codex_model_catalog.configure_native_models_store(root / "codex-native-models.json")
+        self.addCleanup(codex_model_catalog.configure_native_models_store, previous)
+        codex_model_catalog.clear_native_models()
+        self.addCleanup(codex_model_catalog.clear_native_models)
+        self.enterContext(patch.object(agent_server, "CODEX_NATIVE_MODELS_FETCHED", None))
+        self.enterContext(patch.object(agent_server, "codex_native_catalog_key", return_value=self.KEY))
+        self.manager = SimpleNamespace(
+            ready=True, generation=1, request=AsyncMock(return_value=dict(self.PAYLOAD)),
+        )
+
+    async def test_without_a_ready_shared_manager_nothing_is_requested(self) -> None:
+        with patch.object(agent_server, "CODEX_APP_SERVER_MANAGER", None):
+            await agent_server.refresh_codex_native_models(force=True)
+        self.manager.ready = False
+        with patch.object(agent_server, "CODEX_APP_SERVER_MANAGER", self.manager):
+            await agent_server.refresh_codex_native_models(force=True)
+        self.manager.request.assert_not_awaited()
+        self.assertIsNone(agent_server.codex_native_models())
+
+    async def test_ready_manager_is_mirrored_once_per_generation_and_on_every_refresh(self) -> None:
+        with patch.object(agent_server, "CODEX_APP_SERVER_MANAGER", self.manager):
+            await agent_server.refresh_codex_native_models()
+            await agent_server.refresh_codex_native_models()
+            self.assertEqual(self.manager.request.await_count, 1)
+            self.manager.request.assert_awaited_with(
+                "model/list", {}, timeout=agent_server.RUNTIME_CATALOG_TIMEOUT_SECONDS,
+            )
+            await agent_server.refresh_codex_native_models(force=True)
+            self.assertEqual(self.manager.request.await_count, 2)
+            self.manager.generation = 2
+            await agent_server.refresh_codex_native_models()
+            self.assertEqual(self.manager.request.await_count, 3)
+
+        rows = agent_server.codex_native_models()
+        self.assertEqual([row["value"] for row in rows], ["gpt-6-sol"])
+        self.assertTrue(rows[0]["is_default"])
+        self.assertEqual(rows[0]["efforts"], [{"value": "medium", "description": "Balanced"}])
+        # The durable copy is what a restarted hub reads.
+        codex_model_catalog._CACHE.clear()
+        self.assertEqual(agent_server.codex_native_models(), rows)
+
+    async def test_failed_request_keeps_the_previous_copy(self) -> None:
+        with patch.object(agent_server, "CODEX_APP_SERVER_MANAGER", self.manager):
+            await agent_server.refresh_codex_native_models(force=True)
+            self.manager.request = AsyncMock(side_effect=RuntimeError("timeout"))
+            await agent_server.refresh_codex_native_models(force=True)
+            self.manager.request = AsyncMock(return_value={"data": "not a list"})
+            await agent_server.refresh_codex_native_models(force=True)
+        self.assertEqual([row["value"] for row in agent_server.codex_native_models()], ["gpt-6-sol"])
+
+    async def test_catalog_route_mirrors_before_discovery_and_forwards_refresh(self) -> None:
+        calls: list[tuple[str, dict]] = []
+
+        async def mirror(**kwargs):
+            calls.append(("mirror", kwargs))
+
+        def discover(**kwargs):
+            calls.append(("discover", kwargs))
+            return {"backends": {}}
+
+        with patch.object(agent_server, "refresh_codex_app_server_binary", AsyncMock()), \
+                patch.object(agent_server, "refresh_codex_app_server_login", AsyncMock()), \
+                patch.object(agent_server, "refresh_codex_native_models", side_effect=mirror), \
+                patch.object(agent_server, "discover_runtime_catalog", side_effect=discover):
+            await agent_server.runtime_catalog()
+            await agent_server.runtime_catalog(refresh=True)
+
+        self.assertEqual(calls, [
+            ("mirror", {"force": False}), ("discover", {"force_runtime_probe": False}),
+            ("mirror", {"force": True}), ("discover", {"force_runtime_probe": True}),
+        ])
 
 if __name__ == "__main__":
     unittest.main()

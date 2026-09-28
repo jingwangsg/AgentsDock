@@ -423,6 +423,84 @@ class EventWebSocketCatchupTests(unittest.IsolatedAsyncioTestCase):
         # crossed the websocket, closing the catch-up/live-delivery handoff.
         self.assertEqual(registered_with[-100:], list(range(1001, 1101)))
 
+    async def test_rewind_replacement_between_pages_delivers_exact_surviving_prefix(
+        self,
+    ) -> None:
+        """A rewind mid-catch-up must neither skip survivors nor replay removed rows."""
+
+        session_id = "rewind-race-chat"
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "events.jsonl"
+            with path.open("w", encoding="utf-8") as output:
+                for seq in range(1, 1101):
+                    output.write(json.dumps({
+                        "seq": seq,
+                        "id": f"event-{seq}",
+                        "session_id": session_id,
+                        "type": "assistant_text",
+                        "run_id": "early" if seq <= 1000 else "late",
+                        "ts": "2026-09-28T00:00:00Z",
+                        "text": f"message {seq}",
+                    }, separators=(",", ":")) + "\n")
+
+            page_loaded = asyncio.Event()
+            resume_send = asyncio.Event()
+            registered_with: list[int] = []
+
+            class RewindingWebSocket(FakeWebSocket):
+                async def send_json(self, event: dict[str, object]) -> None:
+                    await super().send_json(event)
+                    if event["seq"] == 500:
+                        page_loaded.set()
+                        await resume_send.wait()
+
+            socket = RewindingWebSocket()
+
+            async def register(_session_id: str, _socket: object) -> None:
+                registered_with.extend(int(event["seq"]) for event in socket.events)
+
+            agent_server.EVENT_DELIVERY_LOCKS.pop(session_id, None)
+            try:
+                with (
+                    patch.dict(
+                        agent_server.STORE.sessions,
+                        {session_id: {"id": session_id}},
+                        clear=True,
+                    ),
+                    patch.object(agent_server, "events_path", return_value=path),
+                    patch.object(agent_server, "fork_internal_run_ids", return_value=set()),
+                    patch.object(agent_server, "websocket_authorized", return_value=True),
+                    patch.object(agent_server.HUB, "register_accepted", side_effect=register),
+                    patch.object(agent_server.HUB, "unsubscribe", new=AsyncMock()),
+                ):
+                    catchup = asyncio.create_task(
+                        agent_server.session_events(
+                            session_id,
+                            socket,  # type: ignore[arg-type]
+                            after=0,
+                            visible=True,
+                        )
+                    )
+                    await asyncio.wait_for(page_loaded.wait(), timeout=3)
+                    summary = await asyncio.to_thread(
+                        agent_server.truncate_session_events_sync,
+                        session_id,
+                        before_seq=1001,
+                    )
+                    self.assertEqual(summary["removed_events"], 100)
+                    resume_send.set()
+                    await asyncio.wait_for(catchup, timeout=3)
+            finally:
+                resume_send.set()
+                agent_server.EVENT_DELIVERY_LOCKS.pop(session_id, None)
+
+        delivered = [int(event["seq"]) for event in socket.events]
+        self.assertEqual(delivered, list(range(1, 1001)))
+        self.assertNotIn("_event_sequence_checkpoint", {event["type"] for event in socket.events})
+        # Registration waits until the replacement's whole surviving prefix and
+        # its sequence checkpoint have been scanned, so no live gap remains.
+        self.assertEqual(registered_with[-1], 1000)
+
     async def test_omitted_visible_query_drains_complete_legacy_gap(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "events.jsonl"

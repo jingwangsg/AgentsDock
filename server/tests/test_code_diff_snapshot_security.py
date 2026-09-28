@@ -10,7 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import HTTPException
+
 import agent_server
+from workspace_git import Repository
 
 
 GIT = shutil.which("git")
@@ -158,7 +161,7 @@ class CodeDiffSnapshotTests(CodeDiffStateMixin, unittest.TestCase):
                 for name in attributed | unrelated:
                     (repo / name).write_text(f"changed {name}\n")
 
-                metadata = agent_server._write_turn_code_diff(
+                _checkpoint, metadata = agent_server._write_turn_code_diff(
                     "chat",
                     "literal-pathspec",
                     "cursor",
@@ -212,7 +215,7 @@ class CodeDiffSnapshotTests(CodeDiffStateMixin, unittest.TestCase):
                 (repo / "binary.bin").write_bytes(b"\x00changed\x00\xff")
                 real_objects_before = self.loose_objects(repo)
 
-                metadata = agent_server._write_turn_code_diff(
+                _checkpoint, metadata = agent_server._write_turn_code_diff(
                     "chat",
                     "run-weird",
                     "codex",
@@ -275,6 +278,134 @@ class CodeDiffSnapshotTests(CodeDiffStateMixin, unittest.TestCase):
                     [],
                 )
 
+    def test_durable_checkpoint_commit_restores_baseline_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = self.repository(root)
+            (repo / ".gitignore").write_text("ignored.log\n")
+            (repo / "tracked.txt").write_text("base\n")
+            (repo / "removed-by-agent.txt").write_text("keep me\n")
+            self.git(repo, "add", "-A")
+            self.git(repo, "commit", "-qm", "base")
+            head = self.git(repo, "rev-parse", "HEAD").stdout.decode().strip()
+            # User state when the turn starts: an unstaged edit, an untracked
+            # file, and an ignored file.
+            (repo / "tracked.txt").write_text("user edit\n")
+            (repo / "notes.txt").write_text("untracked at baseline\n")
+            (repo / "ignored.log").write_text("ignored\n")
+
+            with self.isolated_state(root):
+                objects_dir = agent_server.checkpoint_objects_dir("chat")
+                baseline = agent_server._capture_git_tree("chat", "turn-1", str(repo), durable=True)
+                assert baseline is not None
+                self.assertEqual(baseline["object_dir"], str(objects_dir))
+                self.assertEqual(stat.S_IMODE(objects_dir.stat().st_mode), 0o700)
+                real_objects_before = self.loose_objects(repo)
+
+                (repo / "tracked.txt").write_text("agent edit\n")
+                (repo / "notes.txt").write_text("agent rewrote notes\n")
+                (repo / "removed-by-agent.txt").unlink()
+                (repo / "created.txt").write_text("agent created\n")
+                (repo / "ignored.log").write_text("still ignored\n")
+                checkpoint, metadata = agent_server._write_turn_code_diff(
+                    "chat", "turn-1", "codex", baseline, str(repo),
+                    {"tracked.txt", "notes.txt", "removed-by-agent.txt", "created.txt"},
+                )
+                assert checkpoint is not None and metadata is not None
+                commit = checkpoint["checkpoint_commit"]
+                self.assertRegex(commit, r"^[0-9a-f]{40,64}$")
+                self.assertEqual(metadata["checkpoint_commit"], commit)
+                self.assertEqual(checkpoint, {
+                    "run_id": "turn-1",
+                    "checkpoint_commit": commit,
+                    "changed_files": ["created.txt", "notes.txt", "removed-by-agent.txt", "tracked.txt"],
+                })
+                ref = agent_server.checkpoints_dir("chat") / "turn-1"
+                self.assertEqual(ref.read_text().strip(), commit)
+                self.assertEqual(stat.S_IMODE(ref.stat().st_mode), 0o600)
+                # The durable directory survives the baseline discard; the
+                # user's object database and refs never see the checkpoint.
+                self.assertEqual(baseline["object_dir"], "")
+                self.assertTrue(objects_dir.is_dir())
+                self.assertEqual(list(agent_server.code_diffs_dir("chat").glob(".snapshot-*")), [])
+                self.assertEqual(self.loose_objects(repo), real_objects_before)
+                self.assertNotEqual(subprocess.run(
+                    [GIT, "-C", str(repo), "cat-file", "-e", commit],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                ).returncode, 0)
+                self.assertNotIn(commit, self.git(repo, "for-each-ref").stdout.decode())
+
+                stale = Repository(repo).status()["revision"]
+                (repo / "created.txt").write_text("changed after review\n")
+                with self.assertRaises(HTTPException) as stale_error:
+                    Repository(repo).restore_checkpoint(commit, objects_dir, stale)
+                self.assertEqual(stale_error.exception.detail["code"], "git_stale_revision")
+                (repo / ".git" / "MERGE_HEAD").write_text(head + "\n")
+                with self.assertRaises(HTTPException) as merging:
+                    Repository(repo).restore_checkpoint(commit, objects_dir, Repository(repo).status()["revision"])
+                self.assertEqual(merging.exception.detail["code"], "git_operation_in_progress")
+                (repo / ".git" / "MERGE_HEAD").unlink()
+                self.assertEqual((repo / "created.txt").read_text(), "changed after review\n")
+
+                status = Repository(repo).restore_checkpoint(commit, objects_dir, Repository(repo).status()["revision"])
+
+                self.assertEqual((repo / "tracked.txt").read_text(), "user edit\n")
+                self.assertEqual((repo / "notes.txt").read_text(), "untracked at baseline\n")
+                self.assertEqual((repo / "removed-by-agent.txt").read_text(), "keep me\n")
+                self.assertFalse((repo / "created.txt").exists())
+                self.assertEqual((repo / "ignored.log").read_text(), "still ignored\n")
+                self.assertEqual(
+                    {(item["path"], item["staged"], item["untracked"]) for item in status["files"]},
+                    {("tracked.txt", False, False), ("notes.txt", False, True)},
+                )
+                self.assertEqual(status["head"], head)
+                self.assertEqual(self.loose_objects(repo), real_objects_before)
+                self.assertEqual(list((repo / ".git").glob("agentsdock-index-*")), [])
+                self.assertFalse((repo / ".git" / "index.lock").exists())
+
+                with patch.object(agent_server, "CODE_DIFF_CHECKPOINT_MAX_PER_SESSION", 1):
+                    second = agent_server._capture_git_tree("chat", "turn-2", str(repo), durable=True)
+                    assert second is not None
+                    (repo / "tracked.txt").write_text("second agent edit\n")
+                    later_checkpoint, later = agent_server._write_turn_code_diff("chat", "turn-2", "codex", second, str(repo), {"tracked.txt"})
+                assert later_checkpoint is not None and later is not None
+                self.assertEqual(later["checkpoint_commit"], later_checkpoint["checkpoint_commit"])
+                self.assertEqual(
+                    sorted(path.name for path in agent_server.checkpoints_dir("chat").iterdir()),
+                    ["objects", "turn-2"],
+                )
+
+                unchanged = agent_server._capture_git_tree("chat", "turn-3", str(repo), durable=True)
+                assert unchanged is not None
+                self.assertEqual(
+                    agent_server._write_turn_code_diff("chat", "turn-3", "codex", unchanged, str(repo), set()),
+                    (None, None),
+                )
+                self.assertFalse((agent_server.checkpoints_dir("chat") / "turn-3").exists())
+
+                # A shell command (no agent-attributed edit paths) still moves
+                # the tree, so the turn gets a checkpoint but no code diff.
+                fourth = agent_server._capture_git_tree("chat", "turn-4", str(repo), durable=True)
+                assert fourth is not None
+                (repo / "note.txt").write_text("created through a shell command\n")
+                shell_checkpoint, shell_diff = agent_server._write_turn_code_diff("chat", "turn-4", "codex", fourth, str(repo), set())
+                self.assertIsNone(shell_diff)
+                assert shell_checkpoint is not None
+                self.assertEqual(shell_checkpoint["changed_files"], ["note.txt"])
+                self.assertEqual(
+                    (agent_server.checkpoints_dir("chat") / "turn-4").read_text().strip(),
+                    shell_checkpoint["checkpoint_commit"],
+                )
+                self.assertFalse((agent_server.code_diffs_dir("chat") / "turn-4.patch").exists())
+                hidden = {"type": "turn_checkpoint", **shell_checkpoint}
+                self.assertTrue(agent_server.is_client_visible_event(hidden))
+                self.assertFalse(agent_server.is_visible_timeline_event(hidden, compact=True))
+                self.assertFalse(agent_server.semantic_timeline_event_is_display(hidden))
+                self.assertIn("turn_checkpoint", agent_server.SEMANTIC_TIMELINE_ESSENTIAL_DETAIL_TYPES)
+
+                agent_server.delete_session_local_roots("chat")
+                self.assertFalse(agent_server.code_diffs_dir("chat").exists())
+
     def test_oversize_discovery_and_patch_leave_no_partial_or_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -318,7 +449,7 @@ class CodeDiffSnapshotTests(CodeDiffStateMixin, unittest.TestCase):
                         str(repo),
                         {"tracked.txt"},
                     )
-                self.assertIsNone(result)
+                self.assertEqual(result, (None, None))
                 self.assertFalse(
                     (agent_server.code_diffs_dir("chat") / "oversize-patch.patch").exists()
                 )
@@ -424,6 +555,7 @@ class CodeDiffCancellationTests(CodeDiffStateMixin, unittest.IsolatedAsyncioTest
                 session_id: str,
                 _run_id: str,
                 _cwd: str,
+                **_kwargs: object,
             ) -> dict[str, str]:
                 snapshot = agent_server.code_diffs_dir(session_id) / ".snapshot-cancel"
                 snapshot.mkdir(parents=True)

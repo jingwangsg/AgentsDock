@@ -417,6 +417,66 @@ class EventLogRecoveryTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertEqual(await agent_server.next_event_seq(session_id, path), 5)
 
+    async def test_rewind_truncation_checkpoint_survives_cache_clear(self) -> None:
+        session_id = "rewind-restart"
+        path = self.root / f"{session_id}.jsonl"
+        events = [
+            {"seq": 1, "id": "e1", "type": "turn_started", "run_id": "first", "prompt": "one", "ts": "t1"},
+            {"seq": 2, "id": "e2", "type": "assistant_text", "run_id": "first", "text": "kept answer", "ts": "t2"},
+            {"seq": 3, "id": "e3", "type": "turn_finished", "run_id": "first", "exit_code": 0, "ts": "t3"},
+            {"seq": 4, "id": "e4", "type": "turn_started", "run_id": "second", "prompt": "two", "ts": "t4"},
+            {"seq": 5, "id": "e5", "type": "assistant_text", "run_id": "second", "text": "gone", "ts": "t5"},
+            {"seq": 6, "id": "e6", "type": "code_diff", "run_id": "second", "ts": "t6"},
+        ]
+        path.write_text(
+            "not json\n" + "".join(json.dumps(event) + "\n" for event in events),
+            encoding="utf-8",
+        )
+        summary = agent_server.truncate_session_events_sync(session_id, before_seq=4)
+        self.assertEqual(summary["removed_events"], 3)
+        self.assertEqual(summary["max_seq_before"], 6)
+        self.assertEqual(summary["removed_run_ids"], ["second"])
+        self.assertEqual(summary["removed_event_ids"], ["e4", "e5", "e6"])
+        self.assertEqual(summary["latest_event"], {"seq": 3, "ts": "t3", "type": "turn_finished"})
+        self.assertEqual(summary["latest_agent_event"], {"seq": 2, "ts": "t2", "type": "assistant_text"})
+        lines = path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[0], "not json")  # malformed prefix bytes are copied verbatim
+        remaining = [json.loads(line) for line in lines[1:]]
+        self.assertEqual([event["seq"] for event in remaining], [1, 2, 3, 6])
+        self.assertEqual(remaining[-1]["type"], "_event_sequence_checkpoint")
+        self.assertFalse(agent_server.is_client_visible_event(remaining[-1]))
+        self.assertEqual(list(self.root.glob(".*rewind-tmp")), [])
+
+        agent_server.EVENT_SEQ_CACHE.clear()  # simulate a fresh process
+        with patch.dict(
+            agent_server.STORE.sessions,
+            {session_id: {"id": session_id, "latest_event_seq": 1}},
+            clear=True,
+        ):
+            self.assertEqual(await agent_server.next_event_seq(session_id, path), 7)
+
+    async def test_rewind_truncation_aborts_when_log_changes_underneath(self) -> None:
+        session_id = "rewind-race"
+        path = self.root / f"{session_id}.jsonl"
+        original = json.dumps({"seq": 1, "type": "turn_started", "run_id": "a"}) + "\n"
+        path.write_text(original, encoding="utf-8")
+        real_stat = Path.stat
+
+        def append_then_stat(target: Path, *args, **kwargs):
+            if target == path and not getattr(append_then_stat, "raced", False):
+                append_then_stat.raced = True
+                result = real_stat(target, *args, **kwargs)
+                with path.open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps({"seq": 2, "type": "assistant_text"}) + "\n")
+                return result
+            return real_stat(target, *args, **kwargs)
+
+        with patch.object(Path, "stat", append_then_stat):
+            with self.assertRaisesRegex(RuntimeError, "changed while"):
+                agent_server.truncate_session_events_sync(session_id, before_seq=1)
+        self.assertEqual([event["seq"] for event in self.parsed_events(path)], [1, 2])
+        self.assertEqual(list(self.root.glob(".*rewind-tmp")), [])
+
     async def test_cancelled_prune_cannot_overwrite_concurrent_append(self) -> None:
         session_id = "cancelled-prune"
         path = self.root / f"{session_id}.jsonl"

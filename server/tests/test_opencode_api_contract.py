@@ -178,11 +178,21 @@ class OpenCodeApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.tempdir.cleanup()
 
     async def _create_session(self, **extra) -> str:
+        # Creation ignores permission fields (every chat starts with full
+        # access); a narrower mode is applied the way a client still can.
+        permission_mode = extra.pop("opencode_permission_mode", None)
         response = await self.client.post("/api/sessions", json={
             "backend": "opencode", "cwd": str(self.cwd), **extra,
         })
         self.assertEqual(response.status_code, 200, response.text)
-        return response.json()["session"]["id"]
+        session_id = response.json()["session"]["id"]
+        if permission_mode is not None:
+            patched = await self.client.patch(
+                f"/api/sessions/{session_id}",
+                json={"opencode_permission_mode": permission_mode},
+            )
+            self.assertEqual(patched.status_code, 200, patched.text)
+        return session_id
 
     async def _drain_turn_tasks(self, session_id: str) -> None:
         for _ in range(200):
@@ -231,7 +241,7 @@ class OpenCodeApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             backend["permission_modes"], ["default", "full_access", "plan"]
         )
-        self.assertEqual(backend["default_permission_mode"], "default")
+        self.assertEqual(backend["default_permission_mode"], "full_access")
         values = [option["value"] for option in backend["models"]]
         self.assertIn("opencode/mimo-v2.5-free", values)
         # The empty value is the "server default" option every backend offers.
@@ -250,33 +260,38 @@ class OpenCodeApiContractTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get(f"/api/sessions/{session_id}")
         session = response.json()["session"]
         self.assertEqual(session["backend"], "opencode")
-        self.assertEqual(session["opencode_permission_mode"], "default")
+        self.assertEqual(session["opencode_permission_mode"], "full_access")
 
     async def test_permission_mode_round_trips_through_the_api(self) -> None:
-        session_id = await self._create_session(opencode_permission_mode="plan")
-        response = await self.client.get(f"/api/sessions/{session_id}")
+        # The field is still accepted on creation but no longer narrows a new
+        # chat; PATCH keeps working for clients that still expose the control.
+        created = await self.client.post("/api/sessions", json={
+            "backend": "opencode", "cwd": str(self.cwd),
+            "opencode_permission_mode": "plan",
+        })
+        self.assertEqual(created.status_code, 200, created.text)
+        session_id = created.json()["session"]["id"]
         self.assertEqual(
-            response.json()["session"]["opencode_permission_mode"], "plan"
+            created.json()["session"]["opencode_permission_mode"], "full_access"
         )
         patched = await self.client.patch(
             f"/api/sessions/{session_id}",
-            json={"opencode_permission_mode": "full_access"},
+            json={"opencode_permission_mode": "plan"},
         )
         self.assertEqual(patched.status_code, 200, patched.text)
         response = await self.client.get(f"/api/sessions/{session_id}")
         self.assertEqual(
-            response.json()["session"]["opencode_permission_mode"], "full_access"
+            response.json()["session"]["opencode_permission_mode"], "plan"
         )
 
     async def test_permission_change_rotates_a_resumed_provider_session(self) -> None:
         session_id = await self._create_session(
-            opencode_permission_mode="plan",
             provider_session_id=SESSION,
             import_history=False,
         )
         patched = await self.client.patch(
             f"/api/sessions/{session_id}",
-            json={"opencode_permission_mode": "full_access"},
+            json={"opencode_permission_mode": "plan"},
         )
         self.assertEqual(patched.status_code, 200, patched.text)
         session = patched.json()["session"]
@@ -300,8 +315,9 @@ class OpenCodeApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("-s", record["argv"])
         config = json.loads(record["config_content"])
         agent_name = record["argv"][record["argv"].index("--agent") + 1]
+        # The fresh provider session runs with the narrowed (plan) tool set.
         self.assertEqual(
-            config["agent"][agent_name]["permission"]["bash"], "allow"
+            config["agent"][agent_name]["permission"]["bash"], "deny"
         )
 
     async def test_invalid_opencode_workspaces_are_rejected_not_fallbacked(self) -> None:
@@ -659,7 +675,7 @@ class OpenCodeApiContractTests(unittest.IsolatedAsyncioTestCase):
                 )
                 permission_change = await self.client.patch(
                     f"/api/sessions/{first}",
-                    json={"opencode_permission_mode": "full_access"},
+                    json={"opencode_permission_mode": "plan"},
                 )
                 self.assertEqual(
                     permission_change.status_code,

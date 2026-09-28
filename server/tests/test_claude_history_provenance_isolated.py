@@ -78,9 +78,9 @@ def load_projection() -> dict:
     if {node.name for node in selected} != FUNCTIONS:
         raise AssertionError("Isolated provenance helper allowlist is incomplete")
     constants = [node for node in tree.body if isinstance(node, ast.Assign)
-                 and any(isinstance(target, ast.Name) and target.id == "LEADING_DECORATION_RE" for target in node.targets)]
-    if len(constants) != 1:
-        raise AssertionError("Assistant cleaning constant is missing or ambiguous")
+                 and any(isinstance(target, ast.Name) and target.id in ("LEADING_DECORATION_RE", "OAI_MEM_CITATION_RE") for target in node.targets)]
+    if len(constants) != 2:
+        raise AssertionError("Assistant cleaning constants are missing or ambiguous")
     module = ast.fix_missing_locations(ast.Module(body=[
         ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
         *constants,

@@ -1,7 +1,8 @@
 """Passive Claude model metadata from real SDK connections.
 
 Catalog reads never start a CLI, renew credentials, or terminate a process.
-Only bounded model IDs/labels are retained; account/command data is discarded.
+Only bounded model IDs/labels/descriptions are retained; account/command data
+is discarded.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import unicodedata
 from typing import Any
 
 MAX_MODELS = 512
+MAX_DESCRIPTION = 200
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/\-\[\]]{0,255}")
 VERSIONED_ID = re.compile(
     r"claude-([a-z][a-z0-9]*)-(\d+(?:-\d{1,2})*)(?:-\d{8})?(\[[a-z0-9]+\])?"
@@ -30,8 +32,8 @@ class ClaudeModelCatalogUnavailable(RuntimeError):
     """A metadata probe failed; never include provider output in this error."""
 
 
-def _safe_label(value: Any) -> str:
-    if not isinstance(value, str) or not value or len(value) > 160:
+def _safe_label(value: Any, limit: int = 160) -> str:
+    if not isinstance(value, str) or not value or len(value) > limit:
         return ""
     if any(unicodedata.category(char).startswith("C") for char in value):
         return ""
@@ -70,6 +72,17 @@ def _model_label(model: dict[str, Any], value: str) -> str:
     return _safe_label(label) or display
 
 
+def _model_description(model: dict[str, Any], label: str) -> str:
+    description = _safe_label(model.get("description"), MAX_DESCRIPTION)
+    # The CLI prefixes its picker text with the resolved model name ("Opus 5.5
+    # · Best for everyday, complex tasks"). When the label already shows that
+    # name, only the purpose text after the separator is worth a second line.
+    match = NATIVE_DESCRIPTION.match(description)
+    if match and match[1] in label:
+        description = description[match.end():].strip()
+    return description
+
+
 def parse_native_models(info: Any) -> list[dict[str, str]]:
     if not isinstance(info, dict) or not isinstance(info.get("models"), list):
         raise ClaudeModelCatalogUnavailable("Native model metadata is unavailable")
@@ -88,7 +101,12 @@ def parse_native_models(info: Any) -> list[dict[str, str]]:
         # Never replace an alias with its resolved ID: that would pin new
         # chats to today's version instead of following native updates.
         if model.get("disabled") is not True:
-            options.append({"value": value, "label": _model_label(model, value)})
+            label = _model_label(model, value)
+            option = {"value": value, "label": label}
+            description = _model_description(model, label)
+            if description:
+                option["description"] = description
+            options.append(option)
     if models and not seen:
         raise ClaudeModelCatalogUnavailable("Native model metadata is invalid")
     return options
@@ -97,8 +115,66 @@ def parse_native_models(info: Any) -> list[dict[str, str]]:
 
 CACHE_TTL_SECONDS = 300.0
 CACHE_LIMIT = 16
+STORE_MAX_BYTES = 4 * 1024 * 1024
 _CACHE_LOCK = threading.Lock()
 _CACHE: OrderedDict[str, tuple[float, list[dict[str, str]]]] = OrderedDict()
+# Durable copy of _CACHE so a restarted hub serves the native picker before
+# any chat reconnects. It needs no TTL: native_catalog_key already changes
+# with the CLI binary, settings, credentials, or account identity.
+_STORE_PATH: Path | None = None
+
+
+def configure_native_models_store(path: Path | None) -> None:
+    global _STORE_PATH
+    with _CACHE_LOCK:
+        _STORE_PATH = path
+
+
+def _clean_rows(rows: Any) -> list[dict[str, str]] | None:
+    """Re-validate persisted rows so a damaged file cannot reach the UI."""
+    if not isinstance(rows, list) or len(rows) > MAX_MODELS:
+        return None
+    clean: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        value, label = row.get("value"), _safe_label(row.get("label"))
+        if not isinstance(value, str) or not MODEL_ID.fullmatch(value) or not label:
+            return None
+        option = {"value": value, "label": label}
+        description = _safe_label(row.get("description"), MAX_DESCRIPTION)
+        if description:
+            option["description"] = description
+        clean.append(option)
+    return clean
+
+
+def _read_store() -> OrderedDict[str, list[dict[str, str]]]:
+    store: OrderedDict[str, list[dict[str, str]]] = OrderedDict()
+    if _STORE_PATH is None:
+        return store
+    try:
+        with _STORE_PATH.open("rb") as stream:
+            raw = stream.read(STORE_MAX_BYTES + 1)
+        payload = json.loads(raw) if len(raw) <= STORE_MAX_BYTES else None
+    except (OSError, ValueError):
+        payload = None
+    if isinstance(payload, dict):
+        for key, rows in payload.items():
+            clean = _clean_rows(rows)
+            if isinstance(key, str) and len(key) == 64 and clean is not None:
+                store[key] = clean
+    return store
+
+
+def _write_store(store: OrderedDict[str, list[dict[str, str]]]) -> None:
+    assert _STORE_PATH is not None
+    _STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _STORE_PATH.with_name(_STORE_PATH.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(store, stream)
+    os.replace(tmp, _STORE_PATH)
 
 
 def _file_revision(path: Path) -> tuple:
@@ -146,7 +222,7 @@ def native_catalog_key(executable: str, env: dict[str, str]) -> str:
     resolved = shutil.which(executable, path=env.get("PATH")) or executable
     revisions = [_file_revision(Path(resolved)), *(
         _file_revision(path) for path in (
-            config / "settings.json", config / ".credentials.json",
+            config / "settings.json", config / "settings.local.json", config / ".credentials.json",
             Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
             Path("/etc/claude-code/managed-settings.json"),
         )
@@ -155,16 +231,29 @@ def native_catalog_key(executable: str, env: dict[str, str]) -> str:
 
 
 def _has_project_settings(cwd: str, env: dict[str, str]) -> bool:
-    """Do not promote a workspace-specific picker to the server-wide catalog."""
+    """Do not promote a workspace-specific picker to the server-wide catalog.
+
+    Only a project settings file that pins models makes the picker
+    workspace-specific. Permission allowlists in a parent ``.claude/`` (common
+    for a whole workspace root) must not silence the catalog for every chat.
+    """
     root = Path(cwd).resolve()
     config = Path(env.get("CLAUDE_CONFIG_DIR") or Path(env.get("HOME") or str(Path.home())) / ".claude").resolve()
     for parent in (root, *root.parents):
         folder = parent / ".claude"
+        if folder.resolve() == config:
+            continue  # User-wide config is part of the catalog fingerprint.
         for name in ("settings.json", "settings.local.json"):
             path = folder / name
-            if name == "settings.json" and folder.resolve() == config:
-                continue  # This is the fingerprinted user config, not project config.
-            if path.exists():
+            if not path.is_file():
+                continue
+            try:
+                if path.stat().st_size > 1_000_000:
+                    return True
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return True  # Unreadable project settings: stay conservative.
+            if not isinstance(data, dict) or any("model" in str(key).lower() for key in data):
                 return True
     return False
 
@@ -181,20 +270,36 @@ def remember_native_models(info: Any, *, key: str, executable: str,
         _CACHE.move_to_end(key)
         while len(_CACHE) > CACHE_LIMIT:
             _CACHE.popitem(last=False)
+        if _STORE_PATH is not None:
+            store = _read_store()
+            store[key] = models
+            store.move_to_end(key)
+            while len(store) > CACHE_LIMIT:
+                store.popitem(last=False)
+            try:
+                _write_store(store)
+            except OSError:
+                pass  # Best effort: the in-memory copy above already serves this process.
 
 
 def cached_native_models(executable: str, *, env: dict[str, str]) -> list[dict[str, str]] | None:
     key = native_catalog_key(executable, env)
     with _CACHE_LOCK:
         entry = _CACHE.get(key)
-        if entry is None:
-            return None
-        if time.monotonic() - entry[0] >= CACHE_TTL_SECONDS:
+        if entry is not None and time.monotonic() - entry[0] < CACHE_TTL_SECONDS:
+            return [dict(row) for row in entry[1]]
+        if entry is not None:
             del _CACHE[key]
-            return None
-        return [dict(row) for row in entry[1]]
+        return _read_store().get(key)
 
 
 def clear_native_models() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
+        # Authentication failures call this: a signed-out hub must not keep
+        # serving the previous account's picker from disk either.
+        if _STORE_PATH is not None:
+            try:
+                _STORE_PATH.unlink()
+            except OSError:
+                pass

@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 
 
@@ -32,6 +33,8 @@ def extracted():
         "terminal_session_name": lambda _: "isolated-terminal",
         "codex_user_developer_instructions": lambda: "",
         "session_prompt_addendum": lambda _: "",
+        "STATE_DIR": Path("/isolated/state"),
+        "agentsdock_canvas": SimpleNamespace(prompt_section=lambda *_args, **_kwargs: ""),
     }
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
                  "<isolated-team-read-discovery>", "exec"), namespace)

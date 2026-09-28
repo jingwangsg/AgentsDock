@@ -125,14 +125,15 @@ class OpenCodeSessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_idle_fork_is_unavailable_without_transcript_copy_fallback(self) -> None:
         created = await self.client.post(
             "/api/sessions",
-            json={
-                "backend": "opencode",
-                "cwd": str(self.cwd),
-                "opencode_permission_mode": "plan",
-            },
+            json={"backend": "opencode", "cwd": str(self.cwd)},
         )
         self.assertEqual(created.status_code, 200, created.text)
         parent_id = created.json()["session"]["id"]
+        narrowed = await self.client.patch(
+            f"/api/sessions/{parent_id}",
+            json={"opencode_permission_mode": "plan"},
+        )
+        self.assertEqual(narrowed.status_code, 200, narrowed.text)
         await agent_server.append_event(
             parent_id,
             "turn_started",

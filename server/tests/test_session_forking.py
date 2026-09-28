@@ -1115,6 +1115,9 @@ class ForkSessionFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(order, ["journal", "transfer", "bind"])
         self.assertEqual(ledger_ids, [])
         self.assertNotIn("_fork_initializing", child)
+        # The copied history names the parent's thread; a rewind on the child
+        # must still accept those terminals as cutoffs.
+        self.assertEqual(child["codex_thread_lineage"], ["thread-parent"])
         self.assertEqual(result["session"]["id"], child_id)
         self.assertIsNone(cleanup_state["provider_thread_id"])
         self.assertIsNone(cleanup_state["child_session_id"])

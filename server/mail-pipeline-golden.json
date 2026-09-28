@@ -1,0 +1,67 @@
+{
+  "frames": [
+    {
+      "type": "snapshot",
+      "server_identity": "peer_tls_fixture",
+      "hub_id": "hub_33a67e20a54ab413dd0b7c045f584cbf",
+      "stream_id": "391d459068264107be5dceb0b975a14d",
+      "cursor": {
+        "version": 1,
+        "team_id": "team_451dbe98624bd98bac614452bf8980a6",
+        "recipient_server_id": "node_ee757d9765bbfce04398056322a68f61",
+        "through_sequence": 0,
+        "arrival_id": null,
+        "reset": true
+      }
+    },
+    {
+      "type": "hint",
+      "server_identity": "peer_tls_fixture",
+      "hub_id": "hub_33a67e20a54ab413dd0b7c045f584cbf",
+      "stream_id": "391d459068264107be5dceb0b975a14d",
+      "cursor": {
+        "version": 1,
+        "team_id": "team_451dbe98624bd98bac614452bf8980a6",
+        "recipient_server_id": "node_ee757d9765bbfce04398056322a68f61",
+        "through_sequence": 1,
+        "arrival_id": "tmsg_449e8fed978abf617231d700ad70e0a6",
+        "reset": false
+      }
+    },
+    {
+      "type": "hint",
+      "server_identity": "peer_tls_fixture",
+      "hub_id": "hub_33a67e20a54ab413dd0b7c045f584cbf",
+      "stream_id": "391d459068264107be5dceb0b975a14d",
+      "cursor": {
+        "version": 1,
+        "team_id": "team_451dbe98624bd98bac614452bf8980a6",
+        "recipient_server_id": "node_ee757d9765bbfce04398056322a68f61",
+        "through_sequence": 2,
+        "arrival_id": "tmsg_f0beb0e3545a638f3192f510fa2a7c00",
+        "reset": false
+      }
+    },
+    {
+      "type": "snapshot",
+      "server_identity": "peer_tls_fixture",
+      "hub_id": "hub_33a67e20a54ab413dd0b7c045f584cbf",
+      "stream_id": "78185a838bd642b099c693df580b57d7",
+      "cursor": {
+        "version": 1,
+        "team_id": "team_451dbe98624bd98bac614452bf8980a6",
+        "recipient_server_id": "node_ee757d9765bbfce04398056322a68f61",
+        "through_sequence": 5,
+        "arrival_id": "tmsg_f1a9f0567ee4d752addf4ff35174bcd4",
+        "reset": false
+      }
+    }
+  ],
+  "coverage": {
+    "arrival_id": "tmsg_449e8fed978abf617231d700ad70e0a6",
+    "recipient_server_id": "node_ee757d9765bbfce04398056322a68f61",
+    "team_id": "team_451dbe98624bd98bac614452bf8980a6",
+    "through_sequence": 1,
+    "version": 1
+  }
+}

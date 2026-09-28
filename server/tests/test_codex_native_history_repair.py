@@ -111,9 +111,9 @@ class CodexNativeHistoryRepairTests(unittest.TestCase):
         selected = [node for node in tree.body if (
             isinstance(node, ast.FunctionDef) and node.name == "clean_assistant_text"
         ) or (isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "LEADING_DECORATION_RE" for target in node.targets
+            isinstance(target, ast.Name) and target.id in ("LEADING_DECORATION_RE", "OAI_MEM_CITATION_RE") for target in node.targets
         ))]
-        self.assertEqual(len(selected), 2)
+        self.assertEqual(len(selected), 3)
         namespace = {"re": re}
         exec(compile(ast.Module(body=selected, type_ignores=[]), "native-cleaner", "exec"), namespace)
         for text in ("✅ Scheduled report", "  :white_check_mark: Report\n⚠️ Detail", "  Unchanged text  ", "Text ✅ remains", "✅"):

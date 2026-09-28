@@ -564,6 +564,9 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             "model": "claude-opus",
             "effort": "high",
             "provider_jobs_access": "full",
+            # New chats start in bypassPermissions; the approval-routing tests
+            # below exercise the narrower mode a client can still PATCH in.
+            "claude_permission_mode": "default",
         }
         agent_server.STORE.sessions = {"chat-claude": self.session}
         agent_server.ACTIVE = {}
@@ -2637,7 +2640,10 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(persisted_mode, "dontAsk")
-        self.assertEqual(reset["claude_permission_mode"], "default")
+        self.assertEqual(
+            reset["claude_permission_mode"],
+            agent_server.CLAUDE_DEFAULT_PERMISSION_MODE,
+        )
 
     async def test_print_fallback_keeps_legacy_permission_behavior(self) -> None:
         session = {**self.session, "claude_permission_mode": "plan"}

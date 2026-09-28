@@ -62,6 +62,33 @@ class NativeLoginRevisionTests(unittest.TestCase):
         self.write()
         self.assertNotEqual(original, self.revision())
 
+    def identity(self):
+        return codex_auth.native_account_identity(self.env, cwd=str(self.root))
+
+    def test_account_identity_survives_refresh_and_relogin_but_not_an_account_switch(self):
+        self.write()
+        original = self.identity()
+        self.assertEqual(original[1:], ["chatgpt", "synthetic-account", "synthetic-user"])
+        self.auth["tokens"].update(access_token="new-access", refresh_token="new-refresh")
+        self.claims["auth_time"] = 150
+        self.auth["tokens"]["id_token"] = jwt(self.claims)
+        self.write()
+        self.assertEqual(original, self.identity())
+        self.auth["tokens"]["account_id"] = "other-account"
+        self.write()
+        self.assertNotEqual(original, self.identity())
+
+    def test_account_identity_digests_an_api_key_and_is_unknown_without_a_store(self):
+        self.assertIsNone(self.identity())
+        self.auth = {"OPENAI_API_KEY": "synthetic-key-one"}
+        self.write()
+        identity = self.identity()
+        self.assertEqual(identity[1], "apiKey")
+        self.assertRegex(identity[2], r"^[0-9a-f]{64}$")
+        self.assertNotIn("synthetic-key-one", json.dumps(identity))
+        self.assertIsNone(codex_auth.native_account_identity(
+            {**self.env, "OPENAI_API_KEY": "environment-owned"}, cwd=str(self.root)))
+
     def test_api_key_change_and_same_content_rewrite(self):
         self.auth = {"OPENAI_API_KEY": "synthetic-key-one"}
         self.write()
@@ -282,6 +309,17 @@ class LoginHandoffTests(binary.BinaryRefreshTests):
             await new.start()
         self.assertIs(self.ns["CODEX_SESSION_APP_SERVER_MANAGERS"]["idle"], new)
         self.assertIsNot(new, old)
+
+    async def test_drain_unloads_threads_no_chat_references_so_the_old_process_can_close(self):
+        old = await self.manager("idle")
+        self.load("idle", old)
+        old.client._loaded_threads.add("thread-pre-rewind")  # fork source: no chat owns it any more
+        await self.relogin()
+        await self.preflight("idle")
+        await self.drain()
+        self.assertTrue(old.closed)
+        self.assertNotIn("thread-pre-rewind", old.client._loaded_threads)
+        self.ns["evict_codex_app_server_thread"].assert_any_await(old, "thread-pre-rewind", reinsert_on_failure=False)
 
     async def test_shutdown_does_not_start_detection_or_replace_manager(self):
         old = await self.manager("idle")

@@ -165,6 +165,9 @@ class RunOpenCodeTests(unittest.IsolatedAsyncioTestCase):
             "id": self.session_id,
             "backend": agent_server.BACKEND_OPENCODE,
             "cwd": self.cwd,
+            # New chats start in full_access; these runner tests cover the
+            # per-mode argv/config, so the baseline mode is set explicitly.
+            "opencode_permission_mode": "default",
         }
         agent_server.STORE.sessions = {self.session_id: self.session}
         agent_server.ACTIVE = {}

@@ -444,7 +444,7 @@ class CodexGoalsAdminTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(created, manager)
         self.assertEqual(
             manager_type.call_args.kwargs["app_server_args"],
-            ("--disable", "goals"),
+            ("--disable", "goals", "-c", "thread_unload_delay_secs=0"),
         )
 
     def test_exec_command_applies_native_goal_feature_off(self) -> None:
@@ -551,7 +551,7 @@ class CodexGoalsAdminTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             manager_type.call_args.kwargs["app_server_args"],
-            ("--disable", "goals"),
+            ("--disable", "goals", "-c", "thread_unload_delay_secs=0"),
         )
 
     async def test_compaction_metadata_closes_and_rejects_late_duplicate_start(

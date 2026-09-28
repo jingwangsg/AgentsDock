@@ -75,7 +75,11 @@ import websockets
 import team_mail_grants
 import chat_mailbox
 import workspace_git
+import agentsdock_canvas
+import remote_servers
+import claude_model_catalog
 import codex_auth
+import codex_model_catalog
 import codex_provider
 import server_instances
 import local_session_ownership
@@ -400,6 +404,13 @@ CODE_DIFFS_ROOT = STATE_DIR / "code_diffs"
 HOST_HEALTH_FILE = STATE_DIR / "host_health.jsonl"
 SERVER_ADMIN_ROOT = STATE_DIR / "admin"
 SERVER_IDENTITY_FILE = STATE_DIR / "server-identity"
+# Native Claude model labels/descriptions captured from SDK initialize survive
+# hub restarts here; the fingerprint key already invalidates stale copies when
+# the CLI binary, settings, credentials, or account identity change.
+claude_model_catalog.configure_native_models_store(STATE_DIR / "claude-native-models.json")
+# The Codex picker mirrors the CLI's model/list the same way; its key follows
+# the launcher build and the signed-in account instead.
+codex_model_catalog.configure_native_models_store(STATE_DIR / "codex-native-models.json")
 SERVER_UPDATE_STATUS_FILE = SERVER_ADMIN_ROOT / "server-update.json"
 SERVER_UPDATE_LOG_FILE = SERVER_ADMIN_ROOT / "server-update.log"
 SERVER_RESTART_STATUS_FILE = SERVER_ADMIN_ROOT / "server-restart.json"
@@ -441,7 +452,8 @@ CURSOR_PROCESS_GUARD = Path(__file__).with_name("cursor_process_guard.py")
 OPENCODE_BIN_OVERRIDE = os.environ.get("OPENCODE_BIN", "").strip()
 OPENCODE_BIN = OPENCODE_BIN_OVERRIDE or "opencode"
 OPENCODE_EXECUTABLE_CANDIDATES = ("opencode",)
-CODEX_DEFAULT_MODEL = agentsdock_setting("CODEX_MODEL", "gpt-5.5").strip() or "gpt-5.5"
+CODEX_MODEL_SETTING = agentsdock_setting("CODEX_MODEL", "").strip()
+CODEX_DEFAULT_MODEL = CODEX_MODEL_SETTING or "gpt-5.5"
 _configured_codex_effort = agentsdock_setting("CODEX_EFFORT", "xhigh").strip().lower() or "xhigh"
 CODEX_DEFAULT_EFFORT = CODEX_EFFORT_ALIASES.get(_configured_codex_effort, _configured_codex_effort)
 if CODEX_DEFAULT_EFFORT not in CODEX_EFFORTS:
@@ -702,6 +714,50 @@ CODEX_FALLBACK_SERVICE_TIERS = {
     "gpt-5.6-luna": "priority",
 }
 
+
+def codex_native_catalog_key() -> str | None:
+    """Durable picker copies follow the launcher build and the signed-in account.
+
+    Never probes the binary: the identity comes from the last binary refresh,
+    so this is None until one has run (and always under the exec transport).
+    """
+    if CODEX_BINARY_IDENTITY is None:
+        return None
+    account = codex_auth.native_account_identity(codex_app_server_env(), cwd=existing_cwd(DEFAULT_CWD))
+    return codex_model_catalog.native_catalog_key(CODEX_BINARY_IDENTITY, account)
+
+
+def codex_native_models() -> list[dict[str, Any]] | None:
+    """Rows mirrored from the CLI's model/list, or None (keep the static behaviour)."""
+    key = codex_native_catalog_key()
+    return codex_model_catalog.cached_native_models(key) if key else None
+
+
+def codex_native_model_row(model: str) -> dict[str, Any] | None:
+    clean = str(model or "").strip()
+    return next((row for row in codex_native_models() or () if row["value"] == clean), None)
+
+
+def codex_server_default_model() -> str:
+    """The model a chat with no override launches.
+
+    An explicit CODEX_MODEL setting wins; otherwise follow the CLI picker's
+    own default row, then the static default.
+    """
+    if CODEX_MODEL_SETTING:
+        return CODEX_DEFAULT_MODEL
+    default_row = next((row for row in codex_native_models() or () if row.get("is_default")), None)
+    return str(default_row["value"]) if default_row else CODEX_DEFAULT_MODEL
+
+
+def codex_model_supported_efforts(model: str) -> tuple[str, ...] | None:
+    """Efforts the CLI lists for a model, else the static table, else None (provider-owned)."""
+    row = codex_native_model_row(model)
+    if row is not None and row["efforts"]:
+        return tuple(effort["value"] for effort in row["efforts"])
+    return CODEX_FALLBACK_MODEL_EFFORTS.get(str(model or "").strip())
+
+
 REQUEST_TIMEOUT_SECONDS = int(agentsdock_setting("REQUEST_TIMEOUT_SECONDS", "86400"))
 CODEX_APP_SERVER_TIMEOUT_SECONDS = int(agentsdock_setting("CODEX_APP_SERVER_TIMEOUT_SECONDS", "30"))
 CODEX_APP_SERVER_LIFECYCLE_TIMEOUT_SECONDS = max(
@@ -749,15 +805,17 @@ CLAUDE_PERMISSION_MODE_OPTIONS = (
     "bypassPermissions",
 )
 CLAUDE_PERMISSION_MODES = set(CLAUDE_PERMISSION_MODE_OPTIONS)
-CLAUDE_DEFAULT_PERMISSION_MODE = "default"
+# Permission controls left both clients: every chat runs with full access and
+# no prompts. The narrower modes stay valid API values for older clients.
+CLAUDE_DEFAULT_PERMISSION_MODE = "bypassPermissions"
 CURSOR_PERMISSION_MODES = ("default", "full_access", "plan")
-CURSOR_DEFAULT_PERMISSION_MODE = "default"
+CURSOR_DEFAULT_PERMISSION_MODE = "full_access"
 # Same three names as Cursor so the client needs no new vocabulary, but the
 # default means something different here: OpenCode allows every tool including
 # bash with no prompt, and the default mode defers to that rather than
 # narrowing it (see opencode_agent_client.opencode_permission_config).
 OPENCODE_PERMISSION_MODES = ("default", "full_access", "plan")
-OPENCODE_DEFAULT_PERMISSION_MODE = "default"
+OPENCODE_DEFAULT_PERMISSION_MODE = "full_access"
 PROVIDER_JOBS_ACCESS_MODES = ("full", "read_only", "blocked")
 PROVIDER_JOBS_ACCESS_MODE_SET = set(PROVIDER_JOBS_ACCESS_MODES)
 PROVIDER_JOBS_ACCESS_DEFAULT = "full"
@@ -1716,6 +1774,12 @@ CODE_DIFF_NUMSTAT_MAX_BYTES = max(
         )
     ),
 )
+# Newest per-turn workspace checkpoint refs kept per chat. Older refs are
+# unlinked; their objects stay until delete_session_local_roots.
+CODE_DIFF_CHECKPOINT_MAX_PER_SESSION = max(
+    1,
+    int(agentsdock_setting("CODE_DIFF_CHECKPOINT_MAX_PER_SESSION", "50")),
+)
 SUBAGENT_SNAPSHOT_STATE_LIMIT = 256
 # Most recently updated persisted descendants reconciled per chat open.
 CODEX_SUBAGENT_RECONCILE_LIMIT = int(
@@ -2494,6 +2558,21 @@ def codex_manifest_path(session_id: str) -> Path:
 
 def code_diffs_dir(session_id: str) -> Path:
     return CODE_DIFFS_ROOT / session_id
+
+
+def checkpoints_dir(session_id: str) -> Path:
+    """Per-turn checkpoint refs (``<safe run id>`` files) plus ``objects/``."""
+    return code_diffs_dir(session_id) / "checkpoints"
+
+
+def checkpoint_objects_dir(session_id: str) -> Path:
+    """Durable Git object directory owned by AgentsDock, never the user's ODB."""
+    return checkpoints_dir(session_id) / "objects"
+
+
+def canvas_checkpoints_dir(session_id: str) -> Path:
+    """Per-turn copies of the chat's Canvas sources (``<safe run id>/<name>.canvas.tsx``)."""
+    return code_diffs_dir(session_id) / "canvases"
 
 
 def existing_cwd(requested: str | None) -> str:
@@ -4708,6 +4787,9 @@ def discard_git_baseline(session_id: str, baseline: dict[str, Any] | None) -> No
     if not raw_path:
         return
     path = Path(raw_path)
+    if path == checkpoint_objects_dir(session_id):
+        # Durable checkpoint objects outlive the turn by design.
+        return
     if not _snapshot_object_dir_is_owned(session_id, path):
         logger.warning(
             "refusing to remove unowned code diff object directory session=%s path=%s",
@@ -4724,9 +4806,15 @@ def _capture_git_tree(
     cwd: str,
     *,
     object_dir: str | None = None,
+    durable: bool = False,
     deadline: float | None = None,
 ) -> dict[str, str] | None:
-    """Snapshot bounded worktree state without writing into the real object DB."""
+    """Snapshot bounded worktree state without writing into the real object DB.
+
+    ``durable`` writes into ``checkpoint_objects_dir`` so the tree can later be
+    committed as a restorable per-turn checkpoint; that directory is never
+    discarded with the baseline.
+    """
 
     base_env = _code_diff_git_env()
     if deadline is None:
@@ -4751,8 +4839,13 @@ def _capture_git_tree(
 
     ensure_dirs(session_id)
     diff_root = code_diffs_dir(session_id)
-    created_object_dir = object_dir is None
-    if created_object_dir:
+    created_object_dir = object_dir is None and not durable
+    if durable and object_dir is None:
+        snapshot_object_dir = checkpoint_objects_dir(session_id)
+        snapshot_object_dir.mkdir(parents=True, exist_ok=True)
+        with suppress(OSError):
+            snapshot_object_dir.chmod(0o700)
+    elif created_object_dir:
         snapshot_object_dir = Path(tempfile.mkdtemp(
             prefix=f".snapshot-{safe_name(run_id)[:64]}-",
             dir=str(diff_root),
@@ -4762,7 +4855,10 @@ def _capture_git_tree(
     else:
         snapshot_object_dir = Path(str(object_dir))
         if (
-            not _snapshot_object_dir_is_owned(session_id, snapshot_object_dir)
+            not (
+                _snapshot_object_dir_is_owned(session_id, snapshot_object_dir)
+                or snapshot_object_dir == checkpoint_objects_dir(session_id)
+            )
             or not snapshot_object_dir.is_dir()
         ):
             return None
@@ -5055,7 +5151,13 @@ def _write_turn_code_diff(
     baseline: dict[str, Any],
     cwd: str,
     changed_paths: set[str],
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Return ``(turn_checkpoint, code_diff)`` payloads for one finished turn.
+
+    The checkpoint commit is written whenever the worktree tree changed during
+    the turn, whoever changed it; the code diff only covers agent-attributed
+    paths. Either may be ``None``.
+    """
     # Finalization is best effort and runs on the provider completion path.
     # Share one wall-clock budget across the worktree capture, filtering,
     # patch, and numstat commands so a slow repository cannot multiply the
@@ -5067,6 +5169,7 @@ def _write_turn_code_diff(
     metadata_tmp = diff_root / f".{safe_name(run_id)}-{uuid.uuid4().hex}.json"
     filter_index = diff_root / f".{safe_name(run_id)}-{uuid.uuid4().hex}.filter-index"
     filter_pathspec = diff_root / f".{safe_name(run_id)}-{uuid.uuid4().hex}.filter-paths"
+    checkpoint: dict[str, Any] | None = None
     try:
         current = _capture_git_tree(
             session_id,
@@ -5076,13 +5179,79 @@ def _write_turn_code_diff(
             deadline=deadline,
         )
         if not current or current.get("repo_root") != baseline.get("repo_root"):
-            return None
+            return None, None
         base_tree = str(baseline.get("tree") or "")
         current_tree = str(current.get("tree") or "")
         if not base_tree or not current_tree or base_tree == current_tree:
-            return None
+            return None, None
 
         repo_root = str(current["repo_root"])
+        git_env = _code_diff_git_env()
+        git_env["GIT_INDEX_FILE"] = str(filter_index)
+        git_env["GIT_OBJECT_DIRECTORY"] = str(current["object_dir"])
+        git_env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = str(
+            current["alternate_object_dir"]
+        )
+        if str(current["object_dir"]) == str(checkpoint_objects_dir(session_id)):
+            # The baseline tree already lives in the durable checkpoint object
+            # directory; one commit object there makes it restorable later.
+            # The user's refs and object database are never written.
+            committed = _git_command(
+                repo_root,
+                ["commit-tree", base_tree, "-m", f"AgentsDock checkpoint {run_id}"],
+                env={
+                    **git_env,
+                    "GIT_AUTHOR_NAME": "AgentsDock",
+                    "GIT_AUTHOR_EMAIL": "checkpoint@agentsdock.invalid",
+                    "GIT_COMMITTER_NAME": "AgentsDock",
+                    "GIT_COMMITTER_EMAIL": "checkpoint@agentsdock.invalid",
+                },
+                deadline=deadline,
+            )
+            checkpoint_commit = committed.stdout.strip()
+            (
+                changed_returncode,
+                changed_payload,
+                changed_exceeded,
+                changed_timed_out,
+            ) = _git_stream_stdout(
+                repo_root,
+                ["diff", "--name-only", "-z", base_tree, current_tree],
+                env=git_env,
+                max_bytes=CODE_DIFF_NUMSTAT_MAX_BYTES,
+                deadline=deadline,
+            )
+            if (
+                committed.returncode == 0
+                and re.fullmatch(r"[0-9a-f]{40,64}", checkpoint_commit)
+                and changed_returncode == 0
+                and not changed_exceeded
+                and not changed_timed_out
+            ):
+                ref_path = checkpoints_dir(session_id) / safe_name(run_id)
+                ref_tmp = ref_path.with_name(f".{ref_path.name}-{uuid.uuid4().hex}.tmp")
+                try:
+                    with _open_private_exclusive(ref_tmp, "w") as output:
+                        output.write(checkpoint_commit + "\n")
+                    ref_tmp.replace(ref_path)
+                finally:
+                    with suppress(OSError):
+                        ref_tmp.unlink()
+                refs = sorted(
+                    (entry for entry in checkpoints_dir(session_id).iterdir() if entry.is_file()),
+                    key=lambda entry: entry.stat().st_mtime_ns,
+                )
+                for stale in refs[:-CODE_DIFF_CHECKPOINT_MAX_PER_SESSION]:
+                    with suppress(OSError):
+                        stale.unlink()
+                checkpoint = {
+                    "run_id": run_id,
+                    "checkpoint_commit": checkpoint_commit,
+                    "changed_files": [
+                        os.fsdecode(entry) for entry in changed_payload.split(b"\0") if entry
+                    ],
+                }
+
         attributed_paths = _normalize_changed_paths(
             changed_paths,
             repo_root,
@@ -5095,18 +5264,12 @@ def _write_turn_code_diff(
                 session_id,
                 run_id,
             )
-            return None
+            return checkpoint, None
 
         _write_nul_pathspec(
             filter_pathspec,
             attributed_paths,
             deadline=deadline,
-        )
-        git_env = _code_diff_git_env()
-        git_env["GIT_INDEX_FILE"] = str(filter_index)
-        git_env["GIT_OBJECT_DIRECTORY"] = str(current["object_dir"])
-        git_env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = str(
-            current["alternate_object_dir"]
         )
         if _git_command(
             repo_root,
@@ -5114,7 +5277,7 @@ def _write_turn_code_diff(
             env=git_env,
             deadline=deadline,
         ).returncode != 0:
-            return None
+            return checkpoint, None
         with suppress(OSError):
             filter_index.chmod(0o600)
         if _git_command(
@@ -5129,7 +5292,7 @@ def _write_turn_code_diff(
             env=git_env,
             deadline=deadline,
         ).returncode != 0:
-            return None
+            return checkpoint, None
         with suppress(OSError):
             filter_index.chmod(0o600)
         filtered = _git_command(
@@ -5140,7 +5303,7 @@ def _write_turn_code_diff(
         )
         attributed_tree = filtered.stdout.strip()
         if filtered.returncode != 0 or not attributed_tree or attributed_tree == base_tree:
-            return None
+            return checkpoint, None
 
         with _open_private_exclusive(patch_tmp, "wb") as output:
             patch_returncode, _unused, patch_exceeded, patch_timed_out = (
@@ -5174,7 +5337,7 @@ def _write_turn_code_diff(
                     run_id,
                     CODE_DIFF_PATCH_MAX_BYTES,
                 )
-            return None
+            return checkpoint, None
 
         (
             numstat_returncode,
@@ -5189,7 +5352,7 @@ def _write_turn_code_diff(
             deadline=deadline,
         )
         if numstat_returncode != 0 or numstat_exceeded or numstat_timed_out:
-            return None
+            return checkpoint, None
         files = _parse_git_numstat(numstat_payload)
         additions = sum(int(item["additions"] or 0) for item in files)
         deletions = sum(int(item["deletions"] or 0) for item in files)
@@ -5206,6 +5369,8 @@ def _write_turn_code_diff(
             "attribution": "agent_tool_paths",
             "attributed_paths": attributed_paths,
         }
+        if checkpoint:
+            metadata["checkpoint_commit"] = checkpoint["checkpoint_commit"]
         metadata_path = diff_root / f"{safe_name(run_id)}.json"
         with _open_private_exclusive(metadata_tmp, "w") as output:
             json.dump(metadata, output, indent=2)
@@ -5213,10 +5378,10 @@ def _write_turn_code_diff(
             output.flush()
         patch_tmp.replace(patch_path)
         metadata_tmp.replace(metadata_path)
-        return metadata
+        return checkpoint, metadata
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         logger.warning("code diff capture failed session=%s run=%s error=%s", session_id, run_id, exc)
-        return None
+        return checkpoint, None
     finally:
         for temporary in (
             patch_tmp,
@@ -5248,6 +5413,7 @@ async def capture_git_baseline(
         session_id,
         run_id,
         cwd,
+        durable=True,
     ))
     try:
         baseline = await asyncio.shield(capture_task)
@@ -5290,6 +5456,91 @@ async def discard_owned_git_baselines(
         )
 
 
+def snapshot_session_canvases_sync(session_id: str, run_id: str) -> None:
+    """Copy the chat's Canvas sources so a rewind can put them back.
+
+    Canvases live under the state dir, outside the chat's git worktree, so turn
+    checkpoints never cover them. Tracking starts with the first canvas; from
+    then on every finished turn is recorded, including "no canvases left", so a
+    rewind to that turn removes canvases created afterwards.
+    """
+    try:
+        source_dir = agentsdock_canvas.session_dir(STATE_DIR, session_id)
+    except ValueError:
+        return
+    sources = [
+        path for path in source_dir.iterdir()
+        if path.is_file() and path.name.endswith(agentsdock_canvas.CANVAS_SUFFIX)
+    ] if source_dir.is_dir() else []
+    root = canvas_checkpoints_dir(session_id)
+    if not sources and not root.is_dir():
+        return
+    target = root / safe_name(run_id)
+    staging = root / f".{target.name}-{uuid.uuid4().hex}.tmp"
+    staging.mkdir(parents=True, mode=0o700)
+    try:
+        for path in sources:
+            shutil.copyfile(path, staging / path.name)
+        if target.is_dir():
+            shutil.rmtree(target)
+        staging.replace(target)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    snapshots = sorted(
+        (entry for entry in root.iterdir() if entry.is_dir() and not entry.name.startswith(".")),
+        key=lambda entry: entry.stat().st_mtime_ns,
+    )
+    for stale in snapshots[:-CODE_DIFF_CHECKPOINT_MAX_PER_SESSION]:
+        shutil.rmtree(stale, ignore_errors=True)
+
+
+def restore_session_canvases_sync(
+    session_id: str,
+    kept_run_ids: list[str],
+    removed_run_ids: list[str],
+) -> dict[str, list[str]]:
+    """Return the chat's canvases to their state after the last kept turn.
+
+    A chat whose canvases were never tracked is left alone. Once tracking has
+    started, a kept turn without a snapshot can only predate the first canvas,
+    so the state to restore is "no canvases". Canvas UI state files survive for
+    canvases that stay: they hold the user's own interactions, not agent output.
+    """
+    root = canvas_checkpoints_dir(session_id)
+    snapshot = next(
+        (root / safe_name(run_id) for run_id in reversed(kept_run_ids) if (root / safe_name(run_id)).is_dir()),
+        None,
+    )
+    if snapshot is None and not any((root / safe_name(run_id)).is_dir() for run_id in removed_run_ids):
+        return {"restored": [], "removed": []}
+    wanted = {
+        path.name: path for path in snapshot.iterdir()
+        if path.is_file() and path.name.endswith(agentsdock_canvas.CANVAS_SUFFIX)
+    } if snapshot is not None else {}
+    directory = agentsdock_canvas.session_dir(STATE_DIR, session_id)
+    restored: list[str] = []
+    removed: list[str] = []
+    if directory.is_dir():
+        for path in list(directory.iterdir()):
+            if not (path.is_file() and path.name.endswith(agentsdock_canvas.CANVAS_SUFFIX)) or path.name in wanted:
+                continue
+            for stale in (path, agentsdock_canvas.state_path(path), agentsdock_canvas.build_cache_path(path)):
+                with suppress(OSError):
+                    stale.unlink()
+            removed.append(agentsdock_canvas.canvas_name(path))
+    for name, source in wanted.items():
+        target = directory / name
+        data = source.read_bytes()
+        if target.is_file() and target.read_bytes() == data:
+            continue
+        directory.mkdir(parents=True, exist_ok=True)
+        staging = target.with_name(f".{target.name}-{uuid.uuid4().hex}.tmp")
+        staging.write_bytes(data)
+        staging.replace(target)
+        restored.append(agentsdock_canvas.canvas_name(target))
+    return {"restored": restored, "removed": removed}
+
+
 async def publish_turn_code_diff(
     session_id: str,
     run_id: str,
@@ -5298,11 +5549,15 @@ async def publish_turn_code_diff(
     baseline: dict[str, Any] | None,
     changed_paths: set[str],
 ) -> None:
+    try:
+        await asyncio.to_thread(snapshot_session_canvases_sync, session_id, run_id)
+    except Exception:
+        logger.warning("canvas snapshot failed session=%s run=%s", session_id, run_id, exc_info=True)
     if not baseline:
         return
 
     async def finish_publication() -> None:
-        metadata = await asyncio.to_thread(
+        checkpoint, metadata = await asyncio.to_thread(
             _write_turn_code_diff,
             session_id,
             run_id,
@@ -5311,6 +5566,8 @@ async def publish_turn_code_diff(
             cwd,
             changed_paths,
         )
+        if checkpoint:
+            await append_event(session_id, "turn_checkpoint", checkpoint)
         if metadata:
             await append_event(session_id, "code_diff", metadata)
 
@@ -6937,6 +7194,12 @@ class ForkSessionRequest(BaseModel):
     title: str | None = None
 
 
+class RewindSessionRequest(BaseModel):
+    to_run_id: str = Field(min_length=1, max_length=256)
+    expected_latest_seq: int | None = Field(default=None, ge=0)
+    confirmed: bool = False
+
+
 class ImportHistoryRequest(BaseModel):
     force: bool = False
     limit: int | None = None
@@ -7067,8 +7330,8 @@ def normalize_runtime_effort_for_model(
         configured_model, _configured_effort, _configured_service_tier = (
             codex_user_config_defaults()
         )
-        clean_model = configured_model or CODEX_DEFAULT_MODEL
-    supported = CODEX_FALLBACK_MODEL_EFFORTS.get(clean_model)
+        clean_model = configured_model or codex_server_default_model()
+    supported = codex_model_supported_efforts(clean_model)
     if supported is None or normalized in supported:
         return normalized
     if strict:
@@ -7092,13 +7355,14 @@ def clamp_codex_runtime_effort(model: str, effort: Any) -> str:
     """Return a launch-safe effort without rewriting the saved preference.
 
     The Codex config file can outlive a model or can contain an effort copied
-    from another model.  Known fallback models are clamped to their nearest
-    supported level at launch. Unknown/discovered model ids remain owned by
-    Codex because a static server table must not reject newer capabilities.
+    from another model.  Models the CLI lists (or the static fallback table
+    knows) are clamped to their nearest supported level at launch. Other
+    model ids remain owned by Codex because a server table must not reject
+    newer capabilities.
     """
 
     normalized = normalize_runtime_effort(BACKEND_CODEX, effort)
-    supported = CODEX_FALLBACK_MODEL_EFFORTS.get(str(model or "").strip())
+    supported = codex_model_supported_efforts(model)
     if supported is None:
         return normalized or CODEX_DEFAULT_EFFORT
     if normalized in supported:
@@ -10123,18 +10387,19 @@ class SessionStore:
             if reconcile_session_emergency_alerts(session_id, sess):
                 runtime_changed = True
             backend = str(sess.get("backend") or DEFAULT_BACKEND).strip().lower()
-            claude_permission_mode = effective_claude_permission_mode(sess)
-            if sess.get("claude_permission_mode") != claude_permission_mode:
-                sess["claude_permission_mode"] = claude_permission_mode
-                runtime_changed = True
-            cursor_permission_mode = effective_cursor_permission_mode(sess)
-            if sess.get("cursor_permission_mode") != cursor_permission_mode:
-                sess["cursor_permission_mode"] = cursor_permission_mode
-                runtime_changed = True
-            opencode_permission_mode = effective_opencode_permission_mode(sess)
-            if sess.get("opencode_permission_mode") != opencode_permission_mode:
-                sess["opencode_permission_mode"] = opencode_permission_mode
-                runtime_changed = True
+            # Every chat runs with full access now; values narrowed by an
+            # older build or client are reset rather than merely validated.
+            for key, value in (
+                ("claude_permission_mode", CLAUDE_DEFAULT_PERMISSION_MODE),
+                ("cursor_permission_mode", CURSOR_DEFAULT_PERMISSION_MODE),
+                ("opencode_permission_mode", OPENCODE_DEFAULT_PERMISSION_MODE),
+                ("codex_approval_policy", CODEX_DEFAULT_APPROVAL_POLICY),
+                ("codex_sandbox_mode", CODEX_DEFAULT_SANDBOX_MODE),
+                ("codex_permission_profile", CODEX_DEFAULT_PERMISSION_PROFILE),
+            ):
+                if key not in sess or sess[key] != value:
+                    sess[key] = value
+                    runtime_changed = True
             if backend == BACKEND_CURSOR:
                 stored_cursor_id = (
                     sess.get("cursor_session_id")
@@ -10187,18 +10452,8 @@ class SessionStore:
             if sess.get("provider_cross_chat_route_audit") != provider_route_audit:
                 sess["provider_cross_chat_route_audit"] = provider_route_audit
                 runtime_changed = True
-            for key, default in (
-                ("codex_approval_policy", CODEX_DEFAULT_APPROVAL_POLICY),
-                ("codex_sandbox_mode", CODEX_DEFAULT_SANDBOX_MODE),
-                ("codex_approvals_reviewer", CODEX_DEFAULT_APPROVALS_REVIEWER),
-            ):
-                if sess.get(key) is None:
-                    sess[key] = default
-                    runtime_changed = True
-            if "codex_permission_profile" not in sess:
-                sess["codex_permission_profile"] = (
-                    CODEX_DEFAULT_PERMISSION_PROFILE
-                )
+            if sess.get("codex_approvals_reviewer") is None:
+                sess["codex_approvals_reviewer"] = CODEX_DEFAULT_APPROVALS_REVIEWER
                 runtime_changed = True
             previous_effort = sess.get("effort")
             # Normalize aliases and truly invalid values, but do not erase a
@@ -10599,29 +10854,14 @@ class SessionStore:
             # turn is admitted, before the provider has necessarily returned
             # its durable thread/session id.
             "backend_locked": bool(active_provider_id),
-            "claude_permission_mode": (
-                req.claude_permission_mode or CLAUDE_DEFAULT_PERMISSION_MODE
-            ),
-            "cursor_permission_mode": (
-                req.cursor_permission_mode or CURSOR_DEFAULT_PERMISSION_MODE
-            ),
-            "opencode_permission_mode": (
-                req.opencode_permission_mode or OPENCODE_DEFAULT_PERMISSION_MODE
-            ),
-            "codex_approval_policy": (
-                req.codex_approval_policy or CODEX_DEFAULT_APPROVAL_POLICY
-            ),
-            "codex_sandbox_mode": (
-                req.codex_sandbox_mode or CODEX_DEFAULT_SANDBOX_MODE
-            ),
-            "codex_permission_profile": (
-                str(
-                    req.codex_permission_profile
-                    or CODEX_DEFAULT_PERMISSION_PROFILE
-                    or ""
-                ).strip()
-                or CODEX_DEFAULT_PERMISSION_PROFILE
-            ),
+            # Every chat runs with full access: the request's permission fields
+            # stay validated for older clients but no longer narrow a new chat.
+            "claude_permission_mode": CLAUDE_DEFAULT_PERMISSION_MODE,
+            "cursor_permission_mode": CURSOR_DEFAULT_PERMISSION_MODE,
+            "opencode_permission_mode": OPENCODE_DEFAULT_PERMISSION_MODE,
+            "codex_approval_policy": CODEX_DEFAULT_APPROVAL_POLICY,
+            "codex_sandbox_mode": CODEX_DEFAULT_SANDBOX_MODE,
+            "codex_permission_profile": CODEX_DEFAULT_PERMISSION_PROFILE,
             "codex_approvals_reviewer": (
                 req.codex_approvals_reviewer
                 or CODEX_DEFAULT_APPROVALS_REVIEWER
@@ -11325,24 +11565,7 @@ class SessionStore:
                 sess["cursor_instruction_hash"] = cursor_instruction_hash
                 sess["cursor_instruction_version"] = CURSOR_PROMPT_POLICY_VERSION
             if backend == BACKEND_CODEX and previous_codex_thread_id != provider_id:
-                for key in (
-                    "codex_token_usage",
-                    "codex_token_usage_snapshot",
-                    "_codex_token_usage_checkpoint",
-                    "_codex_token_usage_terminal",
-                    # Thread hygiene is per provider thread: a fresh thread
-                    # starts with zero compactions and no hygiene warning.
-                    "codex_compaction_count",
-                    "_codex_hygiene_warned",
-                ):
-                    sess.pop(key, None)
-                sess["codex_thread_started_at"] = now_iso()
-                usage_signal = clear_provider_context_usage_locked(
-                    sess,
-                    BACKEND_CODEX,
-                    provider_session_id=provider_id,
-                    state="cleared",
-                )
+                usage_signal = reset_codex_thread_scoped_state_locked(sess, provider_id)
             if (
                 backend == BACKEND_CLAUDE
                 and previous_claude_session_id != provider_id
@@ -16565,6 +16788,21 @@ def session_codex_thread_id(session: dict[str, Any]) -> str:
     return ""
 
 
+def codex_thread_lineage(sess: dict[str, Any]) -> list[str]:
+    """Earlier Codex threads whose turns this chat's history still names.
+
+    Appended on every fork-based rewind and inherited by native fork children;
+    cleared when the chat starts a fresh thread.
+    """
+    value = sess.get("codex_thread_lineage")
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item or "").strip()]
+
+
+CODEX_THREAD_LINEAGE_LIMIT = 64
+
+
 def session_lifecycle_lock(session_id: str) -> asyncio.Lock:
     lock = SESSION_LIFECYCLE_LOCKS.get(session_id)
     if lock is None:
@@ -17269,6 +17507,7 @@ def should_bump_session_updated_at(event_type: str, event: dict[str, Any]) -> bo
         "backend_changed",
         "history_imported",
         "session_forked",
+        "history_rewound",
         "codex_interaction_resolved",
         "codex_goal_budget_limited",
         "codex_compaction_started",
@@ -26923,6 +27162,129 @@ def prune_duplicate_imported_history_sync(
             replacement_path.unlink()
 
 
+def truncate_session_events_sync(
+    session_id: str,
+    *,
+    before_seq: int,
+) -> dict[str, Any]:
+    """Rewind a chat's transcript to the rows below ``before_seq``.
+
+    Every raw line without a durable sequence below the cut is copied
+    verbatim (blank and malformed lines included); rows at or above the cut
+    are dropped. The replacement always ends with an internal sequence
+    checkpoint at the removed high-water mark so a crash before sessions.json
+    is saved can never let a later event reuse a sequence a client has seen.
+    The rewrite is atomic and runs under the caller's lifecycle and event
+    delivery locks.
+    """
+
+    path = events_path(session_id)
+    summary: dict[str, Any] = {
+        "events_before": 0,
+        "removed_events": 0,
+        "max_seq_before": 0,
+        "removed_run_ids": [],
+        "removed_event_ids": [],
+        "latest_event": None,
+        "latest_agent_event": None,
+        "bytes_before": 0,
+        "bytes_after": 0,
+    }
+    if not path.exists():
+        return summary
+    source_stat = path.stat()
+    summary["bytes_before"] = source_stat.st_size
+    token = f"{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}"
+    replacement_path = path.with_name(f".{path.name}.{token}.rewind-tmp")
+    kept_run_ids: set[str] = set()
+    removed_run_ids: set[str] = set()
+    try:
+        descriptor = os.open(
+            replacement_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IMODE(source_stat.st_mode) or 0o600,
+        )
+        bytes_written = 0
+        last_byte = b""
+        with os.fdopen(descriptor, "wb") as replacement, path.open("rb") as source:
+            while True:
+                raw_line = source.readline()
+                if not raw_line:
+                    break
+                event: dict[str, Any] | None = None
+                if raw_line.strip():
+                    with suppress(Exception):
+                        loaded = json.loads(raw_line)
+                        if isinstance(loaded, dict):
+                            event = loaded
+                seq = durable_event_seq(event)
+                if event is not None:
+                    summary["events_before"] += 1
+                if seq is not None:
+                    summary["max_seq_before"] = max(summary["max_seq_before"], seq)
+                    if seq >= before_seq:
+                        summary["removed_events"] += 1
+                        if str(event.get("run_id") or ""):
+                            removed_run_ids.add(str(event["run_id"]))
+                        if str(event.get("id") or ""):
+                            summary["removed_event_ids"].append(str(event["id"]))
+                        continue
+                    event_type = str(event.get("type") or "")
+                    summary["latest_event"] = {"seq": seq, "ts": event.get("ts"), "type": event_type}
+                    if is_agent_visible_event(event_type, event):
+                        summary["latest_agent_event"] = summary["latest_event"]
+                if event is not None and str(event.get("run_id") or ""):
+                    kept_run_ids.add(str(event["run_id"]))
+                replacement.write(raw_line)
+                bytes_written += len(raw_line)
+                last_byte = raw_line[-1:]
+
+            # The removed tail's sequence numbers were already delivered to
+            # clients. Persist that high-water mark in the same replacement so
+            # a crash cannot make a later event reuse one of them.
+            checkpoint_line = json.dumps(
+                {
+                    "seq": int(summary["max_seq_before"]),
+                    "id": f"evt_checkpoint_{uuid.uuid4().hex[:16]}",
+                    "session_id": session_id,
+                    "type": "_event_sequence_checkpoint",
+                    "ts": now_iso(),
+                    "server_internal": True,
+                },
+                separators=(",", ":"),
+            ).encode("utf-8") + b"\n"
+            if bytes_written and last_byte != b"\n":
+                replacement.write(b"\n")
+                bytes_written += 1
+            replacement.write(checkpoint_line)
+            bytes_written += len(checkpoint_line)
+            replacement.flush()
+            os.fsync(replacement.fileno())
+
+        current_stat = path.stat()
+        if (
+            current_stat.st_dev != source_stat.st_dev
+            or current_stat.st_ino != source_stat.st_ino
+            or current_stat.st_size != source_stat.st_size
+            or current_stat.st_mtime_ns != source_stat.st_mtime_ns
+            or current_stat.st_ctime_ns != source_stat.st_ctime_ns
+        ):
+            raise RuntimeError("event log changed while the chat was rewound")
+        os.replace(replacement_path, path)
+        # The sparse timeline index is inode-bound and would be ignored, but
+        # remove it now so recovery never mistakes dead metadata for state.
+        with suppress(OSError):
+            events_index_path(path).unlink()
+        fsync_parent_directory(path)
+        summary["bytes_after"] = bytes_written
+        # A run whose rows straddle the cut keeps its diff files.
+        summary["removed_run_ids"] = sorted(removed_run_ids - kept_run_ids)
+        return summary
+    finally:
+        with suppress(OSError):
+            replacement_path.unlink()
+
+
 async def recover_abandoned_codex_compactions_after_start(
     *,
     forced_restart_request_id: str | None = None,
@@ -30609,6 +30971,7 @@ COMPACT_TIMELINE_HIDDEN_TYPES = {
     "backend_changed",
     "session_created",
     "code_diff",
+    "turn_checkpoint",
 }
 
 
@@ -32111,6 +32474,8 @@ TIMELINE_INDEX_TRACE_TYPES = {
     "reasoning_summary", "reasoning_text", "tool_started", "tool_finished", "process_started", "provider_session",
     "cwd_fallback", "history_imported", "backend_changed", "artifact_error", "session_created",
     "idle_warning",
+    # Delivered with its run as an essential detail, never its own card.
+    "turn_checkpoint",
 }
 SEMANTIC_TIMELINE_JOB_RUN_LIMIT = 7
 SEMANTIC_TIMELINE_JOB_EXTRA_LIMIT = 64
@@ -32127,6 +32492,7 @@ SEMANTIC_TIMELINE_ESSENTIAL_DETAIL_TYPES = {
     "artifact_created",
     "file_uploaded",
     "code_diff",
+    "turn_checkpoint",
 }
 
 
@@ -34474,6 +34840,7 @@ RUN_TRACE_EVENT_TYPES = {
     "tool_started",
     "tool_finished",
     "code_diff",
+    "turn_checkpoint",
 }
 
 
@@ -36525,7 +36892,7 @@ async def run_codex_handoff_summarizer(prompt: str, *, model: str | None, effort
         "--skip-git-repo-check",
     ]
     configured_model, _configured_effort, configured_service_tier = codex_user_config_defaults()
-    effective_model = str(model or configured_model or CODEX_DEFAULT_MODEL).strip()
+    effective_model = str(model or configured_model or codex_server_default_model()).strip()
     effective_service_tier = configured_service_tier or codex_default_service_tier(effective_model)
     if model:
         cmd.extend(["--model", model])
@@ -45861,8 +46228,17 @@ LEADING_DECORATION_RE = re.compile(
 )
 
 
+# Codex memory citations are provider-internal markup; Codex's own UI never
+# shows them, so matching native behavior means dropping them here.
+OAI_MEM_CITATION_RE = re.compile(
+    r"[ \t]*<oai-mem-citation>.*?</oai-mem-citation>[ \t]*",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
 def clean_assistant_text(text: str) -> str:
-    return LEADING_DECORATION_RE.sub("", str(text or "")).strip()
+    text = OAI_MEM_CITATION_RE.sub("", str(text or ""))
+    return LEADING_DECORATION_RE.sub("", text).strip()
 
 
 def is_import_boilerplate(text: str) -> bool:
@@ -47587,7 +47963,9 @@ def codex_history_assistant_metadata(value: Any) -> dict[str, str]:
 
 
 def codex_history_assistant_item(event: dict[str, Any], text: str) -> dict[str, Any] | None:
-    item = normalized_history_item("assistant", text)
+    # Imported history carries Codex's raw final answer, citations included; the
+    # live event never shows them, and equal text lets clients fold the replay.
+    item = normalized_history_item("assistant", OAI_MEM_CITATION_RE.sub("", text).strip())
     if item is not None:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         item.update(codex_history_assistant_metadata({
@@ -52273,6 +52651,8 @@ def agent_runner_env(
     env["AGENTSDOCK_CHAT_ID"] = session_id
     env["AGENTSDOCK_TMUX_SESSION"] = terminal_session_name(session_id)
     env["AGENTSDOCK_MANIFEST_PATH"] = str(codex_manifest_path(session_id))
+    with suppress(ValueError):  # ids outside the canvas name grammar simply get no canvas dir
+        env["AGENTSDOCK_CANVAS_DIR"] = str(agentsdock_canvas.session_dir(STATE_DIR, session_id))
     server_origin = provider_helper_server_origin()
     env["AGENTSDOCK_SERVER_URL"] = server_origin
     add_provider_no_proxy_environment(
@@ -52480,6 +52860,34 @@ async def broadcast_provider_runtime_changed(
             session_id,
             concise_error_message(exc),
         )
+
+
+def reset_codex_thread_scoped_state_locked(
+    sess: dict[str, Any],
+    provider_id: str,
+) -> dict[str, Any]:
+    """Drop per-thread counters when a chat moves to another Codex thread.
+
+    Caller holds ``STORE._lock``. Returns the usage signal to broadcast.
+    """
+    for key in (
+        "codex_token_usage",
+        "codex_token_usage_snapshot",
+        "_codex_token_usage_checkpoint",
+        "_codex_token_usage_terminal",
+        # Thread hygiene is per provider thread: a fresh thread
+        # starts with zero compactions and no hygiene warning.
+        "codex_compaction_count",
+        "_codex_hygiene_warned",
+    ):
+        sess.pop(key, None)
+    sess["codex_thread_started_at"] = now_iso()
+    return clear_provider_context_usage_locked(
+        sess,
+        BACKEND_CODEX,
+        provider_session_id=provider_id,
+        state="cleared",
+    )
 
 
 def clear_provider_context_usage_locked(
@@ -55277,6 +55685,37 @@ async def refresh_codex_app_server_binary(*, force: bool = False) -> None:
     schedule_codex_manager_drain()
 
 
+CODEX_NATIVE_MODELS_FETCHED: tuple[int, int] | None = None
+
+
+async def refresh_codex_native_models(*, force: bool = False) -> None:
+    """Mirror the live shared app-server's model/list into the durable picker copy.
+
+    Never starts a process: without a ready shared manager the catalog keeps
+    serving the durable copy or the static fallback. A plain catalog read
+    re-asks once per app-server process generation; an explicit refresh
+    always does.
+    """
+    global CODEX_NATIVE_MODELS_FETCHED
+    manager = CODEX_APP_SERVER_MANAGER
+    if manager is None or not manager.ready:
+        return
+    fetched = (id(manager), manager.generation)
+    if not force and CODEX_NATIVE_MODELS_FETCHED == fetched:
+        return
+    key = await asyncio.to_thread(codex_native_catalog_key)
+    if key is None:
+        return
+    try:
+        result = await manager.request("model/list", {}, timeout=RUNTIME_CATALOG_TIMEOUT_SECONDS)
+        rows = codex_model_catalog.parse_model_list(result)
+    except Exception as exc:
+        logger.debug("codex model/list unavailable error_type=%s", type(exc).__name__)
+        return
+    await asyncio.to_thread(codex_model_catalog.remember_native_models, rows, key=key)
+    CODEX_NATIVE_MODELS_FETCHED = fetched
+
+
 async def refresh_codex_app_server_login(*, request_handoff: bool = False) -> None:
     """Change normal-Codex admission; never kill a credential-owning process.
 
@@ -55424,6 +55863,17 @@ async def drain_retired_codex_managers() -> None:
                     continue  # Never invert the session -> manager lock order.
                 async with lock:
                     await release_idle_codex_manager_session(manager, session_id)
+            # Threads no chat references any more (pre-rewind fork sources,
+            # deleted chats) would otherwise keep this process, and their
+            # rollout writer locks, alive indefinitely.
+            live_threads = {session_codex_thread_id(session) for session in tuple(STORE.sessions.values())}
+            for thread in tuple(manager.client._loaded_threads):
+                if (thread not in live_threads and codex_session_id_for_thread(thread) is None
+                        and manager.active_turn(thread) is None
+                        and thread not in CODEX_APP_SERVER_PINNED_THREADS
+                        and thread not in CODEX_INTERACTIVE_CONTROL_THREADS):
+                    with suppress(Exception):
+                        await evict_codex_app_server_thread(manager, thread, reinsert_on_failure=False)
             client = manager.client
             if (any(owner is manager for owner in CODEX_SESSION_APP_SERVER_MANAGERS.values())
                     or codex_manager_has_callers(manager) or client._loaded_threads
@@ -55577,6 +56027,12 @@ async def codex_app_server_manager(sess: dict[str, Any] | None = None, *, allow_
                     env_factory=(lambda selected=selected: codex_app_server_env(selected)) if selected else codex_app_server_env,
                     app_server_args=(
                         (() if CODEX_GOALS_ENABLED else ("--disable", "goals"))
+                        # load-bearing: codex keeps an unsubscribed thread, and
+                        # its rollout writer lock, loaded for 60 s by default.
+                        # A successor process (login/binary handoff) resuming
+                        # that thread inside the window fails with "already
+                        # has an active writer". Unload on unsubscribe instead.
+                        + codex_provider.config_args({"thread_unload_delay_secs": 0})
                         + (codex_provider.registration_args(selected) + codex_provider.config_args({
                             "model_provider": codex_provider.PROVIDER_ID,
                             "cli_auth_credentials_store": "ephemeral",
@@ -58934,7 +59390,8 @@ def codex_user_developer_instructions() -> str:
 
 
 def codex_default_service_tier(model: str) -> str:
-    return CODEX_FALLBACK_SERVICE_TIERS.get(str(model or "").strip(), "")
+    row = codex_native_model_row(model)
+    return str((row or {}).get("service_tier") or CODEX_FALLBACK_SERVICE_TIERS.get(str(model or "").strip(), ""))
 
 
 # The Codex app-server's thread/start and turn-override JSON-RPC params only
@@ -58953,38 +59410,59 @@ def codex_app_server_service_tier(service_tier: str) -> str:
 
 
 def discover_codex_catalog() -> dict[str, Any]:
-    models: list[dict[str, Any]] = []
     model_options: list[dict[str, Any]] = []
     effort_options: list[dict[str, Any]] = []
     model_efforts: dict[str, list[dict[str, Any]]] = {}
-    default_model = ""
-    default_model_label = ""
-    default_effort = ""
-    default_effort_label = ""
-    default_service_tier = ""
-    model_source = "codex debug models"
-    effort_source = "codex debug models"
     configured_model, configured_effort, configured_service_tier = codex_user_config_defaults()
-    try:
-        payload = json.loads(run_catalog_command([CODEX_BIN, "debug", "models"]))
-        raw_models = payload.get("models") if isinstance(payload, dict) else None
-        if isinstance(raw_models, list):
-            models = [model for model in raw_models if isinstance(model, dict)]
-    except Exception as exc:
-        logger.warning("codex model discovery failed: %s", exc)
-        model_source = f"{model_source} failed"
-        effort_source = f"{effort_source} failed"
+    # The CLI's own picker (model/list, mirrored from a shared app-server) is
+    # authoritative; ``codex debug models`` only fills in until one answers.
+    rows = codex_native_models()
+    if rows:
+        model_source = effort_source = "codex app-server model/list"
+    else:
+        rows = []
+        model_source = effort_source = "codex debug models"
+        try:
+            payload = json.loads(run_catalog_command([CODEX_BIN, "debug", "models"]))
+            raw_models = payload.get("models") if isinstance(payload, dict) else None
+            visible_models = [
+                model for model in (raw_models if isinstance(raw_models, list) else [])
+                if isinstance(model, dict)
+                and str(model.get("visibility") or "list") == "list"
+                and model.get("supported_in_api", True) is not False
+            ]
+            visible_models.sort(key=runtime_priority)
+            for model in visible_models:
+                slug = str(model.get("slug") or model.get("id") or "").strip()
+                if not slug:
+                    continue
+                levels = model.get("supported_reasoning_levels")
+                rows.append({
+                    "value": slug,
+                    "label": str(model.get("display_name") or title_model_label(slug)).strip(),
+                    "description": str(model.get("description") or "").strip(),
+                    "efforts": [
+                        {"value": effort}
+                        for effort in (
+                            str(level.get("effort") or "").strip()
+                            for level in (levels if isinstance(levels, list) else ())
+                            if isinstance(level, dict)
+                        )
+                        if effort
+                    ],
+                    "default_effort": str(model.get("default_reasoning_level") or "").strip(),
+                    "service_tier": str(model.get("default_service_tier") or "").strip(),
+                })
+        except Exception as exc:
+            logger.warning("codex model discovery failed: %s", exc)
+            model_source = f"{model_source} failed"
+            effort_source = f"{effort_source} failed"
 
-    visible_models = [
-        model for model in models
-        if str(model.get("visibility") or "list") == "list" and model.get("supported_in_api", True) is not False
-    ]
-    visible_models.sort(key=runtime_priority)
     # The selectable "Server default" must describe the exact settings that
     # codex_runtime_settings() launches for a chat with no explicit override.
     # The CLI's discovered list can omit a configured/custom default (or a
     # legacy fallback), so the first discovered model is not a safe proxy.
-    default_model = configured_model or CODEX_DEFAULT_MODEL
+    default_model = configured_model or codex_server_default_model()
     default_effort = clamp_codex_runtime_effort(
         default_model,
         configured_effort or CODEX_DEFAULT_EFFORT,
@@ -58992,42 +59470,35 @@ def discover_codex_catalog() -> dict[str, Any]:
     default_service_tier = (
         configured_service_tier or codex_default_service_tier(default_model)
     )
-    default_entry = next(
-        (
-            model
-            for model in visible_models
-            if str(model.get("slug") or model.get("id") or "").strip()
-            == default_model
-        ),
-        None,
-    )
+    default_row = next((row for row in rows if row["value"] == default_model), None)
     default_model_label = str(
-        (default_entry or {}).get("display_name")
-        or title_model_label(default_model)
+        (default_row or {}).get("label") or title_model_label(default_model)
     ).strip()
     default_effort_label = (
         title_effort_label(default_effort) if default_effort else ""
     )
-    for model in visible_models:
-        slug = str(model.get("slug") or model.get("id") or "").strip()
-        if not slug:
-            continue
-        label = str(model.get("display_name") or title_model_label(slug)).strip()
-        model_effort_options: list[dict[str, Any]] = []
-        levels = model.get("supported_reasoning_levels")
-        if isinstance(levels, list):
-            for level in levels:
-                if not isinstance(level, dict):
-                    continue
-                effort = str(level.get("effort") or "").strip()
-                if effort:
-                    option = runtime_option(effort, title_effort_label(effort))
-                    effort_options.append(option)
-                    model_effort_options.append(option)
-        if model_effort_options:
-            model_efforts[slug] = unique_runtime_options(model_effort_options, None)[1:]
-        service_tier = str(model.get("default_service_tier") or "").strip()
-        model_options.append(runtime_option(slug, label, efforts=model_efforts.get(slug, []), service_tier=service_tier or None))
+    for row in rows:
+        slug = row["value"]
+        row_efforts = unique_runtime_options([
+            runtime_option(
+                effort["value"],
+                title_effort_label(effort["value"]),
+                **({"description": effort["description"]} if effort.get("description") else {}),
+            )
+            for effort in row["efforts"]
+        ], None)[1:]
+        effort_options.extend(row_efforts)
+        if row_efforts:
+            model_efforts[slug] = row_efforts
+        extra: dict[str, Any] = {}
+        if row.get("description"):
+            extra["description"] = row["description"]
+        if row.get("default_effort"):
+            extra["default_effort"] = row["default_effort"]
+        model_options.append(runtime_option(
+            slug, row["label"], efforts=model_efforts.get(slug, []),
+            service_tier=row.get("service_tier") or None, **extra,
+        ))
 
     if not model_options:
         for slug, label in CODEX_FALLBACK_MODELS:
@@ -59045,9 +59516,7 @@ def discover_codex_catalog() -> dict[str, Any]:
     if configured_effort and not any(option.get("value") == configured_effort for option in effort_options):
         effort_options.append(runtime_option(configured_effort, title_effort_label(configured_effort)))
     if default_model not in model_efforts:
-        supported_default_efforts = CODEX_FALLBACK_MODEL_EFFORTS.get(
-            default_model
-        )
+        supported_default_efforts = codex_model_supported_efforts(default_model)
         if supported_default_efforts:
             model_efforts[default_model] = [
                 runtime_option(effort, title_effort_label(effort))
@@ -59622,6 +60091,7 @@ def codex_thread_instructions(session_id: str, sess: dict[str, Any]) -> str:
             user_developer_instructions,
             provider_context.rstrip(),
             session_prompt_addendum(sess).strip(),
+            agentsdock_canvas.prompt_section(STATE_DIR, session_id),
         )
         if value
     )
@@ -59647,7 +60117,7 @@ def codex_runtime_settings(sess: dict[str, Any]) -> tuple[str, str, str]:
         catalog = CODEX_PROVIDER_STORE.cached_catalog(selected)
         return model, codex_provider.runtime_effort(selected, catalog, sess.get("effort")), ""
     configured_model, configured_effort, configured_service_tier = codex_user_config_defaults()
-    model = str(sess.get("model") or configured_model or CODEX_DEFAULT_MODEL).strip()
+    model = str(sess.get("model") or configured_model or codex_server_default_model()).strip()
     effort = clamp_codex_runtime_effort(
         model,
         sess.get("effort") or configured_effort or CODEX_DEFAULT_EFFORT,
@@ -60143,6 +60613,50 @@ async def reconcile_codex_thread_goal(
     return native_goal
 
 
+CODEX_WRITER_RELEASE_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0, 2.0, 2.0, 2.0)
+CODEX_WRITER_HANDOFF_DETAIL = (
+    "Codex is still releasing this chat's thread from its previous app-server process. "
+    "Retry in a few seconds."
+)
+
+
+def codex_thread_resume_retryable(exc: BaseException) -> bool:
+    """Another process still writes the thread, or this one is still unloading it."""
+    return isinstance(exc, CodexAppServerRequestError) and (
+        "already has an active writer" in str(exc) or "retry thread/resume after the thread is closed" in str(exc))
+
+
+async def resume_codex_thread_with_retry(
+    manager: CodexAppServerManager,
+    thread_id: str,
+    params: dict[str, Any],
+) -> str:
+    """thread/resume that waits out a writer lock or an in-progress unload.
+
+    After a login or binary handoff the retired process still holds the
+    thread's rollout writer until codex unloads the unsubscribed thread or the
+    drain closes the process. With thread_unload_delay_secs=0 an unsubscribe
+    followed by resume in the same process can also land while codex is still
+    closing the thread ("retry thread/resume after the thread is closed").
+    Both are seconds away, so the conflict is a wait, not a rejection.
+    """
+    for delay in (*CODEX_WRITER_RELEASE_RETRY_DELAYS, None):
+        try:
+            return await manager.resume_thread(thread_id, params)
+        except CodexAppServerRequestError as exc:
+            if not codex_thread_resume_retryable(exc):
+                raise
+            if delay is None:
+                raise TransientAdmissionWait(409, CODEX_WRITER_HANDOFF_DETAIL) from exc
+        for other in codex_app_server_managers():
+            if other is not manager and other.is_thread_loaded(thread_id) and other.active_turn(thread_id) is None:
+                with suppress(Exception):
+                    await evict_codex_app_server_thread(other, thread_id, reinsert_on_failure=False)
+        schedule_codex_manager_drain()
+        await asyncio.sleep(delay)
+    raise AssertionError("unreachable")
+
+
 async def ensure_codex_app_server_thread(
     manager: CodexAppServerManager,
     session_id: str,
@@ -60190,7 +60704,8 @@ async def ensure_codex_app_server_thread(
             # the new policy before accepting another user turn so chat-scoped
             # manifest, jobs, and terminal routing cannot remain stale.
             await manager.unsubscribe_thread(provider_id)
-            provider_id = await manager.resume_thread(
+            provider_id = await resume_codex_thread_with_retry(
+                manager,
                 provider_id,
                 {
                     **codex_thread_params(
@@ -60212,7 +60727,7 @@ async def ensure_codex_app_server_thread(
                 ),
                 "excludeTurns": True,
             }
-            provider_id = await manager.resume_thread(provider_id, resume_params)
+            provider_id = await resume_codex_thread_with_retry(manager, provider_id, resume_params)
 
         if not already_loaded or policy_changed:
             await record_codex_subagent_limit_application(manager, session_id, native_settings)
@@ -60397,8 +60912,17 @@ def session_system_prompt(
     sess: dict[str, Any],
     manifest_path: Path,
 ) -> str:
-    del session_id, manifest_path
-    return CLAUDE_PROMPT_PRELUDE.format() + session_prompt_addendum(sess)
+    del manifest_path
+    return "\n\n".join(
+        value
+        for value in (
+            CLAUDE_PROMPT_PRELUDE.format() + session_prompt_addendum(sess),
+            # Indirection keeps the Claude system prompt identical across chats
+            # (prompt-cache stability); the runner env exports the variable.
+            agentsdock_canvas.prompt_section(STATE_DIR, session_id, directory_label="$AGENTSDOCK_CANVAS_DIR"),
+        )
+        if value
+    )
 
 
 def build_claude_cmd(
@@ -61867,7 +62391,8 @@ async def bind_forked_codex_thread(
     try:
         if manager.is_thread_loaded(thread_id):
             await manager.unsubscribe_thread(thread_id)
-        resumed_thread_id = await manager.resume_thread(
+        resumed_thread_id = await resume_codex_thread_with_retry(
+            manager,
             thread_id,
             {
                 **codex_thread_params(
@@ -74156,8 +74681,9 @@ SERVER_RESTART_FORCE_KILL_DELAY_SECONDS = 3.0
 # so one wedged join cannot starve the provider teardown that follows it.
 SERVER_SHUTDOWN_PHASE_TIMEOUT_SECONDS = 5.0
 # Number of bounded_shutdown_phase calls in the lifespan teardown; keep in sync
-# so the cooperative watchdog budget below honours every phase.
-SERVER_SHUTDOWN_PHASE_COUNT = 18
+# so the cooperative watchdog budget below honours every phase ("remote-servers"
+# stops the hub tunnels).
+SERVER_SHUTDOWN_PHASE_COUNT = 19
 DEFAULT_UVICORN_GRACEFUL_SHUTDOWN_SECONDS = 20.0
 MAX_UVICORN_GRACEFUL_SHUTDOWN_SECONDS = 60.0
 SERVER_SHUTDOWN_STRAGGLERS: set[asyncio.Task[Any]] = set()
@@ -78165,10 +78691,12 @@ async def lifespan(app: FastAPI):
         abandoned_compaction_count,
         removed_authority_files,
     )
+    await REMOTE_SERVERS.start()
     try:
         yield
     finally:
         SERVER_SHUTTING_DOWN = True
+        await bounded_shutdown_phase("remote-servers", REMOTE_SERVERS.stop())
         await bounded_shutdown_phase("side-questions", asyncio.gather(
             SIDE_QUESTIONS.close(), close_generated_session_titles(),
         ))
@@ -81660,6 +82188,12 @@ async def health() -> dict[str, Any]:
                 "version": 1,
                 "supported_backends": [BACKEND_CLAUDE, BACKEND_CODEX],
             },
+            "session_rewind_v1": {
+                "available": True,
+                "version": 1,
+                "supported_backends": [BACKEND_CLAUDE, BACKEND_CODEX],
+                "checkpoint_restore": True,
+            },
             "automatic_pairing_completion_v1": secure_peer_automatic_completion_capability(),
             "local_provider_commands_v1": {
                 "available": True,
@@ -81821,6 +82355,11 @@ async def health() -> dict[str, Any]:
                 "activation_recovery": True,
             },
             "tmux": tmux,
+            "canvas_v1": agentsdock_canvas.capability(STATE_DIR),
+            "remote_servers_v1": {
+                **remote_servers.capability(REMOTE_SERVERS),
+                "available": bool(AGENT_TOKEN),
+            },
             "workspace_files": {
                 "available": WORKSPACE_SECURE_OPEN_AVAILABLE,
                 "required": False,
@@ -86206,10 +86745,14 @@ async def host_diagnostics(limit: int = 40) -> dict[str, Any]:
 
 
 @app.get("/api/runtime/catalog")
-async def runtime_catalog(refresh: bool = False) -> dict[str, Any]:
+async def runtime_catalog(refresh: bool = False, handoff: bool = False) -> dict[str, Any]:
     if refresh:
         await refresh_codex_app_server_binary(force=True)
-        await refresh_codex_app_server_login(request_handoff=True)
+        # Clients refresh on every reconnect and model-picker open. Only an
+        # explicit user recheck may retire the shared Codex process; a plain
+        # refresh re-reads the login revision and hands off on a real change.
+        await refresh_codex_app_server_login(request_handoff=handoff)
+    await refresh_codex_native_models(force=refresh)
     return await asyncio.to_thread(discover_runtime_catalog, force_runtime_probe=refresh)
 
 
@@ -87901,6 +88444,141 @@ def codex_rotation_handoff_reason(reason: str | None) -> str:
         if clean
         else "The user started a fresh Codex thread to leave an oversized one."
     )
+
+
+CODEX_APP_SERVER_PROCESS_RE = re.compile(r"(^|/)codex(\s|$).*\bapp-server\b")
+
+
+def select_stale_codex_app_servers(processes: list[tuple[int, int, str]], me: int) -> list[int]:
+    """Pick `codex app-server` processes that nothing legitimate owns anymore.
+
+    Stale writers come from AgentsServer runs that died or were restarted: their
+    app-servers are orphaned (parent 1) or still hang off another
+    `agent_server.py serve` process. Codex processes owned by other apps (the
+    ChatGPT desktop app, Zed, a user's terminal) are left alone, as are this
+    server's own children. Descendants of a victim go with it.
+    """
+    by_pid = {pid: (ppid, args) for pid, ppid, args in processes}
+    victims: set[int] = set()
+    for pid, (ppid, args) in by_pid.items():
+        if pid == me or ppid == me or not CODEX_APP_SERVER_PROCESS_RE.search(args):
+            continue
+        parent_args = by_pid.get(ppid, (0, ""))[1]
+        orphaned = ppid <= 1
+        under_other_agents_server = "agent_server.py serve" in parent_args
+        if orphaned or under_other_agents_server:
+            victims.add(pid)
+    changed = True
+    while changed:
+        changed = False
+        for pid, (ppid, _args) in by_pid.items():
+            if ppid in victims and pid not in victims and pid != me:
+                victims.add(pid)
+                changed = True
+    return sorted(victims)
+
+
+def codex_process_table() -> list[tuple[int, int, str]]:
+    """(pid, ppid, args) for every process on the host.
+
+    Not ps_process_rows(): its `sid=,etimes=` columns are rejected by macOS ps, so it is
+    empty on the platform where foreign codex owners (ChatGPT.app, Zed) actually appear.
+    """
+    listing = subprocess.run(
+        ["ps", "-eo", "pid=,ppid=,args="], capture_output=True, text=True, check=False,
+    ).stdout
+    processes: list[tuple[int, int, str]] = []
+    for line in listing.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            processes.append((int(parts[0]), int(parts[1]), parts[2]))
+    return processes
+
+
+def kill_foreign_codex_app_servers_sync() -> list[int]:
+    victims = select_stale_codex_app_servers(codex_process_table(), os.getpid())
+    for pid in victims:
+        with suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and any(_pid_alive(pid) for pid in victims):
+        time.sleep(0.2)
+    for pid in victims:
+        if _pid_alive(pid):
+            with suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGKILL)
+    return victims
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+@app.post("/api/sessions/{session_id}/codex/kill-writers")
+async def kill_codex_writers(session_id: str) -> dict[str, Any]:
+    """Release a Codex thread stuck behind "already has an active writer".
+
+    Explicit user action: unsubscribes the chat's thread from this server's
+    app-server and kills every other codex app-server process on the host. The
+    next turn resumes the same thread; AgentsDock history is untouched.
+    """
+    session = STORE.sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    if str(session.get("backend") or DEFAULT_BACKEND).strip().lower() != BACKEND_CODEX:
+        raise HTTPException(status_code=409, detail="Only Codex chats have a provider thread to release.")
+    provider_id = str(session_provider_id(session) or "")
+    released = False
+    for manager in codex_app_server_managers():
+        if provider_id and manager.is_thread_loaded(provider_id):
+            with suppress(Exception):
+                await manager.unsubscribe_thread(provider_id)
+                released = True
+    killed = await asyncio.to_thread(kill_foreign_codex_app_servers_sync)
+    # Nothing outside this server held the thread: the lease is stale inside our
+    # own app-server. Restart it (threads reload on the next turn) unless another
+    # chat is mid-turn, which a restart would interrupt.
+    restarted = False
+    busy_elsewhere = sorted(sid for sid in BUSY_SESSIONS if sid != session_id)
+    if not released and not killed and not busy_elsewhere and codex_app_server_managers():
+        with suppress(Exception):
+            await close_codex_app_server_manager()
+            restarted = True
+    other_holders = await asyncio.to_thread(list_other_codex_app_servers_sync)
+    logger.info(
+        "codex writers released session=%s thread=%s unsubscribed=%s killed=%s restarted=%s others=%s",
+        session_id, provider_id or "-", released, killed, restarted, other_holders,
+    )
+    return {
+        "released_thread": released,
+        "killed": killed,
+        "restarted_app_server": restarted,
+        "busy_sessions": busy_elsewhere,
+        "other_holders": other_holders,
+        "thread_id": provider_id or None,
+    }
+
+
+def list_other_codex_app_servers_sync() -> list[dict[str, Any]]:
+    """Codex app-servers owned by other applications, for the user to close by hand."""
+    rows = {pid: (ppid, args) for pid, ppid, args in codex_process_table()}
+    me = os.getpid()
+    holders = []
+    for pid, (ppid, args) in rows.items():
+        if ppid == me or not CODEX_APP_SERVER_PROCESS_RE.search(args):
+            continue
+        parent_args = rows.get(ppid, (0, ""))[1]
+        owner = parent_args.split()[0].rsplit("/", 1)[-1] if parent_args else "?"
+        if ".app/" in parent_args:
+            owner = parent_args.split(".app/", 1)[0].rsplit("/", 1)[-1] + ".app"
+        holders.append({"pid": pid, "owner": owner})
+    return holders
 
 
 @app.post("/api/sessions/{session_id}/codex/rotate")
@@ -90259,19 +90937,24 @@ def completed_fork_events(
         if active_run_id and str(event.get("run_id") or "") == active_run_id:
             break
         prefix.append(event)
-        if (
-            event.get("type") == "turn_finished"
-            and (event.get("exit_code") == 0 or event.get("imported") is True)
-            and not event.get("stopped")
-            and not event.get("is_error")
-            # Replay bookkeeping is not a newly completed provider turn. In
-            # particular, metadata-only repair batches carry no native turn
-            # identity and must not replace an already resumable boundary.
-            and not (event.get("imported") is True and event.get("metadata_only") is True)
-            and event.get("purpose") not in FORK_INTERNAL_PURPOSES
-        ):
+        if is_completed_fork_terminal(event):
             completed_length = len(prefix)
     return prefix[:completed_length]
+
+
+def is_completed_fork_terminal(event: dict[str, Any]) -> bool:
+    """A ``turn_finished`` row that ends a resumable, fully completed turn."""
+    return bool(
+        event.get("type") == "turn_finished"
+        and (event.get("exit_code") == 0 or event.get("imported") is True)
+        and not event.get("stopped")
+        and not event.get("is_error")
+        # Replay bookkeeping is not a newly completed provider turn. In
+        # particular, metadata-only repair batches carry no native turn
+        # identity and must not replace an already resumable boundary.
+        and not (event.get("imported") is True and event.get("metadata_only") is True)
+        and event.get("purpose") not in FORK_INTERNAL_PURPOSES
+    )
 
 
 def claude_imported_fork_boundary(
@@ -90656,6 +91339,11 @@ async def _fork_session_locked(
             )
             cleanup_state["provider_thread_id"] = forked_codex_thread_id
             child = STORE.sessions[child["id"]]
+            # Copied history still names the parent's thread(s); a later
+            # rewind on the child must accept those terminals as cutoffs.
+            child["codex_thread_lineage"] = [
+                *codex_thread_lineage(parent), str(parent_codex_thread_id),
+            ][-CODEX_THREAD_LINEAGE_LIMIT:]
         except Exception as exc:
             logger.warning(
                 "codex fork policy bind failed parent_session=%s child_session=%s "
@@ -90831,6 +91519,488 @@ async def _fork_session_locked(
         if not session.get("_fork_initializing")
     ])
     return {"session": public_session(child), "sessions": [public_session(sess) for sess in ordered_sessions]}
+
+
+async def ensure_session_idle_for_rewind(session_id: str) -> None:
+    """Reject history/workspace rewrites unless no turn runs, starts, or waits."""
+    async with ACTIVE_LOCK:
+        provider_starting = any(
+            task is not asyncio.current_task() and not task.done()
+            for task in tuple(SESSION_TURN_TASKS.get(session_id) or ())
+        )
+        if (
+            session_id in BUSY_SESSIONS
+            or ACTIVE.get(session_id) is not None
+            or provider_starting
+            or session_id in SERVER_MAINTENANCE_SESSIONS
+        ):
+            raise HTTPException(status_code=409, detail={
+                "code": "session_busy",
+                "message": "Wait for the active turn to finish before rewinding or restoring this chat.",
+            })
+        if QUEUED_TURNS.get(session_id):
+            raise HTTPException(status_code=409, detail={
+                "code": "turn_queue_not_empty",
+                "message": "Remove queued turns before rewinding or restoring this chat.",
+            })
+
+
+# Rows carrying another chat's or a secure peer's delivery identity cannot be
+# rewound: their counterpart ledgers would keep referencing removed events.
+REWIND_FOREIGN_IDENTITY_KEYS = (
+    "cross_chat_envelope_id",
+    "cross_chat_exchange_id",
+    "cross_chat_exchange_leg_id",
+    "exchange_id",
+    "exchange_leg_id",
+    "secure_peer_envelope_id",
+)
+# A Codex manager (re)start surfaces a sign-in handoff as TransientAdmissionWait
+# for a few seconds; the turn path requeues on it, a rewind retries in place.
+REWIND_ADMISSION_RETRY_ATTEMPTS = max(1, int(agentsdock_setting("REWIND_ADMISSION_RETRY_ATTEMPTS", "6")))
+REWIND_ADMISSION_RETRY_SECONDS = max(0.0, float(agentsdock_setting("REWIND_ADMISSION_RETRY_SECONDS", "2")))
+
+
+@app.post("/api/sessions/{session_id}/rewind")
+async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str, Any]:
+    """Truncate this chat to the rows before one turn and rewind its provider.
+
+    Order: provider rewind first (it can fail with 409 and leave no trace),
+    then the atomic local truncation, then the ``history_rewound`` tombstone
+    that live sockets use to drop the removed range.
+    """
+    if not req.confirmed:
+        raise HTTPException(status_code=400, detail={
+            "code": "rewind_confirmation_required",
+            "message": "Rewinding permanently removes chat history and requires explicit confirmed=true.",
+        })
+    if req.expected_latest_seq is None:
+        raise HTTPException(status_code=428, detail={
+            "code": "latest_seq_required",
+            "message": "Rewind requires the chat's current latest event sequence.",
+        })
+    async with session_lifecycle_lock(session_id):
+        ensure_session_not_deleting(session_id)
+        sess = STORE.sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
+        backend = str(sess.get("backend") or DEFAULT_BACKEND).lower()
+        if backend not in {BACKEND_CLAUDE, BACKEND_CODEX}:
+            raise HTTPException(status_code=409, detail={
+                "code": "rewind_unsupported_backend",
+                "message": "This backend cannot rewind its provider conversation; the chat was left unchanged.",
+            })
+        await ensure_session_idle_for_rewind(session_id)
+        current_latest = sess.get("latest_event_seq")
+        if not isinstance(current_latest, int) or isinstance(current_latest, bool):
+            current_latest = 0
+        # "The client has seen everything" is judged against the durable
+        # transcript tail, the value GET /api/sessions/{id} reports as
+        # latest_seq. sessions.json's latest_event_seq can lag rows that do
+        # not bump chat metadata (provider status, turn checkpoints).
+        async with event_delivery_lock(session_id):
+            durable_latest = await asyncio.to_thread(repair_event_log_tail, events_path(session_id))
+        if req.expected_latest_seq != durable_latest:
+            raise HTTPException(status_code=409, detail={
+                "code": "stale_latest_seq",
+                "message": (
+                    "This chat has events you have not loaded. Send latest_seq from "
+                    "GET /api/sessions/{id} (the highest event seq received) and retry."
+                ),
+                "latest_seq": durable_latest,
+            })
+        events = await asyncio.to_thread(lambda: list(iter_session_events(session_id)))
+        target_index = next((
+            index for index, event in enumerate(events)
+            if event.get("type") == "turn_started"
+            and str(event.get("run_id") or "") == req.to_run_id
+            and durable_event_seq(event) is not None
+        ), None)
+        if target_index is None:
+            raise HTTPException(status_code=409, detail={
+                "code": "rewind_target_not_found",
+                "message": "That turn is no longer in this chat's history.",
+            })
+        before_seq = int(events[target_index]["seq"])
+        prefix = events[:target_index]
+        removed = events[target_index:]
+        if any(
+            str(event.get(key) or "").strip()
+            for event in removed
+            for key in REWIND_FOREIGN_IDENTITY_KEYS
+        ):
+            raise HTTPException(status_code=409, detail={
+                "code": "rewind_cross_chat_history",
+                "message": "Turns after that point carry cross-chat or secure-peer identity and cannot be rewound.",
+            })
+
+        provider_rewind: str | None = None
+        claude_provider_id: str | None = None
+        claude_cutoff: str | None = None
+        codex_thread_id = ""
+        forked_thread_id = ""
+        usage_signal: dict[str, Any] | None = None
+        if backend == BACKEND_CLAUDE:
+            terminal_index = next((
+                index for index in range(len(prefix) - 1, -1, -1)
+                if is_completed_fork_terminal(prefix[index])
+            ), None)
+            if terminal_index is None:
+                # Nothing completed survives: the next turn starts a fresh
+                # Claude session instead of resuming the removed one.
+                provider_rewind = "claude_reset"
+            else:
+                claude_provider_id = claude_provider_id_for_session(sess)
+                if not claude_provider_id:
+                    logger.warning("session rewind: claude provider id missing session=%s", session_id)
+                    raise HTTPException(status_code=409, detail={
+                        "code": "rewind_provider_unavailable",
+                        "message": (
+                            "This Claude chat has conversation history but no resumable "
+                            "provider session, so it cannot be rewound safely."
+                        ),
+                    })
+                try:
+                    claude_cutoff = await asyncio.to_thread(
+                        claude_completed_fork_boundary,
+                        dict(sess),
+                        claude_provider_id,
+                        prefix[:terminal_index + 1],
+                    )
+                except (OSError, ValueError) as exc:
+                    logger.warning("session rewind: claude boundary failed session=%s: %s", session_id, concise_error_message(exc))
+                    raise HTTPException(status_code=409, detail={
+                        "code": "rewind_provider_unavailable",
+                        "message": "The completed Claude transcript snapshot is unavailable. The chat was left unchanged.",
+                    }) from exc
+                except HTTPException as exc:
+                    logger.warning("session rewind: claude boundary ambiguous session=%s: %s", session_id, exc.detail)
+                    raise HTTPException(status_code=exc.status_code, detail={
+                        "code": "rewind_boundary_ambiguous",
+                        "message": str(exc.detail),
+                    }) from exc
+                provider_rewind = "claude_fork"
+        else:
+            codex_thread_id = str(sess.get("codex_thread_id") or sess.get("session_id") or "")
+            lineage = codex_thread_lineage(sess)
+            terminal = next((event for event in reversed(prefix) if is_completed_fork_terminal(event)), None)
+            if terminal is None:
+                # Nothing completed survives: the next turn starts a fresh
+                # Codex thread instead of continuing the removed one.
+                provider_rewind = "codex_reset"
+            else:
+                # thread/rollback is not available on current app-servers;
+                # fork the source thread at the surviving completed turn
+                # (excludeTurns semantics, verified like the fork route) and
+                # re-point this same chat to the fork.
+                codex_cutoff = str(terminal.get("provider_turn_id") or "")
+                # Forked threads keep the ancestor's turn ids, so a terminal
+                # recorded on an earlier thread of this chat is still a valid
+                # cutoff on the current one.
+                if not codex_thread_id or not codex_cutoff or str(terminal.get("provider_thread_id") or "") not in {codex_thread_id, *lineage}:
+                    logger.warning(
+                        "session rewind: codex cutoff unverifiable session=%s thread=%s lineage=%s terminal_thread=%s turn=%s",
+                        session_id, codex_thread_id, lineage, terminal.get("provider_thread_id"), codex_cutoff,
+                    )
+                    raise HTTPException(status_code=409, detail={
+                        "code": "rewind_provider_unavailable",
+                        "message": "The last completed Codex turn before that point has no verifiable native snapshot. The chat was left unchanged.",
+                    })
+                async def restore_source_thread(forked: str) -> None:
+                    async with STORE._lock:
+                        sess["codex_thread_id"] = codex_thread_id
+                        sess["session_id"] = codex_thread_id
+                        await STORE.save()
+                    if CODEX_THREAD_SESSION_INDEX.get(forked) == session_id:
+                        CODEX_THREAD_SESSION_INDEX.pop(forked, None)
+                    CODEX_THREAD_SESSION_INDEX[codex_thread_id] = session_id
+
+                async def rewind_codex_thread_once() -> str:
+                    """Fork at the cutoff and re-point this chat, or leave it unchanged.
+
+                    TransientAdmissionWait (sign-in handoff after a manager
+                    restart) propagates so the caller can retry.
+                    """
+                    # Same pre-admission handoff the turn path performs under
+                    # the chat lock; it raises TransientAdmissionWait itself
+                    # while the superseded manager still owns this chat.
+                    await prepare_codex_login_turn(sess)
+                    try:
+                        forked = await fork_codex_thread(codex_thread_id, sess, last_turn_id=codex_cutoff)
+                    except (CodexForkCleanupError, TransientAdmissionWait):
+                        # Cleanup failure: fail closed rather than hide a
+                        # provider object nobody owns. Admission wait: retry.
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "session rewind: codex fork failed session=%s source_thread=%s cutoff=%s error_type=%s: %s",
+                            session_id, codex_thread_id, codex_cutoff, type(exc).__name__, concise_error_message(exc),
+                        )
+                        raise HTTPException(status_code=409, detail={
+                            "code": "rewind_provider_unavailable",
+                            "message": "Codex could not create or verify the completed-turn fork. The chat was left unchanged.",
+                        }) from exc
+                    # fork_codex_thread journaled the fork in the abandoned-fork
+                    # ledger, and save_provider_session refuses a fenced thread.
+                    # As the fork route does for its staged child: make this chat
+                    # the durable owner first, release the fence, then bind
+                    # (bind re-points the chat through save_provider_session,
+                    # which resets per-thread counters and
+                    # CODEX_THREAD_SESSION_INDEX). A crash after the owner write
+                    # leaves a chat that references the fork, which startup
+                    # cleanup treats as owned rather than abandoned.
+                    async with STORE._lock:
+                        sess["codex_thread_id"] = forked
+                        await STORE.save()
+                    # Because the chat already names the fork, save_provider_session
+                    # inside bind sees no identity change; the routing index and
+                    # per-thread counters are moved here and in perform_rewind.
+                    if CODEX_THREAD_SESSION_INDEX.get(codex_thread_id) == session_id:
+                        CODEX_THREAD_SESSION_INDEX.pop(codex_thread_id, None)
+                    CODEX_THREAD_SESSION_INDEX[forked] = session_id
+                    if not await forget_abandoned_fork_provider_thread(forked):
+                        logger.warning(
+                            "session rewind: codex fork fence could not be released session=%s forked_thread=%s",
+                            session_id, forked,
+                        )
+                        await retire_or_record_failed_codex_fork(forked)
+                        await restore_source_thread(forked)
+                        raise HTTPException(status_code=409, detail={
+                            "code": "rewind_provider_unavailable",
+                            "message": "The Codex fork recovery record could not be updated. The chat was left unchanged.",
+                        })
+                    goal = sess.get("codex_goal")
+                    try:
+                        forked, _instruction_hash = await bind_forked_codex_thread(
+                            session_id,
+                            forked,
+                            sess,
+                            require_goal_support=isinstance(goal, dict),
+                            expected_goal=dict(goal) if isinstance(goal, dict) else None,
+                        )
+                    except Exception as exc:
+                        # bind already detached the fork from this chat. Retire
+                        # the fork and restore the source thread so the chat is
+                        # unchanged; the ledger entry (if retirement failed) lets
+                        # startup finish the cleanup.
+                        logger.warning(
+                            "session rewind: codex fork/bind failed session=%s forked_thread=%s error_type=%s: %s",
+                            session_id, forked, type(exc).__name__, concise_error_message(exc),
+                        )
+                        await retire_or_record_failed_codex_fork(forked)
+                        await restore_source_thread(forked)
+                        if isinstance(exc, TransientAdmissionWait):
+                            raise
+                        raise HTTPException(status_code=409, detail={
+                            "code": "rewind_provider_unavailable",
+                            "message": "The completed-turn Codex fork could not be bound safely. The chat was left unchanged.",
+                        }) from exc
+                    return forked
+
+                for attempt in range(REWIND_ADMISSION_RETRY_ATTEMPTS):
+                    try:
+                        forked_thread_id = await rewind_codex_thread_once()
+                        break
+                    except TransientAdmissionWait as exc:
+                        admission_detail = str(exc.detail or "").strip() or "Codex is not accepting new work yet."
+                        if attempt + 1 < REWIND_ADMISSION_RETRY_ATTEMPTS:
+                            await asyncio.sleep(REWIND_ADMISSION_RETRY_SECONDS)
+                else:
+                    logger.warning(
+                        "session rewind: codex admission still waiting after %d attempts session=%s: %s",
+                        REWIND_ADMISSION_RETRY_ATTEMPTS, session_id, admission_detail,
+                    )
+                    raise HTTPException(status_code=409, detail={
+                        "code": "rewind_provider_busy",
+                        "message": admission_detail,
+                        "retry_after_seconds": 5,
+                    })
+                provider_rewind = "codex_fork"
+
+        async with event_delivery_lock(session_id):
+            async def perform_rewind() -> dict[str, Any]:
+                nonlocal usage_signal
+                # Persist the pre-rewrite cursor floor before replacing the
+                # log; sessions.json is the normal restart seed and must never
+                # lag destructive maintenance.
+                durable_high_water = await asyncio.to_thread(
+                    repair_event_log_tail,
+                    events_path(session_id),
+                )
+                sess["latest_event_seq"] = max(current_latest, durable_high_water)
+                await STORE.save(durable=True)
+                summary = await asyncio.to_thread(
+                    truncate_session_events_sync,
+                    session_id,
+                    before_seq=before_seq,
+                )
+                seq_high_water = max(int(summary["max_seq_before"]), int(sess["latest_event_seq"]))
+                summary["through_seq"] = seq_high_water
+                # Connected clients already observed the removed tail. Keep
+                # that sequence high-water mark so later live events are never
+                # assigned numbers their cursors would discard.
+                await forget_event_seq(
+                    session_id,
+                    preserve_at_least=seq_high_water,
+                    preserve_delivery_lock=True,
+                )
+                HISTORY_SEARCH_DIRTY.add(session_id)
+                CLAUDE_METADATA_REPAIR_CACHE.forget(session_id)
+                CODEX_GOAL_HISTORY_REPAIR_CACHE.forget(session_id)
+                CODEX_NATIVE_HISTORY_REPAIR_CACHE.forget(session_id)
+                sess["latest_event_seq"] = seq_high_water
+                latest_event = summary["latest_event"] or {}
+                latest_agent_event = summary["latest_agent_event"] or {}
+                sess["latest_event_at"] = latest_event.get("ts")
+                sess["latest_event_type"] = latest_event.get("type")
+                if latest_agent_event:
+                    sess["latest_agent_event_seq"] = latest_agent_event["seq"]
+                    sess["latest_agent_event_at"] = latest_agent_event["ts"]
+                    sess["latest_agent_event_type"] = latest_agent_event["type"]
+                else:
+                    for key in ("latest_agent_event_seq", "latest_agent_event_at", "latest_agent_event_type"):
+                        sess.pop(key, None)
+                last_read = sess.get("last_read_agent_event_seq")
+                if isinstance(last_read, int) and not isinstance(last_read, bool):
+                    sess["last_read_agent_event_seq"] = min(last_read, int(latest_agent_event.get("seq") or 0))
+                sess.pop("active_run", None)
+                if provider_rewind == "claude_reset":
+                    sess["claude_session_id"] = None
+                    sess["session_id"] = None
+                    sess["fork_from"] = None
+                    sess.pop("fork_resume_session_at", None)
+                elif provider_rewind == "claude_fork":
+                    # One-shot: save_provider_session clears both once the
+                    # next turn resumes into the forked provider session.
+                    sess["fork_from"] = claude_provider_id
+                    sess["fork_resume_session_at"] = claude_cutoff
+                elif provider_rewind == "codex_reset":
+                    if CODEX_THREAD_SESSION_INDEX.get(codex_thread_id) == session_id:
+                        CODEX_THREAD_SESSION_INDEX.pop(codex_thread_id, None)
+                    sess["codex_thread_id"] = None
+                    sess["session_id"] = None
+                    sess.pop("codex_instruction_hash", None)
+                    sess.pop("codex_instruction_version", None)
+                    sess.pop("codex_thread_lineage", None)
+                elif provider_rewind == "codex_fork":
+                    sess["codex_thread_lineage"] = [*lineage, codex_thread_id][-CODEX_THREAD_LINEAGE_LIMIT:]
+                    async with STORE._lock:
+                        usage_signal = reset_codex_thread_scoped_state_locked(sess, forked_thread_id)
+                await STORE.save(durable=True)
+                return summary
+
+            rewind_task = asyncio.create_task(perform_rewind())
+            try:
+                summary = await asyncio.shield(rewind_task)
+            except asyncio.CancelledError as cancellation:
+                # The replacement may already be written. Keep lifecycle and
+                # event-delivery ownership until the atomic replace, durable
+                # sequence floor, and cache repair are all complete.
+                await join_task_despite_caller_cancellation(rewind_task)
+                raise cancellation
+
+        if provider_rewind == "codex_fork":
+            # The chat now owns the fork. Unload the source thread so its
+            # rollout writer lock is free for other Codex clients instead of
+            # being held until this app-server process retires.
+            source_manager = existing_codex_app_server_manager_for_thread(codex_thread_id)
+            if source_manager is not None and source_manager.is_thread_loaded(codex_thread_id):
+                with suppress(Exception):
+                    await evict_codex_app_server_thread(source_manager, codex_thread_id, reinsert_on_failure=False)
+
+        # Outputs follow the history: canvases return to the last kept turn's
+        # snapshot and files the removed turns published are deleted. Uploads
+        # stay; they are the user's inputs and an edited turn may resend them.
+        kept_turn_run_ids = [str(event.get("run_id") or "") for event in prefix if event.get("type") == "turn_started"]
+        removed_turn_run_ids = [str(event.get("run_id") or "") for event in removed if event.get("type") == "turn_started"]
+        removed_artifacts = [
+            event["artifact"] for event in removed
+            if event.get("type") == "artifact_created" and isinstance(event.get("artifact"), dict)
+            and str(event.get("session_id") or session_id) == session_id
+        ]
+        try:
+            canvases = await asyncio.to_thread(
+                restore_session_canvases_sync, session_id, kept_turn_run_ids, removed_turn_run_ids,
+            )
+        except Exception:
+            logger.warning("rewound chat canvases could not be restored session=%s", session_id, exc_info=True)
+            canvases = {"restored": [], "removed": []}
+        await asyncio.to_thread(remove_artifact_records, removed_artifacts)
+        outputs_reverted = {
+            "canvases": len(canvases["restored"]) + len(canvases["removed"]),
+            "artifacts": sum(
+                1 for record in removed_artifacts
+                if re.fullmatch(r"art_[0-9a-f]{16}", str(record.get("id") or ""))
+            ),
+        }
+
+        def remove_run_files() -> None:
+            for run_id in summary["removed_run_ids"]:
+                for path in (
+                    code_diffs_dir(session_id) / f"{safe_name(run_id)}.patch",
+                    code_diffs_dir(session_id) / f"{safe_name(run_id)}.json",
+                    checkpoints_dir(session_id) / safe_name(run_id),
+                ):
+                    with suppress(OSError):
+                        path.unlink()
+                shutil.rmtree(canvas_checkpoints_dir(session_id) / safe_name(run_id), ignore_errors=True)
+
+        await asyncio.to_thread(remove_run_files)
+        removed_event_ids = set(summary["removed_event_ids"])
+        try:
+            async with timeline_pin_lock(session_id):
+                state = await timeline_pin_file_call(read_timeline_pin_state_sync, session_id)
+                stale_pins = [
+                    item_id for item_id, pin in state["pins"].items()
+                    if pin.get("kind") == "message" and str(pin.get("eventId") or "") in removed_event_ids
+                ]
+                if stale_pins:
+                    for item_id in stale_pins:
+                        state["pins"].pop(item_id, None)
+                    state["revision"] = int(state["revision"]) + 1
+                    state["updated_at"] = now_iso()
+                    await timeline_pin_file_call(write_timeline_pin_state_sync, session_id, state)
+                    await notify_timeline_pins_changed(session_id, state)
+        except TimelinePinStorageError as exc:
+            logger.warning("rewound chat pins could not be pruned session=%s: %s", session_id, exc)
+        await append_event(session_id, "history_rewound", {
+            "from_seq": before_seq,
+            "through_seq": summary["through_seq"],
+            "to_run_id": req.to_run_id,
+            "removed_events": summary["removed_events"],
+            "provider_rewind": provider_rewind,
+            "outputs_reverted": outputs_reverted,
+        })
+        if usage_signal is not None:
+            await broadcast_provider_runtime_changed(session_id, usage_signal)
+        return {
+            "ok": True,
+            "from_seq": before_seq,
+            "through_seq": summary["through_seq"],
+            "removed_events": summary["removed_events"],
+            "provider_rewind": provider_rewind,
+            "session": public_session(sess),
+        }
+
+
+@asynccontextmanager
+async def session_checkpoint_restore(session_id: str, run_id: str) -> AsyncIterator[tuple[str, Path]]:
+    """Resolve one turn checkpoint for an idle chat, then record its restore."""
+    async with session_lifecycle_lock(session_id):
+        ensure_session_not_deleting(session_id)
+        session_workspace_root(session_id, for_write=True)
+        await ensure_session_idle_for_rewind(session_id)
+        commit = ""
+        if re.fullmatch(r"[A-Za-z0-9._-]+", run_id):
+            with suppress(OSError):
+                commit = (checkpoints_dir(session_id) / safe_name(run_id)).read_text(encoding="utf-8").strip()
+        if not re.fullmatch(r"[0-9a-f]{40,64}", commit):
+            raise workspace_http_error(404, "checkpoint_not_found", "This turn has no restorable workspace checkpoint.")
+        yield commit, checkpoint_objects_dir(session_id)
+        await append_event(session_id, "workspace_checkpoint_restored", {
+            "run_id": run_id,
+            "checkpoint_commit": commit,
+        })
 
 
 @app.post("/api/sessions/{session_id}/turns")
@@ -96502,6 +97672,15 @@ async def put_session_workspace_file(session_id: str, req: WorkspaceWriteRequest
 
 workspace_git.register_workspace_git_routes(
     app, authorize=require_native_admin_control, workspace_root=session_workspace_root,
+    checkpoint_restore=session_checkpoint_restore,
+)
+agentsdock_canvas.register_canvas_routes(
+    app, state_dir=STATE_DIR, session_exists=lambda session_id: session_id in STORE.sessions,
+)
+# Hub for SSH-only remote servers: registry, tunnels, deploy, and the /api/remote/{id} proxy.
+REMOTE_SERVERS = remote_servers.RemoteServerManager(STATE_DIR, source_dir=SERVER_ROOT)
+remote_servers.register_remote_server_routes(
+    app, manager=REMOTE_SERVERS, authorize_admin=require_native_admin_control, websocket_authorized=websocket_authorized,
 )
 
 

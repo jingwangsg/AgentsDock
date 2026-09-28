@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from contextlib import suppress
 from functools import lru_cache
 import logging
 from pathlib import Path
@@ -69,7 +70,7 @@ class BinaryRefreshTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.identity = ("/fixture/codex", 1, 2, 3, 4, "codex-cli 0.153.4")
         self.locks = {}
-        self.ns = ns = {"asyncio": asyncio, "time": time, "weakref": weakref,
+        self.ns = ns = {"asyncio": asyncio, "time": time, "weakref": weakref, "suppress": suppress,
             "HTTPException": HTTPException, "CodexAppServerRequestError": CodexAppServerRequestError,
             "logger": logging.getLogger(__name__), "codex_provider": codex_provider,
             "CODEX_APP_SERVER_MANAGER": None, "CODEX_CUSTOM_APP_SERVER_MANAGERS": {},
@@ -93,6 +94,7 @@ class BinaryRefreshTests(unittest.IsolatedAsyncioTestCase):
                 for_session=lambda session, **_kwargs: None, for_thread=lambda thread: None),
             "SIDE_QUESTIONS": SimpleNamespace(active_session_ids=lambda: set()),
             "session_provider_id": lambda session: session.get("codex_thread_id"),
+            "session_codex_thread_id": lambda session: str(session.get("codex_thread_id") or ""),
             "session_lifecycle_lock": lambda session: self.locks.setdefault(session, asyncio.Lock()),
             "codex_session_has_live_subagents": lambda session: False,
             "schedule_codex_manager_drain": Mock(),
