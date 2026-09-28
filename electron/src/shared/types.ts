@@ -2015,6 +2015,13 @@ export interface RemoteServerDeployInput {
   name?: string
 }
 
+/** Registers an install another hub deployed; the hub uploads nothing and never restarts it. */
+export interface RemoteServerAttachInput {
+  sshHost: string
+  installDir?: string
+  name?: string
+}
+
 export interface RemoteServerDeployLogEntry {
   phase: string
   message: string

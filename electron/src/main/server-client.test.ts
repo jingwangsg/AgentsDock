@@ -2429,6 +2429,24 @@ describe('AgentServerClient live stream', () => {
     expect(calls[0].headers.authorization).toBeUndefined()
   })
 
+  it('starts a remote attach through the hub admin route with the snake_case body', async () => {
+    const calls: Array<{ method: string; url: string; headers: IncomingMessage['headers']; body: string }> = []
+    await withLocalHTTPServer(async (request, response) => {
+      const body = await incomingBody(request)
+      calls.push({ method: request.method ?? '', url: request.url ?? '', headers: request.headers, body })
+      response.statusCode = 202
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify({ job_id: 'job-1' }))
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'chat-secret')
+      await expect(client.startRemoteAttach({ sshHost: 'nv_gb300', installDir: '/mnt/lustre/.agentsdock-server' })).resolves.toEqual({ job_id: 'job-1' })
+    })
+
+    expect(calls.map(call => [call.method, call.url])).toEqual([['POST', '/api/admin/remote-servers/attach']])
+    expect(JSON.parse(calls[0].body)).toEqual({ ssh_host: 'nv_gb300', install_dir: '/mnt/lustre/.agentsdock-server' })
+    expect(calls[0].headers['x-agentsdock-token']).toBe('chat-secret')
+  })
+
   it('rejects a non-200 response from the Team Hub host-enable control', async () => {
     await withLocalHTTPServer((_request, response) => {
       response.statusCode = 201

@@ -2162,6 +2162,7 @@ button.tool-event-toggle:hover { background: #242424; }
 .server-management-pairing code { flex: 1; min-width: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
 .server-management-editor { display: flex; flex-direction: column; gap: 10px; padding: 11px; background: #202020; border-top: 1px solid var(--border); }
 .server-management-editor-heading { display: flex; align-items: flex-start; gap: 10px; }
+.server-add-mode { align-self: flex-start; }
 .server-management-editor > label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: var(--text-size-meta); }
 .server-management-editor > .checkbox-row { flex-direction: row; }
 .server-management-editor > .server-identity-confirm { align-items: flex-start; padding: 8px 9px; color: var(--amber); background: color-mix(in srgb, var(--amber), transparent 92%); border-radius: 6px; line-height: 1.4; }

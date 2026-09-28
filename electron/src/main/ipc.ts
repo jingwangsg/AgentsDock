@@ -244,6 +244,9 @@ export function registerIpc(
   handleWithEvent('remote-servers:deploy', (event, scope, input) => service.deployRemoteServerViaHub(scope, input, progress => {
     if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
   }))
+  handleWithEvent('remote-servers:attach', (event, scope, input) => service.attachRemoteServerViaHub(scope, input, progress => {
+    if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
+  }))
   handle('remote-servers:cancel', () => service.cancelRemoteDeploy())
   handle('remote-servers:remove', (scope, remoteId) => service.removeRemoteServer(scope, remoteId))
   handle('hub:adopt-local-token', () => service.retryLocalHubToken())

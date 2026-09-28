@@ -78,6 +78,7 @@ describe('ServerManagement', () => {
   const remove = vi.fn()
   const reorder = vi.fn()
   const remoteDeploy = vi.fn()
+  const remoteAttach = vi.fn()
   const remoteCancel = vi.fn()
   const remoteRemove = vi.fn()
   const pairingUrl = vi.fn()
@@ -91,6 +92,7 @@ describe('ServerManagement', () => {
     remove.mockReset().mockResolvedValue(true)
     reorder.mockReset().mockResolvedValue([beta, alpha])
     remoteDeploy.mockReset().mockResolvedValue(gb300)
+    remoteAttach.mockReset().mockResolvedValue(gb300)
     remoteCancel.mockReset().mockResolvedValue(undefined)
     remoteRemove.mockReset().mockResolvedValue(undefined)
     pairingUrl.mockReset().mockResolvedValue('http://nvmac.tail46daa8.ts.net:7850')
@@ -103,7 +105,7 @@ describe('ServerManagement', () => {
       configurable: true,
       value: {
         servers: { list, update, remove, reorder },
-        remoteServers: { deploy: remoteDeploy, cancel: remoteCancel, remove: remoteRemove },
+        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove },
         hub: { pairingUrl, copyToken }
       } as unknown as AgentsDockAPI
     })
@@ -137,6 +139,31 @@ describe('ServerManagement', () => {
     )
     expect(useAppStore.getState().profiles.map(profile => profile.id)).toEqual(['hub', 'osmo', 'gb300'])
     expect(trackEvent).toHaveBeenCalledWith('server_added', { success: true })
+    expect(screen.queryByRole('button', { name: 'Add & switch' })).not.toBeInTheDocument()
+  })
+
+  it('attaches an existing remote through the hub instead of deploying, then switches to it', async () => {
+    list.mockResolvedValue([hub, osmo, gb300])
+    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })
+    const user = userEvent.setup()
+    render(<ServerManagement addRequest={1} />)
+
+    expect(screen.getByRole('button', { name: 'Deploy a new server' })).toHaveAttribute('aria-pressed', 'true')
+    await user.click(screen.getByRole('button', { name: 'Attach an existing server' }))
+    expect(screen.getByRole('button', { name: 'Attach an existing server' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText(/Nothing is uploaded and the server is not restarted/)).toBeInTheDocument()
+    await user.type(screen.getByLabelText('SSH host'), 'nv_gb300')
+    await user.clear(screen.getByLabelText('Install directory on the host'))
+    await user.type(screen.getByLabelText('Install directory on the host'), '/mnt/lustre/.agentsdock-server')
+    await user.click(screen.getByRole('button', { name: 'Add & switch' }))
+
+    await waitFor(() => expect(switchServer).toHaveBeenCalledWith('gb300'))
+    expect(remoteAttach).toHaveBeenCalledWith(
+      { profileId: 'hub', profileGeneration: 1, serverIdentity: 'server-hub' },
+      { sshHost: 'nv_gb300', installDir: '/mnt/lustre/.agentsdock-server', name: undefined }
+    )
+    expect(remoteDeploy).not.toHaveBeenCalled()
+    expect(useAppStore.getState().activeProfileId).toBe('gb300')
     expect(screen.queryByRole('button', { name: 'Add & switch' })).not.toBeInTheDocument()
   })
 

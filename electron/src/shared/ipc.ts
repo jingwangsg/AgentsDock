@@ -73,6 +73,7 @@ import type {
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
   QueuedTurn,
+  RemoteServerAttachInput,
   RemoteServerDeployInput,
   ResumeSessionInput,
   RuntimeCatalog,
@@ -369,6 +370,7 @@ export interface AgentsDockAPI {
   }
   remoteServers: {
     deploy(scope: WorkspaceProfileScope, input: RemoteServerDeployInput): Promise<PublicServerProfile>
+    attach(scope: WorkspaceProfileScope, input: RemoteServerAttachInput): Promise<PublicServerProfile>
     cancel(): Promise<void>
     remove(scope: WorkspaceProfileScope, remoteId: string): Promise<void>
   }

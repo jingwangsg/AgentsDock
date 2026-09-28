@@ -84,6 +84,7 @@ import type {
   QueuedRunNowResponse,
   QueuedTurn,
   RemoteServer,
+  RemoteServerAttachInput,
   RemoteServerDeployInput,
   RemoteServerDeployJob,
   ResumeSessionInput,
@@ -880,6 +881,12 @@ export class AgentServerClient {
   }
   startRemoteDeploy(input: RemoteServerDeployInput): Promise<{ job_id: string }> {
     return this.privilegedNativeRequest('/api/admin/remote-servers/deploy', {
+      method: 'POST',
+      body: JSON.stringify({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name })
+    })
+  }
+  startRemoteAttach(input: RemoteServerAttachInput): Promise<{ job_id: string }> {
+    return this.privilegedNativeRequest('/api/admin/remote-servers/attach', {
       method: 'POST',
       body: JSON.stringify({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name })
     })
@@ -3232,6 +3239,7 @@ function isPrivilegedNativeControlTarget(
     return !target.search && method === 'GET'
   }
   if (path === '/api/admin/remote-servers/deploy') return !target.search && method === 'POST'
+  if (path === '/api/admin/remote-servers/attach') return !target.search && method === 'POST'
   if (/^\/api\/admin\/remote-servers\/[A-Za-z0-9_-]{1,128}$/.test(path)) return !target.search && method === 'DELETE'
   if (path === '/api/admin/remote-servers') return !target.search && method === 'GET'
   return !target.search && method === 'POST' && (

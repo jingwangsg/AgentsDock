@@ -98,6 +98,7 @@ import type {
   PublicServerProfile,
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
+  RemoteServerAttachInput,
   RemoteServerDeployInput,
   RemoteServerDeployJob,
   QueuedTurn,
@@ -1560,6 +1561,23 @@ export class AppService {
     input: RemoteServerDeployInput,
     onProgress: (value: ServerSetupProgress) => void
   ): Promise<PublicServerProfile> {
+    return this.runRemoteServerJobViaHub(expected, client => client.startRemoteDeploy(input), onProgress)
+  }
+
+  /** Same job flow as deploy for an install another hub set up: the hub uploads nothing and never restarts it. */
+  async attachRemoteServerViaHub(
+    expected: WorkspaceProfileScope,
+    input: RemoteServerAttachInput,
+    onProgress: (value: ServerSetupProgress) => void
+  ): Promise<PublicServerProfile> {
+    return this.runRemoteServerJobViaHub(expected, client => client.startRemoteAttach(input), onProgress)
+  }
+
+  private async runRemoteServerJobViaHub(
+    expected: WorkspaceProfileScope,
+    start: (client: AgentServerClient) => Promise<{ job_id: string }>,
+    onProgress: (value: ServerSetupProgress) => void
+  ): Promise<PublicServerProfile> {
     const scope = this.requireWorkspaceScope(expected)
     await this.ensureValidatedScope(scope)
     this.assertCurrentScope(scope)
@@ -1567,7 +1585,7 @@ export class AppService {
       throw new Error('This server does not support deploying remote servers over SSH.')
     }
     if (this.remoteDeploy) throw new Error('A remote server deployment is already running.')
-    const started = await scope.client.startRemoteDeploy(input)
+    const started = await start(scope.client)
     const state = { scope, jobId: started.job_id, cancelled: false }
     this.remoteDeploy = state
     try {
