@@ -48,6 +48,7 @@ import { useTransientClose } from '../lib/transient-close'
 import { CodexInteractionCard } from './CodexInteractionShelf'
 import { GoalConditionField, GoalDialogContent, GoalProgress, GoalSummaryBar } from './GoalDialog'
 import { ProviderStatusTrigger } from './ProviderStatusTrigger'
+import { ProviderUsagePanel } from './ProviderUsagePanel'
 import './CodexControls.css'
 
 export function CodexStatusButton() {
@@ -389,6 +390,7 @@ export function CodexControlsPanel({ onOpenGoal }: { onOpenGoal(): void }) {
           </section>
           {!window.agentsDock.sharedChat && <ThreadActions onNotice={setNotice} />}
           {!window.agentsDock.sharedChat && <BackgroundTerminals onNotice={setNotice} />}
+          <ProviderUsagePanel session={session} />
         </fieldset>}
     </div>
   </div>

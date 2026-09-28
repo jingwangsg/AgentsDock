@@ -38,7 +38,7 @@ describe('provider account usage', () => {
     expect(usage).toHaveBeenCalledExactlyOnceWith(scope, 'codex', 'chat-a', false)
     fireEvent.click(button)
     expect(await screen.findByText('124.5')).toBeVisible()
-    expect(screen.getByRole('progressbar')).toHaveAttribute('value', '75')
+    expect(screen.getByRole('progressbar')).toHaveAttribute('value', '25')
     await waitFor(() => expect(usage).toHaveBeenCalledTimes(2))
     expect(usage).toHaveBeenLastCalledWith(scope, 'codex', 'chat-a', true)
     fireEvent.change(screen.getByLabelText('Main message'), { target: { value: 'Keep typing' } })
@@ -102,7 +102,7 @@ describe('provider account usage', () => {
         label: null, used_percent: null, status: 'rejected' }] })
     render(<ProviderUsageIndicator session={{ ...chat, backend: 'claude' }} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Account usage: Limit reached' }))
-    expect(screen.getByText('75% left')).toBeVisible()
+    expect(screen.getByText('25% used')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Account usage: 75% left' })).not.toBeInTheDocument()
   })
 

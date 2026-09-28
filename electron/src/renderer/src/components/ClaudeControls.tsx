@@ -11,6 +11,7 @@ import { ProviderInteractionCard } from './CodexInteractionShelf'
 import { codexStatusLabel } from './CodexRuntimeContext'
 import { claudeBridge, useClaudeRuntime } from './ClaudeRuntimeContext'
 import { useClaudeGoalsAvailable } from './ClaudeGoalControls'
+import { ProviderUsagePanel } from './ProviderUsagePanel'
 import './CodexControls.css'
 
 export function ClaudeStatusButton() {
@@ -85,6 +86,7 @@ export function ClaudeStatusButton() {
                   <div><strong>{t('claudeGoal.title')}</strong><small>{runtime?.goal?.condition || t('claudeGoal.description')}</small></div>
                   <button type="button" className="quiet-button" onClick={openGoal}><Goal size={14} />{t('codexGoal.open')}</button>
                 </div></section>}
+                <ProviderUsagePanel session={session} />
               </fieldset>}
           </div>
         </div>

@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
-import type { ClaudeRuntimeSnapshot, Session } from '@shared/types'
+import type { ClaudeRuntimeSnapshot, Health, Session } from '@shared/types'
 import { setLocale } from '@shared/i18n'
 import { useAppStore } from '../store/app-store'
 import { ChatHeader } from './ChatHeader'
@@ -29,7 +29,7 @@ describe('Claude header controls', () => {
     vi.clearAllMocks(); setLocale('en')
     runtime.mockResolvedValue(idle); setGoal.mockResolvedValue(idle); clearGoal.mockResolvedValue(idle); resolveInteraction.mockResolvedValue({})
     useAppStore.setState({ activeProfileId: 'a', profileGeneration: 1, connected: true, switchingProfileId: null,
-      selectedSessionId: session.id, sessions: [session], activeSessionIds: new Set(), turnAdmissionTokens: {} })
+      selectedSessionId: session.id, sessions: [session], activeSessionIds: new Set(), turnAdmissionTokens: {}, health: null })
     Object.defineProperty(window, 'agentsDock', { configurable: true, value: {
       claude: { runtime, setGoal, clearGoal, resolveInteraction }, events: { on: vi.fn().mockReturnValue(() => undefined) },
       preferences: { get: vi.fn().mockImplementation((_key, fallback) => Promise.resolve(fallback)) }
@@ -53,6 +53,22 @@ describe('Claude header controls', () => {
     await waitFor(() => expect(runtime).toHaveBeenCalledTimes(3))
     await userEvent.setup().click(within(dialog).getByRole('button', { name: 'Close Claude controls' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('shows Claude account usage inside the controls with CLI-style window names', async () => {
+    const observedAt = '2026-09-24T12:00:00Z'
+    const usage = vi.fn().mockResolvedValue({ backend: 'claude', status: 'available', source: 'claude-events', account_kind: 'subscription', observed_at: observedAt,
+      windows: [{ id: 'five_hour', label: null, used_percent: 42, resets_at: 1790254800, window_minutes: 300, observed_at: observedAt, status: 'allowed' },
+        { id: 'seven_day', label: null, used_percent: 81, resets_at: 1790254800, window_minutes: 10080, observed_at: observedAt, status: 'allowed_warning' }] })
+    Object.assign(window.agentsDock, { runtime: { usage } })
+    useAppStore.setState({ health: { capabilities: { provider_usage: { available: true, version: 1 } } } as Health })
+    render(surface())
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Claude controls: Idle' }))
+    const dialog = screen.getByRole('dialog')
+    expect(await within(dialog).findByText('Current session (5h)')).toBeInTheDocument()
+    expect(within(dialog).getByText('42% used')).toBeInTheDocument()
+    expect(within(dialog).getByText('Current week (all models)').closest('.provider-usage-window')).toHaveClass('warning')
+    expect(usage).toHaveBeenCalledExactlyOnceWith({ profileId: 'a', profileGeneration: 1, serverIdentity: undefined }, 'claude', 'claude-chat', false)
   })
 
   it('keeps lifecycle Running visible when the native snapshot briefly says idle', async () => {

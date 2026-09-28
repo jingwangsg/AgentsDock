@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
-import type { CodexRuntimeSnapshot, Session } from '@shared/types'
+import type { CodexRuntimeSnapshot, Health, Session } from '@shared/types'
 import { useAppStore } from '../store/app-store'
 import { announceCodexGoalsConfigurationChanged } from '../lib/codex-goals'
 import { CodexContextIndicator, CodexGoalBar, CodexStatusButton } from './CodexControls'
@@ -90,7 +90,9 @@ describe('Codex controls', () => {
       profileGeneration: 4,
       sessions: [session],
       selectedSessionId: session.id,
-      activeSessionIds: new Set()
+      activeSessionIds: new Set(),
+      connected: false,
+      health: null
     })
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
@@ -136,6 +138,22 @@ describe('Codex controls', () => {
     expect(screen.getByRole('button', { name: 'Goal…' })).toBeEnabled()
     expect(screen.queryByText('Permissions and approvals')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Save permissions' })).not.toBeInTheDocument()
+  })
+
+  it('shows account usage inside thread controls and refreshes it on demand', async () => {
+    const usage = vi.fn().mockResolvedValue({
+      backend: 'codex', status: 'available', source: 'codex-account', account_kind: 'chatgpt', observed_at: '2026-07-31T12:00:00Z',
+      windows: [{ id: 'codex:primary', label: null, used_percent: 25, resets_at: 1790254800, window_minutes: 300, observed_at: '2026-07-31T12:00:00Z' }]
+    })
+    Object.assign(window.agentsDock, { runtime: { usage } })
+    useAppStore.setState({ connected: true, health: { capabilities: { provider_usage: { available: true, version: 1 } } } as Health })
+    renderControls()
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Codex controls: Approval needed' }))
+    expect(await screen.findByText('5-hour limit')).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: '5-hour limit used' })).toHaveAttribute('value', '25')
+    expect(usage).toHaveBeenCalledExactlyOnceWith({ profileId: 'profile-1', profileGeneration: 4, serverIdentity: undefined }, 'codex', 'chat-1', false)
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Refresh usage' }))
+    await waitFor(() => expect(usage).toHaveBeenLastCalledWith(expect.anything(), 'codex', 'chat-1', true))
   })
 
   it('keeps typing focus in the goal field after thread controls hand off, and restores focus on close', async () => {
