@@ -185,13 +185,13 @@ describe('server selector labels', () => {
       render(createElement(ServerSelector))
       expect(screen.queryByRole('menu')).not.toBeInTheDocument()
 
-      fireEvent.keyDown(window, { key: 'Shift', metaKey: true, shiftKey: true })
+      fireEvent.keyDown(window, { key: 'Shift', altKey: true, shiftKey: true })
       const beta_item = await screen.findByRole('menuitem', { name: /Beta/ })
       expect(beta_item.querySelector('kbd')).toHaveTextContent('2')
       expect(screen.getByRole('menuitem', { name: /Alpha/ }).querySelector('kbd')).toHaveTextContent('1')
 
-      // Shift turns the digit row into symbols on many layouts, so the code decides.
-      fireEvent.keyDown(window, { key: '@', code: 'Digit2', metaKey: true, shiftKey: true })
+      // Shift and Option turn the digit row into symbols on many layouts, so the code decides.
+      fireEvent.keyDown(window, { key: '™', code: 'Digit2', altKey: true, shiftKey: true })
       await waitFor(() => expect(switchServer).toHaveBeenCalledExactlyOnceWith('beta'))
       await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
 
@@ -199,9 +199,9 @@ describe('server selector labels', () => {
       // back where it was instead of on the trigger.
       const input = document.body.appendChild(document.createElement('input'))
       input.focus()
-      fireEvent.keyDown(window, { key: 'Meta', metaKey: true, shiftKey: true })
+      fireEvent.keyDown(window, { key: 'Alt', altKey: true, shiftKey: true })
       await screen.findByRole('menu')
-      fireEvent.keyUp(window, { key: 'Meta', shiftKey: true })
+      fireEvent.keyUp(window, { key: 'Alt', shiftKey: true })
       await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
       await waitFor(() => expect(input).toHaveFocus())
       expect(switchServer).toHaveBeenCalledTimes(1)

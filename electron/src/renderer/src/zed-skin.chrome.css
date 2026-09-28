@@ -30,3 +30,10 @@
 :root[data-skin="zed"] .cwd-popover,
 :root[data-skin="zed"] .timeline-minimap-popover { border: 1px solid var(--border); box-shadow: var(--shadow-popover); border-radius: var(--radius-popover); }
 :root[data-skin="zed"] .dialog-overlay > * { border: 1px solid var(--border); box-shadow: var(--shadow-dialog); }
+
+/* Live-run trace actions ("Load available activity") stay plain text like the
+   rest of the activity chrome; the generated skin's boxed button rule for
+   generic trace actions is more specific than styles.css's run-activity reset. */
+:root[data-skin="zed"] .run-activity .trace-detail-actions { background: transparent; border: 0; }
+:root[data-skin="zed"] .run-activity .trace-detail-actions button { background: transparent; border: 0; font-size: var(--text-size-meta); font-weight: 500; }
+:root[data-skin="zed"] .run-activity .trace-detail-actions button:hover:not(:disabled) { background: transparent; border-color: transparent; text-decoration: underline; }

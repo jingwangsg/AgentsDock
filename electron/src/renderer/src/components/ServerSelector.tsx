@@ -39,13 +39,12 @@ export function ServerSelector() {
   // without choosing changes nothing. Only a chord ever sets this.
   const focusBeforeChord = useRef<HTMLElement | null>(null)
 
-  // Holding ⇧⌘ (Ctrl+Shift elsewhere) shows the list with a digit on each
+  // Holding ⇧⌥ (Alt+Shift elsewhere) shows the list with a digit on each
   // server; that digit switches to it. `code` rather than `key`: with Shift
-  // held the digit row reports "!" "@" … on many layouts.
+  // or Option held the digit row reports "!" "@" "¡" … on many layouts.
   useEffect(() => {
-    const modifier = currentShortcutPlatform() === 'mac' ? 'Meta' : 'Control'
-    const isChord = (event: KeyboardEvent) => event.shiftKey && !event.altKey
-      && (modifier === 'Meta' ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)
+    const modifier = 'Alt'
+    const isChord = (event: KeyboardEvent) => event.shiftKey && event.altKey && !event.metaKey && !event.ctrlKey
     const onKeyDown = (event: KeyboardEvent) => {
       if (!isChord(event)) return
       if (event.key === 'Shift' || event.key === modifier) {

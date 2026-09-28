@@ -16,8 +16,8 @@ describe('app shortcut catalog', () => {
     expect(shortcutDisplay('previousWorkspaceTab', 'mac')).toBe('⌃⇧⇥')
     expect(shortcutDisplay('focusLeftChatPane', 'mac')).toBe('⌥⌘←')
     expect(shortcutDisplay('focusRightChatPane', 'other')).toBe('Ctrl+Alt+→')
-    expect(shortcutAccelerator('nextServer')).toBe('CmdOrCtrl+Shift+]')
-    expect(shortcutDisplay('previousServer', 'mac')).toBe('⇧⌘[')
+    expect(shortcutAccelerator('nextServer')).toBe('Alt+Shift+]')
+    expect(shortcutDisplay('previousServer', 'mac')).toBe('⇧⌥[')
   })
 
   it('has unique native accelerators', () => {
@@ -46,8 +46,8 @@ describe('app shortcut catalog', () => {
     expect(shortcutKeycaps('sendMessage', 'mac')).toEqual(['↩'])
     expect(shortcutKeycaps('settings', 'other')).toEqual(['Ctrl', ','])
     expect(shortcutKeycaps('stopTurn', 'mac')).toEqual(['⎋'])
-    expect(shortcutKeycaps('switchServerByNumber', 'mac')).toEqual(['⇧', '⌘', '1…9'])
-    expect(shortcutKeycaps('switchServerByNumber', 'other')).toEqual(['Ctrl', 'Shift', '1…9'])
+    expect(shortcutKeycaps('switchServerByNumber', 'mac')).toEqual(['⇧', '⌥', '1…9'])
+    expect(shortcutKeycaps('switchServerByNumber', 'other')).toEqual(['Alt', 'Shift', '1…9'])
   })
 
   it('groups every registered shortcut exactly once for settings', () => {

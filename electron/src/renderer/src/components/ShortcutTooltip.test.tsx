@@ -33,8 +33,8 @@ describe('ShortcutTooltip', () => {
 
     const tooltip = await screen.findByRole('tooltip')
     expect(tooltip).toHaveTextContent('Switch server')
-    expect(tooltip).toHaveTextContent('⇧⌘[')
-    expect(tooltip).toHaveTextContent('⇧⌘]')
+    expect(tooltip).toHaveTextContent('⇧⌥[')
+    expect(tooltip).toHaveTextContent('⇧⌥]')
   })
 
   it('does not advertise unavailable terminal chords on Windows or Linux', async () => {
