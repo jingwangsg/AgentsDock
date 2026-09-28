@@ -11,10 +11,13 @@ mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/state"
 chmod 700 "$INSTALL_DIR/state"
 [ -d "$INSTALL_DIR/state/admin" ] && chmod 700 "$INSTALL_DIR/state/admin"
 # Chat import verifies other instances under ~/.config and refuses group/other-writable
-# paths (hosts with umask 002 create them that way); say so instead of failing silently later.
-if [ -d "$HOME_DIR/.config" ] && [ -n "$(find "$HOME_DIR/.config" -maxdepth 0 -perm /022 2>/dev/null)" ]; then
-  log "Warning: $HOME_DIR/.config is group/other-writable; chat import on this host will refuse to run until you chmod 755 it."
-fi
+# ancestors of the state dir, the home directory included (Lustre homes are often
+# created with umask 002). Warn for each offending directory so the operator can chmod it.
+for check_dir in "$HOME_DIR" "$HOME_DIR/.config"; do
+  if [ -d "$check_dir" ] && [ -n "$(find "$check_dir" -maxdepth 0 -perm /022 2>/dev/null)" ]; then
+    log "Warning: $check_dir is group/other-writable; chat import on this host will refuse to run until you chmod g-w,o-w it."
+  fi
+done
 cd "$INSTALL_DIR"
 
 if [ -f upload.tgz ]; then
