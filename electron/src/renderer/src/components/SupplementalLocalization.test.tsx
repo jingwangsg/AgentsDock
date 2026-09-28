@@ -9,6 +9,9 @@ import { CodeReview } from './CodeReview'
 import { EmergencyTimelineDock } from './EmergencyTimelineDock'
 import { WelcomeChat } from './WelcomeChat'
 
+// jsdom cannot host Monaco; the review assertions below read the line-based fallback.
+vi.mock('monaco-editor/editor/editor.api', () => { throw new Error('monaco unavailable in jsdom') })
+
 vi.mock('react-virtuoso', () => ({
   Virtuoso: forwardRef(function MockVirtuoso(props: {
     data: unknown[]
@@ -31,7 +34,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('localizes code-review count templates while retaining raw paths and patch lines', () => {
+it('localizes code-review count templates while retaining raw paths and patch lines', async () => {
   const source = ['src/Settings.ts', 'src/Message.ts'].map(path => [
     `diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -4,7 +4,7 @@',
     ' <<<<<<< HEAD', ' ours /tmp/Settings', ' ||||||| parent', ' base', ' =======', ' theirs', ' >>>>>>> feature'
@@ -39,7 +42,7 @@ it('localizes code-review count templates while retaining raw paths and patch li
   render(<CodeReview target={{ sessionId: 'raw-chat-id', source }} onClose={vi.fn()} />)
   expect(screen.getByRole('status')).toHaveTextContent('2 conflicted files · 2 conflicts')
   expect(screen.getByText('2 files', { exact: true })).toBeInTheDocument()
-  expect(screen.getAllByText('3 unmodified lines').length).toBe(2)
+  expect((await screen.findAllByText('3 unmodified lines')).length).toBe(2)
   act(() => setLocale('zh-CN'))
   expect(screen.getByRole('status')).toHaveTextContent('2 个有冲突的文件 · 2 处冲突')
   expect(screen.getByText('2 个文件', { exact: true })).toBeInTheDocument()

@@ -1,13 +1,16 @@
 // Localized display strings use semantic catalog keys.
 import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FileCode2, FileDiff, Folder, LoaderCircle, RotateCcw, Search, X } from 'lucide-react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Columns2, Copy, FileCode2, FileDiff, Folder, LoaderCircle, RotateCcw, Rows3, Search, TextWrap, X } from 'lucide-react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { buildFileTree, type FileTreeDirectory, type FileTreeNode } from '@shared/file-tree'
 import type { CodeReviewTarget, DiffFile, DiffLine } from '../lib/timeline'
 import { parseReviewableDiff } from '../lib/timeline'
+import { buildMonacoDiffModel } from '../lib/monaco-diff-model'
 import { useTransientClose } from '../lib/transient-close'
 import { useAppStore } from '../store/app-store'
+import { MonacoDiffEditor } from './MonacoDiffEditor'
 
 type ReviewRow =
   | { kind: 'file'; file: DiffFile; fileIndex: number }
@@ -19,21 +22,16 @@ interface ReviewModel {
   fileStarts: number[]
 }
 
-interface ReviewTreeEntry {
+interface ReviewFileEntry {
   file: DiffFile
   fileIndex: number
-  name: string
 }
 
-interface ReviewTreeNode {
-  name: string
-  path: string
-  directories: ReviewTreeNode[]
-  files: ReviewTreeEntry[]
-}
+const SIDE_BY_SIDE_KEY = 'agentsdock:review-side-by-side'
+const WORD_WRAP_KEY = 'agentsdock:review-word-wrap'
 
 export function CodeReview({ target, onClose }: { target: CodeReviewTarget | null; onClose: () => void }) {
-  useLocale()
+  const locale = useLocale()
   useTransientClose(Boolean(target), onClose)
   const [source, setSource] = useState('')
   const [loading, setLoading] = useState(false)
@@ -41,6 +39,13 @@ export function CodeReview({ target, onClose }: { target: CodeReviewTarget | nul
   const [copied, setCopied] = useState(false)
   const [activeFile, setActiveFile] = useState(0)
   const [filter, setFilter] = useState('')
+  const [view, setView] = useState<'tree' | 'flat'>('tree')
+  const [sideBySide, setSideBySide] = useState(() => localStorage.getItem(SIDE_BY_SIDE_KEY) !== '0')
+  const [wordWrap, setWordWrap] = useState(() => localStorage.getItem(WORD_WRAP_KEY) === '1')
+  // Set when Monaco fails to load; the pane then keeps the line-based renderer for this mount.
+  const [editorFailure, setEditorFailure] = useState<string | null>(null)
+  // Directories start expanded; the set holds the exceptions for the current target.
+  const [collapsedDirectories, setCollapsedDirectories] = useState<ReadonlySet<string>>(new Set())
   const list = useRef<VirtuosoHandle>(null)
   const requestEpoch = useRef(0)
 
@@ -51,6 +56,7 @@ export function CodeReview({ target, onClose }: { target: CodeReviewTarget | nul
     setCopied(false)
     setActiveFile(0)
     setFilter('')
+    setCollapsedDirectories(new Set())
     if (!target?.runId) {
       setLoading(false)
       return
@@ -76,12 +82,17 @@ export function CodeReview({ target, onClose }: { target: CodeReviewTarget | nul
   const conflictedFiles = files.filter(file => file.conflictCount > 0)
   const conflictCount = conflictedFiles.reduce((sum, file) => sum + file.conflictCount, 0)
   const normalizedFilter = filter.trim().toLowerCase()
-  const filteredEntries = useMemo(() => files.map((file, fileIndex) => ({
-    file,
-    fileIndex,
-    name: file.path.split('/').filter(Boolean).at(-1) || file.path
-  })).filter(entry => !normalizedFilter || entry.file.path.toLowerCase().includes(normalizedFilter)), [files, normalizedFilter])
-  const fileTree = useMemo(() => buildFileTree(filteredEntries), [filteredEntries])
+  const filteredEntries = useMemo(() => files.map((file, fileIndex) => ({ file, fileIndex }))
+    .filter(entry => !normalizedFilter || entry.file.path.toLowerCase().includes(normalizedFilter)), [files, normalizedFilter])
+  // Tree file nodes index into filteredEntries, which maps back to the real fileIndex.
+  const fileTree = useMemo(() => buildFileTree(filteredEntries.map(entry => entry.file.path)), [filteredEntries])
+  const activeEntry: DiffFile | undefined = files[Math.min(activeFile, files.length - 1)]
+  // The placeholder text is baked into the documents, so the model also follows the locale.
+  const editorModel = useMemo(() => activeEntry
+    ? buildMonacoDiffModel(activeEntry, unchanged => unchanged == null
+      ? '⋯'
+      : `⋯ ${t(unchanged === 1 ? 'review.unmodifiedLines.one' : 'review.unmodifiedLines.other', { count: unchanged.toLocaleString() })}`)
+    : null, [activeEntry, locale])
   const unavailableMessage = error || (source.trim() && files.length === 0
     ? t('review.inventoryOnly')
     : t('review.noChanges'))
@@ -112,12 +123,34 @@ export function CodeReview({ target, onClose }: { target: CodeReviewTarget | nul
     setActiveFile(fileIndex)
     list.current?.scrollToIndex({ index: model.fileStarts[fileIndex] ?? 0, align: 'start', behavior: 'auto' })
   }
+  const toggleDirectory = (path: string) => setCollapsedDirectories(current => {
+    const next = new Set(current)
+    if (!next.delete(path)) next.add(path)
+    return next
+  })
+  const chooseLayout = (value: boolean) => {
+    setSideBySide(value)
+    localStorage.setItem(SIDE_BY_SIDE_KEY, value ? '1' : '0')
+  }
+  const toggleWordWrap = () => {
+    setWordWrap(!wordWrap)
+    localStorage.setItem(WORD_WRAP_KEY, wordWrap ? '0' : '1')
+  }
 
   return <section className="review-panel" role="region" aria-label={t("ui.CodeReview.CodeReview.code_review_3d20067")}>
     <p className="sr-only">{t("ui.CodeReview.CodeReview.complete_code_changes_from_the_selected_ag_4d526c7")}</p>
     <header className="review-header">
       <h2><FileDiff size={15} />{" "}{t("ui.CodeReview.CodeReview.review_aff0766")}</h2>
       <span className="review-spacer" />
+      {!editorFailure && <>
+        <div className="segmented review-layout-toggle">
+          <button type="button" className={sideBySide ? 'active' : ''} aria-pressed={sideBySide} onClick={() => chooseLayout(true)}><Columns2 size={13} aria-hidden="true" />{t('review.layoutSideBySide')}</button>
+          <button type="button" className={sideBySide ? '' : 'active'} aria-pressed={!sideBySide} onClick={() => chooseLayout(false)}><Rows3 size={13} aria-hidden="true" />{t('review.layoutInline')}</button>
+        </div>
+        <div className="segmented review-layout-toggle">
+          <button type="button" className={wordWrap ? 'active' : ''} aria-pressed={wordWrap} onClick={toggleWordWrap}><TextWrap size={13} aria-hidden="true" />{t('review.wordWrap')}</button>
+        </div>
+      </>}
       <button type="button" className="quiet-button" disabled={files.length === 0} onClick={() => void copy()}>{copied ? <Check size={14} /> : <Copy size={14} />}{" "}{t("ui.CodeReview.CodeReview.copy_diff_6e0cb31")}</button>
       <button type="button" className="icon-button" aria-label={t("ui.CodeReview.CodeReview.close_review_337f911")} onClick={onClose}><X size={16} /></button>
     </header>
@@ -138,66 +171,96 @@ export function CodeReview({ target, onClose }: { target: CodeReviewTarget | nul
         {error && files.length > 0 && <div className="review-inline-warning"><span>{error}</span><button type="button" onClick={retry}><RotateCcw size={13} />{" "}{t("ui.CodeReview.CodeReview.retry_942087c")}</button></div>}
         {loading && files.length === 0 ? <div className="review-state"><LoaderCircle className="spin" size={18} /><span>{t("ui.CodeReview.CodeReview.loading_complete_diff_73af489")}</span></div>
           : model.rows.length === 0 ? <div className="review-state error"><FileDiff size={24} /><span>{unavailableMessage}</span>{target.runId && <button type="button" className="quiet-button" onClick={retry}><RotateCcw size={14} />{" "}{t("ui.CodeReview.CodeReview.retry_942087c")}</button>}</div>
-            : <Virtuoso
-              ref={list}
-              className="review-diff-list"
-              data={model.rows}
-              computeItemKey={(index, row) => reviewRowKey(row, index)}
-              rangeChanged={range => setActiveFile(fileIndexAtRow(model.fileStarts, range.startIndex))}
-              itemContent={(_index, row) => <ReviewRowView row={row} />}
-            />}
+            : editorFailure || !activeEntry
+              ? <div className="review-diff-fallback">
+                <p className="review-fallback-note" title={editorFailure ?? undefined}>{t('review.editorUnavailable')}</p>
+                <Virtuoso
+                  ref={list}
+                  className="review-diff-list"
+                  data={model.rows}
+                  computeItemKey={(index, row) => reviewRowKey(row, index)}
+                  rangeChanged={range => setActiveFile(fileIndexAtRow(model.fileStarts, range.startIndex))}
+                  itemContent={(_index, row) => <ReviewRowView row={row} />}
+                />
+              </div>
+              : <div className="review-diff-file">
+                <ReviewRowView row={{ kind: 'file', file: activeEntry, fileIndex: activeFile }} />
+                {editorModel
+                  ? <MonacoDiffEditor path={activeEntry.path} model={editorModel} sideBySide={sideBySide} wordWrap={wordWrap} onUnavailable={setEditorFailure} />
+                  : <div className="review-diff-list">{activeEntry.lines.map((line, index) => <ReviewRowView key={index} row={{ kind: 'line', line, fileIndex: activeFile }} />)}</div>}
+              </div>}
       </section>
       <aside className="review-navigator" aria-label={t("ui.CodeReview.CodeReview.changed_files_5d4041a")}>
         <label className="review-filter"><Search size={13} /><input value={filter} onChange={event => setFilter(event.target.value)} placeholder={t("ui.CodeReview.CodeReview.filter_files_b50efe9")} /></label>
-        <div className="review-tree-root"><Folder size={14} /><strong title={target.repositoryRoot || undefined}>{shortRepositoryRoot(target.repositoryRoot)}</strong><span>{files.length}</span></div>
+        <div className="review-tree-root">
+          <Folder size={14} /><strong title={target.repositoryRoot || undefined}>{shortRepositoryRoot(target.repositoryRoot)}</strong><span>{files.length}</span>
+          <div className="segmented review-view-toggle">
+            <button type="button" className={view === 'tree' ? 'active' : ''} aria-pressed={view === 'tree'} onClick={() => setView('tree')}>{t('review.viewTree')}</button>
+            <button type="button" className={view === 'flat' ? 'active' : ''} aria-pressed={view === 'flat'} onClick={() => setView('flat')}>{t('review.viewFlat')}</button>
+          </div>
+        </div>
         <div className="review-tree">
-          {filteredEntries.length > 0
-            ? <ReviewTree node={fileTree} activeFile={activeFile} onSelect={jumpToFile} />
-            : <p>{t("ui.CodeReview.CodeReview.no_matching_files_7eaa329")}</p>}
+          {filteredEntries.length === 0
+            ? <p>{t("ui.CodeReview.CodeReview.no_matching_files_7eaa329")}</p>
+            : view === 'tree'
+              ? <ReviewTree nodes={fileTree} depth={0} entries={filteredEntries} activeFile={activeFile} collapsed={collapsedDirectories} onToggle={toggleDirectory} onSelect={jumpToFile} />
+              : filteredEntries.map(entry => <ReviewFileButton key={`${entry.file.path}:${entry.fileIndex}`} entry={entry} label={entry.file.path} depth={0} active={entry.fileIndex === activeFile} onSelect={jumpToFile} />)}
         </div>
       </aside>
     </div>
   </section>
 }
 
-function ReviewTree({ node, activeFile, onSelect }: { node: ReviewTreeNode; activeFile: number; onSelect: (index: number) => void }) {
+function ReviewTree({ nodes, depth, entries, activeFile, collapsed, onToggle, onSelect }: {
+  nodes: FileTreeNode[]
+  depth: number
+  entries: ReviewFileEntry[]
+  activeFile: number
+  collapsed: ReadonlySet<string>
+  onToggle: (path: string) => void
+  onSelect: (index: number) => void
+}) {
   useLocale()
   return <>
-    {node.directories.map(directory => <details className="review-tree-directory" open key={directory.path}>
-      <summary><ChevronRight size={12} /><Folder size={13} /><span>{directory.name}</span></summary>
-      <div><ReviewTree node={directory} activeFile={activeFile} onSelect={onSelect} /></div>
-    </details>)}
-    {node.files.map(entry => <button type="button" className={entry.fileIndex === activeFile ? 'active' : ''} title={entry.file.path} key={`${entry.file.path}:${entry.fileIndex}`} aria-current={entry.fileIndex === activeFile ? 'true' : undefined} aria-label={reviewFileAccessibleName(entry.file)} onClick={() => onSelect(entry.fileIndex)}>
-      <span className="review-file-status" aria-hidden="true">M</span><FileCode2 size={13} aria-hidden="true" /><span className="review-file-name">{entry.name}</span>{entry.file.conflictCount > 0 && <ConflictBadge count={entry.file.conflictCount} />}<small aria-hidden="true"><b>+{entry.file.additions}</b><i>-{entry.file.deletions}</i></small>
-    </button>)}
+    {nodes.map(node => {
+      if (node.kind === 'file') {
+        const entry = entries[node.index]
+        return <ReviewFileButton key={`${entry.file.path}:${entry.fileIndex}`} entry={entry} label={node.name} depth={depth} active={entry.fileIndex === activeFile} onSelect={onSelect} />
+      }
+      const expanded = !collapsed.has(node.path)
+      const stats = directoryStats(node, entries)
+      const files = t(stats.count === 1 ? 'review.fileCount.one' : 'review.fileCount.other', { count: stats.count })
+      return <Fragment key={node.path}>
+        <button type="button" className="review-tree-directory" style={{ paddingLeft: treeIndent(depth) }} aria-expanded={expanded} aria-label={t('review.directoryAccessibleName', { path: node.path, files, additions: stats.additions, deletions: stats.deletions })} onClick={() => onToggle(node.path)}>
+          <ChevronRight size={12} aria-hidden="true" /><Folder size={13} aria-hidden="true" /><span className="review-file-name">{node.name}</span><span className="review-directory-count" aria-hidden="true">{stats.count}</span><small aria-hidden="true"><b>+{stats.additions}</b><i>-{stats.deletions}</i></small>
+        </button>
+        {expanded && <ReviewTree nodes={node.children} depth={depth + 1} entries={entries} activeFile={activeFile} collapsed={collapsed} onToggle={onToggle} onSelect={onSelect} />}
+      </Fragment>
+    })}
   </>
 }
 
-function buildFileTree(entries: ReviewTreeEntry[]): ReviewTreeNode {
-  type MutableNode = { name: string; path: string; directories: Map<string, MutableNode>; files: ReviewTreeEntry[] }
-  const root: MutableNode = { name: '', path: '', directories: new Map(), files: [] }
-  for (const entry of entries) {
-    const parts = entry.file.path.split('/').filter(Boolean)
-    entry.name = parts.pop() || entry.file.path
-    let node = root
-    for (const part of parts) {
-      const path = node.path ? `${node.path}/${part}` : part
-      let child = node.directories.get(part)
-      if (!child) {
-        child = { name: part, path, directories: new Map(), files: [] }
-        node.directories.set(part, child)
-      }
-      node = child
-    }
-    node.files.push(entry)
+function ReviewFileButton({ entry, label, depth, active, onSelect }: { entry: ReviewFileEntry; label: string; depth: number; active: boolean; onSelect: (index: number) => void }) {
+  useLocale()
+  const { file, fileIndex } = entry
+  return <button type="button" className={active ? 'active' : ''} style={{ paddingLeft: treeIndent(depth) }} title={file.path} aria-current={active ? 'true' : undefined} aria-label={reviewFileAccessibleName(file)} onClick={() => onSelect(fileIndex)}>
+    <span className="review-file-status" aria-hidden="true">M</span><FileCode2 size={13} aria-hidden="true" /><span className="review-file-name">{label}</span>{file.conflictCount > 0 && <ConflictBadge count={file.conflictCount} />}<small aria-hidden="true"><b>+{file.additions}</b><i>-{file.deletions}</i></small>
+  </button>
+}
+
+const treeIndent = (depth: number) => 5 + depth * 13
+
+function directoryStats(node: FileTreeDirectory, entries: ReviewFileEntry[]): { count: number; additions: number; deletions: number } {
+  const stats = { count: 0, additions: 0, deletions: 0 }
+  for (const child of node.children) {
+    const part = child.kind === 'directory'
+      ? directoryStats(child, entries)
+      : { count: 1, additions: entries[child.index].file.additions, deletions: entries[child.index].file.deletions }
+    stats.count += part.count
+    stats.additions += part.additions
+    stats.deletions += part.deletions
   }
-  const freeze = (node: MutableNode): ReviewTreeNode => ({
-    name: node.name,
-    path: node.path,
-    directories: [...node.directories.values()].sort((a, b) => a.name.localeCompare(b.name)).map(freeze),
-    files: [...node.files].sort((a, b) => a.name.localeCompare(b.name))
-  })
-  return freeze(root)
+  return stats
 }
 
 function shortRepositoryRoot(path?: string | null): string {
