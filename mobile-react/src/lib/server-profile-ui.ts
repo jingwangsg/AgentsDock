@@ -1,5 +1,5 @@
 import { normalizeServerURL } from './format'
-import { defaultProfileName } from './server-profiles'
+import { defaultProfileName, isLoopbackServerURL } from './server-profiles'
 
 export type ServerProfileConnectionState = 'online' | 'degraded' | 'connecting' | 'retrying' | 'offline' | 'cached'
 
@@ -89,6 +89,7 @@ export function initialServerProfileDraft(
 export function serverProfileHost(serverUrl: string): string | null {
   const clean = serverUrl.trim()
   if (!clean) return null
+  if (isLoopbackServerURL(clean)) return 'Local'
   try {
     const parsed = new URL(/^https?:\/\//i.test(clean) ? clean : `http://${clean}`)
     return parsed.host || null
@@ -97,10 +98,18 @@ export function serverProfileHost(serverUrl: string): string | null {
   }
 }
 
+/** Profiles saved under their bare loopback address read as "Local" everywhere. */
+export function displayServerProfileName(profile: Pick<ServerProfileListItem, 'name' | 'serverUrl'>): string {
+  const name = profile.name.trim()
+  if (!isLoopbackServerURL(profile.serverUrl)) return name
+  return /^(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[?::1\]?)(?::\d+)?$/i.test(name) ? 'Local' : name
+}
+
 export function profileHostSubtitle(profile: Pick<ServerProfileListItem, 'name' | 'serverUrl' | 'serverIdentity'>): string | null {
   const host = serverProfileHost(profile.serverUrl)
   if (!host) return null
   const normalizedHost = host.toLocaleLowerCase()
+  if (displayServerProfileName(profile).toLocaleLowerCase() === normalizedHost) return null
   if (profile.name.trim().toLocaleLowerCase() === normalizedHost) return null
   if (profile.serverIdentity?.trim().toLocaleLowerCase() === normalizedHost) return null
   return host

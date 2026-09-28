@@ -21,6 +21,7 @@ import {
   findProfileByIdentity,
   initialServerProfileDraft,
   profileConnectionLabel,
+  displayServerProfileName,
   profileHostSubtitle,
   reorderedServerProfileIds,
   requiresIdentityResetConfirmation,
@@ -99,14 +100,14 @@ export function ServerProfileSelector({
   const host = active ? profileHostSubtitle(active) : null
   const unavailable = disabled || Boolean(switchingProfileId)
   const selectorLabel = switching
-    ? `Switching to ${switching.name}. Please wait.`
+    ? `Switching to ${displayServerProfileName(switching)}. Please wait.`
     : active
-      ? `${active.name}, ${profileConnectionLabel(active)}${active.cachedUnreadCount > 0 ? `, ${active.cachedUnreadCount} unread` : ''}. Choose agent server.`
+      ? `${displayServerProfileName(active)}, ${profileConnectionLabel(active)}${active.cachedUnreadCount > 0 ? `, ${active.cachedUnreadCount} unread` : ''}. Choose agent server.`
       : 'Choose agent server'
   const profileActions: MenuAction[] = profiles.length
     ? profiles.map(profile => ({
         id: `profile:${encodeURIComponent(profile.id)}`,
-        title: profile.cachedUnreadCount > 0 ? `${profile.name} · ${profile.cachedUnreadCount} unread` : profile.name,
+        title: profile.cachedUnreadCount > 0 ? `${displayServerProfileName(profile)} · ${profile.cachedUnreadCount} unread` : displayServerProfileName(profile),
         state: profile.id === activeProfileId ? 'on' : 'off',
         attributes: { disabled: unavailable },
       }))
@@ -123,9 +124,9 @@ export function ServerProfileSelector({
     accessibilityState={{ disabled: unavailable, expanded: false }}
     style={[styles.selector, { backgroundColor: colors.raised, borderColor: colors.border, opacity: disabled ? 0.4 : 1 }]}
   >
-    <ServerConnectionDot state={switching ? 'connecting' : active?.connectionState ?? 'cached'} label={switching ? `Connecting to ${switching.name}` : active ? profileConnectionLabel(active) : 'No server selected'} />
+    <ServerConnectionDot state={switching ? 'connecting' : active?.connectionState ?? 'cached'} label={switching ? `Connecting to ${displayServerProfileName(switching)}` : active ? profileConnectionLabel(active) : 'No server selected'} />
     <View style={styles.selectorCopy}>
-      <Text style={[styles.selectorName, { color: colors.text }]} numberOfLines={1}>{active?.name || 'Choose server'}</Text>
+      <Text style={[styles.selectorName, { color: colors.text }]} numberOfLines={1}>{active ? displayServerProfileName(active) : 'Choose server'}</Text>
       {host ? <Text style={[styles.selectorHost, { color: colors.muted }]} numberOfLines={1}>{host}</Text> : null}
     </View>
     {active && active.cachedUnreadCount > 0 ? <ServerUnreadBadge count={active.cachedUnreadCount} /> : null}

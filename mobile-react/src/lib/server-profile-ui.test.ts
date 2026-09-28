@@ -4,6 +4,8 @@ import {
   findProfileByIdentity,
   initialServerProfileDraft,
   profileHostSubtitle,
+  displayServerProfileName,
+  serverProfileHost,
   reorderedServerProfileIds,
   requiresIdentityResetConfirmation,
   unreadCountLabel,
@@ -80,6 +82,12 @@ assert(reorderedServerProfileIds([alpha, beta], 'alpha', -1) === null, 'reorder 
 
 assert(profileHostSubtitle(alpha) === 'alpha.example:7850', 'selector must show a distinct server host')
 assert(profileHostSubtitle({ ...alpha, name: 'alpha.example:7850' }) === null, 'selector must not repeat a host used as the profile name')
+const hub = { ...alpha, name: '127.0.0.1', serverUrl: 'http://127.0.0.1:7850', serverIdentity: null }
+assert(displayServerProfileName(hub) === 'Local', 'a loopback hub saved under its address reads as Local')
+assert(profileHostSubtitle(hub) === null, 'Local must not be repeated as a subtitle')
+assert(displayServerProfileName({ ...hub, name: 'Home Mac' }) === 'Home Mac', 'a user-chosen hub name is kept')
+assert(profileHostSubtitle({ ...hub, name: 'Home Mac' }) === 'Local', 'a named hub shows Local as its host')
+assert(serverProfileHost('http://nvmac.tail46daa8.ts.net:7850') === 'nvmac.tail46daa8.ts.net:7850', 'remote hosts keep their address')
 assert(unreadCountLabel(100) === '99+', 'unread badge must stay compact')
 assert(requiresIdentityResetConfirmation({ ...alpha, lastConnectionError: 'Server identity changed from server-alpha to server-new.' }), 'identity changes must require confirmation')
 assert(requiresIdentityResetConfirmation({ ...alpha, lastConnectionError: 'Server identity mismatch: expected server-alpha, received server-new.' }), 'identity mismatches must allow an explicit reset')

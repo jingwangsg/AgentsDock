@@ -63,9 +63,21 @@ export function nextCredentialVersion(currentValue: unknown): number {
   return current + 1
 }
 
+export function isLoopbackServerURL(serverURL: string): boolean {
+  try {
+    const host = new URL(normalizeServerURL(serverURL)).hostname.toLowerCase()
+    return host === 'localhost' || host === '[::1]' || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+  } catch {
+    return false
+  }
+}
+
 export function defaultProfileName(serverURL: string, serverIdentity?: string | null): string {
   const identity = cleanServerIdentity(serverIdentity)
   if (identity) return identity
+  // The phone reaches the Mac hub through a Tailscale forward, so a loopback
+  // address is always "the local hub", never a server worth naming by IP.
+  if (isLoopbackServerURL(serverURL)) return 'Local'
   try {
     const url = new URL(normalizeServerURL(serverURL))
     return url.hostname || url.host || 'AgentsServer'
