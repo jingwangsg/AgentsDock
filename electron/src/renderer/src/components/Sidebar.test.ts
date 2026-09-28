@@ -9,11 +9,18 @@ describe('gesture reorder activation', () => {
 })
 
 describe('buildSections folders', () => {
-  it('keeps General and remembered folders listed when they hold no visible chat', () => {
+  it('keeps remembered folders listed when they hold no visible chat and does not inject General', () => {
     const archived = { id: 's1', title: 'Old', folder: 'Work', archived: true } as unknown as Session
     const pinned = { id: 's2', title: 'Pin', folder: null, pinned: true } as unknown as Session
     const titles = buildSections([archived, pinned], ['Work', 'Ideas'], '').map(section => section.title)
-    expect(titles).toEqual(['Pinned', 'Work', 'Ideas', 'General', 'Archived'])
+    expect(titles).toEqual(['Pinned', 'Work', 'Ideas', 'Archived'])
+  })
+
+  it('labels chats without a folder General and orders General like any other folder', () => {
+    const loose = { id: 's1', title: 'Loose', folder: null } as unknown as Session
+    expect(buildSections([loose], ['Work'], '').map(section => section.title)).toEqual(['Work', 'General'])
+    expect(buildSections([loose], ['General', 'Work'], '').map(section => section.title)).toEqual(['General', 'Work'])
+    expect(buildSections([], ['Work', 'General', 'Ideas'], '').map(section => section.title)).toEqual(['Work', 'General', 'Ideas'])
   })
 })
 

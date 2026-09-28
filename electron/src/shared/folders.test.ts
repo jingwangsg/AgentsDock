@@ -6,8 +6,8 @@ describe('rememberedFolderOrder', () => {
     expect(rememberedFolderOrder(['Work'], [{ folder: 'Personal' }, { folder: 'Work' }, { folder: ' Ops ' }, { folder: null }])).toEqual(['Work', 'Personal', 'Ops'])
   })
 
-  it('never records the default General folder and ignores blanks', () => {
-    expect(rememberedFolderOrder([], [{ folder: 'General' }, { folder: '' }, { folder: undefined }])).toEqual([])
+  it('records General like any other folder and ignores blanks', () => {
+    expect(rememberedFolderOrder([], [{ folder: 'General' }, { folder: '' }, { folder: undefined }])).toEqual(['General'])
   })
 
   it('keeps folders whose chats are all gone', () => {

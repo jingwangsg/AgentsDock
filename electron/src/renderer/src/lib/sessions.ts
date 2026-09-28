@@ -76,6 +76,13 @@ export function rankSessionsForSearch(sessions: Session[], query: string, histor
     .map(result => result.session)
 }
 
+/** Folders the sidebar lists, in display order: `folderOrder` first, then folders only live chats know about. */
+export function sidebarFolders(sessions: readonly Session[], folderOrder: readonly string[]): string[] {
+  const order = new Map(folderOrder.map((folder, index) => [folder, index]))
+  const folders = new Set([...folderOrder, ...sessions.filter(session => !session.archived && !session.pinned).map(session => session.folder?.trim() || 'General')])
+  return [...folders].sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b))
+}
+
 export function orderedActiveSessions(sessions: Session[], folderOrder: string[]): Session[] {
   const pinned = sessions.filter(session => session.pinned && !session.archived)
   const regular = sessions.filter(session => !session.pinned && !session.archived)

@@ -176,6 +176,53 @@ describe('sidebar chat rename', () => {
     expect((renameFolder.mock.calls[0][0] as CustomEvent<{ folder: string }>).detail).toEqual({ folder: 'Research' })
   })
 
+  it('offers General the same folder actions as any other folder, hiding move items when it is alone', async () => {
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByText('General').closest('.section-header')!)
+
+    const labels = (await screen.findAllByRole('menuitem')).map(item => item.textContent)
+    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'Rename Folder…', 'Delete Folder'])
+  })
+
+  it('lists one New chat entry per selectable backend and seeds it with the folder', async () => {
+    const requestNewChat = vi.fn().mockResolvedValue(undefined)
+    useAppStore.setState({
+      requestNewChat,
+      sessions: [{ ...session, folder: 'Research' }],
+      folderOrder: ['Research'],
+      health: { ok: true, capabilities: { cursor_backend: { available: true, required: false, message: '', action: null, version: 2 } } }
+    })
+    const user = userEvent.setup()
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByText('Research').closest('.section-header')!)
+    const labels = (await screen.findAllByRole('menuitem')).map(item => item.textContent)
+    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'New Cursor Chat', 'Rename Folder…', 'Delete Folder'])
+    await user.click(screen.getByRole('menuitem', { name: 'New Cursor Chat' }))
+
+    expect(requestNewChat).toHaveBeenCalledWith({ folder: 'Research', backend: 'cursor' })
+  })
+
+  it('moves folders up and down from the context menu and hides the item at the edges', async () => {
+    useAppStore.setState({ sessions: [{ ...session, folder: 'Zeta' }], folderOrder: ['Alpha', 'Beta'] })
+    const user = userEvent.setup()
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByText('Alpha').closest('.section-header')!)
+    expect(await screen.findByRole('menuitem', { name: 'Move Folder Down' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Move Folder Up' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('menuitem', { name: 'Move Folder Down' }))
+    // Zeta is not in folderOrder yet; the swap persists the rendered list so it keeps its place.
+    expect(useAppStore.getState().folderOrder).toEqual(['Beta', 'Alpha', 'Zeta'])
+
+    fireEvent.contextMenu(screen.getByText('Zeta').closest('.section-header')!)
+    expect(await screen.findByRole('menuitem', { name: 'Move Folder Up' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Move Folder Down' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('menuitem', { name: 'Move Folder Up' }))
+    expect(useAppStore.getState().folderOrder).toEqual(['Beta', 'Zeta', 'Alpha'])
+  })
+
   it('turns the entire chat row amber when an active agent needs user action', () => {
     useAppStore.setState({
       sessions: [{ ...session, backend: 'claude', claude_needs_user_action: true, manual_unread: true }],

@@ -1177,18 +1177,81 @@ describe('folder deletion', () => {
     expect(setPreference).toHaveBeenCalledWith('collapsedFolders', [])
   })
 
-  it('never deletes the General folder', async () => {
-    const update = vi.fn()
+  it('deletes General by moving its chats, including chats without a folder, to the first other folder', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ ...sessionFor(sessionId), ...patch }))
+    const setPreference = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { update }, preferences: { set: vi.fn() } } as unknown as AgentsDockAPI
+      value: { sessions: { update }, preferences: { set: setPreference } } as unknown as AgentsDockAPI
     })
-    useAppStore.setState({ sessions: [{ ...sessionFor('general'), folder: 'General' }], folderOrder: ['General'] })
+    useAppStore.setState({
+      sessions: [{ ...sessionFor('general'), folder: 'General' }, { ...sessionFor('loose'), folder: null }, { ...sessionFor('research'), folder: 'Research' }],
+      snapshots: {},
+      folderOrder: ['General', 'Research', 'Ideas'],
+      collapsedFolders: new Set(['General']),
+      error: null
+    })
+
+    await useAppStore.getState().deleteFolder('General')
+
+    expect(update).toHaveBeenCalledTimes(2)
+    expect(update).toHaveBeenCalledWith('general', { folder: 'Research' })
+    expect(update).toHaveBeenCalledWith('loose', { folder: 'Research' })
+    expect(useAppStore.getState().sessions.map(session => session.folder)).toEqual(['Research', 'Research', 'Research'])
+    expect(useAppStore.getState().folderOrder).toEqual(['Research', 'Ideas'])
+    expect(useAppStore.getState().collapsedFolders.has('General')).toBe(false)
+    expect(setPreference).toHaveBeenCalledWith('folderOrder', ['Research', 'Ideas'])
+    expect(useAppStore.getState().error).toBeNull()
+  })
+
+  it('falls back to General when a folder is deleted and nothing else is listed', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ ...sessionFor(sessionId), ...patch }))
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: vi.fn().mockResolvedValue(undefined) } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({ sessions: [{ ...sessionFor('solo'), folder: 'Solo' }], snapshots: {}, folderOrder: ['Solo'], collapsedFolders: new Set(), error: null })
+
+    await useAppStore.getState().deleteFolder('Solo')
+
+    expect(update).toHaveBeenCalledWith('solo', { folder: 'General' })
+    expect(useAppStore.getState().sessions.map(session => session.folder)).toEqual(['General'])
+    expect(useAppStore.getState().folderOrder).toEqual([])
+  })
+
+  it('refuses to delete the last listed folder while it still holds chats', async () => {
+    const update = vi.fn()
+    const setPreference = vi.fn()
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: setPreference } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({ sessions: [{ ...sessionFor('general'), folder: 'General' }], folderOrder: ['General'], collapsedFolders: new Set(), error: null })
 
     await useAppStore.getState().deleteFolder('General')
 
     expect(update).not.toHaveBeenCalled()
+    expect(setPreference).not.toHaveBeenCalled()
     expect(useAppStore.getState().folderOrder).toEqual(['General'])
+    expect(useAppStore.getState().error).toBe('Create another folder first, so the chats in General have somewhere to go.')
+  })
+
+  it('removes an empty last folder, General included, without needing a destination', async () => {
+    const update = vi.fn()
+    const setPreference = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: setPreference } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({ sessions: [], folderOrder: ['General'], collapsedFolders: new Set(['General']), error: null })
+
+    await useAppStore.getState().deleteFolder('General')
+
+    expect(update).not.toHaveBeenCalled()
+    expect(useAppStore.getState().folderOrder).toEqual([])
+    expect(useAppStore.getState().collapsedFolders.size).toBe(0)
+    expect(setPreference).toHaveBeenCalledWith('folderOrder', [])
+    expect(useAppStore.getState().error).toBeNull()
   })
 
   it('removes an empty folder without issuing chat updates', async () => {
@@ -1241,7 +1304,34 @@ describe('folder rename', () => {
     expect(useAppStore.getState().error).toBeNull()
   })
 
-  it('refuses General, unchanged names, and names that already exist in any case', async () => {
+  it('renames General, moving chats whose folder is unset along with it', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ ...sessionFor(sessionId), ...patch }))
+    const setPreference = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: setPreference } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ ...sessionFor('general'), folder: 'General' }, { ...sessionFor('loose'), folder: null }, { ...sessionFor('research'), folder: 'Research' }],
+      snapshots: {},
+      folderOrder: ['General', 'Research'],
+      collapsedFolders: new Set(['General']),
+      error: null
+    })
+
+    await expect(useAppStore.getState().renameFolder('General', 'Inbox')).resolves.toBe(true)
+
+    expect(update).toHaveBeenCalledTimes(2)
+    expect(update).toHaveBeenCalledWith('general', { folder: 'Inbox' })
+    expect(update).toHaveBeenCalledWith('loose', { folder: 'Inbox' })
+    expect(useAppStore.getState().sessions.map(session => session.folder)).toEqual(['Inbox', 'Inbox', 'Research'])
+    expect(useAppStore.getState().folderOrder).toEqual(['Inbox', 'Research'])
+    expect([...useAppStore.getState().collapsedFolders]).toEqual(['Inbox'])
+    expect(setPreference).toHaveBeenCalledWith('folderOrder', ['Inbox', 'Research'])
+    expect(useAppStore.getState().error).toBeNull()
+  })
+
+  it('refuses unchanged names and names that already exist in any case', async () => {
     const update = vi.fn()
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
@@ -1249,19 +1339,21 @@ describe('folder rename', () => {
     })
     useAppStore.setState({
       sessions: [{ ...sessionFor('general'), folder: 'General' }, { ...sessionFor('research'), folder: 'Research' }],
-      folderOrder: ['Research', 'Archive', 'General'],
+      folderOrder: ['Research', 'Archive'],
       collapsedFolders: new Set(),
       error: null
     })
 
-    await expect(useAppStore.getState().renameFolder('General', 'Inbox')).resolves.toBe(false)
     await expect(useAppStore.getState().renameFolder('Research', 'Research')).resolves.toBe(false)
     expect(useAppStore.getState().error).toBeNull()
     await expect(useAppStore.getState().renameFolder('Research', 'archive')).resolves.toBe(false)
     expect(useAppStore.getState().error).toBe('A folder named archive already exists.')
+    // General is only a chat's folder here, not in folderOrder, and still counts as taken.
+    await expect(useAppStore.getState().renameFolder('Research', 'general')).resolves.toBe(false)
+    expect(useAppStore.getState().error).toBe('A folder named general already exists.')
 
     expect(update).not.toHaveBeenCalled()
-    expect(useAppStore.getState().folderOrder).toEqual(['Research', 'Archive', 'General'])
+    expect(useAppStore.getState().folderOrder).toEqual(['Research', 'Archive'])
   })
 })
 

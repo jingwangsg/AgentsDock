@@ -22,7 +22,7 @@ import { trackEvent } from '../lib/analytics'
 import { secureRandomUUID } from '../lib/browser-crypto'
 import { nudgeChatFontSize, setChatFontFamily, setChatFontSize } from '../lib/chat-font'
 import { activeEmergencyAlert } from '../lib/emergency-alert'
-import { isUntouchedNewChat, navigableSessions } from '../lib/sessions'
+import { isUntouchedNewChat, navigableSessions, sidebarFolders } from '../lib/sessions'
 import { isAgentVisibleEvent } from '../lib/timeline'
 import {
   AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY,
@@ -2190,12 +2190,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     const scope = captureProfileScope(get())
     const preferenceScope = captureWorkspaceScope(get())
     const source = folder.trim()
-    if (!source || source.toLocaleLowerCase() === 'general') return
+    if (!source) return
     const sessionsToMove = get().sessions.filter(session => (session.folder?.trim() || 'General') === source)
+    const others = sidebarFolders(get().sessions, get().folderOrder).filter(candidate => candidate !== source)
+    // Chats fall back to General, then to the first remaining folder in sidebar order. General is
+    // only the label for chats without a folder, so with nothing else listed they have nowhere to go.
+    const destination = others.includes('General') ? 'General' : others[0] ?? (source === 'General' ? null : 'General')
+    if (destination === null && sessionsToMove.length) {
+      set({ error: t('ui.sidebar.folderNeedsDestination', { folder: source }) })
+      return
+    }
     try {
-      const movedSessions = await Promise.all(sessionsToMove.map(async session => ({
-        ...(await window.agentsDock.sessions.update(session.id, { folder: 'General' })),
-        folder: 'General'
+      const movedSessions = destination === null ? [] : await Promise.all(sessionsToMove.map(async session => ({
+        ...(await window.agentsDock.sessions.update(session.id, { folder: destination })),
+        folder: destination
       })))
       if (!profileScopeMatches(scope, get())) return
       const movedById = new Map(movedSessions.map(session => [session.id, session]))
@@ -2233,8 +2241,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const preferenceScope = captureWorkspaceScope(get())
     const from = source.trim()
     const to = target.trim()
-    if (!from || from.toLocaleLowerCase() === 'general' || !to || to === from) return false
-    const folders = ['General', ...get().folderOrder, ...get().sessions.map(session => session.folder?.trim() || 'General')]
+    if (!from || !to || to === from) return false
+    const folders = [...get().folderOrder, ...get().sessions.map(session => session.folder?.trim() || 'General')]
     if (folders.some(folder => folder !== from && folder.toLocaleLowerCase() === to.toLocaleLowerCase())) {
       set({ error: t('ui.sidebar.folderExists', { folder: to }) })
       return false

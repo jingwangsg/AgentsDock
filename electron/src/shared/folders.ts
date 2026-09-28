@@ -12,7 +12,7 @@ export function rememberedFolderOrder(folderOrder: readonly string[], sessions: 
   const next = [...known]
   for (const session of sessions) {
     const folder = session.folder?.trim()
-    if (folder && folder !== 'General' && !known.has(folder)) { known.add(folder); next.push(folder) }
+    if (folder && !known.has(folder)) { known.add(folder); next.push(folder) }
   }
   return next.length === known.size && next.length === folderOrder.length && next.every((folder, i) => folder === folderOrder[i]) ? [...folderOrder] as string[] : next
 }
