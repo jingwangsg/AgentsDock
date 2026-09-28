@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from contextlib import suppress
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import agentsdock_canvas
 import agentsdock_chats
 
 
@@ -40,9 +42,11 @@ class ProviderHelperAsyncEnvTests(unittest.IsolatedAsyncioTestCase):
             elif isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id in CONSTANTS for target in node.targets):
                 nodes.append(node)
         self.namespace = {
-            "Any": Any, "Path": Path, "sys": sys, "re": re, "json": json,
+            "Any": Any, "Path": Path, "sys": sys, "re": re, "json": json, "suppress": suppress,
             "ProviderToolError": RuntimeError, "ProviderRuntimeContextError": ValueError,
             "SERVER_ROOT": Path("/qa/source"),
+            # agent_runner_env derives AGENTSDOCK_CANVAS_DIR; session_dir is pure path logic.
+            "agentsdock_canvas": agentsdock_canvas, "STATE_DIR": Path("/qa/state"),
             "validate_provider_tool_input": lambda value: (value["helper"], value["arguments"], value.get("stdin", "")),
             "redact_provider_tool_output": lambda value, _path: value,
             "terminal_session_name": lambda _session: "qa-terminal",

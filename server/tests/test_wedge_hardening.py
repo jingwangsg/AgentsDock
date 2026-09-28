@@ -1180,25 +1180,20 @@ class PruneImportedHistoryTests(unittest.TestCase):
             self.write_log(log, events)
             before = log.read_bytes()
             # Exercise the generation fence directly by changing the file
-            # after the replacement stream has been fsynced.
-            real_stat = agent_server.Path.stat
-            calls = 0
+            # after the replacement stream has been fsynced. Hook fsync
+            # itself: counting Path.stat calls is not portable (Python 3.14
+            # stopped routing Path.exists() through Path.stat).
+            real_fsync = os.fsync
 
-            def changing_stat(target, *args, **kwargs):
-                nonlocal calls
-                result = real_stat(target, *args, **kwargs)
-                if target == log:
-                    calls += 1
-                    if calls == 3:
-                        with log.open("ab") as output:
-                            output.write(b'{"seq":5,"type":"assistant_text","text":"late"}\n')
-                        result = real_stat(target, *args, **kwargs)
-                return result
+            def racing_fsync(descriptor):
+                real_fsync(descriptor)
+                with log.open("ab") as output:
+                    output.write(b'{"seq":5,"type":"assistant_text","text":"late"}\n')
 
             with patch.object(agent_server, "events_path", return_value=log), patch.object(
-                agent_server.Path,
-                "stat",
-                changing_stat,
+                agent_server.os,
+                "fsync",
+                racing_fsync,
             ):
                 with self.assertRaises(RuntimeError):
                     agent_server.prune_duplicate_imported_history_sync(
@@ -1243,31 +1238,26 @@ class PruneImportedHistoryTests(unittest.TestCase):
             rewritten_by_racer = original.replace(b'"prompt": "same"', b'"prompt": "tame"', 1)
             self.assertEqual(len(rewritten_by_racer), len(original))
             initial = log.stat()
-            real_stat = agent_server.Path.stat
-            calls = 0
+            real_fsync = os.fsync
 
-            def changing_stat(target, *args, **kwargs):
-                nonlocal calls
-                result = real_stat(target, *args, **kwargs)
-                if target == log:
-                    calls += 1
-                    if calls == 3:
-                        log.write_bytes(rewritten_by_racer)
-                        os.utime(
-                            log,
-                            ns=(initial.st_atime_ns, initial.st_mtime_ns),
-                        )
-                        result = real_stat(target, *args, **kwargs)
-                        self.assertEqual(result.st_size, initial.st_size)
-                        self.assertEqual(result.st_mtime_ns, initial.st_mtime_ns)
-                        self.assertNotEqual(result.st_ctime_ns, initial.st_ctime_ns)
-                return result
+            # Same fsync anchor as the concurrent-change test above.
+            def racing_fsync(descriptor):
+                real_fsync(descriptor)
+                log.write_bytes(rewritten_by_racer)
+                os.utime(
+                    log,
+                    ns=(initial.st_atime_ns, initial.st_mtime_ns),
+                )
+                rewritten = log.stat()
+                self.assertEqual(rewritten.st_size, initial.st_size)
+                self.assertEqual(rewritten.st_mtime_ns, initial.st_mtime_ns)
+                self.assertNotEqual(rewritten.st_ctime_ns, initial.st_ctime_ns)
 
             with patch.object(
                 agent_server,
                 "events_path",
                 return_value=log,
-            ), patch.object(agent_server.Path, "stat", changing_stat):
+            ), patch.object(agent_server.os, "fsync", racing_fsync):
                 with self.assertRaises(RuntimeError):
                     agent_server.prune_duplicate_imported_history_sync(
                         "chat",

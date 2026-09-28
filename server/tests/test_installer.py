@@ -1472,18 +1472,32 @@ exit 0
         self.assertIn("DIRECTORIES = tuple(DIRECTORY_FILES)", packager_source)
 
         with tempfile.TemporaryDirectory() as temporary:
+            # Package a clean staged copy of the manifest: the live tree carries
+            # gitignored interpreter caches from other local test runs, which
+            # the packager rejects by design.
+            staged = Path(temporary) / "source"
+            for name in package_release.FILES:
+                (staged / name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / name, staged / name)
+            for directory, names in package_release.DIRECTORY_FILES.items():
+                for name in names:
+                    (staged / directory / name).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(ROOT / directory / name, staged / directory / name)
+            (staged / "scripts").mkdir()
+            shutil.copy2(PACKAGER, staged / "scripts" / PACKAGER.name)
+            output = Path(temporary) / "dist"
             result = subprocess.run(
-                [sys.executable, str(PACKAGER), "--output", temporary],
-                cwd=ROOT,
+                [sys.executable, str(staged / "scripts" / PACKAGER.name), "--output", str(output)],
+                cwd=staged,
                 capture_output=True,
                 text=True,
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             version = (ROOT / "VERSION").read_text().strip()
-            archive_path = Path(temporary) / f"agents-server-{version}.tar.gz"
+            archive_path = output / f"agents-server-{version}.tar.gz"
             manifest = json.loads(
-                (Path(temporary) / "agents-server-manifest.json").read_text()
+                (output / "agents-server-manifest.json").read_text()
             )
             with tarfile.open(archive_path, "r:gz") as archive:
                 members = set(archive.getnames())
@@ -2242,6 +2256,7 @@ chmod 755 "$target/bin/python"
             self.write_executable(fake_bin / "uname", "#!/bin/sh\necho Linux\n")
             self.write_executable(fake_bin / "systemctl", "#!/bin/sh\nexit 0\n")
             self.write_executable(fake_bin / "tmux", "#!/bin/sh\nexit 0\n")
+            self.write_unusable_uv(fake_bin)
             self.write_executable(
                 uv_binary_source,
                 """#!/bin/sh
@@ -2497,6 +2512,7 @@ chmod 755 "$project/.venv/bin/python"
             self.prepare_preflight_path(fake_bin, os_name="Linux", commands=("tmux",))
             self.write_executable(fake_bin / "tmux", "#!/bin/sh\nexit 127\n")
             self.write_executable(fake_bin / "systemctl", "#!/bin/sh\nexit 1\n")
+            self.write_unusable_uv(fake_bin)
             result = subprocess.run(
                 ["/bin/bash", str(INSTALLER), "--execution-mode", "legacy", "--non-interactive"],
                 env={
@@ -5731,6 +5747,7 @@ exit 0
             root = Path(temporary).resolve()
             home, fake_bin, install_root, environment = self.fake_linux_preinstall_environment(root)
             curl_log = root / "curl.log"
+            self.write_unusable_uv(fake_bin)
             self.write_executable(fake_bin / "curl", """#!/bin/sh
 for argument in "$@"; do
   [ "$argument" != "--version" ] || exit 0
@@ -5766,6 +5783,7 @@ exit 28
             root = Path(temporary).resolve()
             home, fake_bin, install_root, environment = self.fake_linux_preinstall_environment(root)
             wget_log = root / "wget.log"
+            self.write_unusable_uv(fake_bin)
             self.write_executable(fake_bin / "curl", "#!/bin/sh\nexit 127\n")
             self.write_executable(fake_bin / "wget", """#!/bin/sh
 for argument in "$@"; do
@@ -7533,6 +7551,16 @@ exit 0
     def write_private_file(path: Path, source: str) -> None:
         path.write_text(source)
         path.chmod(0o600)
+
+    @staticmethod
+    def write_unusable_uv(fake_bin: Path) -> None:
+        # install.sh appends /opt/homebrew/bin and /usr/local/bin to PATH, so a
+        # host uv there passes preflight whatever PATH a test hands in. A shim
+        # ahead of it whose --version fails pins the missing-uv branch on any
+        # machine (write_executable would make a fake uv answer --version).
+        path = fake_bin / "uv"
+        path.write_text("#!/bin/sh\nexit 127\n")
+        path.chmod(0o755)
 
     @staticmethod
     def write_executable(path: Path, source: str):

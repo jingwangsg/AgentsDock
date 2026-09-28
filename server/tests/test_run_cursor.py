@@ -314,7 +314,9 @@ print(json.dumps({"type":"result","subtype":"success","session_id":"native-mcp",
         with patch.object(agent_server, "CROSS_CHAT_CAPABILITIES", {"fake": capability}), patch.object(
             agent_server, "execute_provider_tool", executor
         ):
-            events = await self._run_script(body)
+            # The server default mode (full_access) adds --force; the script
+            # asserts the MCP is admitted through the config overlay alone.
+            events = await self._run_script(body, session_patch={"cursor_permission_mode": "default"})
         terminal = [e for e in events if e.get("type") == "turn_finished"]
         self.assertEqual(len(terminal), 1, events)
         self.assertFalse(terminal[0]["is_error"], events)

@@ -3,12 +3,12 @@
     {
       "type": "snapshot",
       "server_identity": "peer_tls_fixture",
-      "hub_id": "hub_33a67e20a54ab413dd0b7c045f584cbf",
-      "stream_id": "391d459068264107be5dceb0b975a14d",
+      "hub_id": "hub_da63314b5fd26153a6f7fbbd7e1b169e",
+      "stream_id": "c0a4ab60856346eab9073fb9d4554a31",
       "cursor": {
         "version": 1,
-        "team_id": "team_451dbe98624bd98bac614452bf8980a6",
-        "recipient_server_id": "node_ee757d9765bbfce04398056322a68f61",
+        "team_id": "team_698d0964be07345338f34ae7f3c7014a",
+        "recipient_server_id": "node_5e515c1592990dbd2922f1ce0c8b39c2",
         "through_sequence": 0,
         "arrival_id": null,
         "reset": true
@@ -17,50 +17,50 @@
     {
       "type": "hint",
       "server_identity": "peer_tls_fixture",
-      "hub_id": "hub_33a67e20a54ab413dd0b7c045f584cbf",
-      "stream_id": "391d459068264107be5dceb0b975a14d",
+      "hub_id": "hub_da63314b5fd26153a6f7fbbd7e1b169e",
+      "stream_id": "c0a4ab60856346eab9073fb9d4554a31",
       "cursor": {
         "version": 1,
-        "team_id": "team_451dbe98624bd98bac614452bf8980a6",
-        "recipient_server_id": "node_ee757d9765bbfce04398056322a68f61",
+        "team_id": "team_698d0964be07345338f34ae7f3c7014a",
+        "recipient_server_id": "node_5e515c1592990dbd2922f1ce0c8b39c2",
         "through_sequence": 1,
-        "arrival_id": "tmsg_449e8fed978abf617231d700ad70e0a6",
+        "arrival_id": "tmsg_21cabf431af29f8321563d046b3c938c",
         "reset": false
       }
     },
     {
       "type": "hint",
       "server_identity": "peer_tls_fixture",
-      "hub_id": "hub_33a67e20a54ab413dd0b7c045f584cbf",
-      "stream_id": "391d459068264107be5dceb0b975a14d",
+      "hub_id": "hub_da63314b5fd26153a6f7fbbd7e1b169e",
+      "stream_id": "c0a4ab60856346eab9073fb9d4554a31",
       "cursor": {
         "version": 1,
-        "team_id": "team_451dbe98624bd98bac614452bf8980a6",
-        "recipient_server_id": "node_ee757d9765bbfce04398056322a68f61",
+        "team_id": "team_698d0964be07345338f34ae7f3c7014a",
+        "recipient_server_id": "node_5e515c1592990dbd2922f1ce0c8b39c2",
         "through_sequence": 2,
-        "arrival_id": "tmsg_f0beb0e3545a638f3192f510fa2a7c00",
+        "arrival_id": "tmsg_c0ea14901517201cdbd7db9c70e4f5c6",
         "reset": false
       }
     },
     {
       "type": "snapshot",
       "server_identity": "peer_tls_fixture",
-      "hub_id": "hub_33a67e20a54ab413dd0b7c045f584cbf",
-      "stream_id": "78185a838bd642b099c693df580b57d7",
+      "hub_id": "hub_da63314b5fd26153a6f7fbbd7e1b169e",
+      "stream_id": "fd011470f4fe431086c1eba2a569aee3",
       "cursor": {
         "version": 1,
-        "team_id": "team_451dbe98624bd98bac614452bf8980a6",
-        "recipient_server_id": "node_ee757d9765bbfce04398056322a68f61",
+        "team_id": "team_698d0964be07345338f34ae7f3c7014a",
+        "recipient_server_id": "node_5e515c1592990dbd2922f1ce0c8b39c2",
         "through_sequence": 5,
-        "arrival_id": "tmsg_f1a9f0567ee4d752addf4ff35174bcd4",
+        "arrival_id": "tmsg_d3d43a821fa51aba4683ceded3b53774",
         "reset": false
       }
     }
   ],
   "coverage": {
-    "arrival_id": "tmsg_449e8fed978abf617231d700ad70e0a6",
-    "recipient_server_id": "node_ee757d9765bbfce04398056322a68f61",
-    "team_id": "team_451dbe98624bd98bac614452bf8980a6",
+    "arrival_id": "tmsg_21cabf431af29f8321563d046b3c938c",
+    "recipient_server_id": "node_5e515c1592990dbd2922f1ce0c8b39c2",
+    "team_id": "team_698d0964be07345338f34ae7f3c7014a",
     "through_sequence": 1,
     "version": 1
   }

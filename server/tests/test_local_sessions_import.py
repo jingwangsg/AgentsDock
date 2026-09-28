@@ -471,8 +471,11 @@ class LocalSessionLabelsEndpointTests(unittest.IsolatedAsyncioTestCase):
                 agent_server, "CODEX_SESSIONS_ROOT", codex,
             ), patch.object(agent_server, "CODEX_SESSION_INDEX_PATH", root / "missing-index"), patch.object(
                 agent_server.STORE, "sessions", existing,
-            ):
-                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=agent_server.app), base_url="http://test") as client:
+            ), patch.object(agent_server, "AGENT_TOKEN", "label-test-token"):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=agent_server.app), base_url="http://test",
+                    headers={"x-agentsdock-token": "label-test-token"},
+                ) as client:
                     response = await client.get("/api/local-sessions")
             self.assertEqual(response.status_code, 200)
             self.assertEqual({(row["backend"], row["provider_session_id"]) for row in response.json()["sessions"]},

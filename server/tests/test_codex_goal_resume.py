@@ -203,6 +203,12 @@ class CodexGoalResumeTests(unittest.IsolatedAsyncioTestCase):
             "CODEX_INTERACTIVE_CONTROL_THREADS": set(),
             "CODEX_INTERACTIVE_CONTROL_THREAD_COUNTS": {},
             "CODEX_APP_SERVER_MANAGER": self.manager,
+            "CODEX_RETIRED_APP_SERVER_MANAGERS": [],
+            # The host's real ~/.codex/auth.json and codex binary would
+            # otherwise retire the fake (login-revision mismatch) and the
+            # drain would then dereference manager.client.
+            "refresh_codex_app_server_login": AsyncMock(),
+            "refresh_codex_app_server_binary": AsyncMock(),
             "CODEX_GOALS_ENABLED": True,
             "CODEX_GOALS_RECONFIGURING": False,
             "CODEX_TRANSPORT": agent_server.CODEX_TRANSPORT_APP_SERVER,

@@ -4375,7 +4375,9 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 submission = asyncio.create_task(
                     agent_server.submit_cross_chat_delivery(record)
                 )
-                await asyncio.wait_for(received_entered.wait(), timeout=1)
+                # 16 fsynced ledger commits precede this event (~26 ms
+                # unloaded); a 1 s hang guard is too tight under disk load.
+                await asyncio.wait_for(received_entered.wait(), timeout=10)
                 durable = await agent_server.CROSS_CHAT.get(record["id"])
                 self.assertEqual(durable["status"], "submitting")
                 self.assertNotIn("target", agent_server.CURRENT_TURNS)

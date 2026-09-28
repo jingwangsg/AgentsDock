@@ -1787,7 +1787,10 @@ class VendoredTeamHubParityTests(unittest.TestCase):
             "service.py": "449462013919687089c8a227fa5b83e65fc2c6fc601cd09952a51300ab81255f",
             "store.py": "c519e4d9c8a6a02dd630aa2035842df33f2574e44f7ae5a709d4bba92a42a3f4",
         }
-        entries = list(vendored.rglob("*"))
+        # Interpreter caches left by other local test runs are gitignored and
+        # never shipped; the packager rejects them on a real release tree.
+        entries = [path for path in vendored.rglob("*")
+                   if "__pycache__" not in path.relative_to(vendored).parts]
         for path in entries:
             self.assertFalse(path.is_symlink(), path)
             self.assertTrue(path.is_file() or path.is_dir(), path)

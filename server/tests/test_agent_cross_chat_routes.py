@@ -107,6 +107,14 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         agent_server.QUEUE_LOCK = asyncio.Lock()
 
     async def asyncTearDown(self) -> None:
+        # Deferred exchange-status wakes keep writing to this test's ledger
+        # after the body returns. Settle them before the store is swapped
+        # back (they would hit the real ledger) and before rmtree races a
+        # sqlite WAL rewrite in the temp dir.
+        wakes = tuple(agent_server.CROSS_CHAT_STATUS_WAKE_TASKS)
+        for task in wakes:
+            task.cancel()
+        await asyncio.gather(*wakes, return_exceptions=True)
         agent_server.CROSS_CHAT_CAPABILITIES.clear()
         agent_server.CROSS_CHAT = self.original["cross_chat"]
         agent_server.CROSS_CHAT_AUTHORITY_ROOT = self.original["authority_root"]

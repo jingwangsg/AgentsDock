@@ -22,6 +22,10 @@ class RuntimeDiagnosticTests(unittest.TestCase):
         self.native_models = self.enterContext(patch.object(
             agent_server, "discover_claude_native_models", return_value=([], "unavailable"),
         ))
+        # These tests drive the `codex debug models` fallback. Once another
+        # module's real binary probe has set CODEX_BINARY_IDENTITY, the host's
+        # durable picker copy would otherwise replace the payload under test.
+        self.enterContext(patch.object(agent_server, "codex_native_models", return_value=None))
         with agent_server.RUNTIME_DIAGNOSTICS_LOCK:
             agent_server.RUNTIME_DIAGNOSTICS.clear()
             agent_server.RUNTIME_DIAGNOSTIC_GENERATIONS.clear()

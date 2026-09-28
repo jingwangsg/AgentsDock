@@ -1644,6 +1644,14 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
                 agent_server,
                 "managed_server_update_blocker",
                 return_value=None,
+            ), patch.object(
+                # The host's real ~/.codex/auth.json would otherwise retire
+                # this AsyncMock and a real manager would take its place.
+                agent_server, "refresh_codex_app_server_login", AsyncMock(),
+            ), patch.object(
+                agent_server, "refresh_codex_app_server_binary", AsyncMock(),
+            ), patch.object(
+                agent_server, "CODEX_RETIRED_APP_SERVER_MANAGERS", [],
             ):
                 runtime = await agent_server.load_codex_runtime("chat")
                 released = "chat" not in agent_server.BUSY_SESSIONS
