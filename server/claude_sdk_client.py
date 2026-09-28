@@ -597,9 +597,12 @@ def default_claude_sdk_client_factory(options: Any) -> ClaudeSDKClientProtocol:
             key = None
             try:
                 key = native_catalog_key(executable, env)
-            except (OSError, ValueError):
-                pass  # Optional metadata must not block actual work.
+            except (OSError, ValueError) as exc:
+                # Optional metadata must not block actual work; the type alone
+                # says why the picker will stay on the fallback list.
+                logger.info("claude native model picker key unavailable: %s", type(exc).__name__)
             await super().connect(prompt)
+            logger.info("claude native model picker capture attempt key=%s", "yes" if key is not None else "no")
             if key is not None:
                 try:
                     # Pinned SDK get_server_info returns its cached initialize
