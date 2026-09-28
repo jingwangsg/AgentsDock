@@ -3,7 +3,7 @@ import { useLocale } from '../lib/i18n'
 import { legacyOutgoingDeliveryStatus, outgoingDeliveryStatus } from '../lib/cross-chat-delivery-status'
 import { timelineCount, timelineEventLabel, timelineStatusLabel } from '../lib/timeline-labels'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Check, ChevronRight, Clock3, Code2, Copy, FileText, History, LoaderCircle, MessageSquareShare, Pencil, Pin, RotateCcw, Siren, Sparkles, TerminalSquare, Wrench } from 'lucide-react'
+import { AlertTriangle, Bot, Check, ChevronRight, Clock3, Code2, Copy, FileText, History, LoaderCircle, MessageSquareShare, Pencil, Pin, RotateCcw, Siren, Sparkles, Square, TerminalSquare, Wrench, X } from 'lucide-react'
 import { compactToolOutputPreview } from '@shared/event-compaction'
 import { agentFileBelongsToSession } from '@shared/session-files'
 import { isImportedProviderInterruption } from '@shared/provider-origin'
@@ -17,6 +17,7 @@ import { useReasoningDisplay } from '../lib/reasoning-display'
 import { formatDuration, formatTime, titleCase } from '../lib/format'
 import { requirePinnedItemsScope } from '../lib/pinned-items'
 import { exactQueuedDeliverySkipAvailable } from '../lib/chat-references'
+import { isSubagentActive, subagentDisplayName, subagentLogText, subagentStatusLabel, subagentsForRun, type SubagentActivity, type SubagentStatus } from '../lib/subagents'
 import { useAppStore } from '../store/app-store'
 import { MarkdownContent } from './MarkdownContent'
 import { MediaGrid } from './MediaGrid'
@@ -374,6 +375,7 @@ function RunActivity({ item, sessionId, profileScope }: { item: ProgressItem; se
 }
 
 const EMPTY_COMMENTARY_IDS: string[] = []
+const EMPTY_SUBAGENTS: SubagentActivity[] = []
 
 function TraceDisclosure({
   events,
@@ -431,6 +433,12 @@ function TraceDisclosure({
     () => events.find(event => event.run_id?.trim())?.run_id?.trim() || null,
     [events]
   )
+  const runSubagents = useAppStore(state => {
+    const sessionEvents = state.snapshots[sessionId]?.events
+    return runActivityMode && runId && sessionEvents && (backend === 'claude' || backend === 'codex')
+      ? subagentsForRun(sessionEvents, backend, runId)
+      : EMPTY_SUBAGENTS
+  })
   const diffScope = JSON.stringify([sessionId, runId, resetKey, runActivity?.key])
   useEffect(() => setReasoningHistoryOpen(false), [diffScope])
   const [expandedDiffScope, setExpandedDiffScope] = useState<string | null>(() => open ? diffScope : null)
@@ -621,7 +629,7 @@ function TraceDisclosure({
     ? hasMore ? t('timeline.ui.loadMoreActivity') : t('timeline.ui.checkForNewerActivity')
     : t('timeline.ui.loadAvailableActivity')
   const activityHeader = runActivity
-    ? <RunActivityHeader item={runActivity} events={events} open={open} detailsId={detailsId} onToggle={toggleDetails} />
+    ? <RunActivityHeader item={runActivity} events={events} open={open} detailsId={detailsId} onToggle={toggleDetails} subagents={runSubagents} />
     : null
   return (
     <div className={`trace${runActivity ? ' run-activity' : ''}${nativeCodex ? ' codex-native-activity' : ''}${nativeClaude ? ' claude-native-activity' : ''} ${open ? 'open' : ''}`}>
@@ -666,17 +674,20 @@ function TraceDisclosure({
   )
 }
 
-function RunActivityHeader({ item, events, open, detailsId, onToggle }: { item: ProgressItem; events: Event[]; open: boolean; detailsId: string; onToggle: () => void }) {
+function RunActivityHeader({ item, events, open, detailsId, onToggle, subagents }: { item: ProgressItem; events: Event[]; open: boolean; detailsId: string; onToggle: () => void; subagents: SubagentActivity[] }) {
   useLocale()
   const live = item.active !== false && !item.stoppedAt
   const stopped = Boolean(item.stoppedAt)
+  const activeSubagents = subagents.filter(isSubagentActive)
+  // Codex collaborators can outlive their turn; their elapsed time keeps ticking.
+  const ticking = live || activeSubagents.length > 0
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    if (!live) return
+    if (!ticking) return
     setNow(Date.now())
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
-  }, [live])
+  }, [ticking])
   const duration = activityDuration(item, events, now)
   const compacting = live && item.lifecycle?.some(marker => marker.event.type === 'codex_compaction_started')
   const title = item.continues ? t('timeline.activity.progress') : stopped
@@ -684,19 +695,92 @@ function RunActivityHeader({ item, events, open, detailsId, onToggle }: { item: 
     : live
       ? compacting ? t('timeline.ui.compactingContext') : t('timeline.activity.workingFor', { duration })
       : t('timeline.activity.workedFor', { duration })
+  const rows = subagents.length ? <SubagentRows agents={subagents} now={now} runLive={live} /> : null
   if (live) {
-    return <div className="run-activity-summary">
-      <span className="activity-ring" aria-hidden="true" />
-      <strong>{title}</strong>
-    </div>
+    const running = activeSubagents.length
+      ? ` · ${timelineCount('subagentsRunning', activeSubagents.length)} (${activeSubagents.slice(0, 2).map(subagentDisplayName).join(', ')})`
+      : ''
+    return <>
+      <div className="run-activity-summary">
+        <span className="activity-ring" aria-hidden="true" />
+        <strong>{title}{running}</strong>
+      </div>
+      {rows}
+    </>
   }
-  return <button
-    type="button"
-    className="run-activity-summary"
-    aria-expanded={open}
-    aria-controls={detailsId}
-    onClick={onToggle}
-  ><ChevronRight size={14} aria-hidden="true" /><strong>{title}</strong></button>
+  return <>
+    <button
+      type="button"
+      className="run-activity-summary"
+      aria-expanded={open}
+      aria-controls={detailsId}
+      onClick={onToggle}
+    ><ChevronRight size={14} aria-hidden="true" /><strong>{title}</strong></button>
+    {rows}
+  </>
+}
+
+const SUBAGENT_SUMMARY_ORDER: SubagentStatus[] = ['running', 'completed', 'failed', 'stopped', 'killed', 'tracking_lost']
+
+function SubagentRows({ agents, now, runLive }: { agents: SubagentActivity[]; now: number; runLive: boolean }) {
+  const anyActive = agents.some(isSubagentActive)
+  const [open, setOpen] = useState(anyActive)
+  // A finished child stays listed while its turn continues, as in the CLI;
+  // only the turn's own end folds the list into the summary line.
+  useEffect(() => {
+    if (anyActive) setOpen(true)
+    else if (!runLive) setOpen(false)
+  }, [anyActive, runLive])
+  const counts = new Map<SubagentStatus, number>()
+  for (const agent of agents) {
+    const status = isSubagentActive(agent) ? 'running' : agent.status
+    counts.set(status, (counts.get(status) ?? 0) + 1)
+  }
+  const summary = [
+    timelineCount('subagents', agents.length),
+    ...SUBAGENT_SUMMARY_ORDER.filter(status => counts.has(status))
+      .map(status => t('timeline.subagents.statusCount', { count: counts.get(status)!, status: subagentStatusLabel(status) }))
+  ].join(' · ')
+  return <div className={`subagent-rows${open ? ' open' : ''}`}>
+    <button type="button" className="subagent-rows-summary" aria-expanded={open} onClick={() => setOpen(value => !value)}>
+      <ChevronRight size={12} aria-hidden="true" /><Bot size={12} aria-hidden="true" /><span>{summary}</span>
+    </button>
+    {open && <ul className="subagent-rows-list" aria-label={t('timeline.subagents.title')}>
+      {agents.map(agent => <SubagentRow key={agent.key} agent={agent} now={now} />)}
+    </ul>}
+  </div>
+}
+
+const SUBAGENT_LOG_PREVIEW_LINES = 20
+
+function SubagentRow({ agent, now }: { agent: SubagentActivity; now: number }) {
+  const [logOpen, setLogOpen] = useState(false)
+  const [showAll, setShowAll] = useState(false)
+  const active = isSubagentActive(agent)
+  const start = Date.parse(agent.startedAt)
+  const end = active ? now : Date.parse(agent.updatedAt)
+  const elapsed = formatDuration(Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) / 1000 : 0)
+  const detail = active ? agent.latestActivity : agent.summary || agent.latestActivity
+  const logLines = logOpen ? subagentLogText(agent).split('\n') : []
+  const hiddenLines = showAll ? 0 : Math.max(0, logLines.length - SUBAGENT_LOG_PREVIEW_LINES)
+  return <li className={`subagent-row ${agent.status}${logOpen ? ' open' : ''}`}>
+    <button type="button" className="subagent-row-toggle" aria-expanded={logOpen} onClick={() => { setLogOpen(value => !value); setShowAll(false) }}>
+      <span className="subagent-row-status" title={subagentStatusLabel(agent.status)}>
+        {active ? <span className="activity-ring" aria-hidden="true" />
+          : agent.status === 'completed' ? <Check size={12} aria-hidden="true" />
+            : agent.status === 'failed' ? <X size={12} aria-hidden="true" />
+              : <Square size={10} aria-hidden="true" />}
+      </span>
+      <strong>{subagentDisplayName(agent)}</strong>
+      {agent.kind && <small className="subagent-row-kind">{agent.kind}</small>}
+      <span className="subagent-row-elapsed">{elapsed}</span>
+      {detail && <span className="subagent-row-detail">{detail}</span>}
+    </button>
+    {logOpen && <>
+      {hiddenLines > 0 && <button type="button" className="subagent-row-log-more" onClick={() => setShowAll(true)}>{t('timeline.subagents.showAllLog', { count: logLines.length })}</button>}
+      <pre className="subagent-row-log">{logLines.slice(hiddenLines).join('\n')}</pre>
+    </>}
+  </li>
 }
 
 function activityDuration(item: ProgressItem | undefined, events: Event[], now: number): string {

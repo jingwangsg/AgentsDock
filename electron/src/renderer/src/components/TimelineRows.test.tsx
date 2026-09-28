@@ -4260,6 +4260,112 @@ describe('timeline pin state', () => {
 
     expect(screen.getByText('current.txt')).toBeInTheDocument()
   })
+
+  describe('run subagent rows', () => {
+    const session = { id: 'chat-1', title: 'Chat', backend: 'codex' as const }
+    const commentary: Event = {
+      id: 'delegating', session_id: 'chat-1', run_id: 'run-1', backend: 'codex', seq: 1, type: 'reasoning_summary',
+      ts: '2026-07-10T14:29:00Z', phase: 'commentary', text: 'Delegating the review.'
+    }
+    const subagent = (seq: number, id: string, name: string, status: string, fields: Partial<Event> = {}): Event => ({
+      id: `subagent-${id}`, seq, session_id: 'chat-1', run_id: 'run-1', backend: 'codex', type: 'subagent_state',
+      ts: '2026-07-10T14:29:30Z', subagent_id: id, subagent_name: name, subagent_kind: 'collaborator',
+      subagent_status: status, subagent_started_at: `2026-07-10T14:29:0${seq}Z`, ...fields
+    })
+    const seed = (events: Event[]) => useAppStore.setState({
+      sessions: [session],
+      snapshots: { 'chat-1': { session, events, queuedTurns: [], files: [], hasMoreEvents: false, eventsTotal: events.length, filesTotal: 0, cachedAt: 1 } }
+    })
+    const live: ProgressItem = {
+      kind: 'progress', id: 'turn:run-1:activity', key: 'turn:run-1:activity', seq: 1,
+      events: [commentary], active: true, startedAt: commentary.ts
+    }
+    const finished: ProgressItem = { ...live, active: false, finishedAt: '2026-07-10T14:35:00Z' }
+    const row = (item: ProgressItem) => <TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />
+
+    it('lists running subagents with a spinner and ticking elapsed time and names them in the live strip', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-07-10T14:30:00Z'))
+      try {
+        seed([
+          commentary,
+          subagent(2, 'child-1', 'Reviewer', 'running', { subagent_activity: 'Reading the diff' }),
+          subagent(3, 'child-2', 'Tester', 'running'),
+          subagent(4, 'child-3', 'Deployer', 'starting')
+        ])
+        const { container } = render(row(live))
+        expect(container.querySelector('.run-activity-summary'))
+          .toHaveTextContent('Working for 1m 0s · 3 subagents running (Reviewer, Tester)')
+        const rows = container.querySelectorAll('.subagent-row')
+        expect(rows).toHaveLength(3)
+        expect(rows[0]).toHaveClass('running')
+        expect(rows[0].querySelector('.activity-ring')).not.toBeNull()
+        expect(within(rows[0] as HTMLElement).getByText('Reviewer')).toBeInTheDocument()
+        expect(within(rows[0] as HTMLElement).getByText('collaborator')).toBeInTheDocument()
+        expect(within(rows[0] as HTMLElement).getByText('Reading the diff')).toBeInTheDocument()
+        expect(rows[0].querySelector('.subagent-row-elapsed')).toHaveTextContent('58s')
+        act(() => { vi.advanceTimersByTime(3000) })
+        expect(rows[0].querySelector('.subagent-row-elapsed')).toHaveTextContent('1m 1s')
+        expect(container.querySelector('.run-activity-summary')).toHaveTextContent('Working for 1m 3s')
+      } finally {
+        cleanup()
+        vi.useRealTimers()
+      }
+    })
+
+    it('folds a finished turn into one summary line that expands to status rows', () => {
+      seed([
+        commentary,
+        subagent(2, 'child-1', 'Reviewer', 'completed', { subagent_summary: 'No blocking issues.' }),
+        subagent(3, 'child-2', 'Tester', 'completed'),
+        subagent(4, 'child-3', 'Deployer', 'failed')
+      ])
+      const { container } = render(row(finished))
+      expect(container.querySelector('.run-activity-summary')).toHaveTextContent('Worked for 6m 0s')
+      expect(container.querySelector('.run-activity-summary')).not.toHaveTextContent('subagents running')
+      const summary = screen.getByRole('button', { name: '3 subagents · 2 completed · 1 failed' })
+      expect(summary).toHaveAttribute('aria-expanded', 'false')
+      expect(container.querySelector('.subagent-row')).toBeNull()
+      fireEvent.click(summary)
+      const rows = container.querySelectorAll('.subagent-row')
+      expect(rows).toHaveLength(3)
+      expect(rows[0]).toHaveClass('completed')
+      expect(rows[0].querySelector('.activity-ring')).toBeNull()
+      expect(within(rows[0] as HTMLElement).getByText('No blocking issues.')).toBeInTheDocument()
+      expect(rows[0].querySelector('.subagent-row-elapsed')).toHaveTextContent('28s')
+      expect(rows[2]).toHaveClass('failed')
+    })
+
+    it('toggles an inline log capped to the last 20 lines with a show-all control', () => {
+      const log = Array.from({ length: 30 }, (_, index) => ({ ts: `2026-07-10T14:29:${String(index).padStart(2, '0')}Z`, text: `step ${index + 1}` }))
+      seed([commentary, subagent(2, 'child-1', 'Reviewer', 'completed', { subagent_log: log })])
+      const { container } = render(row(finished))
+      fireEvent.click(screen.getByRole('button', { name: '1 subagent · 1 completed' }))
+      const toggle = container.querySelector('.subagent-row-toggle') as HTMLElement
+      expect(container.querySelector('.subagent-row-log')).toBeNull()
+      fireEvent.click(toggle)
+      expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      const capped = container.querySelector('.subagent-row-log')!.textContent!.split('\n')
+      expect(capped).toHaveLength(20)
+      expect(capped.at(-1)).toContain('step 30')
+      expect(capped.some(line => /step 5$/.test(line))).toBe(false)
+      fireEvent.click(screen.getByRole('button', { name: /^Show all \d+ lines$/ }))
+      const full = container.querySelector('.subagent-row-log')!.textContent!.split('\n')
+      expect(full.length).toBeGreaterThan(30)
+      expect(full[0]).toBe('Reviewer')
+      expect(full.some(line => /step 1$/.test(line))).toBe(true)
+      expect(screen.queryByRole('button', { name: /^Show all/ })).toBeNull()
+      fireEvent.click(toggle)
+      expect(container.querySelector('.subagent-row-log')).toBeNull()
+    })
+
+    it('renders no subagent block for a run without children', () => {
+      seed([commentary])
+      const { container } = render(row(live))
+      expect(container.querySelector('.subagent-rows')).toBeNull()
+      expect(container.querySelector('.run-activity-summary')).not.toHaveTextContent('subagent')
+    })
+  })
 })
 
 function exchangeFixture(): CrossChatExchange {

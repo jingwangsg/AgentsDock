@@ -4406,6 +4406,60 @@ describe('subagent lifecycle hydration', () => {
     expect(cache.snapshot('profile:a', session.id)?.events).toEqual([agent])
   })
 
+  it('polls the subagent snapshot every 5 s only while the open chat has a live run', async () => {
+    const session: Session = { id: 'chat', title: 'Chat', backend: 'codex' }
+    const child: Event = {
+      seq: 5, id: 'subagent:chat:child-1', session_id: session.id, run_id: 'run-1',
+      type: 'subagent_state', backend: 'codex', ts: '2026-09-20T12:00:05Z',
+      subagent_id: 'child-1', subagent_name: 'Reviewer', subagent_status: 'running'
+    }
+    let children: Event[] = []
+    let onEvent: (event: Event) => void = () => { throw new Error('Timeline stream did not start.') }
+    const client = fakeClient({
+      sessionPage: async () => ({ session, events: [], has_more: false, latest_seq: 4 }),
+      subagents: async () => ({
+        session_id: session.id, subagents: children, count: children.length,
+        active_count: children.length, latest_seq: children.at(-1)?.seq ?? 0
+      }),
+      stream: (_sessionId, _after, receiveEvent) => {
+        onEvent = receiveEvent
+        return vi.fn()
+      }
+    })
+    const { service, cache } = createProfileService({ 'http://a.test:7850': [client] })
+    Object.assign(service, { validatedGeneration: 1 })
+    await service.openTimeline(session.id, true)
+    await settleBackgroundWork()
+    expect(client.subagents).toHaveBeenCalledOnce()
+
+    vi.useFakeTimers()
+    try {
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(client.subagents).toHaveBeenCalledOnce()
+
+      onEvent({ seq: 4, id: 'start', session_id: session.id, run_id: 'run-1', type: 'turn_started', ts: '2026-09-20T12:00:04Z' })
+      children = [child]
+      await vi.advanceTimersByTimeAsync(4_999)
+      expect(client.subagents).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(client.subagents).toHaveBeenCalledTimes(2)
+      expect(cache.snapshot('profile:a', session.id)?.events).toContainEqual(child)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(client.subagents).toHaveBeenCalledTimes(3)
+
+      // A stalled request is not stacked; later ticks wait for it.
+      client.subagents.mockImplementation(() => new Promise<SubagentSnapshot>(() => {}))
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(client.subagents).toHaveBeenCalledTimes(4)
+
+      onEvent({ seq: 9, id: 'finish', session_id: session.id, run_id: 'run-1', type: 'turn_finished', ts: '2026-09-20T12:00:09Z' })
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(client.subagents).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('deduplicates concurrent snapshot requests and tolerates an older server', async () => {
     const response = deferred<SubagentSnapshot>()
     const client = fakeClient({ subagents: async () => response.promise })

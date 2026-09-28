@@ -471,7 +471,10 @@ export function buildSections(sessions: Session[], folderOrder: string[], query:
     const folder = session.folder?.trim() || 'General'
     byFolder.set(folder, [...(byFolder.get(folder) ?? []), session])
   }
-  const folders = orderedFolders(query.trim() ? [...byFolder.keys()] : [...new Set([...folderOrder, ...byFolder.keys()])], folderOrder)
+  // General is the default folder: it stays listed even when every chat in it
+  // is archived or pinned, otherwise "New folder → General" says it already
+  // exists while nothing on screen shows it.
+  const folders = orderedFolders(query.trim() ? [...byFolder.keys()] : [...new Set(['General', ...folderOrder, ...byFolder.keys()])], folderOrder)
   return [
     ...(pinned.length ? [{ id: 'pinned', title: t("ui.Sidebar.buildSections.pinned_f20c879"), sessions: pinned, kind: 'pinned' as const }] : []),
     ...folders.map(folder => ({ id: `folder:${folder}`, title: folder, sessions: byFolder.get(folder) ?? [], kind: 'folder' as const })),

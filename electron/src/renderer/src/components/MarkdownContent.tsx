@@ -1,7 +1,7 @@
 // Localized display strings use semantic catalog keys.
 import { t } from '@shared/i18n'
 import { useLocale, type Locale } from '../lib/i18n'
-import { createContext, memo, useCallback, useContext, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import ReactMarkdown, { defaultUrlTransform, type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -10,7 +10,7 @@ import remarkCjkFriendly from 'remark-cjk-friendly'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
-import { Check, ChevronDown, ChevronUp, Copy, FileCode2, Maximize2, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, Code, Copy, FileCode2, Maximize2, Workflow, X } from 'lucide-react'
 import { isEditorTextFile } from '@shared/file-content-type'
 import { internalWorkspaceLinkURL } from '@shared/workspace-link-url'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
@@ -163,7 +163,21 @@ export const MarkdownContent = memo(function MarkdownContent({
         >{children}</button>
         : <code className="inline-code" {...props}>{children}</code>
     },
-    pre: ({ children }) => <CodeBlock fullSource={restoredNormalized}>{children}</CodeBlock>,
+    pre: ({ children, node }) => {
+      const code = node?.children[0]
+      const classes = code?.type === 'element' ? code.properties.className : undefined
+      if (!Array.isArray(classes) || !classes.includes('language-mermaid')) {
+        return <CodeBlock fullSource={restoredNormalized}>{children}</CodeBlock>
+      }
+      // A fenced token ends on its closing fence only once that fence has
+      // arrived; before that the block is still streaming in.
+      const start = node?.position?.start.offset
+      const end = node?.position?.end.offset
+      const closed = start === undefined || end === undefined
+        || /^[ \t]*(?:`{3,}|~{3,})[ \t]*$/.test(shown.slice(start, end).split('\n').at(-1) ?? '')
+      const visibleText = textFromNode(children).replace(/\n$/, '')
+      return <MermaidBlock source={fullCodeForVisible(restoredNormalized, visibleText)} closed={closed}>{children}</MermaidBlock>
+    },
     span: function MarkdownSpan({ className, children, ...props }) {
       const uiLocale = useContext(MarkdownLocaleContext)
       const referenceIndex = inlineChatReferenceIndex(className)
@@ -463,10 +477,18 @@ function inlineChatReferenceIndex(className?: string): number | null {
 }
 
 function CodeBlock({ children, fullSource }: { children: ReactNode; fullSource: string }) {
+  const visibleText = textFromNode(children).replace(/\n$/, '')
+  return (
+    <div className="code-block">
+      <div className="code-toolbar"><span>code</span><CopyCodeButton text={fullCodeForVisible(fullSource, visibleText)} /></div>
+      <pre>{children}</pre>
+    </div>
+  )
+}
+
+function CopyCodeButton({ text }: { text: string }) {
   const uiLocale = useContext(MarkdownLocaleContext)
   const [copied, setCopied] = useState(false)
-  const visibleText = textFromNode(children).replace(/\n$/, '')
-  const text = fullCodeForVisible(fullSource, visibleText)
   const copy = async () => {
     try {
       await window.agentsDock.native.writeClipboard(normalizeShellContinuations(text))
@@ -476,10 +498,76 @@ function CodeBlock({ children, fullSource }: { children: ReactNode; fullSource: 
       useAppStore.getState().setError(error instanceof Error ? error.message : String(error))
     }
   }
+  return <button type="button" title={t("ui.MarkdownContent.CodeBlock.copy_full_code_e0bb5a9", undefined, uiLocale)} onClick={() => void copy()}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
+}
+
+let mermaidRenderSequence = 0
+// mermaid renders through global config and shared DOM scratch space, so
+// diagrams that mount together (one message, several fences) take turns.
+let mermaidRenderQueue: Promise<void> = Promise.resolve()
+
+function subscribeDocumentTheme(onChange: () => void): () => void {
+  const observer = new MutationObserver(onChange)
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+  return () => observer.disconnect()
+}
+
+function documentTheme(): 'light' | 'dark' {
+  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
+}
+
+function MermaidBlock({ children, source, closed }: { children: ReactNode; source: string; closed: boolean }) {
+  const uiLocale = useContext(MarkdownLocaleContext)
+  const theme = useSyncExternalStore(subscribeDocumentTheme, documentTheme)
+  const [showSource, setShowSource] = useState(false)
+  const [rendered, setRendered] = useState<{ svg?: string; error?: string } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const run = () => {
+      mermaidRenderQueue = mermaidRenderQueue.then(async () => {
+        if (cancelled) return
+        try {
+          const { default: mermaid } = await import('mermaid')
+          mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme: theme === 'light' ? 'default' : 'dark' })
+          // A fresh id per call: mermaid deletes any element carrying the
+          // render id, which would include the SVG already on screen.
+          const { svg } = await mermaid.render(`mermaid-${++mermaidRenderSequence}`, source)
+          if (!cancelled) setRendered({ svg })
+        } catch (error) {
+          if (!cancelled) setRendered({ error: error instanceof Error ? error.message : String(error) })
+        }
+      })
+    }
+    // An open fence is still streaming; parse it only once the text has been idle.
+    const timer = window.setTimeout(run, closed ? 0 : 400)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [closed, source, theme])
+  const svg = showSource ? undefined : rendered?.svg
   return (
-    <div className="code-block">
-      <div className="code-toolbar"><span>code</span><button type="button" title={t("ui.MarkdownContent.CodeBlock.copy_full_code_e0bb5a9", undefined, uiLocale)} onClick={() => void copy()}>{copied ? <Check size={13} /> : <Copy size={13} />}</button></div>
-      <pre>{children}</pre>
+    <div className="code-block mermaid-block">
+      <div className="code-toolbar">
+        <span>mermaid</span>
+        <span className="code-toolbar-actions">
+          {rendered?.svg !== undefined && (
+            <button
+              type="button"
+              title={t(showSource ? 'ui.MarkdownContent.MermaidBlock.show_diagram' : 'ui.MarkdownContent.MermaidBlock.show_source', undefined, uiLocale)}
+              aria-pressed={showSource}
+              onClick={() => setShowSource(value => !value)}
+            >{showSource ? <Workflow size={13} /> : <Code size={13} />}</button>
+          )}
+          <CopyCodeButton text={source} />
+        </span>
+      </div>
+      {svg !== undefined
+        ? <div className="mermaid-diagram" role="img" aria-label={t('ui.MarkdownContent.MermaidBlock.diagram', undefined, uiLocale)} dangerouslySetInnerHTML={{ __html: svg }} />
+        : <pre>{children}</pre>}
+      {rendered?.error !== undefined && (
+        <p className="mermaid-error">
+          <span>{t('ui.MarkdownContent.MermaidBlock.could_not_render', undefined, uiLocale)}</span>
+          <code>{rendered.error}</code>
+        </p>
+      )}
     </div>
   )
 }

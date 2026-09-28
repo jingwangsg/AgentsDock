@@ -1,5 +1,7 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from '../shared/provider-usage'
 import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, shell } from 'electron'
+import { macAppIsAdhocSigned, postAppleScriptNotification, primeMacSignatureProbe } from './notify-fallback'
+import { rememberedFolderOrder } from '../shared/folders'
 import { applyOpenCodeSessionEvent } from '../shared/opencode'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { open, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -231,6 +233,7 @@ const SEMANTIC_TIMELINE_CAPABILITY_CACHE_KEY = 'semanticTimelineCapability:v1'
 const RUNTIME_CATALOG_RETRY_MS = 30_000
 const RUNTIME_CATALOG_REFRESH_MS = 15 * 60_000
 const EVENT_CACHE_FLUSH_MS = 50
+const SUBAGENT_POLL_INTERVAL_MS = 5_000
 // Live events carry foreground chat changes. This is only a reconciliation
 // sweep, so do not parse and publish every session in a large workspace every
 // five seconds or treat a normal typing pause as idle time.
@@ -424,6 +427,7 @@ export class AppService {
   private timelineLeaseSequence = 0
   private timelineReconcileInFlight = new Set<string>()
   private subagentSnapshotInFlight = new Map<string, Promise<SubagentSnapshot | null>>()
+  private subagentPollTimers = new Map<string, ReturnType<typeof setInterval>>()
   private healthFailureCount = 0
   private readonly activityHealth = new ActivityHealthProjection()
   private readonly healthActivityRequests = new WeakMap<Health, ActivityHealthRequest>()
@@ -607,6 +611,8 @@ export class AppService {
   }
 
   start(): void {
+    // Only the packaged app can be ad-hoc signed; dev and tests run Apple-signed Electron.
+    if (app.isPackaged) primeMacSignatureProbe(app.getPath('exe'))
     if (this.running) return
     const adopted = this.adoptLocalHubToken()
     if (!this.clientAvailable || (adopted && this.hubProfile()?.id === this.activeProfileId)) this.activateProfile(this.activeProfileId, false, true)
@@ -3362,6 +3368,7 @@ export class AppService {
     subscription.connected = false
     subscription.initializing = false
     previousStop?.()
+    this.stopSubagentPolling(sessionId)
     const stop = scope.client.stream(sessionId, after, event => {
       if (!this.isCurrentTimeline(scope, sessionId, lease)) return
       const subagentState = this.subagentProjector.project(event)
@@ -3378,6 +3385,9 @@ export class AppService {
       this.emitAgentEvent(scope, event)
       this.enqueueEventCache(scope, event)
       if (JOB_REFRESH_EVENT_TYPES.has(event.type) && !isImportedProviderControlMetadata(event)) void this.refreshJobs(scope)
+      if (event.type === 'turn_started' || event.type === 'turn_finished' || event.type === 'turn_stopped') {
+        this.syncSubagentPolling(scope, sessionId, lease)
+      }
     }, (connected, error) => {
       if (!this.isCurrentTimeline(scope, sessionId, lease)) return
       const current = this.timelineSubscriptions.get(sessionId)
@@ -3411,6 +3421,9 @@ export class AppService {
     const current = this.timelineSubscriptions.get(sessionId)
     if (current?.lease === lease) current.stop = stop
     else stop()
+    // A turn_started that predates `after` is never re-streamed; health is the
+    // only signal that this reconnected chat is mid-run.
+    this.syncSubagentPolling(scope, sessionId, lease)
   }
 
   unsubscribeTimeline(sessionId: string): void {
@@ -3422,6 +3435,7 @@ export class AppService {
     const subscription = this.timelineSubscriptions.get(sessionId)
     if (!subscription) return false
     this.timelineSubscriptions.delete(sessionId)
+    this.stopSubagentPolling(sessionId)
     subscription.stop?.()
     return true
   }
@@ -3429,6 +3443,7 @@ export class AppService {
   private closeAllTimelineSubscriptions(): void {
     const subscriptions = [...this.timelineSubscriptions.values()]
     this.timelineSubscriptions.clear()
+    for (const sessionId of [...this.subagentPollTimers.keys()]) this.stopSubagentPolling(sessionId)
     let firstError: unknown
     for (const subscription of subscriptions) {
       try { subscription.stop?.() }
@@ -5027,6 +5042,15 @@ export class AppService {
       serverIdentity: profile.serverIdentity ?? null,
       sessionId: payload.sessionId
     }
+    if (macAppIsAdhocSigned()) {
+      // Ad-hoc build: Notification Center silently drops our requests (see notify-fallback.ts).
+      postAppleScriptNotification(payload.title, payload.body, error => appLog('notify', error ? 'osascript failed' : 'posted via osascript', { sessionId: payload.sessionId, error: error?.message ?? null }))
+      return
+    }
+    this.postNativeNotification(payload, route, emergencyAlertId)
+  }
+
+  private postNativeNotification(payload: ProfileNotificationPayload, route: ProfileNotificationRoute, emergencyAlertId: string | null): void {
     const notification = new Notification({ title: payload.title, body: payload.body, silent: false })
     notification.on('click', () => {
       const window = this.focusMainWindow()
@@ -5038,6 +5062,15 @@ export class AppService {
     notification.on('failed', (_event, error) => appLog('notify', 'failed', { sessionId: payload.sessionId, error }))
     notification.show()
     appLog('notify', 'posted', { sessionId: payload.sessionId, title: payload.title, emergency: Boolean(emergencyAlertId) })
+  }
+
+  /** Folders survive their last chat being archived or deleted; see shared/folders.ts. */
+  private rememberSessionFolders(namespace: string): string[] {
+    let stored: string[] = []
+    try { stored = this.cache.preference(namespace, 'folderOrder', [] as string[]) } catch { stored = [] }
+    const remembered = rememberedFolderOrder(stored, this.sessions)
+    if (remembered.length !== stored.length) { try { this.cache.putPreference(namespace, 'folderOrder', remembered) } catch { /* cache unavailable: served from memory this run */ } }
+    return remembered
   }
 
   private notificationRouteIsCurrent(route: ProfileNotificationRoute): boolean {
@@ -5888,6 +5921,43 @@ export class AppService {
     })
   }
 
+  /**
+   * Children that started before a reconnect (Claude) and server-side
+   * reconciliation (Codex) reach the renderer only through the snapshot
+   * endpoint, so poll it while the open chat's run is live. The projector's
+   * ordering guard keeps a late snapshot from regressing streamed state.
+   */
+  private syncSubagentPolling(scope: ConnectionScope, sessionId: string, lease: number): void {
+    if (!this.sessionRunActive(sessionId)) {
+      this.stopSubagentPolling(sessionId)
+      return
+    }
+    if (this.subagentPollTimers.has(sessionId)) return
+    this.subagentPollTimers.set(sessionId, setInterval(() => {
+      if (!this.isCurrentTimeline(scope, sessionId, lease) || !this.sessionRunActive(sessionId)) {
+        this.stopSubagentPolling(sessionId)
+        return
+      }
+      // One request at a time; a slow server skips ticks instead of stacking.
+      if (this.subagentSnapshotInFlight.has(`${scope.generation}:${sessionId}`)) return
+      void this.refreshSubagentSnapshot(scope, sessionId, lease).catch(error => {
+        appLog('timeline', 'subagent snapshot poll failed', { sessionId, error: errorText(error) })
+      })
+    }, SUBAGENT_POLL_INTERVAL_MS))
+  }
+
+  private stopSubagentPolling(sessionId: string): void {
+    const timer = this.subagentPollTimers.get(sessionId)
+    if (!timer) return
+    clearInterval(timer)
+    this.subagentPollTimers.delete(sessionId)
+  }
+
+  private sessionRunActive(sessionId: string): boolean {
+    return Boolean(this.activityHealth.runId(sessionId))
+      || (this.health?.active ?? this.health?.active_sessions ?? []).includes(sessionId)
+  }
+
   private async refreshTimelineFiles(scope: ConnectionScope, sessionId: string, force = false): Promise<void> {
     if (!this.isValidatedScope(scope)) return
     const key = `${scope.generation}:${sessionId}`
@@ -6545,7 +6615,7 @@ export class AppService {
       jobs: this.jobs,
       runtimeCatalog: this.runtimeCatalog,
       selectedSessionId: this.focusedSessionId,
-      folderOrder: resetPending ? [] : cacheValue(() => this.cache.preference(scope.namespace, 'folderOrder', [] as string[]), []),
+      folderOrder: resetPending ? [] : this.rememberSessionFolders(scope.namespace),
       collapsedFolders: resetPending ? [] : cacheValue(() => this.cache.preference(scope.namespace, 'collapsedFolders', [] as string[]), []),
       archivedCollapsed: resetPending ? false : cacheValue(() => this.cache.preference(scope.namespace, 'archivedCollapsed', false), false),
       inspectorVisible: resetPending ? false : cacheValue(() => this.cache.preference(scope.namespace, 'inspectorVisible', false), false),

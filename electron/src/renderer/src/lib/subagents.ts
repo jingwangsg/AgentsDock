@@ -314,6 +314,36 @@ export function subagentsFromEvents(events: Event[], ownerBackend?: 'claude' | '
   })
 }
 
+const EMPTY_SUBAGENTS: SubagentActivity[] = []
+const runViewCache = new WeakMap<Event[], {
+  backend: 'claude' | 'codex'
+  locale: string
+  byRun: Map<string, SubagentActivity[]>
+}>()
+
+/**
+ * Per-run view over one store events array. Every turn on screen subscribes to
+ * this, so parse once per array and hand runs without children one shared
+ * empty array; their selector output stays identical and they never re-render.
+ */
+export function subagentsForRun(events: Event[], ownerBackend: 'claude' | 'codex', runId: string): SubagentActivity[] {
+  const locale = getLocale()
+  let entry = runViewCache.get(events)
+  if (!entry || entry.backend !== ownerBackend || entry.locale !== locale) {
+    const byRun = new Map<string, SubagentActivity[]>()
+    for (const agent of subagentsFromEvents(events, ownerBackend)) {
+      const run = byRun.get(agent.runId)
+      if (run) run.push(agent)
+      else byRun.set(agent.runId, [agent])
+    }
+    // Spawn order, like the CLI's Task rows; the session-wide list is newest-first.
+    for (const run of byRun.values()) run.sort((a, b) => Date.parse(a.startedAt || '0') - Date.parse(b.startedAt || '0'))
+    entry = { backend: ownerBackend, locale, byRun }
+    runViewCache.set(events, entry)
+  }
+  return entry.byRun.get(runId) ?? EMPTY_SUBAGENTS
+}
+
 export function isSubagentActive(agent: SubagentActivity): boolean {
   return ACTIVE_STATUSES.has(agent.status)
 }

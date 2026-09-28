@@ -17,6 +17,7 @@ import type { AppUpdateStatus } from '@shared/types'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
 import { ChatHeader } from './components/ChatHeader'
 import { ChatPane } from './components/ChatPane'
+import { ChatOutputsPanel } from './components/ChatOutputsPanel'
 import { ChatSplitView } from './components/ChatSplitView'
 import { CodeReview } from './components/CodeReview'
 import { ClaudeInteractionShelf } from './components/ClaudeInteractionShelf'
@@ -174,6 +175,8 @@ export function App() {
   const splitWorkspaceOverlayRef = useRef<HTMLDivElement | null>(null)
   const [splitWorkspaceTarget, setSplitWorkspaceTarget] = useState<SplitWorkspaceTarget | null>(null)
   const [canvasTarget, setCanvasTarget] = useState<CanvasTarget | null>(null)
+  // Single-conversation layout only; split panes own their toggle inside ChatPane.
+  const [outputsOpen, setOutputsOpen] = useState(false)
   const [slowBoot, setSlowBoot] = useState(false)
   const [retryingStorage, setRetryingStorage] = useState(false)
   useEffect(() => {
@@ -830,6 +833,7 @@ export function App() {
           : <Composer key={`composer:${selectedRenderKey}`} dropActive={fileDropActive} />}
       </div>
     </>}
+    {outputsOpen && selectedSession && <ChatOutputsPanel key={`outputs:${selectedSession.id}`} sessionId={selectedSession.id} onClose={() => setOutputsOpen(false)} />}
   </div>
 
   const singleConversation = <>
@@ -840,6 +844,8 @@ export function App() {
       terminalOpen={terminalOpen}
       onSidebarToggle={toggleSidebar}
       onTerminalToggle={selectedSession?.archived ? undefined : toggleTerminal}
+      outputsOpen={outputsOpen}
+      onOutputsToggle={selectedSession ? () => setOutputsOpen(open => !open) : undefined}
       onOpenSplit={sessionId => void useAppStore.getState().openSessionInSplit(sessionId)}
     />
     {selectedSession

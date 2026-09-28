@@ -8,6 +8,15 @@ describe('gesture reorder activation', () => {
   })
 })
 
+describe('buildSections folders', () => {
+  it('keeps General and remembered folders listed when they hold no visible chat', () => {
+    const archived = { id: 's1', title: 'Old', folder: 'Work', archived: true } as unknown as Session
+    const pinned = { id: 's2', title: 'Pin', folder: null, pinned: true } as unknown as Session
+    const titles = buildSections([archived, pinned], ['Work', 'Ideas'], '').map(section => section.title)
+    expect(titles).toEqual(['Pinned', 'Work', 'Ideas', 'General', 'Archived'])
+  })
+})
+
 describe('folder ordering', () => {
   it('moves a folder before another folder', () => {
     expect(reorderFolderList(['Pinned work', 'Jobs', 'General'], 'General', 'Jobs', 'before'))
