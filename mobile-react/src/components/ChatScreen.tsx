@@ -23,7 +23,7 @@ import { OPEN_CANVAS_EVENT, type OpenCanvasRequest } from '../lib/canvas-links'
 import { isWelcomeSession } from '../lib/welcome-session'
 import { useFileViewer } from './file-viewer/FileViewerContext'
 
-export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, sidebarCollapsed, onToggleSidebar, onBack, onOptions, onSearch, onToggleInspector, onReview, onSetupServer, onOpenMcp, onShellAction }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; sidebarCollapsed: boolean; onToggleSidebar: () => void; onBack: () => void; onOptions: () => void; onSearch: () => void; onToggleInspector: () => void; onReview: (runId: string) => void; onSetupServer: () => void; onOpenMcp: () => void; onShellAction: (action: ComposerShellAction) => void }) {
+export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, sidebarCollapsed, onToggleSidebar, onBack, onOptions, onSearch, onToggleInspector, onReview, onChanges, onSetupServer, onOpenMcp, onShellAction }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; sidebarCollapsed: boolean; onToggleSidebar: () => void; onBack: () => void; onOptions: () => void; onSearch: () => void; onToggleInspector: () => void; onReview: (runId: string) => void; onChanges: () => void; onSetupServer: () => void; onOpenMcp: () => void; onShellAction: (action: ComposerShellAction) => void }) {
   const colors = usePalette()
   const insets = useSafeAreaInsets()
   const { openWorkspace } = useFileViewer()
@@ -160,7 +160,7 @@ export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, sideb
               <Composer sessionId={sessionId} keyboardVisible={composerKeyboardConstrained} onSent={() => setScrollRequest(value => value + 1)} onOpenMcp={onOpenMcp} onShellAction={onShellAction} />
             </View>
       </KeyboardAvoidingView>
-      {!welcome ? <ChatOutputsPanel sessionId={sessionId} visible={outputsOpen} onClose={() => setOutputsOpen(false)} onReview={onReview} onOpenCanvas={setCanvasName} /> : null}
+      {!welcome ? <ChatOutputsPanel sessionId={sessionId} visible={outputsOpen} onClose={() => setOutputsOpen(false)} onReview={onReview} onChanges={onChanges} onOpenCanvas={setCanvasName} /> : null}
       {!welcome ? <CanvasSheet sessionId={sessionId} name={canvasName} onClose={() => setCanvasName(null)} /> : null}
     </View>
   )

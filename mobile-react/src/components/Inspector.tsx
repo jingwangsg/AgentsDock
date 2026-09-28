@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { AccessibilityInfo, ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { useShallow } from 'zustand/react/shallow'
-import { Archive, Check, ChevronDown, Copy, FileText, GitFork, Pause, Pencil, Pin, Play, Plus, RefreshCw, Search, SquareTerminal, Trash2, X } from 'lucide-react-native'
+import { Archive, Check, ChevronDown, Copy, FileDiff, FileText, GitFork, Pause, Pencil, Pin, Play, Plus, RefreshCw, Search, SquareTerminal, Trash2, X } from 'lucide-react-native'
 import { describeJobSchedule, effectiveScheduleKind } from '../lib/job-schedule'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { filesNewestFirst } from '../lib/format'
@@ -22,7 +22,7 @@ type JobRunFeedback = {
   message: string
 }
 
-export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses, onTmux, onFileViewerRequested }: { sessionId: string; onDigest: () => void; onJob: (jobId?: string) => void; onTerminal: () => void; onProcesses: () => void; onTmux: () => void; onFileViewerRequested?: () => void }) {
+export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses, onTmux, onChanges, onFileViewerRequested }: { sessionId: string; onDigest: () => void; onJob: (jobId?: string) => void; onTerminal: () => void; onProcesses: () => void; onTmux: () => void; onChanges: () => void; onFileViewerRequested?: () => void }) {
   const colors = usePalette()
   const { openArtifacts } = useFileViewer()
   const activeProfileId = useAppStore(state => state.activeProfileId)
@@ -210,6 +210,7 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       <Command icon={FileText} label="Digest" onPress={() => { if (scopeIsCurrent()) onDigest() }} />
       <Command icon={Pin} label={session.pinned ? 'Unpin' : 'Pin'} onPress={() => { if (scopeIsCurrent()) void update(sessionId, { pinned: !session.pinned }, profileGeneration) }} />
       <Command icon={Archive} label={session.archived ? 'Unarchive' : 'Archive'} onPress={() => { if (scopeIsCurrent()) void update(sessionId, { archived: !session.archived }, profileGeneration) }} />
+      <Command icon={FileDiff} label="Changes" testID="inspector-changes" onPress={() => { if (scopeIsCurrent()) onChanges() }} />
       <Command icon={SquareTerminal} label="Terminal" onPress={() => { if (scopeIsCurrent()) onTerminal() }} />
       <Command icon={Search} label="Processes" onPress={() => { if (scopeIsCurrent()) onProcesses() }} />
       <Command icon={SquareTerminal} label="Tmux panes" onPress={() => { if (scopeIsCurrent()) onTmux() }} />

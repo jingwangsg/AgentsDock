@@ -49,6 +49,7 @@ interface FetchRecord {
 const originalFetch = globalThis.fetch
 const fetchRecords: FetchRecord[] = []
 const rewindAttempts: Array<{ expected_latest_seq: number }> = []
+const gitActionAttempts: Array<{ action: string; expected_revision: string }> = []
 let busyAttempts = 0
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   const signal = init?.signal
@@ -98,6 +99,27 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   }
   if (url === 'https://rewind.example/api/sessions/chat-1/workspace/git/checkpoint/restore') {
     return Promise.resolve(new Response(JSON.stringify({ root: '/repo', branch: 'main', head: 'def', revision: 'rev-8' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
+  if (url === 'https://git.example/api/sessions/chat-1/workspace/git' || url === 'https://git-stale.example/api/sessions/chat-1/workspace/git') {
+    return Promise.resolve(new Response(JSON.stringify({ root: '/repo', branch: 'main', head: 'abc', revision: 'rev-2', operation: null, files: [], staged_count: 0, conflict_count: 0 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
+  if (url.startsWith('https://git.example/api/sessions/chat-1/workspace/git/diff?')) {
+    return Promise.resolve(new Response(JSON.stringify({ path: 'src/app v2.ts', view: 'staged', diff: 'diff --git a/src/app v2.ts b/src/app v2.ts\n', binary: false, truncated: false, revision: 'rev-2' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
+  if (url.startsWith('https://git.example/api/sessions/chat-1/workspace/git/conflict?')) {
+    return Promise.resolve(new Response(JSON.stringify({ path: 'src/app v2.ts', base: null, ours: 'a', theirs: 'b', result: '<<<<<<<', revision: 'rev-2', binary: false }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
+  if (url === 'https://git.example/api/sessions/chat-1/workspace/git/action' || url === 'https://git-stale.example/api/sessions/chat-1/workspace/git/action') {
+    const attempt = JSON.parse(init?.body as string) as { action: string; expected_revision: string }
+    gitActionAttempts.push(attempt)
+    // git-stale.example never accepts a revision; git.example accepts the re-read one.
+    if (url.startsWith('https://git-stale.example') || attempt.expected_revision !== 'rev-2') {
+      return Promise.resolve(new Response(JSON.stringify({ detail: { code: 'git_stale_revision', message: 'Repository changed since review.' } }), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+    }
+    return Promise.resolve(new Response(JSON.stringify({ root: '/repo', branch: 'main', head: 'abc', revision: 'rev-3', operation: null, files: [], staged_count: 1, conflict_count: 0 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
+  if (url === 'https://git-none.example/api/sessions/chat-1/workspace/git') {
+    return Promise.resolve(new Response(JSON.stringify({ detail: { code: 'workspace_not_git', message: "This chat's working directory is not inside a Git worktree." } }), { status: 422, headers: { 'Content-Type': 'application/json' } }))
   }
   if (url.startsWith('https://subagents.example/api/sessions/')) {
     return Promise.resolve(new Response(JSON.stringify({
@@ -1274,6 +1296,46 @@ try {
   assert(
     restoreRequest?.body === JSON.stringify({ run_id: 'run-4', expected_revision: 'rev-7', confirmed: true }),
     'Checkpoint restore should send the run, the expected revision, and confirmation',
+  )
+
+  const git = new AgentServerClient('https://git.example', 'git-token')
+  const diff = await git.workspaceGitDiff('chat-1', 'src/app v2.ts', 'staged')
+  const diffRequest = fetchRecords.at(-1)
+  assert(diffRequest?.url === 'https://git.example/api/sessions/chat-1/workspace/git/diff?path=src%2Fapp%20v2.ts&view=staged', 'Workspace git diff should encode the path and carry the view')
+  assert(diffRequest.teamNetworkToken === 'git-token', 'Workspace git diff uses the native-control authentication mode')
+  assert(diff.view === 'staged' && diff.diff.startsWith('diff --git'), 'Workspace git diff should return the server payload')
+  const conflict = await git.workspaceGitConflict('chat-1', 'src/app v2.ts')
+  assert(fetchRecords.at(-1)?.url === 'https://git.example/api/sessions/chat-1/workspace/git/conflict?path=src%2Fapp%20v2.ts', 'Workspace git conflict should encode the path')
+  assert(conflict.ours === 'a' && conflict.theirs === 'b', 'Workspace git conflict should return both sides')
+  gitActionAttempts.length = 0
+  const staged = await git.workspaceGitAction('chat-1', { action: 'stage', paths: ['src/app v2.ts'], expected_revision: 'rev-1' })
+  assert(staged.revision === 'rev-3', 'A stale stage should succeed after one status re-read')
+  assert(gitActionAttempts.map(attempt => attempt.expected_revision).join(',') === 'rev-1,rev-2', 'A stale stage is retried exactly once with the re-read revision')
+  const actionRequest = fetchRecords.filter(record => record.url.endsWith('/workspace/git/action')).at(-1)
+  assert(
+    actionRequest?.method === 'POST' && actionRequest.body === JSON.stringify({ action: 'stage', paths: ['src/app v2.ts'], expected_revision: 'rev-2' }),
+    'The retried action keeps its paths and carries the fresh revision',
+  )
+  gitActionAttempts.length = 0
+  await assertRejects(
+    new AgentServerClient('https://git-stale.example').workspaceGitAction('chat-1', { action: 'unstage', paths: ['a.ts'], expected_revision: 'rev-1' }),
+    error => error instanceof ServerError && error.status === 409 && (error.detail as { code?: string })?.code === 'git_stale_revision',
+    'A second stale conflict surfaces instead of looping',
+  )
+  assert(gitActionAttempts.length === 2, 'A stale unstage is attempted at most twice')
+  gitActionAttempts.length = 0
+  await assertRejects(
+    new AgentServerClient('https://git-stale.example').workspaceGitAction('chat-1', { action: 'commit', message: 'x', expected_revision: 'rev-1' }),
+    error => error instanceof ServerError && error.status === 409,
+    'A stale commit surfaces without a retry',
+  )
+  assert(gitActionAttempts.length === 1, 'A stale commit is attempted once')
+  await assertRejects(
+    new AgentServerClient('https://git-none.example').workspaceGitStatus('chat-1'),
+    error => error instanceof ServerError && error.status === 422
+      && (error.detail as { code?: string })?.code === 'workspace_not_git'
+      && error.message === "This chat's working directory is not inside a Git worktree.",
+    'A non-Git workspace surfaces the workspace_not_git detail code and message',
   )
 }
 } finally {

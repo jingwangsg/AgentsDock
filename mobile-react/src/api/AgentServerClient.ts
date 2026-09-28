@@ -62,7 +62,11 @@ import type {
   UploadRef,
   WorkspaceEntriesPage,
   WorkspaceCreateResult,
+  WorkspaceGitAction,
+  WorkspaceGitConflict,
+  WorkspaceGitDiff,
   WorkspaceGitStatus,
+  WorkspaceGitView,
   WorkingDirectoryCompletion,
   WorkspaceFile,
   WorkspaceInfo,
@@ -73,6 +77,7 @@ import type {
 import { normalizeServerURL } from '../lib/format'
 import { createUploadFormData } from '../lib/upload-form'
 import { teamNetworkRequestPath } from '../lib/team-network'
+import { retriesStaleGitAction } from '../lib/workspace-changes'
 
 interface SessionResponse {
   session: Session
@@ -426,6 +431,30 @@ export class AgentServerClient {
   }
   workspaceGitStatus(sessionId: string): Promise<WorkspaceGitStatus> {
     return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/git`, {}, 40_000, false, 'native-control')
+  }
+  workspaceGitDiff(sessionId: string, path: string, view: WorkspaceGitView): Promise<WorkspaceGitDiff> {
+    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/git/diff?path=${encodeURIComponent(path)}&view=${view}`, {}, 40_000, false, 'native-control')
+  }
+  workspaceGitConflict(sessionId: string, path: string): Promise<WorkspaceGitConflict> {
+    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/git/conflict?path=${encodeURIComponent(path)}`, {}, 40_000, false, 'native-control')
+  }
+  /**
+   * Returns the status after the action. A stage or unstage rejected with
+   * 409 `git_stale_revision` re-reads the status and is retried once against
+   * the current revision (same shape as rewindSession's stale guard); any
+   * other rejection, including a second stale one, surfaces to the caller.
+   */
+  async workspaceGitAction(sessionId: string, input: WorkspaceGitAction): Promise<WorkspaceGitStatus> {
+    const post = (action: WorkspaceGitAction) => this.request<WorkspaceGitStatus>(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/git/action`, {
+      method: 'POST', body: JSON.stringify(action),
+    }, 120_000, false, 'native-control')
+    try {
+      return await post(input)
+    } catch (error) {
+      if (!retriesStaleGitAction(input.action, error)) throw error
+      const current = await this.workspaceGitStatus(sessionId)
+      return post({ ...input, expected_revision: current.revision })
+    }
   }
   restoreCheckpoint(sessionId: string, runId: string, expectedRevision: string): Promise<WorkspaceGitStatus> {
     return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/git/checkpoint/restore`, {

@@ -23,7 +23,7 @@ test('the header exposes an Outputs & sources toggle beside the Files button', (
     'the outputs toggle sits between Files and the inspector toggle',
   )
   assert.match(chatScreen, /outputsOpen=\{outputsOpen\} onOutputs=\{\(\) => \{ dismissAppKeyboard\(\); setOutputsOpen\(true\) \}\}/)
-  assert.match(chatScreen, /\{!welcome \? <ChatOutputsPanel sessionId=\{sessionId\} visible=\{outputsOpen\} onClose=\{\(\) => setOutputsOpen\(false\)\} onReview=\{onReview\} onOpenCanvas=\{setCanvasName\} \/> : null\}/)
+  assert.match(chatScreen, /\{!welcome \? <ChatOutputsPanel sessionId=\{sessionId\} visible=\{outputsOpen\} onClose=\{\(\) => setOutputsOpen\(false\)\} onReview=\{onReview\} onChanges=\{onChanges\} onOpenCanvas=\{setCanvasName\} \/> : null\}/)
 })
 
 test('the panel is a page sheet like Chat details and follows the desktop copy', () => {

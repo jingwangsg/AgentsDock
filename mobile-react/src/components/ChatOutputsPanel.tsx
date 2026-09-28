@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { FileDiff, FileText, Frame, Globe, Image, MessageSquare, Paperclip, Plug, Search, Sparkles, type LucideIcon } from 'lucide-react-native'
+import { FileDiff, FileText, Frame, GitBranch, Globe, Image, MessageSquare, Paperclip, Plug, Search, Sparkles, type LucideIcon } from 'lucide-react-native'
 import { collectChatOutputs, type ChatOutputsSummary } from '../lib/chat-outputs'
 import { mobileFileViewerKind } from '../lib/file-viewer'
 import { client, useAppStore } from '../store/useAppStore'
@@ -19,7 +19,7 @@ const REFRESH_DEBOUNCE_MS = 1_000
 const IOS_DISMISS_FALLBACK_MS = 1_000
 const EMPTY_EVENTS: Event[] = []
 
-export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onOpenCanvas }: { sessionId: string; visible: boolean; onClose: () => void; onReview: (runId: string) => void; onOpenCanvas: (name: string) => void }) {
+export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChanges, onOpenCanvas }: { sessionId: string; visible: boolean; onClose: () => void; onReview: (runId: string) => void; onChanges: () => void; onOpenCanvas: (name: string) => void }) {
   const colors = usePalette()
   const events = useAppStore(state => state.snapshots[sessionId]?.events ?? EMPTY_EVENTS)
   const hasMore = useAppStore(state => Boolean(state.snapshots[sessionId]?.hasMore))
@@ -117,6 +117,8 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onOpen
             }
           }
         })}
+        {/* Repository-wide state, unlike the per-turn rows above; it exists whether or not this chat recorded a diff. */}
+        <Row icon={GitBranch} label="Workspace changes" secondary="Git status and diffs of the working directory" onPress={() => closeThen(onChanges)} />
         <Text style={[styles.section, styles.sectionGap, { color: colors.muted }]}>Sources</Text>
         {summary && sources.length === 0 ? <Text style={[styles.empty, { color: colors.muted }]}>No sources yet</Text> : null}
         {visibleSources.map(item => {

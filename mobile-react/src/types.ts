@@ -1300,13 +1300,54 @@ export interface SessionRewindResult {
   session: Session
 }
 
-/** Repository-wide state; `revision` guards checkpoint restores against concurrent edits. */
+/** Repository-wide state, not a single chat turn's recorded patch. Mirrors electron/src/shared/workspace-git.ts. */
+export interface WorkspaceGitFile {
+  path: string
+  original_path?: string
+  index_status: string
+  worktree_status: string
+  staged: boolean
+  unstaged: boolean
+  untracked: boolean
+  conflicted: boolean
+}
+/** `revision` guards every Git action and checkpoint restore against concurrent edits. */
 export interface WorkspaceGitStatus {
   root: string
   branch: string | null
   head: string | null
   revision: string
-  [key: string]: JsonValue | undefined
+  operation: null | 'merge' | 'rebase' | 'cherry-pick' | 'revert'
+  files: WorkspaceGitFile[]
+  staged_count: number
+  conflict_count: number
+}
+export type WorkspaceGitView = 'staged' | 'unstaged'
+export interface WorkspaceGitDiff {
+  path: string
+  view: WorkspaceGitView
+  diff: string
+  binary: boolean
+  truncated: boolean
+  revision: string
+}
+export interface WorkspaceGitConflict {
+  path: string
+  base: string | null
+  ours: string | null
+  theirs: string | null
+  result: string
+  revision: string
+  binary: boolean
+}
+export interface WorkspaceGitAction {
+  action: 'stage' | 'unstage' | 'commit' | 'resolve' | 'continue' | 'abort'
+  expected_revision: string
+  paths?: string[]
+  message?: string
+  path?: string
+  content?: string
+  confirmed?: boolean
 }
 
 export interface ProviderCommandSelection {

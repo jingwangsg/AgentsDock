@@ -219,7 +219,8 @@ function directoryStats(node: FileTreeDirectory, files: DiffFile[]): { count: nu
   return stats
 }
 
-function connectionIsCurrent(connection: AgentServerClient, profileId: string | null, generation: number): boolean {
+// Shared with WorkspaceChanges, which follows the same profile-scoped fetch pattern.
+export function connectionIsCurrent(connection: AgentServerClient, profileId: string | null, generation: number): boolean {
   const state = useAppStore.getState()
   return !connection.isDisposed
     && connection.isValidated

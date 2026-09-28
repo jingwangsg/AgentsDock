@@ -21,6 +21,7 @@ import { ClaudeMcpDialog } from './ClaudeMcpDialog'
 import { AndroidUpdateCoordinator } from './AndroidUpdater'
 import { Text } from './AppText'
 import { CodeReview } from './CodeReview'
+import { WorkspaceChanges } from './WorkspaceChanges'
 import { DigestDialog, JobDialog, ProcessDialog, SearchDialog, ServerSetupDialog, SettingsDialog, TmuxDialog } from './Dialogs'
 import { Inspector } from './Inspector'
 import { Sidebar } from './Sidebar'
@@ -34,7 +35,7 @@ import { useFileViewer } from './file-viewer/FileViewerContext'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 
 type InspectorAction = {
-  kind: 'digest' | 'job' | 'terminal' | 'processes' | 'tmux'
+  kind: 'digest' | 'job' | 'terminal' | 'processes' | 'tmux' | 'changes'
   jobId?: string
 }
 
@@ -103,6 +104,7 @@ function AppShellContent() {
   const [mcpSessionId, setMcpSessionId] = useState<string | null>(null)
   const [terminal, setTerminal] = useState(false)
   const [reviewRun, setReviewRun] = useState<string | null>(null)
+  const [changes, setChanges] = useState(false)
   const pendingInspectorAction = useRef<InspectorAction | null>(null)
   const pendingInspectorFallback = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [modalGeneration, setModalGeneration] = useState(profileGeneration)
@@ -203,11 +205,16 @@ function AppShellContent() {
     setReviewRun(null)
     requestAnimationFrame(dismissAppKeyboard)
   }, [])
-  const openInspectorAction = useCallback((kind: 'digest' | 'job' | 'terminal' | 'processes' | 'tmux', jobId?: string) => {
+  const closeChanges = useCallback(() => {
+    setChanges(false)
+    requestAnimationFrame(dismissAppKeyboard)
+  }, [])
+  const openInspectorAction = useCallback((kind: InspectorAction['kind'], jobId?: string) => {
     if (kind === 'digest') { setDigest(true); trackEvent('digest_opened') }
     else if (kind === 'job') { setJobEditor(jobId ?? 'new'); trackEvent('job_schedule_opened') }
     else if (kind === 'terminal') { setTerminal(true); trackEvent('terminal_opened') }
     else if (kind === 'processes') setProcesses(true)
+    else if (kind === 'changes') setChanges(true)
     else setTmux(true)
     requestAnimationFrame(dismissAppKeyboard)
   }, [])
@@ -371,13 +378,13 @@ function AppShellContent() {
   // the accessibility tree or screen readers land on invisible controls.
   const sidebarRail = <View style={{ width: sidebarWidth(width, sidebarCollapsed), overflow: 'hidden' }} accessibilityElementsHidden={sidebarCollapsed} importantForAccessibility={sidebarCollapsed ? 'no-hide-descendants' : 'auto'}>{sidebar}</View>
   const chat = selected
-    ? <ChatScreen key={`${connectionKey}:${selected.id}`} sessionId={selected.id} compact={compact} inlineInspectorAvailable={chatLayout.inlineInspectorAvailable} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} onBack={closeMobileChat} onOptions={openOptions} onSearch={openSearch} onToggleInspector={() => setInspectorVisible(value => !value)} onReview={openReview} onSetupServer={() => openServers('edit-active')} onOpenMcp={() => openClaudeMcp(selected.id)} onShellAction={action => { if (action === 'details') openOptions(); else if (action === 'new-chat') void quickNewChat(); else openInspectorAction(action) }} />
+    ? <ChatScreen key={`${connectionKey}:${selected.id}`} sessionId={selected.id} compact={compact} inlineInspectorAvailable={chatLayout.inlineInspectorAvailable} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} onBack={closeMobileChat} onOptions={openOptions} onSearch={openSearch} onToggleInspector={() => setInspectorVisible(value => !value)} onReview={openReview} onChanges={() => openInspectorAction('changes')} onSetupServer={() => openServers('edit-active')} onOpenMcp={() => openClaudeMcp(selected.id)} onShellAction={action => { if (action === 'details') openOptions(); else if (action === 'new-chat') void quickNewChat(); else openInspectorAction(action) }} />
     : <NoChat connecting={connecting} onSettings={() => openServers('manage')} onShowChatList={!compact && sidebarCollapsed ? toggleSidebar : undefined} />
 
   return <View style={[styles.fill, { backgroundColor: colors.background }]}>
     <AndroidUpdateCoordinator />
     {error && !showServerSetup ? <View testID="global-error-slot" style={styles.errorSlot}><View style={[styles.error, { backgroundColor: colors.surface, borderColor: colors.red }]}><AlertCircle size={17} color={colors.red} /><View style={styles.errorContent}><Text style={[styles.errorText, { color: colors.text }]} numberOfLines={canCancelPendingServerUpdate ? 4 : 3}>{error}</Text>{canCancelPendingServerUpdate ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel scheduled server update" accessibilityHint="Cancels the pending update so messages can be sent again" accessibilityState={{ disabled: cancelingServerUpdate, busy: cancelingServerUpdate }} testID="error-cancel-server-update" disabled={cancelingServerUpdate} onPress={() => { void cancelCurrentServerUpdate() }} style={({ pressed }) => [styles.errorAction, { backgroundColor: colors.raised, borderColor: colors.border, opacity: cancelingServerUpdate ? 0.45 : pressed ? 0.68 : 1 }]}>{cancelingServerUpdate ? <ActivityIndicator size="small" color={colors.blue} /> : <Text style={[styles.errorActionText, { color: colors.blue }]}>Cancel update</Text>}</Pressable> : null}</View>{!canCancelPendingServerUpdate ? <IconButton icon={Settings} size={15} onPress={openSettings} label="Settings" testID="error-settings" /> : null}<IconButton icon={X} size={15} onPress={clearError} disabled={cancelingServerUpdate} label="Dismiss" testID="error-dismiss" /></View></View> : null}
-    {compact ? <View style={styles.fill}>{sidebar}{modalScopeCurrent && mobileChatOpen && selected ? <MobileChatPane width={width} backgroundColor={colors.background} onClose={closeMobileChat}>{chat}</MobileChatPane> : null}</View> : <View style={styles.workspace}>{sidebarRail}<View style={styles.chat}>{chat}</View>{showInspector && selected && !isWelcomeSession(selected.id) ? <View style={{ width: Math.min(350, width * 0.29) }}><Inspector key={`inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => openInspectorAction('digest')} onJob={jobId => openInspectorAction('job', jobId)} onTerminal={() => openInspectorAction('terminal')} onProcesses={() => openInspectorAction('processes')} onTmux={() => openInspectorAction('tmux')} /></View> : null}</View>}
+    {compact ? <View style={styles.fill}>{sidebar}{modalScopeCurrent && mobileChatOpen && selected ? <MobileChatPane width={width} backgroundColor={colors.background} onClose={closeMobileChat}>{chat}</MobileChatPane> : null}</View> : <View style={styles.workspace}>{sidebarRail}<View style={styles.chat}>{chat}</View>{showInspector && selected && !isWelcomeSession(selected.id) ? <View style={{ width: Math.min(350, width * 0.29) }}><Inspector key={`inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => openInspectorAction('digest')} onJob={jobId => openInspectorAction('job', jobId)} onTerminal={() => openInspectorAction('terminal')} onProcesses={() => openInspectorAction('processes')} onTmux={() => openInspectorAction('tmux')} onChanges={() => openInspectorAction('changes')} /></View> : null}</View>}
 
     <ServerSetupDialog
       visible={showServerSetup}
@@ -434,7 +441,8 @@ function AppShellContent() {
     <ProcessDialog key={`processes:${connectionKey}:${selected?.id ?? 'none'}`} visible={modalScopeCurrent && processes} sessionId={selected?.id ?? null} onClose={() => setProcesses(false)} />
     <TmuxDialog visible={modalScopeCurrent && tmux} sessionId={selected?.id ?? null} onClose={() => setTmux(false)} />
     <CodeReview sessionId={selected?.id ?? ''} runId={modalScopeCurrent ? reviewRun : null} onClose={closeReview} />
-    <Modal visible={modalScopeCurrent && options && Boolean(selected) && !isWelcomeSession(selected?.id)} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={closeOptions} onDismiss={finishOptionsDismissal}>{selected && !isWelcomeSession(selected.id) ? <SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]} edges={['bottom']}><View style={[styles.modalGrabber, { backgroundColor: colors.selected }]} /><View style={styles.modalTop}><Text style={[styles.modalTitle, { color: colors.text }]}>Chat details</Text><SheetCloseButton onPress={closeOptions} label="Close chat details" testID="chat-details-close" /></View><Inspector key={`options-inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => queueInspectorAction('digest')} onJob={jobId => queueInspectorAction('job', jobId)} onTerminal={() => queueInspectorAction('terminal')} onProcesses={() => queueInspectorAction('processes')} onTmux={() => queueInspectorAction('tmux')} onFileViewerRequested={closeOptions} /></SafeAreaView> : null}</Modal>
+    <WorkspaceChanges sessionId={selected?.id ?? ''} visible={modalScopeCurrent && changes && Boolean(selected) && !isWelcomeSession(selected?.id)} onClose={closeChanges} />
+    <Modal visible={modalScopeCurrent && options && Boolean(selected) && !isWelcomeSession(selected?.id)} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={closeOptions} onDismiss={finishOptionsDismissal}>{selected && !isWelcomeSession(selected.id) ? <SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]} edges={['bottom']}><View style={[styles.modalGrabber, { backgroundColor: colors.selected }]} /><View style={styles.modalTop}><Text style={[styles.modalTitle, { color: colors.text }]}>Chat details</Text><SheetCloseButton onPress={closeOptions} label="Close chat details" testID="chat-details-close" /></View><Inspector key={`options-inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => queueInspectorAction('digest')} onJob={jobId => queueInspectorAction('job', jobId)} onTerminal={() => queueInspectorAction('terminal')} onProcesses={() => queueInspectorAction('processes')} onTmux={() => queueInspectorAction('tmux')} onChanges={() => queueInspectorAction('changes')} onFileViewerRequested={closeOptions} /></SafeAreaView> : null}</Modal>
     {modalScopeCurrent && terminal && selected && !isWelcomeSession(selected.id) ? <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={closeTerminal}><SafeAreaView
       testID="terminal-modal"
       style={[styles.fill, {
