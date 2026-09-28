@@ -124,6 +124,13 @@ describe('main-owned passive Team Mail hints', () => {
       refresh: () => service.refreshServer('a', 1), health: () => health }
   }
 
+  it('starts Archived collapsed on every bootstrap and never restores an expanded state', async () => {
+    const test = harness(false)
+    const preference = vi.spyOn(test.cache, 'preference')
+    expect((await test.service.bootstrap()).archivedCollapsed).toBe(true)
+    expect(preference.mock.calls.some(([, key]) => key === 'archivedCollapsed')).toBe(false)
+  })
+
   it('can be explicitly disabled even when the server advertises support', async () => {
     const test = harness(false)
     expect((await test.refresh()).mailHints).toBeNull()

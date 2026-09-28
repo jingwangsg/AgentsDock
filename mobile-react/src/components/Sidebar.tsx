@@ -94,7 +94,13 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   const { promptText, textPromptDialog } = useTextPrompt()
   const waitingSessionCount = useMemo(() => sessions.filter(sessionNeedsProviderInteraction).length, [sessions])
   const profileScope = useMemo<ProfileScope>(() => ({ activeProfileId, profileGeneration }), [activeProfileId, profileGeneration])
-  const collapsed = useMemo(() => new Set(collapsedFolders), [collapsedFolders])
+  // Archived starts collapsed on every launch; expanding it lasts only while the sidebar is mounted.
+  const [archivedExpanded, setArchivedExpanded] = useState(false)
+  const collapsed = useMemo(() => {
+    const next = new Set(collapsedFolders.filter(folder => folder !== 'Archived'))
+    if (!archivedExpanded) next.add('Archived')
+    return next
+  }, [archivedExpanded, collapsedFolders])
   const listState = useMemo(() => ({ active, selected, openingSearchResultId }), [active, openingSearchResultId, selected])
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const searchInput = useRef<TextInput>(null)
@@ -403,7 +409,9 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           onDismissKeyboard={dismissSearchKeyboard}
           onToggle={() => {
             if (!profileScopeIsCurrent(profileScope)) return
+            if (item.folder === 'Archived') { setArchivedExpanded(expanded => !expanded); return }
             const next = new Set(collapsed)
+            next.delete('Archived')
             if (next.has(item.folder)) next.delete(item.folder)
             else next.add(item.folder)
             setCollapsedFolders([...next], profileScope.profileGeneration)

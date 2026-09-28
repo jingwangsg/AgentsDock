@@ -511,7 +511,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   revokingAgentRouteIds: new Set(),
   folderOrder: [],
   collapsedFolders: new Set(),
-  archivedCollapsed: false,
+  // Archived starts collapsed on every launch and server switch; expanding it lasts only this session.
+  archivedCollapsed: true,
   inspectorVisible: false,
   activeSessionIds: new Set(),
   turnAdmissionTokens: {},
@@ -2645,7 +2646,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ collapsedFolders: next }); void setWorkspacePreference(scope, 'collapsedFolders', [...next]).catch(() => undefined)
   },
   setFolderOrder(order) { const scope = captureWorkspaceScope(get()); set({ folderOrder: order }); void setWorkspacePreference(scope, 'folderOrder', order).catch(() => undefined) },
-  setArchivedCollapsed(value) { const scope = captureWorkspaceScope(get()); set({ archivedCollapsed: value }); void setWorkspacePreference(scope, 'archivedCollapsed', value).catch(() => undefined) },
+  setArchivedCollapsed(value) { set({ archivedCollapsed: value }) },
   setInspectorVisible(value) { const scope = captureWorkspaceScope(get()); set({ inspectorVisible: value }); void setWorkspacePreference(scope, 'inspectorVisible', value).catch(() => undefined) },
   setModal(key, value) {
     set(state => ({

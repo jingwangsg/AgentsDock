@@ -105,3 +105,11 @@ test('renaming a chat is offered on both platforms and shares one prompt/update 
   assert.match(source, /\{ id: 'rename', title: 'Rename Chat' \}/)
   assert.match(source, /promptText: \(options: TextPromptOptions\) => Promise<string \| null>/)
 })
+
+test('Archived starts collapsed on every launch and its expansion is not persisted', () => {
+  assert.match(source, /const \[archivedExpanded, setArchivedExpanded\] = useState\(false\)/)
+  assert.match(source, /if \(!archivedExpanded\) next\.add\('Archived'\)/)
+  // Toggling Archived flips session state instead of writing the persisted collapsed list.
+  assert.match(source, /if \(item\.folder === 'Archived'\) \{ setArchivedExpanded\(expanded => !expanded\); return \}/)
+  assert.match(source, /next\.delete\('Archived'\)/)
+})

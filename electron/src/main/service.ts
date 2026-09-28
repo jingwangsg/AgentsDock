@@ -6647,7 +6647,8 @@ export class AppService {
       selectedSessionId: this.focusedSessionId,
       folderOrder: resetPending ? [] : this.rememberSessionFolders(scope.namespace),
       collapsedFolders: resetPending ? [] : cacheValue(() => this.cache.preference(scope.namespace, 'collapsedFolders', [] as string[]), []),
-      archivedCollapsed: resetPending ? false : cacheValue(() => this.cache.preference(scope.namespace, 'archivedCollapsed', false), false),
+      // Never restored: the user wants Archived collapsed by default, and expanding it is a per-session choice.
+      archivedCollapsed: true,
       inspectorVisible: resetPending ? false : cacheValue(() => this.cache.preference(scope.namespace, 'inspectorVisible', false), false),
       activeProfileId: scope.profileId,
       profiles: this.publicProfiles(),
