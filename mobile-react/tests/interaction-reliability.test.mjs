@@ -705,7 +705,7 @@ test('separate controls offer guarded attachments and Mac-parity quick messages'
   assert.match(composerToolbarLayout, /COMPOSER_WIDE_CONTROLS_MIN_WIDTH = 600/)
   assert.match(composer, /const compactToolbar = composerWidth === 0 \|\| isCompactComposerToolbar\(composerWidth\)/)
   assert.match(composer, /onLayout=\{event => \{[\s\S]*?Math\.floor\(event\.nativeEvent\.layout\.width\)[\s\S]*?setComposerWidth/)
-  assert.match(composer, /\{!compactToolbar \? <>[\s\S]*?<Pill tone="neutral">/)
+  assert.match(composer, /\{!compactToolbar \? <Text style=\{\[styles\.backend, \{ color: colors\.text \}\]\}>\{providerName\}<\/Text> : null\}/)
   assert.match(composer, /!compactToolbar && styles\.stopWide/)
   assert.match(composer, /compactToolbar && styles\.steerCompact/)
   assert.match(composer, /\{!compactToolbar \? <Text[\s\S]*?>Steer<\/Text> : null/)

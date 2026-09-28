@@ -90,18 +90,20 @@ import {
   isDenseComposerToolbar,
 } from '../lib/composer-toolbar-layout'
 import { cursorBackendUnavailableReason, isBackendLocked, runtimeCatalogHasSelectableModels, runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, selectableChatBackends } from '../lib/runtime-catalog'
+import { runtimeChipLabel } from '../lib/runtime-chip'
 import { usePalette } from '../theme'
-import type { AgentCrossChatRoute, AgentFile, Backend, ChatReference, ChatReferenceAction, FailedUpload, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeOption, Session, TeamReference, UploadRef } from '../types'
+import type { AgentCrossChatRoute, AgentFile, Backend, ChatReference, ChatReferenceAction, FailedUpload, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, Session, TeamReference, UploadRef } from '../types'
 import { appendWelcomeExchange, isWelcomeSession } from '../lib/welcome-session'
 import { Text, TextInput } from './AppText'
 import { BackendMark } from './BackendMark'
 import { useCodexRuntime } from './CodexRuntimeContext'
 import { CodexGoalBar, CodexGoalEditorSheet } from './CodexGoalBar'
 import { useClaudeRuntime } from './ClaudeRuntimeContext'
-import { IconButton, Pill, SheetCloseButton } from './ui'
+import { IconButton, SheetCloseButton } from './ui'
 import { FullscreenViewerCloseButton, SwipeDismissImage } from './FullscreenImageViewer'
 import { TeamTargetPicker } from './TeamTargetPicker'
-import { ComposerCommandPalette, ComposerOptionPicker, type ProviderCommandLoadStatus } from './ComposerCommandPalette'
+import { ComposerCommandPalette, type ProviderCommandLoadStatus } from './ComposerCommandPalette'
+import { ComposerRuntimeSheet } from './ComposerRuntimeSheet'
 import { useTextPrompt } from './TextPromptDialog'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 
@@ -193,7 +195,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const [inputHeight, setInputHeight] = useState(COMPOSER_INPUT_MIN_HEIGHT)
   const [composerWidth, setComposerWidth] = useState(0)
   const [providerCommandState, setProviderCommandState] = useState<{ key: string | null; status: ProviderCommandLoadStatus; snapshot: ProviderCommandsSnapshot | null }>({ key: null, status: 'idle', snapshot: null })
-  const [commandPicker, setCommandPicker] = useState<'model' | 'reasoning' | null>(null)
+  const [runtimeSheetSection, setRuntimeSheetSection] = useState<'model' | 'reasoning' | null>(null)
   const [goalEditorOpen, setGoalEditorOpen] = useState(false)
   const providerCommandBindingRef = useRef<BoundProviderCommand | null>(null)
   const providerCommandRequestRef = useRef(0)
@@ -299,7 +301,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const denseToolbar = compactToolbar && (composerWidth === 0 ? width < 352 : isDenseComposerToolbar(composerWidth))
   const viewportLimits = composerViewportLimits(width, height, keyboardVisible)
   const displayedInputHeight = Math.min(composerInputHeight(draft, inputHeight), viewportLimits.inputMaxHeight)
-  const hasAuxiliaryContent = commandPaletteVisible || commandPicker != null || references.length > 0 || teamReferences.length > 0 || queued.length > 0 || Boolean(queuedRunStatus) || uploads.length > 0 || pending.length > 0 || failed.length > 0
+  const hasAuxiliaryContent = commandPaletteVisible || references.length > 0 || teamReferences.length > 0 || queued.length > 0 || Boolean(queuedRunStatus) || uploads.length > 0 || pending.length > 0 || failed.length > 0
   const validationRevision = client.validationRevision
   useEffect(() => {
     if (welcome || networkDisabled || !routeHintsSupported) return
@@ -354,7 +356,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     setPreview(null)
     setPickerTrigger(null)
     setPickerQuery('')
-    setCommandPicker(null)
+    setRuntimeSheetSection(null)
     setGoalEditorOpen(false)
     selectionRef.current = { start: draft.length, end: draft.length }
     pendingCaretRef.current = null
@@ -628,6 +630,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Could not update goal', errorText(error))
     }
   }
+  const openRuntimeSheet = (section: 'model' | 'reasoning') => { setRuntimeSheetSection(section); requestAnimationFrame(dismissAppKeyboard) }
   const openGoalCommand = () => {
     if (backend === 'codex') { setGoalEditorOpen(true); requestAnimationFrame(dismissAppKeyboard); return }
     void promptText({
@@ -930,7 +933,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       case 'digest': onShellAction('digest'); break
       case 'goal': openGoalCommand(); break
       case 'mcp': onOpenMcp(); break
-      case 'model': case 'reasoning': setCommandPicker(command.id); break
+      case 'model': case 'reasoning': openRuntimeSheet(command.id); break
       case 'new': onShellAction('new-chat'); break
       case 'schedule': onShellAction('job'); break
       case 'status': case 'workdir': onShellAction('details'); break
@@ -972,26 +975,15 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     state: value === backend ? 'on' : 'off',
     attributes: value === 'cursor' && Boolean(cursorUnavailableReason) ? { disabled: true } : undefined,
   })) : []
-  // Model and effort mirror the Inspector's choice fields. The catalog is per
-  // backend, so the picks only appear once the server has advertised models.
+  // Model and effort live in the chip beside the provider control; the sheet
+  // only opens once the server has advertised models for every backend.
   const runtimeSelectable = !networkDisabled && runtimeCatalogHasSelectableModels(runtime)
-  const choiceActions = (prefix: string, options: RuntimeOption[], current: string | null | undefined): MenuAction[] => options.map(option => ({
-    id: `${prefix}${option.value}`,
-    title: option.label,
-    state: option.value === (current ?? '') ? 'on' : 'off',
-    attributes: option.locked ? { disabled: true } : undefined,
-  }))
   const selectionError = backend ? runtimeSelectionError(health, runtime, backend, model) : null
   const runtimeActions: MenuAction[] = []
   if (backendActions.length) runtimeActions.push({ id: 'switch-backend', title: 'Backend', subactions: backendActions })
-  if (backend && runtimeSelectable) {
-    runtimeActions.push({ id: 'set-model', title: 'Model', subactions: choiceActions('set-model:', runtimeCatalogOptions(runtime, backend, 'models', model), model) })
-    if (backend !== 'cursor') runtimeActions.push({ id: 'set-effort', title: 'Effort', subactions: choiceActions('set-effort:', runtimeEffortOptions(runtime, backend, model, effort), effort) })
-  }
   if (selectionError) runtimeActions.push({ id: 'runtime-selection-error', title: selectionError, attributes: { disabled: true } })
   if (!providerReloadDisabled) runtimeActions.push({ id: 'reload-provider', title: `Reload ${providerName}`, image: 'arrow.clockwise' })
   const runtimeInteractive = runtimeActions.length > 0
-  const runtimeLabel = `${model || 'Server model'}${effort ? ` · ${effort}` : ''}`
   const runtimeTrigger = welcome ? <View
     testID="chat-runtime-menu"
     accessible
@@ -1010,7 +1002,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     style={[styles.runtime, compactToolbar && styles.runtimeCompact, denseToolbar && styles.runtimeDense, { opacity: runtimeInteractive ? 1 : 0.45 }]}
   >
     {providerReloading ? <ActivityIndicator size="small" color={colors.muted} /> : <BackendMark backend={backend} size={21} />}
-    {!compactToolbar ? <><Text style={[styles.backend, { color: colors.text }]}>{providerName}</Text><Pill tone="neutral">{runtimeLabel}</Pill></> : !denseToolbar ? <Text style={[styles.runtimeLabel, { color: colors.muted }]} numberOfLines={1}>{runtimeLabel}</Text> : null}
+    {!compactToolbar ? <Text style={[styles.backend, { color: colors.text }]}>{providerName}</Text> : null}
   </View> : null
   const runtimeControl = welcome || !runtimeTrigger || !runtimeInteractive ? runtimeTrigger : <MenuView
     title={`${providerName} agent`}
@@ -1019,18 +1011,26 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       const action = event.nativeEvent.event
       if (action === 'reload-provider') void reloadChatAgent()
       else if (action.startsWith('switch-backend:')) void switchChatBackend(action.slice('switch-backend:'.length) as Backend)
-      else if (action.startsWith('set-model:') || action.startsWith('set-effort:')) {
-        if (!backend || !remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
-        const value = action.slice(action.indexOf(':') + 1)
-        void updateSession(sessionId, action.startsWith('set-model:')
-          ? { model: value, effort: runtimeEffortAfterModelChange(runtime, backend, value, effort) }
-          : { effort: value }, profileGeneration)
-      }
     }}
     style={[styles.runtimeMenu, compactToolbar && styles.runtimeMenuCompact, denseToolbar && styles.runtimeMenuDense]}
   >
     {runtimeTrigger}
   </MenuView>
+  // Desktop's runtime chip: `Model · Effort` plus a chevron; one tap opens the model and reasoning sheet.
+  const runtimeChip = !welcome && backend ? <Pressable
+    testID="chat-runtime-chip"
+    accessibilityRole="button"
+    accessibilityLabel="Model and reasoning"
+    accessibilityState={{ disabled: !runtimeSelectable }}
+    disabled={!runtimeSelectable}
+    onPress={() => openRuntimeSheet('model')}
+    style={({ pressed }) => [styles.runtimeChip, { opacity: !runtimeSelectable ? 0.45 : pressed ? 0.6 : 1 }]}
+  >
+    <View style={[styles.runtimeChipFace, { backgroundColor: colors.raised }]}>
+      <Text style={[styles.backend, { color: colors.text }]} numberOfLines={1}>{runtimeChipLabel(runtime, backend, model, effort)}</Text>
+      <ChevronDown size={13} color={colors.muted} />
+    </View>
+  </Pressable> : null
 
   return (
     <View testID="chat-composer" style={[styles.shell, { backgroundColor: colors.background }]}>
@@ -1047,19 +1047,6 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
           loadStatus={activeProviderCommandState.status}
           onRefresh={() => void loadProviderCommands(true)}
           onSelect={chooseCommand}
-        /> : null}
-        {commandPicker && backend ? <ComposerOptionPicker
-          title={commandPicker === 'model' ? 'Model' : 'Reasoning effort'}
-          options={commandPicker === 'model' ? runtimeCatalogOptions(runtime, backend, 'models', model) : runtimeEffortOptions(runtime, backend, model, effort)}
-          current={commandPicker === 'model' ? model : effort}
-          onPick={value => {
-            setCommandPicker(null)
-            if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
-            void updateSession(sessionId, commandPicker === 'model'
-              ? { model: value, effort: runtimeEffortAfterModelChange(runtime, backend, value, effort) }
-              : { effort: value }, profileGeneration)
-          }}
-          onClose={() => setCommandPicker(null)}
         /> : null}
         {references.length ? <ChatReferenceShelf
           references={references}
@@ -1129,6 +1116,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         <View style={[styles.toolbar, compactToolbar && styles.toolbarCompact, denseToolbar && styles.toolbarDense]}>
           {!welcome ? <IconButton icon={Paperclip} disabled={attachmentDisabled} onPress={chooseAttachment} label="Add files, photos, or another chat" testID="chat-attach" /> : null}
           {runtimeControl}
+          {runtimeChip}
           {!welcome ? quickMessageControl : null}
           <View style={styles.toolbarSpacer} />
           {active ? <Pressable
@@ -1196,6 +1184,24 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         onClose={closeTargetPicker}
         onDidDismiss={finishTargetPickerDismissal}
       />
+      {!welcome && backend ? <ComposerRuntimeSheet
+        section={runtimeSheetSection}
+        models={runtimeCatalogOptions(runtime, backend, 'models', model)}
+        efforts={backend === 'cursor' ? [] : runtimeEffortOptions(runtime, backend, model, effort)}
+        model={model}
+        effort={effort}
+        onPickModel={value => {
+          setRuntimeSheetSection(null)
+          if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+          void updateSession(sessionId, { model: value || null, effort: runtimeEffortAfterModelChange(runtime, backend, value || null, effort) }, profileGeneration)
+        }}
+        onPickEffort={value => {
+          setRuntimeSheetSection(null)
+          if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+          void updateSession(sessionId, { effort: value || null }, profileGeneration)
+        }}
+        onClose={() => setRuntimeSheetSection(null)}
+      /> : null}
       {!welcome && backend === 'codex' ? <CodexGoalEditorSheet visible={goalEditorOpen} onClose={() => { setGoalEditorOpen(false); requestAnimationFrame(dismissAppKeyboard) }} /> : null}
       {textPromptDialog}
     </View>
@@ -1863,7 +1869,7 @@ const styles = StyleSheet.create({
   toolbarCompact: { minHeight: COMPOSER_COMPACT_TOOLBAR_HEIGHT, paddingHorizontal: COMPOSER_COMPACT_TOOLBAR_PADDING, gap: COMPOSER_COMPACT_TOOLBAR_GAP },
   toolbarDense: { paddingHorizontal: COMPOSER_DENSE_TOOLBAR_PADDING, gap: COMPOSER_DENSE_TOOLBAR_GAP },
   quickMessagesMenu: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0 }, quickMessages: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
-  runtimeMenu: { minWidth: 0, flexShrink: 1 }, runtimeMenuCompact: { width: COMPOSER_COMPACT_BACKEND_SLOT_WIDTH, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0 }, runtimeMenuDense: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, alignItems: 'center', justifyContent: 'center' }, runtime: { minWidth: 0, flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6 }, runtimeCompact: { width: COMPOSER_COMPACT_BACKEND_SLOT_WIDTH, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, flexDirection: 'column', justifyContent: 'center', gap: 0 }, runtimeDense: { width: COMPOSER_DENSE_BACKEND_SLOT_WIDTH }, backend: { fontSize: 12, fontWeight: '700' }, runtimeLabel: { maxWidth: '100%', fontSize: 9, fontWeight: '700', textAlign: 'center' }, toolbarSpacer: { flex: 1, minWidth: 0 },
+  runtimeMenu: { minWidth: 0, flexShrink: 1 }, runtimeMenuCompact: { width: COMPOSER_COMPACT_BACKEND_SLOT_WIDTH, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0 }, runtimeMenuDense: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, alignItems: 'center', justifyContent: 'center' }, runtime: { minWidth: 0, flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6 }, runtimeCompact: { width: COMPOSER_COMPACT_BACKEND_SLOT_WIDTH, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, flexDirection: 'column', justifyContent: 'center', gap: 0 }, runtimeDense: { width: COMPOSER_DENSE_BACKEND_SLOT_WIDTH }, backend: { fontSize: 12, fontWeight: '700' }, runtimeChip: { minWidth: 0, flexShrink: 1, height: COMPOSER_TOOLBAR_TOUCH_SIZE, justifyContent: 'center' }, runtimeChipFace: { minHeight: 28, minWidth: 0, borderRadius: 6, paddingLeft: 8, paddingRight: 6, flexDirection: 'row', alignItems: 'center', gap: 3 }, toolbarSpacer: { flex: 1, minWidth: 0 },
   stop: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, borderRadius: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 }, stopWide: { width: 76 }, compactStopFace: { width: COMPOSER_STOP_FACE_SIZE, height: COMPOSER_STOP_FACE_SIZE, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, alignItems: 'center', justifyContent: 'center' }, stopLabel: { fontSize: 11, fontWeight: '800' }, send: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, alignItems: 'center', justifyContent: 'center' }, sendFace: { width: COMPOSER_SEND_FACE_SIZE, height: COMPOSER_SEND_FACE_SIZE, borderRadius: COMPOSER_SEND_FACE_SIZE / 2, alignItems: 'center', justifyContent: 'center' }, steer: { minHeight: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3 }, steerCompact: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, paddingHorizontal: 0 },
   uploadRail: { flexGrow: 0, minHeight: 64, maxHeight: 64 }, uploads: { flexDirection: 'row', gap: 7, paddingRight: 2 }, upload: { width: 216, height: 64, flexShrink: 0, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingLeft: 7, flexDirection: 'row', alignItems: 'center' }, uploadIdentity: { minWidth: 0, flex: 1, height: 62, flexDirection: 'row', alignItems: 'center', gap: 8 }, fileIconWell: { width: 48, height: 48, minWidth: 48, flexShrink: 0, borderRadius: 6, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }, uploadText: { minWidth: 0, flex: 1, gap: 2 }, uploadName: { fontSize: 12, fontWeight: '700' }, uploadMeta: { fontSize: 10.5 }, uploadActionSpacer: { width: 44, height: 44, flexShrink: 0 }, uploadBusy: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: '#00000066' }, uploadError: { position: 'absolute', right: 3, bottom: 3, width: 19, height: 19, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   previewModal: { flex: 1 }, previewHeader: { minHeight: FULLSCREEN_HEADER_MIN_HEIGHT, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingVertical: FULLSCREEN_HEADER_GUTTER, flexDirection: 'row', alignItems: 'center', gap: 8 }, previewTitle: { minWidth: 0, flex: 1, fontSize: 14, fontWeight: '700' }, previewImage: { flex: 1, margin: 12 },

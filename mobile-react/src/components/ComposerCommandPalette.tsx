@@ -1,11 +1,8 @@
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
-import { Check, X } from 'lucide-react-native'
 import { COMPOSER_COMMAND_CATEGORIES, groupComposerCommandsByCategory, type ComposerCommand } from '../lib/composer-commands'
 import { usePalette } from '../theme'
 import { fonts } from '../lib/typography'
-import type { RuntimeOption } from '../types'
 import { Text } from './AppText'
-import { IconButton } from './ui'
 
 export type ProviderCommandLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -49,43 +46,6 @@ export function ComposerCommandPalette({ commands, loadStatus, onRefresh, onSele
   </View>
 }
 
-/** Choice list for `/model` and `/reasoning`; the toolbar's native menu cannot be opened programmatically. */
-export function ComposerOptionPicker({ title, options, current, onPick, onClose }: {
-  title: string
-  options: readonly RuntimeOption[]
-  current: string | null | undefined
-  onPick: (value: string) => void
-  onClose: () => void
-}) {
-  const colors = usePalette()
-  return <View testID="composer-option-picker" accessibilityRole="menu" accessibilityLabel={title} style={[styles.card, { backgroundColor: colors.raised, borderColor: colors.border }]}>
-    <View style={styles.pickerHeader}>
-      <Text style={[styles.heading, styles.grow, { color: colors.muted }]}>{title}</Text>
-      <IconButton icon={X} size={15} touchSize={44} onPress={onClose} label={`Close ${title.toLocaleLowerCase()} picker`} testID="composer-option-picker-close" />
-    </View>
-    {options.length === 0 ? <Text style={[styles.description, styles.empty, { color: colors.muted }]}>No choices are available for this chat.</Text> : null}
-    {options.map(option => {
-      const selected = option.value === (current ?? '')
-      return <Pressable
-        key={option.value || 'default'}
-        testID={`composer-option-${option.value || 'default'}`}
-        accessibilityRole="menuitem"
-        accessibilityState={{ selected, disabled: Boolean(option.locked) }}
-        disabled={Boolean(option.locked)}
-        onPress={() => onPick(option.value)}
-        style={({ pressed }) => [styles.row, { borderTopColor: colors.border, opacity: option.locked ? 0.4 : pressed ? 0.6 : 1 }]}
-      >
-        <View style={styles.copy}>
-          <Text style={[styles.label, { color: colors.text }]} numberOfLines={1}>{option.label}</Text>
-          {option.locked && option.locked_reason ? <Text style={[styles.description, { color: colors.muted }]} numberOfLines={2}>{option.locked_reason}</Text>
-            : option.description?.trim() ? <Text style={[styles.description, { color: colors.muted }]} numberOfLines={2}>{option.description.trim()}</Text> : null}
-        </View>
-        {selected ? <Check size={16} color={colors.blue} /> : null}
-      </Pressable>
-    })}
-  </View>
-}
-
 const styles = StyleSheet.create({
   card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 9, overflow: 'hidden' },
   heading: { fontSize: 10.5, fontWeight: '800', letterSpacing: 0.4, textTransform: 'uppercase', paddingHorizontal: 11, paddingTop: 8, paddingBottom: 3 },
@@ -98,6 +58,4 @@ const styles = StyleSheet.create({
   status: { minHeight: 44, borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', gap: 9 },
   retry: { minHeight: 44, paddingHorizontal: 8, justifyContent: 'center' },
   grow: { flex: 1, minWidth: 0 },
-  pickerHeader: { flexDirection: 'row', alignItems: 'center', paddingRight: 2 },
-  empty: { paddingHorizontal: 11, paddingBottom: 10 },
 })
