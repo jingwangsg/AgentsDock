@@ -31,20 +31,44 @@ test('Android chat and folder actions open from a long press on a collapsed sibl
   assert.doesNotMatch(source, /MoreHorizontal|AndroidMoreMenu/)
 })
 
-test('folder menus offer new Claude/Codex chats in that folder on both platforms', () => {
-  assert.match(source, /\{ id: 'new-claude', title: 'New Claude chat', image: 'plus' \},\s*\{ id: 'new-codex', title: 'New Codex chat', image: 'plus' \}/)
-  assert.match(source, /\{ id: 'new-claude', title: 'New Claude chat' \},\s*\{ id: 'new-codex', title: 'New Codex chat' \}/)
-  assert.match(source, /if \(id === 'new-claude'\) onNewChat\('claude'\)[\s\S]*?else if \(id === 'new-codex'\) onNewChat\('codex'\)/)
+test('folder menus offer a new chat per selectable backend in that folder on both platforms', () => {
+  assert.match(source, /const chatBackends = useMemo\(\(\) => selectableChatBackends\(health\), \[health\]\)/)
+  assert.match(source, /\.\.\.backends\.map\(backend => \(\{ id: `new:\$\{backend\}`, title: `New \$\{backendLabel\(backend\)\} chat`, image: 'plus' \} satisfies MenuAction\)\),/)
+  assert.match(source, /const backend = backends\.find\(value => id === `new:\$\{value\}`\)\s*if \(backend\) onNewChat\(backend\)/)
   assert.match(source, /onNewChat=\{backend => onNewChatIn\(item\.folder, backend\)\}/)
+  assert.doesNotMatch(source, /new-claude|new-codex/)
 })
 
-test('folders other than General can be renamed from their menu on both platforms', () => {
-  assert.match(source, /\.\.\.\(movable \? \[\s*\{ id: 'rename', title: 'Rename Folder', image: 'pencil' \} satisfies MenuAction,/)
-  assert.match(source, /\.\.\.\(movable \? \[\{ id: 'rename', title: 'Rename Folder' \}\] : \[\]\),/)
+test('every folder, General included, shows the same menu on both platforms', () => {
+  // The iOS sheet is derived from the Android action list, so the two cannot drift.
+  assert.match(source, /options: \[\.\.\.actions\.map\(action => action\.title\), 'Cancel'\],\s*cancelButtonIndex: actions\.length,\s*destructiveButtonIndex: actions\.findIndex\(action => action\.attributes\?\.destructive\),/)
+  assert.match(source, /\{ id: 'rename', title: 'Rename Folder', image: 'pencil' \},\s*\.\.\.\(canMoveUp \? \[\{ id: 'move-up', title: 'Move Folder Up', image: 'arrow\.up' \} satisfies MenuAction\] : \[\]\),\s*\.\.\.\(canMoveDown \? \[\{ id: 'move-down', title: 'Move Folder Down', image: 'arrow\.down' \} satisfies MenuAction\] : \[\]\),\s*\{ id: 'delete', title: 'Delete Folder', image: 'trash', attributes: \{ destructive: true \} \},\s*\]/)
+  // Only the virtual sections go without a menu; General is an ordinary folder.
+  assert.match(source, /const hasMenu = !\['Pinned', 'Archived'\]\.includes\(item\.folder\)/)
+  assert.doesNotMatch(source, /movable|'General', 'Archived'\]/)
+  // Move Folder acts on the rendered folder list and hides at the edges instead of disabling.
+  assert.match(source, /const folders = useMemo\(\(\) => orderedSessionSections\(sessions, folderOrder, false, true\)\.map\(section => section\.id\)\.filter\(folder => folder !== 'Pinned'\), \[folderOrder, sessions\]\)/)
+  assert.match(source, /canMoveUp=\{folders\.indexOf\(item\.folder\) > 0\}\s*canMoveDown=\{folders\.indexOf\(item\.folder\) >= 0 && folders\.indexOf\(item\.folder\) < folders\.length - 1\}/)
+  assert.doesNotMatch(source, /Move Folder (Up|Down)', image: '[^']*', attributes: \{ disabled/)
+})
+
+test('renaming a folder moves its chats, then renames the order and collapsed entries', () => {
   assert.match(source, /else if \(id === 'rename'\) onRename\(\)/)
   assert.match(source, /onRename=\{\(\) => renameFolder\(item\.folder\)\}/)
-  // Refuses empty/unchanged/duplicate names, moves every chat first, then renames the order and collapsed entries.
-  assert.match(source, /const renameFolder = \(folder: string\) => \{[\s\S]*?promptText\(\{[\s\S]*?title: 'Rename folder',[\s\S]*?initialValue: folder,[\s\S]*?confirmLabel: 'Rename',[\s\S]*?\}\)\.then\(async value => \{[\s\S]*?if \(!profileScopeIsCurrent\(scope\)\) return[\s\S]*?if \(!name \|\| name === folder \|\| folders\.includes\(name\)\) return[\s\S]*?await Promise\.all\(sessions[\s\S]*?updateSession\(session\.id, \{ folder: name \}, scope\.profileGeneration\)[\s\S]*?if \(!profileScopeIsCurrent\(scope\)\) return[\s\S]*?setFolderOrder\(movableFolders\.map\(entry => entry === folder \? name : entry\), scope\.profileGeneration\)[\s\S]*?setCollapsedFolders\(collapsedFolders\.map\(entry => entry === folder \? name : entry\), scope\.profileGeneration\)/)
+  // Refuses empty/unchanged names and case-insensitive duplicates of another folder; matches chats by effective folder so General's empty-field chats move too.
+  assert.match(source, /const renameFolder = \(folder: string\) => \{[\s\S]*?promptText\(\{[\s\S]*?title: 'Rename folder',[\s\S]*?initialValue: folder,[\s\S]*?confirmLabel: 'Rename',[\s\S]*?\}\)\.then\(async value => \{[\s\S]*?if \(!profileScopeIsCurrent\(scope\)\) return[\s\S]*?if \(!name \|\| name === folder \|\| folders\.some\(entry => entry !== folder && entry\.toLowerCase\(\) === name\.toLowerCase\(\)\)\) return[\s\S]*?await Promise\.all\(sessions[\s\S]*?\(session\.folder\?\.trim\(\) \|\| 'General'\) === folder\)[\s\S]*?updateSession\(session\.id, \{ folder: name \}, scope\.profileGeneration\)[\s\S]*?if \(!profileScopeIsCurrent\(scope\)\) return[\s\S]*?setFolderOrder\(folders\.map\(entry => entry === folder \? name : entry\), scope\.profileGeneration\)[\s\S]*?setCollapsedFolders\(collapsedFolders\.map\(entry => entry === folder \? name : entry\), scope\.profileGeneration\)/)
+})
+
+test('deleting a folder sends its chats to General, else the first other folder, without a confirmation prompt', () => {
+  assert.match(source, /else if \(id === 'delete'\) onDelete\(\)/)
+  assert.match(source, /onDelete=\{\(\) => deleteFolder\(item\.folder\)\}/)
+  const deleteFolder = source.match(/const deleteFolder = \(folder: string\) => \{([\s\S]*?)\n  \}\n/)?.[1] ?? ''
+  assert.match(deleteFolder, /const others = folders\.filter\(entry => entry !== folder\)/)
+  assert.match(deleteFolder, /const destination = others\.includes\('General'\) \? 'General' : others\.length \? others\[0\] : folder === 'General' \? null : 'General'/)
+  assert.match(deleteFolder, /if \(!destination && moving\.length\) \{\s*Alert\.alert\('Create another folder first', `The chats in “\$\{folder\}” need somewhere to go\.`\)\s*return\s*\}/)
+  assert.match(deleteFolder, /updateSession\(session\.id, \{ folder: destination \}, scope\.profileGeneration\)/)
+  assert.match(deleteFolder, /setFolderOrder\(others, scope\.profileGeneration\)[\s\S]*?setCollapsedFolders\(collapsedFolders\.filter\(entry => entry !== folder\), scope\.profileGeneration\)/)
+  assert.doesNotMatch(deleteFolder, /promptText|Alert\.alert\('Delete/)
 })
 
 test('closed chat rows fully cover their action surfaces', () => {

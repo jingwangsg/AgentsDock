@@ -29,20 +29,18 @@ export function orderedSessionSections(
     const folder = sessionSection(session)
     groups.set(folder, [...(groups.get(folder) ?? []), session])
   }
+  // Map insertion order is folderOrder first, then session folders as first
+  // seen, so the unlisted tail is already in display order.
   const remaining = [...groups.keys()]
-    .filter(folder => !['Pinned', 'General', 'Archived'].includes(folder) && !folderOrder.includes(folder))
-    .sort((left, right) => left.localeCompare(right))
-  const orderedFolders = ['Pinned', ...folderOrder, ...remaining, 'General', ...(includeArchived ? ['Archived'] : [])]
+    .filter(folder => !['Pinned', 'Archived'].includes(folder) && !folderOrder.includes(folder))
+  const orderedFolders = ['Pinned', ...folderOrder, ...remaining, ...(includeArchived ? ['Archived'] : [])]
     .filter((folder, index, values) => values.indexOf(folder) === index && (
-      // In the unfiltered sidebar General stays listed even when every chat in
-      // it is archived or pinned, so Create Folder cannot report it as
-      // existing while nothing on screen shows it.
-      (includeEmptyFolders && folder === 'General')
-      || (groups.get(folder)?.length ?? 0) > 0
+      (groups.get(folder)?.length ?? 0) > 0
       // A folder created in the mobile sidebar exists before any chat is
-      // moved into it. Keep those explicit custom folders visible so Create
-      // Folder never appears to succeed and then lose the folder.
-      || (includeEmptyFolders && !['Pinned', 'General', 'Archived'].includes(folder) && folderOrder.includes(folder))
+      // moved into it, and keeps its place after its last chat is archived.
+      // Keep every folderOrder entry visible so Create Folder never appears
+      // to succeed and then lose the folder.
+      || (includeEmptyFolders && !['Pinned', 'Archived'].includes(folder) && folderOrder.includes(folder))
     ))
   return orderedFolders.map(folder => ({ id: folder, title: folder, sessions: [...(groups.get(folder) ?? [])].sort(compareSessions) }))
 }
@@ -59,7 +57,7 @@ export function rememberedFolderOrder(folderOrder: string[], sessions: Pick<Sess
   const next = [...known]
   for (const session of sessions) {
     const folder = session.folder?.trim()
-    if (folder && folder !== 'General' && !known.has(folder)) { known.add(folder); next.push(folder) }
+    if (folder && !known.has(folder)) { known.add(folder); next.push(folder) }
   }
   return next.length === folderOrder.length ? folderOrder : next
 }

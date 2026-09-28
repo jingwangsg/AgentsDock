@@ -28,15 +28,37 @@ test('empty folders stay out of filtered results', () => {
   )
 })
 
-test('the unfiltered sidebar keeps General listed when it holds no visible chat', () => {
+test('a folder in folderOrder is kept in the unfiltered sidebar when it holds no visible chat', () => {
   assert.deepEqual(
     orderedSessionSections([{ ...session('a', 'Work'), archived: true }], ['Work'], true, true).map(section => section.id),
-    ['Work', 'General', 'Archived'],
+    ['Work', 'Archived'],
   )
 })
 
-test('remembered folder order keeps folders that only exist on sessions', () => {
-  assert.deepEqual(rememberedFolderOrder(['Work'], [session('x', 'Personal'), session('y', 'Work'), session('z')]), ['Work', 'Personal'])
+test('General takes its folderOrder position like any other folder', () => {
+  assert.deepEqual(
+    orderedSessionSections([session('g'), session('w', 'Work'), session('p', 'Personal')], ['Work', 'General', 'Personal']).map(section => section.id),
+    ['Work', 'General', 'Personal'],
+  )
+})
+
+test('General is hidden when it is empty and not in folderOrder', () => {
+  assert.deepEqual(
+    orderedSessionSections([session('w', 'Work'), { ...session('p', 'Work'), pinned: true }], ['Work'], true, true).map(section => section.id),
+    ['Pinned', 'Work'],
+  )
+})
+
+test('folders missing from folderOrder follow it in first-seen order', () => {
+  assert.deepEqual(
+    orderedSessionSections([session('z', 'Zeta'), session('g'), session('a', 'Alpha')], ['Work'], true, true).map(section => section.id),
+    ['Work', 'Zeta', 'General', 'Alpha'],
+  )
+})
+
+test('remembered folder order keeps folders that only exist on sessions, General included', () => {
+  assert.deepEqual(rememberedFolderOrder(['Work'], [session('x', 'Personal'), session('y', 'Work'), session('z')]), ['Work', 'Personal', 'General'])
+  assert.deepEqual(rememberedFolderOrder([], [session('z')]), ['General'])
   const same = ['Work']
   assert.equal(rememberedFolderOrder(same, [session('y', 'Work')]), same)
 })

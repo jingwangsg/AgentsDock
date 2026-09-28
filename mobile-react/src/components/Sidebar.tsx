@@ -6,8 +6,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAppStore } from '../store/useAppStore'
 import { radius, usePalette } from '../theme'
 import type { Backend, Session, TimelineSearchResult } from '../types'
-import { formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
+import { backendLabel, formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
 import { compareSessions, orderedSessionSections, sessionSection } from '../lib/session-order'
+import { selectableChatBackends } from '../lib/runtime-catalog'
 import { sessionNeedsProviderInteraction, sessionPendingInteractionCount } from '../lib/claude-controls'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { isServerSetupRequired } from '../lib/first-launch'
@@ -75,6 +76,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   const collapsedFolders = useAppStore(state => state.collapsedFolders)
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const workspaceAdopting = useAppStore(state => state.workspaceAdopting)
+  const health = useAppStore(state => state.health)
   const searchResults = useAppStore(state => state.searchResults)
   const searchBusy = useAppStore(state => state.searchBusy)
   const searchError = useAppStore(state => state.searchError)
@@ -241,15 +243,11 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     }
     return result
   }, [sessions])
-  const folders = useMemo(() => {
-    const values = new Set(['General', ...folderOrder])
-    for (const session of sessions) {
-      const folder = session.folder?.trim()
-      if (folder && !['Pinned', 'Archived'].includes(folder)) values.add(folder)
-    }
-    return [...values]
-  }, [folderOrder, sessions])
-  const movableFolders = useMemo(() => folders.filter(folder => folder !== 'General'), [folders])
+  // Exactly the folders the unfiltered sidebar renders, in display order, so
+  // Move Folder Up/Down and duplicate-name checks act on what is on screen.
+  // Pinned is a virtual section, not a folder.
+  const folders = useMemo(() => orderedSessionSections(sessions, folderOrder, false, true).map(section => section.id).filter(folder => folder !== 'Pinned'), [folderOrder, sessions])
+  const chatBackends = useMemo(() => selectableChatBackends(health), [health])
   const createFolder = () => {
     const scope = profileScope
     if (!profileScopeIsCurrent(scope)) return
@@ -262,12 +260,12 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     }).then(value => {
       if (!profileScopeIsCurrent(scope)) return
       const name = value?.trim()
-      if (name && !folders.includes(name)) setFolderOrder([...movableFolders, name], scope.profileGeneration)
+      if (name && !folders.includes(name)) setFolderOrder([...folders, name], scope.profileGeneration)
     })
   }
   const moveFolder = (folder: string, direction: 'up' | 'down') => {
     if (!profileScopeIsCurrent(profileScope)) return
-    const order = [...movableFolders]
+    const order = [...folders]
     const index = order.indexOf(folder)
     const target = direction === 'up' ? index - 1 : index + 1
     if (index < 0 || target < 0 || target >= order.length) return
@@ -287,13 +285,32 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     }).then(async value => {
       if (!profileScopeIsCurrent(scope)) return
       const name = value?.trim()
-      if (!name || name === folder || folders.includes(name)) return
+      if (!name || name === folder || folders.some(entry => entry !== folder && entry.toLowerCase() === name.toLowerCase())) return
       await Promise.all(sessions
-        .filter(session => (session.folder?.trim() || 'General') === folder)
+        // The welcome chat is local-only; the server has no record to update.
+        .filter(session => !isWelcomeSession(session.id) && (session.folder?.trim() || 'General') === folder)
         .map(session => updateSession(session.id, { folder: name }, scope.profileGeneration)))
       if (!profileScopeIsCurrent(scope)) return
-      setFolderOrder(movableFolders.map(entry => entry === folder ? name : entry), scope.profileGeneration)
+      setFolderOrder(folders.map(entry => entry === folder ? name : entry), scope.profileGeneration)
       if (collapsed.has(folder)) setCollapsedFolders(collapsedFolders.map(entry => entry === folder ? name : entry), scope.profileGeneration)
+    })
+  }
+  const deleteFolder = (folder: string) => {
+    const scope = profileScope
+    if (!profileScopeIsCurrent(scope)) return
+    const others = folders.filter(entry => entry !== folder)
+    // Chats fall back to General, then to the first remaining folder. Deleting
+    // General while it is the only folder leaves its chats nowhere to go.
+    const destination = others.includes('General') ? 'General' : others.length ? others[0] : folder === 'General' ? null : 'General'
+    const moving = sessions.filter(session => !isWelcomeSession(session.id) && (session.folder?.trim() || 'General') === folder)
+    if (!destination && moving.length) {
+      Alert.alert('Create another folder first', `The chats in “${folder}” need somewhere to go.`)
+      return
+    }
+    void Promise.all(destination ? moving.map(session => updateSession(session.id, { folder: destination }, scope.profileGeneration)) : []).then(() => {
+      if (!profileScopeIsCurrent(scope)) return
+      setFolderOrder(others, scope.profileGeneration)
+      if (collapsed.has(folder)) setCollapsedFolders(collapsedFolders.filter(entry => entry !== folder), scope.profileGeneration)
     })
   }
 
@@ -380,8 +397,9 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           item={item}
           profileScope={profileScope}
           collapsed={collapsed.has(item.folder)}
-          canMoveUp={movableFolders.indexOf(item.folder) > 0}
-          canMoveDown={movableFolders.indexOf(item.folder) >= 0 && movableFolders.indexOf(item.folder) < movableFolders.length - 1}
+          backends={chatBackends}
+          canMoveUp={folders.indexOf(item.folder) > 0}
+          canMoveDown={folders.indexOf(item.folder) >= 0 && folders.indexOf(item.folder) < folders.length - 1}
           onDismissKeyboard={dismissSearchKeyboard}
           onToggle={() => {
             if (!profileScopeIsCurrent(profileScope)) return
@@ -393,6 +411,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           onMove={direction => moveFolder(item.folder, direction)}
           onNewChat={backend => onNewChatIn(item.folder, backend)}
           onRename={() => renameFolder(item.folder)}
+          onDelete={() => deleteFolder(item.folder)}
         /> : (() => {
           const { previousId, nextId } = reorderNeighbors.get(item.session.id) ?? { previousId: null, nextId: null }
           return <SessionRow
@@ -430,10 +449,11 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   )
 }
 
-function FolderHeader({ item, profileScope, collapsed, canMoveUp, canMoveDown, onDismissKeyboard, onToggle, onMove, onNewChat, onRename }: {
+function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canMoveDown, onDismissKeyboard, onToggle, onMove, onNewChat, onRename, onDelete }: {
   item: Extract<Row, { kind: 'header' }>
   profileScope: ProfileScope
   collapsed: boolean
+  backends: Backend[]
   canMoveUp: boolean
   canMoveDown: boolean
   onDismissKeyboard: () => void
@@ -441,47 +461,41 @@ function FolderHeader({ item, profileScope, collapsed, canMoveUp, canMoveDown, o
   onMove: (direction: 'up' | 'down') => void
   onNewChat: (backend: Backend) => void
   onRename: () => void
+  onDelete: () => void
 }) {
   const colors = usePalette()
   const menu = useRef<MenuComponentRef>(null)
-  const movable = !['Pinned', 'General', 'Archived'].includes(item.folder)
   // Pinned and Archived are virtual sections: no chat can be created in them.
   const hasMenu = !['Pinned', 'Archived'].includes(item.folder)
   const runAction = (id: string) => {
     if (!profileScopeIsCurrent(profileScope)) return
-    if (id === 'new-claude') onNewChat('claude')
-    else if (id === 'new-codex') onNewChat('codex')
+    const backend = backends.find(value => id === `new:${value}`)
+    if (backend) onNewChat(backend)
     else if (id === 'rename') onRename()
     else if (id === 'move-up') onMove('up')
     else if (id === 'move-down') onMove('down')
+    else if (id === 'delete') onDelete()
   }
+  // One list feeds the Android menu and the iOS sheet so every folder shows the
+  // same items in the same order; Move is hidden at the edges, not disabled.
   const actions: MenuAction[] = [
-    { id: 'new-claude', title: 'New Claude chat', image: 'plus' },
-    { id: 'new-codex', title: 'New Codex chat', image: 'plus' },
-    ...(movable ? [
-      { id: 'rename', title: 'Rename Folder', image: 'pencil' } satisfies MenuAction,
-      { id: 'move-up', title: 'Move Folder Up', image: 'arrow.up', attributes: { disabled: !canMoveUp } } satisfies MenuAction,
-      { id: 'move-down', title: 'Move Folder Down', image: 'arrow.down', attributes: { disabled: !canMoveDown } } satisfies MenuAction,
-    ] : []),
+    ...backends.map(backend => ({ id: `new:${backend}`, title: `New ${backendLabel(backend)} chat`, image: 'plus' } satisfies MenuAction)),
+    { id: 'rename', title: 'Rename Folder', image: 'pencil' },
+    ...(canMoveUp ? [{ id: 'move-up', title: 'Move Folder Up', image: 'arrow.up' } satisfies MenuAction] : []),
+    ...(canMoveDown ? [{ id: 'move-down', title: 'Move Folder Down', image: 'arrow.down' } satisfies MenuAction] : []),
+    { id: 'delete', title: 'Delete Folder', image: 'trash', attributes: { destructive: true } },
   ]
   const openActionSheet = () => {
     if (!profileScopeIsCurrent(profileScope)) return
     onDismissKeyboard()
-    const available = [
-      { id: 'new-claude', title: 'New Claude chat' },
-      { id: 'new-codex', title: 'New Codex chat' },
-      ...(movable ? [{ id: 'rename', title: 'Rename Folder' }] : []),
-      ...(canMoveUp ? [{ id: 'move-up', title: 'Move Folder Up' }] : []),
-      ...(canMoveDown ? [{ id: 'move-down', title: 'Move Folder Down' }] : []),
-    ]
-    const cancelButtonIndex = available.length
     ActionSheetIOS.showActionSheetWithOptions({
       title: item.title,
-      options: [...available.map(action => action.title), 'Cancel'],
-      cancelButtonIndex,
+      options: [...actions.map(action => action.title), 'Cancel'],
+      cancelButtonIndex: actions.length,
+      destructiveButtonIndex: actions.findIndex(action => action.attributes?.destructive),
     }, index => {
-      const action = available[index]
-      if (action) runAction(action.id)
+      const action = actions[index]
+      if (action?.id) runAction(action.id)
     })
   }
   const header = <Pressable
