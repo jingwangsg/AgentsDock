@@ -1,6 +1,6 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from '../shared/provider-usage'
 import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, shell } from 'electron'
-import { macAppIsAdhocSigned, postAppleScriptNotification, primeMacSignatureProbe } from './notify-fallback'
+import { bannerDedupeKey, notificationBannerContent, type NotificationPopupController } from './notification-popup'
 import { rememberedFolderOrder } from '../shared/folders'
 import { applyOpenCodeSessionEvent } from '../shared/opencode'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -370,6 +370,8 @@ export interface AppServiceOptions {
   fileUploadGrants?: FileUploadGrantRegistry
   /** Test seam for private clipboard staging/scavenging. */
   clipboardTempRoot?: string
+  /** macOS completion banners; injected so tests observe the banner path without real windows. */
+  notificationPopups?: NotificationPopupController
 }
 
 export class AppService {
@@ -447,6 +449,7 @@ export class AppService {
   private health: Health | null = null
   private readonly onServerReachable?: AppServiceOptions['onServerReachable']
   private readonly onServerUnavailable?: AppServiceOptions['onServerUnavailable']
+  private readonly notificationPopups: NotificationPopupController | null
   private sessions: Session[] = []
   private jobs: Job[] = []
   private runtimeCatalog: RuntimeCatalog | null = null
@@ -500,6 +503,7 @@ export class AppService {
     this.removeTeamHubProfile = options.removeTeamHubProfile ?? (async () => undefined)
     this.fileUploadGrants = options.fileUploadGrants ?? new FileUploadGrantRegistry()
     this.clipboardTempRoot = options.clipboardTempRoot ?? app.getPath('temp')
+    this.notificationPopups = options.notificationPopups ?? null
     this.portTunnels.setChangeListener?.(ports => this.emitForwardedPorts(ports))
     appLog('startup', 'local cache ready')
     this.clientFactory = options.clientFactory ?? ((serverUrl, accessToken) => new AgentServerClient(serverUrl, accessToken))
@@ -612,8 +616,6 @@ export class AppService {
   }
 
   start(): void {
-    // Only the packaged app can be ad-hoc signed; dev and tests run Apple-signed Electron.
-    if (app.isPackaged) primeMacSignatureProbe(app.getPath('exe'))
     if (this.running) return
     const adopted = this.adoptLocalHubToken()
     if (!this.clientAvailable || (adopted && this.hubProfile()?.id === this.activeProfileId)) this.activateProfile(this.activeProfileId, false, true)
@@ -674,6 +676,7 @@ export class AppService {
     cleanup(() => this.disconnectAllTerminals())
     this.terminalLeases.clear()
     cleanup(() => this.portTunnels.disposeAll())
+    cleanup(() => this.notificationPopups?.dispose())
     cleanup(() => this.fileUploadGrants.clear())
     cleanup(() => this.removeClipboardStagingDirectory())
     cleanup(() => this.flushEventCache())
@@ -5060,9 +5063,18 @@ export class AppService {
       serverIdentity: profile.serverIdentity ?? null,
       sessionId: payload.sessionId
     }
-    if (macAppIsAdhocSigned()) {
-      // Ad-hoc build: Notification Center silently drops our requests (see notify-fallback.ts).
-      postAppleScriptNotification(payload.title, payload.body, error => appLog('notify', error ? 'osascript failed' : 'posted via osascript', { sessionId: payload.sessionId, error: error?.message ?? null }))
+    if (this.notificationPopups) {
+      // macOS: Notification Center drops the ad-hoc build's requests, so the app
+      // draws its own banner. Open takes the same focus + route path as a click.
+      this.notificationPopups.show({
+        key: bannerDedupeKey(route),
+        content: notificationBannerContent(payload),
+        onOpen: () => {
+          const window = this.focusMainWindow()
+          if (window && !window.isDestroyed()) this.deliverOrQueueNotificationRoute(window, route)
+        }
+      })
+      appLog('notify', 'banner shown', { sessionId: payload.sessionId, emergency: Boolean(emergencyAlertId) })
       return
     }
     this.postNativeNotification(payload, route, emergencyAlertId)

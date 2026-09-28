@@ -20,11 +20,14 @@ export default defineConfig({
       minify: true,
       sourcemap: false,
       rollupOptions: {
-        input: resolve(__dirname, 'src/preload/index.ts'),
+        input: {
+          index: resolve(__dirname, 'src/preload/index.ts'),
+          'notification-popup': resolve(__dirname, 'src/preload/notification-popup.ts')
+        },
         external: ['electron'],
         output: {
           format: 'cjs',
-          entryFileNames: 'index.cjs'
+          entryFileNames: '[name].cjs'
         }
       }
     }

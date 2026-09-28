@@ -7,6 +7,7 @@ import { installGlobalHotkey } from './global-hotkey'
 import { appLog } from './logger'
 import { reportStorageError } from './storage-health'
 import { AppService } from './service'
+import { NotificationPopups } from './notification-popup'
 import { createEditMenu } from './edit-menu'
 import { LanguageSettings } from './language'
 import { localizeNativeMenu } from './native-menu'
@@ -105,7 +106,15 @@ if (!app.requestSingleInstanceLock()) {
           const currentTeamHub = teamHub
           if (!currentTeamHub) throw new Error('Teamspace profile cleanup is not available yet.')
           return currentTeamHub.removeServerProfile(profileId)
-        }
+        },
+        // Only macOS draws its own banner; other platforms keep native notifications.
+        notificationPopups: process.platform === 'darwin'
+          ? new NotificationPopups({
+              displayWindow: () => mainWindow,
+              iconPath: app.isPackaged ? join(process.resourcesPath, 'icon.icns') : join(app.getAppPath(), 'build', 'AgentsDock.icns'),
+              preloadPath: join(__dirname, '../preload/notification-popup.cjs')
+            })
+          : undefined
       })
       const appService = service
       coordinatedUpdates = new CoordinatedUpdateManager({

@@ -88,6 +88,7 @@ import {
 import { AppService, mergePolledSessionSummaries, mergeSessionSummaries, sessionOwnedFilesPage } from './service'
 import { SettingsStore } from './settings'
 import { PortTunnelManager } from './port-tunnel-manager'
+import type { NotificationPopupRequest } from './notification-popup'
 import { mailHintPending, TEAM_MAIL_HINTS_PATH, TEAM_MAIL_HINTS_PROTOCOL, type MailHintPacket, type MailboxCoverage } from '../shared/team-mail-hints'
 
 const cleanup: Array<() => void> = []
@@ -9615,6 +9616,50 @@ describe('server profile lifecycle', () => {
     ])
     expect(electronHarness.notifications).toHaveLength(2)
     expect(electronHarness.notifications[1].options).toEqual({ title: 'Quick question', body: 'Response finished', silent: false })
+  })
+
+  it('shows the macOS banner instead of a native notification and routes Open through the existing delivery', async () => {
+    electronHarness.notificationSupported = true
+    const shown: NotificationPopupRequest[] = []
+    const popups = { show: (request: NotificationPopupRequest) => { shown.push(request) }, dismissAll: vi.fn(), dispose: vi.fn() }
+    const { settings } = profileSettings()
+    settings.setProfileServerIdentity('a', 'server-a')
+    const cache = new LocalCache(':memory:')
+    const service = new AppService({ settings, cache, clientFactory: () => fakeClient() as unknown as AgentServerClient, notificationPopups: popups })
+    cleanup.push(() => { service.stop(); cache.close() })
+    ;(service as unknown as { sessions: Session[] }).sessions = [{ id: 'chat', title: 'Open chat', backend: 'codex' }]
+    const send = vi.fn()
+    const window = {
+      isDestroyed: () => false, isMinimized: () => false, show: vi.fn(), focus: vi.fn(),
+      webContents: { send, isDestroyed: () => false, isLoadingMainFrame: () => false }
+    }
+    ;(service as unknown as { windows: Set<unknown> }).windows = new Set([window])
+    service.rendererReadyForNotificationRoutes(window as never)
+
+    // The existing profile/session validation still gates the banner.
+    await service.notify({ title: 'Open chat', body: 'Response finished', profileId: 'a', serverIdentity: 'spoofed', sessionId: 'chat' })
+    await service.notify({ title: 'Gone', body: 'Response finished', profileId: 'a', serverIdentity: 'server-a', sessionId: 'missing' })
+    expect(shown).toHaveLength(0)
+
+    await service.notify({ title: 'Open chat', body: 'Response finished', profileId: 'a', serverIdentity: 'server-a', sessionId: 'chat' })
+    await service.notify({ title: 'Open chat', body: 'The agent is waiting for you', profileId: 'a', serverIdentity: 'server-a', sessionId: 'chat' })
+    expect(electronHarness.notifications).toHaveLength(0)
+    expect(shown.map(request => request.content)).toEqual([
+      { title: 'Open chat', status: 'Response finished', emergency: false },
+      { title: 'Open chat', status: 'The agent is waiting for you', emergency: false }
+    ])
+    // Both carry the same session key, so the popup replaces rather than stacks.
+    expect(shown[0].key).toBe(shown[1].key)
+    expect(shown[0].key).toBe('a\u0000server-a\u0000chat')
+
+    expect(send).not.toHaveBeenCalled()
+    shown[1].onOpen()
+    expect(window.show).toHaveBeenCalledOnce()
+    expect(window.focus).toHaveBeenCalledOnce()
+    expect(send).toHaveBeenCalledExactlyOnceWith('native:notification', { profileId: 'a', serverIdentity: 'server-a', sessionId: 'chat' })
+
+    service.stop()
+    expect(popups.dispose).toHaveBeenCalledOnce()
   })
 })
 
