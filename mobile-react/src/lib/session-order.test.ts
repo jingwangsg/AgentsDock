@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Session } from '../types'
-import { orderedSessionSections } from './session-order'
+import { orderedSessionSections, rememberedFolderOrder } from './session-order'
 
 function session(id: string, folder = 'General'): Session {
   return { id, title: id, folder, backend: 'codex' } as Session
@@ -26,4 +26,17 @@ test('empty folders stay out of filtered results', () => {
     orderedSessionSections([], ['Empty folder']).map(section => section.id),
     [],
   )
+})
+
+test('the unfiltered sidebar keeps General listed when it holds no visible chat', () => {
+  assert.deepEqual(
+    orderedSessionSections([{ ...session('a', 'Work'), archived: true }], ['Work'], true, true).map(section => section.id),
+    ['Work', 'General', 'Archived'],
+  )
+})
+
+test('remembered folder order keeps folders that only exist on sessions', () => {
+  assert.deepEqual(rememberedFolderOrder(['Work'], [session('x', 'Personal'), session('y', 'Work'), session('z')]), ['Work', 'Personal'])
+  const same = ['Work']
+  assert.equal(rememberedFolderOrder(same, [session('y', 'Work')]), same)
 })

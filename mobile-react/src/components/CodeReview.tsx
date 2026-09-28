@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import * as Clipboard from 'expo-clipboard'
-import { AlertTriangle, Copy } from 'lucide-react-native'
+import { AlertTriangle, ChevronRight, Copy, Folder } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
 import {
   codeReviewFallback,
@@ -11,6 +11,7 @@ import {
   type DiffLine,
   parseReviewableDiff,
 } from '../lib/code-review'
+import { buildFileTree, type FileTreeDirectory, type FileTreeNode } from '../lib/file-tree'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { fonts } from '../lib/typography'
@@ -69,12 +70,15 @@ function ScopedCodeReview({ sessionId, runId, onClose, connection, connectionKey
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState(0)
+  // Directories start expanded; the set holds the exceptions for the current review.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   useEffect(() => {
     let cancelled = false
     const localFallback = runId ? codeReviewFallback(profileGeneration, sessionId, runId) : null
     setDiff(localFallback?.source ?? '')
     setTruncated(Boolean(localFallback?.truncated))
     setSelected(0)
+    setCollapsed(new Set())
     setError(null)
     setLoading(Boolean(runId && connectionReady))
     if (!runId || !connectionReady) return () => { cancelled = true }
@@ -101,6 +105,7 @@ function ScopedCodeReview({ sessionId, runId, onClose, connection, connectionKey
     return () => { cancelled = true }
   }, [activeProfileId, connection, connectionReady, profileGeneration, runId, sessionId])
   const files = useMemo(() => parseReviewableDiff(diff), [diff])
+  const tree = useMemo(() => buildFileTree(files.map(file => file.path)), [files])
   const file = files[Math.min(selected, Math.max(0, files.length - 1))]
   const additions = files.reduce((sum, value) => sum + value.additions, 0)
   const deletions = files.reduce((sum, value) => sum + value.deletions, 0)
@@ -123,7 +128,7 @@ function ScopedCodeReview({ sessionId, runId, onClose, connection, connectionKey
       </View>
       {loading && !files.length ? <Loading label="Loading complete diff" /> : !files.length ? <View style={styles.unavailable}><AlertTriangle size={20} color={colors.orange} /><Text selectable style={[styles.unavailableText, { color: colors.muted }]}>{unavailable}</Text></View> : <View style={styles.workspace}>
         <ScrollView style={[styles.files, { borderColor: colors.border }]} contentContainerStyle={{ padding: 6 }}>
-          {files.map((value, index) => <ReviewFileButton key={`${value.path}:${index}`} file={value} selected={index === selected} onPress={() => setSelected(index)} />)}
+          <ReviewTree nodes={tree} depth={0} files={files} selected={selected} collapsed={collapsed} onToggle={path => setCollapsed(current => { const next = new Set(current); if (!next.delete(path)) next.add(path); return next })} onSelect={setSelected} />
         </ScrollView>
         <View style={styles.diffColumn}>
           {errorWarning || sizeWarning ? <View accessibilityRole="alert" style={[styles.inlineWarning, { borderColor: colors.orange, backgroundColor: `${colors.orange}12` }]}><AlertTriangle size={13} color={colors.orange} /><Text selectable style={{ flex: 1, color: colors.orange, fontSize: 10.5 }}>{[errorWarning, sizeWarning].filter(Boolean).join(' ')}</Text></View> : null}
@@ -134,13 +139,57 @@ function ScopedCodeReview({ sessionId, runId, onClose, connection, connectionKey
   </Modal>
 }
 
-function ReviewFileButton({ file, selected, onPress }: { file: DiffFile; selected: boolean; onPress: () => void }) {
+function ReviewTree({ nodes, depth, files, selected, collapsed, onToggle, onSelect }: {
+  nodes: FileTreeNode[]
+  depth: number
+  files: DiffFile[]
+  selected: number
+  collapsed: ReadonlySet<string>
+  onToggle: (path: string) => void
+  onSelect: (index: number) => void
+}) {
+  const colors = usePalette()
+  return <>
+    {nodes.map(node => {
+      if (node.kind === 'file') return <ReviewFileButton key={`${node.path}:${node.index}`} file={files[node.index]} name={node.name} depth={depth} selected={node.index === selected} onPress={() => onSelect(node.index)} />
+      const expanded = !collapsed.has(node.path)
+      const stats = directoryStats(node, files)
+      return <Fragment key={node.path}>
+        <Pressable accessibilityRole="button" accessibilityLabel={`${node.path}, ${stats.count} file${stats.count === 1 ? '' : 's'}, +${stats.additions} -${stats.deletions}`} accessibilityState={{ expanded }} onPress={() => onToggle(node.path)} style={[styles.directory, { paddingLeft: treeIndent(depth) }]}>
+          <ChevronRight size={12} color={colors.muted} style={{ transform: [{ rotate: expanded ? '90deg' : '0deg' }] }} />
+          <Folder size={12} color={colors.muted} />
+          <Text style={{ flex: 1, minWidth: 0, color: colors.muted, fontSize: 11, fontFamily: fonts.mono }} numberOfLines={1}>{node.name}</Text>
+          <Text style={{ color: colors.muted, fontSize: 10 }}>{stats.count}</Text>
+          <Text style={{ color: colors.green, fontSize: 10 }}>+{stats.additions}</Text><Text style={{ color: colors.red, fontSize: 10 }}>-{stats.deletions}</Text>
+        </Pressable>
+        {expanded ? <ReviewTree nodes={node.children} depth={depth + 1} files={files} selected={selected} collapsed={collapsed} onToggle={onToggle} onSelect={onSelect} /> : null}
+      </Fragment>
+    })}
+  </>
+}
+
+function ReviewFileButton({ file, name, depth, selected, onPress }: { file: DiffFile; name: string; depth: number; selected: boolean; onPress: () => void }) {
   const colors = usePalette()
   const conflict = file.conflictCount ? `, ${file.conflictCount} conflict${file.conflictCount === 1 ? '' : 's'}` : ''
-  return <Pressable accessibilityRole="button" accessibilityLabel={`Review ${file.path}${conflict}`} accessibilityState={{ selected }} onPress={onPress} style={[styles.file, { backgroundColor: selected ? colors.raised : 'transparent' }]}>
-    <View style={styles.fileName}><Text style={{ color: colors.text, fontSize: 11, fontFamily: fonts.mono }} numberOfLines={2}>{file.path}</Text>{file.conflictCount ? <View style={styles.conflictBadge}><AlertTriangle size={10} color={colors.orange} /><Text style={{ color: colors.orange, fontSize: 9, fontWeight: '800' }}>{file.conflictCount}</Text></View> : null}</View>
+  return <Pressable accessibilityRole="button" accessibilityLabel={`Review ${file.path}${conflict}`} accessibilityState={{ selected }} onPress={onPress} style={[styles.file, { backgroundColor: selected ? colors.raised : 'transparent', paddingLeft: treeIndent(depth) }]}>
+    <View style={styles.fileName}><Text style={{ color: colors.text, fontSize: 11, fontFamily: fonts.mono }} numberOfLines={2}>{name}</Text>{file.conflictCount ? <View style={styles.conflictBadge}><AlertTriangle size={10} color={colors.orange} /><Text style={{ color: colors.orange, fontSize: 9, fontWeight: '800' }}>{file.conflictCount}</Text></View> : null}</View>
     <Text style={{ color: colors.green, fontSize: 10 }}>+{file.additions}</Text><Text style={{ color: colors.red, fontSize: 10 }}>-{file.deletions}</Text>
   </Pressable>
+}
+
+const treeIndent = (depth: number) => 9 + depth * 12
+
+function directoryStats(node: FileTreeDirectory, files: DiffFile[]): { count: number; additions: number; deletions: number } {
+  const stats = { count: 0, additions: 0, deletions: 0 }
+  for (const child of node.children) {
+    const part = child.kind === 'directory'
+      ? directoryStats(child, files)
+      : { count: 1, additions: files[child.index].additions, deletions: files[child.index].deletions }
+    stats.count += part.count
+    stats.additions += part.additions
+    stats.deletions += part.deletions
+  }
+  return stats
 }
 
 function ReviewLine({ line }: { line: DiffLine }) {
@@ -192,6 +241,7 @@ const styles = StyleSheet.create({
   unavailable: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24 }, unavailableText: { maxWidth: 360, textAlign: 'center', fontSize: 12, lineHeight: 18 },
   conflictSummary: { minHeight: 27, borderRadius: 6, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 4 },
   workspace: { flex: 1, flexDirection: 'row' }, files: { width: 260, maxWidth: '34%', borderRightWidth: StyleSheet.hairlineWidth }, file: { minHeight: 54, borderRadius: 5, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 5 }, fileName: { flex: 1, minWidth: 0, gap: 3 },
+  directory: { minHeight: 44, borderRadius: 5, paddingHorizontal: 9, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 5 },
   conflictBadge: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 3 },
   diffColumn: { flex: 1, minWidth: 0 }, diff: { flex: 1 }, inlineWarning: { borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 6 },
   line: { minHeight: 20, flexDirection: 'row', alignItems: 'center' }, lineNumber: { width: 40, paddingRight: 8, textAlign: 'right', fontFamily: fonts.mono, fontSize: 10.5 }, code: { fontFamily: fonts.mono, fontSize: 11.5, paddingRight: 12 }, markerLabel: { marginLeft: 8, marginRight: 8, fontSize: 9, fontWeight: '900' },

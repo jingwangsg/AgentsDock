@@ -1,4 +1,4 @@
-import { chatWorkspaceLayout } from './chat-layout'
+import { chatWorkspaceLayout, sidebarWidth } from './chat-layout'
 
 function assertLayout(width: number, height: number, compact: boolean, inlineInspectorAvailable: boolean, message: string): void {
   const layout = chatWorkspaceLayout(width, height)
@@ -17,5 +17,16 @@ assertLayout(996, 407, true, false, 'unfolded clamshell (Flip) landscape stays c
 assertLayout(1079, 1366, false, false, '1079pt cannot mount the inline inspector')
 assertLayout(1080, 1366, false, true, '1080pt can mount the inline inspector')
 assertLayout(1180, 590, true, false, 'wide but short viewports remain compact')
+
+function assertSidebarWidth(width: number, collapsed: boolean, expected: number): void {
+  const actual = sidebarWidth(width, collapsed)
+  if (actual !== expected) throw new Error(`sidebarWidth(${width}, ${collapsed}): expected ${expected}, received ${actual}`)
+}
+
+assertSidebarWidth(700, false, 240)
+assertSidebarWidth(760, false, 255)
+assertSidebarWidth(1180, false, 285)
+assertSidebarWidth(700, true, 0)
+assertSidebarWidth(1180, true, 0)
 
 console.log('chat layout breakpoint regressions passed')

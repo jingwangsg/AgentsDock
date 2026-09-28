@@ -5,14 +5,15 @@ import { useShallow } from 'zustand/react/shallow'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
-import { AlertCircle, Settings, X } from 'lucide-react-native'
+import { AlertCircle, PanelLeftOpen, Settings, X } from 'lucide-react-native'
 import type { Backend } from '../types'
 import { trackEvent } from '../lib/analytics'
 import { dismissAppKeyboard, useAppKeyboardLifecycle } from '../lib/app-keyboard'
-import { chatWorkspaceLayout } from '../lib/chat-layout'
+import { chatWorkspaceLayout, sidebarWidth } from '../lib/chat-layout'
 import { isServerSetupRequired, shouldPresentServerSetup } from '../lib/first-launch'
 import { fullscreenModalTopPadding } from '../lib/fullscreen-modal-layout'
 import { hubProxyRemoteId, profileNamespace } from '../lib/server-profiles'
+import { readSidebarCollapsed, writeSidebarCollapsed } from '../lib/sidebar-preference'
 import { useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { ChatScreen } from './ChatScreen'
@@ -86,6 +87,7 @@ function AppShellContent() {
   const cancelHubDeploy = useAppStore(state => state.cancelHubDeploy)
   const [mobileChatOpen, setMobileChatOpen] = useState(false)
   const [inspectorVisible, setInspectorVisible] = useState(true)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [settings, setSettings] = useState(false)
   const [teamNetwork, setTeamNetwork] = useState(false)
   const [setupDismissed, setSetupDismissed] = useState(true)
@@ -138,6 +140,11 @@ function AppShellContent() {
     setMobileChatOpen(false)
     requestAnimationFrame(dismissAppKeyboard)
   }, [])
+  const toggleSidebar = useCallback(() => {
+    const next = !sidebarCollapsed
+    setSidebarCollapsed(next)
+    void writeSidebarCollapsed(next)
+  }, [sidebarCollapsed])
   const openServers = useCallback((mode: 'manage' | 'edit-active') => {
     setServers(mode)
     requestAnimationFrame(dismissAppKeyboard)
@@ -249,6 +256,11 @@ function AppShellContent() {
   }, [switchServerProfile])
 
   useEffect(() => { void initialize() }, [initialize])
+  useEffect(() => {
+    let active = true
+    void readSidebarCollapsed().then(collapsed => { if (active) setSidebarCollapsed(collapsed) })
+    return () => { active = false }
+  }, [])
   useEffect(() => { if (!selectedId) setMobileChatOpen(false) }, [selectedId])
   // Folding a book-style device mid-chat drops from two panes to one: keep the
   // open chat in view instead of falling back to the list.
@@ -355,14 +367,17 @@ function AppShellContent() {
 
   const connectionKey = `${activeProfileId ?? 'none'}:${profileGeneration}`
   const sidebar = <Sidebar key={`sidebar:${connectionKey}`} profiles={serverProfileItems} activeProfileId={activeProfileId} switchingProfileId={switchingProfileId} onSwitchServer={switchServer} onSetupServer={() => openServers('edit-active')} onManageServers={() => openServers('manage')} onSettings={openSettings} onTeamNetwork={openTeamNetwork} onNewChat={() => void quickNewChat()} onNewChatIn={(folder, backend) => void quickNewChat({ folder, backend })} onOpenChat={() => { trackEvent('chat_opened'); openMobileChat() }} />
+  // The collapsed rail stays mounted (see sidebarWidth), so it must also leave
+  // the accessibility tree or screen readers land on invisible controls.
+  const sidebarRail = <View style={{ width: sidebarWidth(width, sidebarCollapsed), overflow: 'hidden' }} accessibilityElementsHidden={sidebarCollapsed} importantForAccessibility={sidebarCollapsed ? 'no-hide-descendants' : 'auto'}>{sidebar}</View>
   const chat = selected
-    ? <ChatScreen key={`${connectionKey}:${selected.id}`} sessionId={selected.id} compact={compact} inlineInspectorAvailable={chatLayout.inlineInspectorAvailable} onBack={closeMobileChat} onOptions={openOptions} onSearch={openSearch} onToggleInspector={() => setInspectorVisible(value => !value)} onReview={openReview} onSetupServer={() => openServers('edit-active')} onOpenMcp={() => openClaudeMcp(selected.id)} onShellAction={action => { if (action === 'details') openOptions(); else if (action === 'new-chat') void quickNewChat(); else openInspectorAction(action) }} />
-    : <NoChat connecting={connecting} onSettings={() => openServers('manage')} />
+    ? <ChatScreen key={`${connectionKey}:${selected.id}`} sessionId={selected.id} compact={compact} inlineInspectorAvailable={chatLayout.inlineInspectorAvailable} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} onBack={closeMobileChat} onOptions={openOptions} onSearch={openSearch} onToggleInspector={() => setInspectorVisible(value => !value)} onReview={openReview} onSetupServer={() => openServers('edit-active')} onOpenMcp={() => openClaudeMcp(selected.id)} onShellAction={action => { if (action === 'details') openOptions(); else if (action === 'new-chat') void quickNewChat(); else openInspectorAction(action) }} />
+    : <NoChat connecting={connecting} onSettings={() => openServers('manage')} onShowChatList={!compact && sidebarCollapsed ? toggleSidebar : undefined} />
 
   return <View style={[styles.fill, { backgroundColor: colors.background }]}>
     <AndroidUpdateCoordinator />
     {error && !showServerSetup ? <View testID="global-error-slot" style={styles.errorSlot}><View style={[styles.error, { backgroundColor: colors.surface, borderColor: colors.red }]}><AlertCircle size={17} color={colors.red} /><View style={styles.errorContent}><Text style={[styles.errorText, { color: colors.text }]} numberOfLines={canCancelPendingServerUpdate ? 4 : 3}>{error}</Text>{canCancelPendingServerUpdate ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel scheduled server update" accessibilityHint="Cancels the pending update so messages can be sent again" accessibilityState={{ disabled: cancelingServerUpdate, busy: cancelingServerUpdate }} testID="error-cancel-server-update" disabled={cancelingServerUpdate} onPress={() => { void cancelCurrentServerUpdate() }} style={({ pressed }) => [styles.errorAction, { backgroundColor: colors.raised, borderColor: colors.border, opacity: cancelingServerUpdate ? 0.45 : pressed ? 0.68 : 1 }]}>{cancelingServerUpdate ? <ActivityIndicator size="small" color={colors.blue} /> : <Text style={[styles.errorActionText, { color: colors.blue }]}>Cancel update</Text>}</Pressable> : null}</View>{!canCancelPendingServerUpdate ? <IconButton icon={Settings} size={15} onPress={openSettings} label="Settings" testID="error-settings" /> : null}<IconButton icon={X} size={15} onPress={clearError} disabled={cancelingServerUpdate} label="Dismiss" testID="error-dismiss" /></View></View> : null}
-    {compact ? <View style={styles.fill}>{sidebar}{modalScopeCurrent && mobileChatOpen && selected ? <MobileChatPane width={width} backgroundColor={colors.background} onClose={closeMobileChat}>{chat}</MobileChatPane> : null}</View> : <View style={styles.workspace}><View style={{ width: width >= 1180 ? 285 : width >= 760 ? 255 : 240 }}>{sidebar}</View><View style={styles.chat}>{chat}</View>{showInspector && selected && !isWelcomeSession(selected.id) ? <View style={{ width: Math.min(350, width * 0.29) }}><Inspector key={`inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => openInspectorAction('digest')} onJob={jobId => openInspectorAction('job', jobId)} onTerminal={() => openInspectorAction('terminal')} onProcesses={() => openInspectorAction('processes')} onTmux={() => openInspectorAction('tmux')} /></View> : null}</View>}
+    {compact ? <View style={styles.fill}>{sidebar}{modalScopeCurrent && mobileChatOpen && selected ? <MobileChatPane width={width} backgroundColor={colors.background} onClose={closeMobileChat}>{chat}</MobileChatPane> : null}</View> : <View style={styles.workspace}>{sidebarRail}<View style={styles.chat}>{chat}</View>{showInspector && selected && !isWelcomeSession(selected.id) ? <View style={{ width: Math.min(350, width * 0.29) }}><Inspector key={`inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => openInspectorAction('digest')} onJob={jobId => openInspectorAction('job', jobId)} onTerminal={() => openInspectorAction('terminal')} onProcesses={() => openInspectorAction('processes')} onTmux={() => openInspectorAction('tmux')} /></View> : null}</View>}
 
     <ServerSetupDialog
       visible={showServerSetup}
@@ -468,13 +483,15 @@ function MobileChatPane({ children, width, backgroundColor, onClose }: { childre
   </GestureDetector>
 }
 
-function NoChat({ connecting, onSettings }: { connecting: boolean; onSettings: () => void }) {
+function NoChat({ connecting, onSettings, onShowChatList }: { connecting: boolean; onSettings: () => void; onShowChatList?: () => void }) {
   const colors = usePalette()
-  return <View style={styles.fill}>{connecting ? <Loading label="Connecting to agent server" /> : <><EmptyState title="No chat selected" body="Choose a chat from the sidebar or connect to a server." /><Pressable accessibilityRole="button" accessibilityLabel="Connection settings" onPress={onSettings} style={[styles.connectionSettings, { backgroundColor: colors.raised, borderColor: colors.border }]}><Settings size={15} color={colors.muted} /><Text style={{ color: colors.text, fontSize: 12, fontWeight: '700' }}>Connection settings</Text></Pressable></>}</View>
+  return <View style={styles.fill}>{onShowChatList ? <View style={styles.noChatBar}><IconButton icon={PanelLeftOpen} onPress={onShowChatList} label="Show chat list" testID="chat-sidebar-toggle" /></View> : null}{connecting ? <Loading label="Connecting to agent server" /> : <><EmptyState title="No chat selected" body="Choose a chat from the sidebar or connect to a server." /><Pressable accessibilityRole="button" accessibilityLabel="Connection settings" onPress={onSettings} style={[styles.connectionSettings, { backgroundColor: colors.raised, borderColor: colors.border }]}><Settings size={15} color={colors.muted} /><Text style={{ color: colors.text, fontSize: 12, fontWeight: '700' }}>Connection settings</Text></Pressable></>}</View>
 }
 
 const styles = StyleSheet.create({
   fill: { flex: 1 }, workspace: { flex: 1, flexDirection: 'row' }, chat: { flex: 1, minWidth: 0 }, mobileChatPane: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 2 },
+  // Same box as ChatHeader.root so the toggle does not jump when a chat opens.
+  noChatBar: { minHeight: 68, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center' },
   errorSlot: { flexShrink: 0, paddingHorizontal: 12, paddingVertical: 8 },
   error: { width: '100%', minHeight: 50, maxWidth: 740, alignSelf: 'center', borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 7 },
   errorContent: { flex: 1, minWidth: 0, paddingVertical: 3, gap: 4 }, errorText: { fontSize: 12 },

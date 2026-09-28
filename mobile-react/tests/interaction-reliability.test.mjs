@@ -943,6 +943,26 @@ test('inline inspector toggle follows the same layout capability as inspector mo
   assert.doesNotMatch(appShell, /width < 720 \|\| Math\.min\(width, height\) < 600/)
 })
 
+test('two-pane sidebar toggle lives in the chat header and persists across restarts', () => {
+  assert.match(chatLayout, /export function sidebarWidth\(width: number, collapsed: boolean\): number/)
+  assert.match(appShell, /const \[sidebarCollapsed, setSidebarCollapsed\] = useState\(false\)/)
+  assert.match(appShell, /readSidebarCollapsed\(\)\.then\(collapsed => \{ if \(active\) setSidebarCollapsed\(collapsed\) \}\)/)
+  assert.match(appShell, /void writeSidebarCollapsed\(next\)/)
+  // Compact keeps the full-width list regardless of the flag; only the two-pane rail collapses.
+  assert.match(appShell, /\{compact \? <View style=\{styles\.fill\}>\{sidebar\}/)
+  assert.match(appShell, /width: sidebarWidth\(width, sidebarCollapsed\), overflow: 'hidden'/)
+  assert.match(appShell, /accessibilityElementsHidden=\{sidebarCollapsed\}/)
+  assert.match(appShell, /<View style=\{styles\.workspace\}>\{sidebarRail\}<View style=\{styles\.chat\}>/)
+  // With no chat selected there is no header, so NoChat must offer the way back to the list.
+  assert.match(appShell, /<NoChat [^\n]*onShowChatList=\{!compact && sidebarCollapsed \? toggleSidebar : undefined\}/)
+  assert.match(appShell, /onShowChatList \? <View style=\{styles\.noChatBar\}><IconButton icon=\{PanelLeftOpen\} onPress=\{onShowChatList\} label="Show chat list"/)
+  assert.match(chatScreen, /sidebarCollapsed: boolean; onToggleSidebar: \(\) => void/)
+  assert.match(chatScreen, /<ChatHeader[^\n]*sidebarCollapsed=\{sidebarCollapsed\} onToggleSidebar=\{onToggleSidebar\}/)
+  assert.match(chatHeader, /const sidebarButton = !compact \? <IconButton icon=\{sidebarCollapsed \? PanelLeftOpen : PanelLeftClose\} onPress=\{onToggleSidebar\} label=\{sidebarCollapsed \? 'Show chat list' : 'Hide chat list'\}/)
+  // Leftmost in both the welcome header and the regular header.
+  assert.equal(chatHeader.match(/styles\.root, \{ backgroundColor: colors\.background, borderColor: colors\.border \}\]\}>\n\s*\{sidebarButton\}\n/g)?.length, 2)
+})
+
 test('native terminal relies on SwiftTerm tap handling without a competing recognizer', () => {
   assert.doesNotMatch(terminal, /UITapGestureRecognizer/)
   assert.doesNotMatch(terminal, /focusFromTap/)

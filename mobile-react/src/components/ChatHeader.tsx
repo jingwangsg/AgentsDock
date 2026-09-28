@@ -1,6 +1,6 @@
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
 import { Image } from 'expo-image'
-import { ArrowLeft, Ellipsis, FolderOpen, Layers, PanelRight, RefreshCw, Search, Server } from 'lucide-react-native'
+import { ArrowLeft, Ellipsis, FolderOpen, Layers, PanelLeftClose, PanelLeftOpen, PanelRight, RefreshCw, Search, Server } from 'lucide-react-native'
 import { useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { runtimeSummary } from '../lib/format'
@@ -10,7 +10,7 @@ import { CodexContextIndicator, CodexStatusButton } from './CodexControls'
 import { ClaudeContextIndicator } from './ClaudeContextIndicator'
 import { IconButton } from './ui'
 
-export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, onBack, onOptions, onSearch, onFiles, outputsOpen, onOutputs, onToggleInspector, onSetupServer }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; onBack: () => void; onOptions: () => void; onSearch: () => void; onFiles: () => void; outputsOpen: boolean; onOutputs: () => void; onToggleInspector: () => void; onSetupServer: () => void }) {
+export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, sidebarCollapsed, onToggleSidebar, onBack, onOptions, onSearch, onFiles, outputsOpen, onOutputs, onToggleInspector, onSetupServer }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; sidebarCollapsed: boolean; onToggleSidebar: () => void; onBack: () => void; onOptions: () => void; onSearch: () => void; onFiles: () => void; outputsOpen: boolean; onOutputs: () => void; onToggleInspector: () => void; onSetupServer: () => void }) {
   const colors = usePalette()
   const session = useAppStore(state => state.sessions.find(value => value.id === sessionId))
   const connected = useAppStore(state => state.connected)
@@ -21,7 +21,9 @@ export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, onBac
   const syncRetryAttempt = useAppStore(state => state.syncRetryAttempt)
   const retryConnection = useAppStore(state => state.retryConnection)
   if (!session) return null
+  const sidebarButton = !compact ? <IconButton icon={sidebarCollapsed ? PanelLeftOpen : PanelLeftClose} onPress={onToggleSidebar} label={sidebarCollapsed ? 'Show chat list' : 'Hide chat list'} testID="chat-sidebar-toggle" /> : null
   if (isWelcomeSession(sessionId)) return <View style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border }]}>
+    {sidebarButton}
     {compact ? <IconButton icon={ArrowLeft} onPress={onBack} label="Chats" /> : null}
     <Image source={require('../../assets/icon.png')} contentFit="contain" style={styles.welcomeIcon} />
     <View style={styles.titleWrap}><Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>Welcome to AgentsDock</Text><Text style={[styles.subtitle, { color: colors.muted }]} numberOfLines={1}>Local guide · no server connected</Text></View>
@@ -46,6 +48,7 @@ export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, onBac
     else void retryConnection()
   }
   return <View style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border }]}>
+    {sidebarButton}
     {compact ? <IconButton icon={ArrowLeft} onPress={onBack} label="Chats" /> : null}
     <View style={styles.titleWrap}><Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{session.title}</Text><Text style={[styles.subtitle, { color: visibleSyncError ? colors.orange : colors.muted }]} numberOfLines={1}>{visibleSyncError || `${runtimeSummary(session)}${session.session_id || session.codex_thread_id || session.claude_session_id || session.cursor_session_id ? ` · session ${(session.session_id || session.codex_thread_id || session.claude_session_id || session.cursor_session_id)?.slice(0, 12)}` : ''}`}</Text></View>
     {!compact ? <IconButton icon={RefreshCw} onPress={() => void retryConnection()} label="Refresh" /> : null}

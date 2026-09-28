@@ -17,3 +17,10 @@ export function chatWorkspaceLayout(width: number, height: number): ChatWorkspac
     inlineInspectorAvailable: !compact && width >= INLINE_INSPECTOR_MIN_WIDTH,
   }
 }
+
+// Two-pane sidebar rail. Collapsing goes to 0 rather than unmounting so the
+// list keeps its scroll position and search query across toggles.
+export function sidebarWidth(width: number, collapsed: boolean): number {
+  if (collapsed) return 0
+  return width >= 1180 ? 285 : width >= 760 ? 255 : 240
+}
