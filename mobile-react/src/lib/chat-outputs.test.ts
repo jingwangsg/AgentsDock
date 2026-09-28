@@ -1,4 +1,4 @@
-// Port of electron/src/shared/chat-outputs.test.ts without the canvas cases.
+// Port of electron/src/shared/chat-outputs.test.ts.
 import type { Event } from '../types'
 import { collectChatOutputs, humanizeServerId } from './chat-outputs'
 
@@ -75,6 +75,16 @@ seq = 0
   ]
   assertEqual(collectChatOutputs(events).outputs.map(item => item.kind), ['artifact', 'local_preview', 'code_changes'], 'outputs order as files, previews, code changes')
   assertEqual(collectChatOutputs([]), { outputs: [], sources: [] }, 'an empty chat reports no outputs and no sources')
+
+  const canvas = (name: string) => ({ name, path: `canvases/${name}.canvas.tsx`, revision: 1, size: 10, updated_at: 't' })
+  assertEqual(collectChatOutputs(events, [canvas('c')]).outputs.map(item => item.kind), ['canvas', 'artifact', 'local_preview', 'code_changes'], 'canvases lead the outputs')
+  assertEqual(collectChatOutputs([
+    event('assistant_text', { text: 'See [Budget v1](canvases/budget.canvas.tsx) and [Other](other.canvas.tsx?x=1).' }),
+    event('turn_finished', { result_text: 'Updated: [Budget board](/w/canvases/budget.canvas.tsx).' }),
+  ], [canvas('budget'), canvas('plain')]).outputs, [
+    { kind: 'canvas', label: 'Budget board', name: 'budget', path: 'canvases/budget.canvas.tsx' },
+    { kind: 'canvas', label: 'plain', name: 'plain', path: 'canvases/plain.canvas.tsx' },
+  ], 'canvases are labelled with the latest Markdown link text the assistant used, else the name')
 }
 
 // --- sources

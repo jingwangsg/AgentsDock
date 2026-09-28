@@ -1,13 +1,13 @@
-// "Outputs & sources" page sheet for one chat: port of the Electron ChatOutputsPanel without canvas rows.
+// "Outputs & sources" page sheet for one chat: port of the Electron ChatOutputsPanel.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { FileDiff, FileText, Globe, Image, MessageSquare, Paperclip, Plug, Search, Sparkles, type LucideIcon } from 'lucide-react-native'
+import { FileDiff, FileText, Frame, Globe, Image, MessageSquare, Paperclip, Plug, Search, Sparkles, type LucideIcon } from 'lucide-react-native'
 import { collectChatOutputs, type ChatOutputsSummary } from '../lib/chat-outputs'
 import { mobileFileViewerKind } from '../lib/file-viewer'
-import { useAppStore } from '../store/useAppStore'
+import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
-import type { Event } from '../types'
+import type { CanvasSummary, Event } from '../types'
 import { Text } from './AppText'
 import { SheetCloseButton } from './ui'
 import { useFileViewer } from './file-viewer/FileViewerContext'
@@ -19,7 +19,7 @@ const REFRESH_DEBOUNCE_MS = 1_000
 const IOS_DISMISS_FALLBACK_MS = 1_000
 const EMPTY_EVENTS: Event[] = []
 
-export function ChatOutputsPanel({ sessionId, visible, onClose, onReview }: { sessionId: string; visible: boolean; onClose: () => void; onReview: (runId: string) => void }) {
+export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onOpenCanvas }: { sessionId: string; visible: boolean; onClose: () => void; onReview: (runId: string) => void; onOpenCanvas: (name: string) => void }) {
   const colors = usePalette()
   const events = useAppStore(state => state.snapshots[sessionId]?.events ?? EMPTY_EVENTS)
   const hasMore = useAppStore(state => Boolean(state.snapshots[sessionId]?.hasMore))
@@ -29,6 +29,7 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview }: { se
   const { openArtifacts } = useFileViewer()
   const [summary, setSummary] = useState<ChatOutputsSummary | null>(null)
   const [allSources, setAllSources] = useState(false)
+  const [canvases, setCanvases] = useState<CanvasSummary[]>([])
   const firstLoad = useRef(true)
   const pendingAction = useRef<(() => void) | null>(null)
   const dismissFallback = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -40,10 +41,18 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview }: { se
     }
     // Immediate on open; later event batches (including history_rewound) coalesce
     // so a streaming turn does not recompute per token.
-    const timer = setTimeout(() => setSummary(collectChatOutputs(events)), firstLoad.current ? 0 : REFRESH_DEBOUNCE_MS)
+    const timer = setTimeout(() => setSummary(collectChatOutputs(events, canvases)), firstLoad.current ? 0 : REFRESH_DEBOUNCE_MS)
     firstLoad.current = false
     return () => clearTimeout(timer)
-  }, [events, visible])
+  }, [canvases, events, visible])
+
+  // Canvases live in server files, not in events: list them once per open.
+  useEffect(() => {
+    if (!visible) return
+    let stale = false
+    client.listCanvases(sessionId).then(list => { if (!stale) setCanvases(list.canvases) }).catch(() => undefined)
+    return () => { stale = true }
+  }, [sessionId, visible])
 
   // Row actions present another surface (file viewer, review sheet, timeline
   // seek), so they run only after this sheet has finished dismissing.
@@ -88,6 +97,8 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview }: { se
         {summary && summary.outputs.length === 0 ? <Text style={[styles.empty, { color: colors.muted }]}>No outputs yet</Text> : null}
         {summary?.outputs.map(item => {
           switch (item.kind) {
+            case 'canvas':
+              return <Row key={`canvas:${item.path}`} icon={Frame} label={item.label} secondary="Canvas" onPress={() => closeThen(() => onOpenCanvas(item.name))} />
             case 'artifact': {
               const kind = mobileFileViewerKind(item.filename, item.contentType)
               const media = kind === 'image' || kind === 'video'

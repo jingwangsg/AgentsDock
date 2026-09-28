@@ -21,6 +21,8 @@ import type {
   ClaudeMcpSnapshot,
   ClaudeRuntimeSnapshot,
   ChatReference,
+  CanvasRecord,
+  CanvasSummary,
   TeamReference,
   CreateJobInput,
   CreateSessionInput,
@@ -50,6 +52,7 @@ import type {
   TerminalAction,
   TerminalWindowsSnapshot,
   TimelineIndex,
+  SubagentSnapshot,
   TimelinePage,
   TimelineTracePage,
   TimelineSearchResult,
@@ -525,6 +528,36 @@ export class AgentServerClient {
       CODE_DIFF_MAX_BYTES,
     )
   }
+  listCanvases(sessionId: string): Promise<{ canvases: CanvasSummary[] }> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases`)
+  }
+  getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
+    // The server compiles the report on first read (agentsdock_canvas.COMPILE_TIMEOUT_SECONDS = 180).
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}`, 180_000)
+  }
+  putCanvasState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }> {
+    return this.put(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/state`, { state })
+  }
+  /** shell.html / vendor.js for the Canvas page: text bodies, so this bypasses request()'s JSON decoding. */
+  async canvasRuntimeAsset(asset: 'shell.html' | 'vendor.js'): Promise<string> {
+    const scope = this.captureScope()
+    const response = await this.fetchWithTimeout(
+      buildURL(scope.configuration.baseURL, `/api/canvas-runtime/${asset}`),
+      { headers: authHeaders(scope.configuration.token) },
+      60_000,
+      scope.signal,
+    )
+    if (!response.ok) {
+      const error = await this.serverError(response)
+      this.assertScopeActive(scope)
+      this.reportServerError(error)
+      this.revokeForAuthorizationFailure(error)
+      throw error
+    }
+    const text = await response.text()
+    this.assertScopeActive(scope)
+    return text
+  }
   async searchTimeline(sessionId: string, query: string, limit = 50): Promise<TimelineSearchResult[]> {
     const params = new URLSearchParams({ q: query, limit: String(limit) })
     return (await this.get<{ results?: TimelineSearchResult[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/search?${params}`)).results ?? []
@@ -682,6 +715,9 @@ export class AgentServerClient {
   }
   async queue(sessionId: string): Promise<QueuedTurn[]> {
     return (await this.sessionPage(sessionId, { limit: 1, tail: true, visible: false })).queued_turns
+  }
+  subagents(sessionId: string, limit = 64): Promise<SubagentSnapshot> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/subagents?limit=${limit}`)
   }
   async updateQueued(
     sessionId: string,

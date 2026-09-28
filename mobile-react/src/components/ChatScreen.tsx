@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useReducer, useState } from 'react'
-import { AppState, Keyboard, Platform, StyleSheet, View } from 'react-native'
+import { AppState, DeviceEventEmitter, Keyboard, Platform, StyleSheet, View } from 'react-native'
 import { KeyboardAvoidingView, KeyboardController, useGenericKeyboardHandler } from 'react-native-keyboard-controller'
 import { runOnJS } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { initialIOSKeyboardLifecycle, IOS_KEYBOARD_HIDE_FALLBACK_MS, reduceIOSKeyboardLifecycle } from '../lib/keyboard-lifecycle'
 import { usePalette } from '../theme'
+import { CanvasSheet } from './CanvasSheet'
 import { ChatHeader } from './ChatHeader'
 import { ChatOutputsPanel } from './ChatOutputsPanel'
 import { ClaudeInteractionShelf } from './ClaudeInteractionShelf'
@@ -18,16 +19,18 @@ import { RuntimeHealthNotice } from './RuntimeHealth'
 import { useAppStore } from '../store/useAppStore'
 import { trackEvent } from '../lib/analytics'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
+import { OPEN_CANVAS_EVENT, type OpenCanvasRequest } from '../lib/canvas-links'
 import { isWelcomeSession } from '../lib/welcome-session'
 import { useFileViewer } from './file-viewer/FileViewerContext'
 
-export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, onBack, onOptions, onSearch, onToggleInspector, onReview, onSetupServer, onOpenMcp, onShellAction }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; onBack: () => void; onOptions: () => void; onSearch: () => void; onToggleInspector: () => void; onReview: (runId: string) => void; onSetupServer: () => void; onOpenMcp: () => void; onShellAction: (action: ComposerShellAction) => void }) {
+export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, sidebarCollapsed, onToggleSidebar, onBack, onOptions, onSearch, onToggleInspector, onReview, onSetupServer, onOpenMcp, onShellAction }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; sidebarCollapsed: boolean; onToggleSidebar: () => void; onBack: () => void; onOptions: () => void; onSearch: () => void; onToggleInspector: () => void; onReview: (runId: string) => void; onSetupServer: () => void; onOpenMcp: () => void; onShellAction: (action: ComposerShellAction) => void }) {
   const colors = usePalette()
   const insets = useSafeAreaInsets()
   const { openWorkspace } = useFileViewer()
   const welcome = isWelcomeSession(sessionId)
   const [scrollRequest, setScrollRequest] = useState(0)
   const [outputsOpen, setOutputsOpen] = useState(false)
+  const [canvasName, setCanvasName] = useState<string | null>(null)
   const [nonIOSKeyboardVisible, setNonIOSKeyboardVisible] = useState(() => Platform.OS !== 'ios' && KeyboardController.isVisible())
   const [iosKeyboard, dispatchIOSKeyboard] = useReducer(reduceIOSKeyboardLifecycle, AppState.currentState === 'active', initialIOSKeyboardLifecycle)
   const keyboardVisible = Platform.OS === 'ios' ? iosKeyboard.visible : nonIOSKeyboardVisible
@@ -112,9 +115,18 @@ export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, onBac
       appState.remove()
     }
   }, [])
+  // Canvas links render deep inside the timeline list and reach this screen's sheet through a device event (see canvas-links.ts).
+  useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener(OPEN_CANVAS_EVENT, (request: OpenCanvasRequest) => {
+      if (request.sessionId && request.sessionId !== sessionId) return
+      dismissAppKeyboard()
+      setCanvasName(request.name)
+    })
+    return () => subscription.remove()
+  }, [sessionId])
   const content = (
     <View style={[styles.root, { backgroundColor: colors.background }]}>
-      <ChatHeader sessionId={sessionId} compact={compact} inlineInspectorAvailable={inlineInspectorAvailable} onBack={onBack} onOptions={onOptions} onSearch={onSearch} onFiles={() => { trackEvent('open_file_clicked'); dismissAppKeyboard(); openWorkspace(sessionId) }} outputsOpen={outputsOpen} onOutputs={() => { dismissAppKeyboard(); setOutputsOpen(true) }} onToggleInspector={onToggleInspector} onSetupServer={onSetupServer} />
+      <ChatHeader sessionId={sessionId} compact={compact} inlineInspectorAvailable={inlineInspectorAvailable} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={onToggleSidebar} onBack={onBack} onOptions={onOptions} onSearch={onSearch} onFiles={() => { trackEvent('open_file_clicked'); dismissAppKeyboard(); openWorkspace(sessionId) }} outputsOpen={outputsOpen} onOutputs={() => { dismissAppKeyboard(); setOutputsOpen(true) }} onToggleInspector={onToggleInspector} onSetupServer={onSetupServer} />
       {!welcome && backend ? <RuntimeHealthNotice backend={backend} sessionId={sessionId} /> : null}
       <KeyboardAvoidingView
             style={styles.body}
@@ -148,7 +160,8 @@ export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, onBac
               <Composer sessionId={sessionId} keyboardVisible={composerKeyboardConstrained} onSent={() => setScrollRequest(value => value + 1)} onOpenMcp={onOpenMcp} onShellAction={onShellAction} />
             </View>
       </KeyboardAvoidingView>
-      {!welcome ? <ChatOutputsPanel sessionId={sessionId} visible={outputsOpen} onClose={() => setOutputsOpen(false)} onReview={onReview} /> : null}
+      {!welcome ? <ChatOutputsPanel sessionId={sessionId} visible={outputsOpen} onClose={() => setOutputsOpen(false)} onReview={onReview} onOpenCanvas={setCanvasName} /> : null}
+      {!welcome ? <CanvasSheet sessionId={sessionId} name={canvasName} onClose={() => setCanvasName(null)} /> : null}
     </View>
   )
   if (welcome) return content

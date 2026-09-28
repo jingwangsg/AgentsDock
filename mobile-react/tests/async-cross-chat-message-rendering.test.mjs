@@ -38,8 +38,10 @@ const mocks = {
   'expo-haptics': `export const NotificationFeedbackType = { Success: 'success', Error: 'error' }; export async function notificationAsync() {}`,
   '../store/useAppStore': `import { useSyncExternalStore } from 'react'; const fixture = globalThis.__asyncChatMessageFixture; export const client = fixture.client; export const useAppStore = selector => useSyncExternalStore(fixture.subscribe, () => selector(fixture.state)); useAppStore.getState = () => fixture.state;`,
   '../lib/tex-svg': `export const texToSvg = () => null;`,
+  '../lib/canvas-links': `export const openCanvasLink = () => false;`,
   './AppText': `export const Text='Text';`,
   './MediaGrid': `export const MediaGrid='MediaGrid';`,
+  './MermaidDiagram': `export const MermaidDiagram='MermaidDiagram';`,
 }
 const outfile = path.resolve('build/tmp', `async-cross-chat-rendering-${process.pid}.mjs`)
 await mkdir(path.dirname(outfile), { recursive: true })

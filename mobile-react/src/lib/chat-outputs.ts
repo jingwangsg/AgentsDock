@@ -1,7 +1,8 @@
-// Port of electron/src/shared/chat-outputs.ts without canvases (mobile has none).
-import type { CodeDiffFileSummary, Event } from '../types'
+// Port of electron/src/shared/chat-outputs.ts.
+import type { CanvasSummary, CodeDiffFileSummary, Event } from '../types'
 
 export type ChatOutputItem =
+  | { kind: 'canvas'; label: string; name: string; path: string }
   | { kind: 'artifact'; label: string; eventId: string; filename: string; contentType: string | null }
   | { kind: 'local_preview'; url: string; host: string }
   | {
@@ -28,6 +29,7 @@ export interface ChatOutputsSummary {
 
 /** Explicit-port HTTP loopback URLs (localhost, 127.x.x.x, 0.0.0.0, [::1]); same shape as the Electron collector. */
 const LOCAL_URL_PATTERN = /http:\/\/(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])(?::(\d{1,5}))(?=[/?#\s)'"\]}>,]|$)[^\s)'"\]}>,]*/gi
+const CANVAS_LINK_PATTERN = /\[([^\]]+)\]\(([^)\s]+?\.canvas\.tsx)(?:[?#][^)\s]*)?\)/gi
 
 /** `_agentsdock_internal_provider_9f3a2c71` → `Agentsdock Internal Provider 9f3a2c71`. */
 export function humanizeServerId(id: string): string {
@@ -35,7 +37,8 @@ export function humanizeServerId(id: string): string {
     .map(word => word[0].toUpperCase() + word.slice(1)).join(' ')
 }
 
-export function collectChatOutputs(events: readonly Event[]): ChatOutputsSummary {
+export function collectChatOutputs(events: readonly Event[], canvases: readonly CanvasSummary[] = []): ChatOutputsSummary {
+  const canvasLinkText = new Map<string, string>()
   const artifacts = new Map<string, ChatOutputItem>()
   const previews = new Map<string, ChatOutputItem>()
   const codeDiffByRun = new Map<string, Event>()
@@ -49,6 +52,12 @@ export function collectChatOutputs(events: readonly Event[]): ChatOutputsSummary
 
   for (const event of events) {
     const assistantText = event.type === 'assistant_text' ? event.text : event.type === 'turn_finished' ? event.result_text : null
+    if (assistantText) {
+      for (const match of assistantText.matchAll(CANVAS_LINK_PATTERN)) {
+        const stem = match[2].split(/[\\/]/).pop()!.replace(/\.canvas\.tsx$/i, '')
+        canvasLinkText.set(stem, match[1].trim())
+      }
+    }
     const urlText = assistantText ?? (event.type === 'tool_finished' ? event.output : null)
     if (urlText) {
       for (const match of urlText.matchAll(LOCAL_URL_PATTERN)) {
@@ -118,7 +127,10 @@ export function collectChatOutputs(events: readonly Event[]): ChatOutputsSummary
     }
   }
 
-  const outputs: ChatOutputItem[] = [...artifacts.values(), ...previews.values()]
+  const outputs: ChatOutputItem[] = canvases.map(canvas => ({
+    kind: 'canvas', label: canvasLinkText.get(canvas.name) ?? canvas.name, name: canvas.name, path: canvas.path,
+  }))
+  outputs.push(...artifacts.values(), ...previews.values())
   if (codeDiffByRun.size) {
     const diffs = [...codeDiffByRun.values()]
     // Paths dedupe across turns when the server listed them; otherwise fall back to the per-turn counts.

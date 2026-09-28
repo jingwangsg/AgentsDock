@@ -937,6 +937,10 @@ export interface Event {
   subagent_summary?: string | null
   subagent_started_at?: string | null
   subagent_provider_ref?: string | null
+  subagent_title?: string | null
+  subagent_nickname?: string | null
+  subagent_path?: string | null
+  subagent_parent_thread_id?: string | null
   subagent_log?: Array<{ ts: string; text: string }> | null
   file?: AgentFile | null
   artifact?: AgentFile | null
@@ -1346,6 +1350,22 @@ export interface LocalProviderCommandsCapability {
   [key: string]: JsonValue | undefined
 }
 
+export interface CanvasSummary {
+  name: string
+  path: string
+  revision: number
+  size: number
+  updated_at: string
+}
+
+export interface CanvasRecord extends Omit<CanvasSummary, 'size'> {
+  source: string
+  javascript: string
+  diagnostics: string | null
+  runtime_version: string | null
+  state: Record<string, unknown>
+}
+
 export interface HealthCapabilities {
   local_provider_commands_v1?: LocalProviderCommandsCapability
   scheduled_jobs?: ScheduledJobsCapability
@@ -1401,6 +1421,15 @@ export interface ServerUpdateStatus {
   error_action?: string | null
   retryable?: boolean | null
   [key: string]: JsonValue | undefined
+}
+
+/** `GET /api/sessions/{id}/subagents`; each entry is a full `subagent_state` event record. */
+export interface SubagentSnapshot {
+  session_id: string
+  subagents: Event[]
+  count: number
+  active_count: number
+  latest_seq: number | null
 }
 
 export interface TimelinePage {

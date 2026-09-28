@@ -16,10 +16,12 @@ import {
   splitInlineRouteMarkerText,
   timelineChatReferenceIsRemote,
 } from '../lib/timeline-inline-references'
+import { openCanvasLink } from '../lib/canvas-links'
 import { texToSvg } from '../lib/tex-svg'
 import { scaleChatFont } from '../lib/typography'
 import { usePalette } from '../theme'
 import { MarkdownTableSheet } from './MarkdownTableSheet'
+import { MermaidDiagram } from './MermaidDiagram'
 import { IconButton } from './ui'
 
 // markdownItCjkFriendly: CommonMark refuses `**…。**他` as bold because the
@@ -61,9 +63,10 @@ export function MarkdownContent({
   )
   const defaultMathFontSize = scaleChatFont(compact ? 12 : 15.5, fontScale)
   const openLink = useCallback((url: string) => {
+    if (openCanvasLink(url, sourceSessionId ?? null)) return false
     void Linking.openURL(url).catch(() => undefined)
     return false
-  }, [])
+  }, [sourceSessionId])
   // Cells render before their table, so cell and table rules share one lookup
   // instead of re-walking the table for every cell.
   const tableColumnWidths = useMemo(() => {
@@ -155,11 +158,17 @@ export function MarkdownContent({
         {restoreInlineRouteMarkerText(trimTrailingCodeNewline(node.content), prepared.markers)}
       </SelectableText>
     ),
-    fence: (node, _children, _parents, styles, inheritedStyles) => (
-      <SelectableText key={node.key} selectable uiTextView style={[inheritedStyles, styles.fence]}>
-        {restoreInlineRouteMarkerText(trimTrailingCodeNewline(node.content), prepared.markers)}
-      </SelectableText>
-    ),
+    fence: (node, _children, _parents, styles, inheritedStyles) => {
+      const code = restoreInlineRouteMarkerText(trimTrailingCodeNewline(node.content), prepared.markers)
+      const block = (
+        <SelectableText key={node.key} selectable uiTextView style={[inheritedStyles, styles.fence]}>
+          {code}
+        </SelectableText>
+      )
+      // The info string is on the raw token but missing from the typed AST node.
+      const language = (node as ASTNode & { sourceInfo?: string }).sourceInfo?.trim().split(/\s+/)[0]
+      return language === 'mermaid' ? <MermaidDiagram key={node.key} source={code}>{block}</MermaidDiagram> : block
+    },
     table: (node, children, _parents, markdownStyles) => {
       const widths = tableColumnWidths(node)
       return (

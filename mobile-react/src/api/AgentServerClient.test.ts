@@ -99,6 +99,15 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (url === 'https://rewind.example/api/sessions/chat-1/workspace/git/checkpoint/restore') {
     return Promise.resolve(new Response(JSON.stringify({ root: '/repo', branch: 'main', head: 'def', revision: 'rev-8' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }
+  if (url.startsWith('https://subagents.example/api/sessions/')) {
+    return Promise.resolve(new Response(JSON.stringify({
+      session_id: 'chat /?',
+      subagents: [{ seq: 4, id: 'e4', session_id: 'chat /?', type: 'subagent_state', ts: '2026-09-28T10:00:04Z', subagent_id: 'child-1', subagent_status: 'running' }],
+      count: 1,
+      active_count: 1,
+      latest_seq: 4,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
   if (url.startsWith('https://paging.example/api/sessions/')) {
     return Promise.resolve(new Response(JSON.stringify({
       session: { id: 'session /?', title: 'Paging', backend: 'codex' },
@@ -466,6 +475,18 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       message: null,
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }
+  if (url.startsWith('https://canvas.example/')) {
+    const path = new URL(url).pathname
+    if (path === '/api/canvas-runtime/vendor.js') {
+      return Promise.resolve(new Response('window.vendor = 1; // not json', { status: 200, headers: { 'Content-Type': 'application/javascript' } }))
+    }
+    const value = path.endsWith('/state')
+      ? { state: (JSON.parse(init?.body as string) as { state: unknown }).state }
+      : path.endsWith('/canvases')
+        ? { canvases: [{ name: 'budget v2', path: 'canvases/budget v2.canvas.tsx', revision: 2, size: 10, updated_at: 't' }], capability: { available: true } }
+        : { name: 'budget v2', path: 'canvases/budget v2.canvas.tsx', revision: 2, updated_at: 't', source: 'export default () => null', javascript: 'var x = 1;', diagnostics: null, runtime_version: 'rt-1', state: { filter: 'all' } }
+    return Promise.resolve(new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
   if (url === 'https://workspace-permission.example/api/sessions/session/workspace/file') {
     return Promise.resolve(new Response(JSON.stringify({
       detail: { code: 'workspace_permission_denied', message: 'Workspace file is read-only.' },
@@ -518,6 +539,29 @@ try {
     assert(rejectedDiff.text === '', `${origin} must not read an unproven response body`)
     assert(rejectedDiff.truncated, `${origin} must surface a bounded-preview warning`)
   }
+
+  const canvasClient = new AgentServerClient('https://canvas.example', 'canvas-token')
+  const canvasList = await canvasClient.listCanvases('chat /?')
+  assert(fetchRecords.at(-1)?.url === 'https://canvas.example/api/sessions/chat%20%2F%3F/canvases', 'Canvas listing should encode the session id')
+  assert(fetchRecords.at(-1)?.token === 'canvas-token', 'Canvas listing should carry the server token')
+  assert(canvasList.canvases[0]?.name === 'budget v2', 'Canvas listing should return the server summaries')
+  const canvasRecord = await canvasClient.getCanvas('chat /?', 'budget v2')
+  assert(fetchRecords.at(-1)?.url === 'https://canvas.example/api/sessions/chat%20%2F%3F/canvases/budget%20v2', 'Canvas fetch should encode the canvas name')
+  assert(canvasRecord.javascript === 'var x = 1;' && canvasRecord.state.filter === 'all', 'Canvas fetch should return the compiled record with its state')
+  const savedState = await canvasClient.putCanvasState('chat /?', 'budget v2', { filter: 'open' })
+  assert(fetchRecords.at(-1)?.method === 'PUT' && fetchRecords.at(-1)?.url === 'https://canvas.example/api/sessions/chat%20%2F%3F/canvases/budget%20v2/state', 'Canvas state should PUT to the state route')
+  assert(fetchRecords.at(-1)?.body === '{"state":{"filter":"open"}}', 'Canvas state should be wrapped in a state object')
+  assert(savedState.state.filter === 'open', 'Canvas state PUT should return the stored state')
+
+  const subagentsClient = new AgentServerClient('https://subagents.example')
+  const subagentSnapshot = await subagentsClient.subagents('chat /?')
+  assert(fetchRecords.at(-1)?.url === 'https://subagents.example/api/sessions/chat%20%2F%3F/subagents?limit=64', 'Subagent snapshot should encode the session id and default to a 64-record page')
+  assert(subagentSnapshot.active_count === 1 && subagentSnapshot.subagents[0]?.subagent_id === 'child-1', 'Subagent snapshot should return the server state records')
+  await subagentsClient.subagents('chat /?', 8)
+  assert(fetchRecords.at(-1)?.url.endsWith('/subagents?limit=8'), 'Subagent snapshot should pass an explicit limit')
+  const vendor = await canvasClient.canvasRuntimeAsset('vendor.js')
+  assert(fetchRecords.at(-1)?.url === 'https://canvas.example/api/canvas-runtime/vendor.js' && fetchRecords.at(-1)?.token === 'canvas-token', 'Runtime assets should come from the canvas-runtime route with the server token')
+  assert(vendor === 'window.vendor = 1; // not json', 'Runtime assets should be returned as raw text')
 
   const semanticPage = await paging.sessionPage('session /?', {
     before: 91,
@@ -1067,6 +1111,7 @@ try {
     ['terminate Codex background terminal', () => validationClient.terminateCodexBackgroundTerminal('session', { process_id: 'process', confirmed: true })],
     ['clean Codex background terminals', () => validationClient.cleanCodexBackgroundTerminals('session', { confirmed: true })],
     ['queue', () => validationClient.queue('session')],
+    ['subagents', () => validationClient.subagents('session')],
     ['update queued turn', () => validationClient.updateQueued('session', 'queued', 'prompt')],
     ['cross-chat handoff', () => validationClient.crossChatHandoff('handoff')],
     ['cancel cross-chat handoff', () => validationClient.cancelCrossChatHandoff('handoff')],

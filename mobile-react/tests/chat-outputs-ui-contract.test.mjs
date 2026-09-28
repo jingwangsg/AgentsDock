@@ -23,7 +23,7 @@ test('the header exposes an Outputs & sources toggle beside the Files button', (
     'the outputs toggle sits between Files and the inspector toggle',
   )
   assert.match(chatScreen, /outputsOpen=\{outputsOpen\} onOutputs=\{\(\) => \{ dismissAppKeyboard\(\); setOutputsOpen\(true\) \}\}/)
-  assert.match(chatScreen, /\{!welcome \? <ChatOutputsPanel sessionId=\{sessionId\} visible=\{outputsOpen\} onClose=\{\(\) => setOutputsOpen\(false\)\} onReview=\{onReview\} \/> : null\}/)
+  assert.match(chatScreen, /\{!welcome \? <ChatOutputsPanel sessionId=\{sessionId\} visible=\{outputsOpen\} onClose=\{\(\) => setOutputsOpen\(false\)\} onReview=\{onReview\} onOpenCanvas=\{setCanvasName\} \/> : null\}/)
 })
 
 test('the panel is a page sheet like Chat details and follows the desktop copy', () => {
@@ -43,10 +43,10 @@ test('the panel is a page sheet like Chat details and follows the desktop copy',
 
 test('the panel aggregates the store events immediately on open and debounces later batches by 1 s', () => {
   assert.match(panel, /const REFRESH_DEBOUNCE_MS = 1_000/)
-  assert.match(panel, /setTimeout\(\(\) => setSummary\(collectChatOutputs\(events\)\), firstLoad\.current \? 0 : REFRESH_DEBOUNCE_MS\)/)
-  assert.match(panel, /\}, \[events, visible\]\)/)
-  assert.match(collector, /export function collectChatOutputs\(events: readonly Event\[\]\): ChatOutputsSummary/)
-  assert.doesNotMatch(collector, /kind: 'canvas'|canvases\)/, 'mobile has no canvas rows')
+  assert.match(panel, /setTimeout\(\(\) => setSummary\(collectChatOutputs\(events, canvases\)\), firstLoad\.current \? 0 : REFRESH_DEBOUNCE_MS\)/)
+  assert.match(panel, /\}, \[canvases, events, visible\]\)/)
+  assert.match(collector, /export function collectChatOutputs\(events: readonly Event\[\], canvases: readonly CanvasSummary\[\] = \[\]\): ChatOutputsSummary/)
+  assert.match(collector, /kind: 'canvas', label: canvasLinkText\.get\(canvas\.name\) \?\? canvas\.name, name: canvas\.name, path: canvas\.path/, 'canvas rows lead the outputs like the desktop')
   assert.match(types, /skill_selection\?: ProviderCommandSelection \| null/)
 })
 
