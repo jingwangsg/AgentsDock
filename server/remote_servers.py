@@ -159,6 +159,17 @@ class RemoteDeployRequest(BaseModel):
         return value if value == 0 else validate_port(value)
 
 
+class RemoteAttachRequest(BaseModel):
+    """Register an install another hub deployed: nothing is uploaded and the server keeps its port and token."""
+
+    ssh_host: str
+    install_dir: str = "~/.agentsdock-server"
+    name: str | None = None
+
+    _host = field_validator("ssh_host")(classmethod(lambda cls, value: validate_ssh_host(value)))
+    _dir = field_validator("install_dir")(classmethod(lambda cls, value: validate_remote_dir(value)))
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -657,7 +668,7 @@ class RemoteServerManager:
 
     # -- deploy ---------------------------------------------------------------
 
-    def start_deploy(self, request: RemoteDeployRequest | None, *, redeploy_id: str | None = None) -> DeployJob:
+    def start_deploy(self, request: RemoteDeployRequest | RemoteAttachRequest | None, *, redeploy_id: str | None = None) -> DeployJob:
         if any(job.task is not None and not job.task.done() for job in self.jobs.values()):
             raise HTTPException(status_code=409, detail="Another remote deployment is already running.")
         if redeploy_id is not None and redeploy_id not in self.servers:
@@ -682,28 +693,36 @@ class RemoteServerManager:
         job.task.cancel()
         return True
 
-    async def _deploy(self, job: DeployJob, request: RemoteDeployRequest | None, redeploy_id: str | None) -> None:
+    async def _deploy(self, job: DeployJob, request: RemoteDeployRequest | RemoteAttachRequest | None, redeploy_id: str | None) -> None:
         try:
             existing = self.servers[redeploy_id] if redeploy_id else None
+            attach = isinstance(request, RemoteAttachRequest)
             if existing is not None:
                 ssh_host, install_dir, requested_port = existing.ssh_host, existing.install_dir, existing.remote_port
             else:
                 assert request is not None
-                ssh_host, install_dir, requested_port = request.ssh_host, request.install_dir, request.port
+                ssh_host, install_dir = request.ssh_host, request.install_dir
+                requested_port = request.port if isinstance(request, RemoteDeployRequest) else 0
 
             job.progress("connect", f"Probing {ssh_host}…")
             probe_lines = await self._run_ssh(job, [*remote_shell_args(ssh_host), install_dir], stdin=PROBE_SCRIPT.read_bytes(), idle_timeout=60)
             probe = parse_probe(probe_lines)
+            if attach and not probe.get("existing_port"):
+                raise RuntimeError(f"No AgentsServer install was found at {install_dir} on {ssh_host}. Deploy a new server instead.")
             remote_port = requested_port or probe.get("existing_port") or probe["free_port"]
             job.progress("connect", f"Host: {probe.get('os')} {probe.get('arch')}, uid {probe.get('uid')}, home {probe['home']}; remote port {remote_port}.")
             if not probe.get("tmux"):
                 job.progress("connect", "tmux is not installed on the host; the server will run under nohup and chat terminals stay disabled.")
 
-            job.progress("download", f"Uploading AgentsServer source to {ssh_host}…")
-            tarball = await asyncio.to_thread(build_source_tarball, self.source_dir)
-            await self._upload(job, ssh_host, install_dir, tarball)
-
-            job.progress("install", f"Installing AgentsServer on {ssh_host}…")
+            if attach:
+                job.progress("install", f"Checking the AgentsServer install on {ssh_host}…")
+            else:
+                job.progress("download", f"Uploading AgentsServer source to {ssh_host}…")
+                tarball = await asyncio.to_thread(build_source_tarball, self.source_dir)
+                await self._upload(job, ssh_host, install_dir, tarball)
+                job.progress("install", f"Installing AgentsServer on {ssh_host}…")
+            # Without upload.tgz on the host the bootstrap only makes sure the server
+            # is running and reports its port and token (see remote_bootstrap.sh).
             args = [*remote_shell_args(ssh_host), install_dir, str(remote_port), probe["home"]]
             if existing is not None:
                 args.append("restart")
@@ -907,6 +926,11 @@ def register_remote_server_routes(
 
     @app.post(f"{ADMIN_PATH}/deploy", status_code=202)
     async def remote_servers_deploy(request: Request, body: RemoteDeployRequest) -> dict[str, Any]:
+        authorize_admin(request)
+        return {"job_id": manager.start_deploy(body).job_id}
+
+    @app.post(f"{ADMIN_PATH}/attach", status_code=202)
+    async def remote_servers_attach(request: Request, body: RemoteAttachRequest) -> dict[str, Any]:
         authorize_admin(request)
         return {"job_id": manager.start_deploy(body).job_id}
 

@@ -6,14 +6,17 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import socket
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
 import io
 from pathlib import Path
+from unittest import mock
 
 import httpx
 import uvicorn
@@ -28,6 +31,25 @@ import remote_servers as rs  # noqa: E402
 
 HUB_TOKEN = "hub-token-" + "h" * 30
 REMOTE_TOKEN = "remote-token-" + "r" * 40
+
+# Plays the host for deploy/attach jobs: answers the probe and the bootstrap from
+# host.json and records every ssh argv (the part after ``bash -s --``; None for
+# a plain remote command such as the upload's ``cat >``).
+FAKE_SSH = r'''#!{python}
+import json, os, sys
+state = {state!r}
+argv = sys.argv[1:]
+sys.stdin.buffer.read()
+tail = argv[argv.index("--") + 1:] if "--" in argv else None
+with open(os.path.join(state, "calls.jsonl"), "a") as log:
+    log.write(json.dumps(dict(tail=tail, command=None if tail is not None else argv[-1])) + "\n")
+host = json.load(open(os.path.join(state, "host.json")))
+if tail is not None and len(tail) == 1:  # probe: bash -s -- <install_dir>
+    print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=host["existing_port"])))
+elif tail is not None:  # bootstrap: bash -s -- <install_dir> <port> <home> [restart]
+    print("[AgentsDock setup] Starting AgentsServer on port " + tail[1])
+    print("AGENTSDOCK_SETUP_RESULT=" + json.dumps(dict(access_token=host["token"], remote_port=int(tail[1]), install_dir=tail[0], server_version="1.2.3")))
+'''
 
 
 def make_server(**overrides) -> rs.RemoteServer:
@@ -207,6 +229,13 @@ class RemoteServerTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             rs.RemoteDeployRequest(ssh_host="host", port=22)
 
+    def test_attach_request_validates_like_deploy(self) -> None:
+        request = rs.RemoteAttachRequest(ssh_host="user@host")
+        assert request.install_dir == "~/.agentsdock-server" and request.name is None and not hasattr(request, "port")
+        for payload in [{"ssh_host": "-oProxyCommand=curl evil"}, {"ssh_host": "host", "install_dir": "/tmp/with space"}]:
+            with self.assertRaises(ValidationError):
+                rs.RemoteAttachRequest(**payload)
+
     # --- ssh argv and supervisor decisions ------------------------------------
 
     def test_tunnel_and_revive_args(self) -> None:
@@ -253,6 +282,104 @@ class RemoteServerTests(unittest.TestCase):
         with tarfile.open(fileobj=io.BytesIO(rs.build_source_tarball(source)), mode="r:gz") as tar:
             names = sorted(tar.getnames())
         assert names == ["agent_server.py", "canvas_runtime", "canvas_runtime/node_modules", "canvas_runtime/node_modules/lib", "canvas_runtime/node_modules/lib/tests", "canvas_runtime/node_modules/lib/tests/keep.js", "pkg", "pkg/keep.py"]
+
+    # --- deploy jobs against a scripted host ----------------------------------
+
+    def fake_host(self, existing_port: int | None) -> Path:
+        """Point ssh at a script playing the host; returns the argv log it appends to."""
+        state = self.tmp_path / "host"
+        state.mkdir()
+        (state / "host.json").write_text(json.dumps({"token": REMOTE_TOKEN, "existing_port": existing_port}))
+        script = self.tmp_path / "ssh"
+        script.write_text(FAKE_SSH.format(python=sys.executable, state=str(state)))
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        # manage_tunnels=False opens no tunnel, so the health poll is answered here.
+        self.enterContext(mock.patch.object(rs.RemoteServerManager, "_wait_health", mock.AsyncMock(return_value={"version": "1.2.3"})))
+        return state / "calls.jsonl"
+
+    def run_job(self, request: rs.RemoteAttachRequest) -> tuple[rs.RemoteServerManager, rs.DeployJob]:
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
+
+        async def main() -> rs.DeployJob:
+            job = manager.start_deploy(request)
+            assert job.task is not None
+            await job.task
+            await manager.stop()
+            return job
+
+        return manager, asyncio.run(main())
+
+    def test_attach_registers_the_existing_install_without_uploading_or_restarting(self) -> None:
+        calls = self.fake_host(existing_port=7860)
+        manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))
+        assert job.done and job.error is None, job.log
+        [server] = rs.load_registry(manager.path)
+        assert (server.name, server.ssh_host, server.install_dir, server.remote_port, server.token) == ("osmo_9000", "osmo_9000", "/mnt/lustre/.agentsdock-server", 7860, REMOTE_TOKEN)
+        assert job.server == server and job.phase == "complete"
+        # Exactly two ssh sessions, the probe and the bootstrap: no upload command,
+        # and the bootstrap gets no "restart" argument.
+        sessions = [json.loads(line)["tail"] for line in calls.read_text().splitlines()]
+        assert sessions == [["/mnt/lustre/.agentsdock-server"], ["/mnt/lustre/.agentsdock-server", "7860", "/h"]]
+        assert "download" not in {entry["phase"] for entry in job.log}
+
+    def test_attach_fails_when_the_host_has_no_install(self) -> None:
+        calls = self.fake_host(existing_port=None)
+        manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000"))
+        assert job.done and job.error == "No AgentsServer install was found at ~/.agentsdock-server on osmo_9000. Deploy a new server instead."
+        assert len(calls.read_text().splitlines()) == 1  # the probe only; the bootstrap never ran
+        assert rs.load_registry(manager.path) == []
+
+    def test_attach_route_runs_the_job_and_validates_the_body(self) -> None:
+        self.fake_host(existing_port=7860)
+
+        async def main() -> None:
+            manager, _remote, _dead, hub_port, close = await hub_with_fake(self.tmp_path)
+            try:
+                async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{hub_port}") as client:
+                    response = await client.post("/api/admin/remote-servers/attach", json={"ssh_host": "osmo_9000", "install_dir": "/mnt/lustre/.agentsdock-server", "name": "lustre"})
+                    assert response.status_code == 202, response.text
+                    job = manager.jobs[response.json()["job_id"]]
+                    assert job.task is not None
+                    await job.task
+                    view = (await client.get(f"/api/admin/remote-servers/deploy/{job.job_id}")).json()
+                    assert view["done"] and view["error"] is None, view["log"]
+                    assert (view["server"]["name"], view["server"]["remote_port"]) == ("lustre", 7860) and "token" not in view["server"]
+                    assert (await client.post("/api/admin/remote-servers/attach", json={"ssh_host": "bad host"})).status_code == 422
+            finally:
+                await close()
+
+        asyncio.run(main())
+
+    def test_bootstrap_without_a_tarball_leaves_a_healthy_install_alone(self) -> None:
+        # $HOME/.local/bin is the first PATH entry the script prepends, so fakes
+        # placed there shadow the real uv/curl/claude/tmux and record every call.
+        home = self.tmp_path / "home"
+        bin_dir = home / ".local" / "bin"
+        bin_dir.mkdir(parents=True)
+        calls = self.tmp_path / "calls.log"
+        for name in ("uv", "curl", "claude", "tmux"):
+            (bin_dir / name).write_text(f"#!/bin/sh\necho {name} \"$@\" >> '{calls}'\n")
+            (bin_dir / name).chmod(0o700)
+        install = self.tmp_path / "install"
+        (install / "server" / ".venv" / "bin").mkdir(parents=True)
+        (install / "server" / ".venv" / "bin" / "python").symlink_to(sys.executable)
+        (install / "server" / "agent_server.py").write_text("")
+        (install / "server" / "VERSION").write_text("1.2.3\n")
+        (install / "env").write_text(f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTSDOCK_AGENT_PORT=7860\n")
+
+        proc = subprocess.run(
+            ["bash", "-s", "--", str(install), "7860", str(home)], input=rs.BOOTSTRAP_SCRIPT.read_bytes(),
+            capture_output=True, env={**os.environ, "HOME": str(home)}, timeout=60,
+        )
+
+        output = proc.stdout.decode()
+        assert proc.returncode == 0, output + proc.stderr.decode()
+        result = rs.parse_setup_result(output.splitlines())
+        assert (result["access_token"], result["remote_port"], result["server_version"]) == (REMOTE_TOKEN, 7860, "1.2.3")
+        # The only external call is start.sh's health check, which found the server up.
+        assert calls.read_text().splitlines() == [f"curl -fsS -m 3 -H Authorization: Bearer {REMOTE_TOKEN} http://127.0.0.1:7860/api/health"]
+        assert (install / "env").read_text() == f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTSDOCK_AGENT_PORT=7860\n"
 
     # --- header rewriting -----------------------------------------------------
 

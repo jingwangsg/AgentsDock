@@ -20,6 +20,7 @@ for check_dir in "$HOME_DIR" "$HOME_DIR/.config"; do
 done
 cd "$INSTALL_DIR"
 
+UNPACKED=0
 if [ -f upload.tgz ]; then
   log "Unpacking AgentsServer source"
   rm -rf server.new && mkdir server.new
@@ -32,21 +33,26 @@ if [ -f upload.tgz ]; then
   # from matching a shell that carries it in its own command line.
   tmux kill-session -t "agentsdock-$PORT" 2>/dev/null || true
   pkill -f "[a]gent_server.py serve.*--port $PORT$" 2>/dev/null || true
+  UNPACKED=1
 elif [ ! -f server/agent_server.py ]; then
   printf 'No server source was uploaded to %s.\n' "$INSTALL_DIR" >&2
   exit 2
 fi
 
-if ! command -v uv >/dev/null 2>&1; then
-  log "Installing uv"
-  curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
-  export PATH="$HOME/.local/bin:$PATH"
+# A hub attaching to an install another hub deployed runs this script without a
+# tarball and must leave the install as it is: the runtime is synced only for new source.
+if [ "$UNPACKED" = 1 ]; then
+  if ! command -v uv >/dev/null 2>&1; then
+    log "Installing uv"
+    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
+  command -v uv >/dev/null 2>&1 || { printf 'uv could not be installed.\n' >&2; exit 2; }
+  # The server needs 3.11+ (tomllib) although pyproject still says >=3.10; without
+  # the pin uv happily picks an older managed interpreter it finds on the host.
+  log "Preparing the Python runtime (uv sync)"
+  ( cd server && uv sync --frozen --quiet --python '>=3.11' )
 fi
-command -v uv >/dev/null 2>&1 || { printf 'uv could not be installed.\n' >&2; exit 2; }
-# The server needs 3.11+ (tomllib) although pyproject still says >=3.10; without
-# the pin uv happily picks an older managed interpreter it finds on the host.
-log "Preparing the Python runtime (uv sync)"
-( cd server && uv sync --frozen --quiet --python '>=3.11' )
 
 # Agent CLIs. Claude Code has a dependency-free installer; install it under the
 # server's HOME so the binary lands on a persistent path. Codex is left to the
