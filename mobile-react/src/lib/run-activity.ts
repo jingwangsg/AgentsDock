@@ -45,10 +45,13 @@ export interface RunActivityLabel {
  * events alone cannot say so between a queued turn's admission and its
  * `turn_started`, and a stale unfinished turn must never read as live.
  */
-export function runActivityLabel(activity: RunActivity | null, active: boolean, now: number): RunActivityLabel | null {
+export function runActivityLabel(activity: RunActivity | null, active: boolean, now: number, activeSubagentNames: readonly string[] = []): RunActivityLabel | null {
   if (active) {
     const started = activity && !activity.finishedAt ? Date.parse(activity.startedAt) : Number.NaN
-    return { live: true, title: 'Working…', elapsed: Number.isFinite(started) ? formatDuration((now - started) / 1000) : null }
+    // Claude Code CLI wording; the desktop header also lists only the first two names.
+    const count = activeSubagentNames.length
+    const running = count ? ` · ${count} ${count === 1 ? 'subagent' : 'subagents'} running (${activeSubagentNames.slice(0, 2).join(', ')})` : ''
+    return { live: true, title: `Working…${running}`, elapsed: Number.isFinite(started) ? formatDuration((now - started) / 1000) : null }
   }
   if (!activity?.finishedAt) return null
   const start = Date.parse(activity.startedAt)

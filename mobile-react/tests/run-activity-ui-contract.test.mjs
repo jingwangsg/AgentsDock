@@ -27,9 +27,9 @@ test('a live turn shows a spinner, Working… and a 1 s elapsed counter; a finis
   assert.match(bar, /testID="run-activity"/)
   assert.match(bar, /accessibilityLiveRegion="polite"/)
   assert.match(bar, /accessibilityLabel=\{label\.elapsed \? `\$\{label\.title\} \$\{label\.elapsed\}` : label\.title\}/)
-  assert.match(lib, /title: 'Working…'/)
+  assert.match(lib, /title: `Working…\$\{running\}`/)
   assert.match(lib, /`Worked for \$\{duration\}`/)
   assert.match(lib, /`You stopped after \$\{duration\}`/)
   // The server's active flag, not the event tail, decides live vs collapsed.
-  assert.match(lib, /export function runActivityLabel\(activity: RunActivity \| null, active: boolean, now: number\)/)
+  assert.match(lib, /export function runActivityLabel\(activity: RunActivity \| null, active: boolean, now: number, activeSubagentNames: readonly string\[\] = \[\]\)/)
 })

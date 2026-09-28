@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { rememberedFolderOrder } from '../lib/session-order'
 import { AppState as NativeAppState } from 'react-native'
 import * as Notifications from 'expo-notifications'
 import type {
@@ -129,6 +130,7 @@ const HISTORY_SEEK_SIDE_LIMIT = 80
 const FOREGROUND_REFRESH_MS = 60_000
 const LIVE_SNAPSHOT_SAVE_DEBOUNCE_MS = 2_000
 const READ_RECEIPT_DEBOUNCE_MS = 3_000
+const SUBAGENT_POLL_MS = 5_000
 const WORKSPACE_SAVE_DEBOUNCE_MS = 350
 const SYNC_RECOVERY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000] as const
 let streamStop: (() => void) | null = null
@@ -175,6 +177,8 @@ const rewindSessionInFlight = new Set<string>()
 const queueSnapshotRefreshInFlight = new Map<string, { dirty: boolean }>()
 const queuedDeliverySkipTokens = new Map<string, symbol>()
 const olderPageInFlight = new Map<string, Promise<number>>()
+const subagentsRefreshInFlight = new Map<string, Promise<void>>()
+let subagentPoll: { sessionId: string; timer: ReturnType<typeof setInterval> } | null = null
 const filePageInFlight = new Map<string, Promise<void>>()
 const sessionMutations = new SessionMutationReconciler()
 
@@ -453,6 +457,8 @@ interface AppState {
   loadingOlder: Record<string, boolean>
   filePaging: Record<string, FilePagingState | undefined>
   activeSessionIds: Set<string>
+  /** Latest `subagent_state` record per subagent id, per chat; fed by the stream and the snapshot route, never the timeline. */
+  subagentsBySession: Record<string, Record<string, Event>>
   turnAdmissionTokens: Record<string, string>
   sendingSessionIds: Set<string>
   stoppingSessionIds: Set<string>
@@ -520,6 +526,7 @@ interface AppState {
   setChatReferencesForSession(sessionId: string, references: ChatReference[], expectedGeneration?: number): void
   setTeamReferencesForSession(sessionId: string, references: TeamReference[], expectedGeneration?: number): void
   refreshAgentRoutes(sessionId: string, expectedGeneration?: number): Promise<AgentCrossChatRoutesSnapshot | null>
+  refreshSubagents(sessionId: string): Promise<void>
   revokeAgentRoute(sessionId: string, routeId: string, expectedRevision: string, expectedGeneration?: number): Promise<boolean>
   beginTurnAdmission(sessionId: string): string | null
   endTurnAdmission(sessionId: string, token: string): void
@@ -602,6 +609,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadingOlder: {},
   filePaging: {},
   activeSessionIds: new Set(),
+  subagentsBySession: {},
   turnAdmissionTokens: {},
   sendingSessionIds: new Set(),
   stoppingSessionIds: new Set(),
@@ -683,7 +691,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           selectedSessionId: selected,
           syncSessionId: selected,
           syncStatus: selected ? 'cached' : 'idle',
-          folderOrder: workspace.folderOrder,
+          folderOrder: rememberedFolderOrder(workspace.folderOrder, sessions),
           collapsedFolders: workspace.collapsedFolders,
           chatDefaults: workspace.chatDefaults ?? DEFAULT_CHAT_DEFAULTS,
           fontScale: settings.fontScale,
@@ -1385,6 +1393,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         scheduleLiveSnapshotSave(scope, next, true)
         if (reason === 'selection' || reason === 'manual' || reason === 'foreground') {
           void get().refreshFiles(sessionId)
+          void get().refreshSubagents(sessionId)
         }
 
         if (!hasSelectedStream(sessionId)) startSelectedStream(sessionId, next.latestSeq ?? snapshotLatestSeq(next), epoch, set, get)
@@ -1976,6 +1985,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (expectedGeneration !== undefined && expectedGeneration !== get().profileGeneration) return
     set(state => ({ teamReferencesBySession: { ...state.teamReferencesBySession, [sessionId]: references.map(reference => ({ ...reference })) } }))
     scheduleCurrentWorkspaceSave(get)
+  },
+
+  async refreshSubagents(sessionId) {
+    const inFlight = subagentsRefreshInFlight.get(sessionId)
+    if (inFlight) return inFlight
+    const scope = captureConnection()
+    if (!get().connected || get().workspaceAdopting) return
+    const promise = (async () => {
+      try {
+        const snapshot = await scope.client.subagents(sessionId)
+        if (!connectionIsCurrent(scope)) return
+        set(state => ({ subagentsBySession: withSubagentStates(state.subagentsBySession, sessionId, snapshot.subagents) }))
+      } catch {
+        // Advisory rows: the last known state stays on screen and the next poll or turn end retries.
+      } finally {
+        subagentsRefreshInFlight.delete(sessionId)
+      }
+    })()
+    subagentsRefreshInFlight.set(sessionId, promise)
+    return promise
   },
 
   async refreshAgentRoutes(sessionId, expectedGeneration) {
@@ -2807,9 +2836,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         delete uploads[sessionId]
         delete uploadPending[sessionId]
         delete uploadFailed[sessionId]
+        const subagentsBySession = { ...state.subagentsBySession }
+        delete subagentsBySession[sessionId]
         return {
           sessions,
           snapshots,
+          subagentsBySession,
           drafts,
           chatReferencesBySession,
           teamReferencesBySession,
@@ -3663,7 +3695,7 @@ async function prepareServerProfileActivation(
       uploadPending: {},
       uploadFailed: {},
       pins,
-      folderOrder: workspace.folderOrder,
+      folderOrder: rememberedFolderOrder(workspace.folderOrder, sessions),
       collapsedFolders: workspace.collapsedFolders,
       chatDefaults: workspace.chatDefaults ?? DEFAULT_CHAT_DEFAULTS,
       searchResults: [],
@@ -3877,7 +3909,7 @@ async function acceptHealthIdentity(
         drafts: workspace.drafts,
         chatReferencesBySession: workspace.chatReferencesBySession ?? {},
         teamReferencesBySession: workspace.teamReferencesBySession ?? {},
-        folderOrder: workspace.folderOrder,
+        folderOrder: rememberedFolderOrder(workspace.folderOrder, sessions),
         collapsedFolders: workspace.collapsedFolders,
         chatDefaults: workspace.chatDefaults ?? DEFAULT_CHAT_DEFAULTS,
         selectedSessionId: selected,
@@ -4115,6 +4147,14 @@ function unreadCount(sessions: readonly Session[]): number {
   return sessions.filter(session => !session.archived && (session.manual_unread || (session.latest_agent_event_seq ?? 0) > (session.last_read_agent_event_seq ?? 0))).length
 }
 
+// Folders learned from loaded or refreshed sessions are persisted, so archiving
+// or deleting a folder's last chat leaves the folder in place until Delete folder.
+useAppStore.subscribe((state, previous) => {
+  if (state.sessions === previous.sessions || state.workspaceAdopting || state.switchingProfileId) return
+  const remembered = rememberedFolderOrder(state.folderOrder, state.sessions)
+  if (remembered !== state.folderOrder) state.setFolderOrder(remembered, state.profileGeneration)
+})
+
 function saveCurrentWorkspace(get: () => AppState): Promise<void> {
   const scope = captureConnection()
   if (scope.namespaceAdopting) return Promise.resolve()
@@ -4212,6 +4252,53 @@ async function withActiveConnectionMutation<T>(
     activeConnectionMutationDepth -= 1
   }
 }
+
+/** Latest record per subagent id wins by seq; returns `bySession` itself when nothing is newer so subscribers keep their reference. */
+function withSubagentStates(
+  bySession: Record<string, Record<string, Event>>,
+  sessionId: string,
+  incoming: readonly Event[],
+): Record<string, Record<string, Event>> {
+  const current = bySession[sessionId] ?? {}
+  let next: Record<string, Event> | null = null
+  for (const event of incoming) {
+    const id = event.subagent_id
+    if (!id || event.type !== 'subagent_state') continue
+    const existing = (next ?? current)[id]
+    if (existing && existing.seq >= event.seq) continue
+    next ??= { ...current }
+    next[id] = event
+  }
+  return next ? { ...bySession, [sessionId]: next } : bySession
+}
+
+// The 5 s subagent poll is a derived effect of (open chat, active set,
+// connection); reconcile it from the store rather than from every writer of
+// activeSessionIds. Only the open chat has a stream and a strip on screen.
+useAppStore.subscribe((state, previous) => {
+  if (
+    state.selectedSessionId === previous.selectedSessionId
+    && state.activeSessionIds === previous.activeSessionIds
+    && state.connected === previous.connected
+  ) return
+  const sessionId = state.selectedSessionId
+  const wanted = sessionId && state.connected && state.activeSessionIds.has(sessionId) ? sessionId : null
+  if (subagentPoll?.sessionId === wanted) return
+  if (subagentPoll) {
+    clearInterval(subagentPoll.timer)
+    const ended = subagentPoll.sessionId
+    subagentPoll = null
+    // A turn's final child statuses land after its terminal event; one more fetch closes the rows.
+    if (ended === sessionId) void state.refreshSubagents(ended)
+  }
+  if (!wanted) return
+  subagentPoll = {
+    sessionId: wanted,
+    timer: setInterval(() => {
+      if (NativeAppState.currentState === 'active') void useAppStore.getState().refreshSubagents(wanted)
+    }, SUBAGENT_POLL_MS),
+  }
+})
 
 function stopForegroundRefreshTimer(): void {
   if (refreshTimer) clearInterval(refreshTimer)
@@ -4370,6 +4457,8 @@ function applyLiveEvent(scope: ConnectionScope, event: Event, set: (value: Parti
   if (!connectionIsCurrent(scope)) return
   event = sanitizeTimelineEvent(event)
   const sessionId = event.session_id
+  // Subagent state has its own slice; the timeline path below drops it as internal.
+  if (event.type === 'subagent_state') set(state => ({ subagentsBySession: withSubagentStates(state.subagentsBySession, sessionId, [event]) }))
   const timelineInternal = TIMELINE_INTERNAL_EVENT_TYPES.has(event.type)
   const nativeSteerSupersession = isNativeSteerSupersession(event)
   const terminalEvent = ['turn_finished', 'turn_stopped', 'error'].includes(event.type) && !nativeSteerSupersession
@@ -4458,6 +4547,15 @@ function applyLiveEvent(scope: ConnectionScope, event: Event, set: (value: Parti
     'claude_interaction_requested',
     'claude_interaction_resolved',
   ].includes(event.type)) void get().refreshSessions()
+  if (event.type === 'history_rewound') {
+    // The removed turns' children are gone server-side; refetch rather than guess which ids they were.
+    set(state => {
+      const subagentsBySession = { ...state.subagentsBySession }
+      delete subagentsBySession[sessionId]
+      return { subagentsBySession }
+    })
+    void get().refreshSubagents(sessionId)
+  }
   if (event.type.startsWith('job_')) void get().refreshJobs()
   if (
     (event.type === 'queue_snapshot'

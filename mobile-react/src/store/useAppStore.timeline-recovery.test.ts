@@ -82,6 +82,9 @@ async function flushRecoveryWork(): Promise<void> {
 }
 
 client.markValidated()
+// Opening a chat also fetches its subagent snapshot; the real request's 30 s
+// timeout would otherwise register as a fake recovery timer below.
+client.subagents = async sessionId => ({ session_id: sessionId, subagents: [], count: 0, active_count: 0, latest_seq: null })
 client.sessionPage = async sessionId => {
   pageCalls.push(sessionId)
   if (missingSessions.has(sessionId)) throw new ServerError(404, `chat not found: ${sessionId}`)

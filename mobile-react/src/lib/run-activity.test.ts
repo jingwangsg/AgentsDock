@@ -117,4 +117,26 @@ assert(runActivityLabel({ startedAt: T0, finishedAt: null, stopped: false }, fal
 assert(runActivityLabel(null, false, at(T2)) === null, 'nothing to show for an idle empty chat')
 assert(runActivityLabel({ startedAt: 'garbage', finishedAt: T1, stopped: false }, false, at(T2)) === null, 'unparseable timestamps hide the summary')
 
+// Active subagents append their count and up to two names, as in the Claude Code CLI strip.
+assertEqual(
+  runActivityLabel({ startedAt: T0, finishedAt: null, stopped: false }, true, at(T1), ['Audit the renderer']),
+  { live: true, title: 'Working… · 1 subagent running (Audit the renderer)', elapsed: '3m 11s' },
+  'one active subagent reads singular with its name',
+)
+assertEqual(
+  runActivityLabel({ startedAt: T0, finishedAt: null, stopped: false }, true, at(T1), ['Audit', 'Review', 'Fix']),
+  { live: true, title: 'Working… · 3 subagents running (Audit, Review)', elapsed: '3m 11s' },
+  'more than two active subagents list only the first two names',
+)
+assertEqual(
+  runActivityLabel(null, true, at(T2), ['Audit']),
+  { live: true, title: 'Working… · 1 subagent running (Audit)', elapsed: null },
+  'the suffix does not need a turn start',
+)
+assertEqual(
+  runActivityLabel({ startedAt: T0, finishedAt: T1, stopped: false }, false, at(T2), ['Audit']),
+  { live: false, title: 'Worked for 3m 11s', elapsed: null },
+  'a finished turn never carries the running suffix',
+)
+
 console.log('run activity regressions passed')
