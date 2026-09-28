@@ -60,8 +60,6 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [sideBySide, setSideBySide] = useState(() => localStorage.getItem(SIDE_BY_SIDE_KEY) !== '0')
   const [wordWrap, setWordWrap] = useState(() => localStorage.getItem(WORD_WRAP_KEY) === '1')
-  // Set when Monaco fails to load; the pane then keeps the line renderer for this mount.
-  const [editorFailure, setEditorFailure] = useState<string | null>(null)
   const mounted = useRef(true)
   const statusEpoch = useRef(0)
   const detailEpoch = useRef(0)
@@ -269,7 +267,7 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
             {selectedFile.staged && <button type="button" aria-pressed={selection.view === 'staged'} onClick={() => select({ path: selection.path, view: 'staged' })}>{labels.staged}</button>}
             {(selectedFile.unstaged || selectedFile.untracked) && <button type="button" aria-pressed={selection.view === 'unstaged'} onClick={() => select({ path: selection.path, view: 'unstaged' })}>{selectedFile.untracked ? labels.untracked : labels.unstaged}</button>}
           </div>}
-          {selection.view !== 'conflict' && !editorFailure && <>
+          {selection.view !== 'conflict' && <>
             <div className="segmented review-layout-toggle">
               <button type="button" className={sideBySide ? 'active' : ''} aria-pressed={sideBySide} onClick={() => chooseLayout(true)}><Columns2 size={13} aria-hidden="true" />{t('review.layoutSideBySide')}</button>
               <button type="button" className={sideBySide ? '' : 'active'} aria-pressed={!sideBySide} onClick={() => chooseLayout(false)}><Rows3 size={13} aria-hidden="true" />{t('review.layoutInline')}</button>
@@ -293,7 +291,7 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
               <textarea className="workspace-changes-result" aria-label={labels.result} value={result} readOnly={blocked} spellCheck={false} onChange={event => setResult(event.target.value)} />
               <div className="workspace-changes-resolution-footer">{hasMarkers && <span>{labels.markers}</span>}<button type="button" className="primary-button" disabled={blocked || staleConflict || hasMarkers} onClick={() => void run({ action: 'resolve', path: conflict.path, content: result }, conflict.revision)}><Check size={14} />{labels.saveResolution}</button></div>
             </>}
-          </div> : detail?.kind === 'diff' ? <DiffPreview diff={detail.value} sideBySide={sideBySide} wordWrap={wordWrap} editorFailure={editorFailure} onEditorUnavailable={setEditorFailure} /> : <div className="workspace-changes-empty"><FileDiff size={28} /><span>{status?.files.length ? labels.select : status ? labels.empty : labels.unavailable}</span></div>}
+          </div> : detail?.kind === 'diff' ? <DiffPreview diff={detail.value} sideBySide={sideBySide} wordWrap={wordWrap} /> : <div className="workspace-changes-empty"><FileDiff size={28} /><span>{status?.files.length ? labels.select : status ? labels.empty : labels.unavailable}</span></div>}
       </main>
     </div>
     <ConfirmDialog open={active && abortOpen} title={labels.abortTitle} description={labels.abortHint} confirm={labels.abortConfirm} disabled={busy} onCancel={() => setAbortOpen(false)} onConfirm={() => void run({ action: 'abort', confirmed: true })} />
@@ -301,28 +299,27 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
   </section>
 }
 
-function DiffPreview({ diff, sideBySide, wordWrap, editorFailure, onEditorUnavailable }: { diff: WorkspaceGitDiff; sideBySide: boolean; wordWrap: boolean; editorFailure: string | null; onEditorUnavailable: (message: string) => void }) {
+function DiffPreview({ diff, sideBySide, wordWrap }: { diff: WorkspaceGitDiff; sideBySide: boolean; wordWrap: boolean }) {
   const labels = useWorkspaceGitLabels()
   const locale = useLocale()
-  const lines = useMemo(() => diff.diff.split('\n'), [diff.diff])
-  // A truncated diff can stop mid-hunk and a rename (git diff --no-renames) arrives
-  // as two file blocks; both stay on the line renderer, which shows the text as
-  // received. The gap placeholder is baked into the documents, so the model also
-  // follows the locale.
+  // Set when Monaco fails to load; a notice then stands in for the editor.
+  const [editorFailure, setEditorFailure] = useState<string | null>(null)
+  // A rename (git diff --no-renames) arrives as two file blocks; the selected
+  // path's block wins. The gap placeholder is baked into the documents, so the
+  // model also follows the locale.
   const model = useMemo(() => {
-    if (diff.binary || diff.truncated) return null
     const files = parseReviewableDiff(diff.diff)
-    return files.length === 1 ? buildMonacoDiffModel(files[0], unchanged => unchanged == null
+    const file = files.find(candidate => candidate.path === diff.path) ?? files[0]
+    return file ? buildMonacoDiffModel(file, unchanged => unchanged == null
       ? '⋯'
       : `⋯ ${t(unchanged === 1 ? 'review.unmodifiedLines.one' : 'review.unmodifiedLines.other', { count: unchanged.toLocaleString() })}`) : null
   }, [diff, locale])
   if (diff.binary || !diff.diff) return <div className="workspace-changes-empty">{diff.binary ? labels.binary : labels.noDiff}</div>
   return <div className="workspace-changes-diff">
-    {editorFailure && <p className="workspace-changes-notice" title={editorFailure}>{t('review.editorUnavailable')}</p>}
     {diff.truncated && <p className="workspace-changes-notice">{labels.truncated}</p>}
-    {model && !editorFailure
-      ? <MonacoDiffEditor path={diff.path} model={model} sideBySide={sideBySide} wordWrap={wordWrap} onUnavailable={onEditorUnavailable} />
-      : <Virtuoso className="workspace-changes-diff-lines" data={lines} itemContent={(index, line) => <div className={`workspace-changes-diff-line ${line.startsWith('+') && !line.startsWith('+++') ? 'addition' : line.startsWith('-') && !line.startsWith('---') ? 'deletion' : line.startsWith('@@') ? 'hunk' : ''}`}><span aria-hidden="true">{index + 1}</span><code>{line || ' '}</code></div>} />}
+    {editorFailure ? <div className="workspace-changes-empty" role="alert" title={editorFailure}>{t('review.editorUnavailable')}</div>
+      : model ? <MonacoDiffEditor path={diff.path} model={model} sideBySide={sideBySide} wordWrap={wordWrap} onUnavailable={setEditorFailure} />
+      : <div className="workspace-changes-empty">{labels.noDiff}</div>}
   </div>
 }
 

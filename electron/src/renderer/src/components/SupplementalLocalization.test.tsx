@@ -1,5 +1,4 @@
-import { forwardRef } from 'react'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { setLocale } from '@shared/i18n'
 import { resetTransientCloseStackForTests } from '../lib/transient-close'
@@ -9,19 +8,37 @@ import { CodeReview } from './CodeReview'
 import { EmergencyTimelineDock } from './EmergencyTimelineDock'
 import { WelcomeChat } from './WelcomeChat'
 
-// jsdom cannot host Monaco; the review assertions below read the line-based fallback.
-vi.mock('monaco-editor/editor/editor.api', () => { throw new Error('monaco unavailable in jsdom') })
+// jsdom cannot run Monaco; this fake records the documents the review pane hands it.
+const fake = vi.hoisted(() => {
+  const sideEditor = () => ({ updateOptions: vi.fn(), createDecorationsCollection: vi.fn() })
+  const diffEditor = {
+    setModel: vi.fn(),
+    updateOptions: vi.fn(),
+    dispose: vi.fn(),
+    original: sideEditor(),
+    modified: sideEditor(),
+    getOriginalEditor() { return this.original },
+    getModifiedEditor() { return this.modified }
+  }
+  const monaco = {
+    editor: {
+      createDiffEditor: vi.fn(() => diffEditor),
+      createModel: vi.fn((value: string, language: string) => ({ value, language, dispose: vi.fn() })),
+      defineTheme: vi.fn(),
+      setTheme: vi.fn()
+    },
+    languages: { getLanguages: () => [{ id: 'typescript', extensions: ['.ts'] }] },
+    Range: class { constructor(readonly startLineNumber: number, readonly startColumn: number, readonly endLineNumber: number, readonly endColumn: number) {} }
+  }
+  return { diffEditor, monaco }
+})
 
-vi.mock('react-virtuoso', () => ({
-  Virtuoso: forwardRef(function MockVirtuoso(props: {
-    data: unknown[]
-    computeItemKey: (index: number, item: unknown) => string
-    itemContent: (index: number, item: unknown) => React.ReactNode
-    className?: string
-  }, _ref) {
-    return <div className={props.className}>{props.data.map((item, index) => <div key={props.computeItemKey(index, item)}>{props.itemContent(index, item)}</div>)}</div>
-  })
-}))
+vi.mock('monaco-editor/editor/editor.api', () => fake.monaco)
+vi.mock('monaco-editor/basic-languages/monaco.contribution', () => ({}))
+vi.mock('monaco-editor/editor/editor.worker?worker', () => ({ default: class {} }))
+
+// setModel(null) precedes every swap; the last non-null call holds the documents on screen.
+const shownModified = () => fake.diffEditor.setModel.mock.calls.map(call => call[0] as { modified: { value: string } } | null).filter(Boolean).at(-1)?.modified.value
 
 const originalAcknowledge = useAppStore.getState().acknowledgeEmergency
 
@@ -35,20 +52,22 @@ afterEach(() => {
 })
 
 it('localizes code-review count templates while retaining raw paths and patch lines', async () => {
+  // Two hunks per file: the placeholder for the lines skipped between them is baked into the editor documents.
   const source = ['src/Settings.ts', 'src/Message.ts'].map(path => [
-    `diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -4,7 +4,7 @@',
-    ' <<<<<<< HEAD', ' ours /tmp/Settings', ' ||||||| parent', ' base', ' =======', ' theirs', ' >>>>>>> feature'
+    `diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`,
+    '@@ -1,2 +1,2 @@', ' one', ' two',
+    '@@ -6,7 +6,7 @@', ' <<<<<<< HEAD', ' ours /tmp/Settings', ' ||||||| parent', ' base', ' =======', ' theirs', ' >>>>>>> feature'
   ].join('\n')).join('\n')
   render(<CodeReview target={{ sessionId: 'raw-chat-id', source }} onClose={vi.fn()} />)
   expect(screen.getByRole('status')).toHaveTextContent('2 conflicted files · 2 conflicts')
   expect(screen.getByText('2 files', { exact: true })).toBeInTheDocument()
-  expect((await screen.findAllByText('3 unmodified lines')).length).toBe(2)
+  await waitFor(() => expect(shownModified()).toContain('⋯ 3 unmodified lines'))
   act(() => setLocale('zh-CN'))
   expect(screen.getByRole('status')).toHaveTextContent('2 个有冲突的文件 · 2 处冲突')
   expect(screen.getByText('2 个文件', { exact: true })).toBeInTheDocument()
-  expect(screen.getAllByText('3 行未修改').length).toBe(2)
+  await waitFor(() => expect(shownModified()).toContain('⋯ 3 行未修改'))
   expect(screen.getByRole('button', { name: 'src/Settings.ts，1 处冲突，新增 0 行，删除 0 行' })).toBeInTheDocument()
-  expect(screen.getAllByText('ours /tmp/Settings').length).toBe(2)
+  expect(shownModified()).toContain('ours /tmp/Settings')
   act(() => setLocale('en'))
   expect(screen.getByRole('status')).toHaveTextContent('2 conflicted files · 2 conflicts')
 })

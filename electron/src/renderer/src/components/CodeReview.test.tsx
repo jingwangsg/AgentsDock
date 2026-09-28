@@ -1,34 +1,54 @@
-import { forwardRef } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import { resetTransientCloseStackForTests } from '../lib/transient-close'
 import { CodeReview } from './CodeReview'
 
-// jsdom cannot host Monaco. Rejecting its import exercises the line-based
-// fallback, which is the renderer these assertions read.
-vi.mock('monaco-editor/editor/editor.api', () => { throw new Error('monaco unavailable in jsdom') })
+// jsdom cannot run Monaco; this fake records what the review pane asks of it.
+const fake = vi.hoisted(() => {
+  const sideEditor = () => ({ updateOptions: vi.fn(), createDecorationsCollection: vi.fn() })
+  const diffEditor = {
+    setModel: vi.fn(),
+    updateOptions: vi.fn(),
+    dispose: vi.fn(),
+    original: sideEditor(),
+    modified: sideEditor(),
+    getOriginalEditor() { return this.original },
+    getModifiedEditor() { return this.modified }
+  }
+  const monaco = {
+    editor: {
+      createDiffEditor: vi.fn(() => diffEditor),
+      createModel: vi.fn((value: string, language: string) => ({ value, language, dispose: vi.fn() })),
+      defineTheme: vi.fn(),
+      setTheme: vi.fn()
+    },
+    languages: { getLanguages: () => [{ id: 'typescript', extensions: ['.ts'] }] },
+    Range: class { constructor(readonly startLineNumber: number, readonly startColumn: number, readonly endLineNumber: number, readonly endColumn: number) {} }
+  }
+  return { diffEditor, monaco }
+})
 
-vi.mock('react-virtuoso', () => ({
-  Virtuoso: forwardRef(function MockVirtuoso(props: {
-    data: unknown[]
-    computeItemKey: (index: number, item: unknown) => string
-    itemContent: (index: number, item: unknown) => React.ReactNode
-    className?: string
-  }, _ref) {
-    return <div className={props.className}>{props.data.map((item, index) => <div key={props.computeItemKey(index, item)}>{props.itemContent(index, item)}</div>)}</div>
-  })
-}))
+vi.mock('monaco-editor/editor/editor.api', () => fake.monaco)
+vi.mock('monaco-editor/basic-languages/monaco.contribution', () => ({}))
+vi.mock('monaco-editor/editor/editor.worker?worker', () => ({ default: class {} }))
+
+type FakeModel = { value: string; language: string }
+// setModel(null) precedes every swap; the last non-null call holds the documents on screen.
+const shownModels = () => fake.diffEditor.setModel.mock.calls.map(call => call[0] as { original: FakeModel; modified: FakeModel } | null).filter(Boolean).at(-1)
+// The modified side receives its gap rows first and the conflict rows last.
+const conflictDecorations = () => (fake.diffEditor.modified.createDecorationsCollection.mock.calls.at(-1)?.[0] ?? []) as Array<{ options: { className: string; inlineClassName?: string } }>
 
 describe('CodeReview', () => {
+  beforeEach(() => vi.clearAllMocks())
   afterEach(() => {
     cleanup()
     resetTransientCloseStackForTests()
     vi.restoreAllMocks()
   })
 
-  it('renders the canonical patch as line-level code and a changed-file tree', async () => {
+  it('renders the canonical patch in the code editor and a changed-file tree', async () => {
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
       value: {
@@ -39,9 +59,10 @@ describe('CodeReview', () => {
 
     render(<CodeReview target={{ sessionId: 'chat-1', runId: 'run-1', files: [{ path: 'src/example.ts', additions: 1, deletions: 1 }], additions: 1, deletions: 1, repositoryRoot: '/work/project' }} onClose={vi.fn()} />)
 
-    expect(await screen.findByText('+newValue')).toBeInTheDocument()
-    expect(screen.getByText('-oldValue')).toBeInTheDocument()
-    expect(screen.getByText('The code editor could not load; showing the plain diff instead.')).toHaveAttribute('title')
+    await waitFor(() => expect(shownModels()?.modified.value).toBe('newValue'))
+    expect(shownModels()?.original).toMatchObject({ value: 'oldValue', language: 'typescript' })
+    expect(fake.monaco.editor.createDiffEditor).toHaveBeenCalledWith(expect.any(HTMLElement), expect.objectContaining({ readOnly: true }))
+    expect(screen.queryByText('+newValue')).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Code review' })).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(screen.getByRole('complementary', { name: 'Changed files' })).toBeInTheDocument()
@@ -107,19 +128,23 @@ describe('CodeReview', () => {
       'diff --git a/src/clean.ts b/src/clean.ts', '--- a/src/clean.ts', '+++ b/src/clean.ts', '@@ -1 +1 @@', '-old', '+new'
     ].join('\n')
 
-    const view = render(<CodeReview target={{ sessionId: 'chat-1', source }} onClose={vi.fn()} />)
+    render(<CodeReview target={{ sessionId: 'chat-1', source }} onClose={vi.fn()} />)
 
     expect(screen.getByRole('status')).toHaveTextContent('1 conflicted file · 1 conflict')
     const conflicted = screen.getByRole('button', { name: 'src/conflicted.ts, 1 conflict, 0 additions, 0 deletions' })
     const clean = screen.getByRole('button', { name: 'src/clean.ts, 1 additions, 1 deletions' })
-    expect(await screen.findByRole('separator', { name: 'Merge conflict: ours section begins, HEAD' })).toHaveAttribute('data-conflict-side', 'ours')
-    expect(screen.getByRole('separator', { name: 'Merge conflict: base section begins, parent' })).toHaveAttribute('data-conflict-side', 'base')
-    expect(screen.getByRole('separator', { name: 'Merge conflict: theirs section begins' })).toHaveAttribute('data-conflict-side', 'theirs')
-    expect(screen.getByRole('separator', { name: 'Merge conflict ends, feature' })).toHaveAttribute('data-conflict-side', 'theirs')
-    expect(view.container.querySelectorAll('.diff-line[data-conflict-side]')).toHaveLength(7)
+    await waitFor(() => expect(shownModels()?.modified.value).toBe('<<<<<<< HEAD\nours\n||||||| parent\nbase\n=======\ntheirs\n>>>>>>> feature'))
+    // Every row of the complete conflict is painted with its side; the four marker rows are emphasised.
+    expect(conflictDecorations().map(decoration => decoration.options.className)).toEqual([
+      'review-monaco-conflict ours', 'review-monaco-conflict ours',
+      'review-monaco-conflict base', 'review-monaco-conflict base',
+      'review-monaco-conflict theirs', 'review-monaco-conflict theirs', 'review-monaco-conflict theirs'
+    ])
+    expect(conflictDecorations().filter(decoration => decoration.options.inlineClassName === 'review-monaco-conflict-marker')).toHaveLength(4)
     fireEvent.click(clean)
     expect(clean).toHaveAttribute('aria-current', 'true')
     expect(conflicted).not.toHaveAttribute('aria-current')
+    await waitFor(() => expect(shownModels()?.modified.value).toBe('new'))
   })
 
   it('does not style an incomplete conflict marker as a conflict', async () => {
@@ -129,11 +154,11 @@ describe('CodeReview', () => {
     })
     const source = 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -0,0 +1,2 @@\n+<<<<<<< HEAD\n+unfinished'
 
-    const view = render(<CodeReview target={{ sessionId: 'chat-1', source }} onClose={vi.fn()} />)
+    render(<CodeReview target={{ sessionId: 'chat-1', source }} onClose={vi.fn()} />)
 
-    expect(await screen.findByText('+unfinished')).toBeInTheDocument()
+    await waitFor(() => expect(shownModels()?.modified.value).toBe('<<<<<<< HEAD\nunfinished'))
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
-    expect(view.container.querySelector('[data-conflict-side]')).not.toBeInTheDocument()
+    expect(conflictDecorations()).toEqual([])
   })
 
   it('refuses to dress a git status inventory up as a code diff', () => {
@@ -164,10 +189,31 @@ describe('CodeReview', () => {
 
     const view = render(<CodeReview target={{ sessionId: 'chat-1', runId: 'run-1' }} onClose={vi.fn()} />)
     view.rerender(<CodeReview target={{ sessionId: 'chat-2', runId: 'run-2' }} onClose={vi.fn()} />)
-    expect(await screen.findByText('+chatTwo')).toBeInTheDocument()
+    await waitFor(() => expect(shownModels()?.modified.value).toBe('chatTwo'))
 
-    resolveFirst('diff --git a/chat-one.ts b/chat-one.ts\n--- a/chat-one.ts\n+++ b/chat-one.ts\n@@ -1 +1 @@\n-old\n+chatOne')
-    await waitFor(() => expect(screen.queryByText('+chatOne')).not.toBeInTheDocument())
-    expect(screen.getByText('+chatTwo')).toBeInTheDocument()
+    await act(async () => resolveFirst('diff --git a/chat-one.ts b/chat-one.ts\n--- a/chat-one.ts\n+++ b/chat-one.ts\n@@ -1 +1 @@\n-old\n+chatOne'))
+    expect(shownModels()?.modified.value).toBe('chatTwo')
+    expect(fake.monaco.editor.createModel).not.toHaveBeenCalledWith('chatOne', expect.anything())
+  })
+
+  // Kept last: re-registering the Monaco mock affects every later lazy import in this file.
+  it('shows one notice and no diff text when the code editor cannot load', async () => {
+    vi.doMock('monaco-editor/editor/editor.api', () => { throw new Error('monaco unavailable in jsdom') })
+    // The lazy ../lib/monaco module is cached from earlier tests; drop it so the next import re-evaluates.
+    vi.resetModules()
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { diffs: { get: vi.fn() }, native: { writeClipboard: vi.fn() } } as unknown as AgentsDockAPI
+    })
+
+    render(<CodeReview target={{ sessionId: 'chat-1', source: 'diff --git a/src/example.ts b/src/example.ts\n--- a/src/example.ts\n+++ b/src/example.ts\n@@ -4 +4 @@\n-oldValue\n+newValue' }} onClose={vi.fn()} />)
+
+    const notice = await screen.findByText('The code editor could not load.')
+    expect(notice).toHaveAttribute('title')
+    expect(screen.queryByText(/oldValue|newValue/)).not.toBeInTheDocument()
+    expect(fake.monaco.editor.createDiffEditor).not.toHaveBeenCalled()
+    // Only the editor is replaced: the file header and layout toggles stay.
+    expect(screen.getByText('src/example.ts', { selector: '.review-file-path' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Inline' })).toBeInTheDocument()
   })
 })

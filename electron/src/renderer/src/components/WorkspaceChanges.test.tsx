@@ -136,18 +136,29 @@ describe('Workspace changes', () => {
     expect(fake.diffEditor.setModel.mock.calls.filter(call => call[0])).toHaveLength(1)
   })
 
-  it('keeps the plain diff lines for truncated and binary previews', async () => {
+  it('renders a truncated diff in the code editor below the truncated note and keeps the binary notice', async () => {
     git.status.mockResolvedValue({ ...initial, files: [modified, { ...modified, path: 'logo.png' }] })
     git.diff.mockImplementation((_scope, _session, path, view) => Promise.resolve(path === 'logo.png'
       ? { path, view, diff: 'Binary files a/logo.png and b/logo.png differ', revision: 'rev-1', binary: true, truncated: false }
       : { path, view, diff: '--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-old\n+new', revision: 'rev-1', binary: false, truncated: true }))
     render(<WorkspaceChanges scope={scope} sessionId="chat-a" />)
     fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
-    expect(await screen.findByText('+new')).toBeInTheDocument()
+    await waitFor(() => expect(shownModels()?.modified.value).toBe('new'))
     expect(screen.getByText('Preview truncated. Review the complete file before committing.')).toBeInTheDocument()
-    expect(fake.monaco.editor.createDiffEditor).not.toHaveBeenCalled()
+    expect(screen.queryByText('+new')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'logo.png' }))
     expect(await screen.findByText('Binary content cannot be previewed here.')).toBeInTheDocument()
+  })
+
+  it('shows the block for the selected path when the diff carries several file blocks', async () => {
+    git.diff.mockImplementation((_scope, _session, path, view) => Promise.resolve({ path, view, revision: 'rev-1', binary: false, truncated: false, diff: [
+      'diff --git a/legacy.ts b/legacy.ts', '--- a/legacy.ts', '+++ /dev/null', '@@ -1 +0,0 @@', '-gone',
+      'diff --git a/app.ts b/app.ts', '--- /dev/null', '+++ b/app.ts', '@@ -0,0 +1 @@', '+arrived'
+    ].join('\n') }))
+    render(<WorkspaceChanges scope={scope} sessionId="chat-a" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
+    await waitFor(() => expect(shownModels()?.modified.value).toBe('arrived'))
+    expect(shownModels()?.original.value).toBe('')
   })
 
   it('ignores a late snapshot after changing profile ownership', async () => {
@@ -204,16 +215,15 @@ describe('Workspace changes', () => {
   })
 
   // Kept last: re-registering the Monaco mock affects every later lazy import in this file.
-  it('falls back to the plain diff lines when the code editor cannot load', async () => {
+  it('shows one notice and no diff text when the code editor cannot load', async () => {
     vi.doMock('monaco-editor/editor/editor.api', () => { throw new Error('monaco unavailable in jsdom') })
     // The lazy ../lib/monaco module is cached from earlier tests; drop it so the next import re-evaluates.
     vi.resetModules()
     render(<WorkspaceChanges scope={scope} sessionId="chat-a" />)
     fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
-    expect(await screen.findByText('+new')).toBeInTheDocument()
-    expect(screen.getByText('-old')).toBeInTheDocument()
-    expect(screen.getByText('The code editor could not load; showing the plain diff instead.')).toHaveAttribute('title')
-    expect(screen.queryByRole('button', { name: 'Inline' })).not.toBeInTheDocument()
+    const notice = await screen.findByText('The code editor could not load.')
+    expect(notice).toHaveAttribute('title')
+    expect(screen.queryByText(/\+new|-old/)).not.toBeInTheDocument()
     expect(fake.monaco.editor.createDiffEditor).not.toHaveBeenCalled()
   })
 })

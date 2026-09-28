@@ -2415,30 +2415,11 @@ button.tool-event-toggle:hover { background: #242424; }
 .review-file-select { display: none; min-width: 0; max-width: 62%; margin-left: auto; padding: 5px 26px 5px 8px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-control); font: 10px "SFMono-Regular", monospace; text-overflow: ellipsis; }
 .review-workspace { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 270px; overflow: hidden; }
 .review-diff-view { min-width: 0; min-height: 0; position: relative; overflow: hidden; }
-.review-diff-list { width: 100%; height: 100%; overflow-x: auto !important; font: 11px/1.55 "SFMono-Regular", Menlo, monospace; user-select: text; }
 .diff-file-header { min-width: max(100%, 780px); height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 12px; color: var(--text); background: var(--surface-2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); font: 11px "SFMono-Regular", monospace; }
 .diff-file-header:first-child { border-top: 0; }
 .diff-file-header > .review-file-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diff-file-header small { flex: 0 0 auto; }
 .review-conflict-badge { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; padding: 2px 5px; color: var(--amber); background: var(--amber-surface); border: 1px solid color-mix(in srgb, var(--amber) 48%, transparent); border-radius: 999px; font: 700 8px/1.2 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; letter-spacing: .02em; white-space: nowrap; }
-.diff-gap { min-width: max(100%, 780px); margin: 6px 0; padding: 6px 122px; color: var(--muted); background: var(--surface-3); border-block: 1px solid var(--border-soft); font-size: var(--text-size-meta); }
-.diff-line { min-width: max(100%, 780px); display: grid; grid-template-columns: 56px 56px minmax(660px, 1fr); }
-.diff-line > span { padding-right: 8px; color: var(--faint); background: var(--surface); border-right: 1px solid var(--border-soft); text-align: right; user-select: none; }
-.diff-line code { min-height: 17px; padding: 0 10px; color: var(--text); white-space: pre; }
-.diff-line.add > span, .diff-line.add code { color: #bdeccc; background: color-mix(in srgb, #176d39 35%, var(--bg)); }
-.diff-line.remove > span, .diff-line.remove code { color: #ffd1ce; background: color-mix(in srgb, #8b2825 34%, var(--bg)); }
-.diff-line.hunk code { color: #8fbbdf; background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
-.diff-line.header code { color: var(--muted); background: var(--surface-2); }
-.diff-line[data-conflict-side="ours"] { --conflict-side-color: var(--conflict-ours); }
-.diff-line[data-conflict-side="base"] { --conflict-side-color: var(--conflict-base); }
-.diff-line[data-conflict-side="theirs"] { --conflict-side-color: var(--conflict-theirs); }
-.diff-line[data-conflict-side] > span,
-.diff-line[data-conflict-side] code { color: var(--text); background: color-mix(in srgb, var(--conflict-side-color) 13%, var(--bg)); }
-.diff-line[data-conflict-side] code { padding-left: 7px; border-left: 3px solid var(--conflict-side-color); }
-.diff-line.conflict-marker > span,
-.diff-line.conflict-marker code { background: color-mix(in srgb, var(--conflict-side-color) 21%, var(--bg)); }
-.diff-line.conflict-marker code { font-weight: 650; }
-.conflict-marker-label { display: inline-block; margin-left: 12px; padding: 1px 5px; color: var(--conflict-side-color); background: color-mix(in srgb, var(--conflict-side-color) 13%, var(--surface)); border: 1px solid color-mix(in srgb, var(--conflict-side-color) 58%, transparent); border-radius: 999px; font: 750 8px/1.25 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; letter-spacing: .06em; user-select: none; }
 .review-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; padding: 30px; color: var(--muted); text-align: center; }
 .review-state.error { color: var(--danger); }
 .review-inline-warning { z-index: 3; position: absolute; top: 8px; right: 12px; left: 12px; display: flex; align-items: center; gap: 8px; padding: 7px 9px; color: #ffd4d1; background: #482725ee; border: 1px solid #743a37; border-radius: 7px; box-shadow: 0 8px 24px #0008; font-size: var(--text-size-meta); }
@@ -2473,17 +2454,12 @@ button.tool-event-toggle:hover { background: #242424; }
 }
 @media (forced-colors: active) {
   .review-conflict-summary,
-  .review-conflict-badge,
-  .conflict-marker-label { color: CanvasText; background: Canvas; border: 1px solid Highlight; forced-color-adjust: auto; }
-  .diff-line[data-conflict-side] > span,
-  .diff-line[data-conflict-side] code { color: CanvasText; background: Canvas; forced-color-adjust: auto; }
-  .diff-line[data-conflict-side] code { border-left-color: Highlight; }
+  .review-conflict-badge { color: CanvasText; background: Canvas; border: 1px solid Highlight; forced-color-adjust: auto; }
 }
 .review-layout-toggle { padding: 2px; }
 .review-layout-toggle button { min-height: 22px; padding: 0 8px; gap: 5px; font-size: var(--text-size-meta); }
-.review-diff-file, .review-diff-fallback { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.review-diff-file { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .review-diff-file > .diff-file-header { min-width: 0; }
-.review-fallback-note { margin: 0; padding: 6px 12px; color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: var(--text-size-meta); }
 .review-monaco { position: relative; min-height: 0; }
 .review-monaco-host, .review-monaco > .review-state { position: absolute; inset: 0; }
 /* Whole-line decorations only paint behind the text; inline classes carry the text styling. */
@@ -3049,14 +3025,6 @@ button.tool-event-toggle:hover { background: #242424; }
 :root[data-theme="light"] .review-tree button { color: var(--muted); }
 :root[data-theme="light"] .review-tree button:hover { background: var(--surface-3); }
 :root[data-theme="light"] .review-tree button.active { color: var(--text); background: var(--surface-3); }
-:root[data-theme="light"] .diff-line > span { color: var(--muted); background: var(--surface-2); }
-:root[data-theme="light"] .diff-line.add code { color: #125b31; background: #e5f5ea; }
-:root[data-theme="light"] .diff-line.remove code { color: #8c2623; background: #fbe8e7; }
-:root[data-theme="light"] .diff-line.header code { color: var(--muted); background: var(--surface-3); }
-:root[data-theme="light"] .diff-line[data-conflict-side] > span,
-:root[data-theme="light"] .diff-line[data-conflict-side] code { color: #24292f; background: color-mix(in srgb, var(--conflict-side-color) 12%, var(--surface)); }
-:root[data-theme="light"] .diff-line.conflict-marker > span,
-:root[data-theme="light"] .diff-line.conflict-marker code { background: color-mix(in srgb, var(--conflict-side-color) 19%, var(--surface)); }
 :root[data-theme="light"] .hljs { color: #24292f; background: #f6f8fa; }
 :root[data-theme="light"] .hljs-comment,
 :root[data-theme="light"] .hljs-quote { color: #6e7781; }

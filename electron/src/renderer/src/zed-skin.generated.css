@@ -624,9 +624,6 @@
 :root[data-skin="zed"] .review-header h2 { border-radius: 4px; }
 :root[data-skin="zed"] .diff-stat b, :root[data-skin="zed"] .diff-file-header b { color: var(--green); }
 :root[data-skin="zed"] .diff-stat i, :root[data-skin="zed"] .diff-file-header i { color: var(--danger-text); }
-:root[data-skin="zed"] .diff-line.add > span, :root[data-skin="zed"] .diff-line.add code { color: var(--green); background: color-mix(in srgb, var(--surface-3) 35%, var(--bg)); }
-:root[data-skin="zed"] .diff-line.remove > span, :root[data-skin="zed"] .diff-line.remove code { color: var(--danger-text); background: color-mix(in srgb, var(--surface-2) 34%, var(--bg)); }
-:root[data-skin="zed"] .diff-line.hunk code { color: var(--accent); }
 :root[data-skin="zed"] .review-inline-warning { color: var(--danger-text); border: 1px solid var(--border); border-radius: 4px; }
 :root[data-skin="zed"] .review-filter { border-radius: 4px; }
 :root[data-skin="zed"] .review-filter:focus-within { border-color: var(--border); }
@@ -1098,9 +1095,6 @@
 :root[data-skin="zed"]:where([data-theme="light"]) .emergency-timeline-dock-copy > span, :root[data-skin="zed"]:where([data-theme="light"]) .emergency-timeline-dock-copy small { color: var(--faint); }
 :root[data-skin="zed"]:where([data-theme="light"]) .provider-reload-toast { color: var(--text); border-color: var(--border); }
 :root[data-skin="zed"]:where([data-theme="light"]) .provider-reload-toast.error { color: var(--text); background: var(--bg); border-color: var(--danger); }
-:root[data-skin="zed"]:where([data-theme="light"]) .diff-line.add code { color: var(--faint); background: var(--surface); }
-:root[data-skin="zed"]:where([data-theme="light"]) .diff-line.remove code { color: var(--faint); background: var(--surface); }
-:root[data-skin="zed"]:where([data-theme="light"]) .diff-line[data-conflict-side] > span, :root[data-skin="zed"]:where([data-theme="light"]) .diff-line[data-conflict-side] code { color: var(--text); }
 :root[data-skin="zed"]:where([data-theme="light"]) .ports-unavailable { background: var(--bg); border-color: var(--border); }
 :root[data-skin="zed"]:where([data-theme="light"]) .ports-unavailable-icon { color: var(--faint); background: var(--amber); border-color: var(--amber); }
 :root[data-skin="zed"]:where([data-theme="light"]) .ports-unavailable strong { color: var(--text); }

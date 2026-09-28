@@ -80,13 +80,6 @@
 .workspace-changes-commit textarea { width: 100%; height: 64px; min-height: 48px; max-height: 150px; resize: vertical; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-control); padding: var(--space-4); font: inherit; }
 .workspace-changes-diff { min-height: 0; flex: 1; display: flex; flex-direction: column; }
 .workspace-changes-diff > .review-monaco { flex: 1; }
-.workspace-changes-diff-lines { flex: 1; min-height: 80px; }
-.workspace-changes-diff-line { display: flex; min-height: 21px; font-family: var(--font-mono); font-size: 12px; line-height: 21px; }
-.workspace-changes-diff-line > span { width: 48px; flex-shrink: 0; padding-right: var(--space-4); color: var(--faint); text-align: right; user-select: none; }
-.workspace-changes-diff-line > code { min-width: 0; padding-inline: var(--space-4); font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
-.workspace-changes-diff-line.addition { background: color-mix(in srgb, var(--green) 11%, transparent); color: var(--green); }
-.workspace-changes-diff-line.deletion { background: color-mix(in srgb, var(--danger) 9%, transparent); color: var(--danger); }
-.workspace-changes-diff-line.hunk { color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .workspace-changes-conflict { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: var(--space-4); overflow: auto; padding: var(--space-6); }
 .workspace-changes-conflict > p { color: var(--muted); font-size: var(--text-size-meta); }
 .workspace-changes-conflict-sources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); min-height: 140px; height: 32%; flex-shrink: 0; gap: var(--space-4); }
