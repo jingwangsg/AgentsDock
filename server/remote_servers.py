@@ -63,6 +63,11 @@ MAX_BACKOFF = 10.0
 REVIVE_INTERVAL = 120.0
 SETTLE_SECONDS = 3.0
 UPLOAD_CHUNK = 256 * 1024
+# Forwarded ssh hops drop mid-transfer; each retry appends from the byte count
+# the host reports, so a hop that flaps every couple of minutes still finishes
+# a multi-minute upload instead of restarting it.
+UPLOAD_RETRIES = 8
+UPLOAD_RETRY_DELAY = 5.0
 
 NO_MULTIPLEX = ["-o", "ControlMaster=no", "-o", "ControlPath=none"]
 SSH_BATCH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new", *NO_MULTIPLEX]
@@ -696,14 +701,7 @@ class RemoteServerManager:
 
             job.progress("download", f"Uploading AgentsServer source to {ssh_host}…")
             tarball = await asyncio.to_thread(build_source_tarball, self.source_dir)
-            try:
-                await self._upload(job, ssh_host, install_dir, tarball)
-            except SSHConnectionLost as exc:
-                # Port-forwarded ssh hops drop mid-transfer now and then; one retry
-                # covers the blip without hiding a persistent failure.
-                job.progress("download", f"{exc}; retrying the upload once…")
-                await asyncio.sleep(5)
-                await self._upload(job, ssh_host, install_dir, tarball)
+            await self._upload(job, ssh_host, install_dir, tarball)
 
             job.progress("install", f"Installing AgentsServer on {ssh_host}…")
             args = [*remote_shell_args(ssh_host), install_dir, str(remote_port), probe["home"]]
@@ -787,13 +785,45 @@ class RemoteServerManager:
                     proc.kill()
         if code != 0:
             detail = next((line for line in reversed(lines) if line.strip() and not line.startswith((PROBE_PREFIX, RESULT_PREFIX))), "")
+            if code == 255:
+                raise SSHConnectionLost(detail or "ssh exited 255")
             raise RuntimeError(detail or f"ssh exited {code}")
         return lines
 
     async def _upload(self, job: DeployJob, ssh_host: str, install_dir: str, data: bytes) -> None:
+        offset, attempts = 0, 0
+        while True:
+            try:
+                if attempts:
+                    offset = await self._uploaded_bytes(job, ssh_host, install_dir)
+                    if offset > len(data):
+                        offset = 0  # the host holds more than was sent: start over rather than append to it
+                await self._upload_from(job, ssh_host, install_dir, data, offset)
+                if attempts:
+                    held = await self._uploaded_bytes(job, ssh_host, install_dir)
+                    if held != len(data):
+                        raise RuntimeError(f"Uploading the server source failed: the host holds {held} of {len(data)} bytes.")
+                return
+            except SSHConnectionLost as exc:
+                attempts += 1
+                if attempts > UPLOAD_RETRIES:
+                    raise
+                job.progress("download", f"{exc}; resuming the upload ({attempts}/{UPLOAD_RETRIES})…")
+                await asyncio.sleep(UPLOAD_RETRY_DELAY)
+
+    async def _uploaded_bytes(self, job: DeployJob, ssh_host: str, install_dir: str) -> int:
+        lines = await self._run_ssh(
+            job, [*SSH_BATCH_OPTIONS, ssh_host, f"wc -c < {install_dir}/upload.tgz 2>/dev/null || echo 0"], stdin=b"", idle_timeout=60,
+        )
+        # ssh warnings share the stream; the byte count is the last all-digit line.
+        return next((int(line) for line in reversed(lines) if line.strip().isdigit()), 0)
+
+    async def _upload_from(self, job: DeployJob, ssh_host: str, install_dir: str, data: bytes, offset: int) -> None:
         # install_dir is validated to [A-Za-z0-9_.~/-]; unquoted so ~ expands on the host.
+        target = f"{install_dir}/upload.tgz"
+        command = f"mkdir -p {install_dir} && cat > {target}" if offset == 0 else f"cat >> {target}"
         proc = await asyncio.create_subprocess_exec(
-            ssh_binary(), *SSH_BATCH_OPTIONS, ssh_host, f"mkdir -p {install_dir} && cat > {install_dir}/upload.tgz",
+            ssh_binary(), *SSH_BATCH_OPTIONS, ssh_host, command,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=ssh_env(),
         )
         job.proc = proc
@@ -803,12 +833,12 @@ class RemoteServerManager:
             last_report = time.monotonic()
             view = memoryview(data)
             try:
-                for offset in range(0, len(data), UPLOAD_CHUNK):
-                    proc.stdin.write(view[offset:offset + UPLOAD_CHUNK])
+                for pos in range(offset, len(data), UPLOAD_CHUNK):
+                    proc.stdin.write(view[pos:pos + UPLOAD_CHUNK])
                     await asyncio.wait_for(proc.stdin.drain(), 120)
                     if time.monotonic() - last_report > 2:
                         last_report = time.monotonic()
-                        job.progress("download", f"Uploading AgentsServer source… {min(len(data), offset + UPLOAD_CHUNK) / 1048576:.1f} MB")
+                        job.progress("download", f"Uploading AgentsServer source… {min(len(data), pos + UPLOAD_CHUNK) / 1048576:.1f} MB")
                 proc.stdin.close()
             except (BrokenPipeError, ConnectionResetError):
                 pass  # ssh died first; its exit code and output carry the reason
