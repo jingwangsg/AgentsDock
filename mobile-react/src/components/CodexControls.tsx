@@ -48,6 +48,7 @@ import { Text, TextInput } from './AppText'
 import { CodexInteractionCard } from './CodexInteractionShelf'
 import { CodexGoalEditor } from './CodexGoalBar'
 import { codexStatusLabel, useCodexRuntime } from './CodexRuntimeContext'
+import { ProviderUsageSection } from './ProviderUsagePanel'
 import { IconButton, SheetCloseButton } from './ui'
 
 type NoticeTone = 'success' | 'warning'
@@ -266,6 +267,8 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
               ))}
             </Section>
           ) : null}
+
+          <ProviderUsageSection session={session} />
 
           <Section icon={CircleGauge} title="Thread status" subtitle="Live state from Codex app-server">
             <View style={styles.statusGrid}>

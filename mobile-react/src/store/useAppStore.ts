@@ -65,6 +65,7 @@ import {
 } from '../lib/chat-references'
 import { agentRouteCapacityError, isAgentRouteRevisionConflict } from '../lib/agent-route-policy'
 import { publishProviderRuntimeChanged } from '../lib/provider-runtime-events'
+import { publishProviderUsageChanged } from '../lib/provider-usage-events'
 import { reconcileTeamReferences, requireTeamReferenceSupport, restoreFailedTeamReferences, teamMessagesAvailable, teamReferenceContractSupported, teamReferencesEqual, teamReferenceTokenPresent, validTeamReferences } from '../lib/team-references'
 import { BUILT_IN_HUB_TOKEN, DEFAULT_SERVER_URL, localHubAlive } from '../lib/server-setup'
 import { serverSearchQuery } from '../lib/server-search'
@@ -4700,6 +4701,21 @@ function startSelectedStream(
         profileId: scope.profileId,
         profileGeneration: scope.generation,
         event,
+      })
+    },
+    backend => {
+      if (
+        !connectionIsCurrent(scope)
+        || generation !== streamGeneration
+        || epoch !== selectionEpoch
+        || get().selectedSessionId !== sessionId
+      ) return
+      publishProviderUsageChanged({
+        connection: scope.client,
+        profileId: scope.profileId,
+        profileGeneration: scope.generation,
+        sessionId,
+        backend,
       })
     },
   )

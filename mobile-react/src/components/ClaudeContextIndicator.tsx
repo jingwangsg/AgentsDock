@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Modal, Pressable, StyleSheet, View } from 'react-native'
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import Svg, { Circle } from 'react-native-svg'
 import { Bot, RefreshCw } from 'lucide-react-native'
@@ -12,6 +12,7 @@ import {
 import { usePalette } from '../theme'
 import { Text } from './AppText'
 import { useClaudeRuntime } from './ClaudeRuntimeContext'
+import { ProviderUsageSection } from './ProviderUsagePanel'
 import { IconButton, SheetCloseButton } from './ui'
 
 export function ClaudeContextIndicator() {
@@ -103,7 +104,7 @@ export function ClaudeContextIndicator() {
           <IconButton testID="claude-context-refresh" icon={RefreshCw} label="Refresh Claude context" disabled={refreshing || !canRefresh} onPress={() => void refreshContextUsage()} />
           <SheetCloseButton label="Close Claude context" testID="claude-context-close" onPress={close} />
         </View>
-        <View style={styles.content}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.content}>
           <View style={[styles.meter, { borderColor: colors.border, backgroundColor: colors.surface }]}>
             <Svg width={88} height={88} viewBox="0 0 22 22">
               <Circle cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
@@ -127,7 +128,8 @@ export function ClaudeContextIndicator() {
           <Text style={[styles.state, { color: colors.muted }]}>State: {contextStateLabel(state)}</Text>
           <Text accessibilityLiveRegion="polite" selectable={Boolean(contextUsageError)} style={[styles.note, { color: contextUsageError ? colors.red : colors.muted }]}>{refreshStatus}</Text>
           <Text style={[styles.note, { color: colors.muted }]}>Direct sampling is available only for an idle, already-loaded Agent SDK session. Legacy servers keep the last completed-turn snapshot.</Text>
-        </View>
+          <View style={styles.usage}><ProviderUsageSection session={session} /></View>
+        </ScrollView>
       </SafeAreaView>
     </Modal> : null}
   </>
@@ -153,4 +155,5 @@ const styles = StyleSheet.create({
   detail: { textAlign: 'center', fontSize: 14, fontWeight: '700', lineHeight: 20 },
   state: { textAlign: 'center', fontSize: 11.5, lineHeight: 17 },
   note: { maxWidth: 460, textAlign: 'center', fontSize: 10.5, lineHeight: 15 },
+  usage: { alignSelf: 'stretch', marginTop: 4 },
 })

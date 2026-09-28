@@ -118,6 +118,12 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     }
     return Promise.resolve(new Response(JSON.stringify({ root: '/repo', branch: 'main', head: 'abc', revision: 'rev-3', operation: null, files: [], staged_count: 1, conflict_count: 0 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }
+  if (url.startsWith('https://usage.example/api/runtime/usage?')) {
+    return Promise.resolve(new Response(JSON.stringify({
+      backend: new URL(url).searchParams.get('backend'), status: 'unavailable', source: null,
+      account_kind: 'unknown', observed_at: null, windows: [], reason: 'not_reported',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
   if (url === 'https://git-none.example/api/sessions/chat-1/workspace/git') {
     return Promise.resolve(new Response(JSON.stringify({ detail: { code: 'workspace_not_git', message: "This chat's working directory is not inside a Git worktree." } }), { status: 422, headers: { 'Content-Type': 'application/json' } }))
   }
@@ -1336,6 +1342,24 @@ try {
       && (error.detail as { code?: string })?.code === 'workspace_not_git'
       && error.message === "This chat's working directory is not inside a Git worktree.",
     'A non-Git workspace surfaces the workspace_not_git detail code and message',
+  )
+
+  const usage = new AgentServerClient('https://usage.example', 'usage-token')
+  const claudeUsage = await usage.runtimeUsage('claude', 'chat 1', { refresh: true })
+  const claudeUsageRequest = fetchRecords.at(-1)
+  assert(
+    claudeUsageRequest?.url === 'https://usage.example/api/runtime/usage?backend=claude&session_id=chat+1&refresh=true',
+    'Provider usage should carry the backend, encoded session id, and the refresh flag',
+  )
+  assert(
+    claudeUsageRequest.teamNetworkToken === 'usage-token' && claudeUsageRequest.token === null,
+    'Provider usage should use the native-control authentication mode',
+  )
+  assert(claudeUsage.status === 'unavailable' && claudeUsage.reason === 'not_reported', 'Provider usage should map an unavailable snapshot')
+  await usage.runtimeUsage('codex', 'chat 1')
+  assert(
+    fetchRecords.at(-1)?.url === 'https://usage.example/api/runtime/usage?backend=codex&session_id=chat+1',
+    'Provider usage should omit the refresh flag unless it is requested',
   )
 }
 } finally {

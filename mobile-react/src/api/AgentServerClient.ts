@@ -75,6 +75,7 @@ import type {
   WorkspaceSearchPage,
 } from '../types'
 import { normalizeServerURL } from '../lib/format'
+import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../lib/provider-usage'
 import { createUploadFormData } from '../lib/upload-form'
 import { teamNetworkRequestPath } from '../lib/team-network'
 import { retriesStaleGitAction } from '../lib/workspace-changes'
@@ -293,6 +294,11 @@ export class AgentServerClient {
   }
   runtimeCatalog(refresh = false): Promise<RuntimeCatalog> {
     return this.get(`/api/runtime/catalog${refresh ? '?refresh=true' : ''}`)
+  }
+  async runtimeUsage(backend: UsageBackend, sessionId: string, options: { refresh?: boolean } = {}): Promise<ProviderUsageSnapshot> {
+    const query = new URLSearchParams({ backend, session_id: sessionId })
+    if (options.refresh) query.set('refresh', 'true')
+    return parseProviderUsage(await this.request(`/api/runtime/usage?${query}`, {}, 30_000, false, 'native-control'), backend)
   }
   teamNetworkGet<T>(basePath: string, path: string): Promise<T> {
     return this.request(teamNetworkRequestPath(basePath, path), { redirect: 'error' }, 30_000, false, 'team-network')
@@ -874,6 +880,7 @@ export class AgentServerClient {
     onEvent: (event: Event) => void,
     onState: (connected: boolean, detail?: WebSocketStateDetail) => void,
     onProviderRuntime?: (event: ProviderRuntimeChanged) => void,
+    onProviderUsage?: (backend: UsageBackend) => void,
   ): () => void {
     const scope = this.captureScope()
     const endpoint = new URL(buildURL(scope.configuration.baseURL, `/api/sessions/${encodeURIComponent(sessionId)}/events`))
@@ -950,6 +957,10 @@ export class AgentServerClient {
         if (stopped || socket !== connectingSocket) return
         try {
           const packet = JSON.parse(String(message.data)) as unknown
+          if (isProviderUsageChanged(packet)) {
+            if (packet.session_id === sessionId) onProviderUsage?.(packet.backend)
+            return
+          }
           if (isProviderRuntimeChanged(packet)) {
             if (packet.session_id === sessionId) onProviderRuntime?.(packet)
             return
@@ -1268,6 +1279,16 @@ function teamNetworkAuthHeaders(token: string): Record<string, string> {
 function abortController(controller: AbortController, source: AbortSignal): void {
   if (controller.signal.aborted) return
   try { controller.abort(source.reason) } catch { controller.abort() }
+}
+
+function isProviderUsageChanged(value: unknown): value is { type: 'provider_usage_changed'; session_id: string; backend: UsageBackend } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const packet = value as Record<string, unknown>
+  return packet.type === 'provider_usage_changed'
+    && packet.ephemeral === true
+    && (packet.backend === 'codex' || packet.backend === 'claude')
+    && typeof packet.session_id === 'string'
+    && packet.session_id.length > 0
 }
 
 function isProviderRuntimeChanged(value: unknown): value is ProviderRuntimeChanged {
