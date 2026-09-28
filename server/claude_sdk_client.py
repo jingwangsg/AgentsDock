@@ -605,9 +605,12 @@ def default_claude_sdk_client_factory(options: Any) -> ClaudeSDKClientProtocol:
                     # Pinned SDK get_server_info returns its cached initialize
                     # response; it sends no control request or model prompt.
                     info = await super().get_server_info()
-                    remember_native_models(info, key=key, executable=executable, env=env, cwd=cwd)
-                except Exception:
-                    pass  # Do not log raw initialization/account data.
+                    declined = remember_native_models(info, key=key, executable=executable, env=env, cwd=cwd)
+                    if declined:
+                        logger.info("claude native model picker not recorded: %s", declined)
+                except Exception as exc:
+                    # Only the exception type: never raw initialization/account data.
+                    logger.info("claude native model picker not recorded: %s", type(exc).__name__)
 
         async def receive_messages(self) -> AsyncIterator[Any]:
             # SDK 0.2.130 drops local-command provenance and active_goal. Keep

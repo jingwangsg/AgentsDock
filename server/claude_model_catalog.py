@@ -259,11 +259,14 @@ def _has_project_settings(cwd: str, env: dict[str, str]) -> bool:
 
 
 def remember_native_models(info: Any, *, key: str, executable: str,
-                           env: dict[str, str], cwd: str) -> None:
+                           env: dict[str, str], cwd: str) -> str:
+    """Store the picker; return which gate declined it ("" when stored)."""
     # Recheck the pre-connect revision: a slow/old connection must not publish
     # a model list under a newer CLI, provider, or user-settings configuration.
-    if key != native_catalog_key(executable, env) or _has_project_settings(cwd, env):
-        return
+    if key != native_catalog_key(executable, env):
+        return "revision changed during connect"
+    if _has_project_settings(cwd, env):
+        return "project settings pin models"
     models = parse_native_models(info)
     with _CACHE_LOCK:
         _CACHE[key] = (time.monotonic(), models)
@@ -280,6 +283,7 @@ def remember_native_models(info: Any, *, key: str, executable: str,
                 _write_store(store)
             except OSError:
                 pass  # Best effort: the in-memory copy above already serves this process.
+    return ""
 
 
 def cached_native_models(executable: str, *, env: dict[str, str]) -> list[dict[str, str]] | None:
