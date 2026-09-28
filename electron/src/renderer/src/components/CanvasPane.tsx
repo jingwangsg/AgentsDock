@@ -1,7 +1,7 @@
 import { CANVAS_HOST_MESSAGE_SOURCE, CANVAS_NAME_PATTERN, CANVAS_PAGE_MESSAGE_SOURCE, canvasPageURL, type CanvasHostTheme } from '@shared/canvas'
 import { t } from '@shared/i18n'
 import type { CanvasRecord, CanvasSummary, Session } from '@shared/types'
-import { Crosshair, Eye, FileCode2, RefreshCw, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Crosshair, Eye, FileCode2, RefreshCw, Search, X } from 'lucide-react'
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
@@ -41,6 +41,9 @@ type PageMessage =
   | { kind: 'error'; error: string }
   | { kind: 'selection'; elements: SelectedElement[]; complete: boolean }
   | { kind: 'link'; url: string }
+
+/** The in-iframe find reports over the same channel keyed on `type`, so it never collides with a runtime `kind`. */
+interface FindResult { type: 'find-result'; total: number; active: number }
 
 const CANVAS_SUFFIX = '.canvas.tsx'
 const STATE_SAVE_DELAY_MS = 400
@@ -91,6 +94,12 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
   const [selecting, setSelecting] = useState(false)
   const [selection, setSelection] = useState<SelectedElement[] | null>(null)
   const [feedback, setFeedback] = useState('')
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [findResult, setFindResult] = useState<{ total: number; active: number }>({ total: 0, active: 0 })
+  const findInputRef = useRef<HTMLInputElement>(null)
+  // Read inside the page's `ready` handler (which resubscribes rarely) so a reload re-runs the open query.
+  const findLive = useRef({ open: false, query: '' })
   const iframeRef = useRef<HTMLIFrameElement>(null)
   /** Full persistent state of the canvas on screen; the page reports one key at a time and the server replaces the file wholesale. */
   const stateRef = useRef<Record<string, unknown>>({})
@@ -156,6 +165,20 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
     iframeRef.current?.contentWindow?.postMessage({ source: CANVAS_HOST_MESSAGE_SOURCE, call, args }, '*')
   }, [])
 
+  const runFind = useCallback((query: string, options: { forward?: boolean; findNext?: boolean } = {}) => {
+    postToPage('find', [query, { forward: options.forward ?? true, matchCase: false, findNext: options.findNext ?? false }])
+  }, [postToPage])
+  useEffect(() => { findLive.current = { open: findOpen, query: findQuery } }, [findOpen, findQuery])
+  const openFind = useCallback(() => {
+    setFindOpen(true)
+    window.requestAnimationFrame(() => findInputRef.current?.select())
+  }, [])
+  const closeFind = useCallback(() => {
+    setFindOpen(false)
+    setFindResult({ total: 0, active: 0 })
+    postToPage('clear-find')
+  }, [postToPage])
+
   const handleAction = useCallback((action: CanvasAction) => {
     if (action.type === 'askAgent' && record) {
       appendDraft(session.id, `Canvas ${record.path}: ${action.prompt}`)
@@ -171,9 +194,16 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
       const data = event.data as { source?: string; message?: PageMessage } | null
       if (data?.source !== CANVAS_PAGE_MESSAGE_SOURCE || !data.message) return
       const message = data.message
+      const asFind = message as unknown as FindResult
+      if (asFind.type === 'find-result') {
+        setFindResult({ total: asFind.total, active: asFind.active })
+        return
+      }
       switch (message.kind) {
         case 'ready':
           setPageError(null)
+          // A fresh document lost any highlights: re-run the query the find bar still shows.
+          if (findLive.current.open && findLive.current.query) runFind(findLive.current.query)
           break
         case 'state': {
           stateRef.current = { ...stateRef.current, [message.key]: message.value }
@@ -199,7 +229,7 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [flushSave, handleAction, name])
+  }, [flushSave, handleAction, name, runFind])
 
   // Follow the app's light/dark switch inside the frame.
   useEffect(() => {
@@ -298,7 +328,14 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
     window.requestAnimationFrame(() => notifyTimelineViewportLayout('end'))
   }
 
-  return <aside ref={paneRef} className="canvas-pane" role="region" aria-label={t('canvas.title')}>
+  const paneKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'f' && view === 'preview' && src) {
+      event.preventDefault()
+      openFind()
+    }
+  }
+
+  return <aside ref={paneRef} className="canvas-pane" role="region" aria-label={t('canvas.title')} onKeyDown={paneKeyDown}>
     <div
       className="canvas-pane-resize-handle"
       role="separator"
@@ -322,12 +359,32 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
         <button type="button" className={view === 'preview' ? 'active' : ''} aria-pressed={view === 'preview'} onClick={() => setView('preview')}><Eye size={13} aria-hidden="true" />{t('canvas.preview')}</button>
         <button type="button" className={view === 'source' ? 'active' : ''} aria-pressed={view === 'source'} onClick={() => setView('source')}><FileCode2 size={13} aria-hidden="true" />{t('canvas.source')}</button>
       </div>
+      <button type="button" aria-pressed={findOpen} disabled={!src || view !== 'preview'} title={t('canvas.find')} aria-label={t('canvas.find')} onClick={() => (findOpen ? closeFind() : openFind())}><Search size={14} /></button>
       <span className="canvas-pane-header-spacer" aria-hidden="true" />
       <button type="button" aria-pressed={selecting} disabled={!src || view !== 'preview'} title={t('canvas.selectElement')} onClick={toggleSelecting}><Crosshair size={14} /></button>
       <button type="button" title={t('canvas.reload')} onClick={() => { setPageError(null); setReloadToken(token => token + 1) }}><RefreshCw size={14} /></button>
       <button type="button" title={t('canvas.close')} aria-label={t('canvas.close')} onClick={onClose}><X size={14} /></button>
     </header>
     <div className="canvas-pane-body">
+      {findOpen && view === 'preview' && <div className="canvas-pane-find" role="search">
+        <Search size={13} aria-hidden="true" />
+        <input
+          ref={findInputRef}
+          type="text"
+          aria-label={t('canvas.find')}
+          placeholder={t('canvas.findPlaceholder')}
+          value={findQuery}
+          onChange={event => { setFindQuery(event.target.value); runFind(event.target.value) }}
+          onKeyDown={event => {
+            if (event.key === 'Enter') { event.preventDefault(); runFind(findQuery, { findNext: true, forward: !event.shiftKey }) }
+            else if (event.key === 'Escape') { event.preventDefault(); closeFind() }
+          }}
+        />
+        <span className="canvas-pane-find-count">{findQuery ? t('canvas.findCount', { active: findResult.active, total: findResult.total }) : ''}</span>
+        <button type="button" title={t('canvas.findPrev')} aria-label={t('canvas.findPrev')} disabled={findResult.total === 0} onClick={() => runFind(findQuery, { findNext: true, forward: false })}><ChevronUp size={14} /></button>
+        <button type="button" title={t('canvas.findNext')} aria-label={t('canvas.findNext')} disabled={findResult.total === 0} onClick={() => runFind(findQuery, { findNext: true, forward: true })}><ChevronDown size={14} /></button>
+        <button type="button" title={t('canvas.close')} aria-label={t('canvas.close')} onClick={closeFind}><X size={14} /></button>
+      </div>}
       {error
         ? <div className="canvas-pane-notice error">{error}</div>
         : !record

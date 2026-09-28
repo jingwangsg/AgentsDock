@@ -1,10 +1,10 @@
 // Page sheet that shows one chat's Canvas reports: port of the Electron CanvasPane without element selection.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import WebView, { type WebViewMessageEvent } from 'react-native-webview'
-import { RefreshCw } from 'lucide-react-native'
-import { buildCanvasPage, parseCanvasPageMessage, type CanvasHostTheme } from '../lib/canvas-page'
+import { ChevronDown, ChevronUp, RefreshCw, Search, X } from 'lucide-react-native'
+import { buildCanvasPage, canvasFindScript, parseCanvasPageMessage, type CanvasHostTheme } from '../lib/canvas-page'
 import { fonts } from '../lib/typography'
 import { client, useAppStore } from '../store/useAppStore'
 import { useAppColorScheme, usePalette } from '../theme'
@@ -60,6 +60,10 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
   const [pageError, setPageError] = useState<string | null>(null)
   const [showSource, setShowSource] = useState(false)
   const [reloadToken, setReloadToken] = useState(0)
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [findResult, setFindResult] = useState<{ total: number; active: number }>({ total: 0, active: 0 })
+  const webViewRef = useRef<WebView>(null)
   /** Full persistent state of the canvas on screen; the page reports one key at a time and the server replaces the file wholesale. */
   const stateRef = useRef<Record<string, unknown>>({})
   /** Snapshot awaiting its debounced PUT. It carries its own name so switching canvases cannot redirect it. */
@@ -141,10 +145,22 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
       case 'error':
         setPageError(message.error)
         break
+      case 'find-result':
+        setFindResult({ total: message.total, active: message.active })
+        break
       case 'link':
         if (/^https?:\/\//i.test(message.url)) void Linking.openURL(message.url).catch(() => undefined)
         break
     }
+  }
+
+  const injectFind = (query: string, options: { forward?: boolean; findNext?: boolean } = {}) => {
+    webViewRef.current?.injectJavaScript(canvasFindScript(query, options))
+  }
+  const closeFind = () => {
+    setFindOpen(false)
+    setFindResult({ total: 0, active: 0 })
+    injectFind('')
   }
 
   // Zed's editor.background is `surface` here (theme.ts), the same token the desktop pane hands the runtime.
@@ -171,6 +187,7 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
   return <>
     <View style={styles.top}>
       <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>Canvas · {name}</Text>
+      {compiled && !showSource ? <IconButton icon={Search} size={16} selected={findOpen} label="Find in canvas" testID="canvas-find" onPress={() => (findOpen ? closeFind() : setFindOpen(true))} /> : null}
       <IconButton icon={RefreshCw} size={16} label="Reload canvas" testID="canvas-reload" onPress={() => { setPageError(null); setReloadToken(token => token + 1) }} />
       <SheetCloseButton onPress={onClose} label="Close canvas" testID="canvas-close" />
     </View>
@@ -182,6 +199,26 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
         </Pressable>
       })}
     </ScrollView> : null}
+    {findOpen && compiled && !showSource ? <View style={[styles.findBar, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+      <Search size={15} color={colors.muted} />
+      <TextInput
+        testID="canvas-find-input"
+        style={[styles.findInput, { color: colors.text, backgroundColor: colors.raised, borderColor: colors.border }]}
+        value={findQuery}
+        onChangeText={text => { setFindQuery(text); injectFind(text) }}
+        onSubmitEditing={() => injectFind(findQuery, { findNext: true, forward: true })}
+        placeholder="Find in canvas"
+        placeholderTextColor={colors.muted}
+        autoFocus
+        autoCapitalize="none"
+        autoCorrect={false}
+        returnKeyType="search"
+      />
+      <Text testID="canvas-find-count" style={[styles.findCount, { color: colors.muted }]}>{findQuery ? `${findResult.active}/${findResult.total}` : ''}</Text>
+      <IconButton icon={ChevronUp} size={18} disabled={findResult.total === 0} label="Previous match" testID="canvas-find-prev" onPress={() => injectFind(findQuery, { findNext: true, forward: false })} />
+      <IconButton icon={ChevronDown} size={18} disabled={findResult.total === 0} label="Next match" testID="canvas-find-next" onPress={() => injectFind(findQuery, { findNext: true, forward: true })} />
+      <IconButton icon={X} size={18} label="Close find" testID="canvas-find-close" onPress={closeFind} />
+    </View> : null}
     <View style={styles.body}>
       {error
         ? <Notice title="The canvas could not be loaded" detail={error} />
@@ -207,6 +244,7 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
                 {pageError ? <Notice title="The canvas reported an error" detail={pageError} action={showSourceAction} /> : null}
                 {source
                   ? <WebView
+                    ref={webViewRef}
                     testID="canvas-webview"
                     source={source}
                     originWhitelist={[CANVAS_PAGE_BASE_URL]}
@@ -220,6 +258,8 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
                     setSupportMultipleWindows={false}
                     style={[styles.fill, { backgroundColor: colors.surface }]}
                     onMessage={receive}
+                    // A reload drops the injected highlights; re-run the open query once the fresh page has mounted.
+                    onLoadEnd={() => { if (findOpen && findQuery) injectFind(findQuery) }}
                     // The report is self-contained; anything else is a link the runtime should have reported through the bridge.
                     onShouldStartLoadWithRequest={navigation => navigation.url === CANVAS_PAGE_BASE_URL}
                     onError={event => setPageError(event.nativeEvent.description || 'The canvas page failed to load.')}
@@ -254,6 +294,9 @@ const styles = StyleSheet.create({
   code: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 17 },
   actionButton: { alignSelf: 'flex-start', minHeight: 32, justifyContent: 'center' },
   action: { fontSize: 12, fontWeight: '800' },
+  findBar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingBottom: 8, minHeight: 44 },
+  findInput: { flex: 1, height: 36, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, fontSize: 14 },
+  findCount: { minWidth: 42, textAlign: 'center', fontSize: 12, fontVariant: ['tabular-nums'] },
   sourceBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, minHeight: 36 },
   sourcePath: { flex: 1, fontSize: 11, fontFamily: fonts.mono },
   sourceContent: { padding: 14, paddingTop: 4 },

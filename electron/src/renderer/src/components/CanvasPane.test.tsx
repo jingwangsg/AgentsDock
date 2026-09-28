@@ -103,3 +103,64 @@ describe('CanvasPane view toggle', () => {
     expect(screen.getByRole('button', { name: 'Preview' })).toHaveAttribute('aria-pressed', 'true')
   })
 })
+
+describe('CanvasPane find', () => {
+  const compiled = { name: 'report', path: 'canvases/report.tsx', source: 'source', javascript: 'var a = 1', diagnostics: null, state: {}, revision: 1 }
+
+  async function renderCompiled() {
+    vi.stubGlobal('agentsDock', { canvas: {
+      list: vi.fn().mockResolvedValue({ canvases: [{ name: 'report', path: compiled.path }] }),
+      get: vi.fn().mockResolvedValue(compiled),
+      putState: vi.fn()
+    } })
+    renderCanvas()
+    const iframe = (await screen.findByTitle('Canvas report')) as HTMLIFrameElement
+    const post = vi.fn()
+    Object.defineProperty(iframe, 'contentWindow', { configurable: true, value: { postMessage: post } })
+    // The page reports back over the same channel the parent listens on; source must match the frame.
+    const reply = (message: unknown) => {
+      const event = new MessageEvent('message', { data: { source: 'agentsdock-canvas', message } })
+      Object.defineProperty(event, 'source', { value: iframe.contentWindow })
+      window.dispatchEvent(event)
+    }
+    return { iframe, post, reply }
+  }
+
+  it('opens from the header, posts the query, renders the count, steps and clears on Esc', async () => {
+    const { post, reply } = await renderCompiled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find in Canvas' }))
+    const input = screen.getByPlaceholderText('Search text…')
+    fireEvent.change(input, { target: { value: 'hello' } })
+    expect(post).toHaveBeenCalledWith(
+      { source: 'agentsdock-canvas-host', call: 'find', args: ['hello', { forward: true, matchCase: false, findNext: false }] }, '*')
+
+    reply({ type: 'find-result', total: 12, active: 3 })
+    expect(await screen.findByText('3/12')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next match' }))
+    expect(post).toHaveBeenLastCalledWith(
+      { source: 'agentsdock-canvas-host', call: 'find', args: ['hello', { forward: true, matchCase: false, findNext: true }] }, '*')
+    fireEvent.click(screen.getByRole('button', { name: 'Previous match' }))
+    expect(post).toHaveBeenLastCalledWith(
+      { source: 'agentsdock-canvas-host', call: 'find', args: ['hello', { forward: false, matchCase: false, findNext: true }] }, '*')
+
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(post).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas-host', call: 'clear-find', args: [] }, '*')
+    expect(screen.queryByPlaceholderText('Search text…')).toBeNull()
+  })
+
+  it('opens with Cmd-F and steps backward with Shift-Enter', async () => {
+    const { post, reply } = await renderCompiled()
+
+    fireEvent.keyDown(screen.getByRole('region', { name: 'Canvas' }), { key: 'f', metaKey: true })
+    const input = screen.getByPlaceholderText('Search text…')
+    fireEvent.change(input, { target: { value: 'x' } })
+    reply({ type: 'find-result', total: 2, active: 1 })
+    expect(await screen.findByText('1/2')).toBeInTheDocument()
+
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    expect(post).toHaveBeenLastCalledWith(
+      { source: 'agentsdock-canvas-host', call: 'find', args: ['x', { forward: false, matchCase: false, findNext: true }] }, '*')
+  })
+})

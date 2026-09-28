@@ -63,18 +63,79 @@ const BRIDGE_SHIM = `
 (() => {
   const PAGE = ${JSON.stringify(CANVAS_PAGE_MESSAGE_SOURCE)};
   const HOST = ${JSON.stringify(CANVAS_HOST_MESSAGE_SOURCE)};
+  const post = message => window.parent.postMessage({ source: PAGE, message }, '*');
   window.webkit = { messageHandlers: { zedCanvas: { postMessage(raw) {
     let message = raw;
     try { message = JSON.parse(raw); } catch {}
-    window.parent.postMessage({ source: PAGE, message }, '*');
+    post(message);
   } } } };
+
+  // In-page find: a cross-document iframe cannot be searched from the host, so
+  // the 'find'/'clear-find' host calls run here. Matches are painted with the CSS
+  // Custom Highlight API (it decorates ranges without touching the DOM, so it
+  // never fights the runtime's React tree) and the count is reported back.
+  let ranges = [], at = -1;
+  const ready = () => window.CSS && CSS.highlights && document.body;
+  const ensureStyle = () => {
+    if (!ready() || ensureStyle.done) return;
+    try {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync('::highlight(canvas-find){background:rgba(250,204,21,.45);color:inherit}::highlight(canvas-find-active){background:#f97316;color:#14181f}');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      ensureStyle.done = true;
+    } catch (error) {}
+  };
+  const clearFind = () => {
+    ranges = []; at = -1;
+    if (window.CSS && CSS.highlights) { CSS.highlights.delete('canvas-find'); CSS.highlights.delete('canvas-find-active'); }
+  };
+  const reportFind = () => post({ type: 'find-result', total: ranges.length, active: ranges.length ? at + 1 : 0 });
+  const collect = (query, matchCase) => {
+    const found = [], needle = matchCase ? query : query.toLowerCase();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, node =>
+      node.nodeValue && node.nodeValue.trim() && !(node.parentElement && node.parentElement.closest('script,style,noscript'))
+        ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT);
+    for (let node; (node = walker.nextNode());) {
+      const hay = matchCase ? node.nodeValue : node.nodeValue.toLowerCase();
+      for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + needle.length)) {
+        const range = document.createRange();
+        range.setStart(node, i); range.setEnd(node, i + query.length);
+        found.push(range);
+      }
+    }
+    return found;
+  };
+  const paintActive = () => {
+    if (!ready()) return;
+    if (at < 0) { CSS.highlights.delete('canvas-find-active'); return; }
+    CSS.highlights.set('canvas-find-active', new Highlight(ranges[at]));
+    const anchor = ranges[at].startContainer.parentElement;
+    if (anchor && anchor.scrollIntoView) anchor.scrollIntoView({ block: 'center', inline: 'nearest' });
+  };
+  const runFind = (query, options) => {
+    options = options || {};
+    if (!query || !ready()) { clearFind(); reportFind(); return; }
+    if (options.findNext && ranges.length) {
+      at = (at + (options.forward === false ? -1 : 1) + ranges.length) % ranges.length;
+    } else {
+      ensureStyle();
+      ranges = collect(query, !!options.matchCase);
+      at = ranges.length ? 0 : -1;
+      CSS.highlights.set('canvas-find', new Highlight(...ranges));
+    }
+    paintActive();
+    reportFind();
+  };
+
   window.addEventListener('message', event => {
     const data = event.data;
     if (!data || data.source !== HOST || typeof data.call !== 'string') return;
+    if (data.call === 'find') { runFind(data.args && data.args[0], data.args && data.args[1]); return; }
+    if (data.call === 'clear-find') { clearFind(); reportFind(); return; }
     const host = globalThis.__zedCanvasHost;
     if (!host || typeof host[data.call] !== 'function') return;
     try { host[data.call](...(Array.isArray(data.args) ? data.args : [])); }
-    catch (error) { window.parent.postMessage({ source: PAGE, message: { kind: 'error', error: String(error) } }, '*'); }
+    catch (error) { post({ kind: 'error', error: String(error) }); }
   });
 })();
 `

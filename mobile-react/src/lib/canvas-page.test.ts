@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { CANVAS_PAGE_MESSAGE_SOURCE, buildCanvasPage, canvasNameFromPath, parseCanvasPageMessage, type CanvasHostTheme } from './canvas-page'
+import { CANVAS_PAGE_MESSAGE_SOURCE, buildCanvasPage, canvasFindScript, canvasNameFromPath, parseCanvasPageMessage, type CanvasHostTheme } from './canvas-page'
 
 const shell = '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src data:"></head><body><div id="root"></div><!--CANVAS_SCRIPTS--></body></html>'
 const theme: CanvasHostTheme = { background: '#282c33', foreground: '#dce0e5', muted: '#a9afbc', border: '#464b57', accent: '#74ade8', kind: 'dark' }
@@ -53,5 +53,22 @@ assert.deepEqual(
 assert.equal(parseCanvasPageMessage(JSON.stringify({ source: 'other', message: { kind: 'ready' } })), null)
 assert.equal(parseCanvasPageMessage(JSON.stringify({ source: CANVAS_PAGE_MESSAGE_SOURCE, message: 'ready' })), null)
 assert.equal(parseCanvasPageMessage('not json'), null)
+
+// --- canvasFindScript: carries the query, highlights and reports the count over the WebView channel
+{
+  const script = canvasFindScript('needle', { findNext: true, forward: false })
+  assert.match(script, /const request = \{"query":"needle","forward":false,"matchCase":false,"findNext":true\};/)
+  assert.match(script, /CSS\.highlights\.set\('canvas-find'/, 'matches are painted with the Custom Highlight API')
+  assert.match(script, /window\.ReactNativeWebView\.postMessage\(JSON\.stringify\(\{ source: PAGE, message: \{ kind: 'find-result', total: state\.ranges\.length, active/)
+  assert.match(script, /window\.__canvasFind /, 'find state persists across injections so findNext steps in place')
+  assert.ok(script.trimEnd().endsWith('true;'), 'react-native-webview wants a trailing expression')
+  // The parser accepts the find-result envelope the script posts back.
+  assert.deepEqual(
+    parseCanvasPageMessage(JSON.stringify({ source: CANVAS_PAGE_MESSAGE_SOURCE, message: { kind: 'find-result', total: 12, active: 3 } })),
+    { kind: 'find-result', total: 12, active: 3 },
+  )
+}
+// An empty query clears rather than collecting.
+assert.match(canvasFindScript(''), /if \(!request\.query \|\| !ok\(\)\) \{ clear\(\); post\(\); return; \}/)
 
 console.log('canvas page tests passed')

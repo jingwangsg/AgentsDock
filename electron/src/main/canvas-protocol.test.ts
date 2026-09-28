@@ -38,6 +38,11 @@ describe('buildCanvasPage', () => {
     expect(scripts).toHaveLength(4)
     const decoded = scripts.map(tag => Buffer.from(tag.match(/base64,([^"]+)/)![1], 'base64').toString('utf8'))
     expect(decoded[0]).toContain('window.webkit = { messageHandlers: { zedCanvas:')
+    // The shim answers the host's in-page find protocol itself; the runtime has no such method.
+    expect(decoded[0]).toContain("data.call === 'find'")
+    expect(decoded[0]).toContain("data.call === 'clear-find'")
+    expect(decoded[0]).toContain("type: 'find-result'")
+    expect(decoded[0]).toContain('CSS.highlights.set')
     expect(decoded[1]).toBe('VENDOR()')
     expect(decoded[2]).toBe('var CanvasModule = 1;')
     expect(decoded[3]).toBe(`__zedCanvasHost.mount({"clicks":2}, ${JSON.stringify(theme)});`)

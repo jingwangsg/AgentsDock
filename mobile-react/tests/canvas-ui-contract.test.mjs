@@ -86,6 +86,27 @@ test('markdown .canvas.tsx links open the sheet instead of Linking', () => {
   assert.match(chatScreen, /\{!welcome \? <CanvasSheet sessionId=\{sessionId\} name=\{canvasName\} onClose=\{\(\) => setCanvasName\(null\)\} \/> : null\}/)
 })
 
+test('the sheet searches the rendered canvas by injecting a find script and rendering the count', () => {
+  // The WebView needs a ref so the search field can inject JS into it.
+  assert.match(sheet, /const webViewRef = useRef<WebView>\(null\)/)
+  assert.match(sheet, /ref=\{webViewRef\}/)
+  assert.match(sheet, /import \{ buildCanvasPage, canvasFindScript, parseCanvasPageMessage/)
+  assert.match(sheet, /webViewRef\.current\?\.injectJavaScript\(canvasFindScript\(query, options\)\)/)
+  // Typing injects the query; next/prev step the active match; the count comes back over onMessage.
+  assert.match(sheet, /onChangeText=\{text => \{ setFindQuery\(text\); injectFind\(text\) \}\}/)
+  assert.match(sheet, /injectFind\(findQuery, \{ findNext: true, forward: true \}\)/)
+  assert.match(sheet, /injectFind\(findQuery, \{ findNext: true, forward: false \}\)/)
+  assert.match(sheet, /case 'find-result':\s+setFindResult\(\{ total: message\.total, active: message\.active \}\)/)
+  assert.match(sheet, /testID="canvas-find-count"[\s\S]*?\$\{findResult\.active\}\/\$\{findResult\.total\}/)
+  // Closing clears the highlights, and a reload re-runs the open query once the page mounts.
+  assert.match(sheet, /const closeFind = \(\) => \{[\s\S]*?injectFind\(''\)/)
+  assert.match(sheet, /onLoadEnd=\{\(\) => \{ if \(findOpen && findQuery\) injectFind\(findQuery\) \}\}/)
+  // The find script is a pure builder that highlights and reports back over the WebView channel.
+  assert.match(page, /export function canvasFindScript\(query: string, options: \{ forward\?: boolean; matchCase\?: boolean; findNext\?: boolean \} = \{\}\): string/)
+  assert.match(page, /CSS\.highlights\.set\('canvas-find'/)
+  assert.match(page, /message: \{ kind: 'find-result', total: state\.ranges\.length/)
+})
+
 test('the Outputs panel lists the chat canvases as Canvas rows that open the sheet', () => {
   assert.match(panel, /client\.listCanvases\(sessionId\)\.then\(list => \{ if \(!stale\) setCanvases\(list\.canvases\) \}\)/)
   assert.match(panel, /\}, \[sessionId, visible\]\)/, 'canvases are listed when the panel opens')
