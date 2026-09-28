@@ -22,9 +22,3 @@ dist/
 build/
 .DS_Store
 .test-state*/
-
-# Canvas runtime: vendored esbuild/TypeScript toolchain and type bundles are
-# fetched per install, not tracked; compile.cjs, sdk.d.ts, shell.html, vendor.js are.
-canvas_runtime/esbuild/
-canvas_runtime/typescript/
-canvas_runtime/types/
