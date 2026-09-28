@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-09-28 — Side chat button seated inside the folder row
+
+- Seat the Side chat button fully inside the folder row above the message
+  composer instead of straddling the timeline divider. The row grows to the
+  button height so the composer below keeps its spacing. Lifting the button
+  above the divider is not an option: it would cover the timeline's
+  jump-to-latest arrow and the Emergency dock action.
+- Pass the composer layout and Side chat component checks and the production
+  compilation. Not yet exercised in the installed desktop app. No server
+  change is required.
+
 ## 2026-09-27 — Run-bound Cursor chat tools under native permissions
 
 - Replace Shell-based helper instructions for Cursor with a private per-run

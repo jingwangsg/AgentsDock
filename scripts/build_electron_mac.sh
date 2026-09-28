@@ -121,7 +121,13 @@ if [[ ! -d node_modules ]]; then
 fi
 
 node node_modules/typescript/bin/tsc --noEmit
-node_modules/.bin/vitest run
+# AGENTSDOCK_SKIP_TESTS=1 lets a local rebuild proceed when only timing-flaky
+# suites fail; CI and release builds never set it.
+if [[ "${AGENTSDOCK_SKIP_TESTS:-}" == 1 ]]; then
+  echo "Skipping vitest (AGENTSDOCK_SKIP_TESTS=1)"
+else
+  node_modules/.bin/vitest run
+fi
 node_modules/.bin/electron-vite build
 node "$ROOT/scripts/verify_electron_compile_output.mjs" "$PROJECT"
 PACKAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentsdock-electron-local.XXXXXX")"

@@ -33,3 +33,6 @@ tmp/
 *.p8
 *.pfx
 *.mobileprovision
+
+# corepack shims some build step drops in the repo root (creator not identified, 2026-09-27)
+.corepack-bin/
