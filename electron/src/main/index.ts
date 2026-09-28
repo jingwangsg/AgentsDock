@@ -314,6 +314,10 @@ function createWindow(): BrowserWindow {
   window.webContents.on('preload-error', (_event, path, error) => appLog('preload', 'failed to load', { path, error: error.stack || error.message }))
   window.webContents.on('did-fail-load', (_event, code, description, url) => appLog('renderer', 'page load failed', { code, description, url }))
   window.webContents.on('render-process-gone', (_event, details) => appLog('renderer', 'process gone', details))
+  // The packaged build has no devtools, so renderer errors would otherwise leave no trace.
+  window.webContents.on('console-message', details => {
+    if (details.level === 'error') appLog('renderer:console', details.message.slice(0, 2000), { line: details.lineNumber, source: details.sourceId })
+  })
   window.webContents.on('unresponsive', () => appLog('renderer', 'window unresponsive'))
   window.webContents.on('responsive', () => appLog('renderer', 'window responsive again'))
   window.webContents.once('did-finish-load', () => {

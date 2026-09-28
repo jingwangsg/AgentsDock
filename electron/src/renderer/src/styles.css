@@ -3556,3 +3556,9 @@ button.tool-event-toggle:hover { background: #242424; }
 :root[data-theme="light"] .ports-row { border-color: var(--border); }
 :root[data-theme="light"] .ports-remote code { color: #334044; background: var(--surface-2); border-color: var(--border); }
 :root[data-theme="light"] .ports-empty-icon { color: var(--muted); background: var(--surface-2); }
+
+/* Shown by AppErrorBoundary in place of the whole UI after an uncaught render error. */
+.app-crash { padding: 32px; max-width: 900px; color: var(--text); display: grid; gap: 12px; justify-items: start; }
+.app-crash h1 { margin: 0; font-size: var(--text-size-title); }
+.app-crash p { margin: 0; color: var(--muted); }
+.app-crash pre { margin: 0; max-height: 50vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-size-meta); color: var(--muted); }

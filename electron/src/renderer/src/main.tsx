@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TooltipProvider } from '@radix-ui/react-tooltip'
 import { App } from './App'
+import { AppErrorBoundary } from './components/AppErrorBoundary'
 import { initializeAppearance } from './lib/appearance'
 import { initializeLanguage, useLocale } from './lib/i18n'
 import { chatSwitcherShortcutPlatform, installChatSwitcherShortcut } from './lib/chat-switcher-shortcut'
@@ -38,7 +39,7 @@ void initializeLanguage().then(() => ReactDOM.createRoot(document.getElementById
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={350}>
-        <LocalizedApp />
+        <AppErrorBoundary><LocalizedApp /></AppErrorBoundary>
       </TooltipProvider>
     </QueryClientProvider>
   </React.StrictMode>

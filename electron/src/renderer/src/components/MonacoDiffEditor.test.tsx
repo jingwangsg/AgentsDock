@@ -7,10 +7,12 @@ import { MonacoDiffEditor } from './MonacoDiffEditor'
 // jsdom cannot run Monaco; this fake records what the host component asks of it.
 const fake = vi.hoisted(() => {
   const sideEditor = () => ({ updateOptions: vi.fn(), createDecorationsCollection: vi.fn() })
+  const state = { disposed: false }
   const diffEditor = {
-    setModel: vi.fn(),
+    // Real Monaco throws "InstantiationService has been disposed" when a disposed editor is touched.
+    setModel: vi.fn((_models: unknown) => { if (state.disposed) throw new Error('InstantiationService has been disposed') }),
     updateOptions: vi.fn(),
-    dispose: vi.fn(),
+    dispose: vi.fn(() => { state.disposed = true }),
     original: sideEditor(),
     modified: sideEditor(),
     getOriginalEditor() { return this.original },
@@ -26,7 +28,7 @@ const fake = vi.hoisted(() => {
     languages: { getLanguages: () => [{ id: 'typescript', extensions: ['.ts'] }] },
     Range: class { constructor(readonly startLineNumber: number, readonly startColumn: number, readonly endLineNumber: number, readonly endColumn: number) {} }
   }
-  return { diffEditor, monaco }
+  return { diffEditor, monaco, state }
 })
 
 vi.mock('monaco-editor/editor/editor.api', () => fake.monaco)
@@ -44,6 +46,7 @@ describe('MonacoDiffEditor', () => {
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()
+    fake.state.disposed = false
     delete document.documentElement.dataset.theme
   })
 
@@ -95,11 +98,14 @@ describe('MonacoDiffEditor', () => {
     expect(secondModels.modified).toMatchObject({ value: 'd', language: 'plaintext' })
     expect(fake.diffEditor.dispose).not.toHaveBeenCalled()
 
-    view.unmount()
+    // Closing the Review pane once blanked the whole app: the editor was disposed first and the
+    // model cleanup then called setModel(null) on it.
+    expect(() => view.unmount()).not.toThrow()
 
     expect(secondModels.original.dispose).toHaveBeenCalledTimes(1)
     expect(secondModels.modified.dispose).toHaveBeenCalledTimes(1)
     expect(fake.diffEditor.dispose).toHaveBeenCalledTimes(1)
+    expect(fake.diffEditor.setModel).toHaveBeenCalledTimes(3)
   })
 
   it('applies layout and wrap changes and follows the document theme', async () => {

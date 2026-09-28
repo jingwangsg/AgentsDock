@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
 import { t } from '@shared/i18n'
 import type * as MonacoApi from 'monaco-editor/editor/editor.api'
@@ -18,6 +18,10 @@ export function MonacoDiffEditor({ path, model, sideBySide, wordWrap, onUnavaila
   const [host, setHost] = useState<HTMLDivElement | null>(null)
   const [monaco, setMonaco] = useState<Monaco | null>(null)
   const [editor, setEditor] = useState<MonacoApi.editor.IStandaloneDiffEditor | null>(null)
+  // Effect cleanups run in declaration order, so on unmount the editor is disposed before the
+  // model cleanup below runs; Monaco throws "InstantiationService has been disposed" if setModel
+  // touches it then, and without a boundary React unmounted the whole app.
+  const disposedEditors = useRef(new WeakSet<object>())
 
   useEffect(() => {
     let cancelled = false
@@ -47,6 +51,7 @@ export function MonacoDiffEditor({ path, model, sideBySide, wordWrap, onUnavaila
     setEditor(created)
     return () => {
       observer.disconnect()
+      disposedEditors.current.add(created)
       created.dispose()
       setEditor(null)
     }
@@ -77,7 +82,7 @@ export function MonacoDiffEditor({ path, model, sideBySide, wordWrap, onUnavaila
     })))
     return () => {
       // Models outlive editors in Monaco; without this they leak per viewed file.
-      editor.setModel(null)
+      if (!disposedEditors.current.has(editor)) editor.setModel(null)
       original.dispose()
       modified.dispose()
     }
