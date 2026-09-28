@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { connect } from 'node:net'
 import { homedir, networkInterfaces } from 'node:os'
 import { join } from 'node:path'
 import type { PublicServerProfile, RemoteServer } from '../shared/types'
-import { normalizeServerURL } from '../shared/server-url'
+import { DEFAULT_SERVER_URL, normalizeServerURL } from '../shared/server-url'
 
 /** Mirrors server/agent_server.py parse_config_env_file: KEY=VALUE, optional `export `, quotes, malformed lines skipped. */
 export function parseConfigEnv(text: string): Record<string, string> {
@@ -90,4 +91,48 @@ export async function localHubPairingUrl(): Promise<string | null> {
     if (address) return `http://${address}:7850`
   }
   return null
+}
+
+/** install.sh's LaunchAgent first, then the hand-written one that runs a source checkout. */
+const LOCAL_SERVER_LAUNCH_AGENTS = ['com.agentsdock.server', 'com.agentsdock.local-server']
+const LOCAL_SERVER_START_TIMEOUT_MS = 20_000
+
+/**
+ * Starts the local server's LaunchAgent (loading its plist first when launchd has not, e.g. right after login)
+ * and resolves once the server port accepts connections.
+ */
+export async function startLocalServerAgent(
+  agentsDir = join(homedir(), 'Library', 'LaunchAgents'),
+  labels: readonly string[] = LOCAL_SERVER_LAUNCH_AGENTS,
+  serverUrl = DEFAULT_SERVER_URL
+): Promise<void> {
+  if (process.platform !== 'darwin') throw new Error('Starting the local server is only supported on macOS.')
+  const label = labels.find(candidate => existsSync(join(agentsDir, `${candidate}.plist`)))
+  if (!label) throw new Error(`No AgentsServer LaunchAgent in ${agentsDir} (looked for ${labels.map(name => `${name}.plist`).join(', ')}).`)
+  const domain = `gui/${process.getuid?.()}`
+  // Resolves to launchctl's error text, or null on success.
+  const launchctl = (...args: string[]) => new Promise<string | null>(resolve => {
+    execFile('/bin/launchctl', args, { encoding: 'utf8', timeout: 10_000 }, (error, stdout, stderr) => {
+      resolve(error ? stderr.trim() || stdout.trim() || error.message : null)
+    })
+  })
+  // Without -k, kickstart leaves a running server alone; it fails when launchd has not loaded the plist.
+  if (await launchctl('kickstart', `${domain}/${label}`)) {
+    const failure = await launchctl('bootstrap', domain, join(agentsDir, `${label}.plist`))
+      ?? await launchctl('kickstart', `${domain}/${label}`)
+    if (failure) throw new Error(`launchd could not start ${label}: ${failure}`)
+  }
+
+  const { hostname, port } = new URL(serverUrl)
+  const deadline = Date.now() + LOCAL_SERVER_START_TIMEOUT_MS
+  while (!await new Promise<boolean>(resolve => {
+    const socket = connect({ host: hostname, port: Number(port) })
+    socket.once('connect', () => { socket.destroy(); resolve(true) })
+    socket.once('error', () => resolve(false))
+  })) {
+    if (Date.now() >= deadline) {
+      throw new Error(`launchd started ${label}, but nothing accepted connections on ${hostname}:${port} within ${LOCAL_SERVER_START_TIMEOUT_MS / 1000} s. Check that service's log.`)
+    }
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
 }

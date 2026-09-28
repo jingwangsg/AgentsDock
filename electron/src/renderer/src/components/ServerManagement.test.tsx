@@ -83,6 +83,7 @@ describe('ServerManagement', () => {
   const remoteRemove = vi.fn()
   const pairingUrl = vi.fn()
   const copyToken = vi.fn()
+  const startLocalServer = vi.fn()
   const switchServer = vi.fn()
 
   beforeEach(() => {
@@ -97,6 +98,7 @@ describe('ServerManagement', () => {
     remoteRemove.mockReset().mockResolvedValue(undefined)
     pairingUrl.mockReset().mockResolvedValue('http://nvmac.tail46daa8.ts.net:7850')
     copyToken.mockReset().mockResolvedValue(true)
+    startLocalServer.mockReset().mockResolvedValue(undefined)
     switchServer.mockReset().mockImplementation(async (profileId: string) => {
       useAppStore.setState(state => ({ activeProfileId: profileId, profileGeneration: state.profileGeneration + 1 }))
       return true
@@ -106,7 +108,7 @@ describe('ServerManagement', () => {
       value: {
         servers: { list, update, remove, reorder },
         remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove },
-        hub: { pairingUrl, copyToken }
+        hub: { pairingUrl, copyToken, startLocalServer }
       } as unknown as AgentsDockAPI
     })
     useAppStore.setState({
@@ -230,6 +232,26 @@ describe('ServerManagement', () => {
 
     await waitFor(() => expect(copyToken).toHaveBeenCalledOnce())
     expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+  })
+
+  it('offers Start only while the local server is down and shows why a start failed', async () => {
+    const down = { ...hub, connectionState: 'offline' as const, lastConnectionError: 'fetch failed' }
+    useAppStore.setState({ profiles: [down, osmo], activeProfileId: hub.id })
+    startLocalServer.mockRejectedValueOnce(new Error('No AgentsServer LaunchAgent in /Users/me/Library/LaunchAgents'))
+    const user = userEvent.setup()
+    const { rerender } = render(<ServerManagement />)
+
+    expect(screen.queryByRole('button', { name: 'Start OSMO' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Start This Mac' }))
+    expect(await screen.findByText('No AgentsServer LaunchAgent in /Users/me/Library/LaunchAgents')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Start This Mac' }))
+    await waitFor(() => expect(startLocalServer).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('fetch failed')).toBeInTheDocument()
+
+    act(() => useAppStore.setState({ profiles: [hub, osmo] }))
+    rerender(<ServerManagement />)
+    expect(screen.queryByRole('button', { name: 'Start This Mac' })).not.toBeInTheDocument()
   })
 
   it('reveals and focuses the editor when Add server is clicked directly', async () => {

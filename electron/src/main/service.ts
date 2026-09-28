@@ -171,7 +171,7 @@ import { PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL, PortTunnelManager } from './port-tu
 import { FileUploadGrantRegistry } from './file-upload-grants'
 import { SettingsStore, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
-import { planHubRemoteProfiles, readLocalHubToken } from './local-hub'
+import { planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
 import { clearStorageError, localStorageWasFull, observeStorageErrors, reportStorageError } from './storage-health'
 import { SubagentEventProjector } from './subagent-projection'
 import { mergeTimelineSearchResults } from './search'
@@ -1516,6 +1516,14 @@ export class AppService {
       void this.runBackgroundRefresh(true, scope)
     } else this.invalidateProfileHealthProbe(hub.id)
     return true
+  }
+
+  /** Settings → Server "Start": launchd starts the local server, then every profile re-checks now instead of on the next poll. */
+  async startLocalHub(): Promise<void> {
+    await startLocalServerAgent()
+    appLog('hub', 'started the local server LaunchAgent')
+    if (this.hubProfile()?.id === this.activeProfileId) await this.runBackgroundRefresh(true, this.captureScope())
+    this.requestInactiveProfileHealthSweep()
   }
 
   /** Copies the hub token for pairing a phone; the token never crosses into the renderer. */

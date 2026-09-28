@@ -380,6 +380,8 @@ export interface AgentsDockAPI {
     adoptLocalToken(): Promise<boolean>
     /** `http://<tailnet name or IP>:7850` for pairing a phone, or null when no address is known. */
     pairingUrl(): Promise<string | null>
+    /** Starts the local server's LaunchAgent and resolves once 127.0.0.1:7850 accepts connections. */
+    startLocalServer(): Promise<void>
     /** Copies the hub token to the clipboard inside the main process. */
     copyToken(): Promise<boolean>
   }

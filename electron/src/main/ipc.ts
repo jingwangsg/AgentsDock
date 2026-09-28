@@ -251,6 +251,7 @@ export function registerIpc(
   handle('remote-servers:remove', (scope, remoteId) => service.removeRemoteServer(scope, remoteId))
   handle('hub:adopt-local-token', () => service.retryLocalHubToken())
   handle('hub:pairing-url', () => localHubPairingUrl())
+  handle('hub:start-local-server', () => service.startLocalHub())
   handle('hub:copy-token', () => service.copyHubToken())
 
   handle('sessions:list', () => service.listSessions())

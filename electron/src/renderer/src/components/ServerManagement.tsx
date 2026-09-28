@@ -209,6 +209,19 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     }
   }
 
+  // The hub is down (e.g. launchd has not started it yet after login): start its LaunchAgent in place.
+  const startHub = async (profileId: string) => {
+    setActivationError(null)
+    setBusy(`start:${profileId}`)
+    try {
+      await window.agentsDock.hub.startLocalServer()
+    } catch (error) {
+      setActivationError({ profileId, message: errorMessage(error) })
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const remove = async (profile: PublicServerProfile) => {
     if (profile.id === activeProfileId) return
     if (confirmRemoveId !== profile.id) {
@@ -268,6 +281,8 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         const rowActivationError = activationError?.profileId === profile.id ? activationError.message : null
         const details = [profile.serverIdentity ? t("ui.ServerManagement.identity_96fbbb0", { "id": String(profile.serverIdentity) }) : '', profile.serverVersion ? `AgentsServer ${profile.serverVersion}` : ''].filter(Boolean).join(' · ')
         const remoteLocked = !hubActive && hubRemoteId(profile.serverUrl) !== null
+        const starting = busy === `start:${profile.id}`
+        const hubDown = profile.id === hub?.id && (profile.connectionState === 'offline' || profile.connectionState === 'retrying')
         return <div className={`server-management-row${current ? ' active' : ''}`} key={profile.id}>
           <span className={`server-connection-dot ${profile.connectionState}`} title={connectionLabel(profile)} role="img" aria-label={connectionLabel(profile)} />
           <div className="server-management-copy">
@@ -280,6 +295,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
           <div className="server-management-actions">
             <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.move_up_0bca820", { "server": String(profile.name) })} disabled={index === 0 || Boolean(busy)} onClick={() => void move(profile.id, -1)}><ArrowUp size={13} /></button>
             <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.move_down_c5ebfeb", { "server": String(profile.name) })} disabled={index === profiles.length - 1 || Boolean(busy)} onClick={() => void move(profile.id, 1)}><ArrowDown size={13} /></button>
+            {(hubDown || starting) && <button type="button" className="quiet-button" aria-label={t('hub.startLabel', { server: profile.name })} disabled={Boolean(busy)} onClick={() => void startHub(profile.id)}>{starting && <LoaderCircle className="spin" size={12} />} {starting ? t('hub.starting') : t('hub.start')}</button>}
             {!current && <button type="button" className="quiet-button" aria-label={working ? t("ui.ServerManagement.switching_to_e7437c0", { "server": String(profile.name) }) : t("ui.ServerManagement.use_367b9be", { "server": String(profile.name) })} disabled={Boolean(busy) || Boolean(switchingProfileId)} onClick={() => void activate(profile.id)}>{working && <LoaderCircle className="spin" size={12} />} {working ? t("ui.ServerManagement.switching_b7b9fbf") : t("ui.ServerManagement.use_c36d819")}</button>}
             <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.edit_966e044", { "server": String(profile.name) })} disabled={Boolean(busy)} onClick={() => beginEdit(profile)}><Pencil size={13} /></button>
             {profile.id !== hub?.id && <button

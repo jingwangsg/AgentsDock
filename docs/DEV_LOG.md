@@ -1,5 +1,25 @@
 # Public development log
 
+## 2026-09-29 — Start the local server from Server settings
+
+- When the local hub is offline or retrying, its row in Settings → Server shows
+  a Start button. It asks launchd to start the local server's LaunchAgent
+  (install.sh's `com.agentsdock.server`, else `com.agentsdock.local-server`),
+  loading the plist first if launchd has not yet, e.g. right after login. It
+  waits up to 20 s for 127.0.0.1:7850 to accept connections, then re-checks the
+  active and inactive profiles immediately. `kickstart` runs without `-k`, so a
+  server that is already running is left alone. Failures show on the row.
+- Checks run: Electron type check; `ServerManagement`, `local-hub`, `service`,
+  `ipc`, preload and `Dialogs` tests, including a new regression that fails
+  without the button; production build. The launchd path was run against a
+  scratch LaunchAgent: not loaded, already running, loaded but stopped, missing
+  plist, and a program that exits (timeout error). In an isolated native dev
+  instance whose hub row was offline, clicking Start went through IPC to a real
+  `kickstart` of the running local service, which kept its PID.
+- Not exercised: starting a stopped local hub from the installed app, with the
+  rows turning green afterwards. The full Vitest suite passed in the local
+  package build. Available as a local package; not installed.
+
 ## 2026-09-29 — Open file and folder path links from chat
 
 - Chat links to a path that is not an attached file used to do nothing. This

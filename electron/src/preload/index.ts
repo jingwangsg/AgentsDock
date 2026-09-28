@@ -192,6 +192,7 @@ const api: AgentsDockAPI = {
   hub: {
     adoptLocalToken: () => ipcRenderer.invoke('hub:adopt-local-token'),
     pairingUrl: () => ipcRenderer.invoke('hub:pairing-url'),
+    startLocalServer: () => ipcRenderer.invoke('hub:start-local-server'),
     copyToken: () => ipcRenderer.invoke('hub:copy-token')
   },
   sessions: {
