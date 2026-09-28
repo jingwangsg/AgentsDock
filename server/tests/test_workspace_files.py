@@ -762,6 +762,29 @@ class WorkspaceFilesTests(unittest.TestCase):
         self.assertEqual(mutation.exception.detail["code"], "invalid_workspace_path")
         self.assertEqual(unchanged, "# outside\n")
 
+    def test_explicit_absolute_read_names_a_folder_apart_from_other_non_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            workspace = base / "workspace"
+            workspace.mkdir()
+            folder = base / "O-1 refs"
+            folder.mkdir()
+            fifo = base / "pipe"
+            os.mkfifo(fifo)
+            with patch.object(agent_server.STORE, "sessions", {"session-1": self.session(workspace)}):
+                with self.assertRaises(HTTPException) as directory:
+                    agent_server.read_absolute_file_sync("session-1", str(folder))
+                with self.assertRaises(HTTPException) as special:
+                    agent_server.read_absolute_file_sync("session-1", str(fifo))
+
+        self.assertEqual(directory.exception.status_code, 400)
+        self.assertEqual(directory.exception.detail["code"], "absolute_path_is_directory")
+        self.assertEqual(
+            directory.exception.detail["message"],
+            f"{folder} is a folder. Only folders inside the chat's working directory can be browsed.",
+        )
+        self.assertEqual(special.exception.detail["code"], "absolute_not_regular_file")
+
     def test_explicit_home_relative_path_expands_against_the_server_users_home(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()

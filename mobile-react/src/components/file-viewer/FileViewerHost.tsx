@@ -57,7 +57,7 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({
     viewerActive: Boolean(activeRequest || pendingRequest),
     openArtifacts: (request: Omit<Extract<FileViewerRequest, { kind: 'artifacts' }>, 'kind'>) => present({ kind: 'artifacts', ...request }),
-    openWorkspace: (sessionId: string) => present({ kind: 'workspace', sessionId }),
+    openWorkspace: (sessionId: string, initialPath?: string) => present({ kind: 'workspace', sessionId, initialPath }),
     closeViewer,
     setPresentationBlocked,
   }), [activeRequest, closeViewer, pendingRequest, present, setPresentationBlocked])

@@ -772,6 +772,69 @@ describe('WorkspaceEditor', () => {
     )
   })
 
+  it('reveals a chat-linked folder in the explorer without opening a file tab', async () => {
+    renderEditor()
+    expect(screen.queryByRole('button', { name: 'src' })).not.toBeInTheDocument()
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
+        detail: { sessionId: 'chat-a', path: '/work/project/src/', mayBeDirectory: true }
+      }))
+    })
+
+    const folder = await screen.findByRole('button', { name: 'src' })
+    expect(folder).toHaveAttribute('aria-current', 'location')
+    expect(folder).toHaveAttribute('aria-expanded', 'true')
+    expect(await screen.findByRole('button', { name: 'Open src/App.tsx' })).toBeVisible()
+    expect(window.agentsDock.workspace.entries).toHaveBeenCalledWith('chat-a', 'src', 0, 1)
+    expect(window.agentsDock.workspace.read).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Chat/ }))
+    expect(screen.queryByRole('button', { name: 'src' })).not.toBeInTheDocument()
+    expect(screen.getByText('Chat timeline')).toBeVisible()
+  })
+
+  it('opens a chat-linked file once the server says it is not a folder, and reveals the cwd itself', async () => {
+    vi.mocked(window.agentsDock.workspace.entries).mockImplementation((_sessionId, path = '') => path === 'README.md'
+      ? Promise.reject(new Error('Workspace path has the wrong type: README.md'))
+      : Promise.resolve({ root: '/work/project', path, entries: path ? [] : entries.slice(0, 2), total: path ? 0 : 2, offset: 0, limit: 500, has_more: false }))
+    renderEditor()
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
+        detail: { sessionId: 'chat-a', path: 'README.md', mayBeDirectory: true }
+      }))
+    })
+    expect(await screen.findByRole('textbox', { name: 'Contents of README.md' })).toBeInTheDocument()
+    expect(window.agentsDock.workspace.read).toHaveBeenCalledWith('chat-a', 'README.md')
+
+    vi.mocked(window.agentsDock.workspace.entries).mockClear()
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
+        detail: { sessionId: 'chat-a', path: '/work/project', mayBeDirectory: true }
+      }))
+    })
+    expect(await screen.findByRole('button', { name: 'src' })).toBeVisible()
+    expect(window.agentsDock.workspace.entries).not.toHaveBeenCalledWith('chat-a', '/work/project', 0, 1)
+    expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalled()
+  })
+
+  it('shows the server message for a chat-linked folder outside the working directory', async () => {
+    vi.mocked(window.agentsDock.workspace.readAbsolute).mockRejectedValueOnce(new Error(
+      '/lustre/runs/results is a folder. Only folders inside the chat\'s working directory can be browsed.'
+    ))
+    renderEditor()
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
+        detail: { sessionId: 'chat-a', path: '/lustre/runs/results', mayBeDirectory: true }
+      }))
+    })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('/lustre/runs/results is a folder. Only folders inside the chat\'s working directory can be browsed.')
+    expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith('chat-a', '/lustre/runs/results')
+  })
+
   it('copies absolute and workspace-relative paths from the explorer context menu', async () => {
     const user = userEvent.setup()
     renderEditor()

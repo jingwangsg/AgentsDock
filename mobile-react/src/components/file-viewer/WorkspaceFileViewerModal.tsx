@@ -132,7 +132,9 @@ function ScopedWorkspaceFileViewer({ request, connection, modalPadding, connecti
   const [infoRevision, setInfoRevision] = useState(0)
   const infoRef = useRef(info)
   infoRef.current = info
-  const [directory, setDirectory] = useState('')
+  const [directory, setDirectory] = useState(() => request.initialPath ? parentWorkspacePath(request.initialPath) : '')
+  // A chat link does not say whether it names a folder; the first listing (its parent) does.
+  const pendingLinkPath = useRef(request.initialPath || null)
   const [entries, setEntries] = useState<WorkspaceEntry[]>([])
   const [total, setTotal] = useState(0)
   const [hasMore, setHasMore] = useState(false)
@@ -244,6 +246,17 @@ function ScopedWorkspaceFileViewer({ request, connection, modalPadding, connecti
         if (!current) return null
         return page.entries.find(entry => entry.path === current.path) ?? current
       })
+      const linkPath = pendingLinkPath.current
+      if (!append && linkPath !== null) {
+        pendingLinkPath.current = null
+        // Another path means the user navigated (breadcrumbs) before the parent listing arrived; their choice wins.
+        if (path === parentWorkspacePath(linkPath)) {
+          const entry = page.entries.find(candidate => candidate.path === linkPath)
+          if (entry?.kind === 'directory') setDirectory(linkPath)
+          // Missing from this page: the file read then reports whether it exists.
+          else setSelected(entry ?? { name: linkPath.split('/').at(-1) ?? linkPath, path: linkPath, kind: 'file' })
+        }
+      }
       setTotal(page.total)
       setHasMore(page.has_more)
     } catch (cause) {

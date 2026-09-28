@@ -14,6 +14,7 @@ import { Check, ChevronDown, ChevronUp, Code, Copy, FileCode2, Maximize2, Workfl
 import { isEditorTextFile } from '@shared/file-content-type'
 import { internalWorkspaceLinkURL } from '@shared/workspace-link-url'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
+import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import type { AgentFile, ChatReference, TeamReference } from '@shared/types'
 import { chatReferenceDisplayText, parseStoredChatReferences } from '../lib/chat-references'
 import { saveAgentFile } from '../lib/file-actions'
@@ -23,7 +24,8 @@ import { useTransientClose } from '../lib/transient-close'
 import {
   parseWorkspaceCodeReference,
   requestOpenAgentFile,
-  requestOpenWorkspaceReference
+  requestOpenWorkspaceReference,
+  type OpenWorkspacePathDetail
 } from '../lib/workspace-file-links'
 import { useAppStore } from '../store/app-store'
 
@@ -124,6 +126,30 @@ export const MarkdownContent = memo(function MarkdownContent({
     }
     if (sessionId && reference) {
       requestOpenWorkspaceReference(sessionId, reference)
+      return
+    }
+    // decodeLinkTarget already dropped file://; any other scheme is not a path.
+    // One-letter "schemes" are Windows drive letters.
+    const path = decoded.trim()
+    if (sessionId && path && !window.agentsDock.sharedChat && !/^[a-z][a-z0-9+.-]+:/i.test(path)) {
+      const ipcMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
+        .replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i, '')
+      const openByPath = () => {
+        const state = useAppStore.getState()
+        if (state.profiles.find(profile => profile.id === state.activeProfileId)?.serverUrl === DEFAULT_SERVER_URL) {
+          void window.agentsDock.files.openLocalPath(sessionId, path).catch(error => state.setError(ipcMessage(error)))
+        } else {
+          window.dispatchEvent(new CustomEvent<OpenWorkspacePathDetail>('agentsdock:open-workspace-path', {
+            detail: { sessionId, path, mayBeDirectory: true }
+          }))
+        }
+      }
+      // A file the agent published elsewhere in this chat still opens through the server's artifact
+      // lookup, as before; only "not a registered artifact" (404) makes the link a plain path.
+      void window.agentsDock.files.openLinked(sessionId, href).then(undefined, error => {
+        if (/Linked file failed: 404\b/.test(ipcMessage(error))) openByPath()
+        else useAppStore.getState().setError(ipcMessage(error))
+      })
       return
     }
     if (sessionId) void window.agentsDock.files.openLinked(sessionId, href)
@@ -253,7 +279,10 @@ function canonicalSecurePeerInvite(value: string): boolean {
   try { return normalizeSecurePeerJoinTarget(value).expectedCaFingerprint !== null } catch { return false }
 }
 
-function secureMarkdownURL(value: string): string {
+function secureMarkdownURL(value: string, key: string): string {
+  // A file:// link renders with the internal workspace URL and opens through onLink as a path;
+  // an image must never load a local file.
+  if (key === 'href' && value.startsWith('file://')) return value
   return parseTeamMessageLink(value) || canonicalSecurePeerInvite(value) ? value : defaultUrlTransform(value)
 }
 

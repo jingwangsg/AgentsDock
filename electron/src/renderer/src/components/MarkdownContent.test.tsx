@@ -1,28 +1,43 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
+import { DEFAULT_SERVER_URL } from '@shared/server-url'
+import type { PublicServerProfile } from '@shared/types'
+import { useAppStore } from '../store/app-store'
 import { MarkdownContent } from './MarkdownContent'
 import SafeHtmlMarkdownContent from './SafeHtmlMarkdownContent'
 
+function activateProfile(serverUrl: string): void {
+  useAppStore.setState({
+    profiles: [{ id: 'profile-a', name: 'Server', serverUrl } as PublicServerProfile],
+    activeProfileId: 'profile-a'
+  })
+}
+
 describe('MarkdownContent', () => {
   const openLinked = vi.fn().mockResolvedValue(undefined)
+  const openLocalPath = vi.fn().mockResolvedValue(undefined)
   const openExternal = vi.fn().mockResolvedValue(undefined)
   const writeClipboard = vi.fn().mockResolvedValue(undefined)
 
   beforeEach(() => {
-    openLinked.mockClear()
+    openLinked.mockReset().mockResolvedValue(undefined)
+    openLocalPath.mockReset().mockResolvedValue(undefined)
     openExternal.mockClear()
     writeClipboard.mockClear()
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
       value: {
-        files: { open: vi.fn(), openLinked },
+        files: { open: vi.fn(), openLinked, openLocalPath },
         native: { openExternal, writeClipboard }
       } as unknown as AgentsDockAPI
     })
   })
 
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    useAppStore.setState({ profiles: [], activeProfileId: null, error: null })
+  })
 
   it('renders bold whose closing ** sits between CJK punctuation and a letter', () => {
     const { container } = render(<MarkdownContent text="**04:12，训练配置：**Ruijie 说 job 已启动。" sessionId="chat-7" />)
@@ -43,13 +58,106 @@ describe('MarkdownContent', () => {
     expect(openExternal).not.toHaveBeenCalled()
   })
 
-  it('opens unresolved relative links through the authorized session endpoint', () => {
-    render(<MarkdownContent text="[report](out/run/report.csv)" sessionId="chat-7" />)
-    const link = screen.getByRole('link', { name: 'report' })
-    expect(link.tagName).toBe('A')
-    expect(link).toHaveAttribute('href', 'agentsdock-workspace:out%2Frun%2Freport.csv')
-    fireEvent.click(link)
-    expect(openLinked).toHaveBeenCalledWith('chat-7', 'out/run/report.csv')
+  it('opens unregistered path links on the local hub through the local-path IPC', async () => {
+    activateProfile(DEFAULT_SERVER_URL)
+    openLinked.mockRejectedValue(new Error("Error invoking remote method 'files:open-linked': Error: Linked file failed: 404"))
+    const folder = '/Users/dev/Library/CloudStorage/OneDrive-NVIDIA/Legal/O-1 refs'
+    render(<MarkdownContent
+      text={`已存入 [O-1 引用材料目录](<${folder}>)，[report](out/run/report.csv)，[notes](~/notes)，[log](file:///tmp/run%20log.pdf)`}
+      sessionId="chat-7"
+    />)
+    const report = screen.getByRole('link', { name: 'report' })
+    expect(report).toHaveAttribute('href', 'agentsdock-workspace:out%2Frun%2Freport.csv')
+
+    fireEvent.click(screen.getByRole('link', { name: 'O-1 引用材料目录' }))
+    fireEvent.click(report)
+    fireEvent.click(screen.getByRole('link', { name: 'notes' }))
+    fireEvent.click(screen.getByRole('link', { name: 'log' }))
+
+    // Each link first asks the server whether it is a published file; a 404 makes it a plain path.
+    await waitFor(() => expect(openLocalPath.mock.calls).toEqual([
+      ['chat-7', folder],
+      ['chat-7', 'out/run/report.csv'],
+      ['chat-7', '~/notes'],
+      ['chat-7', '/tmp/run log.pdf']
+    ]))
+    expect(openLinked).toHaveBeenCalledTimes(4)
+  })
+
+  it('shows a local-path failure in the app error surface', async () => {
+    activateProfile(DEFAULT_SERVER_URL)
+    openLinked.mockRejectedValue(new Error("Error invoking remote method 'files:open-linked': Error: Linked file failed: 404"))
+    openLocalPath.mockRejectedValue(new Error("Error invoking remote method 'files:open-local-path': Error: Not found on this computer: /missing"))
+    render(<MarkdownContent text="[missing](/missing)" sessionId="chat-7" />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'missing' }))
+
+    await waitFor(() => expect(useAppStore.getState().error).toBe('Not found on this computer: /missing'))
+  })
+
+  it('opens a remote chat path link in the workspace editor, never as a local path', async () => {
+    activateProfile(`${DEFAULT_SERVER_URL}/api/remote/osmo`)
+    openLinked.mockRejectedValue(new Error("Error invoking remote method 'files:open-linked': Error: Linked file failed: 404"))
+    const open = vi.fn()
+    window.addEventListener('agentsdock:open-workspace-path', open)
+    try {
+      render(<MarkdownContent text="[results](/lustre/runs/080126/results) and [report](out/run/report.csv)" sessionId="chat-7" />)
+      fireEvent.click(screen.getByRole('link', { name: 'results' }))
+      fireEvent.click(screen.getByRole('link', { name: 'report' }))
+
+      await waitFor(() => expect(open.mock.calls.map(([event]) => (event as CustomEvent).detail)).toEqual([
+        { sessionId: 'chat-7', path: '/lustre/runs/080126/results', mayBeDirectory: true },
+        { sessionId: 'chat-7', path: 'out/run/report.csv', mayBeDirectory: true }
+      ]))
+      expect(openLocalPath).not.toHaveBeenCalled()
+      expect(openLinked).toHaveBeenCalledTimes(2)
+    } finally {
+      window.removeEventListener('agentsdock:open-workspace-path', open)
+    }
+  })
+
+  it('opens a file published elsewhere in the chat through the artifact lookup, not as a path', async () => {
+    activateProfile(DEFAULT_SERVER_URL)
+    render(<MarkdownContent text="[chart](out/chart.png)" sessionId="chat-7" />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'chart' }))
+
+    await waitFor(() => expect(openLinked).toHaveBeenCalledOnce())
+    await Promise.resolve()
+    expect(openLocalPath).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a non-404 artifact lookup failure instead of guessing a path', async () => {
+    activateProfile(DEFAULT_SERVER_URL)
+    openLinked.mockRejectedValue(new Error("Error invoking remote method 'files:open-linked': Error: Linked file failed: 409"))
+    render(<MarkdownContent text="[dup](out/dup.csv)" sessionId="chat-7" />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'dup' }))
+
+    await waitFor(() => expect(useAppStore.getState().error).toBe('Linked file failed: 409'))
+    expect(openLocalPath).not.toHaveBeenCalled()
+  })
+
+  it('keeps registered artifacts and web links ahead of local path handling', () => {
+    activateProfile(DEFAULT_SERVER_URL)
+    const file = { id: 'artifact-2', filename: 'summary.pdf', source_path: '/Users/dev/project/out/summary.pdf', content_type: 'application/pdf' }
+    render(<MarkdownContent
+      text="[summary](/Users/dev/project/out/summary.pdf) and [site](https://example.com/docs)"
+      files={[file]}
+      sessionId="chat-7"
+    />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'summary' }))
+    fireEvent.click(screen.getByRole('link', { name: 'site' }))
+
+    expect(window.agentsDock.files.open).toHaveBeenCalledExactlyOnceWith('chat-7', file)
+    expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://example.com/docs')
+    expect(openLocalPath).not.toHaveBeenCalled()
+  })
+
+  it('never loads a file:// image even though file:// links are accepted', () => {
+    const { container } = render(<MarkdownContent text="![secret](file:///etc/secret.png)" sessionId="chat-7" />)
+    expect(container.querySelector('img')).toBeNull()
   })
 
   it('does not resolve workspace links against Electron’s packaged renderer URL', () => {

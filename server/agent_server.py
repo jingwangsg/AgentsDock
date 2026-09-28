@@ -3177,6 +3177,14 @@ def read_absolute_file_sync(session_id: str, absolute_path: str) -> dict[str, An
         except OSError as exc:
             raise translate_workspace_os_error(exc, normalized) from exc
         item_stat = os.fstat(file_fd)
+        # Clients cannot stat a server path themselves; a chat link to a
+        # folder outside the workspace needs a message that says so.
+        if stat.S_ISDIR(item_stat.st_mode):
+            raise workspace_http_error(
+                400,
+                "absolute_path_is_directory",
+                f"{normalized} is a folder. Only folders inside the chat's working directory can be browsed.",
+            )
         if not stat.S_ISREG(item_stat.st_mode):
             raise workspace_http_error(400, "absolute_not_regular_file", f"Not a regular file: {normalized}")
         if workspace_text_limit_exceeded(item_stat.st_size):

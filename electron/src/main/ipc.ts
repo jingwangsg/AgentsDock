@@ -402,6 +402,7 @@ export function registerIpc(
   handle('files:save', (sessionId, file) => service.saveFile(sessionId, file))
   handle('files:open', (sessionId, file) => service.openFile(sessionId, file))
   handle('files:open-linked', (sessionId, target) => service.openLinkedFile(sessionId, target))
+  handle('files:open-local-path', (sessionId, target) => service.openLocalPath(sessionId, target))
   handle('files:reveal', (sessionId, file) => service.revealFile(sessionId, file))
   ipcMain.removeHandler('files:begin-drag')
   ipcMain.handle('files:begin-drag', (event, sessionId, file) => {

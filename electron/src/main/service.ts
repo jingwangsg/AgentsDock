@@ -3,12 +3,13 @@ import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, shell
 import { bannerDedupeKey, notificationBannerContent, type NotificationPopupController } from './notification-popup'
 import { rememberedFolderOrder } from '../shared/folders'
 import { applyOpenCodeSessionEvent } from '../shared/opencode'
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { open, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { basename, dirname, join } from 'node:path'
+import { homedir } from 'node:os'
+import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
 import { isImportedHistoryRecord, isImportedProviderControlMetadata, mergeProviderInterruptionEvent } from '../shared/provider-origin'
 import type { ChatShareMode, CreateChatShareInput } from '../shared/chat-shares'
 import type { WorkspaceGitAction, WorkspaceGitStatus, WorkspaceGitView } from '../shared/workspace-git'
@@ -373,6 +374,9 @@ export interface AppServiceOptions {
   /** macOS completion banners; injected so tests observe the banner path without real windows. */
   notificationPopups?: NotificationPopupController
 }
+
+/** Bundles and scripts that macOS would run, not merely open, when handed to openPath. */
+const LAUNCHING_PATH_RE = /\.(?:app|command|tool|terminal|workflow|action|pkg|mpkg|jar|py|sh|zsh|bash|pl|rb)$/i
 
 export class AppService {
   readonly settings: SettingsStore
@@ -4729,6 +4733,29 @@ export class AppService {
     const path = join(app.getPath('temp'), 'AgentsDockLinkedFiles', digest, filename)
     if (!existsSync(path)) await this.downloadResponse(response, path)
     this.assertCurrentScope(scope)
+    const error = await shell.openPath(path)
+    if (error) throw new Error(error)
+  }
+  /**
+   * Only the local hub's server runs on this computer, so only its chats' paths
+   * name local files. A remote chat's path would open an unrelated same-named
+   * local path; the renderer shows those in the workspace editor instead.
+   */
+  async openLocalPath(sessionId: string, target: string): Promise<void> {
+    if (this.captureScope().serverUrl !== DEFAULT_SERVER_URL) throw new Error(t('files.localPath.remoteChat'))
+    const expandHome = (value: string) => value === '~' || value.startsWith('~/') ? join(homedir(), value.slice(1)) : value
+    const clean = expandHome(target.trim())
+    const cwd = expandHome(this.sessions.find(session => session.id === sessionId)?.cwd?.trim() ?? '')
+    const path = isAbsolute(clean) ? normalize(clean) : join(cwd, clean)
+    // join() stays relative when the chat has no absolute cwd; the app's own cwd must never stand in for it.
+    if (!isAbsolute(path)) throw new Error(t('files.localPath.noWorkingDirectory'))
+    if (!existsSync(path)) throw new Error(t('files.localPath.notFound', { path }))
+    // Agent-written links are trusted less than a Finder double-click: apps, scripts and other
+    // executables are revealed rather than launched. Folders open in Finder, documents in their app.
+    if (LAUNCHING_PATH_RE.test(path) || (!statSync(path).isDirectory() && (statSync(path).mode & 0o111) !== 0)) {
+      shell.showItemInFolder(path)
+      return
+    }
     const error = await shell.openPath(path)
     if (error) throw new Error(error)
   }

@@ -78,7 +78,7 @@ test('a history rewind re-lists the canvases and closes the sheet when its canva
 
 test('markdown .canvas.tsx links open the sheet instead of Linking', () => {
   assert.match(markdown, /import \{ openCanvasLink \} from '\.\.\/lib\/canvas-links'/)
-  assert.match(markdown, /const openLink = useCallback\(\(url: string\) => \{\n    if \(openCanvasLink\(url, sourceSessionId \?\? null\)\) return false\n    void Linking\.openURL\(url\)/)
+  assert.match(markdown, /const openLink = useCallback\(\(url: string\) => \{\n    if \(openCanvasLink\(url, sourceSessionId \?\? null\)\) return false\n    if \(openWorkspacePathLink\(url, sourceSessionId \?\? null\)\) return false\n    void Linking\.openURL\(url\)/)
   assert.match(links, /export const OPEN_CANVAS_EVENT = 'agentsdock:open-canvas'/)
   assert.match(links, /const name = canvasNameFromPath\(href\)\n  if \(!name\) return false\n  DeviceEventEmitter\.emit\(OPEN_CANVAS_EVENT, \{ sessionId, name \}/)
   assert.match(page, /if \(!clean\.endsWith\(CANVAS_SUFFIX\)\) return null/)

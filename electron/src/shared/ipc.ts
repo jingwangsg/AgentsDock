@@ -547,6 +547,8 @@ export interface AgentsDockAPI {
     save(sessionId: string, file: AgentFile): Promise<string | null>
     open(sessionId: string, file: AgentFile): Promise<void>
     openLinked(sessionId: string, target: string): Promise<void>
+    /** Local-hub chats only: `target` is a path on this computer (absolute, `~/…`, or relative to the chat cwd). */
+    openLocalPath(sessionId: string, target: string): Promise<void>
     reveal(sessionId: string, file: AgentFile): Promise<void>
     beginDrag(sessionId: string, file: AgentFile): Promise<boolean>
     mediaURL(profileId: string, profileGeneration: number, sessionId: string, fileId: string): string

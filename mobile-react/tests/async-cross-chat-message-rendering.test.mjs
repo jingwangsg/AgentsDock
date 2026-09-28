@@ -39,6 +39,7 @@ const mocks = {
   '../store/useAppStore': `import { useSyncExternalStore } from 'react'; const fixture = globalThis.__asyncChatMessageFixture; export const client = fixture.client; export const useAppStore = selector => useSyncExternalStore(fixture.subscribe, () => selector(fixture.state)); useAppStore.getState = () => fixture.state;`,
   '../lib/tex-svg': `export const texToSvg = () => null;`,
   '../lib/canvas-links': `export const openCanvasLink = () => false;`,
+  '../lib/workspace-path-links': `export const openWorkspacePathLink = () => false;`,
   './AppText': `export const Text='Text';`,
   './MediaGrid': `export const MediaGrid='MediaGrid';`,
   './MermaidDiagram': `export const MermaidDiagram='MermaidDiagram';`,

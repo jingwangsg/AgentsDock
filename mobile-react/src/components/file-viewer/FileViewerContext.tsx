@@ -14,12 +14,14 @@ export interface ArtifactFileViewerRequest {
 export interface WorkspaceFileViewerRequest {
   kind: 'workspace'
   sessionId: string
+  /** Workspace-relative file or folder from a chat link; the viewer learns which from the parent listing. */
+  initialPath?: string
 }
 
 export interface FileViewerController {
   viewerActive: boolean
   openArtifacts: (request: Omit<ArtifactFileViewerRequest, 'kind'>) => void
-  openWorkspace: (sessionId: string) => void
+  openWorkspace: (sessionId: string, initialPath?: string) => void
   closeViewer: () => void
   setPresentationBlocked: (blocked: boolean) => void
 }

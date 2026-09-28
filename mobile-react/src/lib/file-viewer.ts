@@ -90,6 +90,29 @@ export function workspaceRelativeSourcePath(sourcePath?: string | null, workspac
   return relative && !relative.split('/').includes('..') ? relative : null
 }
 
+export type WorkspacePathLinkTarget = { kind: 'workspace'; path: string } | { kind: 'outside'; path: string }
+
+/**
+ * Resolves a chat's path link against the chat cwd. The workspace routes reach
+ * only paths inside cwd (`path` '' is cwd itself); anything else is `outside`
+ * so the caller can say why it cannot open it. `~` is the server account's
+ * home, which the phone cannot compare with cwd.
+ */
+export function workspacePathLinkTarget(href: string, cwd?: string | null): WorkspacePathLinkTarget {
+  let path = href.trim()
+  try { path = decodeURIComponent(path) } catch { /* markdown-it encodes hrefs; keep text it could not decode */ }
+  const absolute = normalizedAbsolutePath(path)
+  if (absolute !== null) {
+    if (absolute === normalizedAbsolutePath(cwd)) return { kind: 'workspace', path: '' }
+    const relative = workspaceRelativeSourcePath(path, cwd)
+    return relative ? { kind: 'workspace', path: relative } : { kind: 'outside', path }
+  }
+  if (path.startsWith('~')) return { kind: 'outside', path }
+  // Rooting the relative path reuses the dot-segment rules; null means it climbs above cwd.
+  const relative = normalizedAbsolutePath(`/${path}`)
+  return relative === null ? { kind: 'outside', path } : { kind: 'workspace', path: relative.slice(1) }
+}
+
 export function joinWorkspacePath(directory: string, name: string): string {
   const base = normalizedWorkspacePath(directory)
   const leaf = name.replace(/^\/+|\/+$/g, '')

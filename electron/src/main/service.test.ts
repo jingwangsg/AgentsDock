@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
   BulkImportSessionItem,
@@ -43,6 +43,7 @@ const electronHarness = vi.hoisted(() => ({
   showSaveDialog: vi.fn(),
   shellOpenExternal: vi.fn(),
   shellOpenPath: vi.fn(),
+  shellShowItem: vi.fn(),
   notifications: [] as Array<{
     options: { title: string; body: string; silent: boolean }
     shown: boolean
@@ -74,7 +75,8 @@ vi.mock('electron', () => ({
   safeStorage: {},
   shell: {
     openExternal: (...args: unknown[]) => electronHarness.shellOpenExternal(...args),
-    openPath: (...args: unknown[]) => electronHarness.shellOpenPath(...args)
+    openPath: (...args: unknown[]) => electronHarness.shellOpenPath(...args),
+    showItemInFolder: (...args: unknown[]) => electronHarness.shellShowItem(...args)
   }
 }))
 
@@ -393,6 +395,71 @@ describe('opening artifact files externally', () => {
     ensureLocalFile.mockRejectedValue(error)
 
     await expect(service.openFile('chat-a', file)).rejects.toBe(error)
+
+    expect(electronHarness.shellOpenPath).not.toHaveBeenCalled()
+  })
+})
+
+describe('opening chat path links on this computer', () => {
+  function harness(serverUrl: string, cwd: string | null) {
+    const root = mkdtempSync(join(tmpdir(), 'agentsdock-local-path-'))
+    cleanup.push(() => rmSync(root, { recursive: true, force: true }))
+    mkdirSync(join(root, 'O-1 refs'))
+    writeFileSync(join(root, 'O-1 refs', 'letter.pdf'), 'pdf')
+    const service = Object.create(AppService.prototype) as AppService
+    Object.assign(service, {
+      scope: { profileId: 'profile-a', generation: 1, serverUrl, namespace: 'server-a', client: {} },
+      sessions: [{ id: 'chat-a', title: 'Chat', backend: 'codex', cwd: cwd === null ? null : cwd.replace('<root>', root) }]
+    })
+    electronHarness.shellOpenPath.mockReset().mockResolvedValue('')
+    return { service, root }
+  }
+
+  it('resolves a relative link against the chat cwd and opens folders and files natively', async () => {
+    const { service, root } = harness(DEFAULT_SERVER_URL, '<root>')
+
+    await service.openLocalPath('chat-a', 'O-1 refs')
+    await service.openLocalPath('chat-a', `${root}/O-1 refs/letter.pdf`)
+    await service.openLocalPath('chat-a', '~')
+
+    expect(electronHarness.shellOpenPath.mock.calls).toEqual([
+      [join(root, 'O-1 refs')],
+      [join(root, 'O-1 refs', 'letter.pdf')],
+      [homedir()]
+    ])
+  })
+
+  it('reports a missing path, a missing cwd, and an operating-system failure without guessing', async () => {
+    const { service, root } = harness(DEFAULT_SERVER_URL, '<root>')
+    await expect(service.openLocalPath('chat-a', 'missing')).rejects.toThrow(`Not found on this computer: ${join(root, 'missing')}`)
+    expect(electronHarness.shellOpenPath).not.toHaveBeenCalled()
+
+    const withoutCwd = harness(DEFAULT_SERVER_URL, null).service
+    await expect(withoutCwd.openLocalPath('chat-a', 'O-1 refs')).rejects.toThrow('This chat has no working directory')
+    expect(electronHarness.shellOpenPath).not.toHaveBeenCalled()
+
+    electronHarness.shellOpenPath.mockResolvedValue('No application can open this file.')
+    await expect(service.openLocalPath('chat-a', 'O-1 refs/letter.pdf')).rejects.toThrow('No application can open this file.')
+  })
+
+  it('reveals apps and executables in Finder instead of launching them', async () => {
+    const { service, root } = harness(DEFAULT_SERVER_URL, '<root>')
+    mkdirSync(join(root, 'Tool.app'))
+    writeFileSync(join(root, 'run.command'), '#!/bin/sh\n')
+    writeFileSync(join(root, 'build'), '#!/bin/sh\n')
+    chmodSync(join(root, 'build'), 0o755)
+    electronHarness.shellShowItem.mockReset()
+
+    for (const target of ['Tool.app', 'run.command', 'build']) await service.openLocalPath('chat-a', target)
+
+    expect(electronHarness.shellShowItem.mock.calls).toEqual([[join(root, 'Tool.app')], [join(root, 'run.command')], [join(root, 'build')]])
+    expect(electronHarness.shellOpenPath).not.toHaveBeenCalled()
+  })
+
+  it('refuses every path for a chat that is not on the local hub', async () => {
+    const { service, root } = harness(`${DEFAULT_SERVER_URL}/api/remote/osmo`, '<root>')
+
+    await expect(service.openLocalPath('chat-a', `${root}/O-1 refs`)).rejects.toThrow('Only chats on this computer’s AgentsServer can open local paths.')
 
     expect(electronHarness.shellOpenPath).not.toHaveBeenCalled()
   })

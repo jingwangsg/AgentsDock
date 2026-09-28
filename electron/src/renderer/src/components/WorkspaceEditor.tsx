@@ -339,6 +339,8 @@ export function WorkspaceEditor({
   const [openingPath, setOpeningPath] = useState<string | null>(null)
   const [directories, setDirectories] = useState<Record<string, DirectoryState>>({})
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set())
+  // Set by a chat link to a folder; it shows the explorer even when no file tab is active.
+  const [revealedDirectory, setRevealedDirectory] = useState<string | null>(null)
   const [workspaceRoot, setWorkspaceRoot] = useState(cwd)
   const [pendingCreate, setPendingCreate] = useState<PendingWorkspaceCreate | null>(null)
   const [pendingUntitledSave, setPendingUntitledSave] = useState<PendingUntitledSave | null>(null)
@@ -451,6 +453,7 @@ export function WorkspaceEditor({
   }
 
   const focusedPath = activeGroup === 'secondary' && secondaryPath ? secondaryPath : activePath
+  const editorPanelShown = activePath !== null || revealedDirectory !== null
   const primaryFile = openFiles.find(file => file.path === activePath) ?? null
   const secondaryFile = openFiles.find(file => file.path === secondaryPath) ?? null
   const activeFile = openFiles.find(file => file.path === focusedPath) ?? null
@@ -615,7 +618,7 @@ export function WorkspaceEditor({
 
   useLayoutEffect(() => {
     const panel = editorPanelRef.current
-    if (!panel || activePath === null) return
+    if (!panel || !editorPanelShown) return
     const updateWidth = () => {
       const width = Math.max(0, Math.round(panel.getBoundingClientRect().width))
       setEditorPanelWidth(current => current === width ? current : width)
@@ -628,7 +631,7 @@ export function WorkspaceEditor({
     const observer = new ResizeObserver(updateWidth)
     observer.observe(panel)
     return () => observer.disconnect()
-  }, [activePath, filePresentation])
+  }, [activePath, editorPanelShown, filePresentation])
 
   useEffect(() => {
     referenceRequestSequence.current += 1
@@ -863,6 +866,7 @@ export function WorkspaceEditor({
 
   const activateFilePath = (path: string, group: EditorGroupId = activeGroupRef.current): void => {
     setChangesOpen(false)
+    setRevealedDirectory(null)
     if (group === 'secondary') {
       secondaryPathRef.current = path
       setSecondaryPath(path)
@@ -878,6 +882,7 @@ export function WorkspaceEditor({
 
   const showChat = (): void => {
     setChangesOpen(false)
+    setRevealedDirectory(null)
     if (paletteOpenRef.current) cancelPalette()
     activePathRef.current = null
     setActivePath(null)
@@ -1605,6 +1610,16 @@ export function WorkspaceEditor({
     ) return
     void loadDirectory('')
   }, [activeFile?.origin, activeFile?.path, available, session.id])
+
+  const revealWorkspaceDirectory = (path: string): void => {
+    setWorkspaceError(null)
+    setRevealedDirectory(path)
+    if (path) {
+      setExpandedDirectories(current => current.has(path) ? current : new Set(current).add(path))
+      void revealWorkspaceFile(path)
+    }
+    if (!directoriesRef.current[path]) void loadDirectory(path)
+  }
 
   const toggleDirectory = (path: string) => {
     setExpandedDirectories(current => {
@@ -2814,10 +2829,26 @@ export function WorkspaceEditor({
           return
         }
         if (pathInput.kind === 'absolute-file') {
+          // resolveWorkspacePathInput treats only paths strictly below cwd as workspace paths.
+          if (detail.mayBeDirectory && detail.path.replace(/\/+$/, '') === cwd.replace(/\/+$/, '')) {
+            revealWorkspaceDirectory('')
+            return
+          }
           void openAbsoluteFile(pathInput.path, detail)
           return
         }
-        void openFile(pathInput.kind === 'workspace-file' ? pathInput.path : detail.path, undefined, detail)
+        const path = pathInput.kind === 'workspace-file' ? pathInput.path : detail.path
+        if (!detail.mayBeDirectory) {
+          void openFile(path, undefined, detail)
+          return
+        }
+        // Listing succeeds only for a folder. A newer open or tab switch supersedes the answer.
+        const request = ++openRequestSequence.current
+        void window.agentsDock.workspace.entries(session.id, path, 0, 1).then(() => true, () => false).then(isDirectory => {
+          if (!mountedRef.current || request !== openRequestSequence.current) return
+          if (isDirectory) revealWorkspaceDirectory(path)
+          else void openFile(path, undefined, detail)
+        })
       }
     }
     window.addEventListener('agentsdock:open-workspace-path', open)
@@ -3350,9 +3381,8 @@ export function WorkspaceEditor({
   const chatTabId = `${instanceId}-chat-tab`
   const chatPanelId = `${instanceId}-chat-panel`
   const editorPanelId = `${instanceId}-editor-panel`
-  const fileActive = activePath !== null
-  const editorOnly = fileActive && (filePresentation === 'full' || Boolean(onReturnToChat))
-  const splitActive = !changesOpen && fileActive && filePresentation === 'split' && !onReturnToChat
+  const editorOnly = editorPanelShown && (filePresentation === 'full' || Boolean(onReturnToChat))
+  const splitActive = !changesOpen && editorPanelShown && filePresentation === 'split' && !onReturnToChat
   const splitStyle = splitActive
     ? { '--workspace-editor-width': `${editorSplit.editorPercent}%` } as CSSProperties
     : undefined
@@ -3475,8 +3505,8 @@ export function WorkspaceEditor({
     key="chat"
     type="button"
     id={chatTabId}
-    className={`workspace-editor-tab workspace-editor-chat-tab${activePath === null && !changesOpen ? ' workspace-editor-tab-active' : ''}`}
-    aria-pressed={activePath === null && !changesOpen}
+    className={`workspace-editor-tab workspace-editor-chat-tab${!editorPanelShown && !changesOpen ? ' workspace-editor-tab-active' : ''}`}
+    aria-pressed={!editorPanelShown && !changesOpen}
     aria-controls={chatPanelId}
     aria-label={t('editor.chatPinned')}
     title={t('editor.chat1')}
@@ -3985,13 +4015,13 @@ export function WorkspaceEditor({
         role="tabpanel"
         tabIndex={-1}
         aria-labelledby={activeFile ? `${instanceId}-${pathToken(activeFile.path)}-tab` : undefined}
-        hidden={activePath === null || changesOpen}
+        hidden={!editorPanelShown || changesOpen}
         style={explorerStyle}
       >
         <Explorer
           root={workspaceLabel}
           cwd={workspaceRoot}
-          activePath={focusedPath}
+          activePath={revealedDirectory ?? focusedPath}
           openPaths={openPaths}
           directories={directories}
           expanded={expandedDirectories}
@@ -4412,8 +4442,10 @@ function DirectoryRows({
     {directory.entries.map(entry => {
       if (entry.kind === 'directory') {
         const open = expanded.has(entry.path)
+        // A folder is the active row only while a chat link has revealed it.
+        const active = activePath === entry.path
         return <div key={entry.path}>
-          <button type="button" data-workspace-entry-path={entry.path} className="workspace-editor-tree-row workspace-editor-folder" style={{ paddingLeft: `${8 + depth * 13}px` }} title={entry.path} aria-expanded={open} onClick={() => onToggle(entry.path)}>
+          <button ref={active ? activeRowRef : undefined} type="button" data-workspace-entry-path={entry.path} className={`workspace-editor-tree-row workspace-editor-folder${active ? ' workspace-editor-tree-file-active' : ''}`} style={{ paddingLeft: `${8 + depth * 13}px` }} title={entry.path} aria-expanded={open} aria-current={active ? 'location' : undefined} onClick={() => onToggle(entry.path)}>
             <ChevronRight className={open ? 'workspace-editor-chevron-open' : ''} size={12} aria-hidden="true" />
             <Folder size={13} aria-hidden="true" />
             <span>{entry.name}</span>

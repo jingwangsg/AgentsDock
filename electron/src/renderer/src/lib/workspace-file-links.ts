@@ -6,6 +6,8 @@ export interface OpenWorkspacePathDetail {
   line?: number
   column?: number
   resolve?: boolean
+  /** Chat links do not say whether they name a folder; the editor asks the server before opening a tab. */
+  mayBeDirectory?: boolean
 }
 
 export interface OpenAgentFileDetail {

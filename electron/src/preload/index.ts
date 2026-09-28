@@ -347,6 +347,7 @@ const api: AgentsDockAPI = {
     save: (sessionId, file) => ipcRenderer.invoke('files:save', sessionId, file),
     open: (sessionId, file) => ipcRenderer.invoke('files:open', sessionId, file),
     openLinked: (sessionId, target) => ipcRenderer.invoke('files:open-linked', sessionId, target),
+    openLocalPath: (sessionId, target) => ipcRenderer.invoke('files:open-local-path', sessionId, target),
     reveal: (sessionId, file) => ipcRenderer.invoke('files:reveal', sessionId, file),
     beginDrag: (sessionId, file) => ipcRenderer.invoke('files:begin-drag', sessionId, file),
     mediaURL: (profileId, profileGeneration, sessionId, fileId) => buildMediaURL(profileId, profileGeneration, sessionId, fileId)

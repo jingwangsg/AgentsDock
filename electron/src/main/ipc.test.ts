@@ -55,6 +55,17 @@ describe('Team Hub IPC registration', () => {
     expect(chatOutputs).toHaveBeenCalledExactlyOnceWith('chat-a')
   })
 
+  it('routes chat path links to the local-path opener only from trusted renderers', async () => {
+    const openLocalPath = vi.fn().mockResolvedValue(undefined)
+    registerIpc({ openLocalPath } as unknown as AppService, {} as AppUpdateManager)
+
+    await harness.handlers.get('files:open-local-path')?.(trustedEvent, 'chat-a', '/Users/dev/O-1 refs')
+    expect(openLocalPath).toHaveBeenCalledExactlyOnceWith('chat-a', '/Users/dev/O-1 refs')
+    expect(() => harness.handlers.get('files:open-local-path')?.({ sender: { id: 2, getURL: () => 'https://untrusted.test/' },
+      senderFrame: { url: 'https://untrusted.test/', parent: null } }, 'chat-a', '/etc')).toThrow('untrusted renderer')
+    expect(openLocalPath).toHaveBeenCalledOnce()
+  })
+
   it('routes synced side-chat operations through scoped native IPC', async () => {
     const methods = { readSyncedSideChat: vi.fn(), submitSyncedSideChat: vi.fn(), stopSyncedSideChat: vi.fn(), clearSyncedSideChat: vi.fn() }
     registerIpc(methods as unknown as AppService, {} as AppUpdateManager)

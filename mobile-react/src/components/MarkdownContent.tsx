@@ -17,6 +17,7 @@ import {
   timelineChatReferenceIsRemote,
 } from '../lib/timeline-inline-references'
 import { openCanvasLink } from '../lib/canvas-links'
+import { openWorkspacePathLink } from '../lib/workspace-path-links'
 import { texToSvg } from '../lib/tex-svg'
 import { scaleChatFont } from '../lib/typography'
 import { usePalette } from '../theme'
@@ -64,6 +65,7 @@ export function MarkdownContent({
   const defaultMathFontSize = scaleChatFont(compact ? 12 : 15.5, fontScale)
   const openLink = useCallback((url: string) => {
     if (openCanvasLink(url, sourceSessionId ?? null)) return false
+    if (openWorkspacePathLink(url, sourceSessionId ?? null)) return false
     void Linking.openURL(url).catch(() => undefined)
     return false
   }, [sourceSessionId])

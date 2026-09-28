@@ -261,6 +261,25 @@ for (const variant of [variants[6], variants[9]]) {
   await close()
 }
 
+// A chat path link opens the viewer at the link's parent; that listing decides
+// whether to enter the folder or select the file.
+for (const [initialPath, folder] of [['folder', true], ['folder/report.txt', false]] as const) {
+  reset()
+  const listed: string[] = []
+  setTestClient({ ...connection(), workspaceEntries: async (_session: string, path = '') => {
+    listed.push(path)
+    const entries = path === 'folder' ? [workspaceEntry] : [{ name: 'folder', path: 'folder', kind: 'directory' as const }]
+    return { entries, total: 1, has_more: false, path, root: '/server/workspace', offset: 0, limit: 500 }
+  } })
+  await act(async () => { renderer = create(<WorkspaceFileViewerModal request={{ kind: 'workspace', sessionId: 'session-a', initialPath }} modalInsets={insets} onClose={() => {}} />) })
+  await flush()
+  assert.deepEqual(listed, folder ? ['', 'folder'] : ['folder'], `${initialPath}: lists the parent first`)
+  assert.equal(Boolean(label('Open file report.txt')), folder, `${initialPath}: a folder link shows the folder's entries`)
+  assert.equal(Boolean(id('preview-fallback-download')), !folder, `${initialPath}: a file link selects the file for preview`)
+  await close()
+}
+console.log('PASS chat path links open the workspace viewer at the linked folder or file')
+
 // Exercise a mounted hook across A -> B -> A while its first picker is still
 // open. The old cancellation must not replace the newest action's visible error.
 function TransferProbe({ scope }: { scope: string }) {

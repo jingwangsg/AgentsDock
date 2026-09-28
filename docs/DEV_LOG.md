@@ -1,5 +1,29 @@
 # Public development log
 
+## 2026-09-29 — Open file and folder path links from chat
+
+- Chat links to a path that is not an attached file used to do nothing. This
+  covers absolute, `~/`, `file://`, and working-directory-relative paths.
+  For chats on the local hub, the desktop app now opens the path natively:
+  a folder opens in Finder and a file in its default app; apps and scripts
+  are revealed in Finder rather than launched. If the path does not exist,
+  the app shows an error. The new `files:open-local-path` IPC refuses paths
+  from any server other than the local hub. A file the agent published
+  elsewhere in the chat still opens through the server's artifact lookup
+  first; only a 404 from that lookup makes the link a plain path.
+- Chats on remote servers open the path in the workspace editor. A folder
+  inside the working directory is revealed and expanded in the explorer,
+  even when no file is open. For a folder outside it, AgentsServer's
+  absolute-file read now reports that the path is a folder. It previously
+  returned "Not a regular file".
+- Mobile opens chat path links in the workspace file viewer: a folder opens as
+  that folder and a file is selected for preview. For a path outside the working
+  directory, it shows an explanation instead of failing silently.
+- Pass Electron type checks and the full Vitest suite, mobile type checks with
+  contract and rendered viewer tests, and the server workspace-file tests. Not
+  yet exercised in the installed desktop or mobile app or against a live
+  server.
+
 ## 2026-09-28 — Side chat button seated inside the folder row
 
 - Seat the Side chat button fully inside the folder row above the message

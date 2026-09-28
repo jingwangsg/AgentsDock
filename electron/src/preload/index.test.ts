@@ -254,6 +254,16 @@ describe('preload session IPC bridge', () => {
     expect(electronHarness.invoke).toHaveBeenNthCalledWith(2, 'sessions:restore-checkpoint', 'chat-1', 'run-2', 'a'.repeat(64))
   })
 
+  it('forwards chat path links on the local-path channel, separate from artifact links', async () => {
+    await electronHarness.exposed?.files.openLocalPath('chat-1', '/Users/dev/O-1 refs')
+    await electronHarness.exposed?.files.openLinked('chat-1', 'artifact-7')
+
+    expect(electronHarness.invoke.mock.calls).toEqual([
+      ['files:open-local-path', 'chat-1', '/Users/dev/O-1 refs'],
+      ['files:open-linked', 'chat-1', 'artifact-7']
+    ])
+  })
+
   it('forwards chat outputs on its dedicated channel', async () => {
     electronHarness.invoke.mockResolvedValue({ outputs: [], sources: [] })
 

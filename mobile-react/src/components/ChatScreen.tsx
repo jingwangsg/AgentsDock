@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useState } from 'react'
-import { AppState, DeviceEventEmitter, Keyboard, Platform, StyleSheet, View } from 'react-native'
+import { Alert, AppState, DeviceEventEmitter, Keyboard, Platform, StyleSheet, View } from 'react-native'
 import { KeyboardAvoidingView, KeyboardController, useGenericKeyboardHandler } from 'react-native-keyboard-controller'
 import { runOnJS } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -20,6 +20,8 @@ import { useAppStore } from '../store/useAppStore'
 import { trackEvent } from '../lib/analytics'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { OPEN_CANVAS_EVENT, type OpenCanvasRequest } from '../lib/canvas-links'
+import { workspacePathLinkTarget } from '../lib/file-viewer'
+import { OPEN_WORKSPACE_PATH_EVENT, type OpenWorkspacePathRequest } from '../lib/workspace-path-links'
 import { isWelcomeSession } from '../lib/welcome-session'
 import { useFileViewer } from './file-viewer/FileViewerContext'
 
@@ -124,6 +126,17 @@ export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, sideb
     })
     return () => subscription.remove()
   }, [sessionId])
+  // Path links arrive the same way. The workspace routes reach only paths inside this chat's cwd.
+  useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener(OPEN_WORKSPACE_PATH_EVENT, (request: OpenWorkspacePathRequest) => {
+      if (request.sessionId !== sessionId) return
+      dismissAppKeyboard()
+      const target = workspacePathLinkTarget(request.href, useAppStore.getState().sessions.find(value => value.id === sessionId)?.cwd)
+      if (target.kind === 'workspace') openWorkspace(sessionId, target.path)
+      else Alert.alert('Outside the working directory', `Mobile can open files and folders only inside this chat’s working directory.\n\n${target.path}`)
+    })
+    return () => subscription.remove()
+  }, [openWorkspace, sessionId])
   const content = (
     <View style={[styles.root, { backgroundColor: colors.background }]}>
       <ChatHeader sessionId={sessionId} compact={compact} inlineInspectorAvailable={inlineInspectorAvailable} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={onToggleSidebar} onBack={onBack} onOptions={onOptions} onSearch={onSearch} onFiles={() => { trackEvent('open_file_clicked'); dismissAppKeyboard(); openWorkspace(sessionId) }} outputsOpen={outputsOpen} onOutputs={() => { dismissAppKeyboard(); setOutputsOpen(true) }} onToggleInspector={onToggleInspector} onSetupServer={onSetupServer} />

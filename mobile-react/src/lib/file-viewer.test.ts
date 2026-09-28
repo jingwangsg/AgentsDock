@@ -10,6 +10,7 @@ import {
   parentWorkspacePath,
   sortFileViewerEntries,
   workspacePathSegments,
+  workspacePathLinkTarget,
   workspaceRelativeSourcePath,
 } from './file-viewer'
 
@@ -52,6 +53,18 @@ assertEqual(workspaceRelativeSourcePath('C:\\Work\\Repo\\src\\App.tsx', 'c:\\wor
 assertEqual(workspaceRelativeSourcePath('C:\\src\\App.tsx', 'c:\\'), 'src/App.tsx', 'Windows drive roots retain one path separator')
 assertEqual(workspaceRelativeSourcePath('/repo/../outside/file.txt', '/repo'), null, 'normalized traversal cannot escape the workspace root')
 assertEqual(workspacePathSegments('src/components').map(value => value.path).join('|'), '|src|src/components', 'breadcrumbs retain each navigable prefix')
+
+for (const [href, cwd, expected, message] of [
+  ['/Users/dev/project/O-1%20refs', '/Users/dev/project', { kind: 'workspace', path: 'O-1 refs' }, 'an encoded absolute folder inside cwd becomes workspace-relative'],
+  ['/Users/dev/project/', '/Users/dev/project', { kind: 'workspace', path: '' }, 'a link to cwd itself opens the workspace root'],
+  ['out/run/../run/report.csv', '/Users/dev/project', { kind: 'workspace', path: 'out/run/report.csv' }, 'relative links resolve dot segments against cwd'],
+  ['./', '/Users/dev/project', { kind: 'workspace', path: '' }, 'a relative link to . is the workspace root'],
+  ['../other/notes.pdf', '/Users/dev/project', { kind: 'outside', path: '../other/notes.pdf' }, 'relative links cannot climb above cwd'],
+  ['/Users/dev/Library/CloudStorage/OneDrive/O-1%20refs', '/Users/dev/project', { kind: 'outside', path: '/Users/dev/Library/CloudStorage/OneDrive/O-1 refs' }, 'absolute paths outside cwd are reported with their decoded text'],
+  ['/Users/dev/project-other/a.txt', '/Users/dev/project', { kind: 'outside', path: '/Users/dev/project-other/a.txt' }, 'cwd containment requires a path boundary'],
+  ['~/notes', '/home/dev', { kind: 'outside', path: '~/notes' }, 'server-home paths cannot be compared with cwd on the phone'],
+  ['/srv/data/file.bin', null, { kind: 'outside', path: '/srv/data/file.bin' }, 'a chat without cwd has no workspace'],
+] as const) assertEqual(JSON.stringify(workspacePathLinkTarget(href, cwd)), JSON.stringify(expected), message)
 
 const sorted = sortFileViewerEntries([
   { name: 'z.txt', path: 'z.txt', kind: 'file' },
