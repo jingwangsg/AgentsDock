@@ -292,7 +292,11 @@ export const TerminalWorkspace = memo(function TerminalWorkspace({ session, layo
       cursorBlink: true,
       cursorStyle: 'bar',
       cursorWidth: 2,
-      fontFamily: '"SFMono-Regular", Menlo, Monaco, "Cascadia Mono", monospace',
+      // Chromium does per-glyph font fallback across this list in xterm's DOM
+      // renderer, so trailing Lilex (bundled; @font-face registered in
+      // zed-skin.css) covers prompt glyphs SF Mono and Menlo miss — powerline
+      // (U+E0Bx) and other box-drawing/PUA — while SF Mono stays primary.
+      fontFamily: '"SFMono-Regular", Menlo, Monaco, "Cascadia Mono", "Lilex", monospace',
       fontSize: 13,
       fontWeight: 400,
       lineHeight: 1.18,

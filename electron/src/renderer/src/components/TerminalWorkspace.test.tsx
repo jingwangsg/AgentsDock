@@ -165,6 +165,17 @@ describe('TerminalWorkspace ports surface', () => {
     } })
   })
 
+  it('keeps the bundled Lilex fallback in the font stack so prompt glyphs render', async () => {
+    // Chromium's per-glyph fallback in xterm's DOM renderer only reaches a
+    // covering font if it is listed. Lilex closes the powerline/PUA gap SF Mono
+    // and Menlo miss; dropping it silently reintroduces missing-glyph boxes.
+    render(<TerminalWorkspace session={session} layoutHeight={360} />)
+    await waitFor(() => expect(xtermHarness.instances).toHaveLength(1))
+    expect(xtermHarness.instances[0].options).toMatchObject({
+      fontFamily: '"SFMono-Regular", Menlo, Monaco, "Cascadia Mono", "Lilex", monospace'
+    })
+  })
+
   it('updates the existing terminal when the app theme changes and preserves the dark palette', async () => {
     document.documentElement.dataset.theme = 'light'
     render(<TerminalWorkspace session={session} layoutHeight={360} />)

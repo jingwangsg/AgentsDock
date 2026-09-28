@@ -3,6 +3,7 @@ import type { NativeSyntheticEvent } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { FIT_JS, XTERM_CSS, XTERM_JS } from '../../terminal/xtermAssets'
+import { PROMPT_GLYPH_FONT_FAMILY, PROMPT_GLYPH_FONT_TTF_BASE64 } from '../../terminal/promptGlyphFont'
 import type { TerminalConnectionStatus, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
 
 export type { TerminalConnectionStatus, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
@@ -139,11 +140,15 @@ export function androidTerminalHTML(config: AndroidTerminalConfig): string {
   const xterm = escapeClosingTag(XTERM_JS, 'script')
   const fit = escapeClosingTag(FIT_JS, 'script')
   const css = escapeClosingTag(XTERM_CSS, 'style')
+  // Bundled fallback so xterm's per-glyph fallback can cover powerline/PUA glyphs
+  // that Android system monospace fonts lack. The base64 is [A-Za-z0-9+/=] only,
+  // so it needs no </style> escaping; font-src data: in the CSP admits it.
+  const promptFont = `@font-face{font-family:"${PROMPT_GLYPH_FONT_FAMILY}";src:url("data:font/ttf;base64,${PROMPT_GLYPH_FONT_TTF_BASE64}") format("truetype")}`
   return `<!doctype html><html><head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ws: wss:; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
-  <style>${css}\nhtml,body,#terminal{width:100%;height:100%;margin:0;background:${config.backgroundHex};overflow:hidden}.xterm{padding:8px;box-sizing:border-box}.xterm-viewport{overscroll-behavior:contain}</style>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ws: wss:; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <style>${css}\n${promptFont}\nhtml,body,#terminal{width:100%;height:100%;margin:0;background:${config.backgroundHex};overflow:hidden}.xterm{padding:8px;box-sizing:border-box}.xterm-viewport{overscroll-behavior:contain}</style>
   </head><body><div id="terminal"></div><script>${xterm}</script><script>${fit}</script><script>
   (() => {
     'use strict';
@@ -152,7 +157,7 @@ export function androidTerminalHTML(config: AndroidTerminalConfig): string {
     const host = document.getElementById('terminal');
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily: 'monospace',
+      fontFamily: 'monospace, "${PROMPT_GLYPH_FONT_FAMILY}"',
       fontSize: config.fontSize,
       scrollback: 10000,
       allowProposedApi: true,
