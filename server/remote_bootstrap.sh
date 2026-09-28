@@ -1,0 +1,126 @@
+set -eu
+INSTALL_DIR="$1"
+case "$INSTALL_DIR" in "~"*) INSTALL_DIR="$HOME${INSTALL_DIR#\~}" ;; esac
+PORT="$2"
+HOME_DIR="$3"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+log() { printf '[AgentsDock setup] %s\n' "$1"; }
+mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/state"
+# The server refuses a state directory that group/others can write (a host umask
+# of 002 makes mkdir produce 775), so pin the two directories it checks.
+chmod 700 "$INSTALL_DIR/state"
+[ -d "$INSTALL_DIR/state/admin" ] && chmod 700 "$INSTALL_DIR/state/admin"
+# Chat import verifies other instances under ~/.config and refuses group/other-writable
+# paths (hosts with umask 002 create them that way); say so instead of failing silently later.
+if [ -d "$HOME_DIR/.config" ] && [ -n "$(find "$HOME_DIR/.config" -maxdepth 0 -perm /022 2>/dev/null)" ]; then
+  log "Warning: $HOME_DIR/.config is group/other-writable; chat import on this host will refuse to run until you chmod 755 it."
+fi
+cd "$INSTALL_DIR"
+
+if [ -f upload.tgz ]; then
+  log "Unpacking AgentsServer source"
+  rm -rf server.new && mkdir server.new
+  tar -xzf upload.tgz -C server.new 2>tar.err || { cat tar.err >&2; exit 2; }
+  rm -f tar.err
+  if [ -d server/.venv ]; then mv server/.venv server.new/.venv; fi
+  rm -rf server.old; [ -d server ] && mv server server.old; mv server.new server; rm -rf server.old upload.tgz
+  # The new source must replace the running instance; start.sh alone sees a
+  # healthy port and leaves the old process serving. The [a] keeps the pattern
+  # from matching a shell that carries it in its own command line.
+  tmux kill-session -t "agentsdock-$PORT" 2>/dev/null || true
+  pkill -f "[a]gent_server.py serve.*--port $PORT$" 2>/dev/null || true
+elif [ ! -f server/agent_server.py ]; then
+  printf 'No server source was uploaded to %s.\n' "$INSTALL_DIR" >&2
+  exit 2
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  log "Installing uv"
+  curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+command -v uv >/dev/null 2>&1 || { printf 'uv could not be installed.\n' >&2; exit 2; }
+# The server needs 3.11+ (tomllib) although pyproject still says >=3.10; without
+# the pin uv happily picks an older managed interpreter it finds on the host.
+log "Preparing the Python runtime (uv sync)"
+( cd server && uv sync --frozen --quiet --python '>=3.11' )
+
+# Agent CLIs. Claude Code has a dependency-free installer; install it under the
+# server's HOME so the binary lands on a persistent path. Codex is left to the
+# user (its login lives in $HOME_DIR/.codex and the CLI is usually already there).
+if ! PATH="$HOME_DIR/.local/bin:$PATH" command -v claude >/dev/null 2>&1; then
+  log "Installing Claude Code into $HOME_DIR/.local/bin"
+  if ! HOME="$HOME_DIR" bash -c 'curl -fsSL https://claude.ai/install.sh | bash' >/dev/null 2>&1; then
+    log "Claude Code install failed; install it manually and reconnect"
+  fi
+fi
+
+if [ ! -f env ]; then
+  log "Generating access token"
+  TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+  umask 077
+  {
+    printf 'export AGENTSDOCK_AGENT_TOKEN=%s\n' "$TOKEN"
+    printf 'export AGENTSDOCK_STATE_DIR=%s/state\n' "$INSTALL_DIR"
+    printf 'export AGENTSDOCK_AGENT_BIND=127.0.0.1\n'
+    printf 'export AGENTSDOCK_AGENT_PORT=%s\n' "$PORT"
+    printf 'export HOME=%s\n' "$HOME_DIR"
+    printf 'export AGENTSDOCK_AGENT_CWD=%s\n' "$HOME_DIR"
+    printf 'export DISABLE_AUTOUPDATER=1\n'
+    if [ "$(id -u)" = 0 ]; then printf 'export IS_SANDBOX=1\n'; fi
+    # Keep the bootstrap PATH at the end: interpreters that live only there
+    # (e.g. /opt/conda/bin) must stay visible to the server and start.sh.
+    printf 'export PATH=%s/.local/bin:%s/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:%s\n' "$HOME_DIR" "$HOME" "$PATH"
+  } > env
+fi
+# Keep the requested port even for an existing install that was moved.
+sed -i.bak "s|^export AGENTSDOCK_AGENT_PORT=.*|export AGENTSDOCK_AGENT_PORT=$PORT|" env && rm -f env.bak
+
+cat > start.sh <<'START'
+#!/usr/bin/env bash
+# Start AgentsServer for this install in a tmux session (nohup without tmux). Idempotent.
+set -euo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+source "$DIR/env"
+HEALTH="http://127.0.0.1:$AGENTSDOCK_AGENT_PORT/api/health"
+if curl -fsS -m 3 -H "Authorization: Bearer $AGENTSDOCK_AGENT_TOKEN" "$HEALTH" >/dev/null 2>&1; then
+  echo "AgentsServer already listening on port $AGENTSDOCK_AGENT_PORT"; exit 0
+fi
+# A dead default tmux socket left by a container's startup makes new-session fail.
+sock="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/default"
+if [[ -S "$sock" ]] && ! tmux -S "$sock" list-sessions >/dev/null 2>&1; then rm -f "$sock"; fi
+# The command lives in a file so tmux never expands $AGENTSDOCK_* itself: a
+# tmux server started earlier from a login shell has no env file loaded, and
+# `bash -c "... --bind \"$AGENTSDOCK_AGENT_BIND\" ..."` collapsed to `--bind --port`.
+cat > "$DIR/run.sh" <<RUN
+#!/usr/bin/env bash
+cd '$DIR/server' && source '$DIR/env' && exec .venv/bin/python agent_server.py serve --bind "\${AGENTSDOCK_AGENT_BIND:-127.0.0.1}" --port "\${AGENTSDOCK_AGENT_PORT:-7850}" >> '$DIR/logs/server.log' 2>&1
+RUN
+chmod +x "$DIR/run.sh"
+SESSION="agentsdock-$AGENTSDOCK_AGENT_PORT"
+if command -v tmux >/dev/null 2>&1; then
+  tmux kill-session -t "$SESSION" 2>/dev/null || true
+  tmux new-session -d -s "$SESSION" "bash '$DIR/run.sh'"
+else
+  setsid nohup bash "$DIR/run.sh" >/dev/null 2>&1 < /dev/null &
+fi
+for _ in $(seq 1 60); do
+  sleep 1
+  if curl -fsS -m 3 -H "Authorization: Bearer $AGENTSDOCK_AGENT_TOKEN" "$HEALTH" >/dev/null 2>&1; then
+    echo "AgentsServer started on port $AGENTSDOCK_AGENT_PORT (tmux session $SESSION)"; exit 0
+  fi
+done
+echo "AgentsServer did not become healthy; log tail:" >&2
+tail -30 "$DIR/logs/server.log" >&2
+exit 1
+START
+chmod +x start.sh
+
+log "Starting AgentsServer on port $PORT"
+bash start.sh
+
+. ./env
+VERSION="$(tr -d '[:space:]' < server/VERSION 2>/dev/null || true)"
+# The venv interpreter exists after uv sync; python3 depends on the PATH env just replaced.
+printf 'AGENTSDOCK_SETUP_RESULT=%s\n' "$(server/.venv/bin/python -c 'import json,sys; print(json.dumps({"server_url": "http://127.0.0.1:" + sys.argv[1], "access_token": sys.argv[2], "service": "ssh-tunnel", "tailscale_ip": "", "server_version": sys.argv[3], "remote_port": int(sys.argv[1]), "install_dir": sys.argv[4]}))' "$PORT" "$AGENTSDOCK_AGENT_TOKEN" "$VERSION" "$INSTALL_DIR")"
