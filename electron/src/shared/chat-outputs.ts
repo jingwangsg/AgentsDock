@@ -1,9 +1,9 @@
 import { LOCAL_URL_PATTERN } from './local-url'
-import type { CanvasSummary, CodeDiffFileSummary, Event } from './types'
+import type { AgentFile, CanvasSummary, CodeDiffFileSummary, Event } from './types'
 
 export type ChatOutputItem =
   | { kind: 'canvas'; label: string; path: string }
-  | { kind: 'artifact'; label: string; eventId: string; filename: string; contentType: string | null }
+  | { kind: 'artifact'; label: string; eventId: string; filename: string; contentType: string | null; file: AgentFile }
   | { kind: 'local_preview'; url: string; host: string }
   | {
     kind: 'code_changes'
@@ -75,7 +75,9 @@ export function collectChatOutputs(events: readonly Event[], canvases: readonly 
         label: file.title?.trim() || file.filename,
         eventId: event.id,
         filename: file.filename,
-        contentType: file.content_type ?? null
+        contentType: file.content_type ?? null,
+        // The summary covers the whole log, so the row can open the file even when its event is outside the loaded timeline page.
+        file
       })
     } else if (event.type === 'file_uploaded' && event.file) {
       uploads.set(event.file.id, event.file.filename)

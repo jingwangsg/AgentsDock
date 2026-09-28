@@ -26,14 +26,15 @@ describe('collectChatOutputs outputs', () => {
 
   it('lists agent-produced files once, titled when a title exists, and points at the creating event', () => {
     const artifact = { id: 'art_1', filename: 'chart.png', content_type: 'image/png', title: 'Sales chart' }
+    const report = { id: 'art_2', filename: 'report.pdf', content_type: 'application/pdf' }
     const events = [
       event('artifact_created', { artifact }),
       event('artifact_created', { artifact: { ...artifact, title: 'Renamed' } }),
-      event('artifact_created', { artifact: { id: 'art_2', filename: 'report.pdf', content_type: 'application/pdf' } })
+      event('artifact_created', { artifact: report })
     ]
     expect(collectChatOutputs(events, []).outputs).toEqual([
-      { kind: 'artifact', label: 'Sales chart', eventId: 'e1', filename: 'chart.png', contentType: 'image/png' },
-      { kind: 'artifact', label: 'report.pdf', eventId: 'e3', filename: 'report.pdf', contentType: 'application/pdf' }
+      { kind: 'artifact', label: 'Sales chart', eventId: 'e1', filename: 'chart.png', contentType: 'image/png', file: artifact },
+      { kind: 'artifact', label: 'report.pdf', eventId: 'e3', filename: 'report.pdf', contentType: 'application/pdf', file: report }
     ])
   })
 

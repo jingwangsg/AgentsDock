@@ -3,18 +3,19 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import type { ChatOutputsSummary, ChatSourceItem } from '@shared/chat-outputs'
-import type { Event, SessionSnapshot } from '@shared/types'
+import type { AgentFile, Event, SessionSnapshot } from '@shared/types'
 import { useAppStore } from '../store/app-store'
 import { ChatOutputsPanel } from './ChatOutputsPanel'
 
 const outputs = vi.fn()
 const openExternal = vi.fn()
 
+const chart = { id: 'art_1', filename: 'chart.png', content_type: 'image/png', title: 'Sales chart' } as AgentFile
 const summary: ChatOutputsSummary = {
   outputs: [
     { kind: 'canvas', label: 'Budget board', path: 'canvases/budget.canvas.tsx' },
-    { kind: 'artifact', label: 'Sales chart', eventId: 'art-ev', filename: 'chart.png', contentType: 'image/png' },
-    { kind: 'artifact', label: 'report.pdf', eventId: 'pdf-ev', filename: 'report.pdf', contentType: 'application/pdf' },
+    { kind: 'artifact', label: 'Sales chart', eventId: 'art-ev', filename: 'chart.png', contentType: 'image/png', file: chart },
+    { kind: 'artifact', label: 'report.pdf', eventId: 'pdf-ev', filename: 'report.pdf', contentType: 'application/pdf', file: { ...chart, id: 'art_2', filename: 'report.pdf', content_type: 'application/pdf', title: undefined } },
     { kind: 'local_preview', url: 'http://localhost:5173/app', host: 'localhost:5173' },
     { kind: 'code_changes', filesChanged: 3, additions: 12, deletions: 4, review: { runId: 'run-2', files: null, additions: 5, deletions: 1, repositoryRoot: '/repo' } }
   ],
@@ -80,7 +81,7 @@ describe('ChatOutputsPanel', () => {
     await renderPanel()
     const dispatched: CustomEvent[] = []
     const record = (event: globalThis.Event) => dispatched.push(event as CustomEvent)
-    for (const name of ['agentsdock:open-canvas', 'agentsdock:find-event', 'agentsdock:review-diff']) window.addEventListener(name, record)
+    for (const name of ['agentsdock:open-canvas', 'agentsdock:open-agent-file', 'agentsdock:find-event', 'agentsdock:review-diff']) window.addEventListener(name, record)
     const user = userEvent.setup()
 
     // A row's accessible name is its label followed by the secondary text.
@@ -92,12 +93,13 @@ describe('ChatOutputsPanel', () => {
 
     expect(dispatched.map(event => [event.type, event.detail])).toEqual([
       ['agentsdock:open-canvas', { sessionId: 'chat', path: 'canvases/budget.canvas.tsx' }],
-      ['agentsdock:find-event', { sessionId: 'chat', eventId: 'art-ev' }],
+      // Generated files open in the editor like the timeline card does; only sources jump to their event.
+      ['agentsdock:open-agent-file', { sessionId: 'chat', file: chart }],
       ['agentsdock:review-diff', { sessionId: 'chat', runId: 'run-2', files: null, additions: 5, deletions: 1, repositoryRoot: '/repo' }],
       ['agentsdock:find-event', { sessionId: 'chat', eventId: 'ref-ev' }]
     ])
     expect(openExternal).toHaveBeenCalledExactlyOnceWith('http://localhost:5173/app')
-    for (const name of ['agentsdock:open-canvas', 'agentsdock:find-event', 'agentsdock:review-diff']) window.removeEventListener(name, record)
+    for (const name of ['agentsdock:open-canvas', 'agentsdock:open-agent-file', 'agentsdock:find-event', 'agentsdock:review-diff']) window.removeEventListener(name, record)
   })
 
   it('collapses sources to six rows behind a view-all toggle', async () => {

@@ -8,6 +8,7 @@ import { isPreviewableFile } from '@shared/file-content-type'
 import type { CodeReviewTarget } from '../lib/timeline'
 import { timelineCount } from '../lib/timeline-labels'
 import { useTransientClose } from '../lib/transient-close'
+import { requestOpenAgentFile } from '../lib/workspace-file-links'
 import { useAppStore } from '../store/app-store'
 
 const COLLAPSED_SOURCE_ROWS = 6
@@ -75,7 +76,7 @@ export function ChatOutputsPanel({ sessionId, onClose }: { sessionId: string; on
               const extension = /\.([a-z0-9]+)$/i.exec(item.filename)?.[1]
               return <Row key={`artifact:${item.eventId}:${item.filename}`} icon={previewable ? Image : FileText} label={item.label}
                 secondary={previewable ? t('chatOutputs.generatedImage') : extension ? t('chatOutputs.fileWithExt', { ext: extension.toUpperCase() }) : t('chatOutputs.file')}
-                onClick={() => findEvent(item.eventId)} />
+                onClick={() => requestOpenAgentFile(sessionId, item.file)} />
             }
             case 'local_preview':
               return <Row key={`preview:${item.host}`} icon={Globe} label={t('chatOutputs.localPreview')} secondary={item.host}
