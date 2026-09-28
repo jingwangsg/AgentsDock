@@ -21,7 +21,6 @@ const mocks = {
   'react-native': `import { createElement } from 'react'; export const ActivityIndicator = 'ActivityIndicator', View = 'View'; export const Pressable = props => createElement('Pressable', props, typeof props.children === 'function' ? props.children({ pressed: false }) : props.children); export const StyleSheet = { create: value => value, absoluteFill: {} }; export const useColorScheme = () => 'dark';`,
   '@shopify/flash-list': `import { useEffect, useState } from 'react'; export function useRecyclingState(initial, deps) { const [value, setValue] = useState(initial); useEffect(() => setValue(initial), deps); return [value, setValue]; }`,
   'lucide-react-native': `export const AlertTriangle = 'AlertTriangle', ChevronDown = 'ChevronDown', ChevronRight = 'ChevronRight', MessageSquareShare = 'MessageSquareShare';`,
-  'react-native-svg': `export default 'Svg'; export const Defs = 'Defs', LinearGradient = 'LinearGradient', Rect = 'Rect', Stop = 'Stop';`,
   '../store/useAppStore': `import { useSyncExternalStore } from 'react'; const fixture = globalThis.__crossChatCardFixture; export const client = fixture.client; export const useAppStore = selector => useSyncExternalStore(fixture.subscribe, () => selector(fixture.state)); useAppStore.getState = () => fixture.state;`,
   '../lib/chat-references': `export const exactQueuedDeliverySkipAvailable = health => health.skipAvailable;`,
   '../lib/format': `export const formatDateTime = value => value; export const messageText = event => event.message || '';`,
@@ -32,7 +31,7 @@ const mocks = {
 const outfile = path.resolve('build/tmp', `cross-chat-card-tests-${process.pid}.mjs`)
 await mkdir(path.dirname(outfile), { recursive: true })
 await build({
-  entryPoints: ['src/components/CrossChatTimelineCards.tsx'], outfile,
+  stdin: { contents: `export * from './src/components/CrossChatTimelineCards'; export { dark } from './src/theme';`, resolveDir: process.cwd(), loader: 'ts' }, outfile,
   bundle: true, format: 'esm', platform: 'node', packages: 'external', jsx: 'automatic', logLevel: 'silent',
   plugins: [{ name: 'cross-chat-native-hosts', setup(context) {
     context.onResolve({ filter: /.*/ }, args => args.path === 'react'
@@ -42,7 +41,7 @@ await build({
   } }],
 })
 after(async () => { await unlink(outfile); delete globalThis.__crossChatCardFixture })
-const { CrossChatExchangeCard, CrossChatConversationSurface, CROSS_CHAT_CONVERSATION_DARK } = await import(pathToFileURL(outfile).href)
+const { CrossChatExchangeCard, CrossChatConversationSurface, dark } = await import(pathToFileURL(outfile).href)
 
 function deferred() {
   let resolve, reject
@@ -104,13 +103,14 @@ test('conversation surface renders shared presentation without store state or ac
   fixture.state = null
   let renderer
   await act(async () => {
-    renderer = TestRenderer.create(React.createElement(CrossChatConversationSurface, { testID: 'shared-conversation', palette: CROSS_CHAT_CONVERSATION_DARK }, React.createElement('Text', null, 'Imported content')))
+    renderer = TestRenderer.create(React.createElement(CrossChatConversationSurface, { testID: 'shared-conversation' }, React.createElement('Text', null, 'Imported content')))
   })
   try {
     assert.equal(renderer.root.findAllByType('Pressable').length, 0)
     assert.equal(renderer.root.findAllByType('MessageSquareShare').length, 1)
-    assert.equal(renderer.root.findAllByType('LinearGradient').length, 1)
-    assert.equal(renderer.root.findAll(node => node.type === 'View' && node.props.testID === 'shared-conversation').length, 1)
+    const surfaces = renderer.root.findAll(node => node.type === 'View' && node.props.testID === 'shared-conversation')
+    assert.equal(surfaces.length, 1)
+    assert.equal(Object.assign({}, ...surfaces[0].props.style).backgroundColor, dark.raised)
     assert.ok(JSON.stringify(renderer.toJSON()).includes('Imported content'))
   } finally { await act(async () => renderer.unmount()) }
 })
@@ -136,7 +136,7 @@ test('expanding a live exchange renders authenticated Markdown with conversation
     const markdown = renderer.root.findByType('MarkdownContent')
     assert.equal(markdown.props.children, body)
     assert.equal(markdown.props.compact, true)
-    assert.equal(markdown.props.color, CROSS_CHAT_CONVERSATION_DARK.body)
+    assert.equal(markdown.props.color, dark.text)
     assert.equal(markdown.props.fontScale, 1.3)
     await act(async () => button(renderer, 'cross-chat-toggle-conversation-exchange-1').props.onPress())
     assert.equal(renderer.root.findAllByType('MarkdownContent').length, 0)

@@ -3,6 +3,7 @@ import { useEffect, useMemo } from 'react'
 import { ActivityIndicator, StyleSheet, View } from 'react-native'
 import { useVideoPlayer, type VideoThumbnail } from 'expo-video'
 import type { AgentServerClient } from '../api/AgentServerClient'
+import { usePalette } from '../theme'
 import type { AgentFile } from '../types'
 
 interface VideoThumbnailConnection {
@@ -16,6 +17,7 @@ export function VideoThumbnailLoader({ file, connection, onThumbnail, onFailure 
   onThumbnail: (value: VideoThumbnail) => void
   onFailure: () => void
 }) {
+  const colors = usePalette()
   const source = useMemo(
     () => ({ uri: connection.client.fileURL(connection.sessionId, file.id), headers: connection.client.authHeaders(), contentType: 'progressive' as const }),
     [connection, file.id],
@@ -53,9 +55,9 @@ export function VideoThumbnailLoader({ file, connection, onThumbnail, onFailure 
     return () => clearTimeout(timeout)
   }, [onFailure])
 
-  return <View style={styles.loading}><ActivityIndicator color="white" /></View>
+  return <View style={[styles.loading, { backgroundColor: colors.surface }]}><ActivityIndicator color={colors.muted} /></View>
 }
 
 const styles = StyleSheet.create({
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#090a0b' },
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 })

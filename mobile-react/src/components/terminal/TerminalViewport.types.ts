@@ -15,8 +15,10 @@ export type TerminalViewportHandle = {
 
 export type TerminalViewportProps = ViewProps & {
   socketURL: string
-  backgroundHex?: string
-  foregroundHex?: string
+  backgroundHex: string
+  foregroundHex: string
+  cursorHex: string
+  selectionHex: string
   fontSize?: number
   onStatus?: (event: NativeSyntheticEvent<TerminalConnectionStatus>) => void
 }

@@ -1,5 +1,4 @@
 import {
-  buildCreateServerProfileInput,
   buildUpdateServerProfileInput,
   editServerProfileDraft,
   findProfileByIdentity,
@@ -46,17 +45,22 @@ assertEqual(
 )
 assertEqual(
   initialServerProfileDraft('edit-active', [], null),
-  {
-    profileId: null,
-    name: '',
-    serverUrl: '',
-    accessToken: '',
-    clearAccessToken: false,
-    resetServerIdentity: false,
-  },
-  'first-run Configure must still open an editor if profile recovery yields no active row',
+  null,
+  'first-run Configure has nothing to edit if profile recovery yields no active row',
 )
 assertEqual(initialServerProfileDraft('manage', [alpha], 'alpha'), null, 'ordinary server management must start at the list')
+
+// The first-launch placeholder (127.0.0.1, not yet configured) opens with blank
+// name/address so the hub placeholders show, and a blank name derives from the
+// entered hub address instead of staying "127.0.0.1".
+const placeholder: ServerProfileListItem = { ...alpha, id: 'placeholder', name: '127.0.0.1', serverUrl: 'http://127.0.0.1:7850', serverIdentity: null, hasAccessToken: false, serverSetupComplete: false }
+const placeholderDraft = editServerProfileDraft(placeholder)
+assertEqual([placeholderDraft.name, placeholderDraft.serverUrl], ['', ''], 'the unconfigured placeholder must open with blank name and address')
+assertEqual(
+  buildUpdateServerProfileInput(placeholder, { ...placeholderDraft, serverUrl: 'nvmac.tail46daa8.ts.net', accessToken: 'hub-token' }, 'hub-identity'),
+  { name: 'nvmac.tail46daa8.ts.net', serverUrl: 'http://nvmac.tail46daa8.ts.net:7850', accessToken: 'hub-token', serverIdentity: 'hub-identity' },
+  'a blank name must fall back to the hub host name',
+)
 
 const unchanged = editServerProfileDraft(alpha)
 assertEqual(buildUpdateServerProfileInput(alpha, unchanged), {}, 'blank edit token must preserve the saved credential')
@@ -68,20 +72,6 @@ assertEqual(buildUpdateServerProfileInput(alpha, cleared, 'server-alpha-tested')
 const replaced = { ...unchanged, accessToken: 'new-private-token' }
 assertEqual(buildUpdateServerProfileInput(alpha, replaced), { accessToken: 'new-private-token' }, 'nonblank token must replace the saved credential')
 assertEqual(buildUpdateServerProfileInput(alpha, unchanged, 'server-alpha-tested'), {}, 'a metadata-free edit must not forward a tested identity by itself')
-
-const created = buildCreateServerProfileInput({
-  ...unchanged,
-  profileId: null,
-  name: ' Lab ',
-  serverUrl: 'lab.example:7850/',
-  accessToken: '',
-}, 'server-lab')
-assertEqual(created, {
-  name: 'Lab',
-  serverUrl: 'http://lab.example:7850',
-  serverIdentity: 'server-lab',
-  serverSetupComplete: true,
-}, 'new server input must normalize the URL without inventing a token')
 
 assert(findProfileByIdentity([alpha, beta], 'server-beta')?.id === 'beta', 'canonical identity must find an existing profile')
 assert(findProfileByIdentity([alpha, beta], 'server-beta', 'beta') === null, 'editing a profile must not duplicate-match itself')

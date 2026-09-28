@@ -1,5 +1,5 @@
 import type { AgentFile, Event } from '../types'
-import { filesNewestFirst, formatChatDateTime, formatDateTime, isImage, mergeEvents, mergeFiles, normalizeServerURL } from './format'
+import { filesNewestFirst, formatChatDateTime, formatDateTime, hasInjectedProviderAuthority, isImage, mergeEvents, mergeFiles, messageText, normalizeServerURL } from './format'
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message)
@@ -8,12 +8,22 @@ function assert(value: unknown, message: string): asserts value {
 export function runFormatTests(): void {
   assert(normalizeServerURL('100.64.0.10:7850') === 'http://100.64.0.10:7850', 'short server addresses must normalize')
   assert(normalizeServerURL('https://dock.example/api/health/?x=1#status') === 'https://dock.example', 'health URLs must normalize to their server origin')
+  // The hub always listens on 7850; a bare Tailscale hostname or IP must
+  // resolve to it without the user typing the port. https is left alone.
+  assert(normalizeServerURL('nvmac.tail46daa8.ts.net') === 'http://nvmac.tail46daa8.ts.net:7850', 'a bare http hostname must default to the hub port')
+  assert(normalizeServerURL('100.81.112.90') === 'http://100.81.112.90:7850', 'a bare IP must default to the hub port')
+  assert(normalizeServerURL('https://dock.example') === 'https://dock.example', 'https addresses must not gain a default port')
   // The edit-server form live-normalizes the address on every keystroke, so
   // an empty-host intermediate value (e.g. backspacing "http://127.0.0.1"
   // down to "http://", or pasting over an existing address) must not throw
   // during render - see crash report on editing a saved server's address.
   assert(normalizeServerURL('http://') === 'http://', 'an empty-host URL must not throw while a user is mid-edit')
   assert(normalizeServerURL('https://') === 'https://', 'an empty-host https URL must not throw while a user is mid-edit')
+  // A hub proxy path (server/remote_servers.py `/api/remote/{id}`) is the
+  // whole address for a remote profile, not just a server origin - it must
+  // survive normalization so reconcileHubProfiles saves a reachable URL.
+  assert(normalizeServerURL('http://127.0.0.1:7850/api/remote/abc123/') === 'http://127.0.0.1:7850/api/remote/abc123', 'a hub proxy path prefix must be kept, only the trailing slash removed')
+  assert(normalizeServerURL('http://127.0.0.1:7850/api/remote/abc123') === 'http://127.0.0.1:7850/api/remote/abc123', 'a hub proxy path prefix without a trailing slash must be unchanged')
 
   const full = formatDateTime('2026-07-16T19:42:00Z')
   assert(/2026/.test(full), `full timestamp must include a year: ${full}`)
@@ -70,4 +80,12 @@ export function runFormatTests(): void {
 }
 
 runFormatTests()
+{
+  const steer: Event = { id: 'steer', seq: 9, session_id: 'chat', type: 'turn_steered', ts: '2026-09-28T00:00:00Z', prompt: 'raw @@server text', display_prompt: 'shown text' }
+  assert(messageText(steer) === 'shown text', 'a goal steer is user input and prefers its display prompt')
+  assert(messageText({ ...steer, display_prompt: null }) === 'raw @@server text', 'without a display prompt the steer prompt is shown')
+  const authority = 'Hello\n\n[AgentsDock provider authority]\nThis authority file is bound to this server, chat, and live run.\nDo not read, print, quote, or expose the authority file.\n[End AgentsDock provider authority]'
+  assert(hasInjectedProviderAuthority(authority), 'the generated authority suffix is recognized')
+  assert(!hasInjectedProviderAuthority('Hello [AgentsDock provider authority] inline mention'), 'an inline mention is not a generated suffix')
+}
 console.log('date and timestamp formatting regressions passed')

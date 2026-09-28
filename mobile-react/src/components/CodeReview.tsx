@@ -13,6 +13,7 @@ import {
 } from '../lib/code-review'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
+import { fonts } from '../lib/typography'
 import { Text } from './AppText'
 import { IconButton, Loading, SheetCloseButton } from './ui'
 
@@ -137,7 +138,7 @@ function ReviewFileButton({ file, selected, onPress }: { file: DiffFile; selecte
   const colors = usePalette()
   const conflict = file.conflictCount ? `, ${file.conflictCount} conflict${file.conflictCount === 1 ? '' : 's'}` : ''
   return <Pressable accessibilityRole="button" accessibilityLabel={`Review ${file.path}${conflict}`} accessibilityState={{ selected }} onPress={onPress} style={[styles.file, { backgroundColor: selected ? colors.raised : 'transparent' }]}>
-    <View style={styles.fileName}><Text style={{ color: colors.text, fontSize: 11, fontFamily: 'Menlo' }} numberOfLines={2}>{file.path}</Text>{file.conflictCount ? <View style={styles.conflictBadge}><AlertTriangle size={10} color={colors.orange} /><Text style={{ color: colors.orange, fontSize: 9, fontWeight: '800' }}>{file.conflictCount}</Text></View> : null}</View>
+    <View style={styles.fileName}><Text style={{ color: colors.text, fontSize: 11, fontFamily: fonts.mono }} numberOfLines={2}>{file.path}</Text>{file.conflictCount ? <View style={styles.conflictBadge}><AlertTriangle size={10} color={colors.orange} /><Text style={{ color: colors.orange, fontSize: 9, fontWeight: '800' }}>{file.conflictCount}</Text></View> : null}</View>
     <Text style={{ color: colors.green, fontSize: 10 }}>+{file.additions}</Text><Text style={{ color: colors.red, fontSize: 10 }}>-{file.deletions}</Text>
   </Pressable>
 }
@@ -148,8 +149,8 @@ function ReviewLine({ line }: { line: DiffLine }) {
   const conflictColor = line.conflictSide === 'ours' ? colors.blue : line.conflictSide === 'base' ? colors.yellow : line.conflictSide === 'theirs' ? colors.orange : null
   const backgroundColor = conflictColor
     ? `${conflictColor}${line.conflictMarker ? '2A' : '12'}`
-    : line.kind === 'add' ? '#123c25' : line.kind === 'remove' ? '#421d20' : undefined
-  const textColor = conflictColor ?? (line.kind === 'add' ? '#68e393' : line.kind === 'remove' ? '#ff858b' : colors.text)
+    : line.kind === 'add' ? colors.greenSurface : line.kind === 'remove' ? colors.dangerSurface : undefined
+  const textColor = conflictColor ?? (line.kind === 'add' ? colors.green : line.kind === 'remove' ? colors.red : colors.text)
   const marker = line.conflictMarker ? conflictMarkerLabel(line.conflictMarker) : null
   return <View accessibilityRole={line.conflictMarker ? 'summary' : undefined} accessibilityLabel={line.conflictMarker ? conflictMarkerAccessibleName(line) : undefined} style={[styles.line, backgroundColor ? { backgroundColor } : undefined]}>
     <Text selectable style={[styles.lineNumber, { color: colors.muted }]}>{line.oldLine ?? ''}</Text>
@@ -193,5 +194,5 @@ const styles = StyleSheet.create({
   workspace: { flex: 1, flexDirection: 'row' }, files: { width: 260, maxWidth: '34%', borderRightWidth: StyleSheet.hairlineWidth }, file: { minHeight: 54, borderRadius: 5, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 5 }, fileName: { flex: 1, minWidth: 0, gap: 3 },
   conflictBadge: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 3 },
   diffColumn: { flex: 1, minWidth: 0 }, diff: { flex: 1 }, inlineWarning: { borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  line: { minHeight: 20, flexDirection: 'row', alignItems: 'center' }, lineNumber: { width: 40, paddingRight: 8, textAlign: 'right', fontFamily: 'Menlo', fontSize: 10.5 }, code: { fontFamily: 'Menlo', fontSize: 11.5, paddingRight: 12 }, markerLabel: { marginLeft: 8, marginRight: 8, fontSize: 9, fontWeight: '900' },
+  line: { minHeight: 20, flexDirection: 'row', alignItems: 'center' }, lineNumber: { width: 40, paddingRight: 8, textAlign: 'right', fontFamily: fonts.mono, fontSize: 10.5 }, code: { fontFamily: fonts.mono, fontSize: 11.5, paddingRight: 12 }, markerLabel: { marginLeft: 8, marginRight: 8, fontSize: 9, fontWeight: '900' },
 })

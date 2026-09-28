@@ -11,7 +11,6 @@ import type {
   CodexGoalsConfiguration,
   CodexOperationAccepted,
   CodexPendingInteraction,
-  CodexPermissionProfile,
   CodexReviewInput,
   CodexRollbackInput,
   CodexRollbackResult,
@@ -37,12 +36,17 @@ import type {
   JsonValue,
   ProcessSnapshot,
   ProviderReloadResult,
+  ProviderCommandSelection,
+  ProviderCommandsSnapshot,
   ProviderRuntimeChanged,
   QueuedRunNowResponse,
   QueuedTurn,
+  RemoteServer,
+  RemoteServerDeployJob,
   RuntimeCatalog,
   ServerUpdateStatus,
   Session,
+  SessionRewindResult,
   TerminalAction,
   TerminalWindowsSnapshot,
   TimelineIndex,
@@ -55,6 +59,7 @@ import type {
   UploadRef,
   WorkspaceEntriesPage,
   WorkspaceCreateResult,
+  WorkspaceGitStatus,
   WorkingDirectoryCompletion,
   WorkspaceFile,
   WorkspaceInfo,
@@ -254,6 +259,27 @@ export class AgentServerClient {
     }, 30_000, false, 'native-control')
   }
   serverUpdateStatus(): Promise<ServerUpdateStatus> { return this.get('/api/admin/update') }
+  // Hub for SSH-only remote servers (see server/remote_servers.py): the
+  // active server can deploy and proxy other AgentsServer installs it
+  // reaches by SSH. Never returns a remote's own token; the client keeps
+  // using the hub's own token for the `/api/remote/{id}` profile it saves.
+  remoteServers(): Promise<{ servers: RemoteServer[] }> {
+    return this.request('/api/admin/remote-servers', {}, 30_000, false, 'native-control')
+  }
+  startRemoteDeploy(input: { ssh_host: string; install_dir?: string; name?: string }): Promise<{ job_id: string }> {
+    return this.request('/api/admin/remote-servers/deploy', {
+      method: 'POST', body: JSON.stringify(input),
+    }, 30_000, false, 'native-control')
+  }
+  remoteDeployStatus(jobId: string): Promise<RemoteServerDeployJob> {
+    return this.request(`/api/admin/remote-servers/deploy/${encodeURIComponent(jobId)}`, {}, 30_000, false, 'native-control')
+  }
+  cancelRemoteDeploy(jobId: string): Promise<{ cancelled: boolean }> {
+    return this.request(`/api/admin/remote-servers/deploy/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }, 30_000, false, 'native-control')
+  }
+  removeRemoteServer(remoteId: string): Promise<void> {
+    return this.request(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, { method: 'DELETE' }, 30_000, false, 'native-control')
+  }
   cancelServerUpdate(scheduleId: string): Promise<ServerUpdateStatus> {
     return this.post('/api/admin/update/cancel', { schedule_id: scheduleId })
   }
@@ -326,12 +352,6 @@ export class AgentServerClient {
       model: input.model || null,
       effort: input.effort || null,
       system_prompt: input.system_prompt || null,
-      codex_approval_policy: input.codex_approval_policy ?? null,
-      codex_sandbox_mode: input.codex_sandbox_mode ?? null,
-      codex_permission_profile: input.codex_permission_profile ?? null,
-      codex_approvals_reviewer: input.codex_approvals_reviewer ?? null,
-      claude_permission_mode: input.claude_permission_mode ?? null,
-      cursor_permission_mode: input.cursor_permission_mode ?? null,
       provider_jobs_access: input.provider_jobs_access ?? null,
       provider_session_id: input.providerId || null,
       import_history: Boolean(input.providerId),
@@ -364,6 +384,50 @@ export class AgentServerClient {
   }
   forkSession(sessionId: string): Promise<{ session: Session; sessions?: Session[] }> {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {})
+  }
+  /**
+   * `expectedLatestSeq` is the highest event seq this client has received for
+   * the chat. Anything appended after it also lies after the target turn, so a
+   * stale guard is retried once with the server's value; a refreshing Codex
+   * sign-in (`rewind_provider_busy`) is retried once after its advertised delay.
+   */
+  async rewindSession(sessionId: string, toRunId: string, expectedLatestSeq: number): Promise<SessionRewindResult> {
+    const rewind = (latestSeq: number) => this.post<SessionRewindResult>(`/api/sessions/${encodeURIComponent(sessionId)}/rewind`, {
+      to_run_id: toRunId, expected_latest_seq: latestSeq, confirmed: true,
+    })
+    let latestSeq = expectedLatestSeq
+    let staleRetried = false
+    let busyRetried = false
+    for (;;) {
+      try {
+        return await rewind(latestSeq)
+      } catch (error) {
+        const detail = error instanceof ServerError && error.status === 409
+          ? error.detail as { code?: unknown; latest_seq?: unknown; latest_event_seq?: unknown; retry_after_seconds?: unknown } | undefined
+          : undefined
+        const serverLatestSeq = detail?.latest_seq ?? detail?.latest_event_seq
+        if (detail?.code === 'stale_latest_seq' && !staleRetried && Number.isSafeInteger(serverLatestSeq)) {
+          staleRetried = true
+          latestSeq = serverLatestSeq as number
+          continue
+        }
+        if (detail?.code === 'rewind_provider_busy' && !busyRetried) {
+          busyRetried = true
+          const seconds = typeof detail.retry_after_seconds === 'number' && detail.retry_after_seconds > 0 ? detail.retry_after_seconds : 5
+          await new Promise(resolve => setTimeout(resolve, Math.min(seconds, 30) * 1_000))
+          continue
+        }
+        throw error
+      }
+    }
+  }
+  workspaceGitStatus(sessionId: string): Promise<WorkspaceGitStatus> {
+    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/git`, {}, 40_000, false, 'native-control')
+  }
+  restoreCheckpoint(sessionId: string, runId: string, expectedRevision: string): Promise<WorkspaceGitStatus> {
+    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/git/checkpoint/restore`, {
+      method: 'POST', body: JSON.stringify({ run_id: runId, expected_revision: expectedRevision, confirmed: true }),
+    }, 120_000, false, 'native-control')
   }
   async reorderSession(sessionId: string, targetId: string, placement: 'before' | 'after'): Promise<Session[]> {
     return (await this.post<{ sessions: Session[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/order`, { target_id: targetId, placement })).sessions
@@ -479,6 +543,7 @@ export class AgentServerClient {
     clientCapabilities: readonly string[] = [],
     chatReferences: readonly ChatReference[] = [],
     teamReferences: readonly TeamReference[] = [],
+    skillSelection?: ProviderCommandSelection,
   ): Promise<{ session: Session; event?: Event; queued?: boolean; queued_id?: string; position?: number }> {
     const body: Record<string, unknown> = {
       prompt,
@@ -491,7 +556,12 @@ export class AgentServerClient {
     if (clientCapabilities.length) body.client_capabilities = [...clientCapabilities]
     if (chatReferences.length) body.chat_references = chatReferences.map(reference => ({ ...reference }))
     if (teamReferences.length) body.team_references = teamReferences.map(reference => ({ ...reference }))
+    // Only the opaque id and revision travel; the server rejects anything else.
+    if (skillSelection) body.skill_selection = { id: skillSelection.id, revision: skillSelection.revision }
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/turns`, body)
+  }
+  providerCommands(sessionId: string, refresh = false): Promise<ProviderCommandsSnapshot> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/provider-commands?refresh=${refresh ? 'true' : 'false'}`)
   }
   async stopTurn(sessionId: string): Promise<TurnStopResult> {
     const response = await this.post<Partial<TurnStopResult>>(`/api/sessions/${encodeURIComponent(sessionId)}/stop`, {})
@@ -530,6 +600,14 @@ export class AgentServerClient {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/claude/mcp`, input)
   }
 
+  setClaudeGoal(sessionId: string, condition: string): Promise<ClaudeRuntimeSnapshot> {
+    return this.put(`/api/sessions/${encodeURIComponent(sessionId)}/claude/goal`, { condition })
+  }
+
+  clearClaudeGoal(sessionId: string): Promise<ClaudeRuntimeSnapshot> {
+    return this.delete(`/api/sessions/${encodeURIComponent(sessionId)}/claude/goal`)
+  }
+
   refreshClaudeContextUsage(sessionId: string): Promise<ClaudeRuntimeSnapshot> {
     return this.post(
       `/api/sessions/${encodeURIComponent(sessionId)}/claude/context-usage/refresh`,
@@ -546,12 +624,6 @@ export class AgentServerClient {
       `/api/sessions/${encodeURIComponent(sessionId)}/claude/interactions/${encodeURIComponent(interactionId)}/resolve`,
       { response },
     )).interaction
-  }
-
-  async codexPermissionProfiles(sessionId: string): Promise<CodexPermissionProfile[]> {
-    return (await this.get<{ profiles: CodexPermissionProfile[] }>(
-      `/api/sessions/${encodeURIComponent(sessionId)}/codex/permission-profiles`,
-    )).profiles
   }
 
   codexGoal(sessionId: string): Promise<CodexGoalSnapshot> {

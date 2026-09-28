@@ -15,8 +15,10 @@ type CopyRequest = {
 
 export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewportProps>(function TerminalViewport({
   socketURL,
-  backgroundHex = '#080b12',
-  foregroundHex = '#f4f7fb',
+  backgroundHex,
+  foregroundHex,
+  cursorHex,
+  selectionHex,
   fontSize = 13,
   onStatus,
   ...viewProps
@@ -26,8 +28,8 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   const pendingCopy = useRef<CopyRequest | null>(null)
   const [webViewKey, setWebViewKey] = useState(0)
   const html = useMemo(
-    () => androidTerminalHTML({ socketURL, backgroundHex, foregroundHex, fontSize }),
-    [backgroundHex, fontSize, foregroundHex, socketURL],
+    () => androidTerminalHTML({ socketURL, backgroundHex, foregroundHex, cursorHex, selectionHex, fontSize }),
+    [backgroundHex, cursorHex, fontSize, foregroundHex, selectionHex, socketURL],
   )
 
   const inject = (script: string): boolean => {
@@ -128,6 +130,8 @@ interface AndroidTerminalConfig {
   socketURL: string
   backgroundHex: string
   foregroundHex: string
+  cursorHex: string
+  selectionHex: string
   fontSize: number
 }
 
@@ -152,7 +156,7 @@ export function androidTerminalHTML(config: AndroidTerminalConfig): string {
       fontSize: config.fontSize,
       scrollback: 10000,
       allowProposedApi: true,
-      theme: { background: config.backgroundHex, foreground: config.foregroundHex, cursor: '#35df84' }
+      theme: { background: config.backgroundHex, foreground: config.foregroundHex, cursor: config.cursorHex, cursorAccent: config.backgroundHex, selectionBackground: config.selectionHex }
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);

@@ -23,9 +23,10 @@ const mocks = {
     export const Pressable = props => createElement('Pressable', props, typeof props.children === 'function' ? props.children({ pressed: false }) : props.children);
     export const StyleSheet = { create: value => value, absoluteFill: {}, hairlineWidth: 0.5, flatten: value => Array.isArray(value) ? Object.assign({}, ...value.flat(Infinity)) : value };
     export const useColorScheme = () => globalThis.__importedDeliveryFixture.theme;
-    export const AccessibilityInfo = { announceForAccessibility() {} };`,
+    export const AccessibilityInfo = { announceForAccessibility() {} };
+    export const Alert = { alert() {} };`,
   '@shopify/flash-list': `import { useEffect, useState } from 'react'; export function useRecyclingState(initial, deps) { const [value, setValue] = useState(initial); useEffect(() => setValue(initial), deps); return [value, setValue]; }`,
-  'lucide-react-native': `export const AlertTriangle='AlertTriangle', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', Clock3='Clock3', Code2='Code2', Copy='Copy', History='History', Pin='Pin', Siren='Siren', Sparkles='Sparkles', Wrench='Wrench', MessageSquareShare='MessageSquareShare', X='X';`,
+  'lucide-react-native': `export const AlertTriangle='AlertTriangle', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', Clock3='Clock3', Code2='Code2', Copy='Copy', FileText='FileText', History='History', Pencil='Pencil', Pin='Pin', RotateCcw='RotateCcw', Siren='Siren', Sparkles='Sparkles', Wrench='Wrench', MessageSquareShare='MessageSquareShare', X='X';`,
   'react-native-svg': `export default 'Svg'; export const Defs='Defs', LinearGradient='LinearGradient', Rect='Rect', Stop='Stop';`,
   'expo-clipboard': `export async function setStringAsync(value) { globalThis.__importedDeliveryFixture.copied = value; }`,
   'expo-haptics': `export const NotificationFeedbackType = { Success: 'success', Error: 'error' }; export async function notificationAsync() {}`,
@@ -37,7 +38,7 @@ const mocks = {
 const outfile = path.resolve('build/tmp', `imported-delivery-tests-${process.pid}.mjs`)
 await mkdir(path.dirname(outfile), { recursive: true })
 await build({
-  stdin: { contents: `export { TimelineRowView } from './src/components/TimelineRows'; export { projectTimeline } from './src/lib/timeline'; export { sanitizeTimelineEvent } from './src/lib/timeline-memory'; export { CROSS_CHAT_CONVERSATION_DARK, CROSS_CHAT_CONVERSATION_LIGHT } from './src/components/CrossChatTimelineCards';`, resolveDir: process.cwd(), loader: 'ts' },
+  stdin: { contents: `export { TimelineRowView } from './src/components/TimelineRows'; export { projectTimeline } from './src/lib/timeline'; export { sanitizeTimelineEvent } from './src/lib/timeline-memory'; export { dark, light } from './src/theme';`, resolveDir: process.cwd(), loader: 'ts' },
   outfile, bundle: true, format: 'esm', platform: 'node', packages: 'external', jsx: 'automatic', logLevel: 'silent',
   plugins: [{ name: 'imported-delivery-native-hosts', setup(context) {
     context.onResolve({ filter: /.*/ }, args => args.path === 'react' ? { path: args.path, external: true }
@@ -46,7 +47,7 @@ await build({
   } }],
 })
 after(async () => { await unlink(outfile); delete globalThis.__importedDeliveryFixture })
-const { TimelineRowView, projectTimeline, sanitizeTimelineEvent, CROSS_CHAT_CONVERSATION_DARK, CROSS_CHAT_CONVERSATION_LIGHT } = await import(pathToFileURL(outfile).href)
+const { TimelineRowView, projectTimeline, sanitizeTimelineEvent, dark, light } = await import(pathToFileURL(outfile).href)
 
 const body = 'Received; these **native-goal findings** are recorded.\n\n- Fixed rendering\n- Kept `code` and [details](https://example.com)'
 const source = 'Please review the mobile renderer.'
@@ -70,7 +71,7 @@ const visible = renderer => renderer.root.findAll(node => node.type === 'Text' |
   .map(node => node.type === 'MarkdownContent' ? node.props.value : node.children.filter(child => typeof child === 'string').join('')).join('\n')
 const flatten = style => Object.assign({}, ...[style].flat(Infinity).filter(Boolean))
 
-for (const backend of ['codex', 'claude']) for (const theme of ['dark', 'light']) test(`${backend} screenshot-shaped delivery uses ${theme} purple card with no user bubble or wire text`, async () => {
+for (const backend of ['codex', 'claude']) for (const theme of ['dark', 'light']) test(`${backend} screenshot-shaped delivery uses ${theme} Zed card with no user bubble or wire text`, async () => {
   fixture.theme = theme; calls.length = 0
   const renderer = await render(rows([event({ backend })])[0])
   try {
@@ -83,8 +84,10 @@ for (const backend of ['codex', 'claude']) for (const theme of ['dark', 'light']
     assert.equal(markdown.props.value, body)
     assert.equal(markdown.props.compact, true)
     assert.equal(markdown.props.fontScale, 1.4)
-    assert.equal(markdown.props.color, (theme === 'dark' ? CROSS_CHAT_CONVERSATION_DARK : CROSS_CHAT_CONVERSATION_LIGHT).body)
-    assert.equal(renderer.root.findAllByType('LinearGradient').length, 1)
+    const palette = theme === 'dark' ? dark : light
+    assert.equal(markdown.props.color, palette.text)
+    assert.equal(flatten(byID(renderer, 'imported-cross-chat-delivery-1')[0].props.style).backgroundColor, palette.raised)
+    assert.equal(flatten(byID(renderer, 'imported-cross-chat-delivery-1-message')[0].props.style).backgroundColor, palette.surface)
     const buttons = renderer.root.findAllByType('Pressable')
     assert.equal(buttons.length, 1, 'Historical sender is not a navigation/reply/cancel action')
     assert.equal(buttons[0].props.accessibilityLabel, 'Show source request')

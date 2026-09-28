@@ -27,14 +27,22 @@ export function normalizeServerURL(value: string): string {
     url.pathname = url.pathname.replace(/\/(api\/health)?\/?$/, '') || ''
     url.search = ''
     url.hash = ''
+    if (url.protocol === 'http:' && !url.port) url.port = '7850'
     return url.toString().replace(/\/$/, '')
   } catch {
     return clean
   }
 }
 
+/** Codex memory citations: provider-internal markup that Codex's own UI hides. */
+const PROVIDER_INTERNAL_MARKUP = /[ \t]*<oai-mem-citation>[\s\S]*?<\/oai-mem-citation>[ \t]*/gi
+
+export function stripProviderInternalMarkup(value: string): string {
+  return value.replace(PROVIDER_INTERNAL_MARKUP, '')
+}
+
 export function messageText(event: Event): string {
-  const inputEvent = event.type === 'turn_started' || event.type === 'turn_queued' || event.type === 'turn_queue_run_now'
+  const inputEvent = event.type === 'turn_started' || event.type === 'turn_steered' || event.type === 'turn_queued' || event.type === 'turn_queue_run_now'
   const raw = inputEvent && event.display_prompt != null
     ? event.display_prompt
     : event.result_text ?? event.text ?? event.prompt ?? event.message ?? event.error ?? event.output ?? ''
@@ -43,6 +51,7 @@ export function messageText(event: Event): string {
   else {
     try { text = JSON.stringify(raw, null, 2) } catch { text = String(raw) }
   }
+  text = stripProviderInternalMarkup(text)
   if (!text.trim() && event.type === 'turn_finished' && event.stopped !== true && typeof event.exit_code === 'number' && event.exit_code !== 0) {
     text = `Agent turn failed with exit code ${event.exit_code}.`
   }
@@ -59,6 +68,10 @@ export function messageText(event: Event): string {
 export function stripInjectedProviderAuthority(text: string): string {
   const start = injectedProviderAuthorityStart(text)
   return start < 0 ? text : text.slice(0, start)
+}
+
+export function hasInjectedProviderAuthority(text: string): boolean {
+  return injectedProviderAuthorityStart(text) >= 0
 }
 
 function injectedProviderAuthorityStart(text: string): number {

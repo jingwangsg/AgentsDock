@@ -330,6 +330,14 @@ try {
   assert.equal((Notifications as typeof Notifications & { __notificationPermissionRequests(): number }).__notificationPermissionRequests(), 1)
   const generationA = state.profileGeneration
 
+  // Settings written before the appearance preference existed open in Zed One
+  // Dark; a Settings change is persisted with the profile settings.
+  assert.equal(state.appearance, 'dark')
+  state.setAppearance('light')
+  const storedAppearance = async () => JSON.parse(await AsyncStorage.getItem('agentsdock.react.settings.v2') ?? '{}').appearance
+  for (let attempt = 0; attempt < 100 && await storedAppearance() !== 'light'; attempt += 1) await nextTurn()
+  assert.equal(await storedAppearance(), 'light')
+
   state.setSessionDraft('shared-session', 'draft-a-live')
   await nextTurn()
   serverA.sessionTitle = 'A delayed response'
@@ -354,6 +362,8 @@ try {
 
   state = useAppStore.getState()
   assert.equal(state.activeProfileId, 'profile-b')
+  assert.equal(state.appearance, 'light')
+  assert.equal(await storedAppearance(), 'light', 'switching profiles must not drop the appearance preference')
   assert.equal(state.connected, true)
   assert.equal(state.sessions[0]?.id, 'shared-session')
   assert.equal(state.sessions[0]?.title, 'B live')
@@ -1109,6 +1119,20 @@ try {
       'attachments added after admission must remain for the next message',
     )
     assert.equal(useAppStore.getState().turnAdmissionTokens['shared-session'], undefined)
+    // A palette-selected provider command rides the turn as skill_selection; ordinary sends carry none.
+    let sentSkillSelection: unknown = 'unset'
+    activeClient.sendTurn = async (_sessionId, _prompt, _fileIds, _model, _effort, _capabilities, _chatReferences, _teamReferences, skillSelection) => {
+      sentSkillSelection = skillSelection
+      return { session: liveSession, queued: false }
+    }
+    assert.equal(await useAppStore.getState().sendPrompt(false, generation, 'shared-session', {
+      promptOverride: '/pdf summarize this',
+      consumeComposer: false,
+      skillSelection: { id: 'cmd-pdf', revision: 'rev-9' },
+    }), true)
+    assert.deepEqual(sentSkillSelection, { id: 'cmd-pdf', revision: 'rev-9' }, 'sendPrompt must forward the palette selection to the client unchanged')
+    assert.equal(await useAppStore.getState().sendPrompt(false, generation, 'shared-session', { promptOverride: 'plain text', consumeComposer: false }), true)
+    assert.equal(sentSkillSelection, undefined, 'sends without a selection must not invent one')
     useAppStore.setState({ activeSessionIds: new Set(['shared-session']), uploads: { 'shared-session': [] } })
 
     const deferredTurn: QueuedTurn = {

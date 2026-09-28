@@ -21,19 +21,12 @@ import {
   MessageSquareText,
   Play,
   RefreshCw,
-  Shield,
   SquareTerminal,
   Trash2,
   X,
 } from 'lucide-react-native'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { codexControlsPresentation } from '../lib/codex-goals'
-import { queueCodexPermissionUpdate } from '../lib/codex-permission-updates'
-import {
-  DEFAULT_CODEX_APPROVAL_POLICY,
-  DEFAULT_CODEX_APPROVALS_REVIEWER,
-  DEFAULT_CODEX_SANDBOX_MODE,
-} from '../lib/codex-permissions'
 import {
   contextUsagePercent,
   formatCompactTokens,
@@ -44,15 +37,12 @@ import {
 } from '../lib/codex-token-usage'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
+import { fonts } from '../lib/typography'
 import type {
-  CodexApprovalPolicy,
-  CodexApprovalsReviewer,
   CodexBackgroundTerminal,
   CodexReviewTarget,
-  CodexSandboxMode,
   JsonValue,
   RuntimeOption,
-  Session,
 } from '../types'
 import { Text, TextInput } from './AppText'
 import { CodexInteractionCard } from './CodexInteractionShelf'
@@ -94,7 +84,7 @@ export function CodexStatusButton({ compact }: { compact: boolean }) {
       >
         {loading ? <ActivityIndicator size="small" color={accent} /> : <Bot size={17} color={accent} />}
         {!compact ? <Text style={[styles.statusButtonText, { color: colors.text }]} numberOfLines={1}>Codex · {label}</Text> : null}
-        {pending ? <View style={[styles.badge, { backgroundColor: colors.orange }]}><Text style={styles.badgeText}>{pending}</Text></View> : null}
+        {pending ? <View style={[styles.badge, { backgroundColor: colors.orange }]}><Text style={[styles.badgeText, { color: colors.textOnAccent }]}>{pending}</Text></View> : null}
       </Pressable>
       {open ? <CodexControlsSheet visible onClose={close} /> : null}
     </>
@@ -169,19 +159,8 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
   } = useCodexRuntime()
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
-  const runtimePermissionProfilesKey = permissionProfilesFingerprint(runtime?.permission_profiles ?? [])
-  const runtimeStatusType = runtime?.status?.type ?? 'notLoaded'
   const events = useAppStore(state => session ? state.snapshots[session.id]?.events ?? EMPTY_EVENTS : EMPTY_EVENTS)
-  const updateSession = useAppStore(state => state.updateSession)
   const [notice, setNotice] = useState<{ text: string; tone: NoticeTone } | null>(null)
-  const [permissionProfiles, setPermissionProfiles] = useState<ChoiceOption[]>([])
-  const [profileLoadError, setProfileLoadError] = useState<string | null>(null)
-  const [profileLoadBusy, setProfileLoadBusy] = useState(false)
-  const [approvalPolicy, setApprovalPolicy] = useState<CodexApprovalPolicy>(DEFAULT_CODEX_APPROVAL_POLICY)
-  const [sandboxMode, setSandboxMode] = useState<CodexSandboxMode>(DEFAULT_CODEX_SANDBOX_MODE)
-  const [permissionProfile, setPermissionProfile] = useState('')
-  const [reviewer, setReviewer] = useState<CodexApprovalsReviewer>(DEFAULT_CODEX_APPROVALS_REVIEWER)
-  const [savingPermissions, setSavingPermissions] = useState(false)
   const [reviewType, setReviewType] = useState<'uncommittedChanges' | 'baseBranch' | 'commit' | 'custom'>('uncommittedChanges')
   const [reviewValue, setReviewValue] = useState('')
   const [rollbackTurns, setRollbackTurns] = useState('1')
@@ -189,101 +168,14 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
   const [shellCommand, setShellCommand] = useState('')
   const [shellConfirmed, setShellConfirmed] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const permissionSaveInFlight = useRef(false)
-  const permissionSaveEpoch = useRef(0)
-  const permissionProfileLoadKey = useRef('')
 
   useEffect(() => { if (visible) void refresh() }, [refresh, visible])
 
-  useEffect(() => {
-    if (!session) return
-    const sessionPolicyIsAuthoritative = session.codex_approval_policy != null
-      && session.codex_sandbox_mode != null
-      && session.codex_approvals_reviewer != null
-    setApprovalPolicy(session.codex_approval_policy ?? runtime?.policy?.approval_policy ?? DEFAULT_CODEX_APPROVAL_POLICY)
-    setSandboxMode(session.codex_sandbox_mode ?? runtime?.policy?.sandbox_mode ?? DEFAULT_CODEX_SANDBOX_MODE)
-    setPermissionProfile(sessionPolicyIsAuthoritative
-      ? session.codex_permission_profile ?? ''
-      : runtime?.policy?.permission_profile ?? '')
-    setReviewer(session.codex_approvals_reviewer ?? runtime?.policy?.approvals_reviewer ?? DEFAULT_CODEX_APPROVALS_REVIEWER)
-  }, [
-    runtime?.policy?.approval_policy,
-    runtime?.policy?.approvals_reviewer,
-    runtime?.policy?.permission_profile,
-    runtime?.policy?.sandbox_mode,
-    session?.codex_approval_policy,
-    session?.codex_approvals_reviewer,
-    session?.codex_permission_profile,
-    session?.codex_sandbox_mode,
-    session?.id,
-  ])
-  useEffect(() => {
-    permissionSaveEpoch.current += 1
-    permissionSaveInFlight.current = false
-    setSavingPermissions(false)
-  }, [activeProfileId, profileGeneration, session?.id])
-  useEffect(() => {
-    if (!visible || !session || !activeProfileId) {
-      permissionProfileLoadKey.current = ''
-      setProfileLoadBusy(false)
-      return
-    }
-    const loadKey = `${activeProfileId}:${profileGeneration}:${session.id}:${runtimePermissionProfilesKey}:${runtimeStatusType}`
-    if (runtime?.permission_profiles?.length) {
-      permissionProfileLoadKey.current = loadKey
-      setPermissionProfiles(permissionProfileChoices(runtime.permission_profiles))
-      setProfileLoadError(null)
-      setProfileLoadBusy(false)
-      return
-    }
-    if (permissionProfileLoadKey.current === loadKey) return
-    permissionProfileLoadKey.current = loadKey
-    setNotice(null)
-    setPermissionProfiles([])
-    setProfileLoadError(null)
-    setProfileLoadBusy(false)
-    const connection = client
-    const requestIsCurrent = () => {
-      const state = useAppStore.getState()
-      return client === connection
-        && state.activeProfileId === activeProfileId
-        && state.profileGeneration === profileGeneration
-        && state.selectedSessionId === session.id
-    }
-    let cancelled = false
-    void connection.codexPermissionProfiles(session.id)
-      .then(profiles => {
-        if (cancelled || !requestIsCurrent()) return
-        setPermissionProfiles(permissionProfileChoices(profiles))
-        setProfileLoadBusy(false)
-      })
-      .catch(cause => {
-        if (cancelled || !requestIsCurrent()) return
-        const detail = errorMessage(cause)
-        const busy = permissionProfilesBusy(detail)
-        setProfileLoadBusy(busy)
-        setProfileLoadError(busy
-          ? 'Codex is busy. Permission profiles will refresh after the active turn finishes.'
-          : detail)
-      })
-    return () => { cancelled = true }
-  }, [activeProfileId, profileGeneration, runtimePermissionProfilesKey, runtimeStatusType, session?.id, visible])
   const threadId = session?.codex_thread_id || session?.session_id || null
   const usage = useMemo(
     () => latestCodexContextUsage(events, runtime?.token_usage_snapshot ?? runtime?.token_usage, threadId, runtime?.context_usage_state),
     [events, runtime?.context_usage_state, runtime?.token_usage, runtime?.token_usage_snapshot, threadId],
   )
-  const permissionProfileOptions = useMemo(() => {
-    const options: ChoiceOption[] = [{ value: '', label: 'Custom settings' }, ...permissionProfiles]
-    if (permissionProfile && !options.some(option => option.value === permissionProfile)) {
-      options.splice(1, 0, {
-        value: permissionProfile,
-        label: `${permissionProfile} (current, unavailable)`,
-        disabled: true,
-      })
-    }
-    return options
-  }, [permissionProfile, permissionProfiles])
 
   if (!session) return null
   const scopeIsCurrent = () => {
@@ -301,42 +193,6 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
         if (scopeIsCurrent()) setNotice({ text: success, tone: 'success' })
       })
       .catch(() => undefined)
-  }
-  const savePermissions = () => {
-    if (permissionSaveInFlight.current || !activeProfileId || !scopeIsCurrent()) return
-    const operationEpoch = ++permissionSaveEpoch.current
-    permissionSaveInFlight.current = true
-    setSavingPermissions(true)
-    setNotice(null)
-    const patch = {
-      codex_approval_policy: approvalPolicy,
-      codex_sandbox_mode: sandboxMode,
-      codex_permission_profile: permissionProfile || null,
-      codex_approvals_reviewer: reviewer,
-    }
-    void run(() => queueCodexPermissionUpdate({
-      profileId: activeProfileId,
-      profileGeneration,
-      sessionId: session.id,
-    }, async () => {
-      const saved = await updateSession(session.id, patch, profileGeneration)
-      const state = useAppStore.getState()
-      const updated = state.sessions.find(candidate => candidate.id === session.id)
-      if (!saved || !updated || !codexPermissionPatchMatches(updated, patch)) {
-        throw new Error(state.error || 'The server did not save the Codex permission settings.')
-      }
-    }))
-      .then(() => {
-        if (operationEpoch === permissionSaveEpoch.current && scopeIsCurrent()) {
-          setNotice({ text: 'Permission settings saved for this chat.', tone: 'success' })
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (operationEpoch !== permissionSaveEpoch.current) return
-        permissionSaveInFlight.current = false
-        if (scopeIsCurrent()) setSavingPermissions(false)
-      })
   }
   const startReview = () => perform(
     () => client.reviewCodexThread(session.id, { target: reviewTarget(reviewType, reviewValue), delivery: 'inline' }),
@@ -438,57 +294,6 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
                 </Text>
               </View>
             ) : null}
-          </Section>
-
-          <Section icon={Shield} title="Permissions and approvals" subtitle="Applied to future interactive turns in this chat">
-            <Choice
-              testID="codex-permission-profile"
-              label="Permission profile"
-              value={permissionProfile}
-              options={permissionProfileOptions}
-              busy={savingPermissions}
-              onChange={setPermissionProfile}
-            />
-            <Choice
-              testID="codex-filesystem-sandbox"
-              label="Filesystem sandbox"
-              value={sandboxMode}
-              disabled={Boolean(permissionProfile)}
-              busy={savingPermissions}
-              options={[
-                { value: 'read-only', label: 'Read only' },
-                { value: 'workspace-write', label: 'Workspace write' },
-                { value: 'danger-full-access', label: 'Full access' },
-              ]}
-              onChange={value => setSandboxMode(value as CodexSandboxMode)}
-            />
-            <Choice
-              testID="codex-command-approvals"
-              label="Command approvals"
-              value={approvalPolicy}
-              busy={savingPermissions}
-              options={[
-                { value: 'never', label: 'Never ask' },
-                { value: 'on-request', label: 'Ask when Codex requests' },
-                { value: 'untrusted', label: 'Ask for untrusted actions' },
-              ]}
-              onChange={value => setApprovalPolicy(value as CodexApprovalPolicy)}
-            />
-            <Choice
-              testID="codex-approval-reviewer"
-              label="Approval reviewer"
-              value={reviewer}
-              busy={savingPermissions}
-              options={[
-                { value: 'user', label: 'Ask me' },
-                { value: 'auto_review', label: 'Codex auto-review' },
-                { value: 'guardian_subagent', label: 'Guardian subagent' },
-              ]}
-              onChange={value => setReviewer(value as CodexApprovalsReviewer)}
-            />
-            {permissionProfile ? <Text testID="codex-permission-profile-hint" style={[styles.permissionHint, { color: colors.muted }]}>The selected profile replaces the custom filesystem sandbox. Choose Custom settings to edit the sandbox directly.</Text> : null}
-            {profileLoadError ? <Text testID="codex-permission-profile-error" accessibilityRole="alert" style={[styles.permissionHint, { color: profileLoadBusy ? colors.yellow : colors.red }]}>{profileLoadBusy ? profileLoadError : `Profiles unavailable: ${profileLoadError}`}</Text> : null}
-            <View style={styles.actions}><Action testID="codex-permissions-save" label={savingPermissions ? 'Saving permissions…' : 'Save permissions'} primary disabled={savingPermissions} onPress={savePermissions} /></View>
           </Section>
 
           <Section icon={Goal} title="Persistent goal" subtitle="Survives turns in this Codex thread">
@@ -852,8 +657,8 @@ function Action({ label, onPress, disabled, primary, tone, testID }: {
         { backgroundColor: primary ? colors.blue : colors.raised, opacity: disabled ? 0.4 : pressed ? 0.68 : 1 },
       ]}
     >
-      {tone === 'danger' ? <Trash2 size={14} color={colors.red} /> : primary ? <Check size={14} color="white" /> : null}
-      <Text style={{ color: primary ? 'white' : tone === 'danger' ? colors.red : colors.text, fontSize: 11.5, fontWeight: '800' }}>{label}</Text>
+      {tone === 'danger' ? <Trash2 size={14} color={colors.red} /> : primary ? <Check size={14} color={colors.textOnAccent} /> : null}
+      <Text style={{ color: primary ? colors.textOnAccent : tone === 'danger' ? colors.red : colors.text, fontSize: 11.5, fontWeight: '800' }}>{label}</Text>
     </Pressable>
   )
 }
@@ -893,49 +698,6 @@ function shortUsageId(value: string): string {
   return value.length > 14 ? `${value.slice(0, 7)}…${value.slice(-5)}` : value
 }
 
-function permissionProfileChoices(profiles: Array<{ id: string; name?: string | null; allowed?: boolean }>): ChoiceOption[] {
-  const choices = new Map<string, ChoiceOption>()
-  for (const profile of profiles) {
-    const value = profile.id || profile.name || ''
-    if (!value || choices.has(value)) continue
-    choices.set(value, {
-      value,
-      label: profile.allowed === false ? `${profile.name || value} (unavailable)` : profile.name || value,
-      disabled: profile.allowed === false,
-    })
-  }
-  return [...choices.values()]
-}
-
-function permissionProfilesFingerprint(profiles: Array<{ id: string; name?: string | null; allowed?: boolean }>): string {
-  return profiles
-    .map(profile => `${profile.id}\u0000${profile.name ?? ''}\u0000${profile.allowed === false ? '0' : '1'}`)
-    .join('\u0001')
-}
-
-function codexPermissionPatchMatches(
-  session: Session,
-  patch: {
-    codex_approval_policy: CodexApprovalPolicy
-    codex_sandbox_mode: CodexSandboxMode
-    codex_permission_profile: string | null
-    codex_approvals_reviewer: CodexApprovalsReviewer
-  },
-): boolean {
-  return session.codex_approval_policy === patch.codex_approval_policy
-    && session.codex_sandbox_mode === patch.codex_sandbox_mode
-    && (session.codex_permission_profile ?? null) === patch.codex_permission_profile
-    && session.codex_approvals_reviewer === patch.codex_approvals_reviewer
-}
-
-function permissionProfilesBusy(error: string): boolean {
-  return /wait for (?:the )?(?:\d+ )?active codex turns? to finish/i.test(error)
-}
-
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error && cause.message ? cause.message : String(cause)
-}
-
 const EMPTY_EVENTS = [] as const
 
 const styles = StyleSheet.create({
@@ -944,7 +706,7 @@ const styles = StyleSheet.create({
   statusButtonText: { fontSize: 10.5, fontWeight: '800', flexShrink: 1 },
   contextIndicator: { width: 44, height: 44, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
   badge: { minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
-  badgeText: { color: 'white', fontSize: 9, fontWeight: '900' },
+  badgeText: { fontSize: 9, fontWeight: '900' },
   sheet: { flex: 1 },
   sheetHeader: { minHeight: 70, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 7 },
   sheetMark: { width: 40, height: 40, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
@@ -964,7 +726,7 @@ const styles = StyleSheet.create({
   contextDetailTitle: { fontSize: 11, fontWeight: '800' },
   contextDetailSubtitle: { marginTop: 2, fontSize: 9.5, lineHeight: 13 },
   contextDetailLabel: { fontSize: 9, textAlign: 'right' },
-  contextDetailId: { marginTop: 2, fontSize: 9.5, fontFamily: 'Menlo' },
+  contextDetailId: { marginTop: 2, fontSize: 9.5, fontFamily: fonts.mono },
   contextProgress: { height: 6, overflow: 'hidden', borderRadius: 3 },
   contextProgressValue: { height: '100%', borderRadius: 3 },
   contextMetrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
@@ -974,7 +736,6 @@ const styles = StyleSheet.create({
   goalSummary: { borderRadius: 7, padding: 9, gap: 4 },
   goalSummaryTitle: { fontSize: 12, fontWeight: '800' },
   fieldLabel: { fontSize: 10.5, fontWeight: '800' },
-  permissionHint: { fontSize: 10.5, lineHeight: 15 },
   choice: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 7 },
   input: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, paddingVertical: 8, fontSize: 12.5 },
   textarea: { minHeight: 82, maxHeight: 150, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, paddingVertical: 9, fontSize: 12.5, textAlignVertical: 'top' },

@@ -488,7 +488,7 @@ function StateCard({ icon: Icon, title, body, detail, color, actionLabel, onActi
     <Text accessibilityRole="header" style={[styles.stateTitle, { color: colors.text }]}>{title}</Text>
     <Text style={[styles.stateBody, { color: colors.muted }]}>{body}</Text>
     {detail ? <Text style={[styles.stateDetail, { color: colors.muted }]}>{detail}</Text> : null}
-    {actionLabel && onAction ? <Pressable accessibilityRole="button" accessibilityLabel={actionLabel} onPress={onAction} style={({ pressed }) => [styles.stateAction, { backgroundColor: colors.blue, opacity: pressed ? 0.65 : 1 }]}><Text style={styles.stateActionText}>{actionLabel}</Text></Pressable> : null}
+    {actionLabel && onAction ? <Pressable accessibilityRole="button" accessibilityLabel={actionLabel} onPress={onAction} style={({ pressed }) => [styles.stateAction, { backgroundColor: colors.blue, opacity: pressed ? 0.65 : 1 }]}><Text style={[styles.stateActionText, { color: colors.textOnAccent }]}>{actionLabel}</Text></Pressable> : null}
   </View>
 }
 
@@ -620,5 +620,5 @@ const styles = StyleSheet.create({
   stateBody: { maxWidth: 520, textAlign: 'center', fontSize: 11.5, lineHeight: 17 },
   stateDetail: { maxWidth: 520, textAlign: 'center', fontSize: 10.5, lineHeight: 15 },
   stateAction: { minWidth: 92, minHeight: 44, marginTop: 4, borderRadius: 7, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center' },
-  stateActionText: { color: 'white', fontSize: 12, fontWeight: '800' },
+  stateActionText: { fontSize: 12, fontWeight: '800' },
 })

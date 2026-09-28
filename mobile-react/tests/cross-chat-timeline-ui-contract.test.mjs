@@ -60,7 +60,7 @@ test('cross-chat cards lazy-load and cancel through scope-fenced server calls', 
   assert.match(cards, /End conversation/)
 })
 
-test('exchange conversations use the current Mac purple conversation surface', () => {
+test('exchange conversations use the Zed conversation surface', () => {
   const exchangeCard = cards.slice(
     cards.indexOf('function CrossChatExchangeCardScoped'),
     cards.indexOf('function validateExchange'),
@@ -69,13 +69,9 @@ test('exchange conversations use the current Mac purple conversation surface', (
     cards.indexOf('function CrossChatHandoffCardScoped'),
     cards.indexOf('export function CrossChatExchangeCard'),
   )
-  assert.match(cards, /gradientStart: '#281f3b'/)
-  assert.match(cards, /gradientEnd: '#211b31'/)
-  assert.match(cards, /gradientStart: '#f5f1ff'/)
-  assert.match(cards, /gradientEnd: '#eee8fb'/)
-  assert.match(cards, /accent: '#8c6fe8'/)
-  assert.match(cards, /accent: '#8566bd'/)
-  assert.match(exchangeCard, /<Svg[\s\S]*?<LinearGradient[\s\S]*?<Rect/)
+  assert.match(exchangeCard, /styles\.conversationCard,\s*\{ borderColor: colors\.border, backgroundColor: colors\.raised \}/)
+  assert.match(exchangeCard, /styles\.conversationAccent, \{ backgroundColor: colors\.blue \}/)
+  assert.doesNotMatch(cards, /CROSS_CHAT_CONVERSATION|useColorScheme|<LinearGradient/)
   assert.match(exchangeCard, /styles\.conversationAccent/)
   assert.match(exchangeCard, /styles\.conversationCard/)
   assert.doesNotMatch(exchangeCard, /styles\.card/)
@@ -84,7 +80,7 @@ test('exchange conversations use the current Mac purple conversation surface', (
   assert.match(cards, /conversationAccent: \{[^}]*width: 3/)
 })
 
-test('purple conversation is visible, semantically aligned, and fully operable', () => {
+test('conversation is visible, semantically aligned, and fully operable', () => {
   assert.match(cards, /label=\{open \? 'Show less' : 'Show full conversation'\}/)
   assert.match(cards, /const allConversationLegsVisible = showEarlier \|\| open/)
   assert.match(cards, /interface CrossChatConversationLeg extends CrossChatExchangeLeg/)

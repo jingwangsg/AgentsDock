@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActionSheetIOS, Alert, FlatList, Image, Platform, Pressable, StyleSheet, View } from 'react-native'
 import { MenuView, type MenuAction, type MenuComponentRef } from '@expo/ui/community/menu'
-import { ChevronDown, ChevronRight, FolderPlus, MoreHorizontal, Network, Plus, RefreshCw, Search, Server, Settings } from 'lucide-react-native'
+import { ChevronDown, ChevronRight, FolderPlus, Network, Plus, RefreshCw, Search, Server, Settings } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
-import type { Session, TimelineSearchResult } from '../types'
+import { radius, usePalette } from '../theme'
+import type { Backend, Session, TimelineSearchResult } from '../types'
 import { formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
 import { compareSessions, orderedSessionSections, sessionSection } from '../lib/session-order'
 import { sessionNeedsProviderInteraction, sessionPendingInteractionCount } from '../lib/claude-controls'
@@ -19,6 +19,7 @@ import { BackendMark } from './BackendMark'
 import { useTextPrompt, type TextPromptOptions } from './TextPromptDialog'
 import { IconButton } from './ui'
 import { ServerProfileSelector, type ServerProfileListItem } from './ServerProfiles'
+import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 
 type Row = { kind: 'header'; key: string; title: string; folder: string; count: number } | { kind: 'session'; key: string; session: Session; searchResult?: TimelineSearchResult }
 
@@ -51,16 +52,17 @@ function sessionScopeIsCurrent(scope: ProfileScope, sessionId: string): boolean 
     && state.sessions.some(session => session.id === sessionId)
 }
 
-export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitchServer, onAddServer, onManageServers, onSettings, onTeamNetwork, onNewChat, onOpenChat }: {
+export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitchServer, onSetupServer, onManageServers, onSettings, onTeamNetwork, onNewChat, onNewChatIn, onOpenChat }: {
   profiles: readonly ServerProfileListItem[]
   activeProfileId: string | null
   switchingProfileId?: string | null
   onSwitchServer: (profileId: string) => Promise<boolean>
-  onAddServer: () => void
+  onSetupServer: () => void
   onManageServers: () => void
   onSettings: () => void
   onTeamNetwork: () => void
   onNewChat: () => void
+  onNewChatIn: (folder: string, backend: Backend) => void
   onOpenChat?: () => void
 }) {
   const colors = usePalette()
@@ -81,6 +83,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   const select = useAppStore(state => state.selectSession)
   const seekTimelineResult = useAppStore(state => state.seekTimelineResult)
   const reorder = useAppStore(state => state.reorderSession)
+  const updateSession = useAppStore(state => state.updateSession)
   const refreshSessions = useAppStore(state => state.refreshSessions)
   const setFolderOrder = useAppStore(state => state.setFolderOrder)
   const setCollapsedFolders = useAppStore(state => state.setCollapsedFolders)
@@ -271,9 +274,31 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     ;[order[index], order[target]] = [order[target], order[index]]
     setFolderOrder(order, profileScope.profileGeneration)
   }
+  const renameFolder = (folder: string) => {
+    const scope = profileScope
+    if (!profileScopeIsCurrent(scope)) return
+    dismissSearchKeyboard()
+    void promptText({
+      title: 'Rename folder',
+      message: `Chats in “${folder}” move to the new name.`,
+      initialValue: folder,
+      confirmLabel: 'Rename',
+      placeholder: 'Folder name',
+    }).then(async value => {
+      if (!profileScopeIsCurrent(scope)) return
+      const name = value?.trim()
+      if (!name || name === folder || folders.includes(name)) return
+      await Promise.all(sessions
+        .filter(session => (session.folder?.trim() || 'General') === folder)
+        .map(session => updateSession(session.id, { folder: name }, scope.profileGeneration)))
+      if (!profileScopeIsCurrent(scope)) return
+      setFolderOrder(movableFolders.map(entry => entry === folder ? name : entry), scope.profileGeneration)
+      if (collapsed.has(folder)) setCollapsedFolders(collapsedFolders.map(entry => entry === folder ? name : entry), scope.profileGeneration)
+    })
+  }
 
   return (
-    <View style={[styles.root, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+    <View style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border }]}>
       <View style={styles.titleRow}>
         <Text style={[styles.title, { color: colors.text }]}>AgentsDock</Text>
       </View>
@@ -288,10 +313,9 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           activeProfileId={activeProfileId}
           switchingProfileId={switchingProfileId}
           onSelectProfile={profileId => { dismissSearchKeyboard(); return profileScopeCanNavigate(profileScope) ? onSwitchServer(profileId) : Promise.resolve(false) }}
-          onAddServer={() => { if (profileScopeCanNavigate(profileScope)) onAddServer() }}
           onManageServers={() => { if (profileScopeCanNavigate(profileScope)) onManageServers() }}
         /></View>
-      {!needsServerSetup ? <Pressable
+      {TEAM_NETWORK_UI_ENABLED && !needsServerSetup ? <Pressable
         testID="sidebar-team-network"
         accessibilityRole="button"
         accessibilityLabel="Open Team Network"
@@ -304,11 +328,11 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
         testID="sidebar-setup-server"
         accessibilityRole="button"
         accessibilityLabel="Set up your server"
-        onPress={() => { if (profileScopeCanNavigate(profileScope)) onAddServer() }}
+        onPress={() => { if (profileScopeCanNavigate(profileScope)) onSetupServer() }}
         style={({ pressed }) => [styles.setupBanner, { backgroundColor: colors.blue, opacity: pressed ? 0.85 : 1 }]}
       >
         <Server size={16} color="white" />
-        <Text style={styles.setupBannerText}>Set up your server</Text>
+        <Text style={[styles.setupBannerText, { color: colors.textOnAccent }]}>Set up your server</Text>
       </Pressable> : null}
       <View
         style={[styles.search, { backgroundColor: colors.raised, borderColor: colors.border }]}
@@ -367,6 +391,8 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
             setCollapsedFolders([...next], profileScope.profileGeneration)
           }}
           onMove={direction => moveFolder(item.folder, direction)}
+          onNewChat={backend => onNewChatIn(item.folder, backend)}
+          onRename={() => renameFolder(item.folder)}
         /> : (() => {
           const { previousId, nextId } = reorderNeighbors.get(item.session.id) ?? { previousId: null, nextId: null }
           return <SessionRow
@@ -404,7 +430,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   )
 }
 
-function FolderHeader({ item, profileScope, collapsed, canMoveUp, canMoveDown, onDismissKeyboard, onToggle, onMove }: {
+function FolderHeader({ item, profileScope, collapsed, canMoveUp, canMoveDown, onDismissKeyboard, onToggle, onMove, onNewChat, onRename }: {
   item: Extract<Row, { kind: 'header' }>
   profileScope: ProfileScope
   collapsed: boolean
@@ -413,15 +439,40 @@ function FolderHeader({ item, profileScope, collapsed, canMoveUp, canMoveDown, o
   onDismissKeyboard: () => void
   onToggle: () => void
   onMove: (direction: 'up' | 'down') => void
+  onNewChat: (backend: Backend) => void
+  onRename: () => void
 }) {
   const colors = usePalette()
+  const menu = useRef<MenuComponentRef>(null)
   const movable = !['Pinned', 'General', 'Archived'].includes(item.folder)
-  const openMoveSheet = () => {
+  // Pinned and Archived are virtual sections: no chat can be created in them.
+  const hasMenu = !['Pinned', 'Archived'].includes(item.folder)
+  const runAction = (id: string) => {
+    if (!profileScopeIsCurrent(profileScope)) return
+    if (id === 'new-claude') onNewChat('claude')
+    else if (id === 'new-codex') onNewChat('codex')
+    else if (id === 'rename') onRename()
+    else if (id === 'move-up') onMove('up')
+    else if (id === 'move-down') onMove('down')
+  }
+  const actions: MenuAction[] = [
+    { id: 'new-claude', title: 'New Claude chat', image: 'plus' },
+    { id: 'new-codex', title: 'New Codex chat', image: 'plus' },
+    ...(movable ? [
+      { id: 'rename', title: 'Rename Folder', image: 'pencil' } satisfies MenuAction,
+      { id: 'move-up', title: 'Move Folder Up', image: 'arrow.up', attributes: { disabled: !canMoveUp } } satisfies MenuAction,
+      { id: 'move-down', title: 'Move Folder Down', image: 'arrow.down', attributes: { disabled: !canMoveDown } } satisfies MenuAction,
+    ] : []),
+  ]
+  const openActionSheet = () => {
     if (!profileScopeIsCurrent(profileScope)) return
     onDismissKeyboard()
     const available = [
-      ...(canMoveUp ? [{ title: 'Move Folder Up', direction: 'up' as const }] : []),
-      ...(canMoveDown ? [{ title: 'Move Folder Down', direction: 'down' as const }] : []),
+      { id: 'new-claude', title: 'New Claude chat' },
+      { id: 'new-codex', title: 'New Codex chat' },
+      ...(movable ? [{ id: 'rename', title: 'Rename Folder' }] : []),
+      ...(canMoveUp ? [{ id: 'move-up', title: 'Move Folder Up' }] : []),
+      ...(canMoveDown ? [{ id: 'move-down', title: 'Move Folder Down' }] : []),
     ]
     const cancelButtonIndex = available.length
     ActionSheetIOS.showActionSheetWithOptions({
@@ -430,31 +481,24 @@ function FolderHeader({ item, profileScope, collapsed, canMoveUp, canMoveDown, o
       cancelButtonIndex,
     }, index => {
       const action = available[index]
-      if (action && profileScopeIsCurrent(profileScope)) onMove(action.direction)
+      if (action) runAction(action.id)
     })
   }
   const header = <Pressable
     accessibilityRole="button"
     accessibilityLabel={`${collapsed ? 'Expand' : 'Collapse'} ${item.title}`}
-    accessibilityHint={movable && Platform.OS === 'ios' ? 'Long press to reorder this folder.' : undefined}
+    accessibilityHint={hasMenu ? 'Long press for folder actions.' : undefined}
     onPress={() => { onDismissKeyboard(); onToggle() }}
-    onLongPress={movable && Platform.OS === 'ios' ? openMoveSheet : undefined}
+    onLongPress={!hasMenu ? undefined : Platform.OS === 'ios' ? openActionSheet : () => menu.current?.show()}
     delayLongPress={350}
-    style={[styles.header, movable && Platform.OS !== 'ios' && styles.headerInShell]}
+    style={[styles.header, hasMenu && Platform.OS !== 'ios' && styles.headerInShell]}
   >
     {collapsed ? <ChevronRight size={13} color={colors.muted} /> : <ChevronDown size={13} color={colors.muted} />}
     <Text style={[styles.headerText, { color: colors.muted }]}>{item.title}</Text>
     <Text style={[styles.count, { color: colors.muted }]}>{item.count}</Text>
   </Pressable>
-  if (!movable || Platform.OS === 'ios') return header
-  return <View style={styles.folderHeaderShell}>{header}<AndroidMoreMenu testID={`folder-actions-${item.folder}`} label={`${item.title} folder actions`} title={item.title} color={colors.muted} actions={[
-    { id: 'move-up', title: 'Move Folder Up', image: 'arrow.up', attributes: { disabled: !canMoveUp } },
-    { id: 'move-down', title: 'Move Folder Down', image: 'arrow.down', attributes: { disabled: !canMoveDown } },
-  ]} onAction={action => {
-    if (!profileScopeIsCurrent(profileScope)) return
-    if (action === 'move-up') onMove('up')
-    if (action === 'move-down') onMove('down')
-  }} /></View>
+  if (!hasMenu || Platform.OS === 'ios') return header
+  return <View style={styles.folderHeaderShell}>{header}<MenuView ref={menu} testID={`folder-actions-${item.folder}`} title={item.title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>
 }
 
 function SessionRow({ session, profileScope, selected, running, searchSnippet, opening, folders, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onDismissKeyboard, onPress, promptText }: {
@@ -486,6 +530,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   const fork = useAppStore(state => state.forkSession)
   const remove = useAppStore(state => state.deleteSession)
   const folderSheetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const menu = useRef<MenuComponentRef>(null)
 
   useEffect(() => () => {
     if (folderSheetTimer.current) clearTimeout(folderSheetTimer.current)
@@ -611,18 +656,18 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
       testID={`chat-row-${session.id}`}
       accessibilityRole="button"
       accessibilityLabel={session.title}
-      accessibilityHint={welcome ? 'Tap to open the local setup guide.' : Platform.OS === 'ios' ? 'Tap to open. Long press for chat actions.' : 'Tap to open. Use the adjacent More button for chat actions.'}
+      accessibilityHint={welcome ? 'Tap to open the local setup guide.' : 'Tap to open. Long press for chat actions.'}
       accessibilityState={{ selected, disabled: opening }}
       disabled={opening}
       delayLongPress={350}
-      onLongPress={!welcome && Platform.OS === 'ios' ? openActionSheet : undefined}
+      onLongPress={welcome ? undefined : Platform.OS === 'ios' ? openActionSheet : () => menu.current?.show()}
       onPress={() => {
         if (!sessionScopeIsCurrent(profileScope, session.id)) return
         onPress()
       }}
       style={({ pressed }) => [styles.session, Platform.OS !== 'ios' && styles.sessionInShell, {
-        backgroundColor: selected ? `${colors.blue}22` : pressed ? colors.raised : colors.surface,
-        borderColor: selected ? `${colors.blue}88` : 'transparent',
+        backgroundColor: selected ? colors.selected : pressed ? colors.raised : colors.background,
+        borderColor: 'transparent',
       }]}
     >
       {selected ? <View pointerEvents="none" style={[styles.selectedIndicator, { backgroundColor: colors.blue }]} /> : null}
@@ -639,7 +684,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
       {waiting ? <View
         accessibilityLabel={`${pendingInteractionCount} ${waitingProviderName} ${pendingInteractionCount === 1 ? 'request' : 'requests'} waiting for you`}
         style={[styles.waitingBadge, { backgroundColor: colors.orange }]}
-      ><Text style={styles.waitingBadgeText}>{pendingInteractionCount > 9 ? '9+' : pendingInteractionCount}</Text></View> : (running || unread) ? <View
+      ><Text style={[styles.waitingBadgeText, { color: colors.textOnAccent }]}>{pendingInteractionCount > 9 ? '9+' : pendingInteractionCount}</Text></View> : (running || unread) ? <View
         accessibilityLabel={running ? 'Agent running' : 'Unread messages'}
         style={[styles.trailingStatusDot, { backgroundColor: running ? colors.green : colors.blue }]}
       /> : null}
@@ -648,17 +693,10 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   // The chat identity is always a plain native Pressable. Wrapping the entire
   // Android row in Compose MenuView + ReanimatedSwipeable lets their gesture
   // hosts retain the touch after returning from a chat, making every row look
-  // dead. Android actions live behind a separate 44pt More target instead.
+  // dead. The Android menu is anchored to a zero-width sibling at the row's
+  // trailing edge and opened from the row's own long press instead.
   if (welcome || Platform.OS === 'ios') return pressableRow
-  return <View style={styles.sessionShell}>{pressableRow}<AndroidMoreMenu testID={`chat-actions-${session.id}`} label={`${session.title} chat actions`} title={session.title} color={colors.muted} actions={actions} onAction={action => {
-    if (!sessionScopeIsCurrent(profileScope, session.id)) return
-    runAction(action)
-  }} /></View>
-}
-
-function AndroidMoreMenu({ testID, label, title, color, actions, onAction }: { testID: string; label: string; title: string; color: string; actions: MenuAction[]; onAction: (action: string) => void }) {
-  const menu = useRef<MenuComponentRef>(null)
-  return <MenuView ref={menu} title={title} actions={actions} onPressAction={event => onAction(event.nativeEvent.event)} style={styles.moreMenuTrigger}><Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} onPress={() => menu.current?.show()} style={styles.moreButton}><MoreHorizontal size={18} color={color} /></Pressable></MenuView>
+  return <View style={styles.sessionShell}>{pressableRow}<MenuView ref={menu} testID={`chat-actions-${session.id}`} title={session.title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>
 }
 
 const styles = StyleSheet.create({
@@ -669,7 +707,7 @@ const styles = StyleSheet.create({
   serverSelector: { marginHorizontal: 10, marginBottom: 8 },
   teamNetworkButton: { minHeight: 44, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, marginHorizontal: 10, marginBottom: 8, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 8 }, teamNetworkButtonText: { flex: 1, fontSize: 12.5, fontWeight: '800' },
   setupBanner: { minHeight: 40, borderRadius: 7, marginHorizontal: 10, marginBottom: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
-  setupBannerText: { color: 'white', fontSize: 13, fontWeight: '700' },
+  setupBannerText: { fontSize: 13, fontWeight: '700' },
   search: { minHeight: 38, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, marginHorizontal: 10, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 5, flexDirection: 'row', alignItems: 'center', gap: 7 },
   searchInput: { flex: 1, fontSize: 14, paddingVertical: 0 },
   searchError: { minHeight: 36, marginHorizontal: 10, marginTop: -3, marginBottom: 6, flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -682,12 +720,16 @@ const styles = StyleSheet.create({
   headerInShell: { flex: 1 },
   headerText: { flex: 1, fontSize: 11, fontWeight: '700' },
   count: { fontSize: 10 },
-  sessionShell: { minHeight: 51, flexDirection: 'row', alignItems: 'stretch', gap: 2 },
-  session: { minHeight: 51, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 9, overflow: 'hidden' },
+  sessionShell: { minHeight: 51, flexDirection: 'row', alignItems: 'stretch' },
+  session: { minHeight: 51, borderRadius: radius.compact, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 9, overflow: 'hidden' },
   sessionInShell: { flex: 1 },
   selectedIndicator: { position: 'absolute', top: 7, bottom: 7, left: 0, width: 3, borderRadius: 2 },
-  moreMenuTrigger: { width: 44, minHeight: 44 },
-  moreButton: { width: 44, minHeight: 44, flex: 1, alignItems: 'center', justifyContent: 'center' },
+  // Long-press menu anchor: takes no layout space and cannot be hit by a touch.
+  // The 1pt child is load-bearing: Compose only refreshes the popup anchor
+  // position for a drawn (non-zero) view, so an empty trigger leaves the menu
+  // anchored at a stale position (first list cell: nowhere at all).
+  menuAnchor: { width: 0, justifyContent: 'flex-end', pointerEvents: 'none' },
+  menuAnchorContent: { width: 1, height: 1 },
   sessionText: { flex: 1, minWidth: 0 },
   sessionTitle: { fontSize: 13, fontWeight: '700' },
   sessionMetaRow: { marginTop: 2, flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -696,6 +738,6 @@ const styles = StyleSheet.create({
   backendStatus: { width: 22, height: 22 },
   trailingStatusDot: { width: 8, height: 8, flexShrink: 0, marginHorizontal: 4, borderRadius: 4 },
   waitingBadge: { minWidth: 20, height: 20, flexShrink: 0, marginHorizontal: 1, paddingHorizontal: 5, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  waitingBadgeText: { color: 'white', fontSize: 10, fontWeight: '800' },
+  waitingBadgeText: { fontSize: 10, fontWeight: '800' },
   footer: { minHeight: 34, borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 5 }, footerDot: { width: 6, height: 6, borderRadius: 3 },
 })

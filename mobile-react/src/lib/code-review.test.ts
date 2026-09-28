@@ -147,3 +147,37 @@ const event = (seq: number, patch: Partial<Event>): Event => ({
   ].join('\n'))
   assert.equal(files[0]?.conflictCount, 0, 'incomplete marker sequences must not be presented as a conflict')
 }
+
+{
+  // Codex app-server sends whole-file bodies (no +/- prefixes) for added and deleted files.
+  const tool = {
+    id: 'patch-2',
+    name: 'apply_patch',
+    input: {
+      changes: [
+        { path: '/Users/me/.agentsdock/canvases/s/board.canvas.tsx', kind: { type: 'add' }, diff: "import { Card } from '@zed/canvas';\n\nconst rows = [\n  { id: 1 },\n];" },
+        { path: '/Users/me/old.txt', kind: 'delete', diff: 'gone\n- still content, not a diff marker' },
+      ],
+    },
+  }
+  const events = [event(1, { tool })]
+  const files = parseReviewableDiff(extractStructuredToolDiff(events))
+  assert.deepEqual(files.map(file => [file.path, file.additions, file.deletions]), [
+    ['/Users/me/.agentsdock/canvases/s/board.canvas.tsx', 5, 0],
+    ['/Users/me/old.txt', 0, 2],
+  ])
+  assert.equal(files[0].lines.filter(line => line.kind === 'add').length, 5)
+  assert.deepEqual(files[1].lines.filter(line => line.kind === 'remove').map(line => line.text), ['gone', '- still content, not a diff marker'])
+  assert.deepEqual(summarizeStructuredToolDiff(events)?.additions, 5)
+  assert.deepEqual(summarizeStructuredToolDiff(events)?.deletions, 2)
+}
+
+{
+  // An added Markdown list is a whole-file body, not an already-prefixed diff.
+  const tool = { id: 'patch-3', name: 'apply_patch', input: { changes: [
+    { path: '/Users/me/notes.md', kind: { type: 'add' }, diff: '- first\n- second\n\n- third' },
+  ] } }
+  const events = [event(1, { tool })]
+  assert.deepEqual(parseReviewableDiff(extractStructuredToolDiff(events)).map(file => [file.additions, file.deletions]), [[4, 0]])
+  assert.equal(summarizeStructuredToolDiff(events)?.deletions, 0)
+}

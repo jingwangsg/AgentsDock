@@ -1,9 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AccessibilityInfo, ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
+import { AccessibilityInfo, ActivityIndicator, Alert, Pressable, StyleSheet, View } from 'react-native'
 import { useRecyclingState } from '@shopify/flash-list'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Clock3, Code2, Copy, History, Pin, Siren, Sparkles, Wrench } from 'lucide-react-native'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Clock3, Code2, Copy, FileText, History, Pencil, Pin, RotateCcw, Siren, Sparkles, Wrench } from 'lucide-react-native'
 import type { ChatReference, Event } from '../types'
 import type { TimelineRow } from '../lib/timeline'
 import {
@@ -23,6 +23,9 @@ import {
 } from '../lib/timeline'
 import { formatDateTime, messageText } from '../lib/format'
 import { canQueryScheduledJobHistory } from '../lib/job-history'
+import { isImportedProviderInterruption } from '../lib/provider-origin'
+import { checkpointRestoreAvailable, sessionRewindAvailable } from '../lib/session-rewind'
+import { timelineEventLabel } from '../lib/timeline-labels'
 import { registerCodeReviewFallback, reviewFallbackForEvents, summarizeStructuredToolDiff } from '../lib/code-review'
 import { foldMarkdownSource } from '../lib/math'
 import {
@@ -41,6 +44,7 @@ import {
 } from '../lib/trace-detail'
 import { useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
+import { fonts } from '../lib/typography'
 import { Text } from './AppText'
 import { ChatReferenceChips, CrossChatExchangeCard, CrossChatHandoffCard, CrossChatMessageCard } from './CrossChatTimelineCards'
 import { ImportedCrossChatDeliveryCard } from './ImportedCrossChatDeliveryCard'
@@ -64,7 +68,7 @@ export const TimelineRowView = memo(function TimelineRowView({ row, sessionId, o
   if (row.kind === 'job') return <JobRowView row={row} sessionId={sessionId} onReview={onReview} fontScale={fontScale} />
   if (row.importedDelivery) return <ImportedCrossChatDeliveryCard row={row} fontScale={fontScale} />
   if (row.crossChatMessage) return <CrossChatMessageCard event={row.event} events={row.events} rowKey={row.key} anchorTs={row.anchorTs} sessionId={sessionId} fontScale={fontScale} layoutWidth={layoutWidth} />
-  if (codexLifecycleSemanticKey(row.event)) return <CodexLifecycleRowView row={row} fontScale={fontScale} />
+  if (codexLifecycleSemanticKey(row.event)) return <CodexLifecycleRowView row={row} sessionId={sessionId} fontScale={fontScale} />
   if (row.key.startsWith('provider-interaction-audit:')) return <ProviderInteractionAuditView row={row} />
   const exchangeId = row.event.exchange_id?.trim() || row.event.cross_chat_exchange_id?.trim()
   if (row.event.type.startsWith('cross_chat_exchange_') && exchangeId) return <CrossChatExchangeCard event={row.event} events={row.events} rowKey={row.key} sessionId={sessionId} fontScale={fontScale} />
@@ -90,9 +94,9 @@ function EmergencyAlertView({ event, sessionId }: { event: Event; sessionId: str
     if (renderedEventId.current !== event.id) return
     setFailed(!ok); setBusy(false)
   }
-  return <View style={[styles.system, { backgroundColor: `${colors.red}18`, borderColor: colors.red }]}>
+  return <View style={[styles.system, { backgroundColor: colors.dangerSurface, borderColor: colors.red }]}>
     <Siren size={16} color={colors.red} />
-    <View style={{ flex: 1, gap: 5 }}><Text style={[styles.systemTitle, { color: colors.red }]}>Emergency alert raised</Text><Text selectable style={[styles.systemText, { color: colors.text }]}>{event.message || event.emergency_alert?.message || 'The agent requested immediate attention.'}</Text>{failed ? <Text accessibilityRole="alert" style={{ color: colors.red, fontSize: 11 }}>Couldn’t acknowledge. Try again.</Text> : null}{acknowledgeable ? <Pressable accessibilityRole="button" accessibilityLabel={`Acknowledge emergency${session?.title ? ` in ${session.title}` : ''}`} disabled={busy} onPress={() => void acknowledge()} style={[styles.emergencyAcknowledge, { backgroundColor: colors.red, opacity: busy ? 0.5 : 1 }]}>{busy ? <ActivityIndicator size="small" color="white" /> : <Text style={{ color: 'white', fontWeight: '800', fontSize: 11 }}>Acknowledge</Text>}</Pressable> : null}</View>
+    <View style={{ flex: 1, gap: 5 }}><Text style={[styles.systemTitle, { color: colors.red }]}>Emergency alert raised</Text><Text selectable style={[styles.systemText, { color: colors.text }]}>{event.message || event.emergency_alert?.message || 'The agent requested immediate attention.'}</Text>{failed ? <Text accessibilityRole="alert" style={{ color: colors.red, fontSize: 11 }}>Couldn’t acknowledge. Try again.</Text> : null}{acknowledgeable ? <Pressable accessibilityRole="button" accessibilityLabel={`Acknowledge emergency${session?.title ? ` in ${session.title}` : ''}`} disabled={busy} onPress={() => void acknowledge()} style={[styles.emergencyAcknowledge, { backgroundColor: colors.red, opacity: busy ? 0.5 : 1 }]}>{busy ? <ActivityIndicator size="small" color={colors.textOnAccent} /> : <Text style={{ color: colors.textOnAccent, fontWeight: '800', fontSize: 11 }}>Acknowledge</Text>}</Pressable> : null}</View>
   </View>
 }
 
@@ -103,6 +107,15 @@ function MessageRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRo
   const pin = useAppStore(state => state.pinMessage)
   const removePin = useAppStore(state => state.removePin)
   const pinned = useAppStore(state => state.pins.some(value => value.id === `message:${row.events.at(-1)?.id}`))
+  // Rewind targets an idle chat: no live run, no stop, and no send being admitted.
+  const canEditTurn = useAppStore(state => row.role === 'user' && Boolean(row.runId)
+    && sessionRewindAvailable(state.health, state.snapshots[sessionId]?.session.backend ?? state.sessions.find(candidate => candidate.id === sessionId)?.backend)
+    && !state.activeSessionIds.has(sessionId)
+    && !state.stoppingSessionIds.has(sessionId)
+    && !state.turnAdmissionTokens[sessionId]
+    && !state.sendingSessionIds.has(sessionId))
+  const canRestoreCheckpoint = useAppStore(state => canEditTurn && Boolean(row.checkpointCommit)
+    && checkpointRestoreAvailable(state.health, state.snapshots[sessionId]?.session.backend ?? state.sessions.find(candidate => candidate.id === sessionId)?.backend))
   const full = useMemo(() => rowText(row), [row])
   const chatReferences = useMemo(
     () => row.role === 'user'
@@ -184,9 +197,26 @@ function MessageRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRo
     void Haptics.notificationAsync(saved ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Error).catch(() => undefined)
     if (saved) void AccessibilityInfo.announceForAccessibility(`${next} message`)
   }
+  const beginEditingTurn = () => {
+    if (!row.runId) return
+    // Resend the original prompt, not its display form.
+    useAppStore.getState().beginEditingTurn(sessionId, row.runId, row.events[0]?.prompt ?? full)
+  }
+  const confirmRestoreCheckpoint = () => {
+    if (!row.runId) return
+    const runId = row.runId
+    Alert.alert(
+      'Restore checkpoint',
+      'This reverts the workspace files to their state before this turn and rewinds the chat to this message. Later messages are removed.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Restore checkpoint', style: 'destructive', onPress: () => { void useAppStore.getState().restoreCheckpoint(sessionId, runId, profileGeneration) } },
+      ],
+    )
+  }
   return (
     <View style={[styles.messageWrap, row.role === 'user' && styles.userAlign]}>
-      <View style={[styles.message, row.role === 'user' ? { backgroundColor: colors.user, borderColor: colors.green } : { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <View style={[styles.message, row.role === 'user' ? { backgroundColor: colors.user, borderColor: colors.border, borderWidth: 1, borderRadius: 6 } : { backgroundColor: 'transparent', borderColor: 'transparent' }]}>
         <View style={styles.metaRow}>
           <Text style={[styles.author, { color: colors.muted }]} numberOfLines={1}>{row.role === 'user' ? 'You' : 'Assistant'}</Text>
           <Text style={[styles.time, { color: colors.muted }]} numberOfLines={1}>{formatDateTime(event.ts)}</Text>
@@ -194,6 +224,8 @@ function MessageRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRo
           {feedback ? <Text testID={`message-action-feedback-${event.id}`} style={[styles.feedback, { color: feedback.includes('failed') ? colors.red : colors.green }]} numberOfLines={1}>{feedback}</Text> : null}
           <IconButton testID={`message-pin-${event.id}`} icon={Pin} size={15} selected={pinned} label={pinned ? 'Unpin message' : 'Pin message'} onPress={() => void togglePin()} />
           <IconButton testID={`message-copy-${event.id}`} icon={feedback === 'Copied' ? Check : Copy} size={15} selected={feedback === 'Copied'} label="Copy full text" onPress={() => void copyFullText()} />
+          {canEditTurn ? <IconButton testID={`message-edit-turn-${event.id}`} icon={Pencil} size={15} label="Edit this turn" onPress={beginEditingTurn} /> : null}
+          {canRestoreCheckpoint ? <IconButton testID={`message-restore-checkpoint-${event.id}`} icon={RotateCcw} size={15} label="Restore checkpoint" onPress={confirmRestoreCheckpoint} /> : null}
         </View>
         <MarkdownContent
           value={visible}
@@ -296,7 +328,7 @@ function TraceRowView({ row, sessionId, onReview, fontScale, anchorSeq, includeC
       if (event.type === 'tool_started' || event.type === 'tool_finished') {
         toolEventCount += 1
         latestTool = event
-      } else if (event.type === 'reasoning_summary') {
+      } else if (event.type === 'reasoning_summary' || event.type === 'reasoning_text') {
         thoughtCount += 1
         latestThought = event
       } else if (event.type === 'code_diff') {
@@ -332,8 +364,15 @@ function TraceRowView({ row, sessionId, onReview, fontScale, anchorSeq, includeC
   const metadata = [
     toolCount ? `${toolCount} ${toolCount === 1 ? 'tool' : 'tools'}` : '',
     thoughtCount ? `${thoughtCount} thinking ${thoughtCount === 1 ? 'summary' : 'summaries'}` : '',
+    row.stoppedAt ? 'Stopped' : '',
   ].filter(Boolean).join(' · ')
   const toggleLabel = open ? 'Hide details' : 'Show details'
+  const openReview = () => {
+    if (!runId) return
+    const fallback = reviewFallbackForEvents(profileGeneration, sessionId, runId, displayEvents)
+    if (fallback) registerCodeReviewFallback(fallback)
+    onReview(runId)
+  }
   const showMore = async () => {
     if (!runId || loadingMoreRef.current) return
     const generation = loadGeneration.current
@@ -404,13 +443,12 @@ function TraceRowView({ row, sessionId, onReview, fontScale, anchorSeq, includeC
           accessibilityLabel="Review code changes"
           onPress={event => {
             event.stopPropagation()
-            const fallback = reviewFallbackForEvents(profileGeneration, sessionId, runId, displayEvents)
-            if (fallback) registerCodeReviewFallback(fallback)
-            onReview(runId)
+            openReview()
           }}
           style={[styles.review, { backgroundColor: colors.surface }]}
         ><Text style={{ color: colors.blue, fontSize: 11, fontWeight: '700' }}>Review</Text></Pressable> : null}
       </Pressable>
+      {traceSummary.canonicalDiff && runId ? <CodeChangesCard event={traceSummary.canonicalDiff} onOpen={openReview} /> : null}
       {open ? <View style={[styles.traceBody, { borderColor: colors.border }]}>
         {hiddenTraceEvents ? <Text style={[styles.traceHidden, { color: colors.muted }]}>{hiddenTraceEvents} older trace updates hidden</Text> : null}
         {visibleTraceEvents.map(event => {
@@ -418,15 +456,17 @@ function TraceRowView({ row, sessionId, onReview, fontScale, anchorSeq, includeC
           return <View key={event.id} style={styles.traceEvent}>
             {event.type.includes('tool')
               ? <Wrench size={13} color={colors.orange} />
-              : event.type === 'reasoning_summary'
+              : event.type === 'reasoning_summary' || event.type === 'reasoning_text'
                 ? <Sparkles size={13} color={colors.blue} />
                 : <Code2 size={13} color={colors.blue} />}
             <View style={styles.traceEventBody}>
               <Text style={[styles.traceEventType, { color: colors.muted }]}>{event.type === 'reasoning_summary'
                 ? event.phase === 'commentary' ? 'Agent update' : 'Thinking summary'
-                : event.tool?.name || event.type.replaceAll('_', ' ')}</Text>
+                : event.type === 'reasoning_text'
+                  ? 'Thinking'
+                  : event.tool?.name || event.type.replaceAll('_', ' ')}</Text>
               {text.trim()
-                ? event.type === 'reasoning_summary'
+                ? event.type === 'reasoning_summary' || event.type === 'reasoning_text'
                   ? <MarkdownContent value={text} fontScale={fontScale} />
                   : <Text selectable style={[styles.traceText, { color: colors.text }]}>{text}</Text>
                 : null}
@@ -554,7 +594,7 @@ function JobRowView({ row, sessionId, onReview, fontScale }: { row: Extract<Time
     () => traceRunId
       ? row.events.filter(event => (
           event.run_id === traceRunId
-          && ['reasoning_summary', 'tool_started', 'tool_finished', 'code_diff'].includes(event.type)
+          && ['reasoning_summary', 'reasoning_text', 'tool_started', 'tool_finished', 'code_diff'].includes(event.type)
         ))
       : [],
     [row.events, traceRunId],
@@ -664,7 +704,7 @@ function JobRowView({ row, sessionId, onReview, fontScale }: { row: Extract<Time
     if (next && !historyLoaded) void loadHistory(null, true)
   }
 
-  return <View style={[styles.job, { borderColor: colors.orange, backgroundColor: `${colors.orange}18` }]}>
+  return <View style={[styles.job, { borderColor: colors.orange, backgroundColor: colors.amberSurface }]}>
     <Pressable
       testID={`job-latest-status-${jobId ?? latestSource.id}`}
       accessibilityRole="button"
@@ -769,17 +809,70 @@ function JobStatusPill({ status, compact = false }: { status: ReturnType<typeof 
   </View>
 }
 
+const ROUTE_AUDIT_COPY = {
+  created: { title: 'Chat route created', verb: 'Created' },
+  updated: { title: 'Chat route updated', verb: 'Updated' },
+  deleted: { title: 'Chat route removed', verb: 'Removed' },
+} as const
+const PROVIDER_INTERRUPTION_COPY = {
+  steer: 'Claude’s earlier response was interrupted by a steering message. Historical record; not a new message.',
+  stop: 'Claude’s earlier response was stopped. Historical record; not a new message.',
+  unknown: 'Claude recorded an interruption. Its cause is not confirmed. Historical record; not a new message.',
+} as const
+
+/** Bodies stay on the Hub; the receipt carries only recipient labels and counts. */
+export function teamMessageSentLabel(event: Event): string {
+  const recipients = event.recipients ?? []
+  const names = recipients.map(recipient => recipient.kind === 'all' ? 'Bulletin' : recipient.display_name).filter(Boolean)
+  const destination = names.length <= 3 ? names.join(', ') : `${names.slice(0, 3).join(', ')} +${names.length - 3}`
+  const isSkill = event.kind === 'skill'
+  const allServers = event.destination === 'all_servers'
+  const bulletin = !allServers && recipients.some(recipient => recipient.kind === 'all')
+  const messageTitle = event.title?.trim()
+  const subject = messageTitle ? `“${messageTitle}”` : isSkill ? 'a team skill' : 'a team message'
+  const destinationText = bulletin ? ' to Bulletin'
+    : allServers ? ' to all server inboxes'
+      : destination ? ` to ${destination}` : ' through Team Network'
+  return `${isSkill ? 'Published' : bulletin ? 'Broadcast' : 'Sent'} ${subject}${destinationText}`
+}
+
 function SystemRowView({ row, fontScale }: { row: Extract<TimelineRow, { kind: 'system' }>; fontScale: number }) {
   const colors = usePalette()
-  const error = isTimelineError(row.event)
-  const digest = isHandoffDigestEvent(row.event)
-  const generating = digest && !['handoff_digest_received', 'handoff_digest_sent', 'handoff_digest_error'].includes(row.event.type)
-  const title = digest ? digestStatusTitle(row.event) : row.event.type.replaceAll('_', ' ')
-  const text = digest ? digestStatusText(row.event) : messageText(row.event) || title
-  const digestBody = row.event.type === 'handoff_digest_received' ? row.event.digest?.trim() : ''
+  const event = row.event
+  const routeAudit = event.type === 'agent_handoff_route_created' ? 'created'
+    : event.type === 'agent_handoff_route_updated' ? 'updated'
+      : event.type === 'agent_handoff_route_deleted' ? 'deleted' : null
+  // Route aliases are protocol handles, not chat names. Keep the receipt's
+  // original data intact and resolve its exact target only for presentation.
+  const routeTargetTitle = useAppStore(state => routeAudit
+    ? state.sessions.find(session => session.id === event.target_session_id)?.title
+    : undefined)
   const [showDigest, setShowDigest] = useRecyclingState(false, [row.key])
+  if (event.type === 'history_rewound' || event.type === 'workspace_checkpoint_restored') {
+    return <View testID={`lifecycle-${event.type}-${event.id}`} style={[styles.system, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <History size={16} color={colors.muted} />
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.systemTitle, { color: colors.muted }]}>{event.type === 'history_rewound' ? 'Rewound to here' : 'Workspace restored to checkpoint'}</Text>
+        <Text style={[styles.systemText, { color: colors.muted }]}>{formatDateTime(event.ts)}</Text>
+      </View>
+    </View>
+  }
+  const error = isTimelineError(event)
+  const digest = isHandoffDigestEvent(event)
+  const interruption = isImportedProviderInterruption(event)
+  const generating = digest && !['handoff_digest_received', 'handoff_digest_sent', 'handoff_digest_error'].includes(event.type)
+  const title = interruption ? 'Claude interruption'
+    : routeAudit ? ROUTE_AUDIT_COPY[routeAudit].title
+      : event.type === 'team_message_sent' ? 'Team Network'
+        : event.type === 'provider_background_task_update' ? 'Claude background task'
+          : digest ? digestStatusTitle(event) : timelineEventLabel(event.type)
+  const text = interruption ? PROVIDER_INTERRUPTION_COPY[event.provider_origin.cause]
+    : routeAudit ? `${ROUTE_AUDIT_COPY[routeAudit].verb} approved chat route to ${routeTargetTitle?.trim() || event.target_title?.trim() || 'another chat'}.`
+      : event.type === 'team_message_sent' ? teamMessageSentLabel(event)
+        : digest ? digestStatusText(event) : messageText(event) || title
+  const digestBody = event.type === 'handoff_digest_received' ? event.digest?.trim() : ''
   const accent = error ? colors.red : digest ? colors.orange : colors.blue
-  return <View style={[styles.system, { backgroundColor: error ? `${colors.red}18` : digest ? `${colors.orange}18` : colors.surface, borderColor: accent }]}>
+  return <View style={[styles.system, { backgroundColor: error ? colors.dangerSurface : digest ? colors.amberSurface : colors.surface, borderColor: accent }]}>
     {error ? <AlertTriangle size={16} color={accent} /> : generating ? <ActivityIndicator size="small" color={accent} style={styles.digestSpinner} /> : digest ? <Sparkles size={16} color={accent} /> : <Check size={16} color={accent} />}
     <View style={{ flex: 1 }}><Text style={[styles.systemTitle, { color: error ? colors.red : colors.muted }]}>{title}</Text><Text selectable style={[styles.systemText, { color: error ? colors.red : colors.text }]}>{text}</Text>{digestBody ? <><Pressable accessibilityRole="button" accessibilityLabel={showDigest ? 'Hide digest' : 'View digest'} accessibilityState={{ expanded: showDigest }} onPress={() => setShowDigest(value => !value)} style={styles.digestToggle}><Text style={{ color: colors.blue, fontSize: 12, fontWeight: '700' }}>{showDigest ? 'Hide digest' : 'View digest'}</Text></Pressable>{showDigest ? <MarkdownContent value={digestBody} fontScale={fontScale} /> : null}</> : null}</View>
   </View>
@@ -827,24 +920,28 @@ function ProviderInteractionAuditView({ row }: { row: Extract<TimelineRow, { kin
   </View>
 }
 
-function CodexLifecycleRowView({ row, fontScale }: { row: Extract<TimelineRow, { kind: 'system' }>; fontScale: number }) {
+function CodexLifecycleRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRow, { kind: 'system' }>; sessionId: string; fontScale: number }) {
   const colors = usePalette()
   const [open, setOpen] = useRecyclingState(false, [row.key])
   const event = row.event
+  // A start marker with no completion is "Compacting" only while the chat is
+  // still running; afterwards it is a historical start without a completion.
+  const liveCompaction = useAppStore(state => event.type === 'codex_compaction_started' && state.activeSessionIds.has(sessionId))
   const failed = codexLifecycleFailed(event)
   const detail = messageText(event).trim()
   const accent = failed ? colors.red : colors.blue
-  return <View style={[styles.lifecycle, { borderColor: accent, backgroundColor: failed ? `${colors.red}18` : colors.surface }]}>
+  const title = codexLifecycleTitle(event, liveCompaction)
+  return <View style={[styles.lifecycle, { borderColor: accent, backgroundColor: failed ? colors.dangerSurface : colors.surface }]}>
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={codexLifecycleTitle(event)}
+      accessibilityLabel={title}
       accessibilityState={{ expanded: open }}
       disabled={!detail}
       onPress={() => setOpen(value => !value)}
       style={styles.lifecycleSummary}
     >
-      {failed ? <AlertTriangle size={14} color={accent} /> : <Sparkles size={14} color={accent} />}
-      <Text style={[styles.lifecycleTitle, { color: failed ? colors.red : colors.text }]}>{codexLifecycleTitle(event)}</Text>
+      {failed ? <AlertTriangle size={14} color={accent} /> : liveCompaction ? <ActivityIndicator size="small" color={accent} style={styles.lifecycleSpinner} /> : <Sparkles size={14} color={accent} />}
+      <Text style={[styles.lifecycleTitle, { color: failed ? colors.red : colors.text }]}>{title}</Text>
       <Text style={[styles.lifecycleTime, { color: colors.muted }]}>{formatDateTime(event.ts)}</Text>
       {detail ? open ? <ChevronDown size={14} color={colors.muted} /> : <ChevronRight size={14} color={colors.muted} /> : null}
     </Pressable>
@@ -852,10 +949,42 @@ function CodexLifecycleRowView({ row, fontScale }: { row: Extract<TimelineRow, {
   </View>
 }
 
-function codexLifecycleTitle(event: Extract<TimelineRow, { kind: 'system' }>['event']): string {
+function codexLifecycleTitle(event: Extract<TimelineRow, { kind: 'system' }>['event'], liveCompaction = false): string {
   if (event.type === 'codex_goal_budget_limited') return 'Goal budget reached'
+  if (event.type === 'codex_compaction_started') return liveCompaction ? 'Compacting context…' : 'Context compaction started'
   if (event.type === 'codex_compaction_completed') return codexLifecycleFailed(event) ? 'Context compaction failed' : 'Context compacted'
-  return event.type.replaceAll('_', ' ')
+  return timelineEventLabel(event.type)
+}
+
+/** Port of the desktop CodeChangesCard: one tap-through to the run's review. */
+function CodeChangesCard({ event, onOpen }: { event: Event; onOpen: () => void }) {
+  const colors = usePalette()
+  const files = event.diff_files ?? []
+  const fileCount = event.files_changed ?? files.length
+  if (fileCount <= 0) return null
+  const visibleFiles = files.slice(0, 3)
+  const remainingFiles = Math.max(0, fileCount - visibleFiles.length)
+  return <Pressable
+    testID={`code-changes-${event.id}`}
+    accessibilityRole="button"
+    accessibilityLabel={`Review ${fileCount} edited ${fileCount === 1 ? 'file' : 'files'}`}
+    onPress={onOpen}
+    style={({ pressed }) => [styles.changesCard, { backgroundColor: colors.surface, borderColor: colors.border, opacity: pressed ? 0.7 : 1 }]}
+  >
+    <FileText size={17} color={colors.blue} />
+    <View style={styles.changesBody}>
+      <Text style={[styles.changesTitle, { color: colors.text }]}>Edited {fileCount} {fileCount === 1 ? 'file' : 'files'}</Text>
+      {visibleFiles.length ? <Text style={[styles.changesFiles, { color: colors.muted }]} numberOfLines={1}>
+        {visibleFiles.map(file => file.path.split(/[\\/]/).pop() || file.path).join(' · ')}{remainingFiles > 0 ? ` +${remainingFiles}` : ''}
+      </Text> : null}
+      <Text style={styles.changesStats}>
+        <Text style={{ color: colors.green, fontWeight: '800' }}>+{event.additions ?? 0}</Text>
+        {' '}
+        <Text style={{ color: colors.red, fontWeight: '800' }}>−{event.deletions ?? 0}</Text>
+      </Text>
+    </View>
+    <Text style={{ color: colors.blue, fontSize: 11, fontWeight: '800' }}>Review</Text>
+  </Pressable>
 }
 
 function codexLifecycleFailed(event: Extract<TimelineRow, { kind: 'system' }>['event']): boolean {
@@ -886,7 +1015,7 @@ const styles = StyleSheet.create({
   fold: { alignSelf: 'flex-start', minHeight: 44, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 5, borderWidth: StyleSheet.hairlineWidth, justifyContent: 'center' }, collapse: { alignSelf: 'flex-start', minHeight: 44, paddingVertical: 5, justifyContent: 'center' },
   traceWrap: { paddingHorizontal: 14 }, traceHeader: { minHeight: 52, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 7 },
   traceHeading: { flex: 1, minWidth: 0, gap: 3 }, traceHeadingMeta: { flexDirection: 'row', alignItems: 'baseline', gap: 7 }, traceTitle: { flexShrink: 0, fontSize: 12, fontWeight: '700' }, traceMeta: { flex: 1, minWidth: 0, fontSize: 10.5 }, traceHeadline: { fontSize: 10.5, lineHeight: 15 }, traceAction: { flexShrink: 0, fontSize: 10.5, fontWeight: '800' }, review: { minHeight: 44, borderRadius: 5, paddingHorizontal: 8, paddingVertical: 5, justifyContent: 'center' },
-  traceBody: { marginHorizontal: 8, borderLeftWidth: StyleSheet.hairlineWidth, paddingVertical: 8, paddingLeft: 11, gap: 9 }, traceHidden: { fontSize: 10, fontWeight: '700' }, traceEvent: { flexDirection: 'row', gap: 8 }, traceEventBody: { flex: 1, minWidth: 0 }, traceEventType: { fontSize: 10, fontWeight: '700', textTransform: 'capitalize' }, traceText: { fontSize: 12, fontFamily: 'Menlo', lineHeight: 17, marginTop: 3 },
+  traceBody: { marginHorizontal: 8, borderLeftWidth: StyleSheet.hairlineWidth, paddingVertical: 8, paddingLeft: 11, gap: 9 }, traceHidden: { fontSize: 10, fontWeight: '700' }, traceEvent: { flexDirection: 'row', gap: 8 }, traceEventBody: { flex: 1, minWidth: 0 }, traceEventType: { fontSize: 10, fontWeight: '700', textTransform: 'capitalize' }, traceText: { fontSize: 12, fontFamily: fonts.mono, lineHeight: 17, marginTop: 3 },
   traceDetailActions: { gap: 7, paddingTop: 3 },
   traceDetailAction: { minHeight: 44, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   traceDetailActionText: { fontSize: 11, fontWeight: '800' },
@@ -905,7 +1034,7 @@ const styles = StyleSheet.create({
   jobTitle: { fontSize: 12, fontWeight: '800' },
   jobMeta: { fontSize: 10, marginTop: 2 },
   jobText: { fontSize: 14, lineHeight: 20 },
-  jobStructuredText: { fontSize: 12, lineHeight: 17, fontFamily: 'Menlo' },
+  jobStructuredText: { fontSize: 12, lineHeight: 17, fontFamily: fonts.mono },
   jobStatusPill: { flexShrink: 0, minHeight: 24, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' },
   jobStatusPillCompact: { minHeight: 21, borderRadius: 11, paddingHorizontal: 6 },
   jobStatusPillText: { fontSize: 10, fontWeight: '800' },
@@ -944,6 +1073,9 @@ const styles = StyleSheet.create({
   lifecycleSummary: { minHeight: 44, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', gap: 7 },
   lifecycleTitle: { flex: 1, minWidth: 0, fontSize: 11.5, fontWeight: '800' }, lifecycleTime: { fontSize: 9.5 },
   lifecycleDetail: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingVertical: 9 },
+  lifecycleSpinner: { width: 14, height: 14 },
+  changesCard: { marginTop: 7, minHeight: 56, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  changesBody: { flex: 1, minWidth: 0, gap: 2 }, changesTitle: { fontSize: 12, fontWeight: '800' }, changesFiles: { fontSize: 10.5 }, changesStats: { fontSize: 10.5 },
   digestSpinner: { width: 16, height: 16 },
   digestToggle: { alignSelf: 'flex-start', minHeight: 44, paddingTop: 8, paddingBottom: 4, justifyContent: 'center' },
 })

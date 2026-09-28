@@ -21,6 +21,7 @@ const eventCharacterCosts = new WeakMap<Event, number>()
 const historicalTraceTypes = new Set([
   'raw_event',
   'reasoning_summary',
+  'reasoning_text',
   'tool_started',
   'tool_finished',
   'process_started',

@@ -19,7 +19,7 @@ import {
 } from 'react-native'
 import WebView, { type WebViewMessageEvent } from 'react-native-webview'
 import { Text } from '../components/AppText'
-import { usePalette } from '../theme'
+import { useAppColorScheme, usePalette } from '../theme'
 import { CODE_EDITOR_HTML } from './codeEditorAssets'
 import { codeEditorLanguage, type CodeEditorLanguageDefinition } from './codeEditorLanguage'
 import {
@@ -37,9 +37,10 @@ import {
   DEFAULT_EDITOR_APPEARANCE,
   normalizeEditorAppearance,
   readEditorAppearance,
+  resolveEditorTheme,
   writeEditorAppearance,
   type EditorAppearance,
-  type EditorThemeId,
+  type EditorThemePreference,
 } from './editorAppearance'
 import {
   acceptMobileCodeEditorMessage,
@@ -121,7 +122,7 @@ export interface MobileCodeEditorProps {
   readOnly?: boolean
   maxBytes?: number
   initialViewState?: CodeEditorViewState
-  theme?: EditorThemeId
+  theme?: EditorThemePreference
   fontSize?: number
   autoFocus?: boolean
   showToolbar?: boolean
@@ -179,6 +180,8 @@ export const MobileCodeEditor = forwardRef<MobileCodeEditorController, MobileCod
   renderFallback,
 }, forwardedRef) {
   const colors = usePalette()
+  const appScheme = useAppColorScheme()
+  const appSchemeRef = useRef(appScheme)
   const window = useWindowDimensions()
   // Large documents must have one authoritative owner. Keeping the strings in a
   // ref prevents React from retaining a new multi-megabyte state object for each
@@ -302,7 +305,7 @@ export const MobileCodeEditor = forwardRef<MobileCodeEditorController, MobileCod
       viewState: current.viewState,
     }
     return type === 'initialize'
-      ? { type, ...document, theme: appearanceRef.current.theme, fontSize: appearanceRef.current.fontSize }
+      ? { type, ...document, theme: resolveEditorTheme(appearanceRef.current.theme, appSchemeRef.current), fontSize: appearanceRef.current.fontSize }
       : { type, ...document }
   }, [])
 
@@ -557,8 +560,17 @@ export const MobileCodeEditor = forwardRef<MobileCodeEditorController, MobileCod
     setAppearance(next)
     onAppearanceChange?.(next)
     if (persist) void writeEditorAppearance(next)
-    if (engineInitializedRef.current) postCommand({ type: 'setAppearance', ...next })
+    if (engineInitializedRef.current) postCommand({ type: 'setAppearance', theme: resolveEditorTheme(next.theme, appSchemeRef.current), fontSize: next.fontSize })
   }, [onAppearanceChange, postCommand])
+
+  useEffect(() => {
+    if (appSchemeRef.current === appScheme) return
+    appSchemeRef.current = appScheme
+    const current = appearanceRef.current
+    if (current.theme === 'app' && engineInitializedRef.current) {
+      postCommand({ type: 'setAppearance', theme: resolveEditorTheme('app', appScheme), fontSize: current.fontSize })
+    }
+  }, [appScheme, postCommand])
 
   useEffect(() => {
     if (theme !== undefined || fontSize !== undefined) {
@@ -760,7 +772,7 @@ function DefaultEditorFallback({ context }: { context: MobileCodeEditorFallbackC
       onPress={context.retry}
       style={({ pressed }) => [styles.retryButton, { backgroundColor: colors.blue, opacity: pressed ? 0.7 : 1 }]}
     >
-      <Text style={styles.retryText}>Retry</Text>
+      <Text style={[styles.retryText, { color: colors.textOnAccent }]}>Retry</Text>
     </Pressable>
   </View>
 }
@@ -897,7 +909,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   retryText: {
-    color: '#ffffff',
     fontSize: 13,
     fontWeight: '700',
   },

@@ -80,20 +80,6 @@ let applyingHostDocument = false
 let currentTheme: CodeEditorThemeId = 'vscode-dark'
 let currentFontSize = 13
 
-const editor = new EditorView({
-  state: createEditorState('', '', false, undefined),
-  parent: editorHost,
-})
-
-editor.dom.addEventListener('focusin', () => emit({ type: 'focusChanged', focused: true }))
-editor.dom.addEventListener('focusout', () => {
-  queueMicrotask(() => emit({ type: 'focusChanged', focused: editor.hasFocus }))
-})
-
-window.addEventListener('message', receiveHostMessage)
-document.addEventListener('message', receiveHostMessage as EventListener)
-emit({ type: 'ready' })
-
 function createEditorState(
   path: string,
   content: string,
@@ -631,3 +617,21 @@ function nonnegativeInteger(value: number | undefined): number {
 function nonnegativeNumber(value: number | undefined): number {
   return Number.isFinite(value) ? Math.max(0, value!) : 0
 }
+
+// load-bearing: boot stays at the end of the file. esbuild bundles top-level
+// const/class declarations as `var`, so a declaration below this point (such
+// as searchOccurrenceCounter) would still be undefined when the first editor
+// state is configured, and CodeMirror would reject the extension list.
+const editor = new EditorView({
+  state: createEditorState('', '', false, undefined),
+  parent: editorHost,
+})
+
+editor.dom.addEventListener('focusin', () => emit({ type: 'focusChanged', focused: true }))
+editor.dom.addEventListener('focusout', () => {
+  queueMicrotask(() => emit({ type: 'focusChanged', focused: editor.hasFocus }))
+})
+
+window.addEventListener('message', receiveHostMessage)
+document.addEventListener('message', receiveHostMessage as EventListener)
+emit({ type: 'ready' })

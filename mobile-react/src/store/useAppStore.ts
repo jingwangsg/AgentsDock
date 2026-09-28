@@ -4,7 +4,7 @@ import * as Notifications from 'expo-notifications'
 import type {
   AgentFile,
   AgentCrossChatRoutesSnapshot,
-  AddServerProfileInput,
+  AppearanceMode,
   Backend,
   ChatDefaults,
   ChatReference,
@@ -19,10 +19,13 @@ import type {
   JobRunHistoryPage,
   PinnedItem,
   ProcessSnapshot,
+  ProviderCommandSelection,
   ProviderReloadResult,
   QueuedRunNowResponse,
   QueuedRunStatus,
   QueuedTurn,
+  RemoteServer,
+  RemoteServerDeployLogEntry,
   RuntimeCatalog,
   ServerUpdateStatus,
   Session,
@@ -42,10 +45,11 @@ import type {
 import { AgentServerClient, AgentServerClientDisposedError, AgentServerClientUnvalidatedError, ServerError, WebSocketConnectionError } from '../api/AgentServerClient'
 import { errorMessage, mergeEvents, mergeFiles, normalizeServerURL } from '../lib/format'
 import { reconcileHealthActiveSessions } from '../lib/active-sessions'
-import { shouldAutoConnectServer } from '../lib/first-launch'
+import { isServerSetupRequired, shouldAutoConnectServer } from '../lib/first-launch'
 import { SNAPSHOT_CACHE_VERSION, shouldReplaceCachedTimeline, snapshotLatestSeq } from '../lib/history'
 import { crossChatQueueRefreshSessionId, isUserQueuedTurn, queuedDeliverySkipIdentity, queuedMoveCrossesDeliveryBarrier, queuedTurnHasEarlierDeliveryBarrier, resolveNewQueuedTurn, updateQueuedTurns } from '../lib/queue'
-import { isAgentActivityEvent } from '../lib/codex-controls'
+import { isAgentActivityEvent, isTurnEndNotificationEvent } from '../lib/codex-controls'
+import { checkpointRestoreAvailable, sessionRewindAvailable } from '../lib/session-rewind'
 import {
   agentCrossChatRoutesAvailable,
   chatReferencesEqual,
@@ -61,10 +65,7 @@ import {
 import { agentRouteCapacityError, isAgentRouteRevisionConflict } from '../lib/agent-route-policy'
 import { publishProviderRuntimeChanged } from '../lib/provider-runtime-events'
 import { reconcileTeamReferences, requireTeamReferenceSupport, restoreFailedTeamReferences, teamMessagesAvailable, teamReferenceContractSupported, teamReferencesEqual, teamReferenceTokenPresent, validTeamReferences } from '../lib/team-references'
-import { awaitAllCodexPermissionUpdates, awaitCodexPermissionUpdates } from '../lib/codex-permission-updates'
-import { awaitAllClaudePermissionUpdates, awaitClaudePermissionUpdates } from '../lib/claude-permission-updates'
-import { awaitAllCursorPermissionUpdates } from '../lib/cursor-permission-updates'
-import { DEFAULT_SERVER_URL } from '../lib/server-setup'
+import { BUILT_IN_HUB_TOKEN, DEFAULT_SERVER_URL, localHubAlive } from '../lib/server-setup'
 import { serverSearchQuery } from '../lib/server-search'
 import { runtimeSelectionError, selectableChatBackends } from '../lib/runtime-catalog'
 import { clearCodeReviewFallbacks } from '../lib/code-review'
@@ -107,10 +108,13 @@ import {
   applyStoredServerProfileUpdate,
   assertUniqueServerProfile,
   createStoredServerProfile,
+  DEFAULT_APPEARANCE,
   DEFAULT_CHAT_DEFAULTS,
   findDuplicateProfileByIdentity,
-  findDuplicateProfileByURL,
+  HUB_PROXY_PREFIX,
+  hubProxyRemoteId,
   profileNamespace,
+  reconcileHubProfiles,
 } from '../lib/server-profiles'
 
 const MIN_API_CONTRACT = 8
@@ -143,6 +147,8 @@ let syncRecovery: { key: string; attempt: number; timer: ReturnType<typeof setTi
 let refreshSessionsInFlight: { scope: ConnectionScope; promise: Promise<void> } | null = null
 let refreshJobsInFlight: { scope: ConnectionScope; promise: Promise<void>; dirty: boolean } | null = null
 let quickCreateSessionInFlight: { scope: ConnectionScope; promise: Promise<boolean> } | null = null
+/** The hub deploy `deployHubRemoteServer` is currently polling, if any; lets cancelHubDeploy reach both the poll loop and the server-side job. */
+let hubDeployInFlight: { scope: ConnectionScope; jobId: string; cancelled: boolean } | null = null
 let readReceiptTimer: ReturnType<typeof setTimeout> | null = null
 let pinSaveQueue: Promise<void> = Promise.resolve()
 const notifiedEvents = new Set<string>()
@@ -165,6 +171,7 @@ const scheduledJobRunInFlight = new Map<string, { scope: ConnectionScope; promis
 const stopTurnInFlight = new Set<string>()
 const providerReloadInFlight = new Set<string>()
 const forkSessionInFlight = new Set<string>()
+const rewindSessionInFlight = new Set<string>()
 const queueSnapshotRefreshInFlight = new Map<string, { dirty: boolean }>()
 const queuedDeliverySkipTokens = new Map<string, symbol>()
 const olderPageInFlight = new Map<string, Promise<number>>()
@@ -172,6 +179,8 @@ const filePageInFlight = new Map<string, Promise<void>>()
 const sessionMutations = new SessionMutationReconciler()
 
 const SEND_IN_FLIGHT_SERVER_MUTATION_MESSAGE = 'A message is still sending. Wait for it to finish before switching or changing the active server.'
+const SESSION_REWIND_UNAVAILABLE_MESSAGE = 'Update AgentsServer to edit earlier turns or restore checkpoints in this chat.'
+const SESSION_REWIND_BUSY_MESSAGE = 'Wait for the current turn to finish before editing an earlier turn or restoring a checkpoint.'
 const SERVER_MUTATION_IN_FLIGHT_SEND_MESSAGE = 'The active server is being changed. Wait for it to finish before sending.'
 const TIMELINE_INTERNAL_EVENT_TYPES = new Set([
   'turn_queued',
@@ -189,6 +198,9 @@ const TIMELINE_INTERNAL_EVENT_TYPES = new Set([
 ])
 const SESSION_METADATA_PASSIVE_EVENT_TYPES = new Set([
   ...TIMELINE_INTERNAL_EVENT_TYPES,
+  // Retained in the snapshot so the projector can carry its checkpoint commit
+  // onto the turn, but never a transcript row or session activity.
+  'turn_checkpoint',
   'raw_event',
   'reasoning_summary',
   'tool_started',
@@ -372,6 +384,8 @@ interface SendPromptOptions {
   admittedFiles?: AgentFile[]
   chatReferences?: ChatReference[]
   teamReferences?: TeamReference[]
+  /** Opaque, revision-bound provider command chosen from the composer palette. */
+  skillSelection?: ProviderCommandSelection
 }
 
 function timelinePageNextBefore(page: TimelinePage): number | null {
@@ -447,6 +461,8 @@ interface AppState {
   queuedRunStatus: Record<string, QueuedRunStatus | undefined>
   jobs: Job[]
   drafts: Record<string, string>
+  /** An earlier user turn being edited in the composer; sending it rewinds the chat first. */
+  editingTurn: Record<string, { runId: string; previousDraft: string } | null>
   chatReferencesBySession: Record<string, ChatReference[]>
   agentRoutesBySession: Record<string, AgentCrossChatRoutesSnapshot>
   agentRouteErrorsBySession: Record<string, string | null>
@@ -462,6 +478,7 @@ interface AppState {
   collapsedFolders: string[]
   chatDefaults: ChatDefaults
   fontScale: number
+  appearance: AppearanceMode
   searchResults: TimelineSearchResult[]
   searchBusy: boolean
   searchError: string | null
@@ -472,7 +489,13 @@ interface AppState {
   initialize(): Promise<void>
   applySettings(serverURL: string, token: string): Promise<void>
   testServerProfile(input: { profileId?: string; serverURL: string; accessToken?: string | null }): Promise<Health>
-  createServerProfile(input: AddServerProfileInput): Promise<string>
+  /** Deploys a new remote over SSH through the active hub, then reconciles the hub's registry into profiles. Resolves to the new profile id. */
+  deployHubRemoteServer(
+    input: { sshHost: string; installDir?: string; name?: string },
+    onProgress: (entry: RemoteServerDeployLogEntry) => void,
+    expectedGeneration?: number,
+  ): Promise<string>
+  cancelHubDeploy(): Promise<void>
   updateServerProfile(profileId: string, patch: UpdateServerProfileInput): Promise<void>
   removeServerProfile(profileId: string): Promise<void>
   reorderServerProfiles(profileIds: string[]): Promise<void>
@@ -505,12 +528,18 @@ interface AppState {
   attachFiles(files: UploadRef[], expectedGeneration?: number, expectedSessionId?: string): Promise<void>
   removeUpload(fileId: string, expectedGeneration?: number, expectedSessionId?: string): void
   removeFailedUpload(fileUri: string, expectedGeneration?: number, expectedSessionId?: string): void
-  updateSession(sessionId: string, patch: Partial<Pick<Session, 'title' | 'folder' | 'cwd' | 'backend' | 'model' | 'effort' | 'system_prompt' | 'codex_approval_policy' | 'codex_sandbox_mode' | 'codex_permission_profile' | 'codex_approvals_reviewer' | 'claude_permission_mode' | 'cursor_permission_mode' | 'provider_jobs_access' | 'pinned' | 'archived'>>, expectedGeneration?: number): Promise<boolean>
+  updateSession(sessionId: string, patch: Partial<Pick<Session, 'title' | 'folder' | 'cwd' | 'backend' | 'model' | 'effort' | 'system_prompt' | 'provider_jobs_access' | 'pinned' | 'archived'>>, expectedGeneration?: number): Promise<boolean>
   reloadProvider(sessionId: string, expectedGeneration?: number): Promise<ProviderReloadResult | null>
   createSession(input: CreateSessionInput, expectedGeneration?: number): Promise<boolean>
-  quickCreateSession(expectedGeneration?: number): Promise<boolean>
+  quickCreateSession(expectedGeneration?: number, preset?: { folder: string; backend: Backend }): Promise<boolean>
   setChatDefaults(patch: Partial<ChatDefaults>): void
   forkSession(sessionId: string, expectedGeneration?: number): Promise<void>
+  beginEditingTurn(sessionId: string, runId: string, prompt: string): void
+  cancelEditingTurn(sessionId: string): void
+  /** Truncates the chat to the rows before `runId` and rewinds the provider. Resolves false when refused. */
+  rewindSession(sessionId: string, runId: string, expectedGeneration?: number): Promise<boolean>
+  /** Reverts the workspace to before `runId`, then rewinds the chat to it. */
+  restoreCheckpoint(sessionId: string, runId: string, expectedGeneration?: number): Promise<boolean>
   deleteSession(sessionId: string, expectedGeneration?: number): Promise<void>
   reorderSession(sessionId: string, targetId: string, placement: 'before' | 'after', expectedGeneration?: number): Promise<void>
   markRead(sessionId: string, expectedGeneration?: number): Promise<void>
@@ -519,6 +548,7 @@ interface AppState {
   setFolderOrder(order: string[], expectedGeneration?: number): void
   setCollapsedFolders(folders: string[], expectedGeneration?: number): void
   setFontScale(value: number): void
+  setAppearance(mode: AppearanceMode): void
   updateQueued(sessionId: string, queuedId: string, prompt: string, chatReferences?: ChatReference[], expectedGeneration?: number, teamReferencesInput?: TeamReference[]): Promise<boolean>
   removeQueued(sessionId: string, queuedId: string, expectedGeneration?: number): Promise<boolean>
   skipQueuedDelivery(sessionId: string, queuedId: string, expectedGeneration?: number): Promise<boolean>
@@ -580,6 +610,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   queuedRunStatus: {},
   jobs: [],
   drafts: {},
+  editingTurn: {},
   chatReferencesBySession: {},
   ...emptyAgentRouteState(),
   teamReferencesBySession: {},
@@ -591,6 +622,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   chatDefaults: DEFAULT_CHAT_DEFAULTS,
   collapsedFolders: [],
   fontScale: APP_FONT_SCALE_DEFAULT,
+  appearance: DEFAULT_APPEARANCE,
   searchResults: [],
   searchBusy: false,
   searchError: null,
@@ -607,8 +639,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         // leaving multi-megabyte snapshots trusted. Remove them by key before
         // any JSON value can be read or parsed on a memory-constrained device.
         await prepareSnapshotCacheGeneration()
-        const settings = await loadProfileSettings()
-        const activeProfile = settings.profiles.find(profile => profile.id === settings.activeProfileId) ?? settings.profiles[0]
+        let settings = await loadProfileSettings()
+        // Apply before the hub probe and cache loads below, which can take
+        // seconds; until then the app renders the default appearance.
+        set({ appearance: settings.appearance })
+        let activeProfile = settings.profiles.find(profile => profile.id === settings.activeProfileId) ?? settings.profiles[0]
+        // A phone usually reaches the Mac hub through a local forward (Tailscale,
+        // ssh -L), so the 127.0.0.1:7850 placeholder is a real candidate: adopt it
+        // when something answers there, with the token baked into this build.
+        if (isServerSetupRequired(activeProfile) && await localHubAlive(activeProfile.serverURL)) {
+          activeProfile = { ...activeProfile, serverConfigured: true, updatedAt: new Date().toISOString() }
+          settings = { ...settings, profiles: settings.profiles.map(profile => profile.id === activeProfile.id ? activeProfile : profile) }
+          await saveProfileSettings(settings)
+          if (BUILT_IN_HUB_TOKEN && !await loadProfileToken(activeProfile.id, activeProfile.credentialVersion)) {
+            await saveProfileToken(activeProfile.id, activeProfile.credentialVersion, BUILT_IN_HUB_TOKEN)
+          }
+        }
         const namespace = profileNamespace(activeProfile)
         const [token, sessions, pins, workspace, profiles] = await Promise.all([
           loadProfileToken(activeProfile.id, activeProfile.credentialVersion),
@@ -684,75 +730,44 @@ export const useAppStore = create<AppState>((set, get) => ({
     return probeServerHealth(input.serverURL, token)
   },
 
-  async createServerProfile(input) {
-    let activation: { intent: number; scope: ConnectionScope } | null = null
-    const createProfile = async () => {
-      const stored = storedProfiles(get().profiles)
-      const normalizedURL = normalizeServerURL(input.serverURL)
-      const duplicateURL = findDuplicateProfileByURL(stored, normalizedURL)
-      if (duplicateURL) {
-        const placeholder = stored.length === 1 && duplicateURL.id === stored[0].id && !stored[0].serverConfigured && !stored[0].serverIdentity
-        if (!placeholder) assertUniqueServerProfile(stored, { serverURL: normalizedURL, serverIdentity: null })
-        const patch: UpdateServerProfileInput = {
-          name: input.name,
-          serverURL: normalizedURL,
-          accessToken: input.accessToken,
-          serverIdentity: input.serverIdentity,
-          serverConfigured: true,
+  async deployHubRemoteServer(input, onProgress, expectedGeneration) {
+    const scope = validatedConnectionOrReport(get, set, expectedGeneration)
+    if (!scope) throw new StaleActionScopeError()
+    if (hubDeployInFlight) throw new Error('A remote server deployment is already running.')
+    const started = await scope.client.startRemoteDeploy({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name })
+    const state = { scope, jobId: started.job_id, cancelled: false }
+    hubDeployInFlight = state
+    try {
+      let seen = 0
+      for (;;) {
+        if (!connectionIsCurrent(scope)) throw new StaleActionScopeError()
+        const job = await scope.client.remoteDeployStatus(state.jobId)
+        for (const entry of job.log.slice(seen)) onProgress(entry)
+        seen = job.log.length
+        if (job.done) {
+          if (state.cancelled) throw new Error('The deployment was cancelled.')
+          if (job.error) throw new Error(job.error)
+          if (!job.server) throw new Error('The deployment finished without reporting the new server.')
+          if (!connectionIsCurrent(scope)) throw new StaleActionScopeError()
+          await reconcileHubRemoteServers(scope, set, get)
+          const remoteURL = normalizeServerURL(get().serverURL + job.server.proxy_path)
+          const profile = get().profiles.find(candidate => normalizeServerURL(candidate.serverURL) === remoteURL)
+          if (!profile) throw new Error(`The deployment finished, but ${job.server.name} did not appear in the hub's server list.`)
+          return profile.id
         }
-        const updateDuplicate = async () => {
-          const changed = await updateServerProfileLocked(duplicateURL.id, patch, set, get)
-          if (changed && duplicateURL.id === get().activeProfileId) {
-            activation = await prepareServerProfileActivation(duplicateURL.id, true, set, get)
-          }
-          return duplicateURL.id
-        }
-        return duplicateURL.id === get().activeProfileId && serverProfileConnectionChanges(duplicateURL, patch)
-          ? withActiveConnectionMutation(set, get, updateDuplicate)
-          : updateDuplicate()
+        await new Promise(resolve => setTimeout(resolve, 1_500))
       }
-      assertUniqueServerProfile(stored, { serverURL: normalizedURL, serverIdentity: null })
-      const token = input.accessToken ?? ''
-      const health = await probeServerHealth(normalizedURL, token)
-      const identity = requiredServerIdentity(health)
-      const testedIdentity = input.serverIdentity?.trim()
-      if (testedIdentity && testedIdentity !== identity) {
-        throw new Error(`The server identity changed after the connection test (expected ${testedIdentity}, received ${identity}). Test the connection again.`)
-      }
-      assertUniqueServerProfile(stored, { serverURL: normalizedURL, serverIdentity: identity })
-      const profile = createStoredServerProfile({
-        ...input,
-        serverURL: normalizedURL,
-        serverIdentity: identity,
-        serverConfigured: true,
-      }, createProfileId())
-      await saveProfileToken(profile.id, profile.credentialVersion, token)
-      try {
-        await saveProfileSettings({
-          schemaVersion: 2,
-          activeProfileId: get().activeProfileId ?? profile.id,
-          profiles: [...stored, profile],
-          fontScale: get().fontScale,
-        })
-      } catch (error) {
-        await deleteProfileToken(profile.id, profile.credentialVersion).catch(() => undefined)
-        throw error
-      }
-      set(state => ({
-        profiles: [...state.profiles, publicProfile(profile, Boolean(token), {
-          connectionState: 'online',
-          serverVersion: healthVersion(health),
-          lastConnectionCheckedAt: Date.now(),
-        })],
-      }))
-      if (input.setActive !== false) activation = await prepareServerProfileActivation(profile.id, true, set, get)
-      return profile.id
+    } finally {
+      if (hubDeployInFlight === state) hubDeployInFlight = null
     }
-    const profileId = await withProfileMutation(() => input.setActive !== false
-      ? withActiveConnectionMutation(set, get, createProfile)
-      : createProfile())
-    if (activation) await completeServerProfileActivation(activation, set, get)
-    return profileId
+  },
+
+  /** Stops the poll loop in `deployHubRemoteServer` and asks the hub to cancel the job. Silently a no-op with nothing running. */
+  async cancelHubDeploy() {
+    const state = hubDeployInFlight
+    if (!state) return
+    state.cancelled = true
+    await state.scope.client.cancelRemoteDeploy(state.jobId).catch(() => undefined)
   },
 
   async updateServerProfile(profileId, patch) {
@@ -777,13 +792,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async removeServerProfile(profileId) {
+    // A hub-proxied profile is unregistered on the hub first so the next
+    // reconcile does not recreate it; the hub must be the active server.
+    const target = get().profiles.find(profile => profile.id === profileId)
+    const remoteId = target ? hubProxyRemoteId(target.serverURL) : null
+    if (target && remoteId) {
+      const scope = captureValidatedConnection(get)
+      if (!normalizeServerURL(target.serverURL).startsWith(normalizeServerURL(get().serverURL) + HUB_PROXY_PREFIX)) {
+        throw new Error('Switch to the hub before removing a server it manages.')
+      }
+      try {
+        await scope.client.removeRemoteServer(remoteId)
+      } catch (error) {
+        if (!(error instanceof ServerError && error.status === 404)) throw error
+      }
+    }
     await withProfileMutation(async () => {
       if (profileId === get().activeProfileId) throw new Error('Switch to another server before removing this profile.')
       const removed = get().profiles.find(profile => profile.id === profileId)
       if (!removed) throw new Error('Server profile not found.')
       const profiles = storedProfiles(get().profiles).filter(profile => profile.id !== profileId)
       if (!profiles.length) throw new Error('At least one server profile is required.')
-      await saveProfileSettings({ schemaVersion: 2, activeProfileId: get().activeProfileId ?? profiles[0].id, profiles, fontScale: get().fontScale })
+      await saveProfileSettings({ schemaVersion: 2, activeProfileId: get().activeProfileId ?? profiles[0].id, profiles, fontScale: get().fontScale, appearance: get().appearance })
       if (profileId === get().activeProfileId) throw new Error('The active server changed while removal was being saved.')
       set(state => ({ profiles: state.profiles.filter(profile => profile.id !== profileId) }))
       await deleteProfileToken(profileId, removed.credentialVersion).catch(() => undefined)
@@ -798,7 +828,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       const byId = new Map(current.map(profile => [profile.id, profile]))
       const profiles = profileIds.map(id => byId.get(id)!)
-      await saveProfileSettings({ schemaVersion: 2, activeProfileId: get().activeProfileId ?? profiles[0].id, profiles: storedProfiles(profiles), fontScale: get().fontScale })
+      await saveProfileSettings({ schemaVersion: 2, activeProfileId: get().activeProfileId ?? profiles[0].id, profiles: storedProfiles(profiles), fontScale: get().fontScale, appearance: get().appearance })
       set({ profiles })
     })
   },
@@ -873,6 +903,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }),
     }))
     requestNotificationPermissionOnce()
+    void reconcileHubRemoteServers(scope, set, get)
     const sessionRead = sessionMutations.captureRead()
     const sessionsRequest = Promise.allSettled([scope.client.sessions()] as const)
     const optionalRequests = Promise.allSettled([scope.client.runtimeCatalog(true), scope.client.jobs()] as const)
@@ -1078,6 +1109,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (NativeAppState.currentState !== 'active' || !connectionIsCurrent(scope)) return
         await acceptHealthIdentity(scope, health, healthValidationRevision, set, get)
         if (NativeAppState.currentState !== 'active' || !connectionIsCurrent(scope)) return
+        // Foreground refresh keeps remotes deployed on the Mac appearing
+        // without an app restart.
+        void reconcileHubRemoteServers(scope, set, get)
       } catch (error) {
         if (NativeAppState.currentState !== 'active') return
         if (isStaleConnectionError(error, scope)) return
@@ -1141,6 +1175,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (NativeAppState.currentState !== 'active' || !validatedRevisionIsCurrent(scope, acceptedValidationRevision)) return
       let mergedSessions = sessions
       let sessionsChanged = false
+      const activeBeforePoll = get().activeSessionIds
       set(state => {
         const merged = mergeSessionState(sessions, state.sessions, sessionRead)
         mergedSessions = merged
@@ -1153,6 +1188,18 @@ export const useAppStore = create<AppState>((set, get) => ({
           activeSessionIds: reconcileHealthActiveSessions(health, state.activeSessionIds, activeRevisionAtRequest, activeSessionRevision),
         }
       })
+      // Chats that are not on screen have no timeline stream, so their turn
+      // ends surface only here, when polled health drops them from `active`.
+      // The selected chat notifies from its streamed terminal event instead.
+      const activeAfterPoll = get().activeSessionIds
+      if (activeAfterPoll !== activeBeforePoll) {
+        const selectedSessionId = get().selectedSessionId
+        for (const sessionId of activeBeforePoll) {
+          if (activeAfterPoll.has(sessionId) || sessionId === selectedSessionId) continue
+          const session = mergedSessions.find(value => value.id === sessionId)
+          if (session) void notifyOnce(scope, session, `poll:${session.latest_event_seq ?? 0}`)
+        }
+      }
       if (sessionsChanged) {
         void saveCachedSessions(scope.namespace, mergedSessions)
         void updateBadge(get())
@@ -2202,6 +2249,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         clientCapabilities,
         chatReferences,
         teamReferences,
+        options?.skillSelection,
       )
       if (!connectionIsCurrent(scope)) return false
       const stateAfterSend = get()
@@ -2574,7 +2622,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false
     }
   },
-  quickCreateSession(expectedGeneration) {
+  quickCreateSession(expectedGeneration, preset) {
     const scope = validatedConnectionOrReport(get, set, expectedGeneration)
     if (!scope) return Promise.resolve(false)
     if (quickCreateSessionInFlight?.scope === scope) return quickCreateSessionInFlight.promise
@@ -2583,19 +2631,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     // configured runtime defaults independent of that chat's agent settings.
     const selected = state.sessions.find(session => session.id === state.selectedSessionId
       && !session.archived && !isWelcomeSession(session.id))
+    // Folder menu preset: its folder and backend win, and the folder's newest
+    // chat supplies the working directory.
+    const folderSeed = preset ? state.sessions
+      .filter(session => !session.archived && (session.folder?.trim() || 'General') === preset.folder)
+      .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))[0] : undefined
     const defaultCwd = state.health?.default_cwd?.trim() || ''
     const backends = selectableChatBackends(state.health)
-    const backend: Backend = backends.includes(state.chatDefaults.backend) ? state.chatDefaults.backend : (backends[0] ?? 'codex')
+    const backend: Backend = preset && backends.includes(preset.backend) ? preset.backend
+      : backends.includes(state.chatDefaults.backend) ? state.chatDefaults.backend : (backends[0] ?? 'codex')
     let model = state.chatDefaults.model
     let effort = state.chatDefaults.effort
-    if (runtimeSelectionError(state.health, state.runtime, backend, model || null)) {
+    // The stored model/effort belong to the stored backend.
+    if (backend !== state.chatDefaults.backend || runtimeSelectionError(state.health, state.runtime, backend, model || null)) {
       model = ''
       effort = ''
     }
     const operation = get().createSession({
       title: 'New chat',
-      folder: selected ? selected.folder?.trim() || 'General' : state.chatDefaults.folder.trim() || 'General',
-      cwd: selected ? selected.cwd?.trim() || defaultCwd : state.chatDefaults.cwd.trim() || defaultCwd,
+      folder: preset?.folder ?? (selected ? selected.folder?.trim() || 'General' : state.chatDefaults.folder.trim() || 'General'),
+      cwd: folderSeed?.cwd?.trim() || (selected ? selected.cwd?.trim() || defaultCwd : state.chatDefaults.cwd.trim() || defaultCwd),
       backend,
       model,
       effort,
@@ -2637,6 +2692,91 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().selectSession(response.session.id, scope.generation)
     } catch (error) { if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) }) }
     finally { forkSessionInFlight.delete(inFlightKey) }
+  },
+  beginEditingTurn(sessionId, runId, prompt) {
+    set(state => ({
+      editingTurn: { ...state.editingTurn, [sessionId]: { runId, previousDraft: state.drafts[sessionId] ?? '' } },
+      drafts: { ...state.drafts, [sessionId]: prompt },
+    }))
+  },
+  cancelEditingTurn(sessionId) {
+    set(state => {
+      const editing = state.editingTurn[sessionId]
+      if (!editing) return state
+      return {
+        editingTurn: { ...state.editingTurn, [sessionId]: null },
+        drafts: { ...state.drafts, [sessionId]: editing.previousDraft },
+      }
+    })
+  },
+  async rewindSession(sessionId, runId, expectedGeneration) {
+    const scope = validatedConnectionOrReport(get, set, expectedGeneration)
+    if (!scope) return false
+    const state = get()
+    const snapshot = state.snapshots[sessionId]
+    if (!sessionRewindAvailable(state.health, state.sessions.find(value => value.id === sessionId)?.backend ?? snapshot?.session.backend)) {
+      set({ error: SESSION_REWIND_UNAVAILABLE_MESSAGE })
+      return false
+    }
+    const inFlightKey = `${scope.generation}:${sessionId}`
+    if (sessionBusyForRewind(state, sessionId, inFlightKey)) {
+      set({ error: SESSION_REWIND_BUSY_MESSAGE })
+      return false
+    }
+    if (rewindSessionInFlight.has(inFlightKey)) return false
+    rewindSessionInFlight.add(inFlightKey)
+    try {
+      // The server guards against a tail it has not shown us yet: send the
+      // highest event seq this client has received for the chat.
+      const expectedLatestSeq = Math.max(
+        snapshot?.latestSeq ?? 0,
+        snapshot?.events.at(-1)?.seq ?? 0,
+        streamSessionId === sessionId ? streamLatestSeq : 0,
+      )
+      const result = await scope.client.rewindSession(sessionId, runId, expectedLatestSeq)
+      if (!connectionIsCurrent(scope)) return false
+      set(current => {
+        const previous = current.snapshots[sessionId]
+        const rewound = previous ? rewindSnapshot(previous, result.from_seq, result.through_seq) : undefined
+        if (rewound && rewound !== previous) scheduleLiveSnapshotSave(scope, rewound, true)
+        return {
+          ...(rewound && rewound !== previous ? { snapshots: snapshotMapWith(current.snapshots, sessionId, rewound) } : {}),
+          ...(current.editingTurn[sessionId] ? { editingTurn: { ...current.editingTurn, [sessionId]: null } } : {}),
+        }
+      })
+      void get().refreshSessions(scope.generation)
+      void get().refreshFiles(sessionId, false, scope.generation)
+      return true
+    } catch (error) {
+      if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) })
+      return false
+    } finally { rewindSessionInFlight.delete(inFlightKey) }
+  },
+  async restoreCheckpoint(sessionId, runId, expectedGeneration) {
+    const scope = validatedConnectionOrReport(get, set, expectedGeneration)
+    if (!scope) return false
+    const state = get()
+    if (!checkpointRestoreAvailable(state.health, state.sessions.find(value => value.id === sessionId)?.backend ?? state.snapshots[sessionId]?.session.backend)) {
+      set({ error: SESSION_REWIND_UNAVAILABLE_MESSAGE })
+      return false
+    }
+    const inFlightKey = `${scope.generation}:${sessionId}`
+    if (sessionBusyForRewind(state, sessionId, inFlightKey)) {
+      set({ error: SESSION_REWIND_BUSY_MESSAGE })
+      return false
+    }
+    if (rewindSessionInFlight.has(inFlightKey)) return false
+    rewindSessionInFlight.add(inFlightKey)
+    try {
+      const status = await scope.client.workspaceGitStatus(sessionId)
+      if (!connectionIsCurrent(scope)) return false
+      await scope.client.restoreCheckpoint(sessionId, runId, status.revision)
+      if (!connectionIsCurrent(scope)) return false
+    } catch (error) {
+      if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) })
+      return false
+    } finally { rewindSessionInFlight.delete(inFlightKey) }
+    return get().rewindSession(sessionId, runId, scope.generation)
   },
   async deleteSession(sessionId, expectedGeneration) {
     const scope = validatedConnectionOrReport(get, set, expectedGeneration)
@@ -2764,6 +2904,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setFontScale(value) {
     const fontScale = clampAppFontScale(value)
     set({ fontScale })
+    void saveProfileSettingsFromState(get)
+  },
+  setAppearance(appearance) {
+    set({ appearance })
     void saveProfileSettingsFromState(get)
   },
 
@@ -2994,46 +3138,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     })
     const operation = (async (): Promise<boolean> => {
-      const session = get().sessions.find(candidate => candidate.id === sessionId)
-      if (session?.backend === 'codex') {
-        try {
-          await awaitCodexPermissionUpdates({
-            profileId: scope.profileId,
-            profileGeneration: scope.generation,
-            sessionId,
-          })
-        } catch (error) {
-          if (connectionIsCurrent(scope)) set(state => ({
-            queuedRunStatus: queuedRunStatusMap(
-              state.queuedRunStatus,
-              sessionId,
-              queuedRunFailureStatus(queuedId, error, true),
-            ),
-          }))
-          return false
-        }
-        if (!connectionIsCurrent(scope)) return false
-      }
-      if (session?.backend === 'claude') {
-        try {
-          await awaitClaudePermissionUpdates({
-            profileId: scope.profileId,
-            profileGeneration: scope.generation,
-            sessionId,
-          })
-        } catch (error) {
-          if (connectionIsCurrent(scope)) set(state => ({
-            queuedRunStatus: queuedRunStatusMap(
-              state.queuedRunStatus,
-              sessionId,
-              queuedRunFailureStatus(queuedId, error, true),
-            ),
-          }))
-          return false
-        }
-        if (!connectionIsCurrent(scope)) return false
-      }
-
       let response: QueuedRunNowResponse
       try {
         response = await scope.client.runQueuedNow(sessionId, queuedId)
@@ -3384,6 +3488,7 @@ async function updateServerProfileLocked(
       activeProfileId: get().activeProfileId ?? profileId,
       profiles,
       fontScale: get().fontScale,
+      appearance: get().appearance,
     })
   } catch (error) {
     if (stagedCredentialVersion !== null) {
@@ -3471,12 +3576,6 @@ async function prepareServerProfileActivation(
 ): Promise<{ intent: number; scope: ConnectionScope } | null> {
   if (!force && profileId === get().activeProfileId && !get().switchingProfileId) return null
   assertNoSendInFlightForServerMutation(set, get)
-  await Promise.all([
-    awaitAllCodexPermissionUpdates(),
-    awaitAllClaudePermissionUpdates(),
-    awaitAllCursorPermissionUpdates(),
-  ])
-  assertNoSendInFlightForServerMutation(set, get)
   const profile = get().profiles.find(value => value.id === profileId)
   if (!profile) throw new Error('Server profile not found.')
   const intent = ++profileSwitchIntent
@@ -3508,6 +3607,7 @@ async function prepareServerProfileActivation(
       activeProfileId: profileId,
       profiles: storedProfiles(get().profiles),
       fontScale: get().fontScale,
+      appearance: get().appearance,
     })
 
     stopSelectedStream()
@@ -3624,6 +3724,66 @@ async function probeServerHealth(serverURL: string, token: string): Promise<Heal
   }
 }
 
+/**
+ * Mirrors the hub's remote-server registry into saved profiles: each
+ * `/api/remote/{id}` the hub reports gets a profile carrying the hub's token,
+ * and proxied profiles the hub no longer lists are dropped. No-op unless the
+ * active profile is the hub itself; a proxied remote also advertises the
+ * capability, so the decision is made on URL shape.
+ */
+async function reconcileHubRemoteServers(
+  scope: ConnectionScope,
+  set: (value: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
+  get: () => AppState,
+): Promise<void> {
+  if (!get().health?.capabilities?.remote_servers_v1?.available || hubProxyRemoteId(get().serverURL) !== null) return
+  let remotes: RemoteServer[]
+  try {
+    remotes = (await scope.client.remoteServers()).servers
+  } catch (error) {
+    if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) })
+    return
+  }
+  try {
+    await withProfileMutation(async () => {
+      if (!connectionIsCurrent(scope) || get().activeProfileId !== scope.profileId) return
+      const stored = storedProfiles(get().profiles)
+      const { create, removeIds } = reconcileHubProfiles(stored, get().serverURL, remotes)
+      if (!create.length && !removeIds.length) return
+      const hub = stored.find(profile => profile.id === scope.profileId)
+      const hubToken = hub ? await loadProfileToken(hub.id, hub.credentialVersion) : ''
+      // No health probe and no identity: a remote whose tunnel is down must
+      // still get its profile; acceptHealthIdentity pins it on the first switch.
+      const created = create.map(entry => createStoredServerProfile({ ...entry, serverConfigured: true }, createProfileId()))
+      const removed = new Set(removeIds)
+      for (const profile of created) await saveProfileToken(profile.id, profile.credentialVersion, hubToken)
+      try {
+        await saveProfileSettings({
+          schemaVersion: 2,
+          activeProfileId: scope.profileId,
+          profiles: [...stored.filter(profile => !removed.has(profile.id)), ...created],
+          fontScale: get().fontScale,
+          appearance: get().appearance,
+        })
+      } catch (error) {
+        for (const profile of created) await deleteProfileToken(profile.id, profile.credentialVersion).catch(() => undefined)
+        throw error
+      }
+      set(state => ({
+        profiles: [
+          ...state.profiles.filter(profile => !removed.has(profile.id)),
+          ...created.map(profile => publicProfile(profile, Boolean(hubToken))),
+        ],
+      }))
+      for (const profile of stored) {
+        if (removed.has(profile.id)) void deleteProfileToken(profile.id, profile.credentialVersion).catch(() => undefined)
+      }
+    })
+  } catch (error) {
+    if (connectionIsCurrent(scope)) set({ error: errorMessage(error) })
+  }
+}
+
 async function acceptHealthIdentity(
   scope: ConnectionScope,
   health: Health,
@@ -3685,6 +3845,7 @@ async function acceptHealthIdentity(
         activeProfileId: profile.id,
         profiles,
         fontScale: get().fontScale,
+        appearance: get().appearance,
       })
       assertHealthValidationCurrent(scope, healthValidationRevision)
       if (!connectionIsCurrent(scope)) return
@@ -4000,6 +4161,7 @@ function saveProfileSettingsFromState(get: () => AppState): Promise<void> {
       activeProfileId: state.activeProfileId,
       profiles: storedProfiles(state.profiles),
       fontScale: state.fontScale,
+      appearance: state.appearance,
     })
   })
 }
@@ -4259,10 +4421,13 @@ function applyLiveEvent(scope: ConnectionScope, event: Event, set: (value: Parti
     if (timelineInternal && queuedTurns === snapshot.queuedTurns) {
       return { queuedRunStatus, activeSessionIds: active, sessions, profiles, ...selectedSync }
     }
-    const mergedEvents = timelineInternal ? snapshot.events : mergeEvents(snapshot.events, [event])
+    // A history_rewound tombstone removes its closed range from the retained
+    // window before the tombstone itself is appended.
+    const rewound = event.type === 'history_rewound' ? rewindSnapshot(snapshot, event.from_seq, event.through_seq) : snapshot
+    const mergedEvents = timelineInternal ? snapshot.events : mergeEvents(rewound.events, [event])
     const boundedEvents = boundLiveTimelineEvents(mergedEvents)
     const next: Snapshot = {
-      ...snapshot,
+      ...rewound,
       events: boundedEvents,
       files: timelineInternal ? snapshot.files : mergeFiles(snapshot.files, filesFromEvents([event])),
       queuedTurns,
@@ -4273,7 +4438,7 @@ function applyLiveEvent(scope: ConnectionScope, event: Event, set: (value: Parti
     scheduleLiveSnapshotSave(
       scope,
       next,
-      terminalEvent,
+      terminalEvent || rewound !== snapshot,
     )
     return {
       snapshots: snapshotMapWith(state.snapshots, sessionId, next),
@@ -4305,10 +4470,42 @@ function applyLiveEvent(scope: ConnectionScope, event: Event, set: (value: Parti
     && get().selectedSessionId === sessionId
     && isAgentActivityEvent(event)
   ) scheduleReadReceipt(scope, sessionId, get)
-  if (NativeAppState.currentState !== 'active' && isAgentActivityEvent(event)) {
+  // The chat on screen is the only one with a live stream; its turn ends
+  // notify here while the app is in the background. Other chats notify from
+  // the health poll transition in refreshSessions.
+  if (NativeAppState.currentState !== 'active' && isTurnEndNotificationEvent(event)) {
     const session = get().sessions.find(value => value.id === sessionId)
-    if (session) void notifyOnce(scope, session, event.seq)
+    if (session) void notifyOnce(scope, session, event.run_id?.trim() || event.id)
   }
+}
+
+/** Store mirror of a server history rewind; returns `snapshot` itself when no retained event is in range. */
+function rewindSnapshot(snapshot: Snapshot, fromSeq: number | null | undefined, throughSeq: number | null | undefined): Snapshot {
+  if (!Number.isSafeInteger(fromSeq) || !Number.isSafeInteger(throughSeq)) return snapshot
+  const events = snapshot.events.filter(event => event.seq < fromSeq! || event.seq > throughSeq!)
+  // The server deletes files published by the removed turns. refreshFiles merges
+  // pages into the retained list rather than replacing it, so drop them here.
+  const files = snapshot.files.filter(file => {
+    const seq = file.seq ?? file.event_seq
+    return seq == null || seq < fromSeq! || seq > throughSeq!
+  })
+  if (events.length === snapshot.events.length && files.length === snapshot.files.length) return snapshot
+  return {
+    ...snapshot,
+    events,
+    files,
+    filesTotal: Math.max(files.length, snapshot.filesTotal - (snapshot.files.length - files.length)),
+    total: snapshot.total == null ? snapshot.total : Math.max(0, snapshot.total - (snapshot.events.length - events.length)),
+    cachedAt: Date.now(),
+  }
+}
+
+function sessionBusyForRewind(state: AppState, sessionId: string, inFlightKey: string): boolean {
+  return state.activeSessionIds.has(sessionId)
+    || state.stoppingSessionIds.has(sessionId)
+    || Boolean(state.turnAdmissionTokens[sessionId])
+    || state.sendingSessionIds.has(sessionId)
+    || queuedRunInFlight.has(inFlightKey)
 }
 
 function scheduleReadReceipt(scope: ConnectionScope, sessionId: string, get: () => AppState): void {
@@ -4648,13 +4845,14 @@ function requestNotificationPermissionOnce(): void {
   void Notifications.requestPermissionsAsync().catch(() => { /* unavailable in unsigned simulator builds */ })
 }
 
-async function notifyOnce(scope: ConnectionScope, session: Session, seq: number): Promise<void> {
+/** One notification per finished turn: a reconnect can redeliver its terminal event. */
+async function notifyOnce(scope: ConnectionScope, session: Session, turnKey: string): Promise<void> {
   if (!connectionIsCurrent(scope)) return
-  const key = `${scope.profileId}:${scope.namespace}:${session.id}:${seq}`
+  const key = `${scope.profileId}:${scope.namespace}:${session.id}:${turnKey}`
   if (notifiedEvents.has(key)) return
   notifiedEvents.add(key)
   if (notifiedEvents.size > 200) notifiedEvents.delete(notifiedEvents.values().next().value ?? '')
   try {
-    await Notifications.scheduleNotificationAsync({ content: { title: session.title, body: 'New agent message', data: { profileId: scope.profileId, serverIdentity: scope.namespace, sessionId: session.id } }, trigger: null })
+    await Notifications.scheduleNotificationAsync({ content: { title: session.title, body: 'Response finished', data: { profileId: scope.profileId, serverIdentity: scope.namespace, sessionId: session.id } }, trigger: null })
   } catch { /* permissions can be denied */ }
 }

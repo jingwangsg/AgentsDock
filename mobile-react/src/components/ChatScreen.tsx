@@ -6,12 +6,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { initialIOSKeyboardLifecycle, IOS_KEYBOARD_HIDE_FALLBACK_MS, reduceIOSKeyboardLifecycle } from '../lib/keyboard-lifecycle'
 import { usePalette } from '../theme'
 import { ChatHeader } from './ChatHeader'
+import { ChatOutputsPanel } from './ChatOutputsPanel'
 import { ClaudeInteractionShelf } from './ClaudeInteractionShelf'
 import { ClaudeRuntimeProvider } from './ClaudeRuntimeContext'
 import { CodexInteractionShelf } from './CodexInteractionShelf'
 import { CodexRuntimeProvider } from './CodexRuntimeContext'
-import { Composer } from './Composer'
+import { Composer, type ComposerShellAction } from './Composer'
 import { Timeline } from './Timeline'
+import { RunActivityBar } from './RunActivityBar'
 import { RuntimeHealthNotice } from './RuntimeHealth'
 import { useAppStore } from '../store/useAppStore'
 import { trackEvent } from '../lib/analytics'
@@ -19,12 +21,13 @@ import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { isWelcomeSession } from '../lib/welcome-session'
 import { useFileViewer } from './file-viewer/FileViewerContext'
 
-export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, onBack, onOptions, onSearch, onToggleInspector, onReview, onSetupServer, onOpenMcp }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; onBack: () => void; onOptions: () => void; onSearch: () => void; onToggleInspector: () => void; onReview: (runId: string) => void; onSetupServer: () => void; onOpenMcp: () => void }) {
+export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, onBack, onOptions, onSearch, onToggleInspector, onReview, onSetupServer, onOpenMcp, onShellAction }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; onBack: () => void; onOptions: () => void; onSearch: () => void; onToggleInspector: () => void; onReview: (runId: string) => void; onSetupServer: () => void; onOpenMcp: () => void; onShellAction: (action: ComposerShellAction) => void }) {
   const colors = usePalette()
   const insets = useSafeAreaInsets()
   const { openWorkspace } = useFileViewer()
   const welcome = isWelcomeSession(sessionId)
   const [scrollRequest, setScrollRequest] = useState(0)
+  const [outputsOpen, setOutputsOpen] = useState(false)
   const [nonIOSKeyboardVisible, setNonIOSKeyboardVisible] = useState(() => Platform.OS !== 'ios' && KeyboardController.isVisible())
   const [iosKeyboard, dispatchIOSKeyboard] = useReducer(reduceIOSKeyboardLifecycle, AppState.currentState === 'active', initialIOSKeyboardLifecycle)
   const keyboardVisible = Platform.OS === 'ios' ? iosKeyboard.visible : nonIOSKeyboardVisible
@@ -111,7 +114,7 @@ export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, onBac
   }, [])
   const content = (
     <View style={[styles.root, { backgroundColor: colors.background }]}>
-      <ChatHeader sessionId={sessionId} compact={compact} inlineInspectorAvailable={inlineInspectorAvailable} onBack={onBack} onOptions={onOptions} onSearch={onSearch} onFiles={() => { trackEvent('open_file_clicked'); dismissAppKeyboard(); openWorkspace(sessionId) }} onToggleInspector={onToggleInspector} onSetupServer={onSetupServer} />
+      <ChatHeader sessionId={sessionId} compact={compact} inlineInspectorAvailable={inlineInspectorAvailable} onBack={onBack} onOptions={onOptions} onSearch={onSearch} onFiles={() => { trackEvent('open_file_clicked'); dismissAppKeyboard(); openWorkspace(sessionId) }} outputsOpen={outputsOpen} onOutputs={() => { dismissAppKeyboard(); setOutputsOpen(true) }} onToggleInspector={onToggleInspector} onSetupServer={onSetupServer} />
       {!welcome && backend ? <RuntimeHealthNotice backend={backend} sessionId={sessionId} /> : null}
       <KeyboardAvoidingView
             style={styles.body}
@@ -132,6 +135,7 @@ export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, onBac
             <View style={styles.timeline}>
               <Timeline sessionId={sessionId} scrollRequest={scrollRequest} keyboardVisible={keyboardVisible} keyboardSettleRequest={keyboardSettleRequest} bottomInset={0} onReview={onReview} />
             </View>
+            {!welcome ? <RunActivityBar sessionId={sessionId} /> : null}
             {!welcome ? <CodexInteractionShelf /> : null}
             {!welcome ? <ClaudeInteractionShelf /> : null}
             <View
@@ -141,9 +145,10 @@ export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, onBac
                   : keyboardVisible ? 0 : insets.bottom,
               }]}
             >
-              <Composer sessionId={sessionId} keyboardVisible={composerKeyboardConstrained} onSent={() => setScrollRequest(value => value + 1)} onOpenMcp={onOpenMcp} />
+              <Composer sessionId={sessionId} keyboardVisible={composerKeyboardConstrained} onSent={() => setScrollRequest(value => value + 1)} onOpenMcp={onOpenMcp} onShellAction={onShellAction} />
             </View>
       </KeyboardAvoidingView>
+      {!welcome ? <ChatOutputsPanel sessionId={sessionId} visible={outputsOpen} onClose={() => setOutputsOpen(false)} onReview={onReview} /> : null}
     </View>
   )
   if (welcome) return content

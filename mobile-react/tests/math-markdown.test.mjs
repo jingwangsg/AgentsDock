@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { build } from 'esbuild'
+import cjkFriendly from 'markdown-it-cjk-friendly'
 
 const outfile = join(tmpdir(), `agentsdock-math-markdown-${process.pid}-${Date.now()}.mjs`)
 await build({
@@ -24,10 +25,17 @@ const markdownPackage = realpathSync(resolve('node_modules/react-native-markdown
 const markdownRequire = createRequire(markdownPackage)
 const MarkdownIt = markdownRequire('markdown-it')
 
+// Same plugin chain as MarkdownContent.tsx builds for the chat.
 function parseInline(source) {
-  const markdown = installMathMarkdown(new MarkdownIt({ typographer: true }))
+  const markdown = installMathMarkdown(new MarkdownIt({ typographer: true }).use(cjkFriendly))
   return markdown.parse(source, {}).flatMap(token => token.children ?? [token])
 }
+
+test('bold closing on CJK punctuation parses as strong, matching the desktop remark-cjk-friendly output', () => {
+  const tokens = parseInline('**可以，而且 Jim 很适合说明你在 NVIDIA 的个人贡献。**他是你的直属经理')
+  assert.ok(tokens.some(token => token.type === 'strong_open'), 'expected a strong token')
+  assert.ok(tokens.every(token => !token.content.includes('**')), 'no literal ** may survive in text')
+})
 
 test('math plugin emits inline and display tokens with original source metadata', () => {
   const tokens = parseInline('Inline $x+1$.\n\n$$\\frac{1}{2}$$')

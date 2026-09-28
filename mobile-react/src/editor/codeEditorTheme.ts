@@ -2,7 +2,7 @@ export const CODE_EDITOR_FONT_SIZE_MIN = 11
 export const CODE_EDITOR_FONT_SIZE_MAX = 20
 export const CODE_EDITOR_DEFAULT_FONT_SIZE = 13
 
-export type CodeEditorThemeId = 'vscode-dark' | 'github-dark' | 'dracula' | 'github-light'
+export type CodeEditorThemeId = 'zed-one-dark' | 'zed-one-light' | 'vscode-dark' | 'github-dark' | 'dracula' | 'github-light'
 export type CodeEditorThemeMode = 'dark' | 'light'
 
 export interface CodeEditorThemePalette {
@@ -41,6 +41,34 @@ export interface CodeEditorThemeDefinition {
 }
 
 export const CODE_EDITOR_THEMES: readonly CodeEditorThemeDefinition[] = [
+  // Zed's One Dark / One Light (assets/themes/one/one.json): editor, gutter,
+  // player-0 cursor/selection and syntax colors; `meta` is Zed's preproc.
+  {
+    id: 'zed-one-dark',
+    label: 'Zed One Dark',
+    mode: 'dark',
+    palette: {
+      background: '#282c33', foreground: '#acb2be', gutterBackground: '#282c33', gutterForeground: '#4e5a5f',
+      gutterBorder: '#282c33', activeLine: '#2f343ebf', activeLineGutter: '#2f343e', selection: '#74ade83d',
+      focus: '#74ade8', cursor: '#74ade8', panelBackground: '#2f343e', tooltipBackground: '#2f343e',
+      tooltipBorder: '#464b57', keyword: '#b477cf', variable: '#acb2be', function: '#73ade9', property: '#d07277',
+      type: '#6eb4bf', string: '#a1c181', number: '#bf956a', comment: '#5d636f', operator: '#6eb4bf',
+      punctuation: '#acb2be', meta: '#b477cf', invalid: '#d07277',
+    },
+  },
+  {
+    id: 'zed-one-light',
+    label: 'Zed One Light',
+    mode: 'light',
+    palette: {
+      background: '#fafafa', foreground: '#242529', gutterBackground: '#fafafa', gutterForeground: '#b4b4bb',
+      gutterBorder: '#fafafa', activeLine: '#ebebecbf', activeLineGutter: '#ebebec', selection: '#5c78e23d',
+      focus: '#5c78e2', cursor: '#5c78e2', panelBackground: '#ebebec', tooltipBackground: '#ebebec',
+      tooltipBorder: '#c9c9ca', keyword: '#a449ab', variable: '#242529', function: '#5b79e3', property: '#d3604f',
+      type: '#3882b7', string: '#649f57', number: '#ad6e25', comment: '#a2a3a7', operator: '#3882b7',
+      punctuation: '#242529', meta: '#a449ab', invalid: '#d36151',
+    },
+  },
   {
     id: 'vscode-dark',
     label: 'VS Code Dark',
@@ -95,7 +123,7 @@ export const CODE_EDITOR_THEMES: readonly CodeEditorThemeDefinition[] = [
   },
 ] as const
 
-export const CODE_EDITOR_DEFAULT_THEME: CodeEditorThemeId = 'vscode-dark'
+export const CODE_EDITOR_DEFAULT_THEME: CodeEditorThemeId = 'zed-one-dark'
 
 const themeIds = new Set<CodeEditorThemeId>(CODE_EDITOR_THEMES.map(theme => theme.id))
 

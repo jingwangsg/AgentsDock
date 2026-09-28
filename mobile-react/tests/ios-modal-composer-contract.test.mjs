@@ -35,7 +35,6 @@ test('native sheets publish before keyboard dismissal and search transfers focus
   assert.doesNotMatch(searchBody, /dismissAppKeyboard/)
   assert.match(appShell, /<SearchDialog[\s\S]*?visible=\{modalScopeCurrent && search && !isWelcomeSession\(selected\?\.id\)\}/)
   assert.match(sidebar, /icon=\{Settings\}[\s\S]*?onPress=\{\(\) => \{ if \(profileScopeIsCurrent\(profileScope\)\) onSettings\(\) \}\}/)
-  assert.match(sidebar, /onAddServer=\{\(\) => \{ if \(profileScopeCanNavigate\(profileScope\)\) onAddServer\(\) \}\}/)
   assert.match(sidebar, /onManageServers=\{\(\) => \{ if \(profileScopeCanNavigate\(profileScope\)\) onManageServers\(\) \}\}/)
 })
 

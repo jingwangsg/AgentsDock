@@ -1,40 +1,95 @@
 import type { Palette } from '../theme'
-import { scaleChatFont } from './typography'
+import { fonts, scaleChatFont } from './typography'
 
 export const MARKDOWN_TABLE_MIN_COLUMN_WIDTH = 112
-export const MARKDOWN_TABLE_MAX_LAYOUT_COLUMNS = 32
-export const MARKDOWN_TABLE_MIN_WIDTH = 320
-export const MARKDOWN_TABLE_MAX_WIDTH = 4096
+export const MARKDOWN_TABLE_MAX_COLUMN_WIDTH = 320
+// Multi-word cells wrap once their one-line width passes this point; a single
+// unbreakable token may still widen the column up to the maximum.
+const MARKDOWN_TABLE_WRAP_WIDTH = 240
+// Body glyphs average ~0.55em of the 15.5pt font; 0.65em keeps digit- and
+// capital-heavy tokens such as `jing-debug-1e47:7850` on one line. Wide CJK
+// glyphs count as two units.
+const MARKDOWN_TABLE_UNIT_WIDTH = 10
+const MARKDOWN_TABLE_CELL_PADDING = 12
+const WIDE_CHARACTER = /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]|[\u{1F300}-\u{1FAFF}\u{20000}-\u{3FFFD}]/u
 
 type MarkdownTableNode = {
   type?: unknown
+  content?: unknown
   children?: readonly MarkdownTableNode[]
 }
 
-export function markdownTableColumnCount(node: MarkdownTableNode): number {
-  let maximum = 0
+/**
+ * Content-sized column widths, like the desktop HTML table: each column is as
+ * wide as its longest cell (bounded) and never narrower than its longest word,
+ * so cell text wraps only at spaces. One entry per column, at least one.
+ */
+export function markdownTableColumnWidths(node: MarkdownTableNode, fontScale: number): number[] {
+  const widths: number[] = []
 
+  const cellText = (candidate: MarkdownTableNode): string => {
+    if (candidate.type === 'text' || candidate.type === 'code_inline') return typeof candidate.content === 'string' ? candidate.content : ''
+    if (candidate.type === 'softbreak' || candidate.type === 'hardbreak') return ' '
+    return candidate.children?.map(cellText).join('') ?? ''
+  }
+  const textUnits = (text: string): number => {
+    let units = 0
+    for (const character of text) units += WIDE_CHARACTER.test(character) ? 2 : 1
+    return units
+  }
   const visit = (candidate: MarkdownTableNode): void => {
-    if (candidate.type === 'tr') {
-      const cells = candidate.children?.filter(child => child.type === 'th' || child.type === 'td').length ?? 0
-      maximum = Math.max(maximum, cells)
+    if (candidate.type !== 'tr') {
+      candidate.children?.forEach(visit)
+      return
     }
-    candidate.children?.forEach(visit)
+    candidate.children?.filter(child => child.type === 'th' || child.type === 'td').forEach((cell, column) => {
+      const text = cellText(cell).trim()
+      const line = Math.min(textUnits(text) * MARKDOWN_TABLE_UNIT_WIDTH, MARKDOWN_TABLE_WRAP_WIDTH)
+      const longestWord = Math.max(0, ...text.split(/\s+/u).map(textUnits)) * MARKDOWN_TABLE_UNIT_WIDTH
+      const width = Math.max(line, longestWord) + MARKDOWN_TABLE_CELL_PADDING
+      widths[column] = Math.max(widths[column] ?? 0, Math.min(MARKDOWN_TABLE_MAX_COLUMN_WIDTH, Math.max(MARKDOWN_TABLE_MIN_COLUMN_WIDTH, width)))
+    })
   }
 
   visit(node)
-  return Math.min(MARKDOWN_TABLE_MAX_LAYOUT_COLUMNS, Math.max(1, maximum))
+  if (widths.length === 0) widths.push(MARKDOWN_TABLE_MIN_COLUMN_WIDTH)
+  return widths.map(width => scaleChatFont(width, fontScale))
 }
 
-export function markdownTableMinimumWidth(columnCount: unknown, fontScale: number): number {
-  const parsed = typeof columnCount === 'number' && Number.isFinite(columnCount)
-    ? Math.floor(columnCount)
-    : 1
-  const bounded = Math.min(MARKDOWN_TABLE_MAX_LAYOUT_COLUMNS, Math.max(1, parsed))
-  return Math.min(
-    MARKDOWN_TABLE_MAX_WIDTH,
-    Math.max(MARKDOWN_TABLE_MIN_WIDTH, scaleChatFont(bounded * MARKDOWN_TABLE_MIN_COLUMN_WIDTH, fontScale)),
-  )
+interface MarkdownItCoreLike {
+  core: {
+    ruler: {
+      push: (
+        ruleName: string,
+        rule: (state: { src: string; tokens: Array<{ type: string; map: [number, number] | null; meta: unknown }> }) => void,
+      ) => void
+    }
+  }
+}
+
+/**
+ * Keep each table's own Markdown on its token so the expanded table view can
+ * re-parse just that table: react-native-markdown-display copies `meta`, not
+ * `map`, into the AST. Dedented so a table nested in a list still parses as a
+ * table on its own instead of an indented code block.
+ */
+export function installMarkdownTableSource<T extends MarkdownItCoreLike>(markdown: T): T {
+  markdown.core.ruler.push('agentsdock_table_source', state => {
+    let lines: string[] | null = null
+    for (const token of state.tokens) {
+      if (token.type !== 'table_open' || !token.map) continue
+      // Core rules run after normalize, so every line break in `src` is `\n`.
+      if (!lines) lines = state.src.split('\n')
+      const rows = lines.slice(token.map[0], token.map[1])
+      const indent = Math.min(...rows.map(row => row.length - row.trimStart().length))
+      token.meta = { ...(token.meta as object | null), source: rows.map(row => row.slice(indent)).join('\n') }
+    }
+  })
+  return markdown
+}
+
+export function markdownTableSource(table: { type?: unknown; sourceMeta?: unknown }): string {
+  return (table.sourceMeta as { source: string }).source
 }
 
 export function createMarkdownStyle(colors: Palette, fontScale: number, compact = false): Record<string, Record<string, string | number>> {
@@ -47,6 +102,7 @@ export function createMarkdownStyle(colors: Palette, fontScale: number, compact 
   return {
     body: {
       color: colors.text,
+      fontFamily: fonts.ui,
       fontSize: bodySize,
       lineHeight: bodyLineHeight,
     },
@@ -110,7 +166,7 @@ export function createMarkdownStyle(colors: Palette, fontScale: number, compact 
       borderRadius: 4,
       paddingHorizontal: 4,
       paddingVertical: 1,
-      fontFamily: 'Menlo',
+      fontFamily: fonts.mono,
       fontSize: codeSize,
     },
     code_block: {
@@ -120,7 +176,7 @@ export function createMarkdownStyle(colors: Palette, fontScale: number, compact 
       borderWidth: 1,
       borderRadius: 6,
       padding: compact ? 8 : 10,
-      fontFamily: 'Menlo',
+      fontFamily: fonts.mono,
       fontSize: codeSize,
       lineHeight: codeLineHeight,
       marginBottom: blockSpacing,
@@ -132,7 +188,7 @@ export function createMarkdownStyle(colors: Palette, fontScale: number, compact 
       borderWidth: 1,
       borderRadius: 6,
       padding: compact ? 8 : 10,
-      fontFamily: 'Menlo',
+      fontFamily: fonts.mono,
       fontSize: codeSize,
       lineHeight: codeLineHeight,
       marginBottom: blockSpacing,

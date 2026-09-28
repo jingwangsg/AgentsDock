@@ -75,6 +75,8 @@ export interface ClaudeRuntimeFeatures {
   context_usage_refresh?: boolean
   /** Native Claude Agent SDK MCP connection inspection and controls. */
   mcp_management?: boolean
+  /** Claude Code offers the native `/goal` command through the SDK. */
+  goals?: boolean
 }
 
 export type ClaudeTokenUsage = Record<string, JsonValue>
@@ -321,11 +323,14 @@ export interface PublicServerProfile extends StoredServerProfile {
   serverVersion?: string | null
 }
 
+export type AppearanceMode = 'system' | 'light' | 'dark'
+
 export interface StoredProfileSettings {
   schemaVersion: 2
   activeProfileId: string
   profiles: StoredServerProfile[]
   fontScale: number
+  appearance: AppearanceMode
 }
 
 export interface ChatDefaults {
@@ -352,7 +357,6 @@ export interface AddServerProfileInput {
   accessToken?: string | null
   serverIdentity?: string | null
   serverConfigured?: boolean
-  setActive?: boolean
 }
 
 export interface UpdateServerProfileInput {
@@ -379,21 +383,15 @@ export interface Session {
   session_id?: string | null
   claude_session_id?: string | null
   codex_thread_id?: string | null
-  codex_approval_policy?: CodexApprovalPolicy | null
-  codex_sandbox_mode?: CodexSandboxMode | null
-  codex_permission_profile?: string | null
-  codex_approvals_reviewer?: CodexApprovalsReviewer | null
   codex_thread_status?: CodexThreadStatus | null
   codex_goal?: CodexGoal | null
   codex_goal_time_budget_seconds?: number | null
   codex_pending_interaction_count?: number | null
   codex_needs_user_action?: boolean | null
   claude_transport?: string | null
-  claude_permission_mode?: ClaudePermissionMode | null
   claude_pending_interaction_count?: number | null
   claude_needs_user_action?: boolean | null
   cursor_session_id?: string | null
-  cursor_permission_mode?: CursorPermissionMode | null
   provider_jobs_access?: ProviderJobsAccess | null
   parent_id?: string | null
   pinned?: boolean | null
@@ -439,6 +437,8 @@ export interface RuntimeOption {
   label: string
   locked?: boolean
   locked_reason?: string | null
+  /** Purpose text from the provider's own picker (e.g. "Fastest for quick answers"), shown under the label. */
+  description?: string | null
   efforts?: RuntimeOption[] | null
 }
 export type RuntimeDiagnosticStatus = 'unknown' | 'ready' | 'missing' | 'unauthenticated' | 'error'
@@ -784,6 +784,32 @@ export interface CodeDiffFileSummary {
   binary?: boolean | null
 }
 
+/** Source identity for a server-verified synthetic provider interruption record. */
+export interface ProviderInterruptionOrigin {
+  provider: 'claude'
+  kind: 'interruption'
+  event_id: string
+  session_id: string
+  timestamp: string
+  cause: 'steer' | 'stop' | 'unknown'
+  parent_event_id?: string | null
+  prompt_id?: string | null
+}
+
+export interface ProviderHistoryOrigin {
+  provider: 'claude' | 'codex'
+  kind?: 'assistant' | 'user' | 'subagent_notification' | 'turn_aborted' | 'provider_notice'
+  event_id?: string
+  session_id?: string
+  timestamp?: string
+  parent_event_id?: string | null
+  prompt_id?: string | null
+  turn_id?: string
+  native_event_id?: string
+  source_text_sha256?: string
+  cause?: never
+}
+
 export interface Event {
   seq: number
   id: string
@@ -795,6 +821,20 @@ export interface Event {
   imported?: boolean | null
   /** The provider-import source already removed generated-only prompt wrappers. */
   provider_history_sanitized?: boolean | null
+  /** Provider control metadata; meaningful only with the exact provider import contract. */
+  metadata_only?: boolean | null
+  /** Server-verified Codex runtime context recovered from imported history. */
+  provider_runtime_context?: 'goal' | 'subagent_notification' | 'turn_aborted' | 'provider_notice' | null
+  /** Server-proven, in-place repair of an imported provider record. */
+  provider_history_repair?: 'source_proven_import' | 'source_proven_assistant_replay' | 'source_proven_native_replay' | null
+  /** Positive provider evidence that an imported input was authored by the user. */
+  provider_user_authored?: boolean | null
+  /** Additive provenance; only the exact imported lifecycle contract is control metadata. */
+  provider_origin?: ProviderInterruptionOrigin | ProviderHistoryOrigin | null
+  /** Provider message identity when supplied by native output or history. */
+  provider_message_id?: string | null
+  /** Durable summary placement at its first streamed section, without changing its ledger sequence. */
+  reasoning_after_seq?: number
   queued_id?: string | null
   promoted?: boolean | null
   secure_peer_envelope_id?: string | null
@@ -861,9 +901,18 @@ export interface Event {
   display_prompt?: string | null
   file_ids?: string[] | null
   display_file_ids?: string[] | null
+  /** Palette-selected skill riding this turn (`turn_started`). */
+  skill_selection?: ProviderCommandSelection | null
   text?: string | null
   result_text?: string | null
   message?: string | null
+  /** `team_message_sent` payload fields. */
+  team_id?: string
+  destination?: 'all_servers'
+  kind?: string | null
+  title?: string | null
+  recipients?: Array<{ kind: 'server' | 'human' | 'all'; display_name: string }> | null
+  attachments?: number | null
   error?: JsonValue
   emergency_alert?: EmergencyAlert | null
   emergency_alert_id?: string | null
@@ -920,18 +969,33 @@ export interface Event {
   positions?: QueuePosition[] | null
   diff_files?: CodeDiffFileSummary[] | null
   repository_root?: string | null
+  /** Durable pre-turn workspace tree written with this turn's `code_diff`; only such runs can be restored. */
+  checkpoint_commit?: string | null
+  changed_files?: string[] | null
   files_changed?: number | null
   additions?: number | null
   deletions?: number | null
+  /** `history_rewound` tombstone: the removed closed sequence range and its provider action. */
+  from_seq?: number | null
+  through_seq?: number | null
+  to_run_id?: string | null
+  removed_events?: number | null
+  provider_rewind?: string | null
+  /** Files the server deleted together with the removed turns. */
+  outputs_reverted?: { canvases: number; artifacts: number } | null
   byte_count?: number | null
   interaction?: CodexPendingInteraction | null
   interaction_id?: string | null
   request_method?: string | null
   resolution?: string | null
+  /** Stable identity shared by Codex context-compaction start/completion events. */
+  compaction_id?: string | null
   operation_id?: string | null
   turn_id?: string | null
   item_id?: string | null
   native_steer?: boolean | null
+  /** Accepted user input on the existing native goal owner; not a new turn or Stop. */
+  native_goal_steer?: boolean | null
   superseded_by_run_id?: string | null
   steer_interrupted_run_id?: string | null
   stopped?: boolean | null
@@ -1170,8 +1234,122 @@ export interface AgentTeamMailCapability extends ServerCapability {
   }
 }
 
+/** Reported by the active server's ssh tunnel supervisor for one registered remote. */
+export interface RemoteServerTunnelStatus {
+  state: 'starting' | 'connected' | 'reconnecting' | 'stopped'
+  restarts: number
+  last_error: string | null
+}
+
+/** A server reachable through the active server's hub proxy at `/api/remote/{id}`. Never carries the remote's own token. */
+export interface RemoteServer {
+  id: string
+  name: string
+  ssh_host: string
+  install_dir: string
+  remote_port: number
+  local_port: number
+  created_at: string
+  proxy_path: string
+  tunnel: RemoteServerTunnelStatus | null
+}
+
+export interface RemoteServerDeployLogEntry {
+  phase: string
+  message: string
+  at: string
+}
+
+export interface RemoteServerDeployJob {
+  job_id: string
+  phase: string
+  done: boolean
+  error: string | null
+  log: RemoteServerDeployLogEntry[]
+  server: RemoteServer | null
+}
+
+export interface RemoteServersCapability {
+  available: boolean
+  required: boolean
+  version: number
+  proxy_prefix: string
+  admin_path: string
+  ssh_available: boolean
+  count: number
+}
+
+export interface SessionRewindCapability {
+  available: boolean
+  version: number
+  supported_backends: Backend[]
+  checkpoint_restore?: boolean
+}
+
+export interface SessionRewindResult {
+  ok: boolean
+  from_seq: number
+  through_seq: number
+  removed_events: number
+  /** Opaque server label (e.g. claude_fork, codex_rollback); displayed, never branched on. */
+  provider_rewind: string | null
+  session: Session
+}
+
+/** Repository-wide state; `revision` guards checkpoint restores against concurrent edits. */
+export interface WorkspaceGitStatus {
+  root: string
+  branch: string | null
+  head: string | null
+  revision: string
+  [key: string]: JsonValue | undefined
+}
+
+export interface ProviderCommandSelection {
+  /** Opaque AgentsServer-owned identifier. The client must never send a filesystem path. */
+  id: string
+  /** Inventory revision used by AgentsServer to reject stale selections. */
+  revision: string
+}
+
+export interface ProviderCommand {
+  /** Opaque AgentsServer-owned identifier. */
+  id: string
+  name: string
+  label: string
+  description: string
+  scope?: string | null
+  source?: string | null
+  kind: string
+  /** Provider-approved visible slash token, for example `/pdf` or `/plugin:skill`. */
+  invocation: string
+}
+
+export interface ProviderCommandSupport {
+  available: boolean
+  mode: string
+  reason?: string | null
+}
+
+export interface ProviderCommandsSnapshot {
+  backend: Backend
+  revision: string
+  support: ProviderCommandSupport
+  commands: ProviderCommand[]
+}
+
+export interface LocalProviderCommandsCapability {
+  available: boolean
+  version?: number
+  endpoint?: string
+  supported_backends?: Backend[]
+  [key: string]: JsonValue | undefined
+}
+
 export interface HealthCapabilities {
+  local_provider_commands_v1?: LocalProviderCommandsCapability
   scheduled_jobs?: ScheduledJobsCapability
+  session_rewind_v1?: SessionRewindCapability
   agent_emergency_alerts_v1?: AgentEmergencyAlertsCapability
   provider_jobs_access_control_v1?: ProviderJobsAccessControlCapability
   codex_controls?: InteractiveProviderCapability
@@ -1188,7 +1366,8 @@ export interface HealthCapabilities {
   team_hub_v1?: TeamHubV1Capability
   server_updates?: ServerUpdatesCapability
   working_directory_completion?: WorkingDirectoryCompletionCapability
-  [key: string]: JsonValue | InteractiveProviderCapability | CursorBackendCapability | ScheduledJobsCapability | AgentEmergencyAlertsCapability | ProviderJobsAccessControlCapability | AgentTeamMailCapability | CrossChatHandoffsCapability | TeamHubV1Capability | ServerUpdatesCapability | WorkingDirectoryCompletionCapability | undefined
+  remote_servers_v1?: RemoteServersCapability
+  [key: string]: JsonValue | InteractiveProviderCapability | CursorBackendCapability | ScheduledJobsCapability | AgentEmergencyAlertsCapability | ProviderJobsAccessControlCapability | AgentTeamMailCapability | CrossChatHandoffsCapability | TeamHubV1Capability | ServerUpdatesCapability | WorkingDirectoryCompletionCapability | RemoteServersCapability | SessionRewindCapability | LocalProviderCommandsCapability | undefined
 }
 
 export interface Health {
@@ -1317,12 +1496,6 @@ export interface CreateSessionInput {
   model?: string | null
   effort?: string | null
   system_prompt?: string | null
-  codex_approval_policy?: CodexApprovalPolicy | null
-  codex_sandbox_mode?: CodexSandboxMode | null
-  codex_permission_profile?: string | null
-  codex_approvals_reviewer?: CodexApprovalsReviewer | null
-  claude_permission_mode?: ClaudePermissionMode | null
-  cursor_permission_mode?: CursorPermissionMode | null
   provider_jobs_access?: ProviderJobsAccess
   providerId?: string
 }

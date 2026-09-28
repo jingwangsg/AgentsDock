@@ -1,4 +1,5 @@
 import { normalizeServerURL } from './format'
+import { defaultProfileName } from './server-profiles'
 
 export type ServerProfileConnectionState = 'online' | 'degraded' | 'connecting' | 'retrying' | 'offline' | 'cached'
 
@@ -21,7 +22,7 @@ export interface ServerProfileListItem {
 }
 
 export interface ServerProfileDraftValues {
-  profileId: string | null
+  profileId: string
   name: string
   serverUrl: string
   accessToken: string
@@ -42,12 +43,10 @@ export interface ServerConnectionTestResult {
   message?: string | null
 }
 
-export interface CreateServerProfileInput {
-  name?: string
-  serverUrl: string
-  accessToken?: string | null
-  serverIdentity?: string | null
-  serverSetupComplete: true
+/** One line of a hub deploy job's log (server/remote_servers.py `DeployJob.log`), without its `at` timestamp - the UI only orders and displays them. */
+export interface RemoteDeployProgressEntry {
+  phase: string
+  message: string
 }
 
 export interface UpdateServerProfileInput {
@@ -60,24 +59,16 @@ export interface UpdateServerProfileInput {
   resetServerIdentity?: boolean
 }
 
-export type ServerProfileEditorInitialMode = 'manage' | 'add' | 'edit-active'
-
-export function emptyServerProfileDraft(): ServerProfileDraftValues {
-  return {
-    profileId: null,
-    name: '',
-    serverUrl: '',
-    accessToken: '',
-    clearAccessToken: false,
-    resetServerIdentity: false,
-  }
-}
+export type ServerProfileEditorInitialMode = 'manage' | 'edit-active'
 
 export function editServerProfileDraft(profile: ServerProfileListItem): ServerProfileDraftValues {
+  // The first-launch placeholder still points at 127.0.0.1; blank fields show
+  // the hub placeholders instead of asking the user to edit the loopback address.
+  const configured = profile.serverSetupComplete
   return {
     profileId: profile.id,
-    name: profile.name,
-    serverUrl: profile.serverUrl,
+    name: configured ? profile.name : '',
+    serverUrl: configured ? profile.serverUrl : '',
     // Never place a saved credential back in React state. Blank means preserve.
     accessToken: '',
     clearAccessToken: false,
@@ -90,10 +81,9 @@ export function initialServerProfileDraft(
   profiles: readonly ServerProfileListItem[],
   activeProfileId: string | null,
 ): ServerProfileDraftValues | null {
-  if (mode === 'add') return emptyServerProfileDraft()
   if (mode !== 'edit-active') return null
   const active = profiles.find(profile => profile.id === activeProfileId)
-  return active ? editServerProfileDraft(active) : emptyServerProfileDraft()
+  return active ? editServerProfileDraft(active) : null
 }
 
 export function serverProfileHost(serverUrl: string): string | null {
@@ -164,28 +154,16 @@ export function draftAccessToken(draft: Pick<ServerProfileDraftValues, 'accessTo
   return draft.accessToken.trim() ? draft.accessToken : undefined
 }
 
-export function buildCreateServerProfileInput(
-  draft: ServerProfileDraftValues,
-  serverIdentity?: string | null,
-): CreateServerProfileInput {
-  const accessToken = draftAccessToken(draft)
-  return {
-    ...(draft.name.trim() ? { name: draft.name.trim() } : {}),
-    serverUrl: normalizeServerURL(draft.serverUrl),
-    ...(accessToken !== undefined ? { accessToken } : {}),
-    serverIdentity: serverIdentity ?? null,
-    serverSetupComplete: true,
-  }
-}
-
 export function buildUpdateServerProfileInput(
   profile: ServerProfileListItem,
   draft: ServerProfileDraftValues,
   testedServerIdentity?: string | null,
 ): UpdateServerProfileInput {
   const patch: UpdateServerProfileInput = {}
-  const name = draft.name.trim() || profile.name
   const serverUrl = normalizeServerURL(draft.serverUrl)
+  // A blank name derives from the new address, so the first-launch
+  // placeholder does not keep its "127.0.0.1" name after the hub is entered.
+  const name = draft.name.trim() || defaultProfileName(serverUrl)
   const accessToken = draftAccessToken(draft)
   if (name !== profile.name) patch.name = name
   if (serverUrl !== profile.serverUrl) patch.serverUrl = serverUrl

@@ -29,16 +29,14 @@ const mocks = {
   'expo-document-picker': `export async function getDocumentAsync(){return {canceled:true}}`,
   'expo-image-picker': `export async function launchImageLibraryAsync(){return {canceled:true}}`,
   '@expo/ui/community/menu': `export const MenuView='MenuView';`,
-  'lucide-react-native': `export const AlertCircle='AlertCircle', ArrowDown='ArrowDown', ArrowUp='ArrowUp', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', CornerDownRight='CornerDownRight', File='File', Mail='Mail', MessageCircleMore='MessageCircleMore', MessageSquareShare='MessageSquareShare', Paperclip='Paperclip', Search='Search', Send='Send', Square='Square', Trash2='Trash2', X='X', Server='Server', RefreshCw='RefreshCw';`,
+  'lucide-react-native': `export const AlertCircle='AlertCircle', ArrowDown='ArrowDown', ArrowUp='ArrowUp', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', CornerDownRight='CornerDownRight', File='File', Mail='Mail', MessageCircleMore='MessageCircleMore', MessageSquareShare='MessageSquareShare', Paperclip='Paperclip', Pencil='Pencil', Search='Search', Send='Send', Square='Square', Trash2='Trash2', X='X', Server='Server', RefreshCw='RefreshCw';`,
   '../store/useAppStore': `export const useAppStore=globalThis.__teamComposerFixture.store; export const client=globalThis.__teamComposerFixture.client;`,
   '../lib/analytics': `export function trackEvent(){}`,
   '../lib/app-keyboard': `export async function dismissAppKeyboard(){}`,
   './AppText': `import {forwardRef,createElement} from 'react'; export const Text='Text'; export const TextInput=forwardRef((props,ref)=>createElement('TextInput',{...props,ref}));`,
   './BackendMark': `export const BackendMark='BackendMark';`,
-  './CodexPermissionMenu': `export const CodexPermissionMenu=()=>null;`,
-  './ClaudePermissionMenu': `export const ClaudePermissionMenu=()=>null;`,
-  './CursorPermissionMenu': `export const CursorPermissionMenu=()=>null;`,
-  './CodexGoalBar': `export const CodexGoalBar=()=>null;`,
+  './CodexGoalBar': `export const CodexGoalBar=()=>null, CodexGoalEditorSheet=()=>null;`,
+  './TextPromptDialog': `export const useTextPrompt=()=>({promptText:async()=>null,textPromptDialog:null});`,
   './CodexRuntimeContext': `export const useCodexRuntime=()=>({refresh:async()=>{}});`,
   './ClaudeRuntimeContext': `export const useClaudeRuntime=()=>({refresh:async()=>{}});`,
   './FullscreenImageViewer': `export const FullscreenViewerCloseButton='FullscreenViewerCloseButton', SwipeDismissImage='SwipeDismissImage';`,
@@ -46,7 +44,7 @@ const mocks = {
 const outfile = path.resolve('build/tmp', `team-composer-tests-${process.pid}.mjs`)
 await mkdir(path.dirname(outfile), { recursive: true })
 await build({
-  stdin: { contents: `export { Composer, ChatTargetPicker, QueueShelf } from './src/components/Composer'; export { TeamTargetPicker } from './src/components/TeamTargetPicker';`, resolveDir: process.cwd(), loader: 'ts' },
+  stdin: { contents: `export { Composer, ChatTargetPicker, QueueShelf } from './src/components/Composer'; export { TeamTargetPicker } from './src/components/TeamTargetPicker'; export { dark, light } from './src/theme';`, resolveDir: process.cwd(), loader: 'ts' },
   outfile, bundle: true, format: 'esm', platform: 'node', packages: 'external', jsx: 'automatic', logLevel: 'silent', loader: { '.png': 'dataurl' },
   plugins: [{ name: 'team-composer-native-hosts', setup(context) {
     context.onResolve({ filter: /.*/ }, args => args.path === 'react' ? { path: args.path, external: true }
@@ -55,7 +53,7 @@ await build({
   } }],
 })
 after(async () => { await unlink(outfile); delete globalThis.__teamComposerFixture })
-const { Composer, ChatTargetPicker, QueueShelf, TeamTargetPicker } = await import(pathToFileURL(outfile).href)
+const { Composer, ChatTargetPicker, QueueShelf, TeamTargetPicker, dark, light } = await import(pathToFileURL(outfile).href)
 
 function health() { return { ok: true, server_identity: 'local-server', server_instance_id: 'instance', capabilities: {
   agent_team_messages_v1: { available: true, version: 1, mention_sigil: '@@', send_requires_mention: true },
@@ -74,7 +72,7 @@ function reset(patch = {}) {
   store.setState({
     activeProfileId:'profile',profileGeneration:1,selectedSessionId:'chat',connected:true,connecting:false,switchingProfileId:null,workspaceAdopting:false,
     health:health(),sessions:[{id:'chat',title:'Mobile',backend:'codex'}],snapshots:{},runtime:null,profiles:[],
-    drafts:{chat:''},uploads:{},uploadPending:{},uploadFailed:{},queuedRunStatus:{},chatReferencesBySession:{},teamReferencesBySession:{},
+    drafts:{chat:''},editingTurn:{},uploads:{},uploadPending:{},uploadFailed:{},queuedRunStatus:{},chatReferencesBySession:{},teamReferencesBySession:{},
     activeSessionIds:new Set(),sendingSessionIds:new Set(),stoppingSessionIds:new Set(),turnAdmissionTokens:{},
     agentRoutesBySession:{},agentRouteErrorsBySession:{},agentRouteLoadingSessionIds:new Set(),revokingAgentRouteIds:new Set(),skippingQueuedDeliveryIds:new Set(),pendingQueuedRunIds:new Set(),
     refreshAgentRoutes:async(...args)=>{fixture.routeReads.push(args);return store.getState().agentRoutesBySession[args[0]]??null},
@@ -457,7 +455,7 @@ async function renderQueue(overrides={}){
   await act(async()=>{renderer=TestRenderer.create(React.createElement(QueueShelf,props))})
   return {renderer,props}
 }
-for(const [scheme,background,border] of [['dark','#312d36','#9d7ac9'],['light','#f4effb','#8566bd']])test(`incoming async queue uses Mac ${scheme} purple and only exact removal, never Edit or Run now`,async()=>{
+for(const [scheme,background,border] of [['dark',dark.surface,dark.blue],['light',light.surface,light.blue]])test(`incoming async queue uses Zed ${scheme} surface and accent and only exact removal, never Edit or Run now`,async()=>{
   resetRoutes({health:queueHealth(),snapshots:{chat:{queuedTurns:[asyncTurn()]}}});fixture.scheme=scheme
   const {renderer}=await renderQueue()
   try{

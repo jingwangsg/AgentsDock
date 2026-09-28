@@ -88,6 +88,11 @@ export function sessionNeedsCodexInteraction(session: Pick<
   )
 }
 
+/** A live turn end worth one notification; imported terminals are replayed history. */
+export function isTurnEndNotificationEvent(event: Pick<Event, 'type' | 'imported'>): boolean {
+  return (event.type === 'turn_finished' || event.type === 'turn_stopped') && event.imported !== true
+}
+
 export function isAgentActivityEvent(event: Pick<Event, 'type'>): boolean {
   return [
     'assistant_text',

@@ -5,6 +5,7 @@ import {
   createStoredServerProfile,
   findDuplicateProfileByIdentity,
   findDuplicateProfileByURL,
+  hubProxyRemoteId,
   legacyURLCacheNamespace,
   migrateLegacyProfileSettings,
   nextCredentialVersion,
@@ -12,6 +13,7 @@ import {
   normalizeStoredProfileSettings,
   profileCredentialKeySuffix,
   profileNamespace,
+  reconcileHubProfiles,
 } from './server-profiles'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -55,6 +57,7 @@ assertEqual(migrated.settings, {
     updatedAt: timestamp,
   }],
   fontScale: 1.3,
+  appearance: 'dark',
 })
 assertEqual(migrated.workspace, {
   selectedSessionId: 'chat-1',
@@ -65,6 +68,14 @@ assertEqual(migrated.workspace, {
 
 // Normalizing an already-migrated value neither creates a new ID nor rewrites timestamps.
 assertEqual(normalizeStoredProfileSettings(migrated.settings, '2030-01-01T00:00:00.000Z'), migrated.settings)
+// Appearance survives a round trip; settings saved before it existed, or with a
+// value this build does not know, open in the default Zed One Dark.
+for (const appearance of ['system', 'light', 'dark'] as const) {
+  assertEqual(normalizeStoredProfileSettings({ ...migrated.settings, appearance }).appearance, appearance)
+}
+const { appearance: _omitted, ...settingsWithoutAppearance } = migrated.settings
+assertEqual(normalizeStoredProfileSettings(settingsWithoutAppearance).appearance, 'dark')
+assertEqual(normalizeStoredProfileSettings({ ...migrated.settings, appearance: 'sepia' }).appearance, 'dark')
 assertEqual(profileNamespace(migrated.settings.profiles[0]), 'profile:default-profile')
 assertEqual(profileNamespace({ id: 'default-profile', serverIdentity: ' canonical-server ' }), 'canonical-server')
 assertEqual(legacyURLCacheNamespace(migrated.settings.profiles[0].serverURL), 'http://server.example:7850')
@@ -96,6 +107,13 @@ assertEqual(profileA.serverURL, 'http://alpha.example:7850')
 assertEqual(profileB.name, 'beta.example')
 assertEqual(findDuplicateProfileByURL([profileA, profileB], 'HTTP://ALPHA.EXAMPLE:7850/')?.id, 'profile-a')
 assertEqual(findDuplicateProfileByIdentity([profileA, profileB], ' server-alpha ')?.id, 'profile-a')
+
+// Two remotes proxied through the same hub differ only by their /api/remote/{id}
+// path; reconcileHubRemoteServers must not treat one as a duplicate of the other.
+const hubRemoteOne = createStoredServerProfile({ serverURL: 'http://127.0.0.1:7850/api/remote/aaa111' }, 'remote-one', timestamp)
+const hubRemoteTwo = createStoredServerProfile({ serverURL: 'http://127.0.0.1:7850/api/remote/bbb222' }, 'remote-two', timestamp)
+assertEqual(findDuplicateProfileByURL([hubRemoteOne, hubRemoteTwo], 'http://127.0.0.1:7850/api/remote/aaa111/'), hubRemoteOne)
+assertEqual(findDuplicateProfileByURL([hubRemoteOne, hubRemoteTwo], 'http://127.0.0.1:7850/api/remote/ccc333'), undefined)
 assertThrows(() => assertUniqueServerProfile([profileA, profileB], {
   serverURL: 'alpha.example:7850',
   serverIdentity: null,
@@ -123,6 +141,7 @@ const duplicateSettings: StoredProfileSettings = {
   activeProfileId: profileA.id,
   profiles: [profileA, { ...profileB, serverURL: profileA.serverURL }],
   fontScale: 1,
+  appearance: 'dark',
 }
 assertThrows(() => normalizeStoredProfileSettings(duplicateSettings), /already uses/)
 
@@ -131,5 +150,24 @@ assertThrows(() => normalizeStoredProfileSettings({
   ...duplicateSettings,
   profiles: duplicateIdentityProfiles,
 }), /already belongs/)
+
+assertEqual(hubProxyRemoteId('http://h:7850/api/remote/abc/'), 'abc')
+assertEqual(hubProxyRemoteId('http://h:7850'), null)
+
+const hubURL = 'http://nvmac.tail46daa8.ts.net:7850'
+const hubProfile = { id: 'hub', serverURL: hubURL }
+const savedRemote = { id: 'remote-aaa', serverURL: `${hubURL}/api/remote/aaa` }
+const staleRemote = { id: 'remote-zzz', serverURL: `${hubURL}/api/remote/zzz` }
+const otherHubRemote = { id: 'other-hub-remote', serverURL: 'http://other.example:7850/api/remote/aaa' }
+const registered = [{ name: 'osmo', proxy_path: '/api/remote/aaa' }, { name: 'lab', proxy_path: '/api/remote/bbb' }]
+// Creates the missing remote, removes the unregistered proxied profile of this
+// hub, and leaves the hub itself and another hub's proxied profile alone.
+assertEqual(reconcileHubProfiles([hubProfile, savedRemote, staleRemote, otherHubRemote], hubURL, registered), {
+  create: [{ name: 'lab', serverURL: `${hubURL}/api/remote/bbb` }],
+  removeIds: ['remote-zzz'],
+})
+// A trailing slash or uppercase host on the hub URL still matches saved profiles.
+assertEqual(reconcileHubProfiles([hubProfile, savedRemote], 'NVMAC.tail46daa8.ts.net:7850/', [registered[0]]), { create: [], removeIds: [] })
+assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [registered[0]]), { create: [], removeIds: [] })
 
 console.log('server profile regressions passed')

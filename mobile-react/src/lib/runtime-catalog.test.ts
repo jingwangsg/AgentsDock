@@ -62,6 +62,21 @@ test('a saved custom value stays visible while the catalog reloads', () => {
   ])
 })
 
+test('model descriptions from the server pass through untouched', () => {
+  const described: RuntimeCatalog = {
+    backends: {
+      claude: {
+        default_model: 'sonnet',
+        default_effort: null,
+        models: [{ value: 'opus', label: 'Opus 5.5', description: 'Most capable for ambitious work' }],
+        efforts: [],
+      },
+    },
+  }
+  assert.deepEqual(runtimeCatalogOptions(described, 'claude', 'models')[1],
+    { value: 'opus', label: 'Opus 5.5', description: 'Most capable for ambitious work' })
+})
+
 test('locked options pass through generically for any backend', () => {
   const lockedCatalog: RuntimeCatalog = {
     backends: {

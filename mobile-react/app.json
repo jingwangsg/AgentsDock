@@ -71,7 +71,84 @@
           "defaultChannel": "default"
         }
       ],
-      "expo-document-picker"
+      "expo-document-picker",
+      [
+        "expo-font",
+        {
+          "ios": {
+            "fonts": [
+              "./assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+              "./assets/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf",
+              "./assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBold.ttf",
+              "./assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBoldItalic.ttf",
+              "./assets/fonts/lilex/Lilex-Regular.ttf",
+              "./assets/fonts/lilex/Lilex-Italic.ttf",
+              "./assets/fonts/lilex/Lilex-Bold.ttf",
+              "./assets/fonts/lilex/Lilex-BoldItalic.ttf"
+            ]
+          },
+          "android": {
+            "fonts": [
+              {
+                "fontFamily": "IBM Plex Sans",
+                "fontDefinitions": [
+                  {
+                    "path": "./assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+                    "weight": 400
+                  },
+                  {
+                    "path": "./assets/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf",
+                    "weight": 400,
+                    "style": "italic"
+                  },
+                  {
+                    "path": "./assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBold.ttf",
+                    "weight": 600
+                  },
+                  {
+                    "path": "./assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBoldItalic.ttf",
+                    "weight": 600,
+                    "style": "italic"
+                  }
+                ]
+              },
+              {
+                "fontFamily": "Lilex",
+                "fontDefinitions": [
+                  {
+                    "path": "./assets/fonts/lilex/Lilex-Regular.ttf",
+                    "weight": 400
+                  },
+                  {
+                    "path": "./assets/fonts/lilex/Lilex-Italic.ttf",
+                    "weight": 400,
+                    "style": "italic"
+                  },
+                  {
+                    "path": "./assets/fonts/lilex/Lilex-Bold.ttf",
+                    "weight": 700
+                  },
+                  {
+                    "path": "./assets/fonts/lilex/Lilex-BoldItalic.ttf",
+                    "weight": 700,
+                    "style": "italic"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "android": {
+            "backgroundColor": "#2f343e",
+            "image": "./assets/android-icon-foreground.png",
+            "imageWidth": 200
+          }
+        }
+      ]
     ]
   }
 }

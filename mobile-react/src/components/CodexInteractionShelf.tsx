@@ -29,6 +29,7 @@ import {
 } from '../lib/codex-mcp-form'
 import { client } from '../store/useAppStore'
 import { usePalette } from '../theme'
+import { fonts } from '../lib/typography'
 import type { JsonValue, ProviderPendingInteraction } from '../types'
 import { Text, TextInput } from './AppText'
 import { useCodexRuntime } from './CodexRuntimeContext'
@@ -573,7 +574,7 @@ function PermissionCard({ interaction, busy, providerName, onRespond }: Provider
             onPress={() => setScope(value)}
             style={[styles.segmentOption, { backgroundColor: scope === value ? colors.blue : colors.background, borderColor: colors.border }]}
           >
-            <Text style={{ color: scope === value ? 'white' : colors.text, fontWeight: '700' }}>
+            <Text style={{ color: scope === value ? colors.textOnAccent : colors.text, fontWeight: '700' }}>
               {value === 'turn' ? 'This turn' : 'This session'}
             </Text>
           </Pressable>
@@ -875,7 +876,7 @@ function Action({ label, onPress, disabled, primary, tone }: {
 }) {
   const colors = usePalette()
   const backgroundColor = primary ? colors.blue : colors.raised
-  const color = primary ? 'white' : tone === 'danger' ? colors.red : colors.text
+  const color = primary ? colors.textOnAccent : tone === 'danger' ? colors.red : colors.text
   return (
     <Pressable
       accessibilityRole="button"
@@ -1043,13 +1044,13 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 14, fontWeight: '900' },
   cardSubtitle: { fontSize: 11, lineHeight: 16, marginTop: 2 },
   countdown: { fontSize: 12, fontWeight: '900' },
-  command: { borderRadius: 7, padding: 11, fontFamily: 'Menlo', fontSize: 11.5, lineHeight: 17 },
+  command: { borderRadius: 7, padding: 11, fontFamily: fonts.mono, fontSize: 11.5, lineHeight: 17 },
   reason: { fontSize: 12, lineHeight: 17 },
   requestScope: { borderRadius: 7, padding: 10, gap: 3 },
   requestPaths: { borderRadius: 7, padding: 10, gap: 8 },
   policyBox: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 9, gap: 8 },
   warning: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 9 },
-  json: { borderRadius: 7, padding: 10, fontFamily: 'Menlo', fontSize: 10.5, lineHeight: 15 },
+  json: { borderRadius: 7, padding: 10, fontFamily: fonts.mono, fontSize: 10.5, lineHeight: 15 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 7 },
   action: { minHeight: 44, borderRadius: 7, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   question: { gap: 7 },

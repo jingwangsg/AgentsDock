@@ -1,11 +1,13 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { UITextView as SelectableText } from '@bsky.app/react-native-uitextview'
 import { Linking, ScrollView, StyleSheet, Text as NativeText, View, type TextStyle } from 'react-native'
+import { Maximize2 } from 'lucide-react-native'
+import markdownItCjkFriendly from 'markdown-it-cjk-friendly'
 import Markdown, { MarkdownIt, type ASTNode, type RenderRules } from 'react-native-markdown-display'
 import { SvgXml } from 'react-native-svg'
 
 import type { ChatReference } from '../types'
-import { createMarkdownStyle, markdownTableColumnCount, markdownTableMinimumWidth } from '../lib/markdown'
+import { createMarkdownStyle, installMarkdownTableSource, markdownTableColumnWidths, markdownTableSource } from '../lib/markdown'
 import { installMathMarkdown } from '../lib/math-markdown'
 import {
   inlineRouteReferenceIsInteractive,
@@ -17,8 +19,13 @@ import {
 import { texToSvg } from '../lib/tex-svg'
 import { scaleChatFont } from '../lib/typography'
 import { usePalette } from '../theme'
+import { MarkdownTableSheet } from './MarkdownTableSheet'
+import { IconButton } from './ui'
 
-const mathMarkdown = installMathMarkdown(new MarkdownIt({ typographer: true }))
+// markdownItCjkFriendly: CommonMark refuses `**…。**他` as bold because the
+// closing `**` sits between CJK punctuation and a letter; models write this
+// constantly. Same fix as the desktop's remark-cjk-friendly.
+const chatMarkdown = installMarkdownTableSource(installMathMarkdown(new MarkdownIt({ typographer: true }).use(markdownItCjkFriendly)))
 const EMPTY_CHAT_REFERENCES: readonly ChatReference[] = []
 const inlineReferenceStyles = StyleSheet.create({ marker: { borderRadius: 4, fontWeight: '800' } })
 
@@ -30,6 +37,7 @@ export function MarkdownContent({
   inlineChatReferences = EMPTY_CHAT_REFERENCES,
   sourceSessionId,
   onChatReferencePress,
+  expandableTables = true,
 }: {
   value: string
   fontScale?: number
@@ -38,9 +46,11 @@ export function MarkdownContent({
   inlineChatReferences?: readonly ChatReference[]
   sourceSessionId?: string
   onChatReferencePress?: (reference: ChatReference) => void
+  expandableTables?: boolean
 }) {
   const colors = usePalette()
   const textColor = color ?? colors.text
+  const [expandedTable, setExpandedTable] = useState<string | null>(null)
   const markdownStyle = useMemo(
     () => createMarkdownStyle(color === undefined ? colors : { ...colors, text: color }, fontScale, compact),
     [colors, color, compact, fontScale],
@@ -54,6 +64,16 @@ export function MarkdownContent({
     void Linking.openURL(url).catch(() => undefined)
     return false
   }, [])
+  // Cells render before their table, so cell and table rules share one lookup
+  // instead of re-walking the table for every cell.
+  const tableColumnWidths = useMemo(() => {
+    const cache = new WeakMap<ASTNode, number[]>()
+    return (table: ASTNode): number[] => {
+      let widths = cache.get(table)
+      if (!widths) cache.set(table, widths = markdownTableColumnWidths(table, fontScale))
+      return widths
+    }
+  }, [fontScale])
   const markdownRules = useMemo<RenderRules>(() => ({
     // Fabric's built-in `Text selectable` only exposes a whole-paragraph Copy
     // command. UITextView provides the normal iOS range handles while keeping
@@ -141,30 +161,60 @@ export function MarkdownContent({
       </SelectableText>
     ),
     table: (node, children, _parents, markdownStyles) => {
-      const columnCount = markdownTableColumnCount(node)
+      const widths = tableColumnWidths(node)
       return (
-        <ScrollView
-          key={node.key}
-          horizontal
-          nestedScrollEnabled
-          directionalLockEnabled
-          keyboardShouldPersistTaps="always"
-          showsHorizontalScrollIndicator={columnCount > 1}
-          style={styles.tableScroll}
-          contentContainerStyle={styles.tableScrollContent}
-        >
-          <View
-            style={[
-              markdownStyles._VIEW_SAFE_table,
-              styles.tableContent,
-              { width: markdownTableMinimumWidth(columnCount, fontScale) },
-            ]}
+        <View key={node.key} style={styles.tableFrame}>
+          <ScrollView
+            horizontal
+            nestedScrollEnabled
+            directionalLockEnabled
+            keyboardShouldPersistTaps="always"
+            showsHorizontalScrollIndicator={widths.length > 1}
+            style={styles.tableScroll}
+            contentContainerStyle={styles.tableScrollContent}
           >
-            {children}
-          </View>
-        </ScrollView>
+            <View
+              style={[
+                markdownStyles._VIEW_SAFE_table,
+                styles.tableContent,
+                { minWidth: widths.reduce((sum, width) => sum + width, 0) },
+              ]}
+            >
+              {children}
+            </View>
+          </ScrollView>
+          {/* An overlay, not a row: the collapsed table's layout does not change. The
+              sheet renders without chat references, so marker glyphs go back to their
+              @mention text before the source is re-parsed. */}
+          {expandableTables ? (
+            <View style={styles.tableExpand}>
+              <IconButton
+                icon={Maximize2}
+                size={14}
+                touchSize={30}
+                label="Expand table"
+                testID="markdown-table-expand"
+                onPress={() => setExpandedTable(restoreInlineRouteMarkerText(markdownTableSource(node), prepared.markers))}
+              />
+            </View>
+          ) : null}
+        </View>
       )
     },
+    // Content-sized columns. `flex: 0` clears the library's `flex: 1` (zero
+    // basis, shrinkable) so `width` sizes the cell even in Yoga's unconstrained
+    // measure pass, where flexBasis is ignored; cells still grow to fill a
+    // table narrower than the phone but never shrink, so words never split.
+    th: (node, children, parents, markdownStyles) => (
+      <View key={node.key} style={[markdownStyles._VIEW_SAFE_th, { flex: 0, flexGrow: 1, width: tableColumnWidths(parents.find(parent => parent.type === 'table')!)[node.index] }]}>
+        {children}
+      </View>
+    ),
+    td: (node, children, parents, markdownStyles) => (
+      <View key={node.key} style={[markdownStyles._VIEW_SAFE_td, { flex: 0, flexGrow: 1, width: tableColumnWidths(parents.find(parent => parent.type === 'table')!)[node.index] }]}>
+        {children}
+      </View>
+    ),
     math_inline: (node, _children, _parents, _styles, inheritedStyles) => (
       <MathFormula
         key={node.key}
@@ -187,10 +237,19 @@ export function MarkdownContent({
         block
       />
     ),
-  }), [colors.blue, colors.muted, textColor, defaultMathFontSize, fontScale, onChatReferencePress, openLink, prepared.markers])
+  }), [colors.blue, colors.muted, textColor, defaultMathFontSize, expandableTables, onChatReferencePress, openLink, prepared.markers, tableColumnWidths])
 
   return (
-    <Markdown markdownit={mathMarkdown} rules={markdownRules} style={markdownStyle} onLinkPress={openLink}>{prepared.text}</Markdown>
+    <>
+      <Markdown markdownit={chatMarkdown} rules={markdownRules} style={markdownStyle} onLinkPress={openLink}>{prepared.text}</Markdown>
+      {/* Mounted only while open, so a collapsed table is laid out once, in the timeline. */}
+      {expandedTable !== null ? (
+        <MarkdownTableSheet onClose={() => setExpandedTable(null)}>
+          {/* Same renderer, one table: at least the 15.5 pt body, never smaller than the timeline for large-font users. */}
+          <MarkdownContent value={expandedTable} fontScale={Math.max(1, fontScale)} color={color} expandableTables={false} />
+        </MarkdownTableSheet>
+      ) : null}
+    </>
   )
 }
 
@@ -261,7 +320,9 @@ function mathNodeUsesDisplayStyle(node: ASTNode): boolean {
 const styles = StyleSheet.create({
   mathDisplay: { width: '100%', marginVertical: 4 },
   mathDisplayContent: { flexGrow: 1, justifyContent: 'center', paddingVertical: 2 },
-  tableScroll: { width: '100%', maxWidth: '100%', marginBottom: 10 },
+  tableFrame: { width: '100%', marginBottom: 10 },
+  tableScroll: { width: '100%', maxWidth: '100%' },
   tableScrollContent: { flexGrow: 1 },
   tableContent: { flexGrow: 1 },
+  tableExpand: { position: 'absolute', top: 0, right: 0 },
 })

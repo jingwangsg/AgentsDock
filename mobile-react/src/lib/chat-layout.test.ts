@@ -7,8 +7,13 @@ function assertLayout(width: number, height: number, compact: boolean, inlineIns
   }
 }
 
-assertLayout(719, 1024, true, false, '719pt remains compact without inline inspector')
-assertLayout(720, 1024, false, false, '720pt iPad portrait uses the chat/details sheet path')
+assertLayout(599, 1024, true, false, '599pt remains compact without inline inspector')
+assertLayout(600, 1024, false, false, '600pt (medium width class) uses the chat/details sheet path')
+assertLayout(701, 841, false, false, 'unfolded Pixel Fold portrait gets two panes')
+assertLayout(841, 701, false, false, 'unfolded Pixel Fold landscape gets two panes')
+assertLayout(411, 797, true, false, 'Pixel Fold cover screen stays compact')
+assertLayout(353, 904, true, false, 'Galaxy Fold cover screen stays compact')
+assertLayout(996, 407, true, false, 'unfolded clamshell (Flip) landscape stays compact')
 assertLayout(1079, 1366, false, false, '1079pt cannot mount the inline inspector')
 assertLayout(1080, 1366, false, true, '1080pt can mount the inline inspector')
 assertLayout(1180, 590, true, false, 'wide but short viewports remain compact')

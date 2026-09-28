@@ -20,10 +20,11 @@ test('chat Markdown connects bounded math tokens to native SVG rendering', () =>
 
 test('wide Markdown tables scroll horizontally without squeezing every column into the phone width', () => {
   assert.match(markdown, /table: \(node, children, _parents, markdownStyles\) =>/)
-  assert.match(markdown, /markdownTableColumnCount\(node\)/)
+  assert.match(markdown, /markdownTableColumnWidths\(table, fontScale\)/)
   assert.match(markdown, /<ScrollView[\s\S]*?horizontal[\s\S]*?nestedScrollEnabled[\s\S]*?directionalLockEnabled/)
   assert.match(markdown, /markdownStyles\._VIEW_SAFE_table/)
-  assert.match(markdown, /width: markdownTableMinimumWidth\(columnCount, fontScale\)/)
+  assert.match(markdown, /minWidth: widths\.reduce\(\(sum, width\) => sum \+ width, 0\)/)
+  assert.match(markdown, /th: \(node, children, parents, markdownStyles\)[\s\S]*?flex: 0, flexGrow: 1, width: tableColumnWidths\(/)
   assert.match(markdown, /keyboardShouldPersistTaps="always"/)
   assert.match(markdown, /tableScrollContent: \{ flexGrow: 1 \}/)
 })

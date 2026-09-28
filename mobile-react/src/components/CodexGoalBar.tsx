@@ -112,19 +112,27 @@ export function CodexGoalBar() {
         <GoalAction testID="codex-goal-clear" label="Clear" accessibilityLabel="Clear goal" icon={Trash2} danger disabled={!available || mutating} onPress={() => confirmClear()} />
       </View> : null}
     </View>
-    {editorOpen ? <Modal visible animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={closeEditor}>
-      <SafeAreaView style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
-        <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
-          <Goal size={21} color={colors.blue} />
-          <Text style={[styles.title, styles.grow, { color: colors.text }]}>Persistent goal</Text>
-          <SheetCloseButton testID="codex-goal-editor-close" label="Close goal editor" onPress={closeEditor} />
-        </View>
-        <ScrollView contentContainerStyle={styles.sheetContent} keyboardShouldPersistTaps="always">
-          <CodexGoalEditor key={scopeKey} />
-        </ScrollView>
-      </SafeAreaView>
-    </Modal> : null}
+    <CodexGoalEditorSheet visible={editorOpen} onClose={closeEditor} />
   </>
+}
+
+/** Page sheet around the editor; opened from the goal bar and from the composer's `/goal` command. */
+export function CodexGoalEditorSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+  const colors = usePalette()
+  const { scopeKey } = useCodexRuntime()
+  if (!visible) return null
+  return <Modal visible animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={onClose}>
+    <SafeAreaView style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+      <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
+        <Goal size={21} color={colors.blue} />
+        <Text style={[styles.title, styles.grow, { color: colors.text }]}>Persistent goal</Text>
+        <SheetCloseButton testID="codex-goal-editor-close" label="Close goal editor" onPress={onClose} />
+      </View>
+      <ScrollView contentContainerStyle={styles.sheetContent} keyboardShouldPersistTaps="always">
+        <CodexGoalEditor key={scopeKey} />
+      </ScrollView>
+    </SafeAreaView>
+  </Modal>
 }
 
 /** Shared by the direct composer editor and the full Codex controls sheet. */

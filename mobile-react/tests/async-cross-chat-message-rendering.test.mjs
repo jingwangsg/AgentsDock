@@ -20,16 +20,18 @@ const fixture = {
 globalThis.__asyncChatMessageFixture = fixture
 const mocks = {
   'react-native': `import { createElement } from 'react';
-    export const View='View', Text='Text', ActivityIndicator='ActivityIndicator', ScrollView='ScrollView', Image='Image', TouchableWithoutFeedback='TouchableWithoutFeedback';
+    export const View='View', Text='Text', ActivityIndicator='ActivityIndicator', ScrollView='ScrollView', Image='Image', TouchableWithoutFeedback='TouchableWithoutFeedback', Modal='Modal';
     export const Pressable = props => createElement('Pressable', props, typeof props.children === 'function' ? props.children({ pressed: false }) : props.children);
     export const StyleSheet = { create: value => value, absoluteFill: {}, hairlineWidth: 0.5, flatten: value => Object.assign({}, ...[value].flat(Infinity).filter(Boolean)) };
     export const Platform = { OS: 'ios', select: values => values.ios ?? values.default };
     export const Linking = { openURL: async url => { globalThis.__asyncChatMessageFixture.links.push(url); } };
     export const useColorScheme = () => globalThis.__asyncChatMessageFixture.theme;
-    export const AccessibilityInfo = { announceForAccessibility() {} };`,
+    export const AccessibilityInfo = { announceForAccessibility() {} };
+    export const Alert = { alert() {} };`,
   '@shopify/flash-list': `import { useEffect, useState } from 'react'; export function useRecyclingState(initial, deps) { const [value, setValue] = useState(initial); useEffect(() => setValue(initial), deps); return [value, setValue]; }`,
-  'lucide-react-native': `export const AlertTriangle='AlertTriangle', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', Clock3='Clock3', Code2='Code2', Copy='Copy', History='History', Pin='Pin', Siren='Siren', Sparkles='Sparkles', Wrench='Wrench', MessageSquareShare='MessageSquareShare', X='X';`,
+  'lucide-react-native': `export const AlertTriangle='AlertTriangle', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', Clock3='Clock3', Code2='Code2', Copy='Copy', FileText='FileText', History='History', Pencil='Pencil', Pin='Pin', RotateCcw='RotateCcw', Siren='Siren', Sparkles='Sparkles', Wrench='Wrench', MessageSquareShare='MessageSquareShare', X='X', Maximize2='Maximize2';`,
   'react-native-svg': `export default 'Svg'; export const SvgXml='SvgXml', Defs='Defs', LinearGradient='LinearGradient', Rect='Rect', Stop='Stop';`,
+  'react-native-safe-area-context': `export const SafeAreaView='SafeAreaView';`,
   '@bsky.app/react-native-uitextview': `export const UITextView='SelectableText';`,
   'react-native-fit-image': `export default 'FitImage';`,
   'expo-clipboard': `export async function setStringAsync() {}`,
@@ -42,7 +44,7 @@ const mocks = {
 const outfile = path.resolve('build/tmp', `async-cross-chat-rendering-${process.pid}.mjs`)
 await mkdir(path.dirname(outfile), { recursive: true })
 await build({
-  stdin: { contents: `export { TimelineRowView } from './src/components/TimelineRows'; export { projectTimeline } from './src/lib/timeline'; export { MarkdownContent } from './src/components/MarkdownContent';`, resolveDir: process.cwd(), loader: 'ts' },
+  stdin: { contents: `export { TimelineRowView } from './src/components/TimelineRows'; export { projectTimeline } from './src/lib/timeline'; export { MarkdownContent } from './src/components/MarkdownContent'; export { dark, light } from './src/theme';`, resolveDir: process.cwd(), loader: 'ts' },
   outfile, bundle: true, format: 'esm', platform: 'node', packages: 'external', jsx: 'automatic', loader: { '.js': 'jsx' }, logLevel: 'silent',
   banner: { js: "import { createRequire as createTestRequire } from 'node:module'; const require = createTestRequire(import.meta.url);" },
   plugins: [{ name: 'async-chat-native-hosts', setup(context) {
@@ -60,7 +62,7 @@ await build({
   } }],
 })
 after(async () => { await unlink(outfile); delete globalThis.__asyncChatMessageFixture })
-const { TimelineRowView, projectTimeline, MarkdownContent } = await import(pathToFileURL(outfile).href)
+const { TimelineRowView, projectTimeline, MarkdownContent, dark, light } = await import(pathToFileURL(outfile).href)
 const event = (patch = {}) => ({
   id: 'event-a', session_id: 'recipient', seq: 1, ts: '2026-09-10T10:00:00Z',
   type: 'chat_conversation_message_started', conversation_mode: 'async_route_v1',
@@ -125,7 +127,7 @@ for (const theme of ['dark', 'light']) for (const width of [320, 834]) test(`${t
     assert.equal(surface.width, width > 720 ? '82%' : '94%')
     assert.equal(surface.maxWidth, 760)
     assert.equal(surface.minWidth, 0)
-    assert.equal(surface.backgroundColor, theme === 'dark' ? '#332444' : '#eee5fb')
+    assert.equal(surface.backgroundColor, (theme === 'dark' ? dark : light).surface)
     const markdown = renderer.root.findByType(MarkdownContent)
     assert.equal(markdown.props.fontScale, 1.3)
     assert.equal(markdown.props.compact, true)

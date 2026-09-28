@@ -1,11 +1,41 @@
 import type { AgentFile, Event } from '../types'
-import { messageText } from './format'
+import { hasInjectedProviderAuthority, messageText } from './format'
 import { foldMarkdownSource } from './math'
 import { importedCrossChatDelivery, type ImportedCrossChatDelivery } from './imported-cross-chat-delivery'
+import {
+  hasProviderUserProvenance,
+  isImportedClaudeControlCompanion,
+  isImportedCodexRuntimeContext,
+  isImportedProviderInterruption,
+  isImportedSourceProvenAssistantReplay,
+  isImportedSourceProvenNativeReplay,
+  isImportedSourceProvenRepair,
+} from './provider-origin'
 
 export type TimelineRow = MessageRow | TraceRow | ProgressRow | MediaRow | SystemRow | JobRow
-export interface MessageRow { kind: 'message'; key: string; seq: number; role: 'user' | 'assistant'; events: Event[]; files: AgentFile[] }
-export interface TraceRow { kind: 'trace'; key: string; seq: number; events: Event[]; promotedCommentaryIds: string[]; runId?: string | null; active: boolean }
+export interface MessageRow {
+  kind: 'message'
+  key: string
+  seq: number
+  role: 'user' | 'assistant'
+  events: Event[]
+  files: AgentFile[]
+  /** `turn_started` run a rewind targets; absent for imported deliveries and steer slices. */
+  runId?: string
+  /** Checkpoint commit written with this turn's `code_diff`; only then can the workspace be restored. */
+  checkpointCommit?: string
+}
+export interface TraceRow {
+  kind: 'trace'
+  key: string
+  seq: number
+  events: Event[]
+  promotedCommentaryIds: string[]
+  runId?: string | null
+  active: boolean
+  /** A genuine user Stop; the trace carries the stopped state instead of a separate row. */
+  stoppedAt?: string
+}
 export interface ProgressRow { kind: 'progress'; key: string; seq: number; events: Event[]; hiddenCount: number }
 export interface MediaRow { kind: 'media'; key: string; seq: number; files: AgentFile[] }
 export interface SystemRow {
@@ -40,6 +70,8 @@ interface Turn {
   finishedSeq?: number
   failedAt?: string
   stoppedAt?: string
+  /** Pre-turn workspace checkpoint, from this run's `code_diff` or hidden `turn_checkpoint`. */
+  checkpointCommit?: string
 }
 
 // A terminal exchange summary must override stale "active" leg packets, but
@@ -76,10 +108,15 @@ const hidden = new Set([
   'codex_goal_updated',
   'codex_goal_cleared',
   'codex_token_usage',
-  'codex_compaction_started',
+  // Goal state belongs to the persistent Claude controls, not the transcript.
+  'claude_goal_changed',
+  // Durable acknowledgement of an internal SDK context hook, not chat content.
+  'claude_background_task_reconciliation_consumed',
+  // Restore target for its turn; the projector carries the commit, never a row.
+  'turn_checkpoint',
 ])
 const traces = new Set([
-  'reasoning_summary', 'tool_started', 'tool_finished', 'raw_event', 'process_started',
+  'reasoning_summary', 'reasoning_text', 'tool_started', 'tool_finished', 'raw_event', 'process_started',
   'provider_session', 'cwd_fallback', 'history_imported', 'backend_changed', 'artifact_error',
   'session_created', 'idle_warning', 'code_diff',
 ])
@@ -235,9 +272,20 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
   const crossChatRows = new Map<string, SystemRow>()
   const crossChatRowsByExchange = new Map<string, Set<SystemRow>>()
   const crossChatTerminalStatusByExchange = new Map<string, NonNullable<Event['exchange_status']>>()
-  const stopRows = new Map<string, SystemRow>()
   const providerInteractionRows = new Map<string, SystemRow>()
+  const providerInterruptionRows = new Map<string, SystemRow>()
+  const deferredRows = new Map<string, SystemRow>()
+  const queuedInputFileIds = new Map<string, string[]>()
+  const suppressedProviderEchoRuns = new Set<string>()
   let active: Turn | null = null
+
+  const removeDeferredRow = (queuedId: string): void => {
+    const row = deferredRows.get(queuedId)
+    if (!row) return
+    deferredRows.delete(queuedId)
+    const index = items.indexOf(row)
+    if (index >= 0) items.splice(index, 1)
+  }
 
   // Provider output from scheduled work does not always repeat job_title.
   for (const event of events) {
@@ -304,10 +352,12 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
     if (!key) return false
     const existing = codexLifecycleRows.get(key)
     if (existing) {
-      if (event.seq >= existing.event.seq) {
-        existing.seq = event.seq
-        existing.event = event
-      }
+      const priority = codexLifecycleEventPriority(event)
+      const existingPriority = codexLifecycleEventPriority(existing.event)
+      if (priority > existingPriority || priority === existingPriority && event.seq >= existing.event.seq) existing.event = event
+      // A compaction row stays where it started so a live "Compacting" marker
+      // becomes "Compacted" without moving; other markers follow their latest packet.
+      existing.seq = key.startsWith('codex:compaction:') ? Math.min(existing.seq, event.seq) : Math.max(existing.seq, event.seq)
       return true
     }
     const row: SystemRow = { kind: 'system', key, seq: event.seq, event }
@@ -370,7 +420,90 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
     return true
   }
 
-  for (const event of events) {
+  for (let event of events) {
+    // Job routing was computed over the server packets; keep that identity
+    // even when a packet is normalized below.
+    const sourceEvent = event
+    // Providers can deliver public updates through either text event shape.
+    // Only an explicit phase makes an assistant text update activity.
+    if (event.type === 'assistant_text' && isPublicCommentary(event)) {
+      event = { ...event, type: 'reasoning_summary' }
+    }
+    // Checkpoint/finish companions of a proven control-only import batch are
+    // not logical turns. In particular, they must not retire current work.
+    if (isImportedClaudeControlCompanion(event) || isImportedSourceProvenAssistantReplay(event)
+      || isImportedSourceProvenNativeReplay(event) && event.type !== 'turn_started') continue
+    // Keep a silent input boundary in mixed imports so later output cannot
+    // become the answer to a preceding genuine question in the same run.
+    if (isImportedSourceProvenRepair(event) || isImportedSourceProvenNativeReplay(event)) {
+      const prior = event.run_id ? turns.get(event.run_id) : undefined
+      if (prior) prior.finishedAt ||= event.ts
+      active = startTurn(event)
+      continue
+    }
+    if (isImportedCodexRuntimeContext(event)) {
+      // One import batch may first replay a suppressed native prompt/answer,
+      // then contain a genuinely new runtime continuation. The metadata starts
+      // a new input slice, even though it never becomes a user bubble.
+      if (event.run_id) suppressedProviderEchoRuns.delete(event.run_id)
+      continue
+    }
+    // A server-proven transcript control is historical metadata, never a
+    // user turn or a stop signal for whichever run happens to be live now.
+    // Provider identity also deduplicates overlapping history imports.
+    if (isImportedProviderInterruption(event)) {
+      const key = `provider-interruption:${event.session_id}:${event.provider_origin.event_id.toLowerCase()}`
+      const presentation: Event = { ...event, ts: event.provider_origin.timestamp, prompt: null, text: null, result_text: null }
+      const existing = providerInterruptionRows.get(key)
+      if (existing) existing.event = presentation
+      else {
+        const row: SystemRow = { kind: 'system', key, seq: event.seq, event: presentation }
+        providerInterruptionRows.set(key, row)
+        items.push(row)
+      }
+      continue
+    }
+    const runId = event.run_id?.trim() || ''
+    if (event.type === 'turn_started' && runId.startsWith('import_')) {
+      if (!hasProviderUserProvenance(event) && hasInjectedProviderAuthority(event.prompt || '')
+        // Unknown delivery formats remain visible rather than being mistaken
+        // for an entire native prompt echo and losing their following answer.
+        && !event.prompt?.trimStart().startsWith('[AgentsDock delivery ')) {
+        suppressedProviderEchoRuns.add(runId)
+      } else {
+        // One import run may contain many user/assistant pairs. Suppression
+        // belongs only to the echoed pair, not later deliveries or user turns.
+        suppressedProviderEchoRuns.delete(runId)
+      }
+    }
+    // Provider transcript catch-up can replay an AgentsDock-authored turn
+    // after its native events. The injected authority suffix proves this is
+    // our own provider echo, so suppress this imported turn slice instead of
+    // showing the user's message and assistant response twice.
+    if (runId && suppressedProviderEchoRuns.has(runId)) continue
+    // Queued attachments belong to the message that eventually runs, not to
+    // the queue packet that first announced them.
+    const queuedId = String(event.queued_id || '').trim()
+    if (queuedId && event.type === 'turn_queued') {
+      queuedInputFileIds.set(queuedId, [...(event.file_ids ?? [])])
+    } else if (queuedId && event.type === 'turn_queue_updated' && event.file_ids) {
+      queuedInputFileIds.set(queuedId, [...event.file_ids])
+    } else if (queuedId && event.type === 'turn_unqueued') {
+      queuedInputFileIds.delete(queuedId)
+      removeDeferredRow(queuedId)
+    } else if (queuedId && (event.type === 'turn_started' || isNativeGoalSteerEvent(event))) {
+      const ownedFileIds = queuedInputFileIds.get(queuedId)
+      if (ownedFileIds) event = { ...event, file_ids: [...ownedFileIds] }
+      queuedInputFileIds.delete(queuedId)
+      removeDeferredRow(queuedId)
+    }
+    // Context loss is user-visible even when a digest or scheduled turn owns
+    // the run. Keep provenance filtering above, but never absorb this notice
+    // into workflow plumbing or a folded activity card.
+    if (event.type === 'provider_session_reset') {
+      items.push({ kind: 'system', key: `event:${event.id}`, seq: event.seq, event })
+      continue
+    }
     const deliveredDigest = digestBody(event)
     if (deliveredDigest) {
       appendDigestEvent({
@@ -392,6 +525,14 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
       items.push({ kind: 'system', key: `event:${event.id}`, seq: event.seq, event })
       continue
     }
+    // Hidden, but it carries the restore target for its turn; a shell-written
+    // change has no agent-attributed code_diff to carry the commit instead.
+    if (event.type === 'turn_checkpoint') {
+      const turn = event.run_id ? turns.get(event.run_id) : undefined
+      const commit = event.checkpoint_commit?.trim()
+      if (turn && commit) turn.checkpointCommit = commit
+      continue
+    }
     if (hidden.has(event.type)) continue
     const interactionKey = providerInteractionAuditKey(event)
     if (interactionKey) {
@@ -409,7 +550,7 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
       continue
     }
     if (appendCodexLifecycleEvent(event)) continue
-    if (isNativeSteerSupersession(event) && !jobAssignments.has(event)) {
+    if (isNativeSteerSupersession(event) && !jobAssignments.has(sourceEvent)) {
       // Native turn/steer keeps one provider turn alive while creating a new
       // logical transcript turn. Retire only the superseded logical trace;
       // presenting this boundary as "Turn stopped" falsely implies failure.
@@ -428,7 +569,15 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
       items.push({ kind: 'system', key: `event:${event.id}`, seq: event.seq, event })
       continue
     }
-    const jobAssignment = jobAssignments.get(event)
+    // A team send receipt is a durable user-visible action, even though the
+    // server associates it with the run that performed the send. Classify it
+    // before scheduled-job and generic run routing so it cannot disappear
+    // into a job card or the active turn's folded trace.
+    if (event.type === 'team_message_sent') {
+      items.push({ kind: 'system', key: `event:${event.id || event.seq}`, seq: event.seq, event })
+      continue
+    }
+    const jobAssignment = jobAssignments.get(sourceEvent)
     if (jobAssignment) {
       const { jobId, groupKey } = jobAssignment
       const existing = jobRows.get(groupKey)
@@ -445,6 +594,31 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
       }
       continue
     }
+    // Lifecycle notices without message text still need a visible row.
+    if (
+      event.type === 'history_rewound'
+      || event.type === 'workspace_checkpoint_restored'
+      || event.type === 'provider_background_task_update'
+      || event.type.startsWith('agent_handoff_route_')
+    ) {
+      items.push({ kind: 'system', key: `event:${event.id}`, seq: event.seq, event })
+      continue
+    }
+    // Repeated steer requests while a provider is still starting refer to
+    // the same queued message. Keep one live status row for that queue item,
+    // including when older servers already persisted duplicate notices.
+    if (event.type === 'turn_deferred' && queuedId) {
+      const existing = deferredRows.get(queuedId)
+      if (existing) {
+        existing.seq = event.seq
+        existing.event = event
+      } else {
+        const row: SystemRow = { kind: 'system', key: `turn-deferred:${queuedId}`, seq: event.seq, event }
+        deferredRows.set(queuedId, row)
+        items.push(row)
+      }
+      continue
+    }
     if (event.type === 'turn_stopped') {
       const terminalTurn: Turn | null | undefined = event.run_id ? turns.get(event.run_id) : active
       if (terminalTurn) {
@@ -453,15 +627,10 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
         terminalTurn.finishedAt = event.ts
         terminalTurn.finishedSeq = event.seq
         if (active?.key === terminalTurn.key) active = null
-      }
-      const stopKey = terminalTurn ? `${terminalTurn.key}:stop` : `event:${event.id}`
-      const existingStop = stopRows.get(stopKey)
-      if (existingStop) {
-        if (event.seq >= existingStop.event.seq) existingStop.event = event
       } else {
-        const stopRow: SystemRow = { kind: 'system', key: stopKey, seq: event.seq, event }
-        stopRows.set(stopKey, stopRow)
-        items.push(stopRow)
+        // An owned stop is presented by that turn's stopped trace; only an
+        // orphan stop needs its own row.
+        items.push({ kind: 'system', key: `event:${event.id}`, seq: event.seq, event })
       }
       continue
     }
@@ -475,6 +644,24 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
         if (active?.key === terminalTurn.key) active = null
       }
       items.push({ kind: 'system', key: `event:${event.id}`, seq: event.seq, event })
+      continue
+    }
+    if (isNativeGoalSteerEvent(event)) {
+      // Native steering keeps the same goal/run alive. End only the previous
+      // display slice so its activity and trace cannot absorb the new input.
+      const prior = turns.get(runId)
+      if (prior) {
+        prior.finishedAt ||= event.ts
+        prior.finishedSeq ||= event.seq
+      }
+      const turn = createTurn(event, `turn:${runId}:start:${event.seq}`)
+      turns.set(runId, turn)
+      turn.user = event
+      for (const id of event.file_ids ?? []) {
+        const file = filesById.get(id)
+        if (file) turn.files.push(file)
+      }
+      active = turn
       continue
     }
     if (event.type === 'turn_started') {
@@ -522,6 +709,7 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
     if (traces.has(event.type)) {
       const turn = turnFor(event)
       turn.trace.push(event)
+      if (event.type === 'code_diff' && event.checkpoint_commit?.trim()) turn.checkpointCommit = event.checkpoint_commit.trim()
       // The final commentary item can race slightly behind the stop packet.
       // Preserve it as visible assistant output just as the Mac projector does.
       if (turn.stoppedAt) promoteInterruptedCommentary(turn)
@@ -623,7 +811,14 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
         if (inputFiles.length) rows.push({
           kind: 'media', key: `${item.key}:delivery-files`, seq: item.user.seq, files: inputFiles,
         })
-      } else rows.push({ kind: 'message', key: `${item.key}:user`, seq: item.user.seq, role: 'user', events: [item.user], files: inputFiles })
+      } else {
+        const runId = item.user.type === 'turn_started' ? item.user.run_id?.trim() || undefined : undefined
+        rows.push({
+          kind: 'message', key: `${item.key}:user`, seq: item.user.seq, role: 'user', events: [item.user], files: inputFiles,
+          ...(runId ? { runId } : {}),
+          ...(runId && item.checkpointCommit ? { checkpointCommit: item.checkpointCommit } : {}),
+        })
+      }
     }
     if (item.assistant.length) {
       const assistantRow: MessageRow = {
@@ -653,18 +848,22 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
     // Commentary is public assistant progress while a turn is active. Private
     // reasoning stays in the trace, and commentary returns to the settled
     // trace after completion unless it was promoted into durable output.
-    const traceEvents = traceActive
-      ? item.trace.filter(event => event.phase !== 'commentary')
-      : item.trace
-    if (traceHasContent(traceEvents)) {
+    // A durable summary sits where its first streamed section appeared.
+    const traceEvents = [...omitTerminalClaudeFinalCommentary(
+      traceActive ? item.trace.filter(event => event.phase !== 'commentary') : item.trace,
+      item.assistant,
+    )].sort((left, right) => activityEventSequence(left) - activityEventSequence(right) || left.seq - right.seq)
+    // A genuine stop is presented on the turn's trace, not as a separate row.
+    if (item.stoppedAt || traceHasContent(traceEvents)) {
       rows.push({
         kind: 'trace',
         key: `${item.key}:trace`,
-        seq: traceEvents[0].seq,
+        seq: traceEvents[0]?.seq ?? item.finishedSeq ?? item.seq,
         events: traceEvents,
         promotedCommentaryIds: item.promotedCommentaryIds,
         runId: item.runId,
         active: traceActive,
+        ...(item.stoppedAt ? { stoppedAt: item.stoppedAt } : {}),
       })
     }
     if (traceActive && currentTurn?.key === item.key) {
@@ -1291,10 +1490,12 @@ export function isNativeSteerSupersession(event: Pick<Event, 'type' | 'native_st
  * for every underlying compaction item.
  */
 export function codexLifecycleSemanticKey(
-  event: Pick<Event, 'type' | 'operation_id' | 'turn_id' | 'item_id' | 'id' | 'seq'>,
+  event: Pick<Event, 'type' | 'compaction_id' | 'operation_id' | 'turn_id' | 'item_id' | 'id' | 'seq'>,
 ): string | null {
   if (event.type === 'codex_goal_budget_limited') return 'codex:goal-budget'
-  if (event.type !== 'codex_compaction_completed') return null
+  if (event.type !== 'codex_compaction_started' && event.type !== 'codex_compaction_completed') return null
+  const compactionId = event.compaction_id?.trim()
+  if (compactionId) return `codex:compaction:${compactionId}`
   const operationId = event.operation_id?.trim()
   if (operationId) return `codex:compaction:${operationId}`
   const nativeId = event.turn_id?.trim()
@@ -1304,9 +1505,93 @@ export function codexLifecycleSemanticKey(
   return `codex:compaction:${nativeId}`
 }
 
+function codexLifecycleEventPriority(event: Event): number {
+  if (event.type === 'codex_compaction_completed') return 20
+  if (event.type === 'codex_compaction_started') return 10
+  return 0
+}
+
+/** A genuine user boundary within one still-running native Codex goal owner. */
+export function isNativeGoalSteerEvent(event: Event): boolean {
+  return event.type === 'turn_steered'
+    && event.native_goal_steer === true
+    && event.native_steer === true
+    && event.backend === 'codex'
+    && event.purpose === 'codex_goal_resume'
+    && event.provider_user_authored === true
+    && Boolean(event.run_id?.trim())
+}
+
+export function isPublicCommentary(event: Event): boolean {
+  return (event.type === 'reasoning_summary' || event.type === 'assistant_text')
+    && event.phase === 'commentary'
+    && Boolean(event.text?.trim())
+}
+
+/** A completed summary keeps the place where its first live text appeared. */
+export function activityEventSequence(event: Event): number {
+  if ((event.type === 'reasoning_summary' || event.type === 'reasoning_text') && Number.isSafeInteger(event.reasoning_after_seq)
+    && event.reasoning_after_seq! >= 0 && event.reasoning_after_seq! < event.seq) return event.reasoning_after_seq! + 0.5
+  return event.seq
+}
+
+const claudeTerminalBookkeepingTypes = new Set([
+  'raw_event', 'process_started', 'provider_session', 'cwd_fallback',
+  'history_imported', 'backend_changed', 'artifact_error', 'session_created',
+  'idle_warning', 'code_diff',
+])
+
+/**
+ * Claude streams every TextBlock before its authoritative ResultMessage. The
+ * terminal TextBlock(s) can therefore be present both as commentary and as
+ * the final answer. Remove only the shortest contiguous Claude commentary
+ * suffix after the last tool whose normalized text exactly equals that final
+ * result. Terminal bookkeeping is retained in place and ignored for matching.
+ * This deliberately leaves earlier repetitions, nonmatching updates,
+ * interrupted output, and Codex commentary untouched.
+ */
+export function omitTerminalClaudeFinalCommentary(events: Event[], finalEvents: Event[]): Event[] {
+  const final = [...finalEvents].reverse().find(event =>
+    event.type === 'turn_finished'
+    && event.backend === 'claude'
+    && Boolean(event.result_text?.trim()),
+  )
+  const finalText = normalizeAssistantOutput(final?.result_text ?? '')
+  if (!finalText || events.length === 0) return events
+
+  let lastToolIndex = -1
+  for (let index = 0; index < events.length; index += 1) {
+    if (events[index].type === 'tool_started' || events[index].type === 'tool_finished') {
+      lastToolIndex = index
+    }
+  }
+
+  let suffix = ''
+  const matchedIndexes: number[] = []
+  for (let index = events.length - 1; index > lastToolIndex; index -= 1) {
+    const event = events[index]
+    if (event.id === final?.id) continue
+    if (claudeTerminalBookkeepingTypes.has(event.type)) continue
+    if (
+      !isPublicCommentary(event)
+      || event.backend !== 'claude'
+    ) return events
+    const text = normalizeAssistantOutput(event.text ?? '')
+    if (!text) return events
+    matchedIndexes.push(index)
+    suffix = suffix ? `${text} ${suffix}` : text
+    if (suffix === finalText) {
+      const matched = new Set(matchedIndexes)
+      return events.filter((_candidate, candidateIndex) => !matched.has(candidateIndex))
+    }
+    if (!finalText.endsWith(suffix)) return events
+  }
+  return events
+}
+
 function traceHasContent(events: Event[]): boolean {
   return events.some(event => [
-    'reasoning_summary', 'tool_started', 'tool_finished', 'idle_warning', 'artifact_error', 'code_diff',
+    'reasoning_summary', 'reasoning_text', 'tool_started', 'tool_finished', 'idle_warning', 'artifact_error', 'code_diff',
   ].includes(event.type) || messageText(event).trim())
 }
 

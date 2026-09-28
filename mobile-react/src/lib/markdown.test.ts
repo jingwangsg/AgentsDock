@@ -1,12 +1,17 @@
+import { realpathSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { resolve } from 'node:path'
+// The library's parser chain is plain JS, so the test drives the real AST
+// pipeline; markdown-it is its nested dependency, reachable only through it.
+import parser from 'react-native-markdown-display/src/lib/parser'
 import type { Palette } from '../theme'
 import {
-  MARKDOWN_TABLE_MAX_LAYOUT_COLUMNS,
-  MARKDOWN_TABLE_MAX_WIDTH,
+  MARKDOWN_TABLE_MAX_COLUMN_WIDTH,
   MARKDOWN_TABLE_MIN_COLUMN_WIDTH,
-  MARKDOWN_TABLE_MIN_WIDTH,
   createMarkdownStyle,
-  markdownTableColumnCount,
-  markdownTableMinimumWidth,
+  installMarkdownTableSource,
+  markdownTableColumnWidths,
+  markdownTableSource,
 } from './markdown'
 import { scaleChatFont } from './typography'
 
@@ -36,35 +41,40 @@ assert(lightStyle.textgroup?.width === '100%', 'selectable Markdown text must me
 assert(lightStyle.textgroup?.maxWidth === '100%', 'selectable Markdown text must not overflow an indented list slot')
 assert(lightStyle.table?.marginBottom === 0, 'the horizontal table wrapper must own block spacing')
 
-const tableNode = {
-  type: 'table',
-  children: [
-    { type: 'thead', children: [{ type: 'tr', children: [{ type: 'th' }, { type: 'th' }, { type: 'th' }] }] },
-    { type: 'tbody', children: [{ type: 'tr', children: [{ type: 'td' }, { type: 'td' }] }] },
-  ],
-}
-assert(markdownTableColumnCount(tableNode) === 3, 'table layout must use the widest parsed row')
-assert(markdownTableColumnCount({ type: 'table', children: [] }) === 1, 'empty tables need a safe minimum layout column')
-assert(
-  markdownTableMinimumWidth(3, 1) === MARKDOWN_TABLE_MIN_COLUMN_WIDTH * 3,
-  'each Markdown table column must receive a readable minimum width',
+// Mirrors react-native-markdown-display's AST: cells wrap a textgroup of text
+// and code_inline nodes; markdown-it pads short rows to the header's column count.
+const cell = (type: 'th' | 'td', ...runs: Array<[string, string]>) => ({
+  type,
+  children: [{ type: 'textgroup', children: runs.map(([kind, content]) => ({ type: kind, content })) }],
+})
+const row = (type: 'th' | 'td', ...texts: string[]) => ({ type: 'tr', children: texts.map(text => cell(type, ['text', text])) })
+const table = (...rows: object[]) => ({ type: 'table', children: [{ type: 'thead', children: rows.slice(0, 1) }, { type: 'tbody', children: rows.slice(1) }] })
+
+const portTable = table(
+  row('th', '本地端口', '远端目标', '实测状态'),
+  { type: 'tr', children: [cell('td', ['text', '7850']), cell('td', ['code_inline', 'jing-debug-1e47:7850']), cell('td', ['text', '已验证（curl 200）'])] },
+  row('td', '7851', 'osmo:7851', ''),
 )
+const portWidths = markdownTableColumnWidths(portTable, 1)
+assert(portWidths.length === 3, 'table layout must produce one width per header column')
+assert(portWidths[0] === MARKDOWN_TABLE_MIN_COLUMN_WIDTH, 'short cells keep the readable minimum column width')
+assert(portWidths[1] === 20 * 10 + 12, 'a column must fit its longest unbreakable token plus cell padding so words never split mid-token')
+assert(portWidths[2] === 18 * 10 + 12, 'wide CJK glyphs count double so mixed-script cells fit on one line')
 assert(
-  markdownTableMinimumWidth(1, 1) === MARKDOWN_TABLE_MIN_WIDTH,
-  'narrow tables must still fill a readable phone-width surface',
-)
-assert(
-  markdownTableMinimumWidth(3, 1.2) > markdownTableMinimumWidth(3, 1),
+  markdownTableColumnWidths(portTable, 1.2)[1] === scaleChatFont(20 * 10 + 12, 1.2),
   'table column width must respect the mobile font scale',
 )
-assert(
-  markdownTableMinimumWidth(Number.POSITIVE_INFINITY, 1) === MARKDOWN_TABLE_MIN_WIDTH,
-  'invalid table widths must fail closed to one column',
-)
-assert(
-  markdownTableMinimumWidth(MARKDOWN_TABLE_MAX_LAYOUT_COLUMNS + 10, 1.4) === MARKDOWN_TABLE_MAX_WIDTH,
-  'pathological tables must have a bounded native layout width',
-)
+assert(markdownTableColumnWidths({ type: 'table', children: [] }, 1).length === 1, 'empty tables need a safe minimum layout column')
+
+const [proseWidth, tokenWidth, hugeWidth] = markdownTableColumnWidths(table(row('th', 'a', 'b', 'c'), row(
+  'td',
+  'one two three four five six seven eight nine ten eleven twelve',
+  'x'.repeat(30),
+  'y'.repeat(40),
+)), 1)
+assert(proseWidth === 240 + 12, 'multi-word cells wrap at spaces instead of stretching the column to one line')
+assert(tokenWidth === 30 * 10 + 12 && tokenWidth > proseWidth, 'a single long token widens the column past the wrap point rather than splitting mid-word')
+assert(hugeWidth === MARKDOWN_TABLE_MAX_COLUMN_WIDTH, 'pathological cells must keep a bounded column width')
 
 const darkStyle = createMarkdownStyle(darkPalette, 1)
 assert(darkStyle.code_block?.backgroundColor === darkPalette.raised, 'dark code blocks must follow the active palette')
@@ -94,5 +104,22 @@ for (const scale of [0.8, 1, 1.2, 1.4]) {
 const compactTint = createMarkdownStyle({ ...lightPalette, text: '#503e68' }, 1, true)
 assert(compactTint.body?.color === '#503e68' && compactTint.fence?.color === '#503e68', 'compact content must accept the conversation body color')
 assert(compactTint.link?.color === lightPalette.blue, 'body tint must preserve distinguishable links')
+
+// The chat parser stashes each table's own lines so the expanded view can
+// re-parse one table through the same renderer.
+const MarkdownIt = createRequire(realpathSync(resolve('node_modules/react-native-markdown-display/package.json')))('markdown-it')
+const tableMarkdown = installMarkdownTableSource(new MarkdownIt({ typographer: true }))
+type Node = { type: string; children?: Node[] }
+const tablesIn = (source: string): Node[] => {
+  const find = (nodes: Node[]): Node[] => nodes.flatMap(node => node.type === 'table' ? [node] : find(node.children ?? []))
+  return find(parser(source, (ast: Node[]) => ast, tableMarkdown))
+}
+const [portTableNode] = tablesIn('Ports:\r\n\r\n| Port | Target |\r\n|---|---|\r\n| 7850 | `osmo:7850` |\r\n\r\nDone.')
+assert(markdownTableSource(portTableNode!) === '| Port | Target |\n|---|---|\n| 7850 | `osmo:7850` |', 'a table carries exactly its own lines, with line breaks normalised')
+const [firstTable, secondTable] = tablesIn('| a |\n|---|\n| 1 |\n\ntext\n\n| b | c |\n|---|---|\n| 2 | 3 |')
+assert(markdownTableSource(firstTable!) === '| a |\n|---|\n| 1 |' && markdownTableSource(secondTable!) === '| b | c |\n|---|---|\n| 2 | 3 |', 'each table keeps its own source')
+const nestedSource = markdownTableSource(tablesIn('1. Results:\n\n    | a | b |\n    |---|---|\n    | 1 | 2 |\n')[0]!)
+assert(nestedSource === '| a | b |\n|---|---|\n| 1 | 2 |', 'a table nested in a list is dedented')
+assert(tablesIn(nestedSource).length === 1 && tablesIn('    | a | b |\n    |---|---|\n    | 1 | 2 |').length === 0, 'dedenting is what lets the nested source re-parse as a table rather than a code block')
 
 console.log('Markdown theme and typography regressions passed')

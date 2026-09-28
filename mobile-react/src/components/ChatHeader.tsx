@@ -1,6 +1,6 @@
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
 import { Image } from 'expo-image'
-import { ArrowLeft, Ellipsis, FolderOpen, PanelRight, RefreshCw, Search, Server } from 'lucide-react-native'
+import { ArrowLeft, Ellipsis, FolderOpen, Layers, PanelRight, RefreshCw, Search, Server } from 'lucide-react-native'
 import { useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { runtimeSummary } from '../lib/format'
@@ -10,7 +10,7 @@ import { CodexContextIndicator, CodexStatusButton } from './CodexControls'
 import { ClaudeContextIndicator } from './ClaudeContextIndicator'
 import { IconButton } from './ui'
 
-export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, onBack, onOptions, onSearch, onFiles, onToggleInspector, onSetupServer }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; onBack: () => void; onOptions: () => void; onSearch: () => void; onFiles: () => void; onToggleInspector: () => void; onSetupServer: () => void }) {
+export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, onBack, onOptions, onSearch, onFiles, outputsOpen, onOutputs, onToggleInspector, onSetupServer }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; onBack: () => void; onOptions: () => void; onSearch: () => void; onFiles: () => void; outputsOpen: boolean; onOutputs: () => void; onToggleInspector: () => void; onSetupServer: () => void }) {
   const colors = usePalette()
   const session = useAppStore(state => state.sessions.find(value => value.id === sessionId))
   const connected = useAppStore(state => state.connected)
@@ -25,7 +25,7 @@ export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, onBac
     {compact ? <IconButton icon={ArrowLeft} onPress={onBack} label="Chats" /> : null}
     <Image source={require('../../assets/icon.png')} contentFit="contain" style={styles.welcomeIcon} />
     <View style={styles.titleWrap}><Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>Welcome to AgentsDock</Text><Text style={[styles.subtitle, { color: colors.muted }]} numberOfLines={1}>Local guide · no server connected</Text></View>
-    <Pressable testID="welcome-setup-server" accessibilityRole="button" accessibilityLabel="Set up your server" onPress={onSetupServer} style={({ pressed }) => [styles.setup, { backgroundColor: colors.blue, opacity: pressed ? 0.72 : 1 }]}><Server size={16} color="white" /><Text style={styles.setupText}>Set up</Text></Pressable>
+    <Pressable testID="welcome-setup-server" accessibilityRole="button" accessibilityLabel="Set up your server" onPress={onSetupServer} style={({ pressed }) => [styles.setup, { backgroundColor: colors.blue, opacity: pressed ? 0.72 : 1 }]}><Server size={16} color={colors.textOnAccent} /><Text style={[styles.setupText, { color: colors.textOnAccent }]}>Set up</Text></Pressable>
   </View>
   const selectedStatus = syncSessionId === sessionId ? syncStatus : 'cached'
   const status = !connected ? (connecting ? 'reconnecting' : 'offline') : selectedStatus
@@ -51,6 +51,7 @@ export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, onBac
     {!compact ? <IconButton icon={RefreshCw} onPress={() => void retryConnection()} label="Refresh" /> : null}
     <IconButton icon={Search} onPress={onSearch} label="Find in chat" />
     <IconButton icon={FolderOpen} onPress={onFiles} label="Browse workspace files" testID="chat-workspace-files" />
+    <IconButton icon={Layers} onPress={onOutputs} selected={outputsOpen} label="Outputs and sources" testID="chat-outputs" />
     {inlineInspectorAvailable ? <IconButton icon={PanelRight} onPress={onToggleInspector} label="Toggle details" /> : null}
     <CodexContextIndicator />
     <ClaudeContextIndicator />
@@ -73,5 +74,5 @@ const styles = StyleSheet.create({
   spinner: { width: 20, height: 20, flexShrink: 0 },
   welcomeIcon: { width: 32, height: 32, borderRadius: 7, flexShrink: 0 },
   setup: { minHeight: 44, borderRadius: 8, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, flexShrink: 0 },
-  setupText: { color: 'white', fontSize: 12, fontWeight: '800' },
+  setupText: { fontSize: 12, fontWeight: '800' },
 })

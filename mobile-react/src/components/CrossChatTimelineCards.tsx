@@ -1,8 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, useColorScheme, View } from 'react-native'
+import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
 import { useRecyclingState } from '@shopify/flash-list'
 import { AlertTriangle, ChevronDown, ChevronRight, MessageSquareShare } from 'lucide-react-native'
-import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg'
 import type { AgentServerClient } from '../api/AgentServerClient'
 import { exactQueuedDeliverySkipAvailable } from '../lib/chat-references'
 import { formatDateTime, messageText } from '../lib/format'
@@ -15,7 +14,8 @@ import type {
   Event,
 } from '../types'
 import { client, useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { usePalette, type Palette } from '../theme'
+import { fonts } from '../lib/typography'
 import { Text } from './AppText'
 import { MarkdownContent } from './MarkdownContent'
 
@@ -24,87 +24,6 @@ const CROSS_CHAT_INLINE_TEXT_LIMIT = 2_000
 const CROSS_CHAT_LONG_MESSAGE_CHARS = 640
 const CROSS_CHAT_LONG_MESSAGE_LINES = 10
 const EMPTY_READ_ONLY_REFERENCE_KEYS: ReadonlySet<string> = new Set()
-
-// Shared by conversation surfaces so legacy one-shot handoffs retain their
-// blue treatment. These are the current Mac conversation colors, not generic
-// app theme tokens.
-export const CROSS_CHAT_CONVERSATION_DARK = {
-  gradientStart: '#281f3b',
-  gradientEnd: '#211b31',
-  border: '#594675',
-  accent: '#8c6fe8',
-  shadow: '#130c22',
-  shadowOpacity: 0.28,
-  icon: '#bca8ff',
-  eyebrow: '#bba9ef',
-  state: '#cfc3ef',
-  stateCompleted: '#aee2c4',
-  stateFailed: '#ffb4af',
-  stateTerminal: '#b7a9d6',
-  title: '#eee9ff',
-  participants: '#a99bc9',
-  participantCurrent: '#e8e0ff',
-  bridge: '#9682ca',
-  speaker: '#eee8ff',
-  currentDot: '#a98cf5',
-  body: '#ded6f1',
-  incomingBackground: '#302640',
-  incomingBorder: '#4d3e61',
-  toggle: '#b9a5ec',
-  control: '#c3b2ee',
-  controlPressed: '#f0ebff',
-  placeholder: '#a99bc9',
-  empty: '#ad9fcf',
-  failure: '#ffbbb6',
-  details: '#9f91bf',
-  detailText: '#a99bc9',
-  detailStrong: '#c9bde6',
-  detailNote: '#baabc9',
-  link: '#7eb8e6',
-  destructive: '#93adc3',
-  destructivePressed: '#ffaaa5',
-} as const
-
-export const CROSS_CHAT_CONVERSATION_LIGHT: CrossChatConversationPalette = {
-  gradientStart: '#f5f1ff',
-  gradientEnd: '#eee8fb',
-  border: '#c8b7e3',
-  accent: '#8566bd',
-  shadow: '#5b477c',
-  shadowOpacity: 0.1,
-  icon: '#7050aa',
-  eyebrow: '#7055a1',
-  state: '#5c467f',
-  stateCompleted: '#276847',
-  stateFailed: '#922824',
-  stateTerminal: '#705c89',
-  title: '#3f2e61',
-  participants: '#705c89',
-  participantCurrent: '#452d6b',
-  bridge: '#8065aa',
-  speaker: '#46315f',
-  currentDot: '#7652ad',
-  body: '#503e68',
-  incomingBackground: '#faf8ff',
-  incomingBorder: '#d4c7e6',
-  toggle: '#67458f',
-  control: '#5b3d80',
-  controlPressed: '#3f265f',
-  placeholder: '#75618f',
-  empty: '#705c89',
-  failure: '#842722',
-  details: '#705c89',
-  detailText: '#705c89',
-  detailStrong: '#52366f',
-  detailNote: '#765f86',
-  link: '#276997',
-  destructive: '#58778f',
-  destructivePressed: '#922824',
-}
-
-export type CrossChatConversationPalette = {
-  [Key in Exclude<keyof typeof CROSS_CHAT_CONVERSATION_DARK, 'shadowOpacity'>]: string
-} & { shadowOpacity: number }
 
 const crossChatTimeFormatter = new Intl.DateTimeFormat(undefined, {
   hour: 'numeric',
@@ -299,7 +218,6 @@ function CrossChatMessageCardScoped({
   event, events, rowKey, sessionId, anchorTs, layoutWidth = 640, fontScale = 1, profileGeneration,
 }: CrossChatMessageCardProps & { profileGeneration: number }) {
   const colors = usePalette()
-  const light = useColorScheme() === 'light'
   const workspaceRevision = useTimelineWorkspaceRevision(sessionId)
   const lifecycle = events?.length ? events : [event]
   const envelopeId = event.cross_chat_envelope_id?.trim() || event.handoff_id?.trim() || event.message_id?.trim() || ''
@@ -388,8 +306,8 @@ function CrossChatMessageCardScoped({
       styles.asyncMessageSurface,
       {
         width: layoutWidth > 720 ? '82%' : '94%', alignSelf: incoming ? 'flex-end' : 'flex-start',
-        backgroundColor: incoming ? light ? '#eee5fb' : '#332444' : colors.raised,
-        borderColor: incoming ? light ? '#bca5dc' : '#685080' : colors.border,
+        backgroundColor: incoming ? colors.surface : colors.raised,
+        borderColor: colors.border,
       },
     ]}>
       <View style={styles.asyncMessageHeader}>
@@ -407,7 +325,7 @@ function CrossChatMessageCardScoped({
         disabled={loading}
         onPress={() => expanded ? setExpanded(false) : void showFullMessage()}
         style={({ pressed }) => [styles.conversationBodyToggle, { opacity: loading ? 0.6 : pressed ? 0.72 : 1 }]}
-      ><Text style={[styles.conversationBodyToggleText, { color: light ? '#664185' : '#c9b1eb' }]}>{toggleLabel}</Text></Pressable> : null}
+      ><Text style={[styles.conversationBodyToggleText, { color: colors.muted }]}>{toggleLabel}</Text></Pressable> : null}
       {failed ? <InlineError message={latestExchangeString(lifecycle, value => value.message) || "Couldn't complete"} /> : null}
       {cancelled ? <Text style={[styles.note, { color: colors.muted }]}>Cancelled</Text> : null}
       {loadError ? <InlineError prefix="Could not load full message" message={loadError} /> : null}
@@ -599,9 +517,7 @@ export function CrossChatExchangeCard(props: CrossChatCardProps) {
 
 function CrossChatExchangeCardScoped({ event, events, rowKey, sessionId, profileGeneration, fontScale = 1 }: CrossChatCardProps & { profileGeneration: number }) {
   const workspaceRevision = useTimelineWorkspaceRevision(sessionId)
-  const conversationPalette = useColorScheme() === 'light'
-    ? CROSS_CHAT_CONVERSATION_LIGHT
-    : CROSS_CHAT_CONVERSATION_DARK
+  const colors = usePalette()
   const exchangeId = event.exchange_id?.trim() || event.cross_chat_exchange_id?.trim() || ''
   const lifecycleEvents = useMemo(() => (events?.length ? events : [event])
     .filter(candidate => (candidate.exchange_id?.trim() || candidate.cross_chat_exchange_id?.trim() || '') === exchangeId)
@@ -863,7 +779,7 @@ function CrossChatExchangeCardScoped({ event, events, rowKey, sessionId, profile
   const showConversationDetails = Boolean(authorizationLabel || initialAction || maxLegs || technicalNotes.length)
   const preview = latestExchangeString(lifecycleEvents, candidate => candidate.handoff_preview)
   const conversationLabel = `Agent conversation between ${requesterTitle} and ${responderTitle}`
-  const stateColor = crossChatConversationStateColor(conversationPalette, exchangeStatus, failed)
+  const stateColor = crossChatConversationStateColor(colors, exchangeStatus, failed)
   const expandConversation = () => {
     setOpen(true)
     setShowEarlier(true)
@@ -888,26 +804,25 @@ function CrossChatExchangeCardScoped({ event, events, rowKey, sessionId, profile
 
   return <CrossChatConversationSurface
     testID={`cross-chat-exchange-${exchangeId || event.id}`}
-    palette={conversationPalette}
     failed={failed}
   >
     <View style={styles.conversationHeader}>
-      <Text style={[styles.conversationEyebrow, { color: conversationPalette.eyebrow }]}>Agent conversation</Text>
-      <Text style={[styles.conversationTime, { color: conversationPalette.participants }]}>{formatCrossChatTime(event.ts)}</Text>
+      <Text style={[styles.conversationEyebrow, { color: colors.muted }]}>Agent conversation</Text>
+      <Text style={[styles.conversationTime, { color: colors.muted }]}>{formatCrossChatTime(event.ts)}</Text>
     </View>
     <View style={styles.conversationHeading}>
-      <Text style={[styles.conversationTitle, { color: conversationPalette.title }]} numberOfLines={1}>{title}</Text>
+      <Text style={[styles.conversationTitle, { color: colors.text }]} numberOfLines={1}>{title}</Text>
       <View accessibilityRole="text" accessibilityLabel={`Conversation status: ${stateLabel}`} style={styles.conversationState}>
         {failed ? <AlertTriangle size={11} color={stateColor} /> : null}
         <Text style={[styles.conversationStateText, { color: stateColor }]} numberOfLines={1}>{stateLabel}</Text>
       </View>
     </View>
     <View accessible accessibilityRole="text" accessibilityLabel={conversationLabel} style={styles.conversationParticipants}>
-      <Text style={[styles.conversationParticipant, { color: requesterId === sessionId ? conversationPalette.participantCurrent : conversationPalette.participants }]} numberOfLines={1}>
+      <Text style={[styles.conversationParticipant, { color: requesterId === sessionId ? colors.text : colors.muted }]} numberOfLines={1}>
         {requesterTitle}{requesterId === sessionId ? ' (this chat)' : ''}
       </Text>
-      <Text accessibilityElementsHidden style={[styles.conversationBridge, { color: conversationPalette.bridge }]}>↔</Text>
-      <Text style={[styles.conversationParticipant, { color: responderId === sessionId ? conversationPalette.participantCurrent : conversationPalette.participants }]} numberOfLines={1}>
+      <Text accessibilityElementsHidden style={[styles.conversationBridge, { color: colors.muted }]}>↔</Text>
+      <Text style={[styles.conversationParticipant, { color: responderId === sessionId ? colors.text : colors.muted }]} numberOfLines={1}>
         {responderTitle}{responderId === sessionId ? ' (this chat)' : ''}
       </Text>
     </View>
@@ -916,13 +831,12 @@ function CrossChatExchangeCardScoped({ event, events, rowKey, sessionId, profile
         testID={`cross-chat-toggle-conversation-${exchangeId}`}
         label={open ? 'Show less' : 'Show full conversation'}
         expanded={open}
-        palette={conversationPalette}
         onPress={open ? collapseConversation : expandConversation}
       />
-      {loading ? <ConversationInlineStatus label="Loading messages…" palette={conversationPalette} /> : null}
-      {loadError && !loading ? <ConversationControl testID={`cross-chat-retry-exchange-${exchangeId}`} label="Retry loading" palette={conversationPalette} onPress={() => void loadExchange()} /> : null}
+      {loading ? <ConversationInlineStatus label="Loading messages…" /> : null}
+      {loadError && !loading ? <ConversationControl testID={`cross-chat-retry-exchange-${exchangeId}`} label="Retry loading" onPress={() => void loadExchange()} /> : null}
     </View> : null}
-    {loadError ? <ConversationInlineError prefix="Could not load the full conversation" message={loadError} palette={conversationPalette} /> : null}
+    {loadError ? <ConversationInlineError prefix="Could not load the full conversation" message={loadError} /> : null}
     <View accessibilityLabel={conversationLabel} style={styles.conversationTranscript}>
       {conversationLegs.map((leg, index) => {
         const isFirstHidden = leg.id === firstHiddenLegId
@@ -932,7 +846,6 @@ function CrossChatExchangeCardScoped({ event, events, rowKey, sessionId, profile
             ? 'Hide earlier messages'
             : `Show ${hiddenLegs.length} earlier ${hiddenLegs.length === 1 ? 'message' : 'messages'}`}
           expanded={allConversationLegsVisible}
-          palette={conversationPalette}
           onPress={() => setShowEarlier(value => !value)}
         /> : null
         if (!allConversationLegsVisible && !primaryIds.has(leg.id)) {
@@ -953,16 +866,15 @@ function CrossChatExchangeCardScoped({ event, events, rowKey, sessionId, profile
             conversationExpanded={open}
             bodyComplete={snapshotCurrent}
             loading={loading}
-            palette={conversationPalette}
             fontScale={fontScale}
             onRequestFull={() => void loadExchange()}
           />
         </Fragment>
       })}
-      {!conversationLegs.length && preview ? <Text selectable style={[styles.conversationPreview, { color: conversationPalette.body }]}>{crossChatCollapsedText(preview)}</Text> : null}
-      {!conversationLegs.length && !preview && !loading ? <Text style={[styles.conversationEmpty, { color: conversationPalette.empty }]}>Waiting for the first agent message.</Text> : null}
+      {!conversationLegs.length && preview ? <Text selectable style={[styles.conversationPreview, { color: colors.text }]}>{crossChatCollapsedText(preview)}</Text> : null}
+      {!conversationLegs.length && !preview && !loading ? <Text style={[styles.conversationEmpty, { color: colors.muted }]}>Waiting for the first agent message.</Text> : null}
     </View>
-    {failureSummary ? <Text accessibilityRole="alert" selectable style={[styles.conversationFailure, { color: conversationPalette.failure }]}>{failureSummary}</Text> : null}
+    {failureSummary ? <Text accessibilityRole="alert" selectable style={[styles.conversationFailure, { color: colors.red }]}>{failureSummary}</Text> : null}
     {showConversationDetails ? <View style={styles.conversationDetails}>
       <Pressable
         testID={`cross-chat-details-${exchangeId}`}
@@ -971,59 +883,47 @@ function CrossChatExchangeCardScoped({ event, events, rowKey, sessionId, profile
         accessibilityState={{ expanded: detailsOpen }}
         onPress={() => setDetailsOpen(value => !value)}
         style={styles.conversationDetailsToggle}
-      ><Text style={[styles.conversationDetailsToggleText, { color: conversationPalette.toggle }]}>Details</Text></Pressable>
+      ><Text style={[styles.conversationDetailsToggleText, { color: colors.muted }]}>Details</Text></Pressable>
       {detailsOpen ? <View style={styles.conversationDetailLines}>
-        {authorizationLabel ? <ConversationDetailLine label="Access" value={authorizationLabel} palette={conversationPalette} /> : null}
-        {initialAction ? <ConversationDetailLine label="Started as" value={initialAction === 'instruction' ? 'Instruction' : 'Question with replies'} palette={conversationPalette} /> : null}
-        <ConversationDetailLine label="Messages" value={`${usedLegs} of ${maxLegs}`} palette={conversationPalette} />
-        {!terminalStatus && remainingLegs != null ? <ConversationDetailLine label="Remaining" value={String(remainingLegs)} palette={conversationPalette} /> : null}
-        {technicalNotes.map(note => <ConversationDetailLine key={note} label="System note" value={note} note palette={conversationPalette} />)}
+        {authorizationLabel ? <ConversationDetailLine label="Access" value={authorizationLabel} /> : null}
+        {initialAction ? <ConversationDetailLine label="Started as" value={initialAction === 'instruction' ? 'Instruction' : 'Question with replies'} /> : null}
+        <ConversationDetailLine label="Messages" value={`${usedLegs} of ${maxLegs}`} />
+        {!terminalStatus && remainingLegs != null ? <ConversationDetailLine label="Remaining" value={String(remainingLegs)} /> : null}
+        {technicalNotes.map(note => <ConversationDetailLine key={note} label="System note" value={note} />)}
       </View> : null}
     </View> : null}
-    {cancelError ? <ConversationInlineError prefix="Could not end the conversation" message={cancelError} palette={conversationPalette} /> : null}
-    {skipError ? <ConversationInlineError prefix="Could not remove the queued message" message={skipError} palette={conversationPalette} /> : null}
-    {skippedQueuedId ? <Text accessibilityRole="text" accessibilityLiveRegion="polite" style={[styles.conversationNotice, { color: conversationPalette.details }]}>Queued message removed.</Text> : null}
-    {openError ? <ConversationInlineError prefix="Could not open referenced chat" message={openError} palette={conversationPalette} /> : null}
+    {cancelError ? <ConversationInlineError prefix="Could not end the conversation" message={cancelError} /> : null}
+    {skipError ? <ConversationInlineError prefix="Could not remove the queued message" message={skipError} /> : null}
+    {skippedQueuedId ? <Text accessibilityRole="text" accessibilityLiveRegion="polite" style={[styles.conversationNotice, { color: colors.muted }]}>Queued message removed.</Text> : null}
+    {openError ? <ConversationInlineError prefix="Could not open referenced chat" message={openError} /> : null}
     <View style={styles.conversationActions}>
-      {counterpartId && counterpartAvailable ? <ConversationAction testID={`cross-chat-open-${counterpartId}`} label={`Open ${counterpartTitle}`} palette={conversationPalette} onPress={() => { setOpenError(''); openTargetSession(counterpartId, sessionId, profileGeneration, setOpenError) }} /> : null}
-      {queuedDelivery && canSkipExactDelivery ? <ConversationAction testID={`cross-chat-skip-delivery-${queuedDelivery.queued_id}`} label={skipping ? 'Removing…' : 'Remove queued message'} destructive disabled={skipping} palette={conversationPalette} onPress={() => void skipQueuedDelivery()} /> : null}
-      {canCancel ? <ConversationAction testID={`cross-chat-cancel-exchange-${exchangeId}`} label={cancelling ? 'Ending…' : 'End conversation'} accessibilityHint="Stops future messages; work already in progress may still finish." destructive disabled={cancelling} palette={conversationPalette} onPress={() => void cancelExchange()} /> : null}
+      {counterpartId && counterpartAvailable ? <ConversationAction testID={`cross-chat-open-${counterpartId}`} label={`Open ${counterpartTitle}`} onPress={() => { setOpenError(''); openTargetSession(counterpartId, sessionId, profileGeneration, setOpenError) }} /> : null}
+      {queuedDelivery && canSkipExactDelivery ? <ConversationAction testID={`cross-chat-skip-delivery-${queuedDelivery.queued_id}`} label={skipping ? 'Removing…' : 'Remove queued message'} destructive disabled={skipping} onPress={() => void skipQueuedDelivery()} /> : null}
+      {canCancel ? <ConversationAction testID={`cross-chat-cancel-exchange-${exchangeId}`} label={cancelling ? 'Ending…' : 'End conversation'} accessibilityHint="Stops future messages; work already in progress may still finish." destructive disabled={cancelling} onPress={() => void cancelExchange()} /> : null}
     </View>
   </CrossChatConversationSurface>
 }
 
-export function CrossChatConversationSurface({ testID, palette, children, failed = false }: {
+export function CrossChatConversationSurface({ testID, children, failed = false }: {
   testID: string
-  palette: CrossChatConversationPalette
   children: ReactNode
   failed?: boolean
 }) {
-  return <View style={[
-    styles.conversationShadow,
-    { shadowColor: palette.shadow, shadowOpacity: palette.shadowOpacity },
-  ]}>
+  const colors = usePalette()
+  return <View style={styles.conversationShadow}>
     <View
       testID={testID}
       style={[
         styles.conversationCard,
-        { borderColor: palette.border, backgroundColor: palette.gradientEnd },
+        { borderColor: colors.border, backgroundColor: colors.raised },
       ]}
     >
-      <Svg pointerEvents="none" width="100%" height="100%" style={StyleSheet.absoluteFill}>
-        <Defs>
-          <LinearGradient id="cross-chat-conversation-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-            <Stop offset="0%" stopColor={palette.gradientStart} />
-            <Stop offset="100%" stopColor={palette.gradientEnd} />
-          </LinearGradient>
-        </Defs>
-        <Rect width="100%" height="100%" fill="url(#cross-chat-conversation-gradient)" />
-      </Svg>
-      <View pointerEvents="none" style={[styles.conversationAccent, { backgroundColor: palette.accent }]} />
+      <View pointerEvents="none" style={[styles.conversationAccent, { backgroundColor: colors.blue }]} />
       <View style={styles.conversationLayout}>
         <View style={styles.conversationIcon}>
           {failed
-            ? <AlertTriangle size={14} color={palette.icon} />
-            : <MessageSquareShare size={14} color={palette.icon} />}
+            ? <AlertTriangle size={14} color={colors.blue} />
+            : <MessageSquareShare size={14} color={colors.blue} />}
         </View>
         <View style={styles.conversationContent}>{children}</View>
       </View>
@@ -1100,14 +1000,14 @@ function exchangeStateLabel(
 }
 
 function crossChatConversationStateColor(
-  palette: CrossChatConversationPalette,
+  colors: Palette,
   status: CrossChatExchangeStatus | null,
   failed: boolean,
 ): string {
-  if (failed || status === 'failed') return palette.stateFailed
-  if (status === 'completed') return palette.stateCompleted
-  if (status === 'cancelled' || status === 'expired') return palette.stateTerminal
-  return palette.state
+  if (failed || status === 'failed') return colors.red
+  if (status === 'completed') return colors.green
+  if (status === 'cancelled' || status === 'expired') return colors.muted
+  return colors.text
 }
 
 function crossChatAuthorizationLabel(kind: string): string | null {
@@ -1267,7 +1167,6 @@ function ConversationLeg({
   conversationExpanded,
   bodyComplete,
   loading,
-  palette,
   fontScale,
   onRequestFull,
 }: {
@@ -1281,10 +1180,10 @@ function ConversationLeg({
   conversationExpanded: boolean
   bodyComplete: boolean
   loading: boolean
-  palette: CrossChatConversationPalette
   fontScale: number
   onRequestFull: () => void
 }) {
+  const colors = usePalette()
   const identity = `${leg.exchange_id}:${leg.id}:${leg.body_sha256}`
   const [expanded, setExpanded] = useRecyclingState(false, [leg.exchange_id, leg.id, conversationExpanded])
   const [limit, setLimit] = useRecyclingState(CROSS_CHAT_BODY_CHUNK, [identity])
@@ -1320,7 +1219,7 @@ function ConversationLeg({
     setExpanded(false)
   }
   const failed = leg.status === 'failed'
-  const speakerColor = failed ? palette.stateFailed : palette.speaker
+  const speakerColor = failed ? colors.red : colors.text
   const accessibilityLabel = [
     `Message ${messageNumber} from ${sourceTitle} to ${targetTitle}.`,
     `${statusLabel(leg.status)}.`,
@@ -1341,15 +1240,15 @@ function ConversationLeg({
     >
       <View style={styles.conversationSpeakerRow}>
         <Text style={[styles.conversationSpeaker, { color: speakerColor }]} numberOfLines={1}>{sourceTitle}</Text>
-        {current ? <View accessibilityElementsHidden style={[styles.conversationCurrentDot, { backgroundColor: palette.currentDot }]} /> : null}
+        {current ? <View accessibilityElementsHidden style={[styles.conversationCurrentDot, { backgroundColor: colors.selected }]} /> : null}
       </View>
-      <Text style={[styles.conversationLegTime, { color: palette.participants }]}>{formatCrossChatTime(leg.updated_at || leg.created_at)}</Text>
+      <Text style={[styles.conversationLegTime, { color: colors.muted }]}>{formatCrossChatTime(leg.updated_at || leg.created_at)}</Text>
     </View>
     {leg.body ? conversationExpanded || expanded
-      ? <MarkdownContent value={`${visibleBody}${locallyHidden ? '…' : ''}`} compact color={palette.body} fontScale={fontScale} />
-      : <Text selectable style={[styles.conversationBody, { color: palette.body }]}>{visibleBody}{locallyHidden ? '…' : ''}</Text>
+      ? <MarkdownContent value={`${visibleBody}${locallyHidden ? '…' : ''}`} compact color={colors.text} fontScale={fontScale} />
+      : <Text selectable style={[styles.conversationBody, { color: colors.text }]}>{visibleBody}{locallyHidden ? '…' : ''}</Text>
       : null}
-    {!leg.body && mayHaveMoreBody ? <Text style={[styles.conversationPlaceholder, { color: palette.placeholder }]}>Message body available on demand.</Text> : null}
+    {!leg.body && mayHaveMoreBody ? <Text style={[styles.conversationPlaceholder, { color: colors.muted }]}>Message body available on demand.</Text> : null}
     {showBodyToggle ? <Pressable
       testID={`cross-chat-message-toggle-${leg.id}`}
       accessibilityRole="button"
@@ -1358,7 +1257,7 @@ function ConversationLeg({
       disabled={mayHaveMoreBody && loading}
       onPress={toggleBody}
       style={({ pressed }) => [styles.conversationBodyToggle, { opacity: mayHaveMoreBody && loading ? 0.6 : pressed ? 0.72 : 1 }]}
-    ><Text style={[styles.conversationBodyToggleText, { color: palette.toggle }]}>{toggleLabel}</Text></Pressable> : null}
+    ><Text style={[styles.conversationBodyToggleText, { color: colors.muted }]}>{toggleLabel}</Text></Pressable> : null}
   </View>
 }
 
@@ -1366,15 +1265,14 @@ function ConversationControl({
   testID,
   label,
   expanded,
-  palette,
   onPress,
 }: {
   testID: string
   label: string
   expanded?: boolean
-  palette: CrossChatConversationPalette
   onPress: () => void
 }) {
+  const colors = usePalette()
   return <Pressable
     testID={testID}
     accessibilityRole="button"
@@ -1382,55 +1280,52 @@ function ConversationControl({
     accessibilityState={typeof expanded === 'boolean' ? { expanded } : undefined}
     onPress={onPress}
     style={styles.conversationControl}
-  >{({ pressed }) => <Text style={[styles.conversationControlText, { color: pressed ? palette.controlPressed : palette.control }]}>{label}</Text>}</Pressable>
+  >{({ pressed }) => <Text style={[styles.conversationControlText, { color: pressed ? colors.text : colors.muted }]}>{label}</Text>}</Pressable>
 }
 
 function ConversationFold({
   testID,
   label,
   expanded,
-  palette,
   onPress,
 }: {
   testID: string
   label: string
   expanded: boolean
-  palette: CrossChatConversationPalette
   onPress: () => void
 }) {
   return <View style={styles.conversationFold}>
-    <ConversationControl testID={testID} label={label} expanded={expanded} palette={palette} onPress={onPress} />
+    <ConversationControl testID={testID} label={label} expanded={expanded} onPress={onPress} />
   </View>
 }
 
-function ConversationInlineStatus({ label, palette }: { label: string; palette: CrossChatConversationPalette }) {
+function ConversationInlineStatus({ label }: { label: string }) {
+  const colors = usePalette()
   return <View accessibilityRole="progressbar" style={styles.conversationInlineStatus}>
-    <ActivityIndicator size="small" color={palette.toggle} />
-    <Text style={[styles.conversationStatusNote, { color: palette.placeholder }]}>{label}</Text>
+    <ActivityIndicator size="small" color={colors.muted} />
+    <Text style={[styles.conversationStatusNote, { color: colors.muted }]}>{label}</Text>
   </View>
 }
 
-function ConversationInlineError({ prefix, message, palette }: { prefix: string; message: string; palette: CrossChatConversationPalette }) {
+function ConversationInlineError({ prefix, message }: { prefix: string; message: string }) {
+  const colors = usePalette()
   const detail = boundedInlineText(message)
   return <View accessibilityRole="alert" style={styles.conversationInlineError}>
-    <AlertTriangle size={12} color={palette.failure} />
-    <Text selectable style={[styles.conversationInlineErrorText, { color: palette.failure }]}>{prefix}: {detail}</Text>
+    <AlertTriangle size={12} color={colors.red} />
+    <Text selectable style={[styles.conversationInlineErrorText, { color: colors.red }]}>{prefix}: {detail}</Text>
   </View>
 }
 
 function ConversationDetailLine({
   label,
   value,
-  note = false,
-  palette,
 }: {
   label: string
   value: string
-  note?: boolean
-  palette: CrossChatConversationPalette
 }) {
-  return <Text selectable style={[styles.conversationDetailLine, { color: note ? palette.detailNote : palette.detailText }]}>
-    <Text style={{ color: palette.detailStrong, fontWeight: '700' }}>{label}:</Text> {value}
+  const colors = usePalette()
+  return <Text selectable style={[styles.conversationDetailLine, { color: colors.muted }]}>
+    <Text style={{ fontWeight: '700' }}>{label}:</Text> {value}
   </Text>
 }
 
@@ -1440,7 +1335,6 @@ function ConversationAction({
   accessibilityHint,
   destructive = false,
   disabled = false,
-  palette,
   onPress,
 }: {
   testID: string
@@ -1448,9 +1342,9 @@ function ConversationAction({
   accessibilityHint?: string
   destructive?: boolean
   disabled?: boolean
-  palette: CrossChatConversationPalette
   onPress: () => void
 }) {
+  const colors = usePalette()
   return <Pressable
     testID={testID}
     accessibilityRole="button"
@@ -1462,7 +1356,7 @@ function ConversationAction({
     style={({ pressed }) => [styles.conversationAction, { opacity: disabled ? 0.6 : pressed ? 0.72 : 1 }]}
   >{({ pressed }) => <Text style={[
     styles.conversationActionText,
-    { color: destructive ? pressed ? palette.destructivePressed : palette.destructive : palette.link },
+    { color: destructive ? pressed ? colors.red : colors.muted : colors.blue },
   ]}>{label}</Text>}</Pressable>
 }
 
@@ -1524,7 +1418,7 @@ const styles = StyleSheet.create({
   detail: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 11, paddingVertical: 10, gap: 8 },
   detailText: { fontSize: 12, lineHeight: 17 },
   body: { borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
-  bodyText: { paddingHorizontal: 10, paddingTop: 9, paddingBottom: 8, fontSize: 11.5, lineHeight: 17, fontFamily: 'Menlo' },
+  bodyText: { paddingHorizontal: 10, paddingTop: 9, paddingBottom: 8, fontSize: 11.5, lineHeight: 17, fontFamily: fonts.mono },
   showMore: { minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' },
   showMoreText: { fontSize: 11, fontWeight: '800' },
   note: { flex: 1, fontSize: 10.5, lineHeight: 15 },
@@ -1538,6 +1432,8 @@ const styles = StyleSheet.create({
     marginHorizontal: 14,
     marginVertical: 8,
     borderRadius: 7,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
     shadowOffset: { width: 0, height: 8 },
     shadowRadius: 12,
     elevation: 5,

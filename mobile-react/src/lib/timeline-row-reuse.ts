@@ -28,6 +28,7 @@ export function sameTimelineRow(left: TimelineRow, right: TimelineRow): boolean 
   if (left.kind === 'trace' && right.kind === 'trace') {
     return left.runId === right.runId
       && left.active === right.active
+      && left.stoppedAt === right.stoppedAt
       && sameEvents(left.events, right.events)
       && sameReferences(left.promotedCommentaryIds, right.promotedCommentaryIds)
   }

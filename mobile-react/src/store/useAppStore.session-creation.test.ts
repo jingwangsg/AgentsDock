@@ -106,6 +106,21 @@ try {
   await useAppStore.getState().quickCreateSession(0)
   assert.equal(requests[0]?.cwd, '')
 
+  // Folder menu preset: folder and backend win, the folder's newest live chat
+  // supplies cwd, and model/effort are dropped when the backend changes.
+  resetCreation({ sessions: [selected,
+    { ...selected, id: 'docs-old', folder: 'Docs', cwd: '/work/docs-old', created_at: '2026-01-01T00:00:00Z' },
+    { ...selected, id: 'docs-new', folder: 'Docs', cwd: '/work/docs-new', created_at: '2026-02-01T00:00:00Z' },
+    { ...selected, id: 'docs-archived', folder: 'Docs', cwd: '/work/docs-archived', created_at: '2026-03-01T00:00:00Z', archived: true },
+  ] })
+  await useAppStore.getState().quickCreateSession(0, { folder: 'Docs', backend: 'codex' })
+  assert.deepEqual(requests[0], { title: 'New chat', folder: 'Docs', cwd: '/work/docs-new', backend: 'codex', model: '', effort: '' })
+  resetCreation()
+  await useAppStore.getState().quickCreateSession(0, { folder: 'Empty', backend: 'claude' })
+  assert.deepEqual(requests[0], {
+    title: 'New chat', folder: 'Empty', cwd: '/work/research', backend: 'claude', model: 'claude-sonnet', effort: 'high',
+  }, 'an empty folder falls back to the open chat location and keeps same-backend defaults')
+
   resetCreation()
   const createGate = deferred<Session>()
   const selectionGate = deferred<void>()

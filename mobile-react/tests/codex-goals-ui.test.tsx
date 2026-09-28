@@ -40,7 +40,7 @@ beforeEach(() => {
   observations.length = 0
   Alert.__reset()
   resetComponentStore({ health, sessions: [session], selectedSessionId: 'chat-a', switchingProfileId: null })
-  setTestClient({ codexRuntime: async () => runtime(), codexPermissionProfiles: async () => [] })
+  setTestClient({ codexRuntime: async () => runtime() })
 })
 afterEach(async () => { for (const tree of mounted.splice(0)) await act(async () => tree.unmount()) })
 
@@ -220,7 +220,7 @@ test('blocked, budget-limited and complete goals show honest states without a re
 
 test('lifecycle Running overrides an idle provider snapshot and opening controls refreshes runtime', async () => {
   let reads = 0
-  setTestClient({ codexRuntime: async () => { reads++; return runtime() }, codexPermissionProfiles: async () => [] })
+  setTestClient({ codexRuntime: async () => { reads++; return runtime() } })
   useAppStore.setState({ activeSessionIds: new Set(['chat-a']) })
   const tree = await mount('status')
   assert.equal(node(tree, 'codex-status').props.accessibilityLabel, 'Codex controls: Running')

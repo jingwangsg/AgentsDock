@@ -6,12 +6,13 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AlertCircle, Settings, X } from 'lucide-react-native'
+import type { Backend } from '../types'
 import { trackEvent } from '../lib/analytics'
 import { dismissAppKeyboard, useAppKeyboardLifecycle } from '../lib/app-keyboard'
 import { chatWorkspaceLayout } from '../lib/chat-layout'
 import { isServerSetupRequired, shouldPresentServerSetup } from '../lib/first-launch'
 import { fullscreenModalTopPadding } from '../lib/fullscreen-modal-layout'
-import { profileNamespace } from '../lib/server-profiles'
+import { hubProxyRemoteId, profileNamespace } from '../lib/server-profiles'
 import { useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { ChatScreen } from './ChatScreen'
@@ -29,6 +30,7 @@ import { EmptyState, IconButton, Loading, SheetCloseButton } from './ui'
 import { isWelcomeSession, welcomeWorkspacePatch } from '../lib/welcome-session'
 import { FileViewerProvider } from './file-viewer/FileViewerHost'
 import { useFileViewer } from './file-viewer/FileViewerContext'
+import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 
 type InspectorAction = {
   kind: 'digest' | 'job' | 'terminal' | 'processes' | 'tmux'
@@ -75,18 +77,20 @@ function AppShellContent() {
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
   const testServerProfile = useAppStore(state => state.testServerProfile)
-  const createServerProfile = useAppStore(state => state.createServerProfile)
   const updateServerProfile = useAppStore(state => state.updateServerProfile)
   const removeServerProfile = useAppStore(state => state.removeServerProfile)
   const reorderServerProfiles = useAppStore(state => state.reorderServerProfiles)
   const switchServerProfile = useAppStore(state => state.switchServerProfile)
+  const health = useAppStore(state => state.health)
+  const deployHubRemoteServer = useAppStore(state => state.deployHubRemoteServer)
+  const cancelHubDeploy = useAppStore(state => state.cancelHubDeploy)
   const [mobileChatOpen, setMobileChatOpen] = useState(false)
   const [inspectorVisible, setInspectorVisible] = useState(true)
   const [settings, setSettings] = useState(false)
   const [teamNetwork, setTeamNetwork] = useState(false)
   const [setupDismissed, setSetupDismissed] = useState(true)
   const setupNextMode = useRef<'edit-active' | null>(null)
-  const [servers, setServers] = useState<'manage' | 'add' | 'edit-active' | null>(null)
+  const [servers, setServers] = useState<'manage' | 'edit-active' | null>(null)
   const quickChatInFlight = useRef(false)
   const [options, setOptions] = useState(false)
   const [search, setSearch] = useState(false)
@@ -134,7 +138,7 @@ function AppShellContent() {
     setMobileChatOpen(false)
     requestAnimationFrame(dismissAppKeyboard)
   }, [])
-  const openServers = useCallback((mode: 'manage' | 'add') => {
+  const openServers = useCallback((mode: 'manage' | 'edit-active') => {
     setServers(mode)
     requestAnimationFrame(dismissAppKeyboard)
   }, [])
@@ -154,11 +158,11 @@ function AppShellContent() {
     setMcpSessionId(sessionId)
     requestAnimationFrame(dismissAppKeyboard)
   }, [])
-  const quickNewChat = useCallback(async () => {
+  const quickNewChat = useCallback(async (preset?: { folder: string; backend: Backend }) => {
     if (quickChatInFlight.current) return
     quickChatInFlight.current = true
     try {
-      const created = await useAppStore.getState().quickCreateSession(profileGeneration)
+      const created = await useAppStore.getState().quickCreateSession(profileGeneration, preset)
       if (created) {
         trackEvent('chat_created')
         if (compact) setMobileChatOpen(true)
@@ -246,6 +250,13 @@ function AppShellContent() {
 
   useEffect(() => { void initialize() }, [initialize])
   useEffect(() => { if (!selectedId) setMobileChatOpen(false) }, [selectedId])
+  // Folding a book-style device mid-chat drops from two panes to one: keep the
+  // open chat in view instead of falling back to the list.
+  const previousCompact = useRef(compact)
+  useEffect(() => {
+    if (compact && !previousCompact.current && selectedId) setMobileChatOpen(true)
+    previousCompact.current = compact
+  }, [compact, selectedId])
   useEffect(() => {
     if (!compact || !mobileChatOpen) return
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -343,15 +354,15 @@ function AppShellContent() {
   if (!initialized) return <View style={[styles.fill, { backgroundColor: colors.background }]}><Loading label="Starting AgentsDock" /></View>
 
   const connectionKey = `${activeProfileId ?? 'none'}:${profileGeneration}`
-  const sidebar = <Sidebar key={`sidebar:${connectionKey}`} profiles={serverProfileItems} activeProfileId={activeProfileId} switchingProfileId={switchingProfileId} onSwitchServer={switchServer} onAddServer={() => openServers('add')} onManageServers={() => openServers('manage')} onSettings={openSettings} onTeamNetwork={openTeamNetwork} onNewChat={() => void quickNewChat()} onOpenChat={() => { trackEvent('chat_opened'); openMobileChat() }} />
+  const sidebar = <Sidebar key={`sidebar:${connectionKey}`} profiles={serverProfileItems} activeProfileId={activeProfileId} switchingProfileId={switchingProfileId} onSwitchServer={switchServer} onSetupServer={() => openServers('edit-active')} onManageServers={() => openServers('manage')} onSettings={openSettings} onTeamNetwork={openTeamNetwork} onNewChat={() => void quickNewChat()} onNewChatIn={(folder, backend) => void quickNewChat({ folder, backend })} onOpenChat={() => { trackEvent('chat_opened'); openMobileChat() }} />
   const chat = selected
-    ? <ChatScreen key={`${connectionKey}:${selected.id}`} sessionId={selected.id} compact={compact} inlineInspectorAvailable={chatLayout.inlineInspectorAvailable} onBack={closeMobileChat} onOptions={openOptions} onSearch={openSearch} onToggleInspector={() => setInspectorVisible(value => !value)} onReview={openReview} onSetupServer={() => openServers('add')} onOpenMcp={() => openClaudeMcp(selected.id)} />
+    ? <ChatScreen key={`${connectionKey}:${selected.id}`} sessionId={selected.id} compact={compact} inlineInspectorAvailable={chatLayout.inlineInspectorAvailable} onBack={closeMobileChat} onOptions={openOptions} onSearch={openSearch} onToggleInspector={() => setInspectorVisible(value => !value)} onReview={openReview} onSetupServer={() => openServers('edit-active')} onOpenMcp={() => openClaudeMcp(selected.id)} onShellAction={action => { if (action === 'details') openOptions(); else if (action === 'new-chat') void quickNewChat(); else openInspectorAction(action) }} />
     : <NoChat connecting={connecting} onSettings={() => openServers('manage')} />
 
   return <View style={[styles.fill, { backgroundColor: colors.background }]}>
     <AndroidUpdateCoordinator />
     {error && !showServerSetup ? <View testID="global-error-slot" style={styles.errorSlot}><View style={[styles.error, { backgroundColor: colors.surface, borderColor: colors.red }]}><AlertCircle size={17} color={colors.red} /><View style={styles.errorContent}><Text style={[styles.errorText, { color: colors.text }]} numberOfLines={canCancelPendingServerUpdate ? 4 : 3}>{error}</Text>{canCancelPendingServerUpdate ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel scheduled server update" accessibilityHint="Cancels the pending update so messages can be sent again" accessibilityState={{ disabled: cancelingServerUpdate, busy: cancelingServerUpdate }} testID="error-cancel-server-update" disabled={cancelingServerUpdate} onPress={() => { void cancelCurrentServerUpdate() }} style={({ pressed }) => [styles.errorAction, { backgroundColor: colors.raised, borderColor: colors.border, opacity: cancelingServerUpdate ? 0.45 : pressed ? 0.68 : 1 }]}>{cancelingServerUpdate ? <ActivityIndicator size="small" color={colors.blue} /> : <Text style={[styles.errorActionText, { color: colors.blue }]}>Cancel update</Text>}</Pressable> : null}</View>{!canCancelPendingServerUpdate ? <IconButton icon={Settings} size={15} onPress={openSettings} label="Settings" testID="error-settings" /> : null}<IconButton icon={X} size={15} onPress={clearError} disabled={cancelingServerUpdate} label="Dismiss" testID="error-dismiss" /></View></View> : null}
-    {compact ? <View style={styles.fill}>{sidebar}{modalScopeCurrent && mobileChatOpen && selected ? <MobileChatPane width={width} backgroundColor={colors.background} onClose={closeMobileChat}>{chat}</MobileChatPane> : null}</View> : <View style={styles.workspace}><View style={{ width: width >= 1180 ? 285 : 255 }}>{sidebar}</View><View style={styles.chat}>{chat}</View>{showInspector && selected && !isWelcomeSession(selected.id) ? <View style={{ width: Math.min(350, width * 0.29) }}><Inspector key={`inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => openInspectorAction('digest')} onJob={jobId => openInspectorAction('job', jobId)} onTerminal={() => openInspectorAction('terminal')} onProcesses={() => openInspectorAction('processes')} onTmux={() => openInspectorAction('tmux')} /></View> : null}</View>}
+    {compact ? <View style={styles.fill}>{sidebar}{modalScopeCurrent && mobileChatOpen && selected ? <MobileChatPane width={width} backgroundColor={colors.background} onClose={closeMobileChat}>{chat}</MobileChatPane> : null}</View> : <View style={styles.workspace}><View style={{ width: width >= 1180 ? 285 : width >= 760 ? 255 : 240 }}>{sidebar}</View><View style={styles.chat}>{chat}</View>{showInspector && selected && !isWelcomeSession(selected.id) ? <View style={{ width: Math.min(350, width * 0.29) }}><Inspector key={`inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => openInspectorAction('digest')} onJob={jobId => openInspectorAction('job', jobId)} onTerminal={() => openInspectorAction('terminal')} onProcesses={() => openInspectorAction('processes')} onTmux={() => openInspectorAction('tmux')} /></View> : null}</View>}
 
     <ServerSetupDialog
       visible={showServerSetup}
@@ -386,23 +397,6 @@ function AppShellContent() {
           throw error
         }
       }}
-      onCreateProfile={async input => {
-        try {
-          const created = await createServerProfile({
-            name: input.name,
-            serverURL: input.serverUrl,
-            accessToken: input.accessToken,
-            serverIdentity: input.serverIdentity,
-            serverConfigured: input.serverSetupComplete,
-            setActive: false,
-          })
-          trackEvent('server_added', { success: true })
-          return created
-        } catch (error) {
-          trackEvent('server_added', { success: false })
-          throw error
-        }
-      }}
       onUpdateProfile={(profileId, patch) => updateServerProfile(profileId, {
         name: patch.name,
         serverURL: patch.serverUrl,
@@ -412,9 +406,12 @@ function AppShellContent() {
       })}
       onReorderProfiles={reorderServerProfiles}
       onRemoveProfile={removeServerProfile}
+      hubAvailable={Boolean(health?.capabilities?.remote_servers_v1?.available) && !hubProxyRemoteId(serverURL)}
+      onDeployRemote={(input, onProgress) => deployHubRemoteServer(input, onProgress, profileGeneration)}
+      onCancelDeploy={cancelHubDeploy}
     />
     <SettingsDialog key={`settings:${connectionKey}`} visible={modalScopeCurrent && settings} onClose={() => setSettings(false)} />
-    <TeamNetwork key={`team-network:${connectionKey}`} visible={modalScopeCurrent && teamNetwork} onClose={() => setTeamNetwork(false)} />
+    {TEAM_NETWORK_UI_ENABLED ? <TeamNetwork key={`team-network:${connectionKey}`} visible={modalScopeCurrent && teamNetwork} onClose={() => setTeamNetwork(false)} /> : null}
     <ClaudeMcpDialog key={`claude-mcp:${connectionKey}:${mcpSessionId ?? 'closed'}`} visible={modalScopeCurrent && mcpSessionId != null && mcpSessionId === selected?.id} sessionId={mcpSessionId} onClose={() => setMcpSessionId(null)} />
     <SearchDialog visible={modalScopeCurrent && search && !isWelcomeSession(selected?.id)} sessionId={selected?.id} onClose={() => setSearch(false)} />
     <DigestDialog visible={modalScopeCurrent && digest} source={selected} onClose={() => setDigest(false)} />
@@ -422,7 +419,7 @@ function AppShellContent() {
     <ProcessDialog key={`processes:${connectionKey}:${selected?.id ?? 'none'}`} visible={modalScopeCurrent && processes} sessionId={selected?.id ?? null} onClose={() => setProcesses(false)} />
     <TmuxDialog visible={modalScopeCurrent && tmux} sessionId={selected?.id ?? null} onClose={() => setTmux(false)} />
     <CodeReview sessionId={selected?.id ?? ''} runId={modalScopeCurrent ? reviewRun : null} onClose={closeReview} />
-    <Modal visible={modalScopeCurrent && options && Boolean(selected) && !isWelcomeSession(selected?.id)} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={closeOptions} onDismiss={finishOptionsDismissal}>{selected && !isWelcomeSession(selected.id) ? <SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]} edges={['bottom']}><View style={styles.modalGrabber} /><View style={styles.modalTop}><Text style={[styles.modalTitle, { color: colors.text }]}>Chat details</Text><SheetCloseButton onPress={closeOptions} label="Close chat details" testID="chat-details-close" /></View><Inspector key={`options-inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => queueInspectorAction('digest')} onJob={jobId => queueInspectorAction('job', jobId)} onTerminal={() => queueInspectorAction('terminal')} onProcesses={() => queueInspectorAction('processes')} onTmux={() => queueInspectorAction('tmux')} onFileViewerRequested={closeOptions} /></SafeAreaView> : null}</Modal>
+    <Modal visible={modalScopeCurrent && options && Boolean(selected) && !isWelcomeSession(selected?.id)} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={closeOptions} onDismiss={finishOptionsDismissal}>{selected && !isWelcomeSession(selected.id) ? <SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]} edges={['bottom']}><View style={[styles.modalGrabber, { backgroundColor: colors.selected }]} /><View style={styles.modalTop}><Text style={[styles.modalTitle, { color: colors.text }]}>Chat details</Text><SheetCloseButton onPress={closeOptions} label="Close chat details" testID="chat-details-close" /></View><Inspector key={`options-inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => queueInspectorAction('digest')} onJob={jobId => queueInspectorAction('job', jobId)} onTerminal={() => queueInspectorAction('terminal')} onProcesses={() => queueInspectorAction('processes')} onTmux={() => queueInspectorAction('tmux')} onFileViewerRequested={closeOptions} /></SafeAreaView> : null}</Modal>
     {modalScopeCurrent && terminal && selected && !isWelcomeSession(selected.id) ? <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={closeTerminal}><SafeAreaView
       testID="terminal-modal"
       style={[styles.fill, {
@@ -482,5 +479,5 @@ const styles = StyleSheet.create({
   error: { width: '100%', minHeight: 50, maxWidth: 740, alignSelf: 'center', borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 7 },
   errorContent: { flex: 1, minWidth: 0, paddingVertical: 3, gap: 4 }, errorText: { fontSize: 12 },
   errorAction: { minHeight: 44, alignSelf: 'flex-start', minWidth: 112, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center' }, errorActionText: { fontSize: 12, fontWeight: '800' },
-  modalGrabber: { alignSelf: 'center', width: 36, height: 5, marginTop: 7, borderRadius: 3, backgroundColor: '#8a8a8a88' }, modalTop: { minHeight: 64, paddingHorizontal: 14, paddingTop: 8, paddingBottom: 4, flexDirection: 'row', alignItems: 'center' }, modalTitle: { flex: 1, fontSize: 16, fontWeight: '800' }, connectionSettings: { position: 'absolute', alignSelf: 'center', top: '58%', minHeight: 44, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 7 },
+  modalGrabber: { alignSelf: 'center', width: 36, height: 5, marginTop: 7, borderRadius: 3 }, modalTop: { minHeight: 64, paddingHorizontal: 14, paddingTop: 8, paddingBottom: 4, flexDirection: 'row', alignItems: 'center' }, modalTitle: { flex: 1, fontSize: 16, fontWeight: '800' }, connectionSettings: { position: 'absolute', alignSelf: 'center', top: '58%', minHeight: 44, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 7 },
 })

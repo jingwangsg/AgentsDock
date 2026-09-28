@@ -163,6 +163,24 @@ function reviewFallbackKey(profileGeneration: number, sessionId: string, runId: 
   return `${profileGeneration}\0${sessionId}\0${runId}`
 }
 
+/**
+ * Codex app-server sends whole-file bodies for added and deleted files (no
+ * `+`/`-` prefixes), so they counted as +0 -0 and rendered as context. Turn
+ * them into one-sided hunks; genuine unified diffs pass through untouched.
+ */
+function structuredChangeDiff(diff: string, operation: 'Add' | 'Update' | 'Delete'): string {
+  if (operation === 'Update' || !diff) return diff
+  const lines = diff.split('\n')
+  // A real unified diff carries a hunk header; a whole-file body of a
+  // Markdown list ("- item") must not be mistaken for one.
+  const alreadyDiff = lines.some(line => line.startsWith('@@ '))
+    && lines.every(line => line === '' || /^(?:[ +-]|@@ |\\ No newline)/u.test(line))
+  if (alreadyDiff && lines.some(line => /^[+-]/u.test(line))) return diff
+  const prefix = operation === 'Add' ? '+' : '-'
+  const hunk = operation === 'Add' ? `@@ -0,0 +1,${lines.length} @@` : `@@ -1,${lines.length} +0,0 @@`
+  return [hunk, ...lines.map(line => prefix + line)].join('\n')
+}
+
 function structuredToolChanges(events: Event[]): Map<string, StructuredToolChange> {
   const changesByPath = new Map<string, StructuredToolChange>()
   const seenChanges = new Set<string>()
@@ -187,7 +205,7 @@ function structuredToolChanges(events: Event[]): Map<string, StructuredToolChang
       const identity = `${toolId || event.id}\0${path}\0${operation}\0${rawDiff.length}\0${rawDiff.slice(0, 128)}\0${rawDiff.slice(-128)}`
       if (seenChanges.has(identity)) continue
       seenChanges.add(identity)
-      const diff = limitReviewSource(rawDiff.slice(0, remainingCharacters)).source.trim()
+      const diff = structuredChangeDiff(limitReviewSource(rawDiff.slice(0, remainingCharacters)).source.trim(), operation)
       if (!diff) continue
       remainingCharacters = Math.max(0, remainingCharacters - diff.length)
       let additions = 0

@@ -28,7 +28,7 @@ const event = (seq: number, type = 'assistant_text', text = `event ${seq}`): Eve
 })
 
 const omittedTypes = [
-  'raw_event', 'reasoning_summary', 'tool_started', 'tool_finished', 'process_started',
+  'raw_event', 'reasoning_summary', 'reasoning_text', 'tool_started', 'tool_finished', 'process_started',
   'provider_session', 'cwd_fallback', 'history_imported', 'backend_changed', 'artifact_error',
   'session_created', 'idle_warning', 'code_diff', 'codex_thread_status',
 ]

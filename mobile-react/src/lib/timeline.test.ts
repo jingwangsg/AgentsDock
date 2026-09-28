@@ -1,5 +1,6 @@
 import type { AgentFile, Event } from '../types'
 import { messageText } from './format'
+import { timelineEventLabel } from './timeline-labels'
 import {
   ACTIVE_TRACE_PROGRESS_CHARACTER_LIMIT,
   ACTIVE_TRACE_PROGRESS_LINE_LIMIT,
@@ -7,9 +8,12 @@ import {
   activeTraceProgress,
   activeTraceProgressEvents,
   activeTraceProgressPreview,
+  activityEventSequence,
   codexLifecycleSemanticKey,
   crossChatSemanticKey,
+  isNativeGoalSteerEvent,
   isTimelineError,
+  omitTerminalClaudeFinalCommentary,
   jobDisplayEvents,
   jobDisplaySelection,
   jobResultPresentation,
@@ -23,6 +27,7 @@ import {
   projectPresentableHistory,
   projectTimeline,
   rowText,
+  type TimelineRow,
 } from './timeline'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -542,8 +547,8 @@ assert(
   'compaction rows must use the same semantic identity as Mac and the server',
 )
 assert(
-  compactionRows[1].kind === 'system' && compactionRows[1].seq === 5 && compactionRows[1].event.item_id === 'compaction-item-b',
-  'same-turn automatic compactions must retain only the newest completion',
+  compactionRows[1].kind === 'system' && compactionRows[1].seq === 4 && compactionRows[1].event.item_id === 'compaction-item-b',
+  'same-turn automatic compactions must retain only the newest completion, anchored where the first packet appeared',
 )
 assert(
   !compactedLifecycle.some(row => row.kind === 'system' && ['codex_goal_updated', 'codex_token_usage', 'codex_compaction_started'].includes(row.event.type)),
@@ -809,6 +814,18 @@ const authorityOnlyPrompt = compactProviderAuthorityPrompt.slice(compactProvider
 assert(
   messageText(event(81, 'turn_started', { prompt: authorityOnlyPrompt })) === '',
   'an authority-only provider echo must not leave an internal-only user bubble',
+)
+const memoryCitedAnswer = [
+  '**可以，而且 Jim 很适合说明你在 NVIDIA 的个人贡献。**他是你的直属经理。 <oai-mem-citation>',
+  'source: memory/2026-09-01.md',
+  'quote: Jim is the direct manager',
+  '</oai-mem-citation>',
+  '',
+  '下一步：先和他对齐。',
+].join('\n')
+assert(
+  messageText(event(82, 'assistant_text', { text: memoryCitedAnswer })) === '**可以，而且 Jim 很适合说明你在 NVIDIA 的个人贡献。**他是你的直属经理。\n\n下一步：先和他对齐。',
+  'Codex memory citations are provider-internal markup and must not reach rendered or copied text',
 )
 const windowsProviderAuthorityPrompt = compactProviderAuthorityPrompt.replace(
   '/Users/example/.agentsdock/cross_chat_authority/run_a39d8f33ad864075-732f636e8745bb38.json',
@@ -1327,20 +1344,29 @@ assert(
 )
 assert(!stoppedCommentaryRows.some(row => row.kind === 'progress'), 'stopped turns must remove live progress')
 assert(
-  stoppedCommentaryRows.some(row => row.kind === 'system' && row.key === 'turn:run-progress:stop'),
-  'genuine stops should retain one stable lifecycle row',
+  !stoppedCommentaryRows.some(row => row.kind === 'system' && row.event.type === 'turn_stopped')
+  && stoppedCommentary.stoppedAt === stoppedCommentaryRows.find(row => row.kind === 'trace')?.stoppedAt
+  && stoppedCommentary.stoppedAt === '2026-07-16T00:00:043Z',
+  'a stop owned by a turn is carried on that turn\'s trace instead of a separate lifecycle row',
 )
 
 const duplicateStoppedRows = projectTimeline([
   event(44, 'turn_started', { run_id: 'run-duplicate-stop', prompt: 'Stop once' }),
   event(45, 'turn_stopped', { run_id: 'run-duplicate-stop', message: 'Stopping.' }),
   event(46, 'turn_stopped', { run_id: 'run-duplicate-stop', message: 'Stopped.' }),
-], []).filter(row => row.kind === 'system' && row.event.type === 'turn_stopped')
+], [])
 assert(
-  duplicateStoppedRows.length === 1
-  && duplicateStoppedRows[0].kind === 'system'
-  && duplicateStoppedRows[0].event.message === 'Stopped.',
-  'repeated stop packets should update one stable lifecycle row instead of duplicating it',
+  !duplicateStoppedRows.some(row => row.kind === 'system' && row.event.type === 'turn_stopped')
+  && duplicateStoppedRows.filter(row => row.kind === 'trace').length === 1
+  && duplicateStoppedRows.find(row => row.kind === 'trace')?.stoppedAt === '2026-07-16T00:00:045Z',
+  'repeated stop packets mark the owning turn stopped once and never add stop rows',
+)
+const orphanStoppedRows = projectTimeline([
+  event(47, 'turn_stopped', { run_id: 'run-unknown-stop', message: 'Stopped by user.' }),
+], [])
+assert(
+  orphanStoppedRows.length === 1 && orphanStoppedRows[0].kind === 'system' && orphanStoppedRows[0].event.type === 'turn_stopped',
+  'a stop that no turn owns still needs its own row',
 )
 
 const stoppedFinishedRows = projectTimeline([
@@ -1385,7 +1411,7 @@ const lateStoppedAssistantIndex = lateStoppedCommentaryWithSuccessor.findIndex(r
   row.kind === 'message' && row.role === 'assistant'
 )
 const lateStoppedStopIndex = lateStoppedCommentaryWithSuccessor.findIndex(row =>
-  row.kind === 'system' && row.event.type === 'turn_stopped'
+  row.kind === 'trace' && row.runId === 'run-stopped-a' && Boolean(row.stoppedAt)
 )
 const successorUserIndex = lateStoppedCommentaryWithSuccessor.findIndex(row =>
   row.kind === 'message' && row.role === 'user' && rowText(row) === 'Second request'
@@ -1489,5 +1515,219 @@ for (let index = 0; index < 600; index += 1) {
   assert(compactionIndex >= 0 && assistantIndex === compactionIndex + 1, `completed answer ${index} must remain immediately after its compaction marker`)
 }
 assert(completedTurnStressElapsed < 1_500, `expected near-linear completed-turn placement, took ${Math.round(completedTurnStressElapsed)}ms`)
+
+
+// --- Desktop-parity event family ---------------------------------------------
+
+const steerFile: AgentFile = { id: 'file-steer', filename: 'steer.png', seq: 203 }
+const goalSteer = event(203, 'turn_steered', {
+  run_id: 'goal-run', prompt: 'Also handle X', backend: 'codex', purpose: 'codex_goal_resume',
+  native_steer: true, native_goal_steer: true, provider_user_authored: true, file_ids: ['file-steer'],
+})
+assert(isNativeGoalSteerEvent(goalSteer), 'an exact codex goal steer is a native goal steer')
+assert(!isNativeGoalSteerEvent({ ...goalSteer, native_goal_steer: undefined }), 'a plain steer is not a goal steer')
+assert(!isNativeGoalSteerEvent({ ...goalSteer, provider_user_authored: false }), 'goal steers need provider user authorship')
+const goalSteerRows = projectTimeline([
+  event(200, 'turn_started', { run_id: 'goal-run', prompt: 'Start the goal', backend: 'codex' }),
+  event(201, 'reasoning_summary', { run_id: 'goal-run', text: 'Planning' }),
+  event(202, 'assistant_text', { run_id: 'goal-run', text: 'First result' }),
+  goalSteer,
+  event(204, 'reasoning_summary', { run_id: 'goal-run', text: 'Continuing' }),
+  event(205, 'assistant_text', { run_id: 'goal-run', text: 'Handled X' }),
+], [steerFile])
+const goalUserRows = goalSteerRows.filter(row => row.kind === 'message' && row.role === 'user')
+assert(
+  goalUserRows.map(rowText).join('|') === 'Start the goal|Also handle X',
+  `a mid-goal Send now must become a second user row, received ${goalUserRows.map(rowText).join('|')}`,
+)
+assert(goalUserRows[1]?.key === 'turn:goal-run:start:203:user', 'the steer slice is keyed by its run and start seq')
+assert(goalUserRows[1]?.kind === 'message' && goalUserRows[1].files.map(file => file.id).join() === 'file-steer', 'the steer slice owns its attachments')
+assert(goalUserRows[1]?.kind === 'message' && goalUserRows[1].runId === undefined, 'a steer slice is not a rewind target')
+assert(
+  goalSteerRows.filter(row => row.kind === 'message' && row.role === 'assistant').map(rowText).join('|') === 'First result|Handled X',
+  'output after the steer belongs to the new slice, not the retired one',
+)
+const goalTraceRuns = goalSteerRows.filter(row => row.kind === 'trace').map(row => row.kind === 'trace' ? row.events.map(value => value.text).join() : '')
+assert(goalTraceRuns.join('|') === 'Planning|Continuing', `each slice keeps its own trace, received ${goalTraceRuns.join('|')}`)
+const plainSteerRows = projectTimeline([
+  event(206, 'turn_started', { run_id: 'plain-run', prompt: 'Start' }),
+  event(207, 'turn_steered', { run_id: 'plain-run', prompt: 'Nudge', native_steer: true }),
+], [])
+assert(plainSteerRows.filter(row => row.kind === 'message' && row.role === 'user').length === 1, 'a non-goal steer does not open a user slice')
+
+const checkpointRows = projectTimeline([
+  event(210, 'turn_started', { run_id: 'cp-run', prompt: 'Edit files' }),
+  event(211, 'turn_checkpoint', { run_id: 'cp-run', checkpoint_commit: 'abc123', changed_files: ['a.ts'] }),
+  event(212, 'turn_finished', { run_id: 'cp-run', result_text: 'Done' }),
+  event(213, 'turn_started', { run_id: 'cp-run-2', prompt: 'Edit more' }),
+  event(214, 'code_diff', { run_id: 'cp-run-2', checkpoint_commit: 'def456', files_changed: 1, diff_files: [{ path: 'src/a.ts', additions: 2, deletions: 1 }], additions: 2, deletions: 1 }),
+  event(215, 'turn_started', { run_id: 'cp-run-3', prompt: 'No checkpoint' }),
+], [])
+const checkpointUsers = checkpointRows.filter(row => row.kind === 'message' && row.role === 'user') as Array<Extract<TimelineRow, { kind: 'message' }>>
+assert(checkpointUsers[0]?.runId === 'cp-run' && checkpointUsers[0].checkpointCommit === 'abc123', 'a hidden turn_checkpoint carries its commit onto the user row')
+assert(checkpointUsers[1]?.runId === 'cp-run-2' && checkpointUsers[1].checkpointCommit === 'def456', 'a code_diff checkpoint commit reaches the user row')
+assert(checkpointUsers[2]?.runId === 'cp-run-3' && checkpointUsers[2].checkpointCommit === undefined, 'turns without a checkpoint expose only the run')
+assert(
+  !checkpointRows.some(row => (row.kind === 'system' && row.event.type === 'turn_checkpoint')
+    || (row.kind === 'trace' && row.events.some(value => value.type === 'turn_checkpoint'))),
+  'turn_checkpoint never renders and never leaks into a trace',
+)
+
+const reasoningTextRows = projectTimeline([
+  event(220, 'turn_started', { run_id: 'rt-run', prompt: 'Think' }),
+  event(221, 'tool_started', { run_id: 'rt-run', tool: { name: 'shell' } }),
+  event(222, 'tool_finished', { run_id: 'rt-run', tool: { name: 'shell' }, output: 'ok' }),
+  event(223, 'reasoning_text', { run_id: 'rt-run', text: 'Deep thought', reasoning_after_seq: 220 }),
+  event(224, 'turn_finished', { run_id: 'rt-run', result_text: 'Answer' }),
+], [])
+const reasoningTextTrace = reasoningTextRows.find(row => row.kind === 'trace')
+assert(
+  reasoningTextTrace?.kind === 'trace' && reasoningTextTrace.events.map(value => value.id).join(',') === 'event-223,event-221,event-222',
+  `reasoning_text is trace content placed after reasoning_after_seq, received ${reasoningTextTrace?.kind === 'trace' ? reasoningTextTrace.events.map(value => value.id).join(',') : 'none'}`,
+)
+assert(activityEventSequence(event(223, 'reasoning_text', { reasoning_after_seq: 220 })) === 220.5, 'a durable summary sits half a step after its anchor')
+assert(activityEventSequence(event(223, 'reasoning_text', { reasoning_after_seq: 230 })) === 223, 'a forward anchor is ignored')
+assert(
+  projectTimeline([event(225, 'turn_started', { run_id: 'rt-only', prompt: 'Think' }), event(226, 'reasoning_text', { run_id: 'rt-only', text: 'Only thought' })], [])
+    .some(row => row.kind === 'trace'),
+  'reasoning_text alone is enough trace content for a row',
+)
+
+const commentaryEvents = [
+  event(230, 'turn_started', { run_id: 'cm-run', prompt: 'Report', backend: 'codex' }),
+  event(231, 'assistant_text', { run_id: 'cm-run', phase: 'commentary', text: 'Working on it' }),
+]
+const liveCommentary = projectTimeline(commentaryEvents, [])
+assert(!liveCommentary.some(row => row.kind === 'message' && row.role === 'assistant'), 'commentary-phased assistant text is activity, not the answer')
+assert(liveCommentary.some(row => row.kind === 'progress' && rowText(row) === 'Working on it'), 'rewritten commentary drives the live progress surface')
+const settledCommentary = projectTimeline([...commentaryEvents, event(232, 'turn_finished', { run_id: 'cm-run', result_text: 'Final' })], [])
+const finishedAnswer = settledCommentary.find(row => row.kind === 'message' && row.role === 'assistant')
+assert(finishedAnswer && rowText(finishedAnswer) === 'Final', 'commentary is not duplicated into the final output')
+assert(
+  settledCommentary.some(row => row.kind === 'trace' && row.events.some(value => value.type === 'reasoning_summary' && value.text === 'Working on it')),
+  'settled commentary returns to the trace as reasoning_summary',
+)
+
+const claudeFinal = event(242, 'turn_finished', { run_id: 'claude-run', backend: 'claude', result_text: 'Final answer.' })
+const claudeTrace = [
+  event(240, 'tool_finished', { run_id: 'claude-run', backend: 'claude', tool: { name: 'shell' } }),
+  event(241, 'reasoning_summary', { run_id: 'claude-run', backend: 'claude', phase: 'commentary', text: 'Final answer.' }),
+]
+assert(omitTerminalClaudeFinalCommentary(claudeTrace, [claudeFinal]).map(value => value.id).join() === 'event-240', 'the terminal Claude TextBlock echo is removed from the trace')
+assert(omitTerminalClaudeFinalCommentary(claudeTrace, [{ ...claudeFinal, backend: 'codex' }]).length === 2, 'Codex commentary is left untouched')
+assert(omitTerminalClaudeFinalCommentary(claudeTrace, [{ ...claudeFinal, result_text: 'Different' }]).length === 2, 'non-matching commentary stays')
+const claudeRows = projectTimeline([
+  event(239, 'turn_started', { run_id: 'claude-run', prompt: 'Ask', backend: 'claude' }),
+  ...claudeTrace,
+  claudeFinal,
+], [])
+assert(
+  claudeRows.filter(row => row.kind === 'trace').every(row => row.kind === 'trace' && !row.events.some(value => value.id === 'event-241')),
+  'the projected trace omits the duplicated final commentary',
+)
+
+const queuedFile: AgentFile = { id: 'file-q', filename: 'attach.pdf', seq: 240 }
+const runNowRows = projectTimeline([
+  event(250, 'turn_queued', { queued_id: 'q-1', prompt: 'Queued with file', file_ids: ['file-q'] }),
+  event(251, 'turn_deferred', { queued_id: 'q-1', message: 'Provider still starting.' }),
+  event(252, 'turn_deferred', { queued_id: 'q-1', message: 'Still starting; try again.' }),
+  event(253, 'turn_started', { run_id: 'q-run', queued_id: 'q-1', prompt: 'Queued with file' }),
+], [queuedFile])
+const runNowUser = runNowRows.find(row => row.kind === 'message' && row.role === 'user')
+assert(runNowUser?.kind === 'message' && runNowUser.files.map(file => file.id).join() === 'file-q', 'queued attachments carry over to the eventual turn_started')
+assert(!runNowRows.some(row => row.kind === 'system' && row.event.type === 'turn_deferred'), 'a deferred notice disappears once its message runs')
+const deferredRows = projectTimeline([
+  event(251, 'turn_deferred', { queued_id: 'q-2', message: 'Provider still starting.' }),
+  event(252, 'turn_deferred', { queued_id: 'q-2', message: 'Still starting; try again.' }),
+], []).filter(row => row.kind === 'system' && row.event.type === 'turn_deferred')
+assert(
+  deferredRows.length === 1 && deferredRows[0].kind === 'system' && deferredRows[0].key === 'turn-deferred:q-2' && deferredRows[0].event.message === 'Still starting; try again.',
+  'repeated deferred notices replace one live status row',
+)
+assert(
+  !projectTimeline([event(251, 'turn_deferred', { queued_id: 'q-3', message: 'Deferred' }), event(252, 'turn_unqueued', { queued_id: 'q-3' })], [])
+    .some(row => row.kind === 'system'),
+  'removing the queued message removes its deferred notice',
+)
+
+const lifecycleRows = projectTimeline([
+  event(260, 'turn_started', { run_id: 'lc-run', prompt: 'Work' }),
+  event(261, 'provider_session_reset', { run_id: 'lc-run', message: 'Context was reset.' }),
+  event(262, 'team_message_sent', { run_id: 'lc-run', team_id: 'team', kind: 'message', title: 'Status', recipients: [{ kind: 'server', display_name: 'Ops' }] }),
+  event(263, 'agent_handoff_route_created', { message: 'Created approved agent handoff route @ops.', target_session_id: 'chat-9' }),
+  event(264, 'history_rewound', { from_seq: 100, through_seq: 120, to_run_id: 'older' }),
+  event(265, 'workspace_checkpoint_restored', { run_id: 'lc-run', checkpoint_commit: 'abc' }),
+  event(266, 'claude_goal_changed', { run_id: 'lc-run', message: 'goal' }),
+  event(267, 'claude_background_task_reconciliation_consumed', { run_id: 'lc-run', message: 'consumed' }),
+], [])
+const lifecycleSystemTypes = lifecycleRows.filter(row => row.kind === 'system').map(row => row.kind === 'system' ? row.event.type : '')
+assert(
+  lifecycleSystemTypes.join(',') === 'provider_session_reset,team_message_sent,agent_handoff_route_created,history_rewound,workspace_checkpoint_restored',
+  `lifecycle notices must render as system rows even inside an active run, received ${lifecycleSystemTypes.join(',')}`,
+)
+assert(
+  !lifecycleRows.some(row => row.kind === 'trace' && row.events.some(value => value.type.startsWith('claude_'))),
+  'hidden Claude bookkeeping never leaks into the trace',
+)
+
+const compactionId = 'cmp-1'
+const compactionStartedOnly = projectTimeline([
+  event(270, 'turn_started', { run_id: 'cx-run', prompt: 'Long chat', backend: 'codex' }),
+  event(271, 'codex_compaction_started', { run_id: 'cx-run', compaction_id: compactionId }),
+], [])
+const startedRow = compactionStartedOnly.find(row => row.kind === 'system' && row.key === `codex:compaction:${compactionId}`)
+assert(startedRow?.kind === 'system' && startedRow.event.type === 'codex_compaction_started', 'a live compaction start renders as its own marker')
+const compactionCompleted = projectTimeline([
+  event(270, 'turn_started', { run_id: 'cx-run', prompt: 'Long chat', backend: 'codex' }),
+  event(271, 'codex_compaction_started', { run_id: 'cx-run', compaction_id: compactionId }),
+  event(272, 'codex_compaction_completed', { run_id: 'cx-run', compaction_id: compactionId, operation_id: 'other', message: 'Compacted.' }),
+], []).filter(row => row.kind === 'system' && row.key.startsWith('codex:compaction:'))
+assert(
+  compactionCompleted.length === 1 && compactionCompleted[0].kind === 'system' && compactionCompleted[0].seq === 271
+  && compactionCompleted[0].event.type === 'codex_compaction_completed',
+  'start and completion share the compaction_id identity, anchored at the start',
+)
+assert(codexLifecycleSemanticKey(event(1, 'codex_compaction_completed', { compaction_id: ' c ', operation_id: 'op' })) === 'codex:compaction:c', 'compaction_id wins over operation_id')
+
+const authoritySuffix = '\n\n[AgentsDock provider authority]\nThis authority file is bound to this server, chat, and live run.\nDo not read, print, quote, or expose the authority file.\n[End AgentsDock provider authority]'
+const provenanceRows = projectTimeline([
+  event(280, 'turn_started', { run_id: 'live-run', prompt: 'Live question' }),
+  event(281, 'assistant_text', { run_id: 'live-run', text: 'Live answer' }),
+  event(282, 'turn_finished', { run_id: 'live-run', result_text: 'Live answer' }),
+  event(283, 'turn_started', { run_id: 'import_echo', imported: true, backend: 'codex', prompt: `Live question${authoritySuffix}` }),
+  event(284, 'assistant_text', { run_id: 'import_echo', imported: true, backend: 'codex', text: 'Live answer' }),
+  event(285, 'turn_started', { run_id: 'import_echo', imported: true, backend: 'codex', prompt: 'A later genuine import' }),
+  event(286, 'assistant_text', { run_id: 'import_echo', imported: true, backend: 'codex', text: 'Later imported answer' }),
+], [])
+assert(
+  provenanceRows.filter(row => row.kind === 'message').map(rowText).join('|') === 'Live question|Live answer|A later genuine import|Later imported answer',
+  `a provider echo of our own turn is suppressed while later imports stay, received ${provenanceRows.filter(row => row.kind === 'message').map(rowText).join('|')}`,
+)
+const companionRows = projectTimeline([
+  event(290, 'turn_started', { run_id: 'active-run', prompt: 'Still working', backend: 'claude' }),
+  event(291, 'reasoning_summary', { run_id: 'active-run', text: 'Thinking' }),
+  event(292, 'turn_finished', { run_id: 'import_batch', imported: true, metadata_only: true, backend: 'claude' }),
+  event(293, 'assistant_text', {
+    run_id: 'import_batch', imported: true, backend: 'claude', text: '', metadata_only: true, provider_history_repair: 'source_proven_assistant_replay',
+    provider_origin: { provider: 'claude', event_id: 'e', session_id: 's', timestamp: '2026-09-28T00:00:00Z' },
+  }),
+  event(294, 'turn_started', { run_id: 'import_goal', imported: true, backend: 'codex', provider_runtime_context: 'goal', metadata_only: true, prompt: '' }),
+], [])
+assert(companionRows.some(row => row.kind === 'trace' && row.active), 'control companions never retire the live turn')
+assert(companionRows.filter(row => row.kind === 'message').length === 1, 'proven replays and runtime context produce no message rows')
+const interruptionOrigin = { provider: 'claude', kind: 'interruption', event_id: '11111111-1111-4111-8111-111111111111', session_id: '22222222-2222-4222-8222-222222222222', timestamp: '2026-09-27T09:00:00Z', cause: 'steer' } as const
+const interruptionRows = projectTimeline([
+  event(300, 'provider_interruption', { imported: true, backend: 'claude', provider_origin: interruptionOrigin, prompt: '[Request interrupted by user]' }),
+  event(301, 'provider_interruption', { imported: true, backend: 'claude', provider_origin: interruptionOrigin, prompt: '[Request interrupted by user]' }),
+], [])
+assert(
+  interruptionRows.length === 1 && interruptionRows[0].kind === 'system'
+  && interruptionRows[0].key === `provider-interruption:chat-1:${interruptionOrigin.event_id}`
+  && interruptionRows[0].event.ts === interruptionOrigin.timestamp && interruptionRows[0].event.prompt === null,
+  'a proven provider interruption is one dated control row, deduplicated by its origin',
+)
+
+assert(timelineEventLabel('provider_session_reset') === 'Provider context reset', 'known event types use their label')
+assert(timelineEventLabel('turn_deferred') === 'Turn Deferred', 'unknown event types are title-cased instead of raw snake_case')
 
 console.log('timeline projection regressions passed')

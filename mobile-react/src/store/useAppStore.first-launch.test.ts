@@ -19,11 +19,15 @@ await AsyncStorage.clear()
 const originalFetch = globalThis.fetch
 const originalSetInterval = globalThis.setInterval
 let fetchCalls = 0
+const fetchedURLs: string[] = []
 let refreshTick: () => void = () => {}
 
-globalThis.fetch = (async () => {
+// Nothing listens on the placeholder address in this test: the one launch probe
+// must fail fast (connection refused), never hang on a health timeout.
+globalThis.fetch = (async (input: RequestInfo | URL) => {
   fetchCalls += 1
-  return new Promise<Response>(() => {})
+  fetchedURLs.push(String(input))
+  throw new TypeError('Network request failed')
 }) as typeof fetch
 globalThis.setInterval = ((handler: TimerHandler) => {
   refreshTick = typeof handler === 'function' ? () => { handler() } : () => {}
@@ -45,12 +49,14 @@ try {
   assert.equal(state.connecting, false)
   assert.equal(state.connected, false)
   assert.equal(state.error, null)
-  assert.equal(fetchCalls, 0, 'fresh launch must not probe the unconfigured localhost placeholder')
+  // A phone usually reaches the hub through a local forward, so the placeholder is probed exactly once on launch.
+  assert.equal(fetchCalls, 1, 'fresh launch probes the 127.0.0.1:7850 placeholder once')
+  assert.equal(fetchedURLs[0], 'http://127.0.0.1:7850/api/health')
 
   await state.reconnect()
   refreshTick()
   await nextTurn()
-  assert.equal(fetchCalls, 0, 'manual and periodic reconnect paths must ignore an unconfigured placeholder')
+  assert.equal(fetchCalls, 1, 'manual and periodic reconnect paths must ignore an unconfigured placeholder')
 
   const appState = NativeAppState as typeof NativeAppState & { __emitAppState(state: string): void }
   appState.__emitAppState('background')
@@ -58,7 +64,7 @@ try {
   await nextTurn()
   state = useAppStore.getState()
   assert.equal(state.connecting, false)
-  assert.equal(fetchCalls, 0, 'foreground reconciliation must not probe an unconfigured placeholder')
+  assert.equal(fetchCalls, 1, 'foreground reconciliation must not probe an unconfigured placeholder')
 } finally {
   globalThis.fetch = originalFetch
   globalThis.setInterval = originalSetInterval

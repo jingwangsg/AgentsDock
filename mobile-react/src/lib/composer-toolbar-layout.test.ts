@@ -4,7 +4,6 @@ import {
   COMPOSER_COMPACT_TOOLBAR_GAP,
   COMPOSER_EMPTY_CARD_MIN_HEIGHT,
   COMPOSER_CARD_MAX_HEIGHT,
-  COMPOSER_PERMISSION_FACE_SIZE,
   COMPOSER_SEND_FACE_SIZE,
   COMPOSER_SHELL_PADDING,
   COMPOSER_STOP_FACE_SIZE,
@@ -46,7 +45,6 @@ for (const backend of [null, 'claude', 'codex'] as const) {
   }
 }
 assert(COMPOSER_TOOLBAR_TOUCH_SIZE === 44, 'compact controls must preserve 44pt hit targets')
-assert(COMPOSER_PERMISSION_FACE_SIZE < COMPOSER_TOOLBAR_TOUCH_SIZE, 'permission chrome must not fill its hit target')
 assert(COMPOSER_STOP_FACE_SIZE < COMPOSER_TOOLBAR_TOUCH_SIZE, 'Stop chrome must not fill its hit target')
 assert(COMPOSER_SEND_FACE_SIZE < COMPOSER_TOOLBAR_TOUCH_SIZE, 'Send chrome must not fill its hit target')
 assert(

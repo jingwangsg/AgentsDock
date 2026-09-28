@@ -147,8 +147,11 @@ function ScopedTerminalView({ session, onClose, connection, connectionKey, activ
         key={`${connectionKey}:${session.id}`}
         ref={terminal}
         socketURL={socketURL}
-        backgroundHex={colors.background}
+        backgroundHex={colors.surface}
         foregroundHex={colors.text}
+        cursorHex={colors.blue}
+        // Zed's text selection: the accent at 0x3d alpha.
+        selectionHex={`${colors.blue}3d`}
         fontSize={scaleAppFont(13, fontScale)}
         style={styles.terminal}
         onStatus={event => {

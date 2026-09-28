@@ -54,7 +54,7 @@ test('selected chats are removable grant references; modern local actions stay o
   assert.match(composer, /if \(actions\.includes\('route'\)\) return \['route'\]/)
   assert.match(composer, /This server cannot deliver one or more selected actions or target chats\./)
   assert.match(composer, /\|\| !referencesSupported/)
-  assert.match(composer, /hasAuxiliaryContent = mailCommandSuggested \|\| references\.length > 0/)
+  assert.match(composer, /hasAuxiliaryContent = commandPaletteVisible \|\| commandPicker != null \|\| references\.length > 0/)
   assert.ok(composer.indexOf('testID="composer-chat-references"') < composer.indexOf('{queued.length || queuedRunStatus'))
 })
 

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Pressable, StyleSheet, useColorScheme, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
 import { useRecyclingState } from '@shopify/flash-list'
 import { ChevronDown, ChevronRight, MessageSquareShare } from 'lucide-react-native'
 import type { SystemRow } from '../lib/timeline'
@@ -7,11 +7,7 @@ import { foldMarkdownSource } from '../lib/math'
 import { usePalette } from '../theme'
 import { Text } from './AppText'
 import { MarkdownContent } from './MarkdownContent'
-import {
-  CROSS_CHAT_CONVERSATION_DARK,
-  CROSS_CHAT_CONVERSATION_LIGHT,
-  CrossChatConversationSurface,
-} from './CrossChatTimelineCards'
+import { CrossChatConversationSurface } from './CrossChatTimelineCards'
 
 const PREVIEW_CHARACTERS = 3_200
 const timeFormatter = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
@@ -19,8 +15,6 @@ const timeFormatter = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minu
 /** Historical presentation only: sender names never become routes or controls. */
 export function ImportedCrossChatDeliveryCard({ row, fontScale }: { row: SystemRow; fontScale: number }) {
   const colors = usePalette()
-  const light = useColorScheme() === 'light'
-  const palette = light ? CROSS_CHAT_CONVERSATION_LIGHT : CROSS_CHAT_CONVERSATION_DARK
   const delivery = row.importedDelivery
   const [sourceOpen, setSourceOpen] = useRecyclingState(false, [row.key, row.event.id])
   if (!delivery) return null
@@ -39,23 +33,17 @@ export function ImportedCrossChatDeliveryCard({ row, fontScale }: { row: SystemR
     </View>
   </View>
 
-  return <CrossChatConversationSurface testID={identity} palette={palette}>
+  return <CrossChatConversationSurface testID={identity}>
     <View style={styles.header}>
-      <Text accessibilityRole="header" style={[styles.eyebrow, { color: palette.eyebrow }]}>Agent conversation</Text>
-      {time ? <Text style={[styles.time, { color: palette.participants }]}>{time}</Text> : null}
+      <Text accessibilityRole="header" style={[styles.eyebrow, { color: colors.muted }]}>Agent conversation</Text>
+      {time ? <Text style={[styles.time, { color: colors.muted }]}>{time}</Text> : null}
     </View>
     <View testID={`${identity}-message`} accessibilityLabel={`Imported message from ${delivery.sender}`} style={[
       styles.incoming,
-      {
-        backgroundColor: palette.incomingBackground,
-        borderColor: palette.incomingBorder,
-        shadowColor: palette.shadow,
-        shadowOpacity: light ? 0.09 : 0.18,
-        shadowRadius: light ? 9 : 10,
-      },
+      { backgroundColor: colors.surface, borderColor: colors.border },
     ]}>
-      <Text testID={`${identity}-sender`} style={[styles.speaker, { color: palette.speaker }]}>{delivery.sender}</Text>
-      <DeliveryMarkdown identity={`${identity}-body`} value={delivery.body} fontScale={fontScale} color={palette.body} controlColor={palette.toggle} />
+      <Text testID={`${identity}-sender`} style={[styles.speaker, { color: colors.text }]}>{delivery.sender}</Text>
+      <DeliveryMarkdown identity={`${identity}-body`} value={delivery.body} fontScale={fontScale} color={colors.text} controlColor={colors.muted} />
     </View>
     {delivery.sourceRequest ? <View style={styles.source}>
       <Pressable
@@ -66,11 +54,11 @@ export function ImportedCrossChatDeliveryCard({ row, fontScale }: { row: SystemR
         onPress={() => setSourceOpen(value => !value)}
         style={({ pressed }) => [styles.toggle, { opacity: pressed ? 0.7 : 1 }]}
       >
-        {sourceOpen ? <ChevronDown size={13} color={palette.toggle} /> : <ChevronRight size={13} color={palette.toggle} />}
-        <Text style={[styles.toggleLabel, { color: palette.toggle }]}>Source request</Text>
+        {sourceOpen ? <ChevronDown size={13} color={colors.muted} /> : <ChevronRight size={13} color={colors.muted} />}
+        <Text style={[styles.toggleLabel, { color: colors.muted }]}>Source request</Text>
       </Pressable>
       {sourceOpen ? <View testID={`${identity}-source`}>
-        <DeliveryMarkdown identity={`${identity}-source-body`} value={delivery.sourceRequest} fontScale={fontScale} color={palette.body} controlColor={palette.toggle} />
+        <DeliveryMarkdown identity={`${identity}-source-body`} value={delivery.sourceRequest} fontScale={fontScale} color={colors.text} controlColor={colors.muted} />
       </View> : null}
     </View> : null}
   </CrossChatConversationSurface>
@@ -100,12 +88,12 @@ const styles = StyleSheet.create({
   eyebrow: { flex: 1, minWidth: 0, fontSize: 9, lineHeight: 13, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase' },
   time: { flexShrink: 0, fontSize: 9, lineHeight: 13, fontVariant: ['tabular-nums'] },
   // Keep phone text readable while limiting long lines on an iPad. The inner
-  // incoming bubble matches the Mac tint, padding, and asymmetric corners.
+  // incoming bubble matches the Mac padding and asymmetric corners.
   incoming: {
     alignSelf: 'flex-start', width: '100%', maxWidth: 620, minWidth: 0,
     paddingVertical: 8, paddingHorizontal: 10, borderWidth: 1,
     borderRadius: 12, borderBottomLeftRadius: 4,
-    shadowOffset: { width: 0, height: 3 },
+    shadowColor: '#000', shadowOpacity: 0.09, shadowRadius: 9, shadowOffset: { width: 0, height: 3 },
   },
   speaker: { fontSize: 10.5, lineHeight: 15, fontWeight: '800', marginBottom: 4, flexShrink: 1 },
   markdown: { minWidth: 0, maxWidth: '100%' },

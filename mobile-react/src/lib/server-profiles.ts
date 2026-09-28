@@ -1,7 +1,9 @@
 import type {
   AddServerProfileInput,
+  AppearanceMode,
   Backend,
   ChatDefaults,
+  RemoteServer,
   StoredProfileSettings,
   StoredServerProfile,
   UpdateServerProfileInput,
@@ -16,6 +18,9 @@ import { APP_FONT_SCALE_DEFAULT, clampAppFontScale } from './typography'
 export const PROFILE_SETTINGS_SCHEMA_VERSION = 2 as const
 export const DEFAULT_PROFILE_ID = 'default-profile'
 export const DEFAULT_CREDENTIAL_VERSION = 1
+// Zed's One Dark is the look the app ships with; Settings can switch to
+// One Light or to following the system.
+export const DEFAULT_APPEARANCE: AppearanceMode = 'dark'
 
 export interface LegacyStoredSettingsV1 {
   serverURL?: unknown
@@ -66,6 +71,38 @@ export function defaultProfileName(serverURL: string, serverIdentity?: string | 
     return url.hostname || url.host || 'AgentsServer'
   } catch {
     return 'AgentsServer'
+  }
+}
+
+export const HUB_PROXY_PREFIX = '/api/remote/'
+
+/** The `{id}` of a hub-proxied profile URL (`…/api/remote/{id}`), or null for a directly addressed server. */
+export function hubProxyRemoteId(serverURL: string): string | null {
+  return /\/api\/remote\/([^/]+)$/.exec(normalizeServerURL(serverURL))?.[1] ?? null
+}
+
+/**
+ * Diffs the saved profiles against the hub's remote-server registry. Only
+ * proxied profiles of this hub can be removed; existing names are never
+ * rewritten, and profiles of other hubs or direct servers are untouched.
+ */
+export function reconcileHubProfiles(
+  profiles: readonly Pick<StoredServerProfile, 'id' | 'serverURL'>[],
+  hubURL: string,
+  remotes: readonly Pick<RemoteServer, 'name' | 'proxy_path'>[],
+): { create: { name: string; serverURL: string }[]; removeIds: string[] } {
+  const hub = normalizeServerURL(hubURL)
+  const prefix = hub + HUB_PROXY_PREFIX
+  const registered = new Map(remotes.map(remote => [normalizeServerURL(hub + remote.proxy_path), remote.name]))
+  const saved = new Set(profiles.map(profile => normalizeServerURL(profile.serverURL)))
+  return {
+    create: [...registered].filter(([serverURL]) => !saved.has(serverURL)).map(([serverURL, name]) => ({ name, serverURL })),
+    removeIds: profiles
+      .filter(profile => {
+        const serverURL = normalizeServerURL(profile.serverURL)
+        return serverURL.startsWith(prefix) && !registered.has(serverURL)
+      })
+      .map(profile => profile.id),
   }
 }
 
@@ -158,6 +195,9 @@ export function normalizeStoredProfileSettings(value: unknown, timestamp = new D
     activeProfileId,
     profiles,
     fontScale: clampAppFontScale(value.fontScale),
+    appearance: value.appearance === 'system' || value.appearance === 'light' || value.appearance === 'dark'
+      ? value.appearance
+      : DEFAULT_APPEARANCE,
   }
 }
 
@@ -185,6 +225,7 @@ export function migrateLegacyProfileSettings(
       activeProfileId: profile.id,
       profiles: [profile],
       fontScale: legacy.fontScale === undefined ? APP_FONT_SCALE_DEFAULT : clampAppFontScale(legacy.fontScale),
+      appearance: DEFAULT_APPEARANCE,
     },
     workspace: normalizeWorkspacePreferences({
       selectedSessionId: legacy.selectedSessionId,

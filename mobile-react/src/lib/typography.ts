@@ -1,3 +1,7 @@
+// Zed's UI and code fonts. Android resolves them through the XML font families
+// the expo-font plugin registers (app.json); iOS through the TTFs' family names.
+export const fonts = { ui: 'IBM Plex Sans', mono: 'Lilex' } as const
+
 export const APP_FONT_SCALE_MIN = 0.8
 export const APP_FONT_SCALE_MAX = 1.4
 export const APP_FONT_SCALE_STEP = 0.1

@@ -12,14 +12,12 @@ import {
 } from 'react-native'
 import { MenuView, type MenuAction } from '@expo/ui/community/menu'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { Check, ChevronDown, MoreHorizontal, Pencil, Plus, Server, Wifi, X } from 'lucide-react-native'
+import { Check, ChevronDown, MoreHorizontal, Pencil, Server, UploadCloud, Wifi, X } from 'lucide-react-native'
 import {
-  buildCreateServerProfileInput,
   buildUpdateServerProfileInput,
   connectionStateLabel,
   draftAccessToken,
   editServerProfileDraft,
-  emptyServerProfileDraft,
   findProfileByIdentity,
   initialServerProfileDraft,
   profileConnectionLabel,
@@ -27,7 +25,7 @@ import {
   reorderedServerProfileIds,
   requiresIdentityResetConfirmation,
   unreadCountLabel,
-  type CreateServerProfileInput,
+  type RemoteDeployProgressEntry,
   type ServerConnectionTestResult,
   type ServerProfileConnectionState,
   type ServerProfileDraftValues,
@@ -36,12 +34,13 @@ import {
   type ServerProfileTestInput,
   type UpdateServerProfileInput,
 } from '../lib/server-profile-ui'
+import { hubProxyRemoteId } from '../lib/server-profiles'
 import { usePalette } from '../theme'
 import { Text, TextInput } from './AppText'
 import { IconButton, SheetCloseButton } from './ui'
 
 export type {
-  CreateServerProfileInput,
+  RemoteDeployProgressEntry,
   ServerConnectionTestResult,
   ServerProfileConnectionState,
   ServerProfileListItem,
@@ -62,7 +61,6 @@ interface CommonServerProfileProps {
 export interface ServerProfileSelectorProps extends CommonServerProfileProps {
   disabled?: boolean
   onSelectProfile: (profileId: string) => Awaitable<ActionResult>
-  onAddServer: () => void
   onManageServers: () => void
 }
 
@@ -70,10 +68,16 @@ export interface ServerProfilesManagerProps extends CommonServerProfileProps {
   initialMode?: ServerProfileEditorInitialMode
   onSwitchProfile: (profileId: string) => Awaitable<ActionResult>
   onTestConnection: (input: ServerProfileTestInput) => Awaitable<ServerConnectionTestResult>
-  onCreateProfile: (input: CreateServerProfileInput) => Awaitable<CreatedProfile>
   onUpdateProfile: (profileId: string, patch: UpdateServerProfileInput) => Awaitable<void>
   onReorderProfiles: (orderedProfileIds: string[]) => Awaitable<void>
   onRemoveProfile: (profileId: string) => Awaitable<void>
+  /** True when the active server is itself a hub (advertises remote_servers_v1) that can proxy and deploy other servers. */
+  hubAvailable?: boolean
+  onDeployRemote?: (
+    input: { sshHost: string; installDir?: string; name?: string },
+    onProgress: (entry: RemoteDeployProgressEntry) => void,
+  ) => Awaitable<CreatedProfile>
+  onCancelDeploy?: () => Awaitable<void>
 }
 
 export interface ServerProfilesSheetProps extends ServerProfilesManagerProps {
@@ -87,7 +91,6 @@ export function ServerProfileSelector({
   switchingProfileId = null,
   disabled = false,
   onSelectProfile,
-  onAddServer,
   onManageServers,
 }: ServerProfileSelectorProps) {
   const colors = usePalette()
@@ -110,7 +113,6 @@ export function ServerProfileSelector({
     : [{ id: 'no-profiles', title: 'No saved servers', attributes: { disabled: true } }]
   const actions: MenuAction[] = [
     { id: 'profiles', title: 'Servers', displayInline: true, subactions: profileActions },
-    { id: 'add', title: 'Add Server', image: 'plus', attributes: { disabled } },
     { id: 'manage', title: 'Manage Servers', image: 'gearshape', attributes: { disabled } },
   ]
   const trigger = <View
@@ -136,8 +138,7 @@ export function ServerProfileSelector({
     actions={actions}
     onPressAction={event => {
       const id = event.nativeEvent.event
-      if (id === 'add') onAddServer()
-      else if (id === 'manage') onManageServers()
+      if (id === 'manage') onManageServers()
       else if (id.startsWith('profile:')) {
         const profileId = decodeURIComponent(id.slice('profile:'.length))
         if (profileId !== activeProfileId) void Promise.resolve(onSelectProfile(profileId)).catch(error => {
@@ -160,7 +161,7 @@ export function ServerProfilesSheet({ visible, onClose, ...props }: ServerProfil
   >
     <View style={[styles.sheet, { backgroundColor: colors.surface }]}>
       <SafeAreaView style={styles.sheetSafeArea} edges={['bottom']}>
-        <View style={styles.grabber} />
+        <View style={[styles.grabber, { backgroundColor: colors.selected }]} />
         <View style={[styles.sheetHeader, { borderColor: colors.border }]}>
           <View style={styles.sheetHeadingCopy}>
             <Text style={[styles.sheetTitle, { color: colors.text }]}>Servers</Text>
@@ -181,10 +182,12 @@ export function ServerProfilesManager({
   initialMode = 'manage',
   onSwitchProfile,
   onTestConnection,
-  onCreateProfile,
   onUpdateProfile,
   onReorderProfiles,
   onRemoveProfile,
+  hubAvailable = false,
+  onDeployRemote,
+  onCancelDeploy,
 }: ServerProfilesManagerProps) {
   const colors = usePalette()
   const [draft, setDraft] = useState<ServerProfileDraftValues | null>(() => initialServerProfileDraft(initialMode, profiles, activeProfileId))
@@ -192,6 +195,11 @@ export function ServerProfilesManager({
   const [tested, setTested] = useState<ServerConnectionTestResult | null>(null)
   const [feedback, setFeedback] = useState<{ tone: 'error' | 'success' | 'neutral'; message: string } | null>(null)
   const testLease = useRef(0)
+  const [deployDraft, setDeployDraft] = useState<{ sshHost: string; installDir: string; name: string } | null>(null)
+  const [deployBusy, setDeployBusy] = useState(false)
+  const [deployProgress, setDeployProgress] = useState<RemoteDeployProgressEntry[]>([])
+  const [deployError, setDeployError] = useState<string | null>(null)
+  const deployLease = useRef(0)
   const editedProfile = useMemo(() => profiles.find(profile => profile.id === draft?.profileId) ?? null, [draft?.profileId, profiles])
   const duplicateProfile = useMemo(
     () => findProfileByIdentity(profiles, tested?.server_identity, draft?.profileId),
@@ -217,7 +225,7 @@ export function ServerProfilesManager({
     || pendingUpdatePatch.accessToken !== undefined
     || pendingUpdatePatch.resetServerIdentity === true
   ))
-  const updateTestMissing = Boolean(draft?.profileId && updateConnectionChanged && !tested?.server_identity?.trim())
+  const updateTestMissing = Boolean(updateConnectionChanged && !tested?.server_identity?.trim())
   const identityResetUnconfirmed = Boolean(testedIdentityChanged && !draft?.resetServerIdentity)
 
   const invalidateTest = () => {
@@ -230,14 +238,10 @@ export function ServerProfilesManager({
     if (invalidatesTest) invalidateTest()
     setDraft(current => current ? { ...current, ...patch } : current)
   }
-  const openAdd = () => {
+  const openEdit =(profile: ServerProfileListItem) => {
     if (busy) return
     invalidateTest()
-    setDraft(emptyServerProfileDraft())
-  }
-  const openEdit = (profile: ServerProfileListItem) => {
-    if (busy) return
-    invalidateTest()
+    setDeployDraft(null)
     setDraft(editServerProfileDraft(profile))
   }
   const closeEditor = () => {
@@ -246,13 +250,52 @@ export function ServerProfilesManager({
     setDraft(null)
   }
 
+  const openDeploy = () => {
+    if (busy || deployBusy) return
+    setDraft(null)
+    setDeployError(null)
+    setDeployProgress([])
+    setDeployDraft({ sshHost: '', installDir: '~/.agentsdock-server', name: '' })
+  }
+  const closeDeployEditor = () => {
+    if (deployBusy) return
+    setDeployDraft(null)
+  }
+  const runDeploy = async () => {
+    if (!deployDraft?.sshHost.trim() || deployBusy || !onDeployRemote) return
+    const lease = ++deployLease.current
+    setDeployBusy(true)
+    setDeployError(null)
+    setDeployProgress([])
+    try {
+      const created = await onDeployRemote(
+        { sshHost: deployDraft.sshHost.trim(), installDir: deployDraft.installDir.trim() || undefined, name: deployDraft.name.trim() || undefined },
+        entry => { if (lease === deployLease.current) setDeployProgress(current => [...current.slice(-49), entry]) },
+      )
+      if (lease !== deployLease.current) return
+      const profileId = typeof created === 'string' ? created : created?.id
+      if (!profileId) throw new Error('The remote server was deployed without a profile identifier.')
+      const switched = await onSwitchProfile(profileId)
+      if (switched === false) throw new Error('The remote server was saved, but it could not be activated.')
+      setDeployDraft(null)
+    } catch (error) {
+      if (lease === deployLease.current) setDeployError(errorMessage(error))
+    } finally {
+      if (lease === deployLease.current) setDeployBusy(false)
+    }
+  }
+  const cancelDeploy = async () => {
+    if (!deployBusy || !onCancelDeploy) return
+    try { await onCancelDeploy() } catch { /* best effort; the poll loop still stops locally */ }
+  }
+
   const testConnection = async () => {
     if (!draft?.serverUrl.trim()) return
     const request = ++testLease.current
     const testedDraft = { ...draft }
     const accessToken = draftAccessToken(testedDraft)
     const input: ServerProfileTestInput = {
-      ...(testedDraft.profileId ? { profileId: testedDraft.profileId } : {}),
+      profileId: testedDraft.profileId,
       serverUrl: testedDraft.serverUrl.trim(),
       ...(accessToken !== undefined ? { accessToken } : {}),
     }
@@ -287,15 +330,11 @@ export function ServerProfilesManager({
 
   const save = async () => {
     if (!draft?.serverUrl.trim() || busy) return
-    if (!draft.profileId && !tested?.ok) {
-      setFeedback({ tone: 'error', message: 'Test this connection successfully before adding the server.' })
-      return
-    }
-    if (draft.profileId && !editedProfile) {
+    if (!editedProfile) {
       setFeedback({ tone: 'error', message: 'This saved server no longer exists.' })
       return
     }
-    if (draft.profileId && updateConnectionChanged && !tested?.server_identity?.trim()) {
+    if (updateConnectionChanged && !tested?.server_identity?.trim()) {
       setFeedback({ tone: 'error', message: 'Test this exact connection successfully before saving address, token, or identity changes.' })
       return
     }
@@ -306,20 +345,9 @@ export function ServerProfilesManager({
     setBusy('save')
     setFeedback(null)
     try {
-      if (!draft.profileId && duplicateProfile) {
-        const switched = await onSwitchProfile(duplicateProfile.id)
-        if (switched === false) throw new Error(`Could not activate the existing “${duplicateProfile.name}” profile.`)
-      } else if (draft.profileId && editedProfile) {
-        if (duplicateProfile) throw new Error(`This connection belongs to the existing “${duplicateProfile.name}” profile.`)
-        const patch = buildUpdateServerProfileInput(editedProfile, draft, tested?.server_identity)
-        if (Object.keys(patch).length) await onUpdateProfile(editedProfile.id, patch)
-      } else {
-        const created = await onCreateProfile(buildCreateServerProfileInput(draft, tested?.server_identity))
-        const profileId = typeof created === 'string' ? created : created?.id
-        if (!profileId) throw new Error('The server was saved without a profile identifier.')
-        const switched = await onSwitchProfile(profileId)
-        if (switched === false) throw new Error('The server was saved, but it could not be activated.')
-      }
+      if (duplicateProfile) throw new Error(`This connection belongs to the existing “${duplicateProfile.name}” profile.`)
+      const patch = buildUpdateServerProfileInput(editedProfile, draft, tested?.server_identity)
+      if (Object.keys(patch).length) await onUpdateProfile(editedProfile.id, patch)
       testLease.current += 1
       setTested(null)
       setDraft(null)
@@ -363,7 +391,9 @@ export function ServerProfilesManager({
     if (profile.id === activeProfileId || busy) return
     Alert.alert(
       `Remove “${profile.name}”?`,
-      'The saved connection will be removed. Its cached chats remain on this device.',
+      hubProxyRemoteId(profile.serverUrl) !== null
+        ? 'This server will be unregistered from your hub and removed from this device. Its cached chats remain on this device.'
+        : 'The saved connection will be removed. Its cached chats remain on this device.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Remove server', style: 'destructive', onPress: () => { void removeProfile(profile) } },
@@ -386,6 +416,10 @@ export function ServerProfilesManager({
     )
   }
 
+  // The hub (or any directly addressed server) can only be removed while
+  // another one remains; hub-proxied remotes are always removable.
+  const nonProxiedCount = profiles.filter(profile => hubProxyRemoteId(profile.serverUrl) === null).length
+
   return <ScrollView
     style={styles.manager}
     contentContainerStyle={styles.managerContent}
@@ -395,10 +429,10 @@ export function ServerProfilesManager({
   >
     <View style={styles.managementHeading}>
       <View style={styles.managementHeadingCopy}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Saved servers</Text>
-        <Text style={[styles.help, { color: colors.muted }]}>Switching replaces the active workspace without mixing server data.</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Servers</Text>
+        <Text style={[styles.help, { color: colors.muted }]}>Remote servers registered on your hub appear here automatically.</Text>
       </View>
-      <SecondaryButton icon={Plus} label="Add server" disabled={Boolean(busy)} onPress={openAdd} />
+      {hubAvailable ? <SecondaryButton icon={UploadCloud} label="Deploy over SSH" disabled={Boolean(busy) || deployBusy} onPress={openDeploy} /> : null}
     </View>
 
     <View style={[styles.profileList, { borderColor: colors.border }]}>
@@ -413,6 +447,7 @@ export function ServerProfilesManager({
           active={active}
           switching={switching}
           disabled={Boolean(busy) || Boolean(switchingProfileId)}
+          removable={hubProxyRemoteId(profile.serverUrl) !== null || nonProxiedCount > 1}
           onSwitch={() => { void switchProfile(profile.id) }}
           onEdit={() => openEdit(profile)}
           onMove={direction => { void moveProfile(profile.id, direction) }}
@@ -421,7 +456,7 @@ export function ServerProfilesManager({
       }) : <View style={styles.noProfiles}>
         <Server size={24} color={colors.muted} />
         <Text style={[styles.noProfilesTitle, { color: colors.text }]}>No saved servers</Text>
-        <Text style={[styles.help, { color: colors.muted, textAlign: 'center' }]}>Add and test a server connection to begin.</Text>
+        <Text style={[styles.help, { color: colors.muted, textAlign: 'center' }]}>Connect to your hub to begin.</Text>
       </View>}
     </View>
 
@@ -436,7 +471,7 @@ export function ServerProfilesManager({
     {draft ? <View testID="server-profile-editor" style={[styles.editor, { backgroundColor: colors.raised, borderColor: colors.border }]}>
       <View style={styles.editorHeader}>
         <View style={styles.editorHeaderCopy}>
-          <Text style={[styles.editorTitle, { color: colors.text }]}>{draft.profileId ? `Edit ${editedProfile?.name || 'server'}` : 'Add server'}</Text>
+          <Text style={[styles.editorTitle, { color: colors.text }]}>{`Edit ${editedProfile?.name || 'server'}`}</Text>
           <Text style={[styles.help, { color: colors.muted }]}>Credentials remain in the device secure store.</Text>
         </View>
         <IconButton icon={X} disabled={Boolean(busy)} onPress={closeEditor} label="Close server editor" />
@@ -449,7 +484,7 @@ export function ServerProfilesManager({
         value={draft.name}
         onChangeText={name => updateDraft({ name })}
         editable={!busy}
-        placeholder="Production, Home Mac, Lab…"
+        placeholder="Home Mac"
         placeholderTextColor={colors.muted}
         returnKeyType="next"
         style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
@@ -465,7 +500,7 @@ export function ServerProfilesManager({
         autoCapitalize="none"
         autoCorrect={false}
         keyboardType="url"
-        placeholder="server.example.com:7850"
+        placeholder="my-mac.tailnet.ts.net:7850"
         placeholderTextColor={colors.muted}
         style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
       />
@@ -480,7 +515,7 @@ export function ServerProfilesManager({
         secureTextEntry
         autoCapitalize="none"
         autoCorrect={false}
-        placeholder={editedProfile?.hasAccessToken ? 'Leave blank to keep saved token' : 'Token from AgentsServer'}
+        placeholder={editedProfile?.hasAccessToken ? 'Leave blank to keep saved token' : 'Hub access token'}
         placeholderTextColor={colors.muted}
         style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border, opacity: draft.clearAccessToken ? 0.4 : 1 }]}
       />
@@ -525,8 +560,7 @@ export function ServerProfilesManager({
         </Text>
       </View> : null}
 
-      {!draft.profileId && !tested ? <Text style={[styles.help, { color: colors.muted }]}>A successful connection test is required before this server can be added.</Text> : null}
-      {draft.profileId && updateTestMissing ? <Text style={[styles.help, { color: colors.orange }]}>Test this exact connection before saving address, access-token, or identity changes.</Text> : null}
+      {updateTestMissing ? <Text style={[styles.help, { color: colors.orange }]}>Test this exact connection before saving address, access-token, or identity changes.</Text> : null}
 
       <View style={styles.editorActions}>
         <SecondaryButton
@@ -539,23 +573,94 @@ export function ServerProfilesManager({
         <View style={styles.actionSpacer} />
         <SecondaryButton label="Cancel" disabled={Boolean(busy)} onPress={closeEditor} />
         <PrimaryButton
-          label={busy === 'save' ? 'Saving…' : draft.profileId ? 'Save' : duplicateProfile ? `Use ${duplicateProfile.name}` : 'Add & switch'}
-          disabled={Boolean(busy) || !draft.serverUrl.trim() || (!draft.profileId && !tested?.ok) || Boolean(draft.profileId && duplicateProfile) || updateTestMissing || identityResetUnconfirmed}
+          label={busy === 'save' ? 'Saving…' : 'Save'}
+          disabled={Boolean(busy) || !draft.serverUrl.trim() || Boolean(duplicateProfile) || updateTestMissing || identityResetUnconfirmed}
           busy={busy === 'save'}
           onPress={() => { void save() }}
+        />
+      </View>
+    </View> : null}
+
+    {deployDraft ? <View testID="remote-deploy-editor" style={[styles.editor, { backgroundColor: colors.raised, borderColor: colors.border }]}>
+      <View style={styles.editorHeader}>
+        <View style={styles.editorHeaderCopy}>
+          <Text style={[styles.editorTitle, { color: colors.text }]}>Deploy over SSH</Text>
+          <Text style={[styles.help, { color: colors.muted }]}>The active server installs and proxies this one; only the hub's own token ever reaches this device.</Text>
+        </View>
+        <IconButton icon={X} disabled={deployBusy} onPress={closeDeployEditor} label="Close deploy editor" />
+      </View>
+
+      <FieldLabel text="SSH host" />
+      <TextInput
+        testID="remote-deploy-ssh-host"
+        accessibilityLabel="SSH host"
+        value={deployDraft.sshHost}
+        onChangeText={sshHost => setDeployDraft(current => current ? { ...current, sshHost } : current)}
+        editable={!deployBusy}
+        autoCapitalize="none"
+        autoCorrect={false}
+        placeholder="osmo_9000 or user@host"
+        placeholderTextColor={colors.muted}
+        style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
+      />
+
+      <FieldLabel text="Install directory" />
+      <TextInput
+        testID="remote-deploy-install-dir"
+        accessibilityLabel="Install directory"
+        value={deployDraft.installDir}
+        onChangeText={installDir => setDeployDraft(current => current ? { ...current, installDir } : current)}
+        editable={!deployBusy}
+        autoCapitalize="none"
+        autoCorrect={false}
+        placeholderTextColor={colors.muted}
+        style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
+      />
+
+      <FieldLabel text="Name on this device" />
+      <TextInput
+        testID="remote-deploy-name"
+        accessibilityLabel="Name on this device"
+        value={deployDraft.name}
+        onChangeText={name => setDeployDraft(current => current ? { ...current, name } : current)}
+        editable={!deployBusy}
+        placeholder={deployDraft.sshHost.trim() || 'osmo, Lab GPU box…'}
+        placeholderTextColor={colors.muted}
+        style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
+      />
+
+      {deployProgress.length ? <View style={styles.deployLog}>
+        {deployProgress.slice(-10).map((entry, index) => <Text
+          key={`${entry.phase}-${deployProgress.length - 10 + index}`}
+          style={[styles.deployLogLine, { color: colors.muted }]}
+          numberOfLines={2}
+        >{entry.message}</Text>)}
+      </View> : null}
+      {deployError ? <View accessibilityRole="alert" style={[styles.feedback, { backgroundColor: `${colors.red}18`, borderColor: `${colors.red}66` }]}>
+        <Text style={{ color: colors.red, fontSize: 12, lineHeight: 17 }}>{deployError}</Text>
+      </View> : null}
+
+      <View style={styles.editorActions}>
+        <SecondaryButton label="Cancel" disabled={deployBusy && !onCancelDeploy} onPress={() => { if (deployBusy) void cancelDeploy(); else closeDeployEditor() }} />
+        <PrimaryButton
+          label={deployBusy ? 'Deploying…' : 'Deploy & switch'}
+          disabled={deployBusy || !deployDraft.sshHost.trim()}
+          busy={deployBusy}
+          onPress={() => { void runDeploy() }}
         />
       </View>
     </View> : null}
   </ScrollView>
 }
 
-function ServerManagementRow({ profile, index, count, active, switching, disabled, onSwitch, onEdit, onMove, onRemove }: {
+function ServerManagementRow({ profile, index, count, active, switching, disabled, removable, onSwitch, onEdit, onMove, onRemove }: {
   profile: ServerProfileListItem
   index: number
   count: number
   active: boolean
   switching: boolean
   disabled: boolean
+  removable: boolean
   onSwitch: () => void
   onEdit: () => void
   onMove: (direction: -1 | 1) => void
@@ -567,13 +672,15 @@ function ServerManagementRow({ profile, index, count, active, switching, disable
   const actions: MenuAction[] = [
     { id: 'up', title: `Move ${profile.name} Up`, image: 'arrow.up', attributes: { disabled: disabled || index === 0 } },
     { id: 'down', title: `Move ${profile.name} Down`, image: 'arrow.down', attributes: { disabled: disabled || index === count - 1 } },
-    {
+  ]
+  if (removable) {
+    actions.push({
       id: 'remove',
       title: active ? 'Active Server Cannot Be Removed' : `Remove ${profile.name}`,
       image: 'trash',
       attributes: { disabled: disabled || active, destructive: !active },
-    },
-  ]
+    })
+  }
   return <View style={[styles.profileRow, { borderColor: colors.border, backgroundColor: active ? `${colors.blue}10` : colors.surface }]}>
     <ServerConnectionDot state={switching ? 'connecting' : profile.connectionState} label={switching ? `Connecting to ${profile.name}` : status} />
     <View style={styles.profileCopy}>
@@ -622,7 +729,7 @@ export function ServerConnectionDot({ state, label = connectionStateLabel(state)
 export function ServerUnreadBadge({ count }: { count: number }) {
   const colors = usePalette()
   return <View accessible accessibilityRole="text" accessibilityLabel={`${count} unread chat${count === 1 ? '' : 's'}`} style={[styles.unreadBadge, { backgroundColor: colors.blue }]}>
-    <Text style={styles.unreadText}>{unreadCountLabel(count)}</Text>
+    <Text style={[styles.unreadText, { color: colors.textOnAccent }]}>{unreadCountLabel(count)}</Text>
   </View>
 }
 
@@ -640,11 +747,11 @@ function PrimaryButton({ label, disabled, busy, onPress }: { label: string; disa
     disabled={disabled}
     onPress={onPress}
     style={({ pressed }) => [styles.primaryButton, { backgroundColor: colors.blue, opacity: disabled ? 0.35 : pressed ? 0.65 : 1 }]}
-  >{busy ? <ActivityIndicator size="small" color="white" /> : null}<Text style={styles.primaryButtonText}>{label}</Text></Pressable>
+  >{busy ? <ActivityIndicator size="small" color={colors.textOnAccent} /> : null}<Text style={[styles.primaryButtonText, { color: colors.textOnAccent }]}>{label}</Text></Pressable>
 }
 
 function SecondaryButton({ icon: Icon, label, accessibilityLabel, disabled, busy, compact, onPress }: {
-  icon?: typeof Plus
+  icon?: typeof UploadCloud
   label: string
   accessibilityLabel?: string
   disabled?: boolean
@@ -681,10 +788,10 @@ const styles = StyleSheet.create({
   selectorHost: { fontSize: 10 },
   connectionDot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
   unreadBadge: { minWidth: 21, minHeight: 20, borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, alignItems: 'center', justifyContent: 'center' },
-  unreadText: { color: 'white', fontSize: 10, fontWeight: '800' },
+  unreadText: { fontSize: 10, fontWeight: '800' },
   sheet: { flex: 1 },
   sheetSafeArea: { flex: 1 },
-  grabber: { alignSelf: 'center', width: 36, height: 5, marginTop: 7, marginBottom: 1, borderRadius: 3, backgroundColor: '#8a8a8a88' },
+  grabber: { alignSelf: 'center', width: 36, height: 5, marginTop: 7, marginBottom: 1, borderRadius: 3 },
   sheetHeader: { minHeight: 64, paddingHorizontal: 14, paddingTop: 8, paddingBottom: 4, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 8 },
   sheetHeadingCopy: { flex: 1, minWidth: 0, gap: 2 },
   sheetTitle: { fontSize: 17, fontWeight: '800' },
@@ -709,6 +816,8 @@ const styles = StyleSheet.create({
   noProfiles: { minHeight: 150, padding: 20, alignItems: 'center', justifyContent: 'center', gap: 7 },
   noProfilesTitle: { fontSize: 15, fontWeight: '800' },
   feedback: { minHeight: 42, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, padding: 10, justifyContent: 'center' },
+  deployLog: { gap: 2 },
+  deployLogLine: { fontSize: 11, lineHeight: 15 },
   editor: { borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, padding: 12, gap: 8 },
   editorHeader: { minHeight: 42, flexDirection: 'row', alignItems: 'center', gap: 8 },
   editorHeaderCopy: { flex: 1, minWidth: 0, gap: 2 },
@@ -723,7 +832,7 @@ const styles = StyleSheet.create({
   editorActions: { paddingTop: 3, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: 7 },
   actionSpacer: { flex: 1, minWidth: 8 },
   primaryButton: { minHeight: 44, borderRadius: 6, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
-  primaryButtonText: { color: 'white', fontSize: 12, fontWeight: '800' },
+  primaryButtonText: { fontSize: 12, fontWeight: '800' },
   secondaryButton: { minHeight: 44, borderRadius: 6, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   compactButton: { minWidth: 55, paddingHorizontal: 9 },
   secondaryButtonText: { fontSize: 12, fontWeight: '700' },

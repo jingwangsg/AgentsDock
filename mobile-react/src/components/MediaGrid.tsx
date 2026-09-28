@@ -240,7 +240,7 @@ function CompactMediaTile({ file, connection, generateVideoThumbnail, pinned, do
   const colors = usePalette()
   return <View testID={`compact-media-tile-${file.id}`} style={[styles.compactTile, { borderColor: colors.border, backgroundColor: colors.surface }]}>
     <Pressable accessibilityRole="button" accessibilityLabel={`Preview ${file.title || file.filename}`} onPress={onPreview} style={styles.compactPreviewButton}>
-      <View style={styles.compactPreview}>
+      <View style={[styles.compactPreview, { backgroundColor: colors.surface }]}>
         {isImage(file) ? <RemoteImagePreview file={file} connection={connection} /> : <VideoThumbnailPreview file={file} connection={connection} enabled={generateVideoThumbnail} />}
         {isVideo(file) ? <View pointerEvents="none" style={styles.playBadge}><Play size={18} color="white" fill="white" /></View> : null}
       </View>
@@ -263,7 +263,7 @@ function MediaTile({ file, connection, generateVideoThumbnail, width, pinned, do
   const colors = usePalette()
   return <View style={[styles.tile, { width, borderColor: colors.border, backgroundColor: colors.surface }]}>
     <Pressable accessibilityRole="button" accessibilityLabel={`Preview ${file.title || file.filename}`} onPress={onPreview}>
-      <View style={styles.preview}>
+      <View style={[styles.preview, { backgroundColor: colors.surface }]}>
         {isImage(file) ? <RemoteImagePreview file={file} connection={connection} /> : <VideoThumbnailPreview file={file} connection={connection} enabled={generateVideoThumbnail} />}
         {isVideo(file) ? <View pointerEvents="none" style={styles.playBadge}><Play size={18} color="white" fill="white" /></View> : null}
       </View>
@@ -309,7 +309,7 @@ function VideoThumbnailPreview({ file, connection, enabled }: { file: AgentFile;
   const rejectThumbnail = useCallback(() => setFailed(true), [])
 
   if (thumbnail) return <Image source={thumbnail} contentFit="contain" style={StyleSheet.absoluteFill} transition={100} />
-  if (Platform.OS === 'ios' || !enabled || failed) return <View style={[styles.center, { backgroundColor: '#090a0b' }]}><File size={22} color={colors.muted} /></View>
+  if (Platform.OS === 'ios' || !enabled || failed) return <View style={[styles.center, { backgroundColor: colors.surface }]}><File size={22} color={colors.muted} /></View>
   return <QueuedVideoThumbnailLoader file={file} connection={connection} onThumbnail={acceptThumbnail} onFailure={rejectThumbnail} />
 }
 
@@ -353,8 +353,8 @@ function QueuedVideoThumbnailLoader({ file, connection, onThumbnail, onFailure }
     onFailure()
   }, [finish, onFailure])
 
-  if (!appActive || !granted) return <View style={[styles.center, { backgroundColor: '#090a0b' }]}><File size={22} color={colors.muted} /></View>
-  const placeholder = <View style={[styles.center, { backgroundColor: '#090a0b' }]}><File size={22} color={colors.muted} /></View>
+  if (!appActive || !granted) return <View style={[styles.center, { backgroundColor: colors.surface }]}><File size={22} color={colors.muted} /></View>
+  const placeholder = <View style={[styles.center, { backgroundColor: colors.surface }]}><File size={22} color={colors.muted} /></View>
   return <DeferredLoadBoundary resetKey={file.id} fallback={placeholder} onError={rejectThumbnail}>
     <Suspense fallback={placeholder}>
       <VideoThumbnailLoader file={file} connection={connection} onThumbnail={acceptThumbnail} onFailure={rejectThumbnail} />
@@ -452,13 +452,13 @@ const styles = StyleSheet.create({
   compactMediaList: { width: '100%', gap: TILE_GAP },
   compactTile: { width: '100%', minHeight: 112, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, padding: 8, flexDirection: 'row', alignItems: 'stretch', gap: 10 },
   compactPreviewButton: { width: '38%', minWidth: 96, maxWidth: 148, alignSelf: 'center' },
-  compactPreview: { width: '100%', aspectRatio: 16 / 9, position: 'relative', overflow: 'hidden', borderRadius: 5, backgroundColor: '#090a0b' },
+  compactPreview: { width: '100%', aspectRatio: 16 / 9, position: 'relative', overflow: 'hidden', borderRadius: 5 },
   compactDetails: { flex: 1, minWidth: 0, justifyContent: 'space-between' },
   compactIdentity: { flex: 1, minHeight: 50, paddingTop: 2 },
   compactTitle: { fontSize: 12, lineHeight: 16, fontWeight: '800' },
   compactActions: { minHeight: 44, flexDirection: 'row', alignItems: 'center' },
   tile: { borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
-  preview: { width: '100%', aspectRatio: 16 / 9, position: 'relative', backgroundColor: '#090a0b' },
+  preview: { width: '100%', aspectRatio: 16 / 9, position: 'relative' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   playBadge: { position: 'absolute', left: '50%', top: '50%', marginLeft: -19, marginTop: -19, width: 38, height: 38, borderRadius: 19, backgroundColor: '#00000099', alignItems: 'center', justifyContent: 'center' },
   caption: { paddingHorizontal: 9, paddingTop: 7, minHeight: 48 },

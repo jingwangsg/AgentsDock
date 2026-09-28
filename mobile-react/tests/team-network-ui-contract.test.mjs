@@ -88,3 +88,18 @@ test('Team changes clear old content and preserve drafts under their owning team
   assert.match(network, /JSON\.stringify\(\[teamId, externalAgentId, displayName, agentBackend\]\)/)
   assert.match(network, /return \(\) => requests\.current\.reset\(\)/)
 })
+
+test('the Team Network entry points sit behind the build-time UI switch', () => {
+  const composer = fs.readFileSync(path.resolve('src/components/Composer.tsx'), 'utf8')
+  const flag = fs.readFileSync(path.resolve('src/lib/team-network-ui.ts'), 'utf8')
+  assert.match(flag, /process\.env\.EXPO_PUBLIC_AGENTSDOCK_TEAM_NETWORK_UI !== '0'/)
+  assert.match(flag, /process\.env\.NODE_TEST_CONTEXT\s*\?\s*true/)
+  assert.match(sidebar, /TEAM_NETWORK_UI_ENABLED && !needsServerSetup \? <Pressable\s+testID="sidebar-team-network"/)
+  assert.match(shell, /\{TEAM_NETWORK_UI_ENABLED \? <TeamNetwork /)
+  assert.match(composer, /case 'mail': return TEAM_NETWORK_UI_ENABLED && !teamMentionsSupported/)
+  assert.match(composer, /if \(trigger\.kind === '@@' && !TEAM_NETWORK_UI_ENABLED\) return/)
+  assert.match(composer, /if \(trigger\?\.kind === '@@' && !TEAM_NETWORK_UI_ENABLED\) return/)
+  assert.match(composer, /consumeComposer && TEAM_NETWORK_UI_ENABLED \? teamMailCommandError/)
+  assert.match(composer, /visible=\{TEAM_NETWORK_UI_ENABLED && !welcome && pickerTrigger\?\.kind === '@@'\}/)
+  assert.match(composer, /\{TEAM_NETWORK_UI_ENABLED \? <Pressable testID="chat-target-team-network"/)
+})

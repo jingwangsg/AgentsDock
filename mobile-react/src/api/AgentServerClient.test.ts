@@ -48,6 +48,8 @@ interface FetchRecord {
 
 const originalFetch = globalThis.fetch
 const fetchRecords: FetchRecord[] = []
+const rewindAttempts: Array<{ expected_latest_seq: number }> = []
+let busyAttempts = 0
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   const signal = init?.signal
   assert(signal, 'Client request did not provide a combined signal')
@@ -73,6 +75,29 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   }
   if (url === 'https://revoke.example/api/health') {
     return Promise.resolve(new Response(JSON.stringify({ ok: true, server_identity: 'revoke-server', api_contract_version: 7 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
+  if (url === 'https://rewind.example/api/sessions/chat-1/rewind') {
+    rewindAttempts.push(JSON.parse(init?.body as string) as { expected_latest_seq: number })
+    if (rewindAttempts.length === 1) {
+      return Promise.resolve(new Response(JSON.stringify({ detail: { code: 'stale_latest_seq', message: 'stale', latest_seq: 12 } }), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+    }
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, from_seq: 4, through_seq: 12, removed_events: 9, provider_rewind: 'claude_fork', session: { id: 'chat-1' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
+  if (url === 'https://rewind-busy.example/api/sessions/chat-1/rewind') {
+    busyAttempts += 1
+    if (busyAttempts === 1) {
+      return Promise.resolve(new Response(JSON.stringify({ detail: { code: 'rewind_provider_busy', message: 'Codex sign-in is refreshing.', retry_after_seconds: 0.01 } }), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+    }
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, from_seq: 2, through_seq: 3, removed_events: 2, provider_rewind: 'codex_reset', session: { id: 'chat-1' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
+  if (url === 'https://rewind-refused.example/api/sessions/chat-1/rewind') {
+    return Promise.resolve(new Response(JSON.stringify({ detail: { code: 'turn_queue_not_empty', message: 'Remove queued turns before rewinding or restoring this chat.' } }), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+  }
+  if (url === 'https://rewind.example/api/sessions/chat-1/workspace/git') {
+    return Promise.resolve(new Response(JSON.stringify({ root: '/repo', branch: 'main', head: 'abc', revision: 'rev-7' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }
+  if (url === 'https://rewind.example/api/sessions/chat-1/workspace/git/checkpoint/restore') {
+    return Promise.resolve(new Response(JSON.stringify({ root: '/repo', branch: 'main', head: 'def', revision: 'rev-8' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }
   if (url.startsWith('https://paging.example/api/sessions/')) {
     return Promise.resolve(new Response(JSON.stringify({
@@ -380,8 +405,6 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
           created_at: '2026-08-05T00:00:00Z',
         },
       }
-    } else if (path.endsWith('/codex/permission-profiles')) {
-      value = { profiles: [] }
     } else if (path.endsWith('/codex/goal')) {
       value = { goal: null, time_budget_seconds: null }
     } else if (path.endsWith('/codex/rollback')) {
@@ -711,10 +734,9 @@ try {
   })
   const createBody = JSON.parse(fetchRecords.at(-1)?.body ?? '{}') as Record<string, unknown>
   assert(createBody.system_prompt === 'Stay focused.', 'Session creation should send the system prompt')
-  assert(createBody.codex_approval_policy === null, 'The server should own an omitted Codex approval default')
-  assert(createBody.codex_sandbox_mode === null, 'The server should own an omitted Codex sandbox default')
-  assert(createBody.codex_permission_profile === null, 'The server should own an omitted Codex permission profile default')
-  assert(createBody.codex_approvals_reviewer === null, 'The server should own an omitted Codex reviewer default')
+  for (const field of ['codex_approval_policy', 'codex_sandbox_mode', 'codex_permission_profile', 'codex_approvals_reviewer', 'claude_permission_mode', 'cursor_permission_mode']) {
+    assert(!Object.hasOwn(createBody, field), `Session creation must leave ${field} to the server (full access is the default)`)
+  }
   assert(createBody.provider_jobs_access === null, 'The server should own an omitted provider jobs access default')
 
   await codex.createSession({
@@ -722,32 +744,10 @@ try {
     folder: '',
     cwd: '/workspace',
     backend: 'codex',
-    codex_approval_policy: 'untrusted',
-    codex_sandbox_mode: 'workspace-write',
-    codex_permission_profile: 'workspace',
-    codex_approvals_reviewer: 'user',
     provider_jobs_access: 'read_only',
   })
   const explicitCreateBody = JSON.parse(fetchRecords.at(-1)?.body ?? '{}') as Record<string, unknown>
-  assert(explicitCreateBody.codex_approval_policy === 'untrusted', 'Explicit Codex approval policy must override the default')
-  assert(explicitCreateBody.codex_sandbox_mode === 'workspace-write', 'Explicit Codex sandbox mode must override the default')
-  assert(explicitCreateBody.codex_permission_profile === 'workspace', 'Explicit Codex permission profile must override the default')
-  assert(explicitCreateBody.codex_approvals_reviewer === 'user', 'Explicit Codex reviewer must override the default')
   assert(explicitCreateBody.provider_jobs_access === 'read_only', 'Session creation must serialize explicit provider jobs access')
-
-  await codex.createSession({
-    title: 'Claude plan',
-    folder: '',
-    cwd: '/workspace',
-    backend: 'claude',
-    claude_permission_mode: 'plan',
-  })
-  const claudeCreateBody = JSON.parse(fetchRecords.at(-1)?.body ?? '{}') as Record<string, unknown>
-  assert(claudeCreateBody.claude_permission_mode === 'plan', 'Claude session creation must send the requested SDK permission mode')
-  await codex.updateSession('session /?', { claude_permission_mode: null })
-  const claudeResetBody = JSON.parse(fetchRecords.at(-1)?.body ?? '{}') as Record<string, unknown>
-  assert(Object.hasOwn(claudeResetBody, 'claude_permission_mode'), 'Claude permission reset must preserve an explicit null')
-  assert(claudeResetBody.claude_permission_mode === null, 'Claude permission reset must send null to restore the server default')
 
   await codex.sendTurn('session /?', 'Default-safe turn', [])
   const defaultTurnBody = JSON.parse(fetchRecords.at(-1)?.body ?? '{}') as Record<string, unknown>
@@ -766,6 +766,21 @@ try {
       && claudeTurnBody.client_capabilities[0] === 'claude_sdk_interactive_v1',
     'Callers should be able to opt into the Claude Agent SDK capability explicitly',
   )
+  await codex.sendTurn('session /?', '/pdf summarize', [], null, null, ['claude_sdk_interactive_v1'], [], [], { id: 'cmd-1', revision: 'rev-1' })
+  const skillTurnBody = JSON.parse(fetchRecords.at(-1)?.body ?? '{}') as Record<string, unknown>
+  assert(
+    JSON.stringify(skillTurnBody.skill_selection) === JSON.stringify({ id: 'cmd-1', revision: 'rev-1' }),
+    'A palette selection must travel as the opaque skill_selection {id, revision}',
+  )
+  assert(!Object.hasOwn(claudeTurnBody, 'skill_selection'), 'Turns without a selection must omit skill_selection')
+  await codex.providerCommands('session /?')
+  assert(fetchRecords.at(-1)?.url === 'https://codex.example/api/sessions/session%20%2F%3F/provider-commands?refresh=false', 'Provider commands read the session-scoped inventory route')
+  await codex.providerCommands('session /?', true)
+  assert(fetchRecords.at(-1)?.url.endsWith('/provider-commands?refresh=true'), 'A forced refresh must be passed to the server')
+  await codex.setClaudeGoal('session /?', 'tests pass')
+  assert(fetchRecords.at(-1)?.method === 'PUT' && fetchRecords.at(-1)?.url.endsWith('/claude/goal') && JSON.parse(fetchRecords.at(-1)?.body ?? '{}').condition === 'tests pass', 'Claude goals use PUT /claude/goal with the condition')
+  await codex.clearClaudeGoal('session /?')
+  assert(fetchRecords.at(-1)?.method === 'DELETE' && fetchRecords.at(-1)?.url.endsWith('/claude/goal'), 'Clearing a Claude goal uses DELETE /claude/goal')
   const chatReference = {
     session_id: 'target',
     display_title_snapshot: 'Target',
@@ -879,7 +894,6 @@ try {
     { decision: 'accept' },
   )
   assert(claudeInteraction.id === 'claude interaction /?', 'Claude interaction resolution should unwrap the interaction')
-  await codex.codexPermissionProfiles('session /?')
   await codex.codexGoal('session /?')
   await codex.setCodexGoal('session /?', { objective: 'Ship parity', time_budget_seconds: 900 })
   await codex.clearCodexGoal('session /?')
@@ -1040,7 +1054,6 @@ try {
     ['Claude MCP control', () => validationClient.controlClaudeMcp('session', { version: 1, action: 'reconnect', server_name: 'calendar', expected_generation: 'generation' })],
     ['refresh Claude context usage', () => validationClient.refreshClaudeContextUsage('session')],
     ['resolve Codex interaction', () => validationClient.resolveCodexInteraction('session', 'interaction', {})],
-    ['Codex permission profiles', () => validationClient.codexPermissionProfiles('session')],
     ['Codex goal', () => validationClient.codexGoal('session')],
     ['set Codex goal', () => validationClient.setCodexGoal('session', {})],
     ['clear Codex goal', () => validationClient.clearCodexGoal('session')],
@@ -1187,6 +1200,37 @@ try {
   assert(ungatedClient.isValidated, 'Revocation should not lock a client that does not require validation')
   assert(ungatedClient.url('/api/health') === 'https://ungated.example/api/health', 'Ungated clients should remain usable after revocation')
   ungatedClient.dispose()
+
+  {
+  const rewind = new AgentServerClient('https://rewind.example')
+  const result = await rewind.rewindSession('chat-1', 'run-4', 9)
+  assert(result.through_seq === 12 && result.provider_rewind === 'claude_fork', 'Rewind should return the server result after a stale-guard retry')
+  assert(
+    rewindAttempts.map(attempt => attempt.expected_latest_seq).join(',') === '9,12',
+    'A stale_latest_seq conflict should be retried exactly once with the server latest_seq',
+  )
+  const rewindRequest = fetchRecords.filter(record => record.url.endsWith('/rewind')).at(-1)
+  assert(rewindRequest?.body?.includes('"confirmed":true') && rewindRequest.body.includes('"to_run_id":"run-4"'), 'Rewind should confirm and name the target run')
+  const busy = new AgentServerClient('https://rewind-busy.example')
+  const busyResult = await busy.rewindSession('chat-1', 'run-2', 3)
+  assert(busyAttempts === 2 && busyResult.provider_rewind === 'codex_reset', 'A refreshing Codex sign-in should be retried once after retry_after_seconds')
+  await assertRejects(
+    new AgentServerClient('https://rewind-refused.example').rewindSession('chat-1', 'run-2', 3),
+    error => error instanceof ServerError && error.status === 409 && error.message.includes('Remove queued turns'),
+    'Other 409 conflicts should surface the server message',
+  )
+  const status = await rewind.workspaceGitStatus('chat-1')
+  assert(status.revision === 'rev-7', 'Workspace git status should expose the revision guard')
+  const statusRequest = fetchRecords.filter(record => record.url.endsWith('/workspace/git')).at(-1)
+  assert(statusRequest?.teamNetworkToken !== undefined, 'Workspace git calls use the native-control authentication mode')
+  const restored = await rewind.restoreCheckpoint('chat-1', 'run-4', status.revision)
+  assert(restored.revision === 'rev-8', 'Checkpoint restore should return the new workspace status')
+  const restoreRequest = fetchRecords.filter(record => record.url.endsWith('/checkpoint/restore')).at(-1)
+  assert(
+    restoreRequest?.body === JSON.stringify({ run_id: 'run-4', expected_revision: 'rev-7', confirmed: true }),
+    'Checkpoint restore should send the run, the expected revision, and confirmation',
+  )
+}
 } finally {
   globalThis.fetch = originalFetch
 }
@@ -1361,6 +1405,24 @@ try {
   await delay(550)
   assert(FakeWebSocket.instances.length === 1, 'Client disposal should cancel a pending timeline retry')
   assert(disposedTimelineEvents === 0, 'Timeline should ignore packets queued after disposal')
+
+  // A remote saved from a hub's /api/admin/remote-servers registry uses a
+  // /api/remote/{id} path prefix as its whole server address (see
+  // server/remote_servers.py); both HTTP and WS URL builders must keep it.
+  FakeWebSocket.instances = []
+  const hubProxied = new AgentServerClient('http://hub.example:7850/api/remote/abc123', 'hub-token', { requireValidation: false })
+  assert(
+    hubProxied.fileURL('chat', 'file') === 'http://hub.example:7850/api/remote/abc123/api/sessions/chat/files/file',
+    'A hub-proxied base must keep its /api/remote/{id} prefix in HTTP URLs',
+  )
+  hubProxied.stream('session-hub', 0, () => undefined, () => undefined)
+  const hubSocket = FakeWebSocket.instances[0]
+  assert(hubSocket, 'A hub-proxied client should still open a timeline socket')
+  assert(
+    hubSocket.url.startsWith('ws://hub.example:7850/api/remote/abc123/api/sessions/session-hub/events'),
+    `A hub-proxied WS URL must swap only the protocol and keep the proxy prefix, got ${hubSocket.url}`,
+  )
+  hubProxied.dispose()
 
   FakeWebSocket.instances = []
   const terminalStates: boolean[] = []

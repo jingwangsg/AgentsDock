@@ -139,8 +139,8 @@ function SmallButton({ label, onPress, disabled, primary, icon: Icon, testID }: 
       opacity: disabled ? 0.45 : pressed ? 0.68 : 1,
     }]}
   >
-    {Icon ? <Icon size={14} color={primary ? 'white' : colors.text} /> : null}
-    <Text style={{ color: primary ? 'white' : colors.text, fontSize: 11, fontWeight: '800' }}>{label}</Text>
+    {Icon ? <Icon size={14} color={primary ? colors.textOnAccent : colors.text} /> : null}
+    <Text style={{ color: primary ? colors.textOnAccent : colors.text, fontSize: 11, fontWeight: '800' }}>{label}</Text>
   </Pressable>
 }
 

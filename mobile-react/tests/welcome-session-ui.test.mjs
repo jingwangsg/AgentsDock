@@ -12,8 +12,8 @@ const store = readFileSync(new URL('../src/store/useAppStore.ts', import.meta.ur
 test('first launch exposes a local welcome chat without a blocking setup sheet', () => {
   assert.match(appShell, /const \[setupDismissed, setSetupDismissed\] = useState\(true\)/)
   assert.match(appShell, /welcomeWorkspacePatch\(useAppStore\.getState\(\), needsSetup\)/)
-  assert.match(appShell, /onSetupServer=\{\(\) => openServers\('add'\)\}/)
-  assert.match(sidebar, /testID="sidebar-setup-server"[\s\S]*?onAddServer\(\)/)
+  assert.match(appShell, /onSetupServer=\{\(\) => openServers\('edit-active'\)\}/)
+  assert.match(sidebar, /testID="sidebar-setup-server"[\s\S]*?onSetupServer\(\)/)
   assert.match(chatHeader, /if \(isWelcomeSession\(sessionId\)\) return[\s\S]*?testID="welcome-setup-server"/)
 })
 
@@ -23,14 +23,14 @@ test('the welcome surface has no server-backed dead controls or requests', () =>
   assert.match(chatScreen, /!welcome \? <CodexInteractionShelf/)
   assert.match(chatScreen, /!welcome \? <ClaudeInteractionShelf/)
   assert.match(sidebar, /if \(!clean \|\| needsServerSetup\)[\s\S]*?clearSearch\(\)[\s\S]*?return/)
-  assert.match(sidebar, /onLongPress=\{!welcome && Platform\.OS === 'ios' \? openActionSheet : undefined\}/)
+  assert.match(sidebar, /onLongPress=\{welcome \? undefined : Platform\.OS === 'ios' \? openActionSheet : \(\) => menu\.current\?\.show\(\)\}/)
   assert.match(sidebar, /if \(welcome \|\| Platform\.OS === 'ios'\) return pressableRow/)
   assert.match(sidebar, /if \(isWelcomeSession\(session\.id\)\) \{[\s\S]*?selectedSessionId: session\.id,[\s\S]*?syncStatus: 'cached',[\s\S]*?onOpenChat\?\.\(\)[\s\S]*?return[\s\S]*?const selection = select/)
   assert.match(composer, /if \(welcome\) \{[\s\S]*?appendWelcomeExchange\(snapshot, text\)[\s\S]*?return[\s\S]*?remoteComposerScopeIsCurrent/)
   assert.match(composer, /\{!welcome \? <IconButton icon=\{Paperclip\}/)
   assert.match(composer, /\{!welcome \? quickMessageControl : null\}/)
   assert.match(composer, /<ChatTargetPicker\s+visible=\{!welcome && pickerTrigger != null && pickerTrigger.kind !== '@@'\}/)
-  assert.match(composer, /<TeamTargetPicker\s+visible=\{!welcome && pickerTrigger\?\.kind === '@@'\}/)
+  assert.match(composer, /<TeamTargetPicker\s+visible=\{TEAM_NETWORK_UI_ENABLED && !welcome && pickerTrigger\?\.kind === '@@'\}/)
 })
 
 test('the synthetic chat cannot leak into persisted server-workspace state', () => {

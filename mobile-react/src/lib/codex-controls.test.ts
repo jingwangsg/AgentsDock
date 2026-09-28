@@ -7,6 +7,7 @@ import {
   codexStatusTone,
   isAgentActivityEvent,
   isCodexControlEvent,
+  isTurnEndNotificationEvent,
   latestCodexControlEventSeq,
   remainingAutoResolveSeconds,
   sessionNeedsCodexInteraction,
@@ -161,5 +162,11 @@ const interaction = {
 } satisfies CodexPendingInteraction
 equal(remainingAutoResolveSeconds(interaction, Date.parse('2026-07-28T00:00:15.100Z')), 45)
 equal(remainingAutoResolveSeconds({ ...interaction, auto_resolution_ms: null }), null)
+
+assert(isTurnEndNotificationEvent({ type: 'turn_finished' }))
+assert(isTurnEndNotificationEvent({ type: 'turn_stopped', imported: false }))
+assert(!isTurnEndNotificationEvent({ type: 'turn_finished', imported: true }), 'imported terminals are replayed history')
+assert(!isTurnEndNotificationEvent({ type: 'assistant_text' }), 'streamed text is not a finished turn')
+assert(!isTurnEndNotificationEvent({ type: 'artifact_created' }))
 
 console.log('Codex control helpers passed')

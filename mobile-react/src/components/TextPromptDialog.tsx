@@ -104,7 +104,7 @@ export function useTextPrompt() {
               backgroundColor: request.destructive ? colors.red : colors.blue,
               opacity: !value.trim() ? 0.35 : pressed ? 0.65 : 1,
             }]}
-          ><Text style={[styles.buttonText, { color: 'white' }]}>{request.confirmLabel ?? 'OK'}</Text></Pressable>
+          ><Text style={[styles.buttonText, { color: colors.textOnAccent }]}>{request.confirmLabel ?? 'OK'}</Text></Pressable>
         </View>
       </View> : null}
     </KeyboardAvoidingView>

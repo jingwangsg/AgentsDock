@@ -10,7 +10,6 @@ import {
   ScrollView,
   StyleSheet,
   View,
-  useColorScheme,
   useWindowDimensions,
   type NativeSyntheticEvent,
   type TextInputSelectionChangeEventData,
@@ -21,7 +20,7 @@ import * as DocumentPicker from 'expo-document-picker'
 import * as ImagePicker from 'expo-image-picker'
 import { useShallow } from 'zustand/react/shallow'
 import { MenuView, type MenuAction } from '@expo/ui/community/menu'
-import { AlertCircle, ArrowDown, ArrowUp, Check, ChevronDown, CornerDownRight, File as FileIcon, Mail, MessageCircleMore, MessageSquareShare, Paperclip, Search, Send, Square, Trash2, X } from 'lucide-react-native'
+import { AlertCircle, ArrowDown, ArrowUp, Check, ChevronDown, CornerDownRight, File as FileIcon, Mail, MessageCircleMore, MessageSquareShare, Paperclip, Pencil, Search, Send, Square, Trash2, X } from 'lucide-react-native'
 import { client, useAppStore } from '../store/useAppStore'
 import {
   COMPOSER_INPUT_MAX_HEIGHT,
@@ -36,11 +35,25 @@ import { FULLSCREEN_HEADER_GUTTER, FULLSCREEN_HEADER_MIN_HEIGHT, fullscreenModal
 import { isAsyncQueuedChatMessage, isCrossChatDeliveryQueuedTurn, isUserQueuedTurn, isVisibleQueuedTurn, queuedDeliverySkipIdentity, queuedMoveCrossesDeliveryBarrier, queuedTurnHasEarlierDeliveryBarrier } from '../lib/queue'
 import { isImageUpload, photoAssetsToUploads } from '../lib/uploads'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
-import { awaitCodexPermissionUpdates } from '../lib/codex-permission-updates'
-import { awaitClaudePermissionUpdates } from '../lib/claude-permission-updates'
-import { awaitCursorPermissionUpdates } from '../lib/cursor-permission-updates'
 import { isClaudeMcpCommand } from '../lib/claude-mcp'
-import { isTeamMailCommandCandidate, TEAM_MAIL_COMMAND_SYNTAX, TEAM_MAIL_COMMAND_TEMPLATE, teamMailCapabilityError, teamMailCommandError } from '../lib/team-mail-command'
+import { TEAM_MAIL_COMMAND_TEMPLATE, teamMailCapabilityError, teamMailCommandError } from '../lib/team-mail-command'
+import {
+  CLAUDE_GOAL_COMMAND_DESCRIPTION,
+  COMPOSER_COMMANDS,
+  cacheProviderCommands,
+  cachedProviderCommands,
+  composerCommandTrigger,
+  draftUsesProviderCommand,
+  filterComposerCommands,
+  forgetProviderCommands,
+  goalCommandArgument,
+  providerCommandContextKey,
+  providerCommandForInvocation,
+  providerCommandsAvailable,
+  providerComposerCommands,
+  type BoundProviderCommand,
+  type ComposerCommand,
+} from '../lib/composer-commands'
 import { insertTeamReference, MAX_TEAM_REFERENCES, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceContractSupported, validTeamReferences, type TeamMentionCandidate, type TeamMentionTrigger } from '../lib/team-references'
 import {
   caretAfterTextChange,
@@ -76,21 +89,21 @@ import {
   isCompactComposerToolbar,
   isDenseComposerToolbar,
 } from '../lib/composer-toolbar-layout'
-import { cursorBackendUnavailableReason, isBackendLocked, selectableChatBackends } from '../lib/runtime-catalog'
+import { cursorBackendUnavailableReason, isBackendLocked, runtimeCatalogHasSelectableModels, runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, selectableChatBackends } from '../lib/runtime-catalog'
 import { usePalette } from '../theme'
-import type { AgentCrossChatRoute, AgentFile, Backend, ChatReference, ChatReferenceAction, FailedUpload, QueuedTurn, Session, TeamReference, UploadRef } from '../types'
+import type { AgentCrossChatRoute, AgentFile, Backend, ChatReference, ChatReferenceAction, FailedUpload, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeOption, Session, TeamReference, UploadRef } from '../types'
 import { appendWelcomeExchange, isWelcomeSession } from '../lib/welcome-session'
 import { Text, TextInput } from './AppText'
 import { BackendMark } from './BackendMark'
-import { CodexPermissionMenu } from './CodexPermissionMenu'
 import { useCodexRuntime } from './CodexRuntimeContext'
-import { CodexGoalBar } from './CodexGoalBar'
-import { ClaudePermissionMenu } from './ClaudePermissionMenu'
+import { CodexGoalBar, CodexGoalEditorSheet } from './CodexGoalBar'
 import { useClaudeRuntime } from './ClaudeRuntimeContext'
-import { CursorPermissionMenu } from './CursorPermissionMenu'
 import { IconButton, Pill, SheetCloseButton } from './ui'
 import { FullscreenViewerCloseButton, SwipeDismissImage } from './FullscreenImageViewer'
 import { TeamTargetPicker } from './TeamTargetPicker'
+import { ComposerCommandPalette, ComposerOptionPicker, type ProviderCommandLoadStatus } from './ComposerCommandPalette'
+import { useTextPrompt } from './TextPromptDialog'
+import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 
 const EMPTY_FILES: AgentFile[] = []
 const EMPTY_PENDING: UploadRef[] = []
@@ -110,8 +123,10 @@ const QUICK_MESSAGE_ACTIONS: MenuAction[] = QUICK_MESSAGES.map((title, index) =>
 type AttachmentImageSource = { uri: string; headers?: Record<string, string> }
 type ComposerSelection = { start: number; end: number }
 type ComposerMentionTrigger = ChatMentionTrigger | TeamMentionTrigger
+/** App-shell surfaces a slash command can open: chat details, the digest sheet, the job editor, or a new chat. */
+export type ComposerShellAction = 'details' | 'digest' | 'job' | 'new-chat'
 
-export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { sessionId: string; keyboardVisible: boolean; onSent: () => void; onOpenMcp: () => void }) {
+export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShellAction }: { sessionId: string; keyboardVisible: boolean; onSent: () => void; onOpenMcp: () => void; onShellAction: (action: ComposerShellAction) => void }) {
   const welcome = isWelcomeSession(sessionId)
   const colors = usePalette()
   const insets = useSafeAreaInsets()
@@ -136,6 +151,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
       claude_session_id: session.claude_session_id,
       codex_thread_id: session.codex_thread_id,
       cursor_session_id: session.cursor_session_id,
+      cwd: session.cwd,
     } : null
   }))
   const backend = sourceSession?.backend
@@ -156,13 +172,16 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
   const reloadProvider = useAppStore(state => state.reloadProvider)
   const updateSession = useAppStore(state => state.updateSession)
   const runtime = useAppStore(state => state.runtime)
-  const { refresh: refreshCodexRuntime } = useCodexRuntime()
-  const { refresh: refreshClaudeRuntime } = useClaudeRuntime()
+  const codexRuntime = useCodexRuntime()
+  const claudeRuntime = useClaudeRuntime()
+  const { refresh: refreshCodexRuntime } = codexRuntime
+  const { refresh: refreshClaudeRuntime } = claudeRuntime
   const attachFiles = useAppStore(state => state.attachFiles)
   const removeUpload = useAppStore(state => state.removeUpload)
   const removeFailedUpload = useAppStore(state => state.removeFailedUpload)
   const sending = useAppStore(state => state.sendingSessionIds.has(sessionId))
   const admitting = useAppStore(state => Boolean(state.turnAdmissionTokens[sessionId]))
+  const editingTurn = useAppStore(state => state.editingTurn[sessionId] ?? null)
   const admissionPreflight = admitting && !sending
   const stopping = useAppStore(state => state.stoppingSessionIds.has(sessionId))
   const [pickingAttachment, setPickingAttachment] = useState(false)
@@ -173,6 +192,12 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
   const [pickerQuery, setPickerQuery] = useState('')
   const [inputHeight, setInputHeight] = useState(COMPOSER_INPUT_MIN_HEIGHT)
   const [composerWidth, setComposerWidth] = useState(0)
+  const [providerCommandState, setProviderCommandState] = useState<{ key: string | null; status: ProviderCommandLoadStatus; snapshot: ProviderCommandsSnapshot | null }>({ key: null, status: 'idle', snapshot: null })
+  const [commandPicker, setCommandPicker] = useState<'model' | 'reasoning' | null>(null)
+  const [goalEditorOpen, setGoalEditorOpen] = useState(false)
+  const providerCommandBindingRef = useRef<BoundProviderCommand | null>(null)
+  const providerCommandRequestRef = useRef(0)
+  const { promptText, textPromptDialog } = useTextPrompt()
   const inputRef = useRef<TextInput>(null)
   const draftRef = useRef(draft)
   const referencesRef = useRef<ChatReference[]>(references)
@@ -222,8 +247,39 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
   const networkDisabled = !connected || connecting || switching || !client.isValidated
   const hasReadyContent = Boolean(draft.trim()) || (!welcome && uploads.length > 0)
   const mcpCommand = !welcome && isClaudeMcpCommand(draft)
-  const mailCommandSuggested = !welcome && isTeamMailCommandCandidate(draft)
   const mcpCommandLabel = backend === 'claude' ? 'Open Claude MCP servers' : 'Run /mcp command'
+  // Slash palette: the draft is a lone `/word`. The native caret is not held
+  // as state, so a draft ending in that token counts as caret-at-end.
+  const commandTrigger = !welcome ? composerCommandTrigger(draft, draft.length) : null
+  const providerCommandsKey = !welcome && sourceSession && providerCommandsAvailable(health, backend)
+    ? providerCommandContextKey(activeProfileId, profileGeneration, health?.server_identity, { id: sessionId, backend: sourceSession.backend, cwd: sourceSession.cwd })
+    : null
+  const activeProviderCommandState = providerCommandState.key === providerCommandsKey
+    ? providerCommandState
+    : { key: providerCommandsKey, status: 'idle' as const, snapshot: null }
+  const codexGoalsAvailable = backend === 'codex' && codexRuntime.goalsSupported && codexRuntime.goalsEnabled
+  const claudeGoalsAvailable = backend === 'claude' && claudeRuntime.supported && claudeRuntime.runtime?.features?.goals === true
+  const commandAvailable = (command: ComposerCommand): boolean => {
+    if (!backend) return false
+    if (command.provider) return command.provider.command.kind.length > 0
+    switch (command.id) {
+      case 'chat': return crossChatSupported
+      case 'mail': return TEAM_NETWORK_UI_ENABLED && !teamMentionsSupported
+      case 'goal': return codexGoalsAvailable || claudeGoalsAvailable
+      case 'compact': return backend === 'codex' ? codexRuntime.supported : backend === 'claude' && claudeRuntime.supported
+      case 'model': return runtimeCatalogHasSelectableModels(runtime)
+      case 'reasoning': return backend !== 'cursor' && runtimeEffortOptions(runtime, backend, model, effort).some(option => Boolean(option.value))
+      case 'mcp': return backend === 'claude'
+      case 'schedule': return health?.capabilities?.scheduled_jobs?.available === true
+      default: return true
+    }
+  }
+  const allComposerCommands = useMemo(() => [
+    ...COMPOSER_COMMANDS.map(command => command.id === 'goal' && backend === 'claude' ? { ...command, description: CLAUDE_GOAL_COMMAND_DESCRIPTION } : command),
+    ...providerComposerCommands(activeProviderCommandState.snapshot, backend),
+  ], [activeProviderCommandState.snapshot, backend])
+  const commandCandidates = commandTrigger ? filterComposerCommands(allComposerCommands, commandTrigger.query, commandAvailable) : []
+  const commandPaletteVisible = Boolean(commandTrigger && (commandCandidates.length > 0 || activeProviderCommandState.status === 'loading' || activeProviderCommandState.status === 'error'))
   const sendDisabled = welcome ? false : (networkDisabled || pending.length > 0 || failed.length > 0 || sending || admitting || routeRevoking || attachmentSendGuarded || !referencesSupported || !teamReferencesSupported)
   const effectiveSendDisabled = mcpCommand ? switching || admitting : sendDisabled
   const effectiveSendBusy = !mcpCommand && (sending || admitting)
@@ -243,12 +299,42 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
   const denseToolbar = compactToolbar && (composerWidth === 0 ? width < 352 : isDenseComposerToolbar(composerWidth))
   const viewportLimits = composerViewportLimits(width, height, keyboardVisible)
   const displayedInputHeight = Math.min(composerInputHeight(draft, inputHeight), viewportLimits.inputMaxHeight)
-  const hasAuxiliaryContent = mailCommandSuggested || references.length > 0 || teamReferences.length > 0 || queued.length > 0 || Boolean(queuedRunStatus) || uploads.length > 0 || pending.length > 0 || failed.length > 0
+  const hasAuxiliaryContent = commandPaletteVisible || commandPicker != null || references.length > 0 || teamReferences.length > 0 || queued.length > 0 || Boolean(queuedRunStatus) || uploads.length > 0 || pending.length > 0 || failed.length > 0
   const validationRevision = client.validationRevision
   useEffect(() => {
     if (welcome || networkDisabled || !routeHintsSupported) return
     void useAppStore.getState().refreshAgentRoutes(sessionId, profileGeneration)
   }, [welcome, networkDisabled, routeHintsSupported, activeProfileId, profileGeneration, sessionId, validationRevision, health?.server_identity, health?.server_instance_id])
+  const loadProviderCommands = useCallback(async (refresh = false) => {
+    const key = providerCommandsKey
+    if (!key || networkDisabled) return
+    if (!refresh) {
+      const cached = cachedProviderCommands(key)
+      if (cached) { setProviderCommandState({ key, status: 'ready', snapshot: cached }); return }
+    }
+    const requestId = ++providerCommandRequestRef.current
+    setProviderCommandState(previous => ({ key, status: 'loading', snapshot: previous.key === key ? previous.snapshot : null }))
+    try {
+      const snapshot = await client.providerCommands(sessionId, refresh)
+      if (providerCommandRequestRef.current !== requestId || !composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+      cacheProviderCommands(key, snapshot)
+      setProviderCommandState({ key, status: 'ready', snapshot })
+    } catch {
+      if (providerCommandRequestRef.current !== requestId) return
+      setProviderCommandState(previous => ({ key, status: 'error', snapshot: previous.key === key ? previous.snapshot : null }))
+    }
+  }, [activeProfileId, networkDisabled, profileGeneration, providerCommandsKey, sessionId])
+  useEffect(() => {
+    providerCommandBindingRef.current = null
+    providerCommandRequestRef.current += 1
+  }, [providerCommandsKey])
+  const commandPaletteOpen = commandTrigger != null
+  useEffect(() => {
+    // Fetch when the palette opens; a cached inventory is reused for 30 s, then refreshed server-side.
+    if (!commandPaletteOpen || !providerCommandsKey) return
+    if (activeProviderCommandState.status === 'idle') void loadProviderCommands()
+    else if (activeProviderCommandState.status === 'ready' && !cachedProviderCommands(providerCommandsKey)) void loadProviderCommands(true)
+  }, [commandPaletteOpen, providerCommandsKey, activeProviderCommandState.status, loadProviderCommands])
   const closePreview = useCallback(() => {
     setPreview(null)
     requestAnimationFrame(dismissAppKeyboard)
@@ -268,6 +354,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
     setPreview(null)
     setPickerTrigger(null)
     setPickerQuery('')
+    setCommandPicker(null)
+    setGoalEditorOpen(false)
     selectionRef.current = { start: draft.length, end: draft.length }
     pendingCaretRef.current = null
     pendingTeamPicker.current = null
@@ -319,6 +407,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
     mentionOpenTimer.current = null
     if (!trigger) { dismissedMentionStartRef.current = null; return }
     if (pickerTriggerRef.current || dismissedMentionStartRef.current === trigger.start) return
+    if (trigger.kind === '@@' && !TEAM_NETWORK_UI_ENABLED) return
     if (trigger.kind !== '@@' && !crossChatSupported) return
     const show = () => {
       mentionOpenTimer.current = null
@@ -343,6 +432,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
     referencesRef.current = nextReferences
     teamReferencesRef.current = nextTeamReferences
     selectionRef.current = { start: caret, end: caret }
+    const binding = providerCommandBindingRef.current
+    if (binding && !draftUsesProviderCommand(text, binding)) providerCommandBindingRef.current = null
     if (!text.length) setInputHeight(COMPOSER_INPUT_MIN_HEIGHT)
     setSessionDraft(sessionId, text, profileGeneration)
     setChatReferencesForSession(sessionId, nextReferences, profileGeneration)
@@ -395,12 +486,13 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
 
   const openTeamFromChatPicker = useCallback((query = '') => {
     const trigger = pickerTriggerRef.current
-    if (!trigger || trigger.kind === '@@') return
+    if (!TEAM_NETWORK_UI_ENABLED || !trigger || trigger.kind === '@@') return
     pendingTeamPicker.current = { ...trigger, kind: '@@', query }
     closeTargetPicker()
   }, [closeTargetPicker])
 
   const openTargetPicker = useCallback((trigger?: ComposerMentionTrigger) => {
+    if (trigger?.kind === '@@' && !TEAM_NETWORK_UI_ENABLED) return
     if (trigger?.kind !== '@@' && !crossChatSupported) {
       Alert.alert('Chat handoffs unavailable', 'Update the active AgentsServer to use agent-to-agent chat handoffs.')
       return
@@ -521,7 +613,31 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
     discoverMention(trigger)
   }, [discoverMention])
 
-  const send = async (steer = false, promptOverride?: string, consumeComposer = true) => {
+  const setGoalFromCommand = async (argument: string) => {
+    if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+    try {
+      if (backend === 'codex') {
+        await codexRuntime.updateGoal({ objective: argument, status: 'active' })
+      } else if (backend === 'claude') {
+        // Same server path as desktop: AgentsServer turns the condition into a revision-bound native `/goal` turn.
+        if (argument.toLocaleLowerCase() === 'clear') await client.clearClaudeGoal(sessionId)
+        else await client.setClaudeGoal(sessionId, argument)
+        void refreshClaudeRuntime()
+      }
+    } catch (error) {
+      if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Could not update goal', errorText(error))
+    }
+  }
+  const openGoalCommand = () => {
+    if (backend === 'codex') { setGoalEditorOpen(true); requestAnimationFrame(dismissAppKeyboard); return }
+    void promptText({
+      title: 'Claude goal',
+      message: 'Claude keeps working until this condition is met. Enter "clear" to remove the current goal.',
+      confirmLabel: 'Set goal',
+      placeholder: 'Completion condition',
+    }).then(value => { if (value?.trim()) void setGoalFromCommand(value.trim()) })
+  }
+  const send = async (steer = false, promptOverride?: string, consumeComposer = true, skillSelection?: ProviderCommandSelection) => {
     if (welcome) {
       if (!consumeComposer) return
       const text = (useAppStore.getState().drafts[sessionId] ?? draftRef.current).trim()
@@ -556,6 +672,19 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
       else Alert.alert('Claude MCP only', '/mcp is available in Claude chats only.')
       return
     }
+    const goalArgument = consumeComposer ? goalCommandArgument(currentDraft) : null
+    if (goalArgument != null && (codexGoalsAvailable || claudeGoalsAvailable)) {
+      if (!composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+      draftRef.current = ''
+      setSessionDraft(sessionId, '', profileGeneration)
+      inputRef.current?.clear()
+      if (goalArgument) void setGoalFromCommand(goalArgument)
+      else openGoalCommand()
+      return
+    }
+    const binding = providerCommandBindingRef.current
+    const outgoingSkillSelection = skillSelection
+      ?? (consumeComposer && binding && binding.contextKey === providerCommandsKey && draftUsesProviderCommand(currentDraft, binding) ? binding.selection : undefined)
     if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
     const currentUploads = consumeComposer ? currentState.uploads[sessionId] ?? uploads : EMPTY_FILES
     const currentReferences = consumeComposer ? currentState.chatReferencesBySession[sessionId] ?? referencesRef.current : EMPTY_CHAT_REFERENCES
@@ -572,7 +701,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
       || (currentTeamReferences.length > 0 && !teamMessagesAvailable(currentState.health))
     if (consumeComposer && (currentSendDisabled || !currentHasReadyContent)) return
     if (!consumeComposer && (networkDisabled || sending || admitting || !promptOverride?.trim())) return
-    const mailError = consumeComposer ? teamMailCommandError(currentState.health, currentDraft) : null
+    const mailError = consumeComposer && TEAM_NETWORK_UI_ENABLED ? teamMailCommandError(currentState.health, currentDraft) : null
     if (mailError) {
       Alert.alert('Team Network mail unavailable', mailError)
       return
@@ -593,44 +722,18 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
       Alert.alert('Team Network reference changed', 'Remove the changed reference and select that recipient again.')
       return
     }
+    const editingTurnState = consumeComposer ? useAppStore.getState().editingTurn[sessionId] : null
+    if (editingTurnState) {
+      // The provider and history must be rewound before this send is admitted;
+      // a refused rewind keeps the edit banner so the user can retry or cancel.
+      if (!await useAppStore.getState().rewindSession(sessionId, editingTurnState.runId, profileGeneration)) return
+      if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+    }
     const admissionToken = useAppStore.getState().beginTurnAdmission(sessionId)
     if (!admissionToken) return
     const admittedDraft = consumeComposer ? currentDraft : undefined
     const admittedFiles = consumeComposer ? currentUploads : undefined
     try {
-      if (backend === 'codex' && activeProfileId) {
-        try {
-          await awaitCodexPermissionUpdates({ profileId: activeProfileId, profileGeneration, sessionId })
-        } catch (error) {
-          if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) {
-            useAppStore.setState({ error: error instanceof Error ? error.message : String(error) })
-          }
-          return
-        }
-        if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
-      }
-      if (backend === 'claude' && activeProfileId) {
-        try {
-          await awaitClaudePermissionUpdates({ profileId: activeProfileId, profileGeneration, sessionId })
-        } catch (error) {
-          if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) {
-            useAppStore.setState({ error: error instanceof Error ? error.message : String(error) })
-          }
-          return
-        }
-        if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
-      }
-      if (backend === 'cursor' && activeProfileId) {
-        try {
-          await awaitCursorPermissionUpdates({ profileId: activeProfileId, profileGeneration, sessionId })
-        } catch (error) {
-          if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) {
-            useAppStore.setState({ error: error instanceof Error ? error.message : String(error) })
-          }
-          return
-        }
-        if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
-      }
       try {
         const request = sendPrompt(steer, profileGeneration, sessionId, {
           promptOverride,
@@ -640,6 +743,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
           admittedFiles,
           chatReferences: outgoingReferences,
           teamReferences: outgoingTeamReferences,
+          skillSelection: outgoingSkillSelection,
         })
         // sendPrompt consumes an accepted composer draft synchronously, before
         // its first network await. Clear the focused native buffer in the same
@@ -651,6 +755,12 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
         ) inputRef.current?.clear()
         const sent = await request
         if (sent) trackEvent('message_sent')
+        if (consumeComposer && sent) providerCommandBindingRef.current = null
+        if (!sent && outgoingSkillSelection && providerCommandsKey) {
+          // A refused selection is usually a stale inventory revision; drop the cache so the next palette open re-reads it.
+          forgetProviderCommands(providerCommandsKey)
+          void loadProviderCommands(true)
+        }
         if (sent && remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) onSent()
       } catch {
         // The store surfaces request failures; keep the draft available to retry.
@@ -746,15 +856,10 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
   >
     {quickMessageTrigger}
   </MenuView>
-  const chooseMailCommand = () => {
-    if (networkDisabled || !remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
-    const capabilityError = teamMailCapabilityError(health)
-    if (capabilityError) {
-      Alert.alert('Team Network mail unavailable', capabilityError)
-      return
-    }
-    const caret = TEAM_MAIL_COMMAND_TEMPLATE.length
-    updateComposerDraft(TEAM_MAIL_COMMAND_TEMPLATE)
+  /** Replaces the draft with `text`, keeping focus with the caret at its end. */
+  const replaceDraft = (text: string) => {
+    const caret = text.length
+    updateComposerDraft(text)
     pendingCaretRef.current = caret
     selectionRef.current = { start: caret, end: caret }
     requestAnimationFrame(() => {
@@ -763,6 +868,73 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
       inputRef.current?.setNativeProps({ selection: { start: caret, end: caret } })
       pendingCaretRef.current = null
     })
+  }
+  const chooseMailCommand = () => {
+    if (networkDisabled || !remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+    const capabilityError = teamMailCapabilityError(health)
+    if (capabilityError) {
+      Alert.alert('Team Network mail unavailable', capabilityError)
+      return
+    }
+    replaceDraft(TEAM_MAIL_COMMAND_TEMPLATE)
+  }
+  const runCompactCommand = async () => {
+    if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+    if (backend === 'codex') {
+      try {
+        await codexRuntime.run(() => client.compactCodexThread(sessionId))
+        if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Compacting context', 'Native context compaction started.')
+      } catch (error) {
+        if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Could not compact context', errorText(error))
+      }
+      return
+    }
+    // Claude compacts through its native `/compact`, sent as a revision-bound provider selection.
+    let snapshot = activeProviderCommandState.snapshot ?? (providerCommandsKey ? cachedProviderCommands(providerCommandsKey) : null)
+    if (!snapshot && providerCommandsKey) {
+      try {
+        snapshot = await client.providerCommands(sessionId)
+        cacheProviderCommands(providerCommandsKey, snapshot)
+      } catch (error) {
+        if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Could not compact context', errorText(error))
+        return
+      }
+    }
+    const compact = providerCommandForInvocation(snapshot, backend, '/compact')
+    if (!compact) {
+      if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Compact unavailable', 'This Claude installation does not offer /compact.')
+      return
+    }
+    await send(false, compact.command.invocation, false, compact.selection)
+  }
+  const chooseCommand = (command: ComposerCommand) => {
+    if (!commandTrigger || !commandAvailable(command) || !composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+    if (command.provider) {
+      // Provider selections start at byte zero to match the server's revalidation contract.
+      providerCommandBindingRef.current = {
+        contextKey: providerCommandsKey ?? '',
+        invocation: command.provider.command.invocation,
+        name: command.provider.command.name,
+        kind: command.provider.command.kind,
+        selection: command.provider.selection,
+      }
+      replaceDraft(`${command.provider.command.invocation} `)
+      return
+    }
+    if (command.id === 'mail') { chooseMailCommand(); return }
+    updateComposerDraft('')
+    switch (command.id) {
+      case 'attach': chooseAttachment(); break
+      case 'chat': openTargetPicker(); break
+      case 'compact': void runCompactCommand(); break
+      case 'digest': onShellAction('digest'); break
+      case 'goal': openGoalCommand(); break
+      case 'mcp': onOpenMcp(); break
+      case 'model': case 'reasoning': setCommandPicker(command.id); break
+      case 'new': onShellAction('new-chat'); break
+      case 'schedule': onShellAction('job'); break
+      case 'status': case 'workdir': onShellAction('details'); break
+    }
   }
   const providerName = backend ? backendLabel(backend) : 'Claude'
   const reloadChatAgent = async () => {
@@ -800,10 +972,26 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
     state: value === backend ? 'on' : 'off',
     attributes: value === 'cursor' && Boolean(cursorUnavailableReason) ? { disabled: true } : undefined,
   })) : []
+  // Model and effort mirror the Inspector's choice fields. The catalog is per
+  // backend, so the picks only appear once the server has advertised models.
+  const runtimeSelectable = !networkDisabled && runtimeCatalogHasSelectableModels(runtime)
+  const choiceActions = (prefix: string, options: RuntimeOption[], current: string | null | undefined): MenuAction[] => options.map(option => ({
+    id: `${prefix}${option.value}`,
+    title: option.label,
+    state: option.value === (current ?? '') ? 'on' : 'off',
+    attributes: option.locked ? { disabled: true } : undefined,
+  }))
+  const selectionError = backend ? runtimeSelectionError(health, runtime, backend, model) : null
   const runtimeActions: MenuAction[] = []
-  if (backendActions.length) runtimeActions.push({ id: 'switch-backend', title: 'Coding agent', displayInline: true, subactions: backendActions })
+  if (backendActions.length) runtimeActions.push({ id: 'switch-backend', title: 'Backend', subactions: backendActions })
+  if (backend && runtimeSelectable) {
+    runtimeActions.push({ id: 'set-model', title: 'Model', subactions: choiceActions('set-model:', runtimeCatalogOptions(runtime, backend, 'models', model), model) })
+    if (backend !== 'cursor') runtimeActions.push({ id: 'set-effort', title: 'Effort', subactions: choiceActions('set-effort:', runtimeEffortOptions(runtime, backend, model, effort), effort) })
+  }
+  if (selectionError) runtimeActions.push({ id: 'runtime-selection-error', title: selectionError, attributes: { disabled: true } })
   if (!providerReloadDisabled) runtimeActions.push({ id: 'reload-provider', title: `Reload ${providerName}`, image: 'arrow.clockwise' })
   const runtimeInteractive = runtimeActions.length > 0
+  const runtimeLabel = `${model || 'Server model'}${effort ? ` · ${effort}` : ''}`
   const runtimeTrigger = welcome ? <View
     testID="chat-runtime-menu"
     accessible
@@ -822,7 +1010,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
     style={[styles.runtime, compactToolbar && styles.runtimeCompact, denseToolbar && styles.runtimeDense, { opacity: runtimeInteractive ? 1 : 0.45 }]}
   >
     {providerReloading ? <ActivityIndicator size="small" color={colors.muted} /> : <BackendMark backend={backend} size={21} />}
-    {!compactToolbar ? <><Text style={[styles.backend, { color: colors.text }]}>{providerName}</Text><Pill tone="neutral">{model || 'Server model'}{effort ? ` · ${effort}` : ''}</Pill></> : null}
+    {!compactToolbar ? <><Text style={[styles.backend, { color: colors.text }]}>{providerName}</Text><Pill tone="neutral">{runtimeLabel}</Pill></> : !denseToolbar ? <Text style={[styles.runtimeLabel, { color: colors.muted }]} numberOfLines={1}>{runtimeLabel}</Text> : null}
   </View> : null
   const runtimeControl = welcome || !runtimeTrigger || !runtimeInteractive ? runtimeTrigger : <MenuView
     title={`${providerName} agent`}
@@ -831,6 +1019,13 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
       const action = event.nativeEvent.event
       if (action === 'reload-provider') void reloadChatAgent()
       else if (action.startsWith('switch-backend:')) void switchChatBackend(action.slice('switch-backend:'.length) as Backend)
+      else if (action.startsWith('set-model:') || action.startsWith('set-effort:')) {
+        if (!backend || !remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+        const value = action.slice(action.indexOf(':') + 1)
+        void updateSession(sessionId, action.startsWith('set-model:')
+          ? { model: value, effort: runtimeEffortAfterModelChange(runtime, backend, value, effort) }
+          : { effort: value }, profileGeneration)
+      }
     }}
     style={[styles.runtimeMenu, compactToolbar && styles.runtimeMenuCompact, denseToolbar && styles.runtimeMenuDense]}
   >
@@ -847,21 +1042,25 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
         keyboardShouldPersistTaps="handled"
         nestedScrollEnabled
       >
-        {mailCommandSuggested ? <Pressable
-          testID="chat-mail-command-suggestion"
-          accessibilityRole="button"
-          accessibilityLabel={`Send Team Network mail. Use ${TEAM_MAIL_COMMAND_SYNTAX}`}
-          accessibilityState={{ disabled: networkDisabled }}
-          disabled={networkDisabled}
-          onPress={chooseMailCommand}
-          style={({ pressed }) => [styles.commandSuggestion, { backgroundColor: colors.raised, borderColor: colors.border, opacity: networkDisabled ? 0.45 : pressed ? 0.68 : 1 }]}
-        >
-          <Mail size={17} color={colors.blue} />
-          <View style={styles.commandSuggestionText}>
-            <Text style={[styles.commandSuggestionTitle, { color: colors.text }]}>Send Team Network mail</Text>
-            <Text style={[styles.commandSuggestionSyntax, { color: colors.muted }]}>{TEAM_MAIL_COMMAND_SYNTAX}</Text>
-          </View>
-        </Pressable> : null}
+        {commandPaletteVisible ? <ComposerCommandPalette
+          commands={commandCandidates}
+          loadStatus={activeProviderCommandState.status}
+          onRefresh={() => void loadProviderCommands(true)}
+          onSelect={chooseCommand}
+        /> : null}
+        {commandPicker && backend ? <ComposerOptionPicker
+          title={commandPicker === 'model' ? 'Model' : 'Reasoning effort'}
+          options={commandPicker === 'model' ? runtimeCatalogOptions(runtime, backend, 'models', model) : runtimeEffortOptions(runtime, backend, model, effort)}
+          current={commandPicker === 'model' ? model : effort}
+          onPick={value => {
+            setCommandPicker(null)
+            if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+            void updateSession(sessionId, commandPicker === 'model'
+              ? { model: value, effort: runtimeEffortAfterModelChange(runtime, backend, value, effort) }
+              : { effort: value }, profileGeneration)
+          }}
+          onClose={() => setCommandPicker(null)}
+        /> : null}
         {references.length ? <ChatReferenceShelf
           references={references}
           referenceSupported={referenceSupported}
@@ -892,6 +1091,17 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
           onRetry={file => { if (remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) void attachFiles([file], profileGeneration, sessionId) }}
         /> : null}
       </ScrollView> : null}
+      {editingTurn ? <View testID="composer-editing-turn" accessibilityRole="summary" style={[styles.editingBanner, { backgroundColor: colors.raised, borderColor: colors.border }]}>
+        <Pencil size={14} color={colors.blue} />
+        <Text style={[styles.editingBannerText, { color: colors.text }]}>Editing an earlier turn. Sending replaces that turn and everything after it.</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Cancel edit"
+          testID="composer-cancel-editing-turn"
+          onPress={() => useAppStore.getState().cancelEditingTurn(sessionId)}
+          style={styles.editingBannerCancel}
+        ><Text style={{ color: colors.blue, fontSize: 12, fontWeight: '800' }}>Cancel</Text></Pressable>
+      </View> : null}
       <View
         onLayout={event => {
           const nextWidth = Math.floor(event.nativeEvent.layout.width)
@@ -920,9 +1130,6 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
           {!welcome ? <IconButton icon={Paperclip} disabled={attachmentDisabled} onPress={chooseAttachment} label="Add files, photos, or another chat" testID="chat-attach" /> : null}
           {runtimeControl}
           {!welcome ? quickMessageControl : null}
-          {!welcome && backend === 'codex' ? <CodexPermissionMenu sessionId={sessionId} compact={compactToolbar} /> : null}
-          {!welcome && backend === 'claude' ? <ClaudePermissionMenu sessionId={sessionId} compact={compactToolbar} /> : null}
-          {!welcome && backend === 'cursor' ? <CursorPermissionMenu sessionId={sessionId} compact={compactToolbar} /> : null}
           <View style={styles.toolbarSpacer} />
           {active ? <Pressable
             accessibilityRole="button"
@@ -932,7 +1139,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
             disabled={networkDisabled || stopping}
             onPress={() => { if (remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) void stopTurn(profileGeneration, sessionId) }}
             style={({ pressed }) => [styles.stop, !compactToolbar && styles.stopWide, { backgroundColor: compactToolbar ? 'transparent' : colors.red, opacity: networkDisabled || stopping ? 0.35 : pressed ? 0.65 : 1 }]}
-          >{compactToolbar ? <View style={[styles.compactStopFace, { backgroundColor: `${colors.red}18`, borderColor: `${colors.red}55` }]}>{stopping ? <ActivityIndicator size="small" color={colors.red} /> : <Square size={14} color={colors.red} fill={colors.red} strokeWidth={2} />}</View> : <>{stopping ? <ActivityIndicator size="small" color="white" /> : <Square size={17} color="white" fill="white" strokeWidth={2.2} />}<Text style={styles.stopLabel}>{stopping ? 'Stopping' : 'Stop'}</Text></>}</Pressable> : null}
+          >{compactToolbar ? <View style={[styles.compactStopFace, { backgroundColor: `${colors.red}18`, borderColor: `${colors.red}55` }]}>{stopping ? <ActivityIndicator size="small" color={colors.red} /> : <Square size={14} color={colors.red} fill={colors.red} strokeWidth={2} />}</View> : <>{stopping ? <ActivityIndicator size="small" color={colors.textOnAccent} /> : <Square size={17} color={colors.textOnAccent} fill={colors.textOnAccent} strokeWidth={2.2} />}<Text style={[styles.stopLabel, { color: colors.textOnAccent }]}>{stopping ? 'Stopping' : 'Stop'}</Text></>}</Pressable> : null}
           {active && hasReadyContent && !mcpCommand ? <Pressable
             accessibilityRole="button"
             accessibilityLabel="Steer current turn"
@@ -951,7 +1158,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
             onPress={() => void send(false)}
             style={({ pressed }) => [styles.send, { opacity: effectiveSendDisabled || pressed ? 0.6 : 1 }]}
           >
-            <View style={[styles.sendFace, { backgroundColor: !effectiveSendDisabled && hasReadyContent ? colors.blue : colors.raised }]}>{effectiveSendBusy ? <ActivityIndicator size="small" color={!effectiveSendDisabled && hasReadyContent ? 'white' : colors.muted} /> : <Send size={17} color={!effectiveSendDisabled && hasReadyContent ? 'white' : colors.muted} />}</View>
+            <View style={[styles.sendFace, { backgroundColor: !effectiveSendDisabled && hasReadyContent ? colors.blue : colors.raised }]}>{effectiveSendBusy ? <ActivityIndicator size="small" color={!effectiveSendDisabled && hasReadyContent ? colors.textOnAccent : colors.muted} /> : <Send size={17} color={!effectiveSendDisabled && hasReadyContent ? colors.textOnAccent : colors.muted} />}</View>
           </Pressable>
         </View>
       </View>
@@ -979,7 +1186,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
         onDidDismiss={finishTargetPickerDismissal}
       />
       <TeamTargetPicker
-        visible={!welcome && pickerTrigger?.kind === '@@'}
+        visible={TEAM_NETWORK_UI_ENABLED && !welcome && pickerTrigger?.kind === '@@'}
         width={width}
         query={pickerQuery}
         sourceSessionId={sessionId}
@@ -989,6 +1196,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp }: { se
         onClose={closeTargetPicker}
         onDidDismiss={finishTargetPickerDismissal}
       />
+      {!welcome && backend === 'codex' ? <CodexGoalEditorSheet visible={goalEditorOpen} onClose={() => { setGoalEditorOpen(false); requestAnimationFrame(dismissAppKeyboard) }} /> : null}
+      {textPromptDialog}
     </View>
   )
 }
@@ -1114,7 +1323,7 @@ export function ChatTargetPicker({ visible, width, query, sourceSessionId, suppo
     onDismiss={onDidDismiss}
   >
     {visible ? <SafeAreaView edges={Platform.OS === 'ios' ? ['bottom'] : ['top', 'bottom']} onAccessibilityEscape={onClose} style={[styles.targetPickerSafe, { backgroundColor: colors.background }]}>
-      <View style={styles.targetPickerGrabber} />
+      <View style={[styles.targetPickerGrabber, { backgroundColor: colors.border }]} />
       <View style={[styles.targetPickerPanel, tablet && styles.targetPickerPanelTablet]}>
         <View style={[styles.targetPickerHeader, { borderColor: colors.border }]}>
           <View style={styles.targetPickerHeading}>
@@ -1143,7 +1352,7 @@ export function ChatTargetPicker({ visible, width, query, sourceSessionId, suppo
         {referenceLimitReached ? <View accessibilityRole="alert" testID="chat-target-reference-limit" style={[styles.referenceWarning, styles.targetLimitWarning]}><AlertCircle size={14} color={colors.red} /><Text style={[styles.referenceWarningText, { color: colors.red }]}>Maximum {MAX_CHAT_REFERENCES} chat references reached. Remove one before adding another.</Text></View> : null}
         {loading ? <View testID="chat-routes-loading" style={styles.routeNotice}><ActivityIndicator size="small" color={colors.blue} /><Text style={{ color: colors.muted }}>Refreshing granted access…</Text></View> : null}
         {error ? <View testID="chat-routes-error" accessibilityRole="alert" style={styles.routeNotice}><Text style={{ color: colors.red, flex: 1 }}>{error}</Text><Pressable testID="chat-routes-retry" accessibilityRole="button" accessibilityLabel="Retry loading granted chat access" disabled={!connected || loading} onPress={() => { if (remoteComposerScopeIsCurrent(profileId, generation, sourceSessionId)) void useAppStore.getState().refreshAgentRoutes(sourceSessionId, generation) }} style={styles.routeRevoke}><Text style={{ color: colors.blue }}>Retry</Text></Pressable></View> : null}
-        <Pressable testID="chat-target-team-network" accessibilityRole="button" accessibilityLabel="Reference a server inbox with @@" onPress={onTeamNetwork} style={[styles.targetRow, { marginHorizontal: 16, backgroundColor: colors.surface, borderColor: colors.border }]}><Mail size={20} color={colors.blue} /><Text style={{ color: colors.blue }}>Servers (@@) · Team Network inbox</Text></Pressable>
+        {TEAM_NETWORK_UI_ENABLED ? <Pressable testID="chat-target-team-network" accessibilityRole="button" accessibilityLabel="Reference a server inbox with @@" onPress={onTeamNetwork} style={[styles.targetRow, { marginHorizontal: 16, backgroundColor: colors.surface, borderColor: colors.border }]}><Mail size={20} color={colors.blue} /><Text style={{ color: colors.blue }}>Servers (@@) · Team Network inbox</Text></Pressable> : null}
         <FlatList
           testID="chat-target-list"
           data={targets}
@@ -1335,7 +1544,7 @@ function AttachmentShelf({ sessionId, uploads, pending, failed, connectionReady,
     })}
     {failed.map((file, index) => <View key={`failed:${file.uri}`} testID={`attachment-failed-${index}`} style={[styles.upload, { backgroundColor: `${colors.red}12`, borderColor: colors.red }]}>
       <Pressable disabled={retryDisabled} accessibilityRole="button" accessibilityLabel={`Retry ${file.name}`} onPress={() => onRetry(file)} style={styles.uploadIdentity}>
-        <View style={[styles.fileIconWell, { backgroundColor: colors.surface }]}>{isImageUpload(file) ? <Image source={{ uri: file.uri }} contentFit="cover" style={StyleSheet.absoluteFill} /> : <FileIcon size={21} color={colors.red} strokeWidth={1.8} />}<View style={styles.uploadError}><AlertCircle size={15} color="white" fill={colors.red} /></View></View>
+        <View style={[styles.fileIconWell, { backgroundColor: colors.surface }]}>{isImageUpload(file) ? <Image source={{ uri: file.uri }} contentFit="cover" style={StyleSheet.absoluteFill} /> : <FileIcon size={21} color={colors.red} strokeWidth={1.8} />}<View style={[styles.uploadError, { backgroundColor: colors.surface }]}><AlertCircle size={15} color={colors.textOnAccent} fill={colors.red} /></View></View>
         <View style={styles.uploadText}><Text style={[styles.uploadName, { color: colors.text }]} numberOfLines={1}>{file.name}</Text><Text style={[styles.uploadMeta, { color: colors.red }]} numberOfLines={1}>Upload failed · Tap to retry</Text></View>
       </Pressable>
       <IconButton icon={X} size={14} disabled={disabled} onPress={() => onRemoveFailed(file.uri)} label={`Remove ${file.name}`} />
@@ -1345,10 +1554,6 @@ function AttachmentShelf({ sessionId, uploads, pending, failed, connectionReady,
 
 export function QueueShelf({ sessionId, profileId, profileGeneration, networkDisabled, onSent }: { sessionId: string; profileId: string | null; profileGeneration: number; networkDisabled: boolean; onSent: () => void }) {
   const colors = usePalette()
-  const agentPalette = useColorScheme() === 'light'
-    ? { background: '#f4effb', accent: '#8566bd', sender: '#7050aa' }
-    // Mac mixes #9d7ac9 at 12% over #222 for a pending agent message.
-    : { background: '#312d36', accent: '#9d7ac9', sender: '#c3a9e4' }
   const { width } = useWindowDimensions()
   const allTurns = useAppStore(state => state.snapshots[sessionId]?.queuedTurns) ?? EMPTY_QUEUE
   const turns = useMemo(() => allTurns.filter(isVisibleQueuedTurn), [allTurns])
@@ -1547,7 +1752,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
           || (validChatReferences(editText, editReferences, sessionId).length === editReferences.length && editReferences.every(referenceSupported)
             && validTeamReferences(editText, editTeamReferences, editReferences).length === editTeamReferences.length
             && editTeamReferences.every(reference => teamReferenceContractSupported(health, reference)))
-        return <View key={turn.queued_id} testID={`queued-row-${turn.queued_id}`} style={[styles.queueRow, { backgroundColor: agentMessage ? agentPalette.background : colors.queued, borderColor: agentMessage ? agentPalette.accent : colors.yellow, borderLeftWidth: agentMessage ? 2 : StyleSheet.hairlineWidth }]}>
+        return <View key={turn.queued_id} testID={`queued-row-${turn.queued_id}`} style={[styles.queueRow, { backgroundColor: agentMessage ? colors.surface : colors.queued, borderColor: agentMessage ? colors.blue : colors.yellow, borderLeftWidth: agentMessage ? 2 : StyleSheet.hairlineWidth }]}>
           {editing === turn.queued_id && !crossChatDelivery ? <TextInput
             autoFocus
             editable={!networkDisabled && !busy}
@@ -1564,7 +1769,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
             }}
             multiline
             style={[styles.queueInput, { color: colors.text }]}
-          /> : <Pressable accessibilityRole={crossChatDelivery ? undefined : 'button'} accessibilityLabel={agentMessage ? `${sender}: ${turnText}` : crossChatDelivery ? 'Incoming cross-chat delivery' : 'Edit queued message'} accessibilityState={{ disabled: crossChatDelivery || networkDisabled || queueBusy }} disabled={crossChatDelivery || networkDisabled || queueBusy} style={styles.queuePrompt} onPress={() => { if (remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) beginEdit(turn) }}>{agentMessage ? <Text style={{ color: agentPalette.sender, fontSize: 11, fontWeight: '700' }}>{sender}</Text> : null}<Text style={[styles.queueText, { color: colors.text }]} numberOfLines={3}>{turnText}</Text>{crossChatDelivery && !agentMessage ? <Text style={{ color: colors.muted, fontSize: 10 }}>Cross-chat delivery · starts automatically</Text> : !agentMessage && pausedLabel ? <Text style={{ color: colors.orange, fontSize: 10 }}>{pausedLabel}</Text> : null}</Pressable>}
+          /> : <Pressable accessibilityRole={crossChatDelivery ? undefined : 'button'} accessibilityLabel={agentMessage ? `${sender}: ${turnText}` : crossChatDelivery ? 'Incoming cross-chat delivery' : 'Edit queued message'} accessibilityState={{ disabled: crossChatDelivery || networkDisabled || queueBusy }} disabled={crossChatDelivery || networkDisabled || queueBusy} style={styles.queuePrompt} onPress={() => { if (remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) beginEdit(turn) }}>{agentMessage ? <Text style={{ color: colors.muted, fontSize: 11, fontWeight: '700' }}>{sender}</Text> : null}<Text style={[styles.queueText, { color: colors.text }]} numberOfLines={3}>{turnText}</Text>{crossChatDelivery && !agentMessage ? <Text style={{ color: colors.muted, fontSize: 10 }}>Cross-chat delivery · starts automatically</Text> : !agentMessage && pausedLabel ? <Text style={{ color: colors.orange, fontSize: 10 }}>{pausedLabel}</Text> : null}</Pressable>}
           {!crossChatDelivery && rowReferences.length ? <ChatReferenceShelf
             references={rowReferences}
             referenceSupported={referenceSupported}
@@ -1586,7 +1791,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
           /> : null}
           {crossChatDelivery ? <View style={styles.queueActions}><View style={styles.toolbarSpacer} /><Pressable testID={`queued-skip-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel={`Remove queued message from ${sender}`} accessibilityHint={!canSkip ? 'Update AgentsServer to safely remove this delivery.' : undefined} accessibilityState={{ disabled: networkDisabled || queueBusy || !canSkip, busy }} disabled={networkDisabled || queueBusy || !canSkip} onPress={() => void act(turn.queued_id, () => skipDelivery(sessionId, turn.queued_id, profileGeneration))} style={({ pressed }) => [styles.routeRevoke, { opacity: networkDisabled || queueBusy || !canSkip || pressed ? 0.45 : 1 }]}>{busy ? <ActivityIndicator size="small" color={colors.red} /> : <Trash2 size={16} color={colors.red} />}</Pressable></View> : editing === turn.queued_id ? <View style={styles.queueEditActions}>
             <Pressable accessibilityRole="button" accessibilityLabel="Cancel queued message edit" disabled={Boolean(busyTurn)} onPress={cancelEdit} style={({ pressed }) => [styles.queueEditButton, { backgroundColor: colors.raised, opacity: busyTurn || pressed ? 0.5 : 1 }]}><Text style={[styles.queueEditButtonText, { color: colors.text }]}>Cancel</Text></Pressable>
-            <Pressable testID={`queued-save-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel="Save queued message" accessibilityState={{ disabled: networkDisabled || busy || !editText.trim() || !validEditReferences, busy }} disabled={networkDisabled || busy || !editText.trim() || !validEditReferences} onPress={() => void commitEdit(turn)} style={({ pressed }) => [styles.queueEditButton, { backgroundColor: colors.blue, opacity: networkDisabled || busy || !editText.trim() || !validEditReferences || pressed ? 0.45 : 1 }]}>{busy ? <ActivityIndicator size="small" color="white" /> : <><Check size={14} color="white" /><Text style={[styles.queueEditButtonText, { color: 'white' }]}>Save</Text></>}</Pressable>
+            <Pressable testID={`queued-save-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel="Save queued message" accessibilityState={{ disabled: networkDisabled || busy || !editText.trim() || !validEditReferences, busy }} disabled={networkDisabled || busy || !editText.trim() || !validEditReferences} onPress={() => void commitEdit(turn)} style={({ pressed }) => [styles.queueEditButton, { backgroundColor: colors.blue, opacity: networkDisabled || busy || !editText.trim() || !validEditReferences || pressed ? 0.45 : 1 }]}>{busy ? <ActivityIndicator size="small" color={colors.textOnAccent} /> : <><Check size={14} color={colors.textOnAccent} /><Text style={[styles.queueEditButtonText, { color: colors.textOnAccent }]}>Save</Text></>}</Pressable>
           </View> : <View style={styles.queueActions}>
             <Pressable testID={`queued-send-now-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel="Run queued message now" accessibilityHint={blockedByEarlierDelivery ? 'Wait for the earlier delivery barrier to finish.' : undefined} accessibilityState={{ disabled: networkDisabled || queueBusy || blockedByEarlierDelivery, busy }} disabled={networkDisabled || queueBusy || blockedByEarlierDelivery} onPress={() => void act(turn.queued_id, () => runNow(sessionId, turn.queued_id, profileGeneration)).then(sent => { if (sent && remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) onSent() })} style={({ pressed }) => [styles.runNow, { opacity: networkDisabled || blockedByEarlierDelivery || pressed || queueBusy && !busy ? 0.45 : 1 }]}>
               {busy ? <ActivityIndicator size="small" color={colors.yellow} /> : <CornerDownRight size={14} color={colors.yellow} />}
@@ -1626,6 +1831,10 @@ function remoteComposerScopeIsCurrent(profileId: string | null, profileGeneratio
   return composerScopeIsCurrent(profileId, profileGeneration, sessionId) && client.isValidated && state.connected && !state.connecting
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : String(error)
+}
+
 function pickerError(error: unknown): string {
   return error instanceof Error && error.message ? error.message : 'The attachment picker could not be opened.'
 }
@@ -1637,7 +1846,8 @@ const styles = StyleSheet.create({
   routeRevoke: { minWidth: 64, minHeight: 44, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
   shell: { padding: COMPOSER_SHELL_PADDING, gap: 7 },
   auxiliaryScroll: { flexGrow: 0 }, auxiliaryContent: { gap: 7 },
-  commandSuggestion: { minHeight: 54, borderWidth: StyleSheet.hairlineWidth, borderRadius: 9, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', gap: 9 }, commandSuggestionText: { minWidth: 0, flex: 1, gap: 2 }, commandSuggestionTitle: { fontSize: 12.5, fontWeight: '800' }, commandSuggestionSyntax: { fontSize: 10.5, fontFamily: 'Menlo' },
+  editingBanner: { minHeight: 44, borderRadius: 9, borderWidth: StyleSheet.hairlineWidth, paddingLeft: 11, paddingRight: 4, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  editingBannerText: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 16 }, editingBannerCancel: { minHeight: 44, paddingHorizontal: 8, justifyContent: 'center' },
   referenceShelfWrap: { minWidth: 0, gap: 3 },
   referenceRail: { flexGrow: 0, minHeight: 44, maxHeight: 44 },
   referenceShelf: { flexDirection: 'row', gap: 6, paddingRight: 2 },
@@ -1653,12 +1863,12 @@ const styles = StyleSheet.create({
   toolbarCompact: { minHeight: COMPOSER_COMPACT_TOOLBAR_HEIGHT, paddingHorizontal: COMPOSER_COMPACT_TOOLBAR_PADDING, gap: COMPOSER_COMPACT_TOOLBAR_GAP },
   toolbarDense: { paddingHorizontal: COMPOSER_DENSE_TOOLBAR_PADDING, gap: COMPOSER_DENSE_TOOLBAR_GAP },
   quickMessagesMenu: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0 }, quickMessages: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
-  runtimeMenu: { minWidth: 0, flexShrink: 1 }, runtimeMenuCompact: { width: COMPOSER_COMPACT_BACKEND_SLOT_WIDTH, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0 }, runtimeMenuDense: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, alignItems: 'center', justifyContent: 'center' }, runtime: { minWidth: 0, flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6 }, runtimeCompact: { width: COMPOSER_COMPACT_BACKEND_SLOT_WIDTH, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, justifyContent: 'center', gap: 0 }, runtimeDense: { width: COMPOSER_DENSE_BACKEND_SLOT_WIDTH }, backend: { fontSize: 12, fontWeight: '700' }, toolbarSpacer: { flex: 1, minWidth: 0 },
-  stop: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, borderRadius: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 }, stopWide: { width: 76 }, compactStopFace: { width: COMPOSER_STOP_FACE_SIZE, height: COMPOSER_STOP_FACE_SIZE, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, alignItems: 'center', justifyContent: 'center' }, stopLabel: { color: 'white', fontSize: 11, fontWeight: '800' }, send: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, alignItems: 'center', justifyContent: 'center' }, sendFace: { width: COMPOSER_SEND_FACE_SIZE, height: COMPOSER_SEND_FACE_SIZE, borderRadius: COMPOSER_SEND_FACE_SIZE / 2, alignItems: 'center', justifyContent: 'center' }, steer: { minHeight: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3 }, steerCompact: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, paddingHorizontal: 0 },
-  uploadRail: { flexGrow: 0, minHeight: 64, maxHeight: 64 }, uploads: { flexDirection: 'row', gap: 7, paddingRight: 2 }, upload: { width: 216, height: 64, flexShrink: 0, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingLeft: 7, flexDirection: 'row', alignItems: 'center' }, uploadIdentity: { minWidth: 0, flex: 1, height: 62, flexDirection: 'row', alignItems: 'center', gap: 8 }, fileIconWell: { width: 48, height: 48, minWidth: 48, flexShrink: 0, borderRadius: 6, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }, uploadText: { minWidth: 0, flex: 1, gap: 2 }, uploadName: { fontSize: 12, fontWeight: '700' }, uploadMeta: { fontSize: 10.5 }, uploadActionSpacer: { width: 44, height: 44, flexShrink: 0 }, uploadBusy: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: '#00000066' }, uploadError: { position: 'absolute', right: 3, bottom: 3, width: 19, height: 19, borderRadius: 10, backgroundColor: '#ffffff', alignItems: 'center', justifyContent: 'center' },
+  runtimeMenu: { minWidth: 0, flexShrink: 1 }, runtimeMenuCompact: { width: COMPOSER_COMPACT_BACKEND_SLOT_WIDTH, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0 }, runtimeMenuDense: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, alignItems: 'center', justifyContent: 'center' }, runtime: { minWidth: 0, flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6 }, runtimeCompact: { width: COMPOSER_COMPACT_BACKEND_SLOT_WIDTH, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, flexDirection: 'column', justifyContent: 'center', gap: 0 }, runtimeDense: { width: COMPOSER_DENSE_BACKEND_SLOT_WIDTH }, backend: { fontSize: 12, fontWeight: '700' }, runtimeLabel: { maxWidth: '100%', fontSize: 9, fontWeight: '700', textAlign: 'center' }, toolbarSpacer: { flex: 1, minWidth: 0 },
+  stop: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, borderRadius: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 }, stopWide: { width: 76 }, compactStopFace: { width: COMPOSER_STOP_FACE_SIZE, height: COMPOSER_STOP_FACE_SIZE, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, alignItems: 'center', justifyContent: 'center' }, stopLabel: { fontSize: 11, fontWeight: '800' }, send: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, alignItems: 'center', justifyContent: 'center' }, sendFace: { width: COMPOSER_SEND_FACE_SIZE, height: COMPOSER_SEND_FACE_SIZE, borderRadius: COMPOSER_SEND_FACE_SIZE / 2, alignItems: 'center', justifyContent: 'center' }, steer: { minHeight: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3 }, steerCompact: { width: COMPOSER_TOOLBAR_TOUCH_SIZE, paddingHorizontal: 0 },
+  uploadRail: { flexGrow: 0, minHeight: 64, maxHeight: 64 }, uploads: { flexDirection: 'row', gap: 7, paddingRight: 2 }, upload: { width: 216, height: 64, flexShrink: 0, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingLeft: 7, flexDirection: 'row', alignItems: 'center' }, uploadIdentity: { minWidth: 0, flex: 1, height: 62, flexDirection: 'row', alignItems: 'center', gap: 8 }, fileIconWell: { width: 48, height: 48, minWidth: 48, flexShrink: 0, borderRadius: 6, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }, uploadText: { minWidth: 0, flex: 1, gap: 2 }, uploadName: { fontSize: 12, fontWeight: '700' }, uploadMeta: { fontSize: 10.5 }, uploadActionSpacer: { width: 44, height: 44, flexShrink: 0 }, uploadBusy: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: '#00000066' }, uploadError: { position: 'absolute', right: 3, bottom: 3, width: 19, height: 19, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   previewModal: { flex: 1 }, previewHeader: { minHeight: FULLSCREEN_HEADER_MIN_HEIGHT, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingVertical: FULLSCREEN_HEADER_GUTTER, flexDirection: 'row', alignItems: 'center', gap: 8 }, previewTitle: { minWidth: 0, flex: 1, fontSize: 14, fontWeight: '700' }, previewImage: { flex: 1, margin: 12 },
   targetPickerSafe: { flex: 1 },
-  targetPickerGrabber: { width: 38, height: 5, marginTop: 8, marginBottom: 3, borderRadius: 3, backgroundColor: '#8e8e9380', alignSelf: 'center' },
+  targetPickerGrabber: { width: 38, height: 5, marginTop: 8, marginBottom: 3, borderRadius: 3, alignSelf: 'center' },
   targetPickerPanel: { flex: 1, width: '100%', alignSelf: 'center' }, targetPickerPanelTablet: { maxWidth: 760 },
   targetPickerHeader: { minHeight: 70, paddingLeft: 16, paddingRight: 10, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 10 },
   targetPickerHeading: { minWidth: 0, flex: 1, gap: 3 }, targetPickerTitle: { fontSize: 18, fontWeight: '800' }, targetPickerSubtitle: { fontSize: 12.5 },
