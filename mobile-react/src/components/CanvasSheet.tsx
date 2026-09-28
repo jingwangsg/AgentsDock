@@ -1,6 +1,6 @@
 // Page sheet that shows one chat's Canvas reports: port of the Electron CanvasPane without element selection.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native'
+import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import WebView, { type WebViewMessageEvent } from 'react-native-webview'
 import { ChevronDown, ChevronUp, RefreshCw, Search, X } from 'lucide-react-native'
@@ -9,7 +9,7 @@ import { fonts } from '../lib/typography'
 import { client, useAppStore } from '../store/useAppStore'
 import { useAppColorScheme, usePalette } from '../theme'
 import type { CanvasRecord, CanvasSummary, Event } from '../types'
-import { Text } from './AppText'
+import { Text, TextInput } from './AppText'
 import { IconButton, Loading, SheetCloseButton } from './ui'
 
 const STATE_SAVE_DELAY_MS = 400
