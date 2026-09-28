@@ -2,21 +2,29 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import * as Clipboard from 'expo-clipboard'
-import { AlertTriangle, ChevronRight, Copy, Folder } from 'lucide-react-native'
+import { AlertTriangle, ChevronRight, Columns2, Copy, Folder, Rows3, WrapText } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
 import {
   codeReviewFallback,
   limitReviewSource,
   type DiffFile,
-  type DiffLine,
   parseReviewableDiff,
 } from '../lib/code-review'
 import { buildFileTree, type FileTreeDirectory, type FileTreeNode } from '../lib/file-tree'
+import { readReviewLayout, writeReviewLayout, type ReviewLayoutPreference } from '../lib/review-layout-preference'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { fonts } from '../lib/typography'
 import { Text } from './AppText'
+import { MonacoDiffView } from './MonacoDiffView'
 import { IconButton, Loading, SheetCloseButton } from './ui'
+
+// Until the user picks a layout: two panes need room once the file tree has
+// taken its share, so phones in portrait start inline and tablets and
+// landscape phones side by side. Measured on the workspace, not the window,
+// because iPad page sheets are narrower than the screen.
+const SIDE_BY_SIDE_MIN_WIDTH = 700
+const gapLabel = (unchanged: number | null) => unchanged == null ? '⋯' : `⋯ ${unchanged} unchanged line${unchanged === 1 ? '' : 's'}`
 
 interface CodeReviewProps {
   sessionId: string
@@ -72,6 +80,13 @@ function ScopedCodeReview({ sessionId, runId, onClose, connection, connectionKey
   const [selected, setSelected] = useState(0)
   // Directories start expanded; the set holds the exceptions for the current review.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  const [layout, setLayout] = useState<ReviewLayoutPreference>({ sideBySide: null, wordWrap: false })
+  const [workspaceWidth, setWorkspaceWidth] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    void readReviewLayout().then(stored => { if (!cancelled) setLayout(stored) })
+    return () => { cancelled = true }
+  }, [])
   useEffect(() => {
     let cancelled = false
     const localFallback = runId ? codeReviewFallback(profileGeneration, sessionId, runId) : null
@@ -115,6 +130,16 @@ function ScopedCodeReview({ sessionId, runId, onClose, connection, connectionKey
     ? `${error}${fallback?.source.trim() && !error.includes('Showing the locally captured patch.') ? ' Showing the locally captured patch.' : ''}`
     : null
   const unavailable = error || sizeWarning || 'No line-level code changes were captured for this turn.'
+  const sideBySide = layout.sideBySide ?? workspaceWidth >= SIDE_BY_SIDE_MIN_WIDTH
+  const chooseLayout = (value: boolean) => {
+    setLayout(current => ({ ...current, sideBySide: value }))
+    void writeReviewLayout({ sideBySide: value })
+  }
+  const toggleWordWrap = () => {
+    const wordWrap = !layout.wordWrap
+    setLayout(current => ({ ...current, wordWrap }))
+    void writeReviewLayout({ wordWrap })
+  }
   return <Modal key={connectionKey} visible={Boolean(runId)} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={onClose}>
     <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
       <View style={[styles.header, { borderColor: colors.border }]}>
@@ -123,16 +148,18 @@ function ScopedCodeReview({ sessionId, runId, onClose, connection, connectionKey
         <Text style={{ color: colors.red }}>-{deletions}</Text>
         {conflictCount ? <View accessibilityRole="alert" style={[styles.conflictSummary, { backgroundColor: `${colors.orange}18` }]}><AlertTriangle size={12} color={colors.orange} /><Text style={{ color: colors.orange, fontSize: 10, fontWeight: '800' }}>{conflictCount} conflict{conflictCount === 1 ? '' : 's'}</Text></View> : null}
         <View style={{ flex: 1 }} />
+        <IconButton icon={sideBySide ? Columns2 : Rows3} onPress={() => chooseLayout(!sideBySide)} label={sideBySide ? 'Side by side layout. Switch to inline' : 'Inline layout. Switch to side by side'} testID="review-layout-toggle" />
+        <IconButton icon={WrapText} selected={layout.wordWrap} onPress={toggleWordWrap} label="Wrap long lines" testID="review-word-wrap" />
         <IconButton icon={Copy} onPress={() => void Clipboard.setStringAsync(diff)} label="Copy diff" />
         <SheetCloseButton onPress={onClose} label="Close review" testID="review-close" />
       </View>
-      {loading && !files.length ? <Loading label="Loading complete diff" /> : !files.length ? <View style={styles.unavailable}><AlertTriangle size={20} color={colors.orange} /><Text selectable style={[styles.unavailableText, { color: colors.muted }]}>{unavailable}</Text></View> : <View style={styles.workspace}>
+      {loading && !files.length ? <Loading label="Loading complete diff" /> : !files.length ? <View style={styles.unavailable}><AlertTriangle size={20} color={colors.orange} /><Text selectable style={[styles.unavailableText, { color: colors.muted }]}>{unavailable}</Text></View> : <View style={styles.workspace} onLayout={event => setWorkspaceWidth(event.nativeEvent.layout.width)}>
         <ScrollView style={[styles.files, { borderColor: colors.border }]} contentContainerStyle={{ padding: 6 }}>
           <ReviewTree nodes={tree} depth={0} files={files} selected={selected} collapsed={collapsed} onToggle={path => setCollapsed(current => { const next = new Set(current); if (!next.delete(path)) next.add(path); return next })} onSelect={setSelected} />
         </ScrollView>
         <View style={styles.diffColumn}>
           {errorWarning || sizeWarning ? <View accessibilityRole="alert" style={[styles.inlineWarning, { borderColor: colors.orange, backgroundColor: `${colors.orange}12` }]}><AlertTriangle size={13} color={colors.orange} /><Text selectable style={{ flex: 1, color: colors.orange, fontSize: 10.5 }}>{[errorWarning, sizeWarning].filter(Boolean).join(' ')}</Text></View> : null}
-          <ScrollView style={styles.diff} horizontal contentContainerStyle={{ minWidth: '100%' }}><ScrollView contentContainerStyle={{ paddingVertical: 8 }}>{file?.lines.map((line, index) => <ReviewLine key={index} line={line} />)}</ScrollView></ScrollView>
+          {file ? <MonacoDiffView file={file} path={file.path} sideBySide={sideBySide} wordWrap={layout.wordWrap} gapLabel={gapLabel} /> : null}
         </View>
       </View>}
     </SafeAreaView>
@@ -192,38 +219,6 @@ function directoryStats(node: FileTreeDirectory, files: DiffFile[]): { count: nu
   return stats
 }
 
-function ReviewLine({ line }: { line: DiffLine }) {
-  const colors = usePalette()
-  const prefix = line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : line.kind === 'context' ? ' ' : ''
-  const conflictColor = line.conflictSide === 'ours' ? colors.blue : line.conflictSide === 'base' ? colors.yellow : line.conflictSide === 'theirs' ? colors.orange : null
-  const backgroundColor = conflictColor
-    ? `${conflictColor}${line.conflictMarker ? '2A' : '12'}`
-    : line.kind === 'add' ? colors.greenSurface : line.kind === 'remove' ? colors.dangerSurface : undefined
-  const textColor = conflictColor ?? (line.kind === 'add' ? colors.green : line.kind === 'remove' ? colors.red : colors.text)
-  const marker = line.conflictMarker ? conflictMarkerLabel(line.conflictMarker) : null
-  return <View accessibilityRole={line.conflictMarker ? 'summary' : undefined} accessibilityLabel={line.conflictMarker ? conflictMarkerAccessibleName(line) : undefined} style={[styles.line, backgroundColor ? { backgroundColor } : undefined]}>
-    <Text selectable style={[styles.lineNumber, { color: colors.muted }]}>{line.oldLine ?? ''}</Text>
-    <Text selectable style={[styles.lineNumber, { color: colors.muted }]}>{line.newLine ?? ''}</Text>
-    <Text selectable style={[styles.code, { color: textColor }]}>{prefix}{line.text || ' '}</Text>
-    {marker ? <Text style={[styles.markerLabel, { color: conflictColor ?? colors.orange }]}>{marker}</Text> : null}
-  </View>
-}
-
-function conflictMarkerLabel(marker: NonNullable<DiffLine['conflictMarker']>): string {
-  if (marker === 'start') return 'OURS'
-  if (marker === 'base') return 'BASE'
-  if (marker === 'separator') return 'THEIRS'
-  return 'END'
-}
-
-function conflictMarkerAccessibleName(line: DiffLine): string {
-  const detail = line.conflictLabel ? `, ${line.conflictLabel}` : ''
-  if (line.conflictMarker === 'start') return `Merge conflict: ours section begins${detail}`
-  if (line.conflictMarker === 'base') return `Merge conflict: base section begins${detail}`
-  if (line.conflictMarker === 'separator') return 'Merge conflict: theirs section begins'
-  return `Merge conflict ends${detail}`
-}
-
 function connectionIsCurrent(connection: AgentServerClient, profileId: string | null, generation: number): boolean {
   const state = useAppStore.getState()
   return !connection.isDisposed
@@ -243,6 +238,5 @@ const styles = StyleSheet.create({
   workspace: { flex: 1, flexDirection: 'row' }, files: { width: 260, maxWidth: '34%', borderRightWidth: StyleSheet.hairlineWidth }, file: { minHeight: 54, borderRadius: 5, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 5 }, fileName: { flex: 1, minWidth: 0, gap: 3 },
   directory: { minHeight: 44, borderRadius: 5, paddingHorizontal: 9, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 5 },
   conflictBadge: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 3 },
-  diffColumn: { flex: 1, minWidth: 0 }, diff: { flex: 1 }, inlineWarning: { borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  line: { minHeight: 20, flexDirection: 'row', alignItems: 'center' }, lineNumber: { width: 40, paddingRight: 8, textAlign: 'right', fontFamily: fonts.mono, fontSize: 10.5 }, code: { fontFamily: fonts.mono, fontSize: 11.5, paddingRight: 12 }, markerLabel: { marginLeft: 8, marginRight: 8, fontSize: 9, fontWeight: '900' },
+  diffColumn: { flex: 1, minWidth: 0 }, inlineWarning: { borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 6 },
 })

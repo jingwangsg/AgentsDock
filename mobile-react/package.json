@@ -64,14 +64,16 @@
     "codemirror": "^6.0.2",
     "esbuild": "^0.28.1",
     "mermaid": "^12.0.0",
+    "monaco-editor": "0.57.0",
     "react-test-renderer": "19.2.3",
     "typescript": "~6.0.3"
   },
   "scripts": {
     "embed:editor": "node scripts/embed-code-editor.mjs",
     "embed:mermaid": "node scripts/embed-mermaid.mjs",
+    "embed:monaco-diff": "node scripts/embed-monaco-diff.mjs",
     "embed:xterm": "node scripts/embed-xterm.mjs",
-    "postinstall": "node scripts/embed-xterm.mjs && node scripts/embed-code-editor.mjs && node scripts/embed-mermaid.mjs",
+    "postinstall": "node scripts/embed-xterm.mjs && node scripts/embed-code-editor.mjs && node scripts/embed-mermaid.mjs && node scripts/embed-monaco-diff.mjs",
     "verify:ios-native": "node scripts/verify-ios-native-dependencies.mjs",
     "verify:ios-archive-abi": "node scripts/verify-ios-framework-abi.mjs",
     "verify:android-native": "node scripts/verify-android-native.mjs",
