@@ -3,7 +3,7 @@
 import asyncio
 import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 import httpx
@@ -40,6 +40,7 @@ class PassiveClaudeAuthTests(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch.object(server, "parse_claude_help_catalog", return_value={
             "models": [{"value": "sonnet", "label": "Sonnet"}], "efforts": [],
         }))
+        self.enterContext(patch.object(server, "refresh_claude_native_models", AsyncMock()))
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app),
                 base_url="http://127.0.0.1", headers={"X-AgentsDock-Token": "passive-auth-test-token"}) as client:
             first = await client.get("/api/runtime/catalog?refresh=true")

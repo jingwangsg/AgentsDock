@@ -653,6 +653,71 @@ def create_claude_agent_options(**kwargs: Any) -> Any:
     return ClaudeAgentOptions(**kwargs)
 
 
+async def probe_claude_native_models(
+    *,
+    cli_path: str,
+    executable: str,
+    env: dict[str, str],
+    cwd: str,
+    timeout_seconds: float,
+) -> str:
+    """Run only the SDK initialize handshake and keep its model picker.
+
+    Chats record the picker passively from their own connection, so a server
+    nobody has chatted with Claude on keeps the static list. The CLI is started
+    exactly as a chat starts it (same SDK client, argv and env), receives no
+    prompt, and is closed once the initialize response is in. Returns "" when
+    the picker was stored, else a bounded reason for the catalog text.
+    """
+    from claude_model_catalog import (
+        ClaudeModelCatalogUnavailable,
+        native_catalog_key,
+        remember_native_models,
+    )
+
+    try:
+        key = native_catalog_key(executable, env)
+    except (OSError, ValueError) as exc:
+        return f"catalog fingerprint unavailable ({type(exc).__name__})"
+    try:
+        options = create_claude_agent_options(
+            cli_path=cli_path,
+            cwd=cwd,
+            env=env,
+            # Same sources as a chat so the picker matches what chats capture;
+            # ``cwd`` holds no project files, so nothing can pin it.
+            setting_sources=["user", "project", "local"],
+            stderr=lambda _line: None,  # may carry account text; never surfaced
+        )
+    except ClaudeSDKUnavailable:
+        return "claude-agent-sdk is not installed"
+    from claude_agent_sdk import ClaudeSDKClient
+
+    client = ClaudeSDKClient(options=options)
+    try:
+        try:
+            await asyncio.wait_for(client.connect(), timeout_seconds)
+        except asyncio.TimeoutError:
+            return f"initialize timed out after {timeout_seconds:g}s"
+        except Exception as exc:
+            # Type only: the message may quote CLI output.
+            return f"initialize failed ({type(exc).__name__})"
+        try:
+            info = await client.get_server_info()
+            return remember_native_models(info, key=key, executable=executable, env=env, cwd=cwd)
+        except ClaudeModelCatalogUnavailable as exc:
+            return str(exc)
+    finally:
+        # disconnect() closes only through the Query; a timeout inside
+        # connect() can leave a spawned CLI that no Query owns yet.
+        transport, query = getattr(client, "_transport", None), getattr(client, "_query", None)
+        with suppress(Exception):
+            await asyncio.wait_for(client.disconnect(), 20)
+        if query is None and transport is not None:
+            with suppress(Exception):
+                await asyncio.wait_for(transport.close(), 20)
+
+
 def create_claude_sdk_mcp_server(
     *,
     name: str,

@@ -116,6 +116,7 @@ from claude_sdk_client import (
     claude_nondurable_scheduler_reason,
     create_claude_agent_options,
     create_claude_sdk_mcp_server,
+    probe_claude_native_models,
 )
 from provider_commands import (
     MAX_OPENCODE_SKILL_FILE_BYTES,
@@ -989,6 +990,10 @@ CODEX_RESUME_ACTIVITY_TIMEOUT_SECONDS = int(agentsdock_setting("CODEX_RESUME_ACT
 RUNTIME_CATALOG_TIMEOUT_SECONDS = float(agentsdock_setting("RUNTIME_CATALOG_TIMEOUT_SECONDS", "6"))
 # Leave room for HTTP/JSON overhead before desktop and mobile's 30s deadline.
 RUNTIME_CATALOG_BUDGET_SECONDS = 25.0
+# A catalog refresh may run one Claude SDK initialize handshake to capture the
+# CLI's model picker (refresh_claude_native_models); catalog reads never do.
+CLAUDE_NATIVE_PROBE_TIMEOUT_SECONDS = 20.0
+CLAUDE_NATIVE_PROBE_RETRY_SECONDS = 300.0
 RUNTIME_CATALOG_DEADLINE: ContextVar[float | None] = ContextVar(
     "runtime_catalog_deadline", default=None,
 )
@@ -55716,6 +55721,49 @@ async def refresh_codex_native_models(*, force: bool = False) -> None:
     CODEX_NATIVE_MODELS_FETCHED = fetched
 
 
+CLAUDE_NATIVE_PROBE_LOCK = asyncio.Lock()
+CLAUDE_NATIVE_PROBE_FINISHED_AT: float | None = None  # monotonic
+CLAUDE_NATIVE_PROBE_FAILURE = ""  # last probe's reason; shown while the static list serves
+
+
+async def refresh_claude_native_models(*, explicit: bool = False) -> None:
+    """Capture the Claude CLI's own model picker without a chat.
+
+    The SDK initialize response is the only place the CLI publishes its
+    picker; chats record it passively, so a server nobody has chatted with
+    Claude on would keep the static list. A plain refresh probes at most every
+    CLAUDE_NATIVE_PROBE_RETRY_SECONDS; an explicit recheck always does. Two
+    probes never overlap: a caller that waited for one reuses its result.
+    """
+    global CLAUDE_NATIVE_PROBE_FINISHED_AT, CLAUDE_NATIVE_PROBE_FAILURE
+    requested_at = time.monotonic()
+    async with CLAUDE_NATIVE_PROBE_LOCK:
+        finished_at = CLAUDE_NATIVE_PROBE_FINISHED_AT
+        if finished_at is not None and (
+            finished_at >= requested_at
+            or (not explicit and requested_at - finished_at < CLAUDE_NATIVE_PROBE_RETRY_SECONDS)
+        ):
+            return
+        env = runner_env()
+        try:
+            cli_path = claude_sdk_cli_path(env)
+        except ClaudeSDKUnavailable as exc:
+            failure = str(exc)
+        else:
+            # No project files here: the CLI's project/local settings cannot
+            # pin the server-wide picker to one workspace.
+            cwd = STATE_DIR / "claude-native-probe"
+            cwd.mkdir(parents=True, exist_ok=True)
+            failure = await probe_claude_native_models(
+                cli_path=cli_path, executable=CLAUDE_BIN, env=env, cwd=str(cwd),
+                timeout_seconds=CLAUDE_NATIVE_PROBE_TIMEOUT_SECONDS,
+            )
+        CLAUDE_NATIVE_PROBE_FAILURE = failure
+        CLAUDE_NATIVE_PROBE_FINISHED_AT = time.monotonic()
+        if failure:
+            logger.info("claude native model probe did not record the picker: %s", failure)
+
+
 async def refresh_codex_app_server_login(*, request_handoff: bool = False) -> None:
     """Change normal-Codex admission; never kill a credential-owning process.
 
@@ -59837,6 +59885,9 @@ def parse_claude_help_catalog() -> dict[str, Any]:
         if provider_status == "failed":
             model_sources.append("Anthropic Models API failed")
         model_sources.append("current fallback")
+    model_source = " + ".join(model_sources)
+    if native_status != "success" and CLAUDE_NATIVE_PROBE_FAILURE:
+        model_source += f"; probe failed: {CLAUDE_NATIVE_PROBE_FAILURE}"
     effort_source = "claude --help" if help_available else "claude --help failed"
     default_model_label = next(
         (option["label"] for option in model_options if option["value"] == default_model),
@@ -59845,7 +59896,7 @@ def parse_claude_help_catalog() -> dict[str, Any]:
     return {
         "models": unique_runtime_options(model_options, default_model_label),
         "efforts": unique_runtime_options(effort_options, title_effort_label(default_effort) if default_effort else ""),
-        "model_source": " + ".join(model_sources),
+        "model_source": model_source,
         "effort_source": effort_source,
         "default_model": default_model,
         "default_effort": default_effort or None,
@@ -78671,7 +78722,12 @@ async def lifespan(app: FastAPI):
     )
     host_monitor_task = asyncio.create_task(host_monitor_loop())
     history_search_task = asyncio.create_task(history_search_index_loop())
-    runtime_probe_task = asyncio.create_task(asyncio.to_thread(refresh_runtime_diagnostics, force=True))
+    async def startup_runtime_probe() -> None:
+        await asyncio.to_thread(refresh_runtime_diagnostics, force=True)
+        # A server nobody has chatted with Claude on has no native picker yet.
+        if (await asyncio.to_thread(discover_claude_native_models))[1] != "success":
+            await refresh_claude_native_models()
+    runtime_probe_task = asyncio.create_task(startup_runtime_probe())
     if CONFIG_ENV_APPLIED:
         # Names only - these can be provider credentials.
         logger.info(
@@ -86753,6 +86809,8 @@ async def runtime_catalog(refresh: bool = False, handoff: bool = False) -> dict[
         # refresh re-reads the login revision and hands off on a real change.
         await refresh_codex_app_server_login(request_handoff=handoff)
     await refresh_codex_native_models(force=refresh)
+    if refresh:
+        await refresh_claude_native_models(explicit=handoff)
     return await asyncio.to_thread(discover_runtime_catalog, force_runtime_probe=refresh)
 
 

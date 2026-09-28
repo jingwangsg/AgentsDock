@@ -2,14 +2,19 @@
 
 import asyncio
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 from concurrent.futures import Future
+from pathlib import Path
 from unittest.mock import patch
 
 import agent_server
+import claude_model_catalog
 
 
 def completed(args, stdout="", returncode=0):
@@ -365,6 +370,153 @@ class RuntimeProbeTimeoutTests(unittest.TestCase):
                 [sys.executable, "-c", "import time; time.sleep(10)"],
                 timeout_seconds=0.1,
             )
+
+
+# Stand-in for the Claude CLI in SDK stream-json mode: answers the SDK's
+# version check, records how it was spawned, and in "models" mode replies to
+# the initialize control request the way the real CLI does.
+FAKE_CLAUDE = """#!{python}
+import json, os, sys, time
+if sys.argv[1:] in (["-v"], ["--version"]):
+    print("2.1.283 (Claude Code)")
+    sys.exit(0)
+with open({log!r}, "a") as log:
+    log.write(json.dumps({{"argv": sys.argv[1:], "cwd": os.getcwd()}}) + "\\n")
+if {mode!r} == "exit":
+    sys.exit(1)
+for line in sys.stdin:
+    frame = json.loads(line)
+    if {mode!r} == "models" and frame.get("type") == "control_request" and frame["request"].get("subtype") == "initialize":
+        time.sleep({delay})
+        sys.stdout.write(json.dumps({{"type": "control_response", "response": {{
+            "subtype": "success", "request_id": frame["request_id"], "response": {{"commands": [], "models": [
+                {{"value": "default", "displayName": "Default (recommended)", "resolvedModel": "claude-opus-5-5",
+                 "description": "Opus 5.5 · Best for everyday tasks"}},
+                {{"value": "sonnet", "displayName": "Sonnet", "resolvedModel": "claude-sonnet-5", "description": "Sonnet 5 · Fast"}},
+            ]}}}}}}) + "\\n")
+        sys.stdout.flush()
+"""
+
+
+class ClaudeNativeProbeTests(unittest.IsolatedAsyncioTestCase):
+    """The initialize-only probe uses a chat's SDK transport, a neutral cwd, and a hard deadline."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.log = self.tmp / "spawns.jsonl"
+        self.store = self.tmp / "claude-native-models.json"
+        previous_store = claude_model_catalog._STORE_PATH
+        claude_model_catalog.configure_native_models_store(self.store)
+        self.addCleanup(claude_model_catalog.configure_native_models_store, previous_store)
+        claude_model_catalog.clear_native_models()
+        self.addCleanup(claude_model_catalog.clear_native_models)
+        self.neutral_cwd = self.tmp / "state" / "claude-native-probe"
+        self.enterContext(patch.object(agent_server, "STATE_DIR", self.tmp / "state"))
+        self.enterContext(patch.object(agent_server, "runner_env", return_value={
+            "PATH": os.environ.get("PATH", ""), "HOME": str(self.tmp / "home"),
+        }))
+        self.enterContext(patch.object(agent_server, "CLAUDE_NATIVE_PROBE_LOCK", asyncio.Lock()))
+        self.enterContext(patch.object(agent_server, "CLAUDE_NATIVE_PROBE_FINISHED_AT", None))
+        self.enterContext(patch.object(agent_server, "CLAUDE_NATIVE_PROBE_FAILURE", ""))
+        self.enterContext(patch.object(agent_server, "CLAUDE_NATIVE_PROBE_TIMEOUT_SECONDS", 5.0))
+        token = agent_server.RUNTIME_CATALOG_DEADLINE.set(None)
+        self.addCleanup(agent_server.RUNTIME_CATALOG_DEADLINE.reset, token)
+
+    def fake_claude(self, mode, delay=0.0):
+        path = self.tmp / f"claude-{mode}"
+        path.write_text(FAKE_CLAUDE.format(python=sys.executable, log=str(self.log), mode=mode, delay=delay))
+        path.chmod(0o755)
+        self.enterContext(patch.object(agent_server, "CLAUDE_BIN", str(path)))
+
+    def spawns(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def catalog(self):
+        def run(cmd, **kwargs):
+            return completed(cmd, "--effort <level> (low, medium, high)")
+        with patch.object(agent_server.subprocess, "run", side_effect=run), patch.object(
+            agent_server, "discover_claude_provider_models", return_value=([], "unavailable"),
+        ):
+            return agent_server.parse_claude_help_catalog()
+
+    async def test_refresh_captures_the_picker_through_the_sdk_handshake(self):
+        self.fake_claude("models")
+        await agent_server.refresh_claude_native_models(explicit=True)
+        self.assertEqual(agent_server.CLAUDE_NATIVE_PROBE_FAILURE, "")
+        stored = json.loads(self.store.read_text())
+        self.assertEqual([[row["value"] for row in rows] for rows in stored.values()], [["default", "sonnet"]])
+        [spawn] = self.spawns()
+        self.assertEqual(Path(spawn["cwd"]).resolve(), self.neutral_cwd.resolve())
+        self.assertEqual(spawn["argv"][:3], ["--output-format", "stream-json", "--verbose"])
+        self.assertIn("--setting-sources=user,project,local", spawn["argv"])
+        self.assertEqual(spawn["argv"][-2:], ["--input-format", "stream-json"])
+        result = self.catalog()
+        self.assertEqual(result["model_source"], "Cached Claude SDK initialize")
+        self.assertEqual(
+            [(row["label"], row.get("description")) for row in result["models"] if row["value"]],
+            [("Default — Opus 5.5", "Best for everyday tasks"), ("Sonnet 5", "Fast")],
+        )
+
+    async def test_silent_cli_keeps_the_static_list_and_names_the_failure(self):
+        self.fake_claude("silent")
+        self.enterContext(patch.object(agent_server, "CLAUDE_NATIVE_PROBE_TIMEOUT_SECONDS", 1.0))
+        await agent_server.refresh_claude_native_models(explicit=True)
+        self.assertEqual(agent_server.CLAUDE_NATIVE_PROBE_FAILURE, "initialize timed out after 1s")
+        self.assertFalse(self.store.exists())
+        result = self.catalog()
+        self.assertTrue(result["models"])
+        self.assertEqual(result["model_source"],
+                         "claude --help + current fallback; probe failed: initialize timed out after 1s")
+
+    async def test_exiting_cli_reports_the_failure_type_only(self):
+        self.fake_claude("exit")
+        await agent_server.refresh_claude_native_models(explicit=True)
+        self.assertRegex(agent_server.CLAUDE_NATIVE_PROBE_FAILURE, r"^initialize failed \([A-Za-z]+\)$")
+        self.assertFalse(self.store.exists())
+
+    async def test_concurrent_refreshes_share_one_probe(self):
+        self.fake_claude("models", delay=0.5)
+        await asyncio.gather(*(agent_server.refresh_claude_native_models(explicit=True) for _ in range(3)))
+        self.assertEqual(len(self.spawns()), 1)
+        self.assertTrue(self.store.exists())
+
+    async def test_plain_refresh_waits_for_the_retry_window_but_an_explicit_recheck_does_not(self):
+        self.fake_claude("exit")
+        await agent_server.refresh_claude_native_models()
+        await agent_server.refresh_claude_native_models()
+        self.assertEqual(len(self.spawns()), 1)
+        await agent_server.refresh_claude_native_models(explicit=True)
+        self.assertEqual(len(self.spawns()), 2)
+        with patch.object(agent_server, "CLAUDE_NATIVE_PROBE_RETRY_SECONDS", 0.0):
+            await agent_server.refresh_claude_native_models()
+        self.assertEqual(len(self.spawns()), 3)
+
+    async def test_probe_ignores_the_server_working_directory_settings(self):
+        self.fake_claude("models")
+        project = self.tmp / "project"
+        (project / ".claude").mkdir(parents=True)
+        (project / ".claude" / "settings.json").write_text('{"model": "opus"}')
+        previous_cwd = os.getcwd()
+        os.chdir(project)
+        self.addCleanup(os.chdir, previous_cwd)
+        consulted = []
+        real_gate = claude_model_catalog._has_project_settings
+        def recording_gate(cwd, env):
+            consulted.append(cwd)
+            return real_gate(cwd, env)
+        with patch.object(claude_model_catalog, "_has_project_settings", recording_gate):
+            await agent_server.refresh_claude_native_models(explicit=True)
+        self.assertEqual(agent_server.CLAUDE_NATIVE_PROBE_FAILURE, "")
+        self.assertTrue(self.store.exists())
+        self.assertEqual(consulted, [str(self.neutral_cwd)])
+        self.assertEqual(Path(self.spawns()[0]["cwd"]).resolve(), self.neutral_cwd.resolve())
+
+    async def test_missing_cli_fails_fast_without_spawning(self):
+        self.enterContext(patch.object(agent_server, "CLAUDE_BIN", str(self.tmp / "absent" / "claude")))
+        await agent_server.refresh_claude_native_models(explicit=True)
+        self.assertIn("was not found", agent_server.CLAUDE_NATIVE_PROBE_FAILURE)
+        self.assertEqual(self.spawns(), [])
 
 
 if __name__ == "__main__":

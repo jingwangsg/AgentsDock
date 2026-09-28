@@ -34,26 +34,30 @@ class FakeManager:
 
 class RuntimeCatalogRefreshTests(unittest.IsolatedAsyncioTestCase):
     async def run_catalog(self, **query):
-        binary, login = AsyncMock(), AsyncMock()
+        binary, login, claude_native = AsyncMock(), AsyncMock(), AsyncMock()
         with patch.object(agent_server, "refresh_codex_app_server_binary", binary), \
                 patch.object(agent_server, "refresh_codex_app_server_login", login), \
+                patch.object(agent_server, "refresh_claude_native_models", claude_native), \
                 patch.object(agent_server, "discover_runtime_catalog", Mock(return_value={"backends": {}})):
             await agent_server.runtime_catalog(**query)
-        return binary, login
+        return binary, login, claude_native
 
     async def test_plain_refresh_reprobes_without_retiring_the_codex_process(self):
-        binary, login = await self.run_catalog(refresh=True)
+        binary, login, claude_native = await self.run_catalog(refresh=True)
         binary.assert_awaited_once_with(force=True)
         login.assert_awaited_once_with(request_handoff=False)
+        claude_native.assert_awaited_once_with(explicit=False)
 
     async def test_explicit_recheck_requests_the_handoff(self):
-        _binary, login = await self.run_catalog(refresh=True, handoff=True)
+        _binary, login, claude_native = await self.run_catalog(refresh=True, handoff=True)
         login.assert_awaited_once_with(request_handoff=True)
+        claude_native.assert_awaited_once_with(explicit=True)
 
     async def test_cached_catalog_touches_neither(self):
-        binary, login = await self.run_catalog()
+        binary, login, claude_native = await self.run_catalog()
         binary.assert_not_awaited()
         login.assert_not_awaited()
+        claude_native.assert_not_awaited()
 
 
 class ResumeAwaitingWriterTests(unittest.IsolatedAsyncioTestCase):
