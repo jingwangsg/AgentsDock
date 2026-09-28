@@ -14,6 +14,7 @@ import { runtimeSelectionError, selectableChatBackends } from '@shared/runtime-c
 import { isAsyncCrossChatMessage, isNativeGoalSteerEvent, isNativeSteerTransitionStop, timelineSemanticUnits } from '@shared/semantic-timeline'
 import { turnSendErrorMessage } from '@shared/server-errors'
 import { completedPrefixForkAvailable, RUNNING_FORK_UNAVAILABLE } from '@shared/session-fork'
+import { sessionRewindAvailable } from '@shared/session-rewind'
 import { agentFileBelongsToSession, isolateSessionEvent, isolateSessionSnapshot } from '@shared/session-files'
 import { isImportedClaudeControlCompanion, isImportedCodexRuntimeContext, isImportedHistoryRecord, isImportedProviderControlMetadata, isImportedProviderInterruption, mergeProviderInterruptionEvent } from '@shared/provider-origin'
 import { isReasoningSummaryStream } from '@shared/reasoning-stream'
@@ -65,6 +66,8 @@ const PROFILE_REFRESH_TIMEOUT_MS = 45_000
 const PROFILE_RECOVERY_TIMEOUT_MS = 3_000
 const MAX_BUFFERED_MAIL_HINT_SCOPES = 8
 const bufferedMailHints = new Map<string, MailHintProjection>()
+// Turn terminals already seen on the event stream: a reconnect can redeliver
+// them, and one finished turn must produce at most one native notification.
 
 interface ModalState {
   settings: boolean
@@ -202,6 +205,8 @@ interface AppState {
   uploadsBySession: Record<string, AgentFile[]>
   uploadPathsBySession: Record<string, NativeFileRef[]>
   drafts: Record<string, string>
+  /** Per-chat "edit this turn" mode; `previousDraft` is restored on cancel. */
+  editingTurn: Record<string, { runId: string; originalPrompt: string; previousDraft: string } | null>
   chatReferencesBySession: Record<string, ChatReference[]>
   teamReferencesBySession: Record<string, TeamReference[]>
   agentRoutesBySession: Record<string, AgentCrossChatRoutesSnapshot>
@@ -257,14 +262,22 @@ interface AppState {
   removeUpload(fileId: string): void
   removeUploadForSession(sessionId: string, fileId: string): void
   refreshSessions(): Promise<void>
-  requestNewChat(): Promise<void>
+  requestNewChat(preset?: { folder: string; backend: Backend }): Promise<void>
   updateSession(
     sessionId: string,
     patch: Partial<Session>,
     options?: { allowDuringWorkspaceFlush?: boolean }
   ): Promise<void>
   deleteFolder(folder: string): Promise<void>
+  /** Moves every session in `source` to `target`; resolves false (with `error` set for a duplicate name) when refused. */
+  renameFolder(source: string, target: string): Promise<boolean>
   forkSession(sessionId: string): Promise<void>
+  beginEditingTurn(sessionId: string, runId: string, prompt: string): void
+  cancelEditingTurn(sessionId: string): void
+  /** Truncates history to before `runId`'s turn; resolves false (with `error` set) when refused. */
+  rewindSession(sessionId: string, runId: string): Promise<boolean>
+  /** Restores the pre-turn workspace checkpoint, then rewinds the chat to that turn. */
+  restoreCheckpoint(sessionId: string, runId: string): Promise<boolean>
   deleteSession(sessionId: string): Promise<boolean>
   markRead(sessionId: string, force?: boolean): Promise<void>
   markUnread(sessionId: string): Promise<void>
@@ -369,13 +382,6 @@ function directChatPlaceholderFingerprint(session: Session): string {
     model: session.model?.trim() || null,
     effort: session.effort?.trim() || null,
     systemPrompt: session.system_prompt ?? null,
-    codexApprovalPolicy: session.codex_approval_policy ?? null,
-    codexSandboxMode: session.codex_sandbox_mode ?? null,
-    codexPermissionProfile: session.codex_permission_profile ?? null,
-    codexApprovalsReviewer: session.codex_approvals_reviewer ?? null,
-    claudePermissionMode: session.claude_permission_mode ?? null,
-    cursorPermissionMode: session.cursor_permission_mode ?? null,
-    ...(session.backend === 'opencode' ? { opencodePermissionMode: session.opencode_permission_mode ?? null } : {}),
     providerJobsAccess: session.provider_jobs_access ?? null
   })
 }
@@ -496,6 +502,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   uploadsBySession: {},
   uploadPathsBySession: {},
   drafts: {},
+  editingTurn: {},
   chatReferencesBySession: {},
   teamReferencesBySession: {},
   agentRoutesBySession: {},
@@ -788,8 +795,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           const previousEmergency = activeEmergencyAlert(previous.get(session.id))
           const emergency = activeEmergencyAlert(session)
           const newEmergency = Boolean(emergency && emergency.id !== previousEmergency?.id)
-          const before = previous.get(session.id)?.latest_agent_event_seq ?? 0
-          const after = session.latest_agent_event_seq ?? 0
           const visible = visibleChatSessionIds(get().chatPanes).includes(session.id)
           if (newEmergency && (!document.hasFocus() || !visible)) {
             const current = get()
@@ -802,20 +807,27 @@ export const useAppStore = create<AppState>((set, get) => ({
               sessionId: session.id,
               emergencyAlertId: emergency.id
             })
-          } else if (
-            after > before
-            && session.latest_agent_event_type !== 'emergency_alert_raised'
-            && !document.hasFocus()
-          ) {
-            const current = get()
-            const profile = current.profiles.find(candidate => candidate.id === current.activeProfileId)
-            if (current.activeProfileId) void window.agentsDock.native.notify({
-              title: session.title,
-              body: 'New agent message',
-              profileId: current.activeProfileId,
-              serverIdentity: profile?.serverIdentity ?? null,
-              sessionId: session.id
-            })
+          } else {
+            // Like Zed's "agent waiting" notice: one native notification when the
+            // agent needs the user, unless the chat is on screen in the focused
+            // window. Turn ends notify from the streamed terminal event (the
+            // `server:event` handler): this list arrives from a 30 s poll and
+            // Codex appends codex_* events after turn_finished, so its
+            // latest_event_type rarely shows the turn end.
+            const previousSession = previous.get(session.id)
+            const needsUser = Boolean(session.claude_needs_user_action || session.codex_needs_user_action)
+              && !(previousSession?.claude_needs_user_action || previousSession?.codex_needs_user_action)
+            if (needsUser && (!document.hasFocus() || !visible)) {
+              const current = get()
+              const profile = current.profiles.find(candidate => candidate.id === current.activeProfileId)
+              if (current.activeProfileId) void window.agentsDock.native.notify({
+                title: session.title,
+                body: t('notifications.agentWaiting'),
+                profileId: current.activeProfileId,
+                serverIdentity: profile?.serverIdentity ?? null,
+                sessionId: session.id
+              })
+            }
           }
         }
         if (!get().selectedSessionId) {
@@ -913,7 +925,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (discontinuity) scheduleTimelineRepair(sessionId, captureProfileScope(get()))
       }),
       window.agentsDock.events.on('server:event', payload => {
-        if (profileEventMatches(payload, get())) enqueueLiveEvent(payload.event,
+        if (!profileEventMatches(payload, get())) return
+        const { event } = payload
+        // The server deletes the canvases a rewind covers; the open canvas pane re-lists on this signal.
+        if (event.type === 'history_rewound') {
+          window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: event.session_id } }))
+        }
+        enqueueLiveEvent(event,
           typeof payload.activeSession === 'boolean'
             ? { active: payload.activeSession, runId: payload.activeRunId }
             : undefined)
@@ -2044,7 +2062,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) { if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) }) }
   },
 
-  async requestNewChat() {
+  async requestNewChat(preset) {
     const initial = get()
     if (initial.switchingProfileId || initial.creatingChat) return
     const preferenceScope = captureWorkspaceScope(initial)
@@ -2068,6 +2086,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const seed = lastOpened ?? newestAvailableSession(current.sessions)
       let defaults = parseNewChatDefaults(stored)
         ?? (seed ? sessionNewChatDefaults(seed, current.health?.default_cwd?.trim() || '') : null)
+        ?? (preset ? { version: 1 as const, folder: preset.folder, cwd: current.health?.default_cwd?.trim() || '', backend: preset.backend, model: null, effort: null } : null)
       if (!defaults) {
         set({ creatingChat: false })
         current.setModal('newChat', true)
@@ -2080,6 +2099,18 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...defaults,
         folder: lastOpenedFolder ?? defaults.folder,
         cwd: lastOpenedCwd ?? (defaults.cwd || defaultCwd)
+      }
+      if (preset) {
+        // Folder context menu: reuse the folder's newest working directory; model/effort/provider
+        // belong to the previous backend, so drop them when the backend changes.
+        const folderSeed = newestAvailableSession(current.sessions.filter(session => (session.folder || 'General') === preset.folder))
+        defaults = {
+          ...defaults,
+          folder: preset.folder,
+          backend: preset.backend,
+          cwd: folderSeed?.cwd?.trim() || defaults.cwd,
+          ...(defaults.backend === preset.backend ? {} : { model: null, effort: null, codex_provider: undefined })
+        }
       }
       if (
         !selectableChatBackends(current.health, current.runtimeCatalog).includes(defaults.backend)
@@ -2097,9 +2128,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...(defaults.codex_provider === 'custom' ? { codex_provider: 'custom' as const } : {}),
         model: defaults.model,
         effort: defaults.effort,
-        system_prompt: null,
-        cursor_permission_mode: defaults.backend === 'cursor' ? 'default' : null,
-        opencode_permission_mode: defaults.backend === 'opencode' ? 'default' : null
+        system_prompt: null
       }
       const session = await window.agentsDock.sessions.create(input)
       if (!workspaceScopeMatches(preferenceScope, get()) || !profileScopeMatches(profileScope, get())) return
@@ -2198,6 +2227,55 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  async renameFolder(source, target) {
+    if (get().switchingProfileId) return false
+    const scope = captureProfileScope(get())
+    const preferenceScope = captureWorkspaceScope(get())
+    const from = source.trim()
+    const to = target.trim()
+    if (!from || from.toLocaleLowerCase() === 'general' || !to || to === from) return false
+    const folders = ['General', ...get().folderOrder, ...get().sessions.map(session => session.folder?.trim() || 'General')]
+    if (folders.some(folder => folder !== from && folder.toLocaleLowerCase() === to.toLocaleLowerCase())) {
+      set({ error: t('ui.sidebar.folderExists', { folder: to }) })
+      return false
+    }
+    const sessionsToMove = get().sessions.filter(session => (session.folder?.trim() || 'General') === from)
+    try {
+      const movedSessions = await Promise.all(sessionsToMove.map(async session => ({
+        ...(await window.agentsDock.sessions.update(session.id, { folder: to })),
+        folder: to
+      })))
+      if (!profileScopeMatches(scope, get())) return false
+      const movedById = new Map(movedSessions.map(session => [session.id, session]))
+      const folderOrder = get().folderOrder.map(candidate => candidate === from ? to : candidate)
+      const collapsedFolders = new Set([...get().collapsedFolders].map(candidate => candidate === from ? to : candidate))
+      await Promise.all([
+        setWorkspacePreference(preferenceScope, 'folderOrder', folderOrder),
+        setWorkspacePreference(preferenceScope, 'collapsedFolders', [...collapsedFolders])
+      ])
+      if (!profileScopeMatches(scope, get())) return false
+      set(state => {
+        const snapshots = { ...state.snapshots }
+        for (const [sessionId, session] of movedById) {
+          if (snapshots[sessionId]) snapshots[sessionId] = { ...snapshots[sessionId], session }
+        }
+        return {
+          sessions: state.sessions.map(session => movedById.get(session.id) ?? session),
+          snapshots,
+          folderOrder,
+          collapsedFolders
+        }
+      })
+      return true
+    } catch (error) {
+      if (!profileScopeMatches(scope, get())) return false
+      await get().refreshSessions()
+      if (!profileScopeMatches(scope, get())) return false
+      set({ error: errorMessage(error) })
+      return false
+    }
+  },
+
   async forkSession(sessionId) {
     const current = get()
     if (current.switchingProfileId) return
@@ -2217,6 +2295,88 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!profileScopeMatches(scope, get())) return
       await get().selectSession(session.id)
     } catch (error) { if (profileScopeMatches(scope, get())) set({ error: forkErrorMessage(error) }) }
+  },
+  beginEditingTurn(sessionId, runId, prompt) {
+    set(state => ({
+      editingTurn: { ...state.editingTurn, [sessionId]: { runId, originalPrompt: prompt, previousDraft: state.drafts[sessionId] ?? '' } },
+      drafts: { ...state.drafts, [sessionId]: prompt }
+    }))
+  },
+  cancelEditingTurn(sessionId) {
+    set(state => {
+      const editing = state.editingTurn[sessionId]
+      if (!editing) return state
+      return {
+        editingTurn: { ...state.editingTurn, [sessionId]: null },
+        drafts: { ...state.drafts, [sessionId]: editing.previousDraft }
+      }
+    })
+  },
+  async rewindSession(sessionId, runId) {
+    const current = get()
+    if (current.switchingProfileId) return false
+    const session = current.sessions.find(candidate => candidate.id === sessionId)
+    const snapshot = current.snapshots[sessionId]
+    if (!sessionRewindAvailable(current.health, session?.backend ?? snapshot?.session.backend)) {
+      set({ error: t('sessionRewind.unavailable') })
+      return false
+    }
+    if (current.activeSessionIds.has(sessionId) || current.turnAdmissionTokens[sessionId]) {
+      set({ error: t('sessionRewind.busy') })
+      return false
+    }
+    // The server compares against its own latest_event_seq; the freshest local
+    // estimate is the greater of the published session field and the rendered tail.
+    const expectedLatestSeq = Math.max(
+      session?.latest_event_seq ?? 0,
+      snapshot?.session.latest_event_seq ?? 0,
+      snapshot?.events.at(-1)?.seq ?? 0
+    )
+    const scope = captureProfileScope(current)
+    try {
+      const result = await window.agentsDock.sessions.rewind(sessionId, runId, expectedLatestSeq)
+      if (!profileScopeMatches(scope, get())) return false
+      set(state => {
+        const previous = state.snapshots[sessionId]
+        const rewound = previous ? rewindSnapshot(previous, [[result.from_seq, result.through_seq]]) : undefined
+        return {
+          ...(rewound && rewound !== previous ? { snapshots: { ...state.snapshots, [sessionId]: rewound } } : {}),
+          ...(state.editingTurn[sessionId] ? { editingTurn: { ...state.editingTurn, [sessionId]: null } } : {})
+        }
+      })
+      return true
+    } catch (error) {
+      if (profileScopeMatches(scope, get())) set({ error: rewindErrorMessage(error) })
+      return false
+    }
+  },
+  async restoreCheckpoint(sessionId, runId) {
+    const current = get()
+    if (current.switchingProfileId) return false
+    const git = window.agentsDock.workspaceGit
+    if (!git || !current.activeProfileId) {
+      set({ error: t('sessionRewind.unavailable') })
+      return false
+    }
+    if (current.activeSessionIds.has(sessionId) || current.turnAdmissionTokens[sessionId]) {
+      set({ error: t('sessionRewind.busy') })
+      return false
+    }
+    const scope = captureProfileScope(current)
+    try {
+      const status = await git.status({
+        profileId: current.activeProfileId,
+        profileGeneration: current.profileGeneration,
+        serverIdentity: current.profiles.find(profile => profile.id === current.activeProfileId)?.serverIdentity ?? null
+      }, sessionId)
+      await window.agentsDock.sessions.restoreCheckpoint(sessionId, runId, status.revision)
+    } catch (error) {
+      if (profileScopeMatches(scope, get())) set({ error: rewindErrorMessage(error) })
+      return false
+    }
+    if (!profileScopeMatches(scope, get())) return false
+    window.dispatchEvent(new CustomEvent('agentsdock:workspace-git-changed', { detail: sessionId }))
+    return get().rewindSession(sessionId, runId)
   },
   async deleteSession(sessionId) {
     if (get().switchingProfileId) return false
@@ -2935,6 +3095,7 @@ function workspaceStateFromBootstrap(
     uploadsBySession: {},
     uploadPathsBySession: {},
     drafts: {},
+    editingTurn: {},
     chatReferencesBySession: {},
     teamReferencesBySession: {},
     agentRoutesBySession: {},
@@ -3323,6 +3484,7 @@ function releaseFailedNamespaceAdoption(
     uploadsBySession: {},
     uploadPathsBySession: {},
     drafts: {},
+    editingTurn: {},
     chatReferencesBySession: {},
     teamReferencesBySession: {},
     agentRoutesBySession: {},
@@ -4564,7 +4726,15 @@ function flushLiveEvents(forceAll = false): void {
       }
       queuedTurns = stableArray(snapshot.queuedTurns, queuedTurns)
       const mergedFiles = mergeFiles(snapshot.files, files)
-      const mergedEvents = mergeEvents(snapshot.events, isolatedEvents)
+      // A history_rewound tombstone removes its closed range from the retained
+      // window and from any older event still buffered in this same batch.
+      const rewoundRanges = isolatedEvents.flatMap(event => (
+        event.type === 'history_rewound' && Number.isSafeInteger(event.from_seq) && Number.isSafeInteger(event.through_seq)
+          ? [[event.from_seq!, event.through_seq!] as const]
+          : []
+      ))
+      const rewound = rewindSnapshot(snapshot, rewoundRanges)
+      const mergedEvents = mergeEvents(rewound.events, withoutRewoundEvents(isolatedEvents, rewoundRanges))
       const filesTotal = Math.max(snapshot.filesTotal, mergedFiles.length)
       if (
         mergedEvents === snapshot.events
@@ -4573,14 +4743,16 @@ function flushLiveEvents(forceAll = false): void {
         && filesTotal === snapshot.filesTotal
       ) continue
       const nextSnapshot = {
-        ...snapshot,
+        ...rewound,
         ...(updatedOwner && updatedOwner !== owner ? { session: updatedOwner } : {}),
         events: mergedEvents,
-        generation: nextTimelineGeneration(
-          snapshot,
-          mergedEvents,
-          isStrictTimelineTailAppend(snapshot.events, isolatedEvents)
-        ),
+        generation: rewound === snapshot
+          ? nextTimelineGeneration(
+            snapshot,
+            mergedEvents,
+            isStrictTimelineTailAppend(snapshot.events, isolatedEvents)
+          )
+          : rewound.generation,
         queuedTurns,
         files: mergedFiles,
         filesTotal
@@ -4785,6 +4957,33 @@ function forkErrorMessage(error: unknown): string {
     ? RUNNING_FORK_UNAVAILABLE
     : message
 }
+function rewindErrorMessage(error: unknown): string {
+  return errorMessage(error).replace(/^Error invoking remote method 'sessions:(?:rewind|restore-checkpoint)': (?:Error: )?/, '')
+}
+
+/** Events outside every closed `[from, through]` range; returns `events` itself when nothing is removed. */
+function withoutRewoundEvents(events: Event[], ranges: ReadonlyArray<readonly [number, number]>): Event[] {
+  if (!ranges.length) return events
+  const retained = events.filter(event => !ranges.some(([from, through]) => event.seq >= from && event.seq <= through))
+  return retained.length === events.length ? events : retained
+}
+
+/** Renderer mirror of a server history rewind; returns `snapshot` itself when no retained event is in range. */
+function rewindSnapshot(snapshot: SessionSnapshot, ranges: ReadonlyArray<readonly [number, number]>): SessionSnapshot {
+  const events = withoutRewoundEvents(snapshot.events, ranges)
+  if (events === snapshot.events) return snapshot
+  return {
+    ...snapshot,
+    events,
+    // Removing interior turns invalidates both the projection cache and
+    // Virtuoso's measured coordinate space.
+    generation: (snapshot.generation ?? 0) + 1,
+    timelineListGeneration: (snapshot.timelineListGeneration ?? 0) + 1,
+    eventsTotal: snapshot.eventsTotal == null
+      ? snapshot.eventsTotal
+      : Math.max(0, snapshot.eventsTotal - (snapshot.events.length - events.length))
+  }
+}
 function jsonEquivalent(a: unknown, b: unknown): boolean { return a === b || JSON.stringify(a) === JSON.stringify(b) }
 function stringSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   return left === right || left.size === right.size && [...left].every(value => right.has(value))
@@ -4842,13 +5041,6 @@ function normalizeSessionPatch(patch: Partial<Session>) { return {
   effort: patch.effort,
   system_prompt: patch.system_prompt,
   subagent_limit: patch.subagent_limit,
-  codex_approval_policy: patch.codex_approval_policy,
-  codex_sandbox_mode: patch.codex_sandbox_mode,
-  codex_permission_profile: patch.codex_permission_profile,
-  codex_approvals_reviewer: patch.codex_approvals_reviewer,
-  claude_permission_mode: patch.claude_permission_mode,
-  cursor_permission_mode: patch.cursor_permission_mode,
-  opencode_permission_mode: patch.opencode_permission_mode,
   provider_jobs_access: patch.provider_jobs_access ?? undefined,
   pinned: patch.pinned ?? undefined,
   archived: patch.archived ?? undefined

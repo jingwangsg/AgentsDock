@@ -7,6 +7,7 @@ import type { ChatPane as ChatPaneId } from '../lib/chat-panes'
 import { nativeFileRefsFromFiles } from '../lib/native-files'
 import { useAppStore } from '../store/app-store'
 import { ChatHeader } from './ChatHeader'
+import { ChatOutputsPanel } from './ChatOutputsPanel'
 import { ClaudeInteractionShelf } from './ClaudeInteractionShelf'
 import { ClaudeRuntimeProvider } from './ClaudeRuntimeContext'
 import { CodexInteractionShelf } from './CodexInteractionShelf'
@@ -57,6 +58,9 @@ export const ChatPane = memo(function ChatPane({
   const claudeCapability = claudeControlsAvailable ? AVAILABLE_CLAUDE_CONTROLS : null
   const dragTimer = useRef<number | null>(null)
   const [dropActive, setDropActive] = useState(false)
+  const [outputsOpen, setOutputsOpen] = useState(false)
+  useEffect(() => setOutputsOpen(false), [session.id])
+  const closeOutputs = useCallback(() => setOutputsOpen(false), [])
   const focusPane = useCallback(() => useAppStore.getState().focusChatPane(pane), [pane])
   const clearDragTimer = useCallback(() => {
     if (dragTimer.current === null) return
@@ -148,6 +152,8 @@ export const ChatPane = memo(function ChatPane({
       terminalOpen={terminalOpen}
       onSidebarToggle={pane === 'primary' ? onSidebarToggle : undefined}
       onTerminalToggle={focused ? onTerminalToggle : undefined}
+      outputsOpen={outputsOpen}
+      onOutputsToggle={() => setOutputsOpen(open => !open)}
       onOpenSplit={!split || pane === 'primary' ? candidateId => void useAppStore.getState().openSessionInSplit(candidateId) : undefined}
       onSwapPanes={split ? () => useAppStore.getState().swapChatPanes() : undefined}
       onClosePane={split ? () => useAppStore.getState().closeChatPane(pane) : undefined}
@@ -174,6 +180,8 @@ export const ChatPane = memo(function ChatPane({
           ? <div className="composer disabled"><span>{t("ui.ChatPane.ChatPane.archived_chat_unarchive_it_to_send_a_messa_1b14da3")}</span></div>
           : <Composer sessionId={session.id} dropActive={dropActive} />}
       </div>
+      {/* Absolutely positioned over the history; kept out of the grid rows the layout tests pin. */}
+      {outputsOpen && <ChatOutputsPanel sessionId={session.id} onClose={closeOutputs} />}
     </div>
   </>
 

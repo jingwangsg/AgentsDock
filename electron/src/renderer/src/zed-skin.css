@@ -1,0 +1,159 @@
+/*
+ * Zed skin: retargets the design tokens in styles.css to Zed's One Dark /
+ * One Light palettes (assets/themes/one/one.json in the Zed repo), Zed's UI
+ * fonts (IBM Plex Sans, Lilex; both OFL, see assets/fonts) and its tighter
+ * corner radii. Active only while <html data-skin="zed">, set in main.tsx.
+ */
+
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; src: url("./assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf") format("truetype"); }
+@font-face { font-family: "IBM Plex Sans"; font-style: italic; font-weight: 400; src: url("./assets/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf") format("truetype"); }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500 700; src: url("./assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBold.ttf") format("truetype"); }
+@font-face { font-family: "IBM Plex Sans"; font-style: italic; font-weight: 500 700; src: url("./assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBoldItalic.ttf") format("truetype"); }
+@font-face { font-family: "Lilex"; font-style: normal; font-weight: 400; src: url("./assets/fonts/lilex/Lilex-Regular.ttf") format("truetype"); }
+@font-face { font-family: "Lilex"; font-style: italic; font-weight: 400; src: url("./assets/fonts/lilex/Lilex-Italic.ttf") format("truetype"); }
+@font-face { font-family: "Lilex"; font-style: normal; font-weight: 700; src: url("./assets/fonts/lilex/Lilex-Bold.ttf") format("truetype"); }
+@font-face { font-family: "Lilex"; font-style: italic; font-weight: 700; src: url("./assets/fonts/lilex/Lilex-BoldItalic.ttf") format("truetype"); }
+
+/* ---------- shared: typography and shape ---------- */
+:root[data-skin="zed"] {
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "Lilex", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  --chat-font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+
+  /* ui crate ButtonSize: Default 22px, Medium 28px; lists and chips sit on the small size. */
+  --control-height-sm: 22px;
+  --control-height-md: 24px;
+  --control-height-lg: 28px;
+
+  /* GPUI's rounded_sm/rounded_md; panels and dialogs stay nearly square. */
+  --radius-compact: 4px;
+  --radius-icon: 4px;
+  --radius-control: 4px;
+  --radius-selection: 4px;
+  --radius-popover: 6px;
+  --radius-dialog: 8px;
+  --radius-dialog-large: 8px;
+}
+
+/* ---------- One Dark ---------- */
+:root[data-skin="zed"] {
+  --bg: #282c33;            /* editor.background: user card, composer, code blocks */
+  --surface: #2f343e;       /* panel.background: sidebar, inspector, conversation pane */
+  --surface-1: var(--surface);
+  --surface-2: #363c46;     /* element.hover */
+  --surface-3: #454a56;     /* element.selected */
+  --border: #464b57;
+  --border-soft: #363c46;   /* border.variant */
+  --border-focused: #47679e; /* border.focused */
+  --text: #dce0e5;
+  --muted: #a9afbc;
+  --faint: #7c8290;
+  --accent: #74ade8;        /* text.accent */
+  --accent-hover: #8dbdef;
+  --text-on-accent: #1b1f26;
+  --interaction-hover: color-mix(in srgb, var(--text) 8%, transparent);
+  --interaction-pressed: color-mix(in srgb, var(--text) 14%, transparent);
+  --green: #a1c181;
+  --green-surface: #303b32;
+  --green-border: #5f7a55;
+  --amber: #dec184;
+  --amber-surface: #3f3a2f;
+  --danger: #d07277;
+  --danger-surface: #43333a;
+  --danger-strong: #b85f64;
+  --danger-highlight: #c46a6f;
+  --danger-text: #e39a9e;
+  --control-surface: #2e343e;
+  --control-surface-hover: #363c46;
+  --control-border: #464b57;
+  --control-text: #dce0e5;
+  --overlay-surface: #2f343e;
+  --overlay-border: #464b57;
+  --overlay-text: #dce0e5;
+  --overlay-separator: #363c46;
+  --dialog-surface: #2f343e;
+  --dialog-border: #464b57;
+  --dialog-separator: #363c46;
+  --field-surface: #282c33;
+  --field-border: #464b57;
+  --field-text: #dce0e5;
+  --field-label: #a9afbc;
+  --tooltip-surface: #363c46;
+  --tooltip-border: #464b57;
+  --tooltip-text: #dce0e5;
+  --tooltip-key-surface: #2f343e;
+  --tooltip-key-border: #4d525e;
+  --tooltip-key-text: #c4c9d3;
+  --tooltip-key-shadow: inset 0 -1px #0006;
+  --segmented-surface: #2f343e;
+  --segmented-border: #464b57;
+  --segmented-active-surface: #454a56;
+  --segmented-active-text: #dce0e5;
+  --shadow-selection: 0 1px 2px #0004;
+  --shadow-tooltip: 0 4px 12px #0006;
+  --shadow-popover: 0 8px 24px #0007;
+  --shadow-dialog: 0 16px 48px #0008;
+  --shadow-dialog-large: 0 16px 48px #0008;
+}
+
+/* ---------- One Light ---------- */
+:root[data-skin="zed"][data-theme="light"] {
+  --bg: #fafafa;
+  --surface: #ebebec;
+  --surface-1: var(--surface);
+  --surface-2: #dfdfe0;
+  --surface-3: #cacaca;
+  --border: #c9c9ca;
+  --border-soft: #dfdfe0;
+  --border-focused: #7d82e8;
+  --text: #242529;
+  --muted: #58585a;
+  --faint: #8b8b8d;
+  --accent: #5c78e2;
+  --accent-hover: #4d68cf;
+  --text-on-accent: #ffffff;
+  --interaction-hover: rgb(0 0 0 / 6%);
+  --interaction-pressed: rgb(0 0 0 / 11%);
+  --green: #669f59;
+  --green-surface: #e4efe0;
+  --green-border: #a9c9a0;
+  --amber: #a48819;
+  --amber-surface: #f5efd9;
+  --danger: #d36151;
+  --danger-surface: #f8e4e0;
+  --danger-strong: #b94e40;
+  --danger-highlight: #c45647;
+  --danger-text: #b04838;
+  --control-surface: #ebebec;
+  --control-surface-hover: #dfdfe0;
+  --control-border: #c9c9ca;
+  --control-text: #242529;
+  --overlay-surface: #fafafa;
+  --overlay-border: #c9c9ca;
+  --overlay-text: #242529;
+  --overlay-separator: #dfdfe0;
+  --dialog-surface: #fafafa;
+  --dialog-border: #c9c9ca;
+  --dialog-separator: #dfdfe0;
+  --field-surface: #ffffff;
+  --field-border: #c9c9ca;
+  --field-text: #242529;
+  --field-label: #58585a;
+  --tooltip-surface: #ebebec;
+  --tooltip-border: #c9c9ca;
+  --tooltip-text: #242529;
+  --tooltip-key-surface: #fafafa;
+  --tooltip-key-border: #c9c9ca;
+  --tooltip-key-text: #58585a;
+  --tooltip-key-shadow: inset 0 -1px #aaa5;
+  --segmented-surface: #ebebec;
+  --segmented-border: #c9c9ca;
+  --segmented-active-surface: #fafafa;
+  --segmented-active-text: #242529;
+  --scrim: #0007;
+  --shadow-selection: 0 1px 2px #00000020;
+  --shadow-tooltip: 0 4px 12px #0000001e;
+  --shadow-popover: 0 8px 24px #00000022;
+  --shadow-dialog: 0 16px 48px #0000002c;
+  --shadow-dialog-large: 0 16px 48px #0000002c;
+}

@@ -153,21 +153,15 @@ const api: AgentsDockAPI = {
     retryServers: profileId => ipcRenderer.invoke('updates:retry-servers', profileId),
     setTrack: track => ipcRenderer.invoke('updates:set-track', track)
   },
-  settings: {
-    get: () => ipcRenderer.invoke('settings:get'),
-    apply: settings => ipcRenderer.invoke('settings:apply', settings)
-  },
   servers: {
     list: () => ipcRenderer.invoke('servers:list'),
     getActive: () => ipcRenderer.invoke('servers:get-active'),
-    add: input => ipcRenderer.invoke('servers:add', input),
     update: (profileId, patch) => ipcRenderer.invoke('servers:update', profileId, patch),
     updateAndSwitch: (profileId, patch) => ipcRenderer.invoke('servers:update-and-switch', profileId, patch),
     remove: profileId => ipcRenderer.invoke('servers:remove', profileId),
     reorder: profileIds => ipcRenderer.invoke('servers:reorder', profileIds),
     switch: (profileId, force) => ipcRenderer.invoke('servers:switch', profileId, force),
     refresh: (profileId, profileGeneration) => ipcRenderer.invoke('servers:refresh', profileId, profileGeneration),
-    testConnection: input => ipcRenderer.invoke('servers:test-connection', input),
     restartStatus: scope => ipcRenderer.invoke('servers:restart-status', scope),
     restart: (scope, expectedServerInstanceId, forceConfirmation) => forceConfirmation
       ? ipcRenderer.invoke('servers:restart', scope, expectedServerInstanceId, forceConfirmation)
@@ -186,6 +180,19 @@ const api: AgentsDockAPI = {
     diagnostics: () => ipcRenderer.invoke('server-setup:diagnostics'),
     openLog: () => ipcRenderer.invoke('server-setup:open-log')
   },
+  // Hub for SSH-only remote servers reached through the active server's
+  // /api/remote/{id} proxy (server/remote_servers.py). Deploy progress
+  // arrives on the same 'server:setup-progress' event as `setup.run`.
+  remoteServers: {
+    deploy: (scope, input) => ipcRenderer.invoke('remote-servers:deploy', scope, input),
+    cancel: () => ipcRenderer.invoke('remote-servers:cancel'),
+    remove: (scope, remoteId) => ipcRenderer.invoke('remote-servers:remove', scope, remoteId)
+  },
+  hub: {
+    adoptLocalToken: () => ipcRenderer.invoke('hub:adopt-local-token'),
+    pairingUrl: () => ipcRenderer.invoke('hub:pairing-url'),
+    copyToken: () => ipcRenderer.invoke('hub:copy-token')
+  },
   sessions: {
     list: () => ipcRenderer.invoke('sessions:list'),
     create: input => ipcRenderer.invoke('sessions:create', input),
@@ -194,6 +201,8 @@ const api: AgentsDockAPI = {
     reloadProvider: sessionId => ipcRenderer.invoke('sessions:provider:reload', sessionId),
     remove: sessionId => ipcRenderer.invoke('sessions:remove', sessionId),
     fork: sessionId => ipcRenderer.invoke('sessions:fork', sessionId),
+    rewind: (sessionId, toRunId, expectedLatestSeq) => ipcRenderer.invoke('sessions:rewind', sessionId, toRunId, expectedLatestSeq),
+    restoreCheckpoint: (sessionId, runId, expectedRevision) => ipcRenderer.invoke('sessions:restore-checkpoint', sessionId, runId, expectedRevision),
     reorder: (sessionId, relativeTo, placement, targetFolder) => ipcRenderer.invoke('sessions:reorder', sessionId, relativeTo, placement, targetFolder),
     searchHistory: (query, limit) => ipcRenderer.invoke('sessions:search-history', query, limit),
     searchAllProfiles: (query, limit) => ipcRenderer.invoke('sessions:search-all-profiles', query, limit),
@@ -245,7 +254,6 @@ const api: AgentsDockAPI = {
     resolveInteraction: (sessionId, interactionId, response) => (
       ipcRenderer.invoke('codex:interaction:resolve', sessionId, interactionId, response)
     ),
-    permissionProfiles: sessionId => ipcRenderer.invoke('codex:permission-profiles', sessionId),
     goal: sessionId => ipcRenderer.invoke('codex:goal:get', sessionId),
     setGoal: (sessionId, input) => ipcRenderer.invoke('codex:goal:set', sessionId, input),
     clearGoal: sessionId => ipcRenderer.invoke('codex:goal:clear', sessionId),
@@ -253,6 +261,7 @@ const api: AgentsDockAPI = {
     rollback: (sessionId, input) => ipcRenderer.invoke('codex:rollback', sessionId, input),
     review: (sessionId, input) => ipcRenderer.invoke('codex:review', sessionId, input),
     shell: (sessionId, input) => ipcRenderer.invoke('codex:shell', sessionId, input),
+    killWriters: sessionId => ipcRenderer.invoke('codex:kill-writers', sessionId),
     backgroundTerminals: sessionId => ipcRenderer.invoke('codex:background-terminals', sessionId),
     terminateBackgroundTerminal: (sessionId, input) => (
       ipcRenderer.invoke('codex:background-terminal:terminate', sessionId, input)
@@ -341,6 +350,14 @@ const api: AgentsDockAPI = {
     beginDrag: (sessionId, file) => ipcRenderer.invoke('files:begin-drag', sessionId, file),
     mediaURL: (profileId, profileGeneration, sessionId, fileId) => buildMediaURL(profileId, profileGeneration, sessionId, fileId)
   },
+  canvas: {
+    list: sessionId => ipcRenderer.invoke('canvas:list', sessionId),
+    get: (sessionId, name) => ipcRenderer.invoke('canvas:get', sessionId, name),
+    putState: (sessionId, name, state) => ipcRenderer.invoke('canvas:put-state', sessionId, name, state)
+  },
+  chat: {
+    outputs: sessionId => ipcRenderer.invoke('chat:outputs', sessionId)
+  },
   workspace: {
     info: sessionId => ipcRenderer.invoke('workspace:info', sessionId),
     entries: (sessionId, path, offset, limit) => ipcRenderer.invoke('workspace:entries', sessionId, path, offset, limit),
@@ -366,7 +383,7 @@ const api: AgentsDockAPI = {
     send: input => ipcRenderer.invoke('digest:send', input)
   },
   runtime: {
-    catalog: refresh => ipcRenderer.invoke('runtime:catalog', refresh),
+    catalog: (refresh, handoff) => ipcRenderer.invoke('runtime:catalog', refresh, handoff),
     usage: (scope, backend, sessionId, refresh) => ipcRenderer.invoke('runtime:usage', scope, backend, sessionId, refresh)
   },
   processes: {
@@ -414,11 +431,14 @@ const api: AgentsDockAPI = {
     analyticsDisabled: process.env.AGENTSDOCK_DISABLE_ANALYTICS === '1',
     openExternal: url => ipcRenderer.invoke('native:open-external', url),
     showItemInFolder: path => ipcRenderer.invoke('native:show-item', path),
+    openInZed: input => ipcRenderer.invoke('native:open-in-zed', input),
     setBadge: count => ipcRenderer.invoke('native:set-badge', count),
     notify: payload => ipcRenderer.invoke('native:notify', payload),
     log: (scope, message, data) => ipcRenderer.invoke('native:log', scope, message, data),
     readClipboard: () => ipcRenderer.invoke('native:clipboard:read'),
     writeClipboard: text => ipcRenderer.invoke('native:clipboard:write', text),
+    getGlobalHotkey: () => ipcRenderer.invoke('native:global-hotkey:get'),
+    setGlobalHotkey: accelerator => ipcRenderer.invoke('native:global-hotkey:set', accelerator),
     readyForNotifications: () => ipcRenderer.invoke('native:notification:ready'),
     readyForSecurePeerInvite: () => ipcRenderer.invoke('native:secure-peer-invite:ready'),
     closeWindow: () => ipcRenderer.invoke('native:close-window'),

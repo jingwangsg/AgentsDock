@@ -27,6 +27,15 @@ import type {
 } from '../shared/types'
 import { DEFAULT_SERVER_URL, normalizeServerURL } from '../shared/server-url'
 
+const SSH_HOST_PATTERN = /^[A-Za-z0-9_.@%+:[\]-]+$/
+
+/** An SSH alias or user@host that ssh cannot read as an option. One rule for stored profiles and the hub deploy form. */
+export function validateSshHost(sshHost: string): void {
+  if (sshHost.startsWith('-') || !SSH_HOST_PATTERN.test(sshHost)) {
+    throw new Error('Enter an SSH host such as user@server or a configured SSH alias.')
+  }
+}
+
 interface StoredSettingsV1 {
   serverUrl?: string
   encryptedAccessToken?: string
@@ -49,6 +58,7 @@ export interface StoredServerProfile {
   encryptedAccessToken?: string
   keychainAccessToken?: boolean
   serverSetupComplete: boolean
+  sshHost?: string
   createdAt: string
   updatedAt: string
   /** Durable cleanup work left after an explicit server-authority reset. */
@@ -257,6 +267,7 @@ export class SettingsStore {
       serverUrl,
       serverIdentity,
       serverSetupComplete: input.serverSetupComplete ?? Boolean(serverIdentity),
+      ...optionalSshHost(cleanSshHost(input.sshHost)),
       createdAt: timestamp,
       updatedAt: timestamp
     }
@@ -290,6 +301,7 @@ export class SettingsStore {
       serverUrl: patch.serverUrl === undefined ? current.serverUrl : normalizeServerURL(patch.serverUrl),
       serverIdentity: patch.serverIdentity === undefined ? current.serverIdentity : cleanIdentity(patch.serverIdentity),
       serverSetupComplete: patch.serverSetupComplete ?? current.serverSetupComplete,
+      ...optionalSshHost(patch.sshHost === undefined ? current.sshHost ?? null : cleanSshHost(patch.sshHost)),
       retiredServerNamespaces: patch.retiredServerNamespaces === undefined
         ? current.retiredServerNamespaces
         : normalizeRetiredNamespaces(patch.retiredServerNamespaces),
@@ -718,6 +730,7 @@ function publicProfile(profile: StoredServerProfile, hasAccessToken: boolean, ru
     serverIdentity: profile.serverIdentity ?? null,
     hasAccessToken,
     serverSetupComplete: profile.serverSetupComplete,
+    sshHost: profile.sshHost ?? null,
     connectionState: runtime?.connectionState ?? 'cached',
     cachedUnreadCount: Math.max(0, Math.trunc(runtime?.cachedUnreadCount ?? 0)),
     lastConnectionError: runtime?.lastConnectionError ?? null,
@@ -731,6 +744,19 @@ function hasStoredAccessToken(profile: StoredServerProfile): boolean {
 
 function cleanIdentity(value: string | null | undefined): string | null {
   return value?.trim() || null
+}
+
+/** Same shape rule as the SSH setup target: an alias or user@host, never an option. */
+function cleanSshHost(value: string | null | undefined): string | null {
+  const sshHost = value?.trim() || ''
+  if (!sshHost) return null
+  validateSshHost(sshHost)
+  return sshHost
+}
+
+/** Stored profiles omit the key entirely when no SSH host is configured. */
+function optionalSshHost(sshHost: string | null): { sshHost?: string } {
+  return sshHost ? { sshHost } : {}
 }
 
 function normalizeRetiredNamespaces(value: unknown): string[] {
@@ -809,6 +835,7 @@ function normalizeProfile(value: unknown, timestamp: string, index: number): Sto
   const serverIdentity = cleanIdentity(typeof value.serverIdentity === 'string' ? value.serverIdentity : null)
   const createdAt = typeof value.createdAt === 'string' && value.createdAt ? value.createdAt : timestamp
   const updatedAt = typeof value.updatedAt === 'string' && value.updatedAt ? value.updatedAt : createdAt
+  const sshHost = typeof value.sshHost === 'string' ? value.sshHost.trim() : ''
   return {
     id,
     name: cleanProfileName(typeof value.name === 'string' ? value.name : undefined) || defaultProfileName(serverUrl, serverIdentity),
@@ -817,6 +844,7 @@ function normalizeProfile(value: unknown, timestamp: string, index: number): Sto
     encryptedAccessToken: cleanEncryptedToken(value.encryptedAccessToken),
     keychainAccessToken: Boolean(value.keychainAccessToken),
     serverSetupComplete: Boolean(value.serverSetupComplete),
+    ...optionalSshHost(sshHost && !sshHost.startsWith('-') && SSH_HOST_PATTERN.test(sshHost) ? sshHost : null),
     retiredServerNamespaces: normalizeRetiredNamespaces(value.retiredServerNamespaces),
     createdAt,
     updatedAt

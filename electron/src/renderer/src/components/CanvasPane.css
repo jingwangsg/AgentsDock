@@ -1,0 +1,49 @@
+/* Canvas preview beside the chat. The conversation pane keeps its own layout;
+   while a Canvas is open its other children give up the right-hand column.
+   Dragging the Canvas edge sets --canvas-pane-user-width; the clamp keeps 280px of Canvas and 360px of chat. */
+.conversation-pane.canvas-open { --canvas-pane-width: clamp(280px, var(--canvas-pane-user-width, min(52%, 820px)), calc(100% - 360px)); }
+.conversation-pane.canvas-open > :not(.canvas-pane) { margin-right: var(--canvas-pane-width); }
+
+.canvas-pane {
+  position: absolute; z-index: 85; top: 0; right: 0; bottom: 0; width: var(--canvas-pane-width);
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0;
+  background: var(--bg); border-left: 1px solid var(--border); color: var(--text);
+}
+.canvas-pane-resize-handle { width: 9px; position: absolute; z-index: 3; top: 0; bottom: 0; left: -5px; cursor: col-resize; touch-action: none; outline: none; }
+.canvas-pane-resize-handle::after { width: 2px; position: absolute; inset: 0 auto 0 3px; content: ""; background: var(--accent); opacity: 0; transition: opacity 120ms ease; }
+.canvas-pane-resize-handle:hover::after, .canvas-pane-resize-handle:focus-visible::after, body.canvas-resizing .canvas-pane-resize-handle::after { opacity: .75; }
+body.canvas-resizing { cursor: col-resize; user-select: none; }
+/* load-bearing: the Canvas iframe swallows pointer events even under pointer capture, which strands a drag once it crosses the edge. */
+body.canvas-resizing .canvas-pane iframe { pointer-events: none; }
+.canvas-pane-header {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; min-height: 38px;
+  border-bottom: 1px solid var(--border); background: var(--surface); font-size: var(--text-size-label);
+}
+.canvas-pane-header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--text-weight-label); }
+.canvas-pane-header select {
+  max-width: 220px; height: var(--control-height-sm); border-radius: var(--radius-control);
+  background: var(--field-surface); color: var(--field-text); border: 1px solid var(--field-border); padding: 0 6px; font: inherit;
+}
+.canvas-pane-header button {
+  height: var(--control-height-sm); padding: 0 8px; border-radius: var(--radius-control); border: 1px solid transparent;
+  background: transparent; color: var(--muted); font: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+}
+.canvas-pane-header button:hover { background: var(--interaction-hover); color: var(--text); }
+.canvas-pane-header button[aria-pressed="true"] { background: var(--surface-3); color: var(--text); border-color: var(--border); }
+.canvas-pane-header button:disabled { opacity: .5; cursor: default; }
+
+.canvas-pane-body { position: relative; min-height: 0; background: var(--bg); }
+.canvas-pane-body iframe { display: block; width: 100%; height: 100%; border: 0; background: transparent; color-scheme: normal; }
+.canvas-pane-notice { padding: 16px; color: var(--muted); font-size: var(--text-size-label); line-height: var(--line-height-body); }
+.canvas-pane-notice.error { color: var(--danger-text); }
+.canvas-pane-notice pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-size-meta); color: var(--text); }
+.canvas-pane-source { margin: 0; padding: 12px 16px; height: 100%; overflow: auto; font-family: var(--font-mono); font-size: var(--text-size-meta); line-height: 1.5; white-space: pre; color: var(--text); background: var(--bg); }
+.canvas-pane-selecting { position: absolute; left: 12px; top: 8px; z-index: 2; padding: 4px 8px; border-radius: var(--radius-control); background: var(--tooltip-surface); border: 1px solid var(--tooltip-border); color: var(--tooltip-text); font-size: var(--text-size-caption); pointer-events: none; }
+
+.canvas-pane-feedback { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.canvas-pane-feedback textarea {
+  min-height: 34px; max-height: 120px; resize: vertical; border-radius: var(--radius-control); padding: 6px 8px; font: inherit; font-size: var(--text-size-label);
+  background: var(--field-surface); color: var(--field-text); border: 1px solid var(--field-border);
+}
+.canvas-pane-feedback small { grid-column: 1 / -1; color: var(--muted); font-size: var(--text-size-caption); }
+.canvas-pane-feedback .primary-button { align-self: end; }

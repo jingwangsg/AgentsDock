@@ -106,6 +106,21 @@ describe('SettingsStore schema v2 migration', () => {
     expect(keychain.reads).toHaveLength(1)
   })
 
+  it('keeps a stored SSH host across reads and ignores a retired tunnel entry', () => {
+    const path = settingsPath()
+    const timestamp = '2026-09-10T10:00:00Z'
+    writeFileSync(path, JSON.stringify({ schemaVersion: 2, activeProfileId: 'hub', profiles: [
+      { id: 'hub', name: 'Local', serverUrl: 'http://127.0.0.1:7850', serverSetupComplete: true, createdAt: timestamp, updatedAt: timestamp },
+      { id: 'osmo', name: 'osmo', serverUrl: 'http://127.0.0.1:7850/api/remote/abc123def456', sshHost: 'osmo_9000',
+        sshTunnel: { localPort: 7851, remotePort: 7850 }, serverSetupComplete: true, createdAt: timestamp, updatedAt: timestamp },
+      { id: 'bad', name: 'bad', serverUrl: 'http://10.0.0.9:7850', sshHost: '-oProxyCommand=evil', serverSetupComplete: true, createdAt: timestamp, updatedAt: timestamp }
+    ] }))
+    const store = new SettingsStore({ path, safeStorage: memorySafeStorage, isMacAppStoreBuild: () => false })
+    expect(store.getProfile('osmo')?.sshHost).toBe('osmo_9000')
+    expect(store.getProfile('bad')?.sshHost).toBeNull()
+    expect(store.getProfile('osmo')).not.toHaveProperty('sshTunnel')
+  })
+
   it('migrates v1 settings and the fixed Keychain account exactly once', () => {
     const path = settingsPath()
     const legacy = {

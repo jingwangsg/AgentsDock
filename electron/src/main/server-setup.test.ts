@@ -26,11 +26,7 @@ import {
   isRetryableLaunchdSetupFailure,
   localReleaseBootstrap,
   parseServerSetupResult,
-  parseSSHConfigHostname,
   redactServerSetupLogLine,
-  remoteFallbackURL,
-  remoteReleaseBootstrap,
-  remoteShellArgs,
   serverSetupCapabilities,
   SERVER_SETUP_PATH_BOOTSTRAP,
   SERVER_SETUP_PREFLIGHT_SCRIPT,
@@ -47,7 +43,6 @@ const STABLE_RELEASE = { track: 'stable' as const, version: '1.0.3',
 const BETA_RELEASE = { track: 'beta' as const, version: '1.0.7-beta.1',
   url: 'https://github.com/ZhengyiLuo/AgentsServer/releases/download/v1.0.7-beta.1/agents-server-1.0.7-beta.1.tar.gz', sha256: 'b'.repeat(64) }
 const LOCAL_RELEASE_BOOTSTRAP = localReleaseBootstrap(STABLE_RELEASE)
-const REMOTE_BOOTSTRAP = remoteReleaseBootstrap(STABLE_RELEASE)
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -57,7 +52,6 @@ function deferred<T>() {
 
 type ServerSetupManagerHarness = {
   runLocal(port: number, progress: (value: ServerSetupProgress) => void, teamHubHost?: boolean, release?: unknown): Promise<ServerSetupResult>
-  runRemote(sshHost: string, port: number, progress: (value: ServerSetupProgress) => void, teamHubHost?: boolean, release?: unknown): Promise<ServerSetupResult>
   runProcess(
     command: string,
     args: string[],
@@ -97,13 +91,12 @@ beforeEach(() => {
 })
 
 describe('server setup', () => {
-  it('validates local and SSH setup without accepting shell input', () => {
+  it('validates local setup input and rejects the retired remote targets', () => {
     expect(validateServerSetupInput({ target: 'local', port: 7850 })).toEqual({ target: 'local', port: 7850, track: 'stable' })
     expect(validateServerSetupInput({ target: 'local', port: 7850, teamHubHost: false })).toEqual({ target: 'local', port: 7850, track: 'stable', teamHubHost: false })
-    expect(validateServerSetupInput({ target: 'ssh', sshHost: 'user@server-01', port: 9000, track: 'beta', teamHubHost: true })).toEqual({ target: 'ssh', sshHost: 'user@server-01', port: 9000, track: 'beta', teamHubHost: true })
-    expect(() => validateServerSetupInput({ target: 'ssh', sshHost: 'user@server; reboot', port: 7850 })).toThrow(/SSH host/)
+    expect(() => validateServerSetupInput({ target: 'ssh' as never, sshHost: 'user@server-01' } as never)).toThrow(/where to install/)
+    expect(() => validateServerSetupInput({ target: 'ssh-tunnel' as never })).toThrow(/where to install/)
     expect(() => validateServerSetupInput({ target: 'local', port: 70000 })).toThrow(/Port/)
-    expect(() => validateServerSetupInput({ target: 'ssh', sshHost: 'user@server', port: 22 })).toThrow(/HTTP API port, not the SSH port/)
     expect(() => validateServerSetupInput({ target: 'local', port: 0 })).toThrow(/1024 and 65535/)
     expect(() => validateServerSetupInput({ target: 'local', track: 'nightly' as 'stable' })).toThrow(/Stable or Beta/)
     expect(() => validateServerSetupInput({ target: 'local', teamHubHost: 'true' as unknown as boolean })).toThrow(/Team Network/)
@@ -127,8 +120,6 @@ describe('server setup', () => {
   it('uses the resolved immutable release without mixing channels', () => {
     const stableLocal = localReleaseBootstrap(STABLE_RELEASE)
     const betaLocal = localReleaseBootstrap(BETA_RELEASE)
-    const stableRemote = remoteReleaseBootstrap(STABLE_RELEASE)
-    const betaRemote = remoteReleaseBootstrap(BETA_RELEASE)
     expect(stableLocal).toContain(`VERSION="${STABLE_RELEASE.version}"`)
     expect(stableLocal).toContain(STABLE_RELEASE.url)
     expect(stableLocal).toContain(STABLE_RELEASE.sha256)
@@ -137,10 +128,6 @@ describe('server setup', () => {
     expect(betaLocal).toContain(BETA_RELEASE.url)
     expect(betaLocal).toContain(BETA_RELEASE.sha256)
     expect(betaLocal).not.toContain(STABLE_RELEASE.url)
-    expect(stableRemote).toContain(STABLE_RELEASE.url)
-    expect(stableRemote).not.toContain(BETA_RELEASE.url)
-    expect(betaRemote).toContain(BETA_RELEASE.url)
-    expect(betaRemote).not.toContain(STABLE_RELEASE.url)
   })
 
   it('parses the private installer result without exposing it as progress', () => {
@@ -152,23 +139,6 @@ describe('server setup', () => {
       tailscaleIP: '100.64.0.10',
       serverVersion: '0.1.0'
     })
-  })
-
-  it('builds a remote fallback URL from a safe SSH destination', () => {
-    expect(remoteFallbackURL('user@server.local', 7850)).toBe('http://server.local:7850')
-    expect(remoteFallbackURL('dev@2001:db8::1', 7850)).toBe('http://[2001:db8::1]:7850')
-    expect(remoteFallbackURL('user@lab-alias', 7850, '100.64.0.20')).toBe('http://100.64.0.20:7850')
-  })
-
-  it('uses the HostName resolved by ssh -G for HTTP instead of an SSH-only alias', () => {
-    expect(parseSSHConfigHostname(`
-host lab-alias
-user dev
-hostname 100.64.0.20
-port 22
-`, 'dev@lab-alias')).toBe('100.64.0.20')
-    expect(parseSSHConfigHostname('', 'dev@lab-alias')).toBe('lab-alias')
-    expect(parseSSHConfigHostname('hostname bad/path', 'dev@lab-alias')).toBe('lab-alias')
   })
 
   it('does not tell users to run AgentsDock as root when launchd reports a restart race', () => {
@@ -283,43 +253,6 @@ port 22
     expect(fsHarness.rm).not.toHaveBeenCalled()
   })
 
-  it('uses BatchMode for remote preflight and installer bootstrap', async () => {
-    const manager = new ServerSetupManager() as unknown as ServerSetupManagerHarness
-    const result: ServerSetupResult = {
-      serverUrl: 'http://100.64.0.10:7850',
-      accessToken: '0123456789abcdef0123456789abcdef',
-      service: 'systemd-user',
-      tailscaleIP: '100.64.0.10'
-    }
-    const runProcess = vi.spyOn(manager, 'runProcess')
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(result)
-
-    await expect(manager.runRemote('user@server', 7850, vi.fn(), true, STABLE_RELEASE)).resolves.toEqual(result)
-
-    expect(runProcess).toHaveBeenCalledTimes(2)
-    expect(runProcess.mock.calls[0]?.[1]).toEqual(remoteShellArgs('user@server', 'sh'))
-    expect(runProcess.mock.calls[0]?.[2]).toBe(SERVER_SETUP_PREFLIGHT_SCRIPT)
-    expect(runProcess.mock.calls[0]?.[4]).toBe(false)
-    expect(runProcess.mock.calls[1]?.[1]).toEqual([...remoteShellArgs('user@server', 'sh'), '7850', 'true'])
-    expect(runProcess.mock.calls[1]?.[2]).toBe(REMOTE_BOOTSTRAP)
-    expect(runProcess.mock.calls[1]?.[4]).toBe(true)
-    expect(runProcess.mock.calls.every(call => call[1].includes('BatchMode=yes'))).toBe(true)
-    expect(runProcess.mock.calls.every(call => call[1].includes('ServerAliveInterval=15'))).toBe(true)
-    expect(runProcess.mock.calls.every(call => call[1].includes('ServerAliveCountMax=4'))).toBe(true)
-  })
-
-  it('does not launch the remote clone or installer after preflight failure', async () => {
-    const manager = new ServerSetupManager() as unknown as ServerSetupManagerHarness
-    const runProcess = vi.spyOn(manager, 'runProcess').mockRejectedValueOnce(new Error('The systemctl --user session is unavailable.'))
-
-    await expect(manager.runRemote('user@server', 7850, vi.fn(), false, STABLE_RELEASE)).rejects.toThrow('systemctl --user')
-
-    expect(runProcess).toHaveBeenCalledOnce()
-    expect(runProcess.mock.calls[0]?.[1]).toEqual(remoteShellArgs('user@server', 'sh'))
-    expect(runProcess.mock.calls[0]?.[2]).toBe(SERVER_SETUP_PREFLIGHT_SCRIPT)
-  })
-
   it('parses only the saved PATH value without sourcing other env-file content', () => {
     const directory = mkdtempSync(join(tmpdir(), 'agentsdock-preflight-path-'))
     const config = join(directory, 'config')
@@ -341,31 +274,11 @@ port 22
     }
   })
 
-  it('keeps the evaluated preflight and remote bootstrap shell syntax valid', () => {
+  it('keeps the evaluated preflight and local bootstrap shell syntax valid', () => {
     expect(() => execFileSync('/bin/sh', ['-n'], { input: SERVER_SETUP_PREFLIGHT_SCRIPT })).not.toThrow()
     expect(() => execFileSync('/bin/sh', ['-n'], { input: LOCAL_RELEASE_BOOTSTRAP })).not.toThrow()
-    expect(() => execFileSync('/bin/sh', ['-n'], { input: REMOTE_BOOTSTRAP })).not.toThrow()
     expect(LOCAL_RELEASE_BOOTSTRAP).toContain('if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]')
-    expect(REMOTE_BOOTSTRAP).toContain('if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]')
     expect(LOCAL_RELEASE_BOOTSTRAP).not.toContain('git clone')
-    expect(REMOTE_BOOTSTRAP).not.toContain('git clone')
-  })
-
-  it('rejects an unsafe remote Team Network host position before running downloaded code', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-host-flag-'))
-    const marker = join(directory, 'must-not-exist')
-    try {
-      const result = spawnSync('/bin/sh', ['-s', '--', '7850', `true; touch ${marker}`], {
-        input: REMOTE_BOOTSTRAP,
-        encoding: 'utf8',
-        env: { ...process.env, HOME: directory, AGENTS_SERVER_CONFIG_DIR: join(directory, 'config') }
-      })
-      expect(result.status).toBe(2)
-      expect(result.stderr).toContain('Invalid Team Network host choice.')
-      expect(existsSync(marker)).toBe(false)
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
   })
 
   it('carries the validated Team Network host choice into the selected installer path', async () => {
@@ -389,9 +302,9 @@ port 22
 
   it('does not connect or install when release verification fails', async () => {
     const actual = new ServerSetupManager(undefined, async () => { throw new Error('Invalid release signature') })
-    const runRemote = vi.spyOn(actual as unknown as ServerSetupManagerHarness, 'runRemote')
-    await expect(actual.run({ target: 'ssh', sshHost: 'qa-server' }, vi.fn())).rejects.toThrow('Invalid release signature')
-    expect(runRemote).not.toHaveBeenCalled()
+    const runLocal = vi.spyOn(actual as unknown as ServerSetupManagerHarness, 'runLocal')
+    await expect(actual.run({ target: 'local' }, vi.fn())).rejects.toThrow('Invalid release signature')
+    expect(runLocal).not.toHaveBeenCalled()
     expect(actual.diagnostics().state).toBe('failed')
   })
 

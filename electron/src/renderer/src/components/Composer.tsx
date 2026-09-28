@@ -7,20 +7,16 @@ import * as Dialog from '@radix-ui/react-dialog'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import * as Tooltip from '@radix-ui/react-tooltip'
 import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent, type DragOverEvent } from '@dnd-kit/core'
-import { AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CheckCircle2, ChevronDown, Columns2, CornerDownRight, File, FolderOpen, Gauge, GitFork, Goal, GripVertical, Import, Info, ListOrdered, LoaderCircle, Mail, MessageSquarePlus, MessageSquareShare, MoreHorizontal, Network, Paperclip, Pencil, Plus, RadioTower, RotateCw, Send, Settings, Shield, Sparkles, Square, Trash2, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CheckCircle2, ChevronDown, Columns2, CornerDownRight, File, FolderOpen, Gauge, GitFork, Goal, GripVertical, Import, Info, ListOrdered, LoaderCircle, Mail, MessageSquarePlus, MessageSquareShare, MoreHorizontal, Network, Paperclip, Pencil, Plus, RadioTower, RotateCw, Send, Settings, Sparkles, Square, Trash2, X } from 'lucide-react'
 import { effectiveFileContentType } from '@shared/file-content-type'
 import { localSessionImportSupported } from '@shared/local-session-import'
-import type { AgentCrossChatRoute, AgentTeamMailRoute, AgentTeamMailRoutesSnapshot, AgentFile, ChatReference, ChatReferenceAction, ClaudePermissionMode, Event as AgentEvent, Health, NativeFileRef, ProviderCommand, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
+import type { AgentCrossChatRoute, AgentTeamMailRoute, AgentTeamMailRoutesSnapshot, AgentFile, ChatReference, ChatReferenceAction, Event as AgentEvent, Health, NativeFileRef, ProviderCommand, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
 import { teamAllServersAliasAvailable, teamBulletinAliasAvailable, type TeamNetworkServer } from '@shared/team-network'
 import { chatBackendChoice, chatBackendSelection, codexCustomProviderAvailable, cursorBackendAvailable, cursorBackendUnavailableReason, runtimeCatalogOptions, runtimeDiagnosticFor, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, selectableChatBackendChoices } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
 import { backendLabel, formatBytes, runtimeLabel } from '../lib/format'
 import { CodexModelDiscovery } from './CodexModelDiscovery'
 import { cancelComposerEditorLayout, composerTextCanUseMirror, observeComposerEditorWidth, scheduleComposerEditorLayout, syncComposerEditorMirror } from '../lib/composer-editor-layout'
-import { awaitAllClaudePermissionUpdates, awaitClaudePermissionUpdates } from '../lib/claude-permission-updates'
-import { supportedClaudePermissionModes } from '../lib/claude-permission-copy'
-import { awaitAllCodexPermissionUpdates, awaitCodexPermissionUpdates } from '../lib/codex-permission-updates'
-import { awaitAllCursorPermissionUpdates, awaitCursorPermissionUpdates } from '../lib/cursor-permission-updates'
 import { nativeFileRefsFromFiles } from '../lib/native-files'
 import { profileSessionKey } from '../lib/profile-scope'
 import { orderedActiveSessions, rankSessionsForSearch } from '../lib/sessions'
@@ -105,6 +101,7 @@ import {
   type TeamMentionTrigger,
   type TeamReferenceTarget
 } from '../lib/team-references'
+import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 import { interactiveClientCapabilities, useAppStore, type PendingTurnSubmission } from '../store/app-store'
 import { useTransientClose } from '../lib/transient-close'
 import { openTeamMessageLink } from '../lib/team-message-links'
@@ -113,16 +110,11 @@ import { BackendMark } from './BackendMark'
 import { CodexContextIndicator, CodexGoalBar } from './CodexControls'
 import { useCodexRuntime } from './CodexRuntimeContext'
 import { ClaudeContextIndicator } from './ClaudeContextIndicator'
-import { ClaudePermissionMenu } from './ClaudePermissionMenu'
 import { useClaudeRuntime } from './ClaudeRuntimeContext'
 import { ClaudeMcpDialog, claudeMcpCapabilityAdvertised, claudeMcpCapabilitySupported } from './ClaudeMcpDialog'
 import { ClaudeGoalControls, useClaudeGoalsAvailable } from './ClaudeGoalControls'
-import { CodexPermissionMenu } from './CodexPermissionMenu'
-import { CursorPermissionMenu } from './CursorPermissionMenu'
-import { OpenCodePermissionMenu } from './OpenCodePermissionMenu'
 import { openCodeProviderCommandsAvailable } from '@shared/opencode'
 import { opencodeBackendAvailable, opencodeBackendUnavailableReason } from '@shared/runtime-catalog'
-import { awaitAllOpenCodePermissionUpdates, awaitOpenCodePermissionUpdates } from '../lib/opencode-permission-updates'
 import { RuntimeHealthNotice } from './RuntimeHealth'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { WorkingDirectoryInput } from './WorkingDirectoryInput'
@@ -297,8 +289,6 @@ const COMPOSER_COMMANDS: readonly ComposerCommand[] = [
   { id: 'mcp', get label() { return t("ui.Composer.copy.mcp_servers_22a7559") }, get description() { return t("ui.Composer.copy.view_and_control_claude_mcp_connections_ed0b999") }, keywords: ['tools', 'connections', 'servers'], category: 'agentsdock' },
   { id: 'model', get label() { return t("ui.Composer.copy.model_5e2c614") }, get description() { return t("ui.Composer.copy.choose_the_model_for_this_chat_9edb622") }, keywords: ['runtime'], category: 'agentsdock' },
   { id: 'new', get label() { return t("ui.Composer.copy.new_chat_db18382") }, get description() { return t("ui.Composer.copy.create_another_chat_cbc42a6") }, keywords: ['create'], category: 'agentsdock' },
-  { id: 'permissions', get label() { return t("ui.Composer.copy.permissions_abccc78") }, get description() { return t("ui.Composer.copy.control_this_provider_s_access_b10033f") }, keywords: ['approval', 'sandbox', 'access'], category: 'agentsdock' },
-  { id: 'plan', get label() { return t("ui.Composer.copy.plan_mode_3ca7d84") }, get description() { return t("ui.Composer.copy.open_claude_permissions_to_choose_plan_mod_1e9ad59") }, keywords: ['planning', 'permission'], category: 'agentsdock' },
   { id: 'reasoning', label: 'Reasoning', get description() { return t("ui.Composer.copy.choose_the_reasoning_effort_for_this_chat_248ba75") }, keywords: ['effort', 'thinking'], category: 'agentsdock' },
   { id: 'schedule', get label() { return t("ui.Composer.copy.schedule_f4830a1") }, get description() { return t("ui.Composer.copy.create_a_scheduled_job_for_this_chat_7ad3abb") }, keywords: ['job', 'cron', 'automation'], category: 'agentsdock' },
   { id: 'settings', get label() { return t("ui.Composer.copy.settings_74a883a") }, get description() { return t("ui.Composer.copy.open_agentsdock_settings_9e90b52") }, keywords: ['server', 'appearance', 'update'], category: 'agentsdock' },
@@ -499,6 +489,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const queuedTurns = useAppStore(state => selectedId ? state.snapshots[selectedId]?.queuedTurns ?? EMPTY_QUEUED_TURNS : EMPTY_QUEUED_TURNS)
   const visibleQueuedTurns = useMemo(() => queuedTurns.filter(isVisibleQueuedTurn), [queuedTurns])
   const storedDraft = useAppStore(state => selectedId ? state.drafts[selectedId] ?? '' : '')
+  const editingTurn = useAppStore(state => selectedId ? state.editingTurn[selectedId] ?? null : null)
   const storedReferences = useAppStore(state => selectedId ? state.chatReferencesBySession[selectedId] ?? EMPTY_CHAT_REFERENCES : EMPTY_CHAT_REFERENCES)
   const storedTeamReferences = useAppStore(state => selectedId ? state.teamReferencesBySession[selectedId] ?? EMPTY_TEAM_REFERENCES : EMPTY_TEAM_REFERENCES)
   const uploads = useAppStore(state => selectedId ? state.uploadsBySession[selectedId] ?? EMPTY_UPLOADS : EMPTY_UPLOADS)
@@ -508,6 +499,26 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const pendingSubmission = useAppStore(state => selectedId ? state.pendingTurnSubmissions[selectedId] : undefined)
   const pendingSubmissionMode = pendingSubmission?.mode
   const stopping = useAppStore(state => selectedId ? state.stoppingSessionIds.has(selectedId) : false)
+  // Esc stops the running turn of the chat being worked in: the single-layout
+  // composer, or the focused pane of a split. Controls that own Esc (dialogs,
+  // menus, mention palettes, edit-turn fields) call preventDefault first.
+  const paneFocused = useAppStore(state => sessionId === undefined || state.chatPanes[state.focusedChatPane] === sessionId)
+  useEffect(() => {
+    if (!running || stopping || writeDisabled || !selectedId || !paneFocused) return
+    const id = selectedId
+    const stopOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.repeat || event.isComposing) return
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
+      if (document.querySelector('[aria-modal="true"]')) return
+      // The terminal and the code editor use Esc themselves (vim, search widgets).
+      if (event.target instanceof Element && event.target.closest('.xterm, .cm-editor')) return
+      event.preventDefault()
+      if (!confirmInboundDeliveryInterruption(id, 'stop')) return
+      void useAppStore.getState().stopTurnForSession(id)
+    }
+    window.addEventListener('keydown', stopOnEscape)
+    return () => window.removeEventListener('keydown', stopOnEscape)
+  }, [running, stopping, writeDisabled, selectedId, paneFocused])
   const catalog = useAppStore(state => state.runtimeCatalog)
   const healthRevision = useAppStore(state => composerHealthContractRevision(state.health))
   const health = useMemo(() => useAppStore.getState().health, [healthRevision])
@@ -594,7 +605,6 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   })
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false)
   const [runtimeMenuSection, setRuntimeMenuSection] = useState<'model' | 'reasoning' | null>(null)
-  const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
   const [mcpDialogOpen, setMcpDialogOpen] = useState(false)
   const [claudeGoalOpen, setClaudeGoalOpen] = useState(false)
   const [workingDirectoryOpen, setWorkingDirectoryOpen] = useState(false)
@@ -751,33 +761,6 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const codexControls = health?.capabilities?.codex_controls
   const claudeControls = health?.capabilities?.claude_controls
   const claudeMcpAvailable = claudeMcpCapabilitySupported(claudeControls)
-  const claudePermissionMode = session?.claude_permission_mode ?? claudeRuntime.runtime?.policy?.permission_mode
-  const claudePermissionModes = useMemo(
-    () => supportedClaudePermissionModes(claudeRuntime.runtime?.permission_modes),
-    [claudeRuntime.runtime?.permission_modes]
-  )
-  const codexPermissionsAvailable = Boolean(
-    session?.backend === 'codex'
-    && codexControls?.available === true
-    && codexControls.features?.approvals !== false
-    && codexRuntime.supported
-    && (session.codex_approval_policy ?? codexRuntime.runtime?.policy?.approval_policy) != null
-    && (session.codex_sandbox_mode ?? codexRuntime.runtime?.policy?.sandbox_mode) != null
-    && (session.codex_approvals_reviewer ?? codexRuntime.runtime?.policy?.approvals_reviewer) != null
-  )
-  const claudePermissionsAvailable = Boolean(
-    session?.backend === 'claude'
-    && claudeControls?.available === true
-    && claudeControls.features?.permission_mode_control === true
-    && claudeRuntime.supported
-    && claudeRuntime.runtime?.features?.permission_mode_control === true
-    && claudePermissionMode != null
-    && claudePermissionModes.includes(claudePermissionMode)
-  )
-  const cursorPermissionsAvailable = Boolean(
-    session?.backend === 'cursor'
-    && cursorBackendAvailable(health, catalog)
-  )
   const codexGoalsAvailable = session?.backend === 'codex'
     && codexControls?.available === true
     && codexControls.features?.goals !== false
@@ -793,33 +776,26 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   }
   const commandAvailable = useCallback((command: ComposerCommand): boolean => {
     if (!session) return false
-    if (window.agentsDock.sharedChat && !['goal', 'permissions', 'reasoning', 'model', 'plan', 'schedule', 'attach'].includes(command.id)) return false
+    if (window.agentsDock.sharedChat && !['goal', 'reasoning', 'model', 'schedule', 'attach'].includes(command.id)) return false
     if (command.provider) return command.provider.command.kind.length > 0
       && (session.backend !== 'opencode' || openCodeProviderCommandsAvailable(health))
     if (command.id === 'chat') return crossChatSupported
-    if (command.id === 'mail') return !teamMessagesAdvertised
+    if (command.id === 'mail') return TEAM_NETWORK_UI_ENABLED && !teamMessagesAdvertised
     if (command.id === 'goal') {
       if (session.backend === 'claude') return claudeGoalsAvailable
       return codexGoalsAvailable
     }
-    if (command.id === 'permissions') return codexPermissionsAvailable || claudePermissionsAvailable || cursorPermissionsAvailable || session.backend === 'opencode' && opencodeBackendAvailable(health, catalog)
     if (command.id === 'reasoning') {
       return session.backend !== 'cursor' && session.backend !== 'opencode'
         && runtimeEffortOptions(catalog, session.backend, session.model, session.effort, session.codex_provider, session.codex_provider_catalog)
         .some(option => Boolean(option.value))
     }
     if (command.id === 'mcp') return session.backend === 'claude' && claudeMcpAvailable
-    if (command.id === 'plan') {
-      return session.backend === 'claude'
-        && claudePermissionsAvailable
-        && Boolean(claudeControls?.permission_modes?.includes('plan'))
-        && claudePermissionModes.includes('plan')
-    }
     if (command.id === 'schedule') return health?.capabilities?.scheduled_jobs?.available === true
     if (command.id === 'import') return localSessionImportSupported(health)
     if (command.id === 'split') return !splitOpen
     return true
-  }, [catalog, claudeControls?.permission_modes, claudeGoalsAvailable, claudeMcpAvailable, claudePermissionModes, claudePermissionsAvailable, codexGoalsAvailable, codexPermissionsAvailable, crossChatSupported, cursorPermissionsAvailable, healthRevision, session, splitOpen, teamMessagesAdvertised])
+  }, [catalog, claudeGoalsAvailable, claudeMcpAvailable, codexGoalsAvailable, crossChatSupported, healthRevision, session, splitOpen, teamMessagesAdvertised])
   const activeProviderCommandState: ProviderCommandLoadState = providerCommandState.key === providerCommandsKey
     ? providerCommandState
     : { key: providerCommandsKey, status: 'idle', snapshot: null }
@@ -851,7 +827,6 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     setRuntimeMenuOpen(false)
     setRuntimeMenuSection(null)
   })
-  useTransientClose(permissionMenuOpen, () => setPermissionMenuOpen(false))
   useTransientClose(workingDirectoryOpen, () => setWorkingDirectoryOpen(false))
 
   useEffect(() => {
@@ -968,7 +943,6 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     setCommandTrigger(null)
     setRuntimeMenuOpen(false)
     setRuntimeMenuSection(null)
-    setPermissionMenuOpen(false)
     setMcpDialogOpen(false)
     setClaudeGoalOpen(false)
     setWorkingDirectoryOpen(false)
@@ -1102,11 +1076,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
           : []),
         ...(validated.teamReferences.length || teamReferencesDirtyRef.current
           ? [Promise.resolve().then(() => setWorkspacePreference(draftPreferenceScope(context), teamReferencesPreferenceKey(contextSessionId), validated.teamReferences))]
-          : []),
-        awaitAllClaudePermissionUpdates(),
-        awaitAllCodexPermissionUpdates(),
-        awaitAllOpenCodePermissionUpdates(),
-        awaitAllCursorPermissionUpdates()
+          : [])
       ]).then(() => {
         referencesDirtyRef.current = false
         teamReferencesDirtyRef.current = false
@@ -1149,6 +1119,19 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     }, 450)
     return () => window.clearTimeout(timer)
   }, [activeProfileId, draft, profileGeneration, references, selectedId, serverIdentity, teamReferences])
+
+  // Entering edit mode replaces the textarea with the seeded original prompt.
+  // Leaving it is handled by the cancel button (draft restore) or by a
+  // successful send (composer already consumed), never by this effect.
+  const editingRunId = editingTurn?.runId ?? null
+  useEffect(() => {
+    if (!editingRunId || !selectedId) return
+    const seeded = useAppStore.getState().drafts[selectedId] ?? ''
+    draftRef.current = seeded
+    draftDirtyRef.current = true
+    setDraft(seeded)
+    textareaRef.current?.focus()
+  }, [editingRunId, selectedId])
 
   useEffect(() => {
     const current = useAppStore.getState()
@@ -1208,6 +1191,15 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     }
   }, [activeProfileId, profileGeneration, routeHintsSupported, selectedId, serverIdentity, storedTeamReferences, teamReferences.length])
 
+  const cancelEditingTurn = () => {
+    if (!selectedId) return
+    useAppStore.getState().cancelEditingTurn(selectedId)
+    const restored = useAppStore.getState().drafts[selectedId] ?? ''
+    draftRef.current = restored
+    draftDirtyRef.current = true
+    setDraft(restored)
+  }
+
   const send = async (steer = false, promptOverride?: string, consumeComposer = true) => {
     if (writeDisabled) return
     if (steer && running && session?.backend === 'opencode') { useAppStore.getState().setError(t('opencode.steerUnavailable')); return }
@@ -1259,7 +1251,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     const outgoingTeamReferences = canonicalOutgoing.teamReferences
     if (consumeComposer && uploadPaths.length > 0) return
     if (!outgoing.trim() && (!consumeComposer || uploads.length === 0)) return
-    if (consumeComposer && outgoing.trim().split(/\s/, 1)[0] === '/mail') {
+    if (TEAM_NETWORK_UI_ENABLED && consumeComposer && outgoing.trim().split(/\s/, 1)[0] === '/mail') {
       const capability = health?.capabilities?.agent_team_mail_v1
       if (
         capability?.available !== true
@@ -1336,6 +1328,13 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       else setMcpDialogOpen(true)
       return
     }
+    const editingTurnState = consumeComposer ? useAppStore.getState().editingTurn[session.id] : null
+    if (editingTurnState) {
+      // The provider and history must be rewound before this send is admitted;
+      // a refused rewind keeps the edit banner so the user can retry or cancel.
+      if (!await useAppStore.getState().rewindSession(session.id, editingTurnState.runId)) return
+      if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) return
+    }
     const admissionToken = useAppStore.getState().beginTurnAdmission(session.id)
     if (!admissionToken) return
     const staged = useAppStore.getState().stagePendingTurnSubmission(session.id, admissionToken, {
@@ -1384,37 +1383,6 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       if (diagnostic && !['ready', 'unknown'].includes(diagnostic.status) && !nativeClaudeAuthRetry) {
         useAppStore.getState().setError([diagnostic.message, diagnostic.action].filter(Boolean).join(' '))
         return
-      }
-      if (session.backend === 'codex') {
-        try {
-          await awaitCodexPermissionUpdates(session.id)
-        } catch (error) {
-          reportActionError(error)
-          return
-        }
-        if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) return
-      }
-      if (session.backend === 'claude') {
-        try {
-          await awaitClaudePermissionUpdates(session.id)
-        } catch (error) {
-          reportActionError(error)
-          return
-        }
-        if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) return
-      }
-      if (session.backend === 'cursor') {
-        try {
-          await awaitCursorPermissionUpdates(session.id)
-        } catch (error) {
-          reportActionError(error)
-          return
-        }
-        if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) return
-      }
-      if (session.backend === 'opencode') {
-        try { await awaitOpenCodePermissionUpdates(session.id) } catch (error) { reportActionError(error); return }
-        if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) return
       }
       const currentRuntimeState = useAppStore.getState()
       const currentSession = currentRuntimeState.sessions.find(candidate => candidate.id === session.id)
@@ -1713,8 +1681,6 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       setMcpDialogOpen(true)
     } else if (command.id === 'new') {
       void useAppStore.getState().requestNewChat()
-    } else if (command.id === 'permissions' || command.id === 'plan') {
-      setPermissionMenuOpen(true)
     } else if (command.id === 'schedule') {
       useAppStore.getState().setModal('job', true)
     } else if (command.id === 'settings') {
@@ -1860,7 +1826,8 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         </fieldset>
       {(uploads.length > 0 || uploadPaths.length > 0) && <AttachmentShelf sessionId={session.id} profileId={activeProfileId} profileGeneration={profileGeneration} files={uploads} pending={uploadPaths} />}
       <RuntimeHealthNotice backend={session.backend} codexProvider={session.codex_provider} sessionId={session.id} />
-      {selectedRuntimeError && !(session.backend === 'cursor' && !cursorPermissionsAvailable) && <span className="chat-reference-warning">{selectedRuntimeError}</span>}
+      {editingTurn && <span className="composer-sync-status composer-editing-turn" role="status">{t('composer.rewind.editingTurn')} <button type="button" className="quiet-button" onClick={cancelEditingTurn}>{t('composer.rewind.cancel')}</button></span>}
+      {selectedRuntimeError && <span className="chat-reference-warning">{selectedRuntimeError}</span>}
       {activeInboundDeliveryKind && <span className={activeInboundDeliveryKind === 'unknown' ? 'composer-sync-status' : 'chat-reference-warning'} role="status">{activeInboundDeliveryKind === 'unknown'
         ? t("ui.Composer.Composer.an_active_turn_is_running_while_chat_sync__2265ac1")
         : activeInboundDeliveryKind === 'secure_peer'
@@ -2145,7 +2112,6 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         selectedIndex={commandIndex}
         session={session}
         catalog={catalog}
-        claudePermissionMode={claudePermissionMode ?? undefined}
         loadStatus={activeProviderCommandState.status}
         onRefresh={() => void loadProviderCommands(true)}
         onHighlight={setCommandIndex}
@@ -2210,13 +2176,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
             }}
             focusSection={runtimeMenuSection}
           />
-          {session.backend === 'codex' && <CodexPermissionMenu session={session} open={permissionMenuOpen} onOpenChange={setPermissionMenuOpen} />}
           {session.backend === 'codex' && <CodexContextIndicator />}
-          {session.backend === 'claude' && <ClaudePermissionMenu session={session} running={running} open={permissionMenuOpen} onOpenChange={setPermissionMenuOpen} />}
           {session.backend === 'claude' && <ClaudeContextIndicator />}
           {goalControlsAvailable && <button type="button" className="composer-icon" aria-label={goalTitle} title={goalTitle} onClick={openGoalControls}><Goal size={15} /></button>}
-          {session.backend === 'cursor' && <CursorPermissionMenu session={session} running={running} open={permissionMenuOpen} onOpenChange={setPermissionMenuOpen} />}
-          {session.backend === 'opencode' && <OpenCodePermissionMenu session={session} running={running} open={permissionMenuOpen} onOpenChange={setPermissionMenuOpen} />}
         </div>
         <div className="composer-actions">
           {(steeringPending || admitting) && <span className="steering-pending" role="status"><span className="activity-ring" /><span className="steering-pending-label">{
@@ -2849,7 +2811,6 @@ function ComposerCommandPalette({
   selectedIndex,
   session,
   catalog,
-  claudePermissionMode,
   loadStatus,
   onRefresh,
   onHighlight,
@@ -2860,7 +2821,6 @@ function ComposerCommandPalette({
   selectedIndex: number
   session: Session
   catalog: RuntimeCatalog | null
-  claudePermissionMode?: ClaudePermissionMode
   loadStatus: ProviderCommandLoadState['status']
   onRefresh: () => void
   onHighlight: (index: number) => void
@@ -2876,7 +2836,7 @@ function ComposerCommandPalette({
     {groupComposerCommandsByCategory(commands, COMPOSER_COMMAND_CATEGORIES).map(group => <div key={group.id} className="composer-command-group" role="group" aria-label={group.heading}>
       {group.showHeading && <div className="composer-command-section-header" role="presentation">{group.heading}</div>}
       {group.items.map(({ command, index }) => {
-        const value = composerCommandValue(command, session, catalog, claudePermissionMode)
+        const value = composerCommandValue(command, session, catalog)
         return <button
         ref={node => { optionRefs.current[index] = node }}
         id={`${id}-${command.id}`}
@@ -2919,8 +2879,7 @@ function ComposerCommandPalette({
 function composerCommandValue(
   command: ComposerCommand,
   session: Session,
-  catalog: RuntimeCatalog | null,
-  claudePermissionMode?: ClaudePermissionMode
+  catalog: RuntimeCatalog | null
 ): string {
   if (command.provider) return command.provider.command.invocation
   if (command.id === 'model') {
@@ -2931,7 +2890,6 @@ function composerCommandValue(
     return runtimeEffortOptions(catalog, session.backend, session.model, session.effort, session.codex_provider, session.codex_provider_catalog)
       .find(option => option.value === (session.effort ?? ''))?.label ?? 'Default'
   }
-  if (command.id === 'plan') return claudePermissionMode === 'plan' ? 'On' : 'Choose'
   if (command.id === 'workdir') {
     const cwd = session.cwd?.trim()
     if (!cwd) return t("ui.Composer.composerCommandValue.server_default_42b9983")
@@ -2954,8 +2912,6 @@ function composerCommandIcon(command: ComposerCommand) {
     case 'mcp': return <Network size={15} />
     case 'model': return <Gauge size={15} />
     case 'new': return <MessageSquarePlus size={15} />
-    case 'permissions': return <Shield size={15} />
-    case 'plan': return <ListOrdered size={15} />
     case 'reasoning': return <Sparkles size={15} />
     case 'schedule': return <CalendarClock size={15} />
     case 'settings': return <Settings size={15} />
@@ -3303,7 +3259,7 @@ function RuntimeMenu({
           align="start"
         >
           <DropdownMenu.Label className="menu-label">{t("ui.Composer.RuntimeMenu.model_5e2c614")}</DropdownMenu.Label>
-          {models.map(option => <DropdownMenu.CheckboxItem data-runtime-section="model" key={option.value || 'default'} className="menu-item" disabled={option.locked} title={option.locked ? option.locked_reason ?? undefined : undefined} checked={(session.model ?? '') === option.value} onCheckedChange={() => selectModel(option.value)}>{option.label}{option.locked && !isCustomCodex ? <span className="menu-item-locked-hint">{" "}{t("ui.Composer.upgrade_required_838a00a")}</span> : null}</DropdownMenu.CheckboxItem>)}
+          {models.map(option => <DropdownMenu.CheckboxItem data-runtime-section="model" key={option.value || 'default'} className="menu-item" disabled={option.locked} title={option.locked ? option.locked_reason ?? undefined : undefined} checked={(session.model ?? '') === option.value} onCheckedChange={() => selectModel(option.value)}>{option.description?.trim() ? <span className="menu-item-copy"><span>{option.label}</span><small className="menu-item-description">{option.description.trim()}</small></span> : option.label}{option.locked && !isCustomCodex ? <span className="menu-item-locked-hint">{" "}{t("ui.Composer.upgrade_required_838a00a")}</span> : null}</DropdownMenu.CheckboxItem>)}
           {isCustomCodex && <>
             <DropdownMenu.Item className="menu-item" onSelect={() => { setManualModel(session.model ?? ''); setManualModelOpen(true) }}>{t('codexProvider.manualModel')}</DropdownMenu.Item>
             <CodexModelDiscovery menu sessionId={session.id} />

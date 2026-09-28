@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
@@ -39,30 +39,73 @@ const gamma: PublicServerProfile = {
   serverIdentity: 'server-gamma'
 }
 
+// The local hub and two remotes it registered; remotes are proxied through the hub URL.
+const hub: PublicServerProfile = {
+  id: 'hub',
+  name: 'This Mac',
+  serverUrl: 'http://127.0.0.1:7850',
+  serverIdentity: 'server-hub',
+  hasAccessToken: true,
+  serverSetupComplete: true,
+  connectionState: 'online',
+  cachedUnreadCount: 0
+}
+
+const osmo: PublicServerProfile = {
+  id: 'osmo',
+  name: 'OSMO',
+  serverUrl: 'http://127.0.0.1:7850/api/remote/abc123def456',
+  sshHost: 'osmo_9000',
+  serverIdentity: 'server-osmo',
+  hasAccessToken: true,
+  serverSetupComplete: true,
+  connectionState: 'cached',
+  cachedUnreadCount: 0
+}
+
+const gb300: PublicServerProfile = {
+  ...osmo,
+  id: 'gb300',
+  name: 'GB300',
+  serverUrl: 'http://127.0.0.1:7850/api/remote/fedcba654321',
+  sshHost: 'nv_gb300',
+  serverIdentity: 'server-gb300'
+}
+
 describe('ServerManagement', () => {
   const list = vi.fn()
-  const add = vi.fn()
   const update = vi.fn()
   const remove = vi.fn()
   const reorder = vi.fn()
-  const testConnection = vi.fn()
+  const remoteDeploy = vi.fn()
+  const remoteCancel = vi.fn()
+  const remoteRemove = vi.fn()
+  const pairingUrl = vi.fn()
+  const copyToken = vi.fn()
   const switchServer = vi.fn()
 
   beforeEach(() => {
     vi.mocked(trackEvent).mockClear()
     list.mockReset().mockResolvedValue([alpha, beta])
-    add.mockReset().mockResolvedValue(beta)
     update.mockReset().mockResolvedValue(alpha)
     remove.mockReset().mockResolvedValue(true)
     reorder.mockReset().mockResolvedValue([beta, alpha])
-    testConnection.mockReset().mockResolvedValue({ ok: true, server_identity: 'server-beta' })
+    remoteDeploy.mockReset().mockResolvedValue(gb300)
+    remoteCancel.mockReset().mockResolvedValue(undefined)
+    remoteRemove.mockReset().mockResolvedValue(undefined)
+    pairingUrl.mockReset().mockResolvedValue('http://nvmac.tail46daa8.ts.net:7850')
+    copyToken.mockReset().mockResolvedValue(true)
     switchServer.mockReset().mockImplementation(async (profileId: string) => {
       useAppStore.setState(state => ({ activeProfileId: profileId, profileGeneration: state.profileGeneration + 1 }))
       return true
     })
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { servers: { list, add, update, remove, reorder, testConnection } } as unknown as AgentsDockAPI
+      value: {
+        servers: { list, update, remove, reorder },
+        remoteServers: { deploy: remoteDeploy, cancel: remoteCancel, remove: remoteRemove },
+        hub: { pairingUrl, copyToken }
+      } as unknown as AgentsDockAPI
     })
     useAppStore.setState({
       profiles: [alpha],
@@ -78,45 +121,88 @@ describe('ServerManagement', () => {
     vi.restoreAllMocks()
   })
 
-  it('tests a new connection, saves the profile, and switches without reloading', async () => {
+  it('deploys a remote through the local hub, refreshes the list and switches to it', async () => {
+    list.mockResolvedValue([hub, osmo, gb300])
+    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })
     const user = userEvent.setup()
     render(<ServerManagement addRequest={1} />)
 
-    await user.type(screen.getByLabelText('Name on this Mac'), 'Beta')
-    await user.type(screen.getByLabelText('Server URL'), 'https://beta.example:7850')
-    await user.type(screen.getByLabelText('Access token'), 'private-token')
-    await user.click(screen.getByRole('button', { name: 'Test connection' }))
-
-    await waitFor(() => expect(testConnection).toHaveBeenCalledWith({
-      profileId: undefined,
-      serverUrl: 'https://beta.example:7850',
-      accessToken: 'private-token'
-    }))
-    expect(await screen.findByText('Connected · server-beta')).toBeInTheDocument()
-
+    await user.type(screen.getByLabelText('SSH host'), 'nv_gb300')
     await user.click(screen.getByRole('button', { name: 'Add & switch' }))
-    await waitFor(() => expect(add).toHaveBeenCalledWith({
-      name: 'Beta',
-      serverUrl: 'https://beta.example:7850',
-      accessToken: 'private-token',
-      serverIdentity: 'server-beta',
-      serverSetupComplete: true
-    }))
-    expect(switchServer).toHaveBeenCalledWith('beta')
+
+    await waitFor(() => expect(switchServer).toHaveBeenCalledWith('gb300'))
+    expect(remoteDeploy).toHaveBeenCalledWith(
+      { profileId: 'hub', profileGeneration: 1, serverIdentity: 'server-hub' },
+      { sshHost: 'nv_gb300', installDir: '~/.agentsdock-server', name: undefined }
+    )
+    expect(useAppStore.getState().profiles.map(profile => profile.id)).toEqual(['hub', 'osmo', 'gb300'])
+    expect(trackEvent).toHaveBeenCalledWith('server_added', { success: true })
     expect(screen.queryByRole('button', { name: 'Add & switch' })).not.toBeInTheDocument()
   })
 
-  it('shows an unavailable health response as a failed connection test', async () => {
-    testConnection.mockResolvedValueOnce({ ok: false })
+  it('cancels an in-flight deployment through the hub', async () => {
+    let rejectDeploy!: (error: Error) => void
+    remoteDeploy.mockImplementation(() => new Promise<PublicServerProfile>((_resolve, reject) => { rejectDeploy = reject }))
+    remoteCancel.mockImplementation(async () => rejectDeploy(new Error('Deployment cancelled.')))
+    useAppStore.setState({ profiles: [hub], activeProfileId: hub.id })
     const user = userEvent.setup()
     render(<ServerManagement addRequest={1} />)
 
-    await user.type(screen.getByLabelText('Server URL'), 'https://offline.example:7850')
-    await user.click(screen.getByRole('button', { name: 'Test connection' }))
+    await user.type(screen.getByLabelText('SSH host'), 'nv_gb300')
+    await user.click(screen.getByRole('button', { name: 'Add & switch' }))
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
 
-    expect(await screen.findByText('Server health check reported unavailable.')).toBeInTheDocument()
-    expect(screen.queryByText('Connected')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Add & switch' })).toBeDisabled()
+    await waitFor(() => expect(remoteCancel).toHaveBeenCalledOnce())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Deployment cancelled.')
+    expect(trackEvent).toHaveBeenCalledWith('server_added', { success: false })
+    expect(switchServer).not.toHaveBeenCalled()
+  })
+
+  it('removes a hub-managed remote through the hub and refreshes the list', async () => {
+    list.mockResolvedValue([hub])
+    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+
+    await user.click(screen.getByRole('button', { name: 'Remove OSMO' }))
+    expect(remoteRemove).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Remove OSMO' }))
+
+    await waitFor(() => expect(remoteRemove).toHaveBeenCalledWith({ profileId: 'hub', profileGeneration: 1, serverIdentity: 'server-hub' }, 'abc123def456'))
+    expect(remove).not.toHaveBeenCalled()
+    await waitFor(() => expect(useAppStore.getState().profiles.map(profile => profile.id)).toEqual(['hub']))
+  })
+
+  it('shows remotes by SSH host, never offers to delete the hub, and locks changes while a remote is active', () => {
+    useAppStore.setState({ profiles: [hub, osmo, gb300], activeProfileId: hub.id })
+    render(<ServerManagement />)
+
+    expect(screen.getByText('osmo_9000')).toBeInTheDocument()
+    expect(screen.getByText('nv_gb300')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Remove This Mac|Cannot remove active server This Mac/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add server' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Remove OSMO' })).toBeEnabled()
+
+    act(() => useAppStore.setState({ activeProfileId: osmo.id }))
+
+    expect(screen.getByRole('button', { name: 'Add server' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Add server' })).toHaveAttribute('title', 'Switch to the local server first.')
+    expect(screen.getByRole('button', { name: 'Remove GB300' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Remove GB300' })).toHaveAttribute('title', 'Switch to the local server first.')
+    expect(screen.queryByRole('button', { name: /Remove This Mac|Cannot remove active server This Mac/ })).not.toBeInTheDocument()
+  })
+
+  it('shows the phone pairing address and copies the hub token from the main process', async () => {
+    useAppStore.setState({ profiles: [hub], activeProfileId: hub.id })
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+
+    expect(screen.getByText('Pair a phone')).toBeInTheDocument()
+    expect(await screen.findByText('http://nvmac.tail46daa8.ts.net:7850')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Copy token' }))
+
+    await waitFor(() => expect(copyToken).toHaveBeenCalledOnce())
+    expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
   })
 
   it('reveals and focuses the editor when Add server is clicked directly', async () => {
@@ -125,29 +211,14 @@ describe('ServerManagement', () => {
       configurable: true,
       value: scrollIntoView
     })
+    useAppStore.setState({ profiles: [hub], activeProfileId: hub.id })
     const user = userEvent.setup()
     render(<ServerManagement />)
 
     await user.click(screen.getByRole('button', { name: 'Add server' }))
 
-    expect(screen.getByLabelText('Name on this Mac')).toHaveFocus()
+    expect(screen.getByLabelText('SSH host')).toHaveFocus()
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
-  })
-
-  it('reuses the saved profile when a URL alias resolves to its canonical identity', async () => {
-    testConnection.mockResolvedValueOnce({ ok: true, server_identity: alpha.serverIdentity })
-    const user = userEvent.setup()
-    render(<ServerManagement addRequest={1} />)
-
-    await user.type(screen.getByLabelText('Name on this Mac'), 'Alpha alias')
-    await user.type(screen.getByLabelText('Server URL'), 'https://alpha-alias.example:7850')
-    await user.click(screen.getByRole('button', { name: 'Test connection' }))
-
-    expect(await screen.findByText('Already saved as “Alpha”')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Use Alpha' }))
-
-    await waitFor(() => expect(switchServer).toHaveBeenCalledWith(alpha.id))
-    expect(add).not.toHaveBeenCalled()
   })
 
   it('protects the active profile and requires confirmation before removing another profile', async () => {
@@ -162,6 +233,7 @@ describe('ServerManagement', () => {
     await user.click(screen.getByRole('button', { name: 'Remove Beta' }))
 
     await waitFor(() => expect(remove).toHaveBeenCalledWith('beta'))
+    expect(remoteRemove).not.toHaveBeenCalled()
     expect(useAppStore.getState().activeProfileId).toBe('alpha')
     expect(useAppStore.getState().profiles.map(profile => profile.id)).toEqual(['alpha'])
   })
@@ -276,22 +348,10 @@ describe('ServerManagement', () => {
     expect(switchServer).not.toHaveBeenCalled()
   })
 
-  it('reopens an active profile through the guarded store switch after a connection edit', async () => {
-    list.mockResolvedValue([{ ...alpha, serverUrl: 'https://new-alpha.example:7850' }])
-    const user = userEvent.setup()
-    render(<ServerManagement />)
-
-    await user.click(screen.getByRole('button', { name: 'Edit Alpha' }))
-    await user.clear(screen.getByLabelText('Server URL'))
-    await user.type(screen.getByLabelText('Server URL'), 'https://new-alpha.example:7850')
-    await user.click(screen.getByRole('button', { name: 'Save' }))
-
-    await waitFor(() => expect(switchServer).toHaveBeenCalledWith('alpha', true, { serverUrl: 'https://new-alpha.example:7850' }))
-    expect(update).not.toHaveBeenCalled()
-  })
-
-  it('keeps an active connection edit pending until the guarded store switch completes', async () => {
-    list.mockResolvedValue([{ ...alpha, serverUrl: 'https://new-alpha.example:7850' }])
+  it('keeps an active identity reset pending until the guarded store switch completes', async () => {
+    const changed = { ...alpha, lastConnectionError: 'Server identity changed from server-alpha to server-new.' }
+    useAppStore.setState({ profiles: [changed] })
+    list.mockResolvedValue([{ ...changed, serverIdentity: null, lastConnectionError: null }])
     let releaseSwitch!: () => void
     switchServer.mockImplementationOnce(() => new Promise<boolean>(resolve => {
       releaseSwitch = () => {
@@ -303,32 +363,14 @@ describe('ServerManagement', () => {
     render(<ServerManagement />)
 
     await user.click(screen.getByRole('button', { name: 'Edit Alpha' }))
-    await user.clear(screen.getByLabelText('Server URL'))
-    await user.type(screen.getByLabelText('Server URL'), 'https://new-alpha.example:7850')
+    await user.click(screen.getByLabelText(/I confirm this URL may establish a new server identity/))
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => expect(switchServer).toHaveBeenCalledWith('alpha', true, { serverUrl: 'https://new-alpha.example:7850' }))
+    await waitFor(() => expect(switchServer).toHaveBeenCalledWith('alpha', true, { resetServerIdentity: true }))
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
     expect(update).not.toHaveBeenCalled()
     releaseSwitch()
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument())
-  })
-
-  it('invalidates a successful connection test as soon as connection inputs change', async () => {
-    let resolveTest!: (value: { ok: true; server_identity: string }) => void
-    testConnection.mockImplementation(() => new Promise(resolve => { resolveTest = resolve }))
-    const user = userEvent.setup()
-    render(<ServerManagement addRequest={1} />)
-
-    await user.type(screen.getByLabelText('Server URL'), 'https://first.example:7850')
-    await user.click(screen.getByRole('button', { name: 'Test connection' }))
-    await user.clear(screen.getByLabelText('Server URL'))
-    await user.type(screen.getByLabelText('Server URL'), 'https://second.example:7850')
-    resolveTest({ ok: true, server_identity: 'first-server' })
-
-    await waitFor(() => expect(testConnection).toHaveBeenCalled())
-    expect(screen.queryByText(/Connected · first-server/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Add & switch' })).toBeDisabled()
   })
 
   it('requires explicit confirmation before clearing a changed canonical identity', async () => {
@@ -346,60 +388,6 @@ describe('ServerManagement', () => {
 
     await waitFor(() => expect(switchServer).toHaveBeenCalledWith('alpha', true, { resetServerIdentity: true }))
     expect(update).not.toHaveBeenCalled()
-  })
-
-  it('tracks a successful connection test and a successful server add', async () => {
-    const user = userEvent.setup()
-    render(<ServerManagement addRequest={1} />)
-
-    await user.type(screen.getByLabelText('Server URL'), 'https://beta.example:7850')
-    await user.type(screen.getByLabelText('Access token'), 'private-token')
-    await user.click(screen.getByRole('button', { name: 'Test connection' }))
-
-    await waitFor(() => expect(trackEvent).toHaveBeenCalledWith('connection_tested', { success: true }))
-
-    await user.click(screen.getByRole('button', { name: 'Add & switch' }))
-    await waitFor(() => expect(trackEvent).toHaveBeenCalledWith('server_added', { success: true }))
-  })
-
-  it('keeps a persisted server add successful when the later activation fails', async () => {
-    switchServer.mockResolvedValueOnce(false)
-    const user = userEvent.setup()
-    render(<ServerManagement addRequest={1} />)
-
-    await user.type(screen.getByLabelText('Server URL'), 'https://beta.example:7850')
-    await user.click(screen.getByRole('button', { name: 'Test connection' }))
-    await user.click(screen.getByRole('button', { name: 'Add & switch' }))
-
-    expect(await screen.findByText(/was saved, but AgentsDock could not switch/)).toBeInTheDocument()
-    expect(trackEvent).toHaveBeenCalledWith('server_added', { success: true })
-    expect(trackEvent).not.toHaveBeenCalledWith('server_added', { success: false })
-  })
-
-  it('tracks a failed server add only when persistence fails', async () => {
-    add.mockRejectedValueOnce(new Error('Could not save server.'))
-    const user = userEvent.setup()
-    render(<ServerManagement addRequest={1} />)
-
-    await user.type(screen.getByLabelText('Server URL'), 'https://beta.example:7850')
-    await user.click(screen.getByRole('button', { name: 'Test connection' }))
-    await user.click(screen.getByRole('button', { name: 'Add & switch' }))
-
-    expect(await screen.findByText('Could not save server.')).toBeInTheDocument()
-    expect(trackEvent).toHaveBeenCalledWith('server_added', { success: false })
-    expect(trackEvent).not.toHaveBeenCalledWith('server_added', { success: true })
-  })
-
-  it('tracks a failed connection test without recording a server add', async () => {
-    testConnection.mockResolvedValueOnce({ ok: false })
-    const user = userEvent.setup()
-    render(<ServerManagement addRequest={1} />)
-
-    await user.type(screen.getByLabelText('Server URL'), 'https://offline.example:7850')
-    await user.click(screen.getByRole('button', { name: 'Test connection' }))
-
-    await waitFor(() => expect(trackEvent).toHaveBeenCalledWith('connection_tested', { success: false }))
-    expect(trackEvent).not.toHaveBeenCalledWith('server_added', expect.anything())
   })
 
   it('tracks a successful server switch from the Use button', async () => {

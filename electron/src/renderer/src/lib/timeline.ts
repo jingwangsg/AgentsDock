@@ -22,6 +22,10 @@ export interface MessageItem {
   /** Renderer-only outbound message that has not been accepted by AgentsServer yet. */
   pending?: boolean
   pendingPhase?: 'preflight' | 'submitting' | 'submitted'
+  /** `turn_started` run a rewind targets; absent for pending rows, imported deliveries, and steer slices. */
+  runId?: string
+  /** Checkpoint commit written with this turn's `code_diff`; only then can the workspace be restored. */
+  checkpointCommit?: string
 }
 
 export interface TraceItem {
@@ -97,6 +101,8 @@ export interface TurnItem {
   /** Presentation-only native-goal input slice, with unchanged runtime ownership. */
   afterSeq?: number
   throughSeq?: number
+  /** Pre-turn workspace checkpoint, from this run's `code_diff` or hidden `turn_checkpoint`. */
+  checkpointCommit?: string
 }
 
 export interface TimelineProjectionScope {
@@ -169,6 +175,7 @@ const hiddenTypes = new Set([
   'codex_thread_status', 'codex_goal_updated', 'codex_goal_cleared', 'codex_token_usage',
   'emergency_alert_acknowledged',
   'claude_background_task_reconciliation_consumed',
+  'turn_checkpoint',
 ])
 const jobTypes = new Set(['job_created', 'job_ran', 'job_started', 'job_deferred', 'job_finished', 'job_error'])
 const jobStatusTypes = new Set([
@@ -576,6 +583,14 @@ export class TimelineProjector {
     ) {
       this.retireActiveTurnAtIdle(event.ts)
     }
+    // Hidden, but it carries the restore target for its turn; a shell-written
+    // change has no agent-attributed code_diff to carry the commit instead.
+    if (event.type === 'turn_checkpoint') {
+      const turn = event.run_id ? this.turnByRun.get(event.run_id) : undefined
+      const commit = event.checkpoint_commit?.trim()
+      if (turn && commit) this.writableTurn(turn).checkpointCommit = commit
+      return
+    }
     if (hiddenTypes.has(event.type)) return
 
     const interactionAuditKey = providerInteractionAuditKey(event)
@@ -738,6 +753,7 @@ export class TimelineProjector {
     if (traceTypes.has(event.type)) {
       const turn = this.writableTurn(this.ensureTurn(event))
       turn.trace.push(event)
+      if (event.type === 'code_diff' && event.checkpoint_commit?.trim()) turn.checkpointCommit = event.checkpoint_commit.trim()
       return
     }
 
@@ -1909,11 +1925,17 @@ function renderTimelineItem(item: TimelineItem): RenderTimelineItem[] {
         seq: item.user.seq, files: inputFiles
       })
     }
-    else rows.push({
-      kind: 'message', id: `${item.id}:user`, key: `${item.key}:user:${item.user.id}`,
-      seq: item.user.seq, event: item.user, events: [item.user], role: 'user',
-      files: inputFiles
-    })
+    else {
+      const runId = item.user.type === 'turn_started' ? item.user.run_id?.trim() || undefined : undefined
+      const checkpointCommit = runId ? item.checkpointCommit : undefined
+      rows.push({
+        kind: 'message', id: `${item.id}:user`, key: `${item.key}:user:${item.user.id}`,
+        seq: item.user.seq, event: item.user, events: [item.user], role: 'user',
+        files: inputFiles,
+        ...(runId ? { runId } : {}),
+        ...(checkpointCommit ? { checkpointCommit } : {})
+      })
+    }
   }
   const finalAssistantEvents = item.assistant.filter(event => !isPublicCommentary(event))
   const sourceEvents = deduplicateEvents([
@@ -2197,12 +2219,19 @@ function containsInOrder(value: string, parts: string[]): boolean {
   return true
 }
 
+/** Codex memory citations: provider-internal markup that Codex's own UI hides. */
+const PROVIDER_INTERNAL_MARKUP = /[ \t]*<oai-mem-citation>[\s\S]*?<\/oai-mem-citation>[ \t]*/gi
+
+export function stripProviderInternalMarkup(value: string): string {
+  return value.replace(PROVIDER_INTERNAL_MARKUP, '')
+}
+
 function normalizeAssistantOutput(value: string): string {
-  return value.replace(/\s+/g, ' ').trim()
+  return stripProviderInternalMarkup(value).replace(/\s+/g, ' ').trim()
 }
 
 export function messageText(event: Event): string {
-  const text = event.result_text || event.text || event.prompt || printableEventValue(event.message) || printableEventValue(event.error) || event.output || ''
+  const text = stripProviderInternalMarkup(event.result_text || event.text || event.prompt || printableEventValue(event.message) || printableEventValue(event.error) || event.output || '')
   return !hasProviderUserProvenance(event)
     && (event.type === 'turn_started' || event.type === 'turn_queued' || event.type === 'turn_queue_run_now' || isNativeGoalSteerEvent(event))
     ? stripInjectedProviderAuthority(text)
@@ -2746,9 +2775,10 @@ function structuredToolChanges(events: Event[]): Map<string, StructuredToolChang
       if (!candidate || Array.isArray(candidate) || typeof candidate !== 'object') continue
       const rawPath = typeof candidate.path === 'string' ? candidate.path : candidate.filePath
       const path = typeof rawPath === 'string' ? rawPath.trim() : ''
-      const diff = typeof candidate.diff === 'string' ? candidate.diff.trim() : ''
-      if (!path || !diff || /[\r\n\0]/.test(path)) continue
+      const rawDiff = typeof candidate.diff === 'string' ? candidate.diff.trim() : ''
+      if (!path || !rawDiff || /[\r\n\0]/.test(path)) continue
       const operation = structuredChangeOperation(candidate.kind)
+      const diff = structuredChangeDiff(rawDiff, operation)
       const identity = `${toolId || event.id}\0${path}\0${operation}\0${diff}`
       if (seenChanges.has(identity)) continue
       seenChanges.add(identity)
@@ -2771,6 +2801,24 @@ function structuredToolChanges(events: Event[]): Map<string, StructuredToolChang
     }
   }
   return changesByPath
+}
+
+/**
+ * Codex app-server sends whole-file bodies for added and deleted files (no
+ * `+`/`-` prefixes), so they counted as +0 -0 and rendered as context. Turn
+ * them into one-sided hunks; genuine unified diffs pass through untouched.
+ */
+function structuredChangeDiff(diff: string, operation: 'Add' | 'Update' | 'Delete'): string {
+  if (operation === 'Update') return diff
+  const lines = diff.split('\n')
+  // A real unified diff carries a hunk header; a whole-file body of a
+  // Markdown list ("- item") must not be mistaken for one.
+  const alreadyDiff = lines.some(line => line.startsWith('@@ '))
+    && lines.every(line => line === '' || /^(?:[ +-]|@@ |\\ No newline)/.test(line))
+  if (alreadyDiff && lines.some(line => /^[+-]/.test(line))) return diff
+  const prefix = operation === 'Add' ? '+' : '-'
+  const hunk = operation === 'Add' ? `@@ -0,0 +1,${lines.length} @@` : `@@ -1,${lines.length} +0,0 @@`
+  return [hunk, ...lines.map(line => prefix + line)].join('\n')
 }
 
 function isApplyPatchTool(name: string): boolean {

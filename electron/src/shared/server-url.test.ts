@@ -9,4 +9,9 @@ describe('normalizeServerURL', () => {
   it('removes only a health suffix, query, hash, and trailing slash', () => {
     expect(normalizeServerURL('https://dock.example/api/health/?x=1#status')).toBe('https://dock.example')
   })
+
+  it('keeps a hub proxy path prefix (/api/remote/{id}) so remote profiles survive normalization', () => {
+    expect(normalizeServerURL('http://127.0.0.1:7850/api/remote/abc123/')).toBe('http://127.0.0.1:7850/api/remote/abc123')
+    expect(normalizeServerURL('http://127.0.0.1:7850/api/remote/abc123')).toBe('http://127.0.0.1:7850/api/remote/abc123')
+  })
 })

@@ -3892,6 +3892,39 @@ describe('parseUnifiedDiff', () => {
     expect(source).not.toContain('-e')
   })
 
+  it('treats whole-file bodies of added and deleted files as additions and deletions', () => {
+    // Codex app-server sends the full file for kind add/delete without +/- prefixes.
+    const events = [
+      event(1, 'tool_started', {
+        tool: { id: 'patch-1', name: 'apply_patch', input: { changes: [
+          { path: '/Users/me/.agentsdock/canvases/s/board.canvas.tsx', kind: { type: 'add' }, diff: 'import { Card } from \'@zed/canvas\';\n\nconst rows = [\n  { id: 1 },\n];' },
+          { path: '/Users/me/old.txt', kind: 'delete', diff: 'gone\n- still content, not a diff marker' }
+        ] } }
+      })
+    ]
+
+    const files = parseReviewableDiff(extractStructuredToolDiff(events))
+    expect(files).toMatchObject([
+      { path: '/Users/me/.agentsdock/canvases/s/board.canvas.tsx', additions: 5, deletions: 0 },
+      { path: '/Users/me/old.txt', additions: 0, deletions: 2 }
+    ])
+    expect(files[0].lines.filter(line => line.kind === 'add')).toHaveLength(5)
+    expect(files[1].lines.filter(line => line.kind === 'remove').map(line => line.text)).toEqual(['gone', '- still content, not a diff marker'])
+    expect(summarizeStructuredToolDiff(events)).toMatchObject({ filesChanged: 2, additions: 5, deletions: 2 })
+  })
+
+  it('does not mistake an added Markdown list for an already-prefixed diff', () => {
+    const events = [
+      event(1, 'tool_started', {
+        tool: { id: 'patch-2', name: 'apply_patch', input: { changes: [
+          { path: '/Users/me/notes.md', kind: { type: 'add' }, diff: '- first\n- second\n\n- third' }
+        ] } }
+      })
+    ]
+    expect(parseReviewableDiff(extractStructuredToolDiff(events))).toMatchObject([{ path: '/Users/me/notes.md', additions: 4, deletions: 0 }])
+    expect(summarizeStructuredToolDiff(events)).toMatchObject({ additions: 4, deletions: 0 })
+  })
+
   it('parses every file and hunk in a complete Git patch without advancing metadata lines', () => {
     const files = parseUnifiedDiff([
       'diff --git a/a.ts b/a.ts',

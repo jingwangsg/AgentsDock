@@ -2,6 +2,7 @@
 import { t, getLocale } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { AlertTriangle, CheckCircle2, CircleHelp, RefreshCw, XCircle } from 'lucide-react'
+import { CodexWriterRelease, isActiveWriterError } from './CodexWriterRelease'
 import type { Backend, CodexProvider, Event, RuntimeCatalog, RuntimeDiagnostic } from '@shared/types'
 import {
   opencodeBackendAvailable,
@@ -52,7 +53,7 @@ function useRuntimeRecheck() {
     setRefreshing(true)
     try {
       const runtimeCatalog = runtimeCatalogAfterExplicitRecheck(
-        await window.agentsDock.runtime.catalog(true)
+        await window.agentsDock.runtime.catalog(true, true)
       )
       const refreshedDiagnostics = Object.fromEntries(
         Object.entries(runtimeCatalog.backends).flatMap(([backend, value]) => (
@@ -183,6 +184,9 @@ function RuntimeStatus({
           onClick={() => void onRecheck()}
         >
           <RefreshCw className={refreshing ? 'spin' : ''} size={12} />{" "}{t("ui.RuntimeHealth.RuntimeStatus.recheck_1f47d83")}</button>
+      : null}
+    {compact && sessionId && backend === 'codex' && isActiveWriterError(chatError)
+      ? <CodexWriterRelease sessionId={sessionId} compact />
       : null}
     {!compact && diagnostic?.version ? <code>{diagnostic.version}</code> : null}
   </div>

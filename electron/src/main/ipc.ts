@@ -3,7 +3,9 @@ import type { AppService } from './service'
 import { appLog } from './logger'
 import type { AppUpdateManager } from './updater'
 import { ServerSetupManager } from './server-setup'
+import { localHubPairingUrl } from './local-hub'
 import { acknowledgeWindowCloseFlush, closeWindowAfterRendererFlush } from './window-close'
+import { openInZed } from './open-in-zed'
 import type { LazyTeamHubService } from './team-hub-lazy-service'
 import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, parseBulkImportSessionItems } from '../shared/local-session-import'
 import type { LanguageSettings } from './language'
@@ -208,18 +210,14 @@ export function registerIpc(
   handle('updates:cancel', () => updater.cancel())
   handle('updates:retry-servers', profileId => updater.retryServers(profileId))
   handle('updates:set-track', track => updater.setTrack(track))
-  handle('settings:get', () => service.publicSettings())
-  handle('settings:apply', settings => service.applySettings(settings))
   handle('servers:list', () => service.listServers())
   handle('servers:get-active', () => service.getActiveServer())
-  handle('servers:add', input => service.addServer(input))
   handle('servers:update', (profileId, patch) => service.updateServer(profileId, patch))
   handle('servers:update-and-switch', (profileId, patch) => service.updateServerAndSwitch(profileId, patch))
   handle('servers:remove', profileId => service.removeServer(profileId))
   handle('servers:reorder', profileIds => service.reorderServers(profileIds))
   handle('servers:switch', (profileId, force) => service.switchServer(profileId, force))
   handle('servers:refresh', (profileId, profileGeneration) => service.refreshServer(profileId, profileGeneration))
-  handle('servers:test-connection', input => service.testServerConnection(input))
   handle('servers:restart-status', scope => service.serverRestartStatus(scope))
   handle('servers:restart', (scope, expectedServerInstanceId, forceConfirmation) => forceConfirmation === undefined
     ? service.restartServer(scope, expectedServerInstanceId)
@@ -243,6 +241,14 @@ export function registerIpc(
       if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
     })
   })
+  handleWithEvent('remote-servers:deploy', (event, scope, input) => service.deployRemoteServerViaHub(scope, input, progress => {
+    if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
+  }))
+  handle('remote-servers:cancel', () => service.cancelRemoteDeploy())
+  handle('remote-servers:remove', (scope, remoteId) => service.removeRemoteServer(scope, remoteId))
+  handle('hub:adopt-local-token', () => service.retryLocalHubToken())
+  handle('hub:pairing-url', () => localHubPairingUrl())
+  handle('hub:copy-token', () => service.copyHubToken())
 
   handle('sessions:list', () => service.listSessions())
   handle('sessions:create', input => service.createSession(input))
@@ -251,6 +257,8 @@ export function registerIpc(
   handle('sessions:provider:reload', sessionId => service.reloadProvider(sessionId))
   handle('sessions:remove', sessionId => service.removeSession(sessionId))
   handle('sessions:fork', sessionId => service.forkSession(sessionId))
+  handle('sessions:rewind', (sessionId, toRunId, expectedLatestSeq) => service.rewindSession(sessionId, toRunId, expectedLatestSeq))
+  handle('sessions:restore-checkpoint', (sessionId, runId, expectedRevision) => service.restoreCheckpoint(sessionId, runId, expectedRevision))
   handle('sessions:reorder', (sessionId, relativeTo, placement, targetFolder) => service.reorderSession(sessionId, relativeTo, placement, targetFolder))
   handle('sessions:search-history', (query, limit) => service.searchSessions(query, limit))
   handle('sessions:search-all-profiles', (query, limit) => service.searchAllProfileSessions(query, limit))
@@ -297,7 +305,6 @@ export function registerIpc(
   handle('codex:interaction:resolve', (sessionId, interactionId, response) => (
     service.resolveCodexInteraction(sessionId, interactionId, response)
   ))
-  handle('codex:permission-profiles', sessionId => service.codexPermissionProfiles(sessionId))
   handle('codex:goal:get', sessionId => service.codexGoal(sessionId))
   handle('codex:goal:set', (sessionId, input) => service.setCodexGoal(sessionId, input))
   handle('codex:goal:clear', sessionId => service.clearCodexGoal(sessionId))
@@ -305,6 +312,7 @@ export function registerIpc(
   handle('codex:rollback', (sessionId, input) => service.rollbackCodexThread(sessionId, input))
   handle('codex:review', (sessionId, input) => service.reviewCodexThread(sessionId, input))
   handle('codex:shell', (sessionId, input) => service.shellCodexThread(sessionId, input))
+  handle('codex:kill-writers', sessionId => service.killCodexWriters(sessionId))
   handle('codex:background-terminals', sessionId => service.codexBackgroundTerminals(sessionId))
   handle('codex:background-terminal:terminate', (sessionId, input) => (
     service.terminateCodexBackgroundTerminal(sessionId, input)
@@ -401,6 +409,10 @@ export function registerIpc(
   })
   handle('workspace:info', sessionId => service.workspaceInfo(sessionId))
   handle('workspace:entries', (sessionId, path, offset, limit) => service.workspaceEntries(sessionId, path, offset, limit))
+  handle('canvas:list', sessionId => service.listCanvases(sessionId))
+  handle('canvas:get', (sessionId, name) => service.getCanvas(sessionId, name))
+  handle('canvas:put-state', (sessionId, name, state) => service.putCanvasState(sessionId, name, state))
+  handle('chat:outputs', sessionId => service.chatOutputs(sessionId))
   handle('workspace:search', (sessionId, query, limit) => service.workspaceSearch(sessionId, query, limit))
   handle('workspace:read', (sessionId, path) => service.workspaceFile(sessionId, path))
   handle('workspace:read-absolute', (sessionId, path) => service.absoluteFile(sessionId, path))
@@ -417,7 +429,7 @@ export function registerIpc(
 
   handle('digest:preview', input => service.previewDigest(input))
   handle('digest:send', input => service.sendDigest(input))
-  handle('runtime:catalog', refresh => service.runtime(Boolean(refresh)))
+  handle('runtime:catalog', (refresh, handoff) => service.runtime(Boolean(refresh), Boolean(handoff)))
   handle('runtime:usage', (scope, backend, sessionId, refresh) => service.providerUsage(scope, backend, sessionId, Boolean(refresh)))
   handle('processes:list', sessionId => service.processes(sessionId))
   handle('processes:tail', (sessionId, path, lines) => service.processLog(sessionId, path, lines))
@@ -464,6 +476,7 @@ export function registerIpc(
     await shell.openExternal(parsed.toString())
   })
   handle('native:show-item', path => shell.showItemInFolder(path))
+  handle('native:open-in-zed', input => openInZed(input))
   handle('native:set-badge', count => service.setBadge(count))
   handle('native:notify', payload => service.notify(payload))
   handle('native:log', (scope, message, data) => appLog(`renderer:${scope}`, message, data))

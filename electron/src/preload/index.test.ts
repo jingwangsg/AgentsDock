@@ -110,7 +110,7 @@ describe('preload session IPC bridge', () => {
 
   it('forwards the typed Team Network host choice through setup IPC unchanged', async () => {
     electronHarness.invoke.mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850' })
-    const input = { target: 'ssh' as const, sshHost: 'user@server', port: 7850, track: 'stable' as const, teamHubHost: true }
+    const input = { target: 'local' as const, port: 7850, track: 'stable' as const, teamHubHost: true }
 
     await electronHarness.exposed?.setup.run(input)
 
@@ -232,6 +232,24 @@ describe('preload session IPC bridge', () => {
       'chat /?',
       alertId
     )
+  })
+
+  it('forwards rewind and checkpoint restore on their dedicated session channels', async () => {
+    electronHarness.invoke.mockResolvedValue(undefined)
+
+    await electronHarness.exposed?.sessions.rewind('chat-1', 'run-2', 41)
+    await electronHarness.exposed?.sessions.restoreCheckpoint('chat-1', 'run-2', 'a'.repeat(64))
+
+    expect(electronHarness.invoke).toHaveBeenNthCalledWith(1, 'sessions:rewind', 'chat-1', 'run-2', 41)
+    expect(electronHarness.invoke).toHaveBeenNthCalledWith(2, 'sessions:restore-checkpoint', 'chat-1', 'run-2', 'a'.repeat(64))
+  })
+
+  it('forwards chat outputs on its dedicated channel', async () => {
+    electronHarness.invoke.mockResolvedValue({ outputs: [], sources: [] })
+
+    await electronHarness.exposed?.chat.outputs('chat-1')
+
+    expect(electronHarness.invoke).toHaveBeenCalledWith('chat:outputs', 'chat-1')
   })
 
   it('forwards managed restart status and action with the exact workspace scope', async () => {

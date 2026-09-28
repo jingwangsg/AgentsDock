@@ -2,11 +2,13 @@
 import { getLocale } from '@shared/i18n'
 import { localeOptions } from '@shared/locales'
 import { useLocale } from '../lib/i18n'
+import { acceleratorFromKeyboardEvent, formatAccelerator } from '../lib/hotkey'
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { ArrowRight, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, Command, Copy, Download, ExternalLink, FileText, FolderOpen, GitFork, Import, KeyRound, Laptop, LoaderCircle, Network, RefreshCw, RotateCcw, Search, Server, Sparkles, X } from 'lucide-react'
+import { ArrowRight, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, Copy, Download, FileText, FolderOpen, GitFork, Import, KeyRound, LoaderCircle, RefreshCw, RotateCcw, Search, Server, Sparkles, X } from 'lucide-react'
 import type { AppUpdateStatus, AppUpdateTrack, Backend, BulkImportSessionItem, BulkImportSessionResult, ChatReference, ChatReferenceAction, CoordinatedServerUpdate, CreateJobInput, Health, Job, JobContextMode, JobScheduleKind, LocalSessionCandidate, ServerRestartBlockerSnapshot, ServerSetupCapabilities, ServerSetupProgress, ServerUpdateStatus, ServerUpdateTrack, Session, TeamReference, UpdateJobInput, WorkspaceProfileScope } from '@shared/types'
 import { cursorLocalSessionImportSupported, localSessionImportKey, localSessionImportSupported } from '@shared/local-session-import'
+import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { opencodeBackendAvailable, opencodeBackendUnavailableReason, chatBackendSelection, codexCustomProviderAvailable, cursorBackendAvailable, cursorBackendUnavailableReason, runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, selectableChatBackendChoices, selectableChatBackends, type ChatBackendChoice } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
 import { readAppearance, setAppearanceMode, type AppearanceMode } from '../lib/appearance'
@@ -14,6 +16,7 @@ import { t, useLanguagePreference, type LanguagePreference } from '../lib/i18n'
 import { canonicalizeLocalRouteHints, chatMentionTrigger, chatReferenceDisplayText, currentRouteHintReference, insertChatReference, parseStoredChatReferences, reconcileChatReferences, routeHintMentionsAvailable, supportedCrossChatTargetBackends, validChatReferences, type ChatMentionTrigger } from '../lib/chat-references'
 import { atomicComposerReferenceCaret, atomicComposerReferenceDeletion, atomicComposerReferenceNavigation, insertTeamReference, orderedComposerReferenceSpans, parseStoredTeamReferences, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceText, validComposerReferences, validTeamReferences, type TeamMentionTrigger } from '../lib/team-references'
 import { backendLabel, formatTime, runtimeLabel } from '../lib/format'
+import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 import { useProfileSearch } from '../lib/profile-search'
 import { historyResultsBySession, openSessionHistoryResult, useSessionHistorySearch } from '../lib/session-history-search'
 import { effectiveScheduleKind, formatScheduleWallTime, jobLoopsForever, parseScheduleWallTime, supportedTimezones, validateJobSchedule } from '../lib/job-schedule'
@@ -38,7 +41,6 @@ import { ADD_SERVER_EVENT, MANAGE_SERVERS_EVENT } from './ServerSelector'
 import { TeamMentionPalette, type TeamMentionCandidate } from './Composer'
 import { parseServerUpdateIntents, serverUpdateIntentKey, serverUpdateIntentResolved, serverUpdateIntentHealthResolved, serverUpdateStartErrorIsAmbiguous, type ServerUpdateIntent } from '../lib/server-update-intent'
 
-const AGENTS_SERVER_SETUP_GUIDE_URL = 'https://github.com/ZhengyiLuo/AgentsServer/tree/v0.1.20#guided-setup'
 const DEFERRED_SERVER_UPDATES_STORAGE_KEY = 'agentsdock:deferred-server-updates:v1'
 const SUBMITTED_SERVER_UPDATES_STORAGE_KEY = 'agentsdock:submitted-server-updates:v1'
 const UNKNOWN_SERVER_UPDATE_MESSAGE = 'Update outcome is not confirmed. AgentsDock will check status while Settings is open; it will not submit another update.'
@@ -452,8 +454,10 @@ export function Dialogs() {
     <DigestDialog />
     <JobDialog />
     <RenameChatDialog />
+    <RenameFolderDialog />
     <ChatShareDialog />
     <ConfirmDeleteDialog />
+    <ConfirmRestoreCheckpointDialog />
   </>
 }
 
@@ -609,6 +613,7 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
                 </select>
               </label>
               <ReasoningDisplaySettings />
+              <GlobalHotkeyRow />
               <div className="app-settings-row">
                 <strong className="app-settings-row-title">AgentsDock</strong>
                 <span className="app-settings-value">{update?.currentVersion ? t('settings.version', { version: update.currentVersion }) : t('settings.versionUnavailable')}</span>
@@ -678,19 +683,50 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
   </Dialog.Root>
 }
 
+/** System-wide bring-to-front shortcut: focus the field, press the combination; Backspace clears, Esc cancels. */
+function GlobalHotkeyRow() {
+  useLocale()
+  const [state, setState] = useState<{ accelerator: string | null; error: string | null }>({ accelerator: null, error: null })
+  const [recording, setRecording] = useState(false)
+  useEffect(() => { void window.agentsDock.native?.getGlobalHotkey?.().then(setState) }, [])
+  const apply = (accelerator: string | null) => { void window.agentsDock.native.setGlobalHotkey(accelerator).then(setState) }
+  return <div className="app-settings-row">
+    <strong className="app-settings-row-title">{t('settings.globalHotkey')}</strong>
+    <div className="app-settings-actions">
+      <button
+        type="button"
+        className={`hotkey-recorder${recording ? ' recording' : ''}`}
+        title={t('settings.globalHotkeyRecording')}
+        onFocus={() => setRecording(true)}
+        onBlur={() => setRecording(false)}
+        onKeyDown={event => {
+          if (event.key === 'Tab') return
+          event.preventDefault()
+          if (event.key === 'Escape') { event.currentTarget.blur(); return }
+          if (event.key === 'Backspace' || event.key === 'Delete') { apply(null); event.currentTarget.blur(); return }
+          const next = acceleratorFromKeyboardEvent(event.nativeEvent)
+          if (!next) return
+          apply(next)
+          event.currentTarget.blur()
+        }}
+      >{recording ? t('settings.globalHotkeyRecording') : state.accelerator ? formatAccelerator(state.accelerator) : t('settings.globalHotkeyNone')}</button>
+      {state.accelerator && !recording && <button type="button" className="quiet-button" onClick={() => apply(null)}>{t('settings.globalHotkeyClear')}</button>}
+      {state.error && <span className="app-settings-value" role="alert">{t('settings.globalHotkeyError', { accelerator: formatAccelerator(state.error) })}</span>}
+    </div>
+  </div>
+}
+
 export function ServerOnboardingDialog() {
   useLocale()
   const connected = useAppStore(state => state.connected)
-  const [mode, setMode] = useState<'configure-active' | 'add'>('configure-active')
+  // The app only talks to the local hub; onboarding is needed only while that
+  // profile is active, has no token and is not connected.
+  const hubNeedsSetup = useAppStore(state => {
+    const hub = state.profiles.find(profile => profile.serverUrl === DEFAULT_SERVER_URL)
+    return Boolean(hub && hub.id === state.activeProfileId && !hub.hasAccessToken && !state.connected)
+  })
   const [intent, setIntent] = useState<ServerSetupIntent>('setup')
   const [open, setOpen] = useState(false)
-  const [url, setURL] = useState('')
-  const [token, setToken] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [view, setView] = useState<'setup' | 'manual'>('setup')
-  const [target, setTarget] = useState<'ssh' | 'local'>('ssh')
-  const [sshHost, setSSHHost] = useState('')
-  const [port, setPort] = useState('7850')
   const [teamHubHost, setTeamHubHost] = useState(true)
   const [hostOrigin, setHostOrigin] = useState<TeamNetworkHostOrigin | null>(null)
   const [teamNetworkServerName, setTeamNetworkServerName] = useState('')
@@ -707,31 +743,23 @@ export function ServerOnboardingDialog() {
 
   useEffect(() => {
     let active = true
-    void Promise.all([window.agentsDock.settings.get(), window.agentsDock.setup.capabilities()]).then(([settings, setup]) => {
-      if (!active) return
-      setURL(settings.serverUrl)
-      setCapabilities(setup)
-      if (!setup.available) setView('manual')
-      setOpen(!settings.serverSetupComplete && !useAppStore.getState().connected)
-    })
+    void window.agentsDock.setup.capabilities().then(setup => { if (active) setCapabilities(setup) })
     return () => { active = false }
   }, [])
   useEffect(() => {
-    if (connected && mode === 'configure-active' && intent === 'setup' && !installing) setOpen(false)
-  }, [connected, installing, intent, mode])
+    if (hubNeedsSetup) setOpen(true)
+  }, [hubNeedsSetup])
+  useEffect(() => {
+    if (connected && intent === 'setup' && !installing) setOpen(false)
+  }, [connected, installing, intent])
   useEffect(() => {
     const show = (event: Event) => {
-      const detail = (event as CustomEvent<{
-        mode?: 'configure-active' | 'add'
-        intent?: ServerSetupIntent
-        origin?: TeamNetworkHostOrigin
-      }>).detail
+      const detail = (event as CustomEvent<{ intent?: ServerSetupIntent; origin?: TeamNetworkHostOrigin }>).detail
       const nextIntent: ServerSetupIntent = detail?.intent === 'update-beta'
         ? 'update-beta'
         : detail?.intent === 'host-team-network'
           ? 'host-team-network'
           : 'setup'
-      setMode(nextIntent === 'host-team-network' ? 'configure-active' : detail?.mode === 'add' ? 'add' : 'configure-active')
       setIntent(nextIntent)
       setTeamHubHost(nextIntent !== 'update-beta')
       setProgress([])
@@ -739,9 +767,6 @@ export function ServerOnboardingDialog() {
       setDiagnosticNotice(null)
       setInstallStartedAt(null)
       setElapsedSeconds(0)
-      setTarget('ssh')
-      setSSHHost('')
-      setPort('7850')
       if (nextIntent === 'host-team-network') {
         const origin = detail?.origin
         const validOrigin = origin
@@ -756,12 +781,11 @@ export function ServerOnboardingDialog() {
         setHostOrigin(null)
         setTeamNetworkServerName('')
       }
-      setView(nextIntent === 'host-team-network' ? 'setup' : capabilities?.available === false ? 'manual' : 'setup')
       setOpen(true)
     }
     window.addEventListener('agentsdock:server-setup', show)
     return () => window.removeEventListener('agentsdock:server-setup', show)
-  }, [capabilities?.available])
+  }, [])
   useEffect(() => window.agentsDock.events.on('server:setup-progress', value => {
     setProgress(current => [...current.slice(-49), value])
   }), [])
@@ -773,69 +797,7 @@ export function ServerOnboardingDialog() {
     return () => window.clearInterval(timer)
   }, [installStartedAt, installing])
 
-  const applyConnection = async (profileId: string | null, profileGeneration: number, serverUrl: string, accessToken: string) => {
-    const current = useAppStore.getState()
-    if (!profileId || current.switchingProfileId || current.activeProfileId !== profileId || current.profileGeneration !== profileGeneration) {
-      throw new Error('The active server changed while setup was running. The installed server was not bound to a different profile; review the connection details and try Connect again.')
-    }
-    let health: Health
-    try {
-      health = await window.agentsDock.servers.testConnection({ serverUrl, accessToken })
-    } catch (error) {
-      throw new Error(`Could not connect to AgentsServer at ${serverUrl}: ${message(error)}`)
-    }
-    const latest = useAppStore.getState()
-    if (latest.switchingProfileId || latest.activeProfileId !== profileId || latest.profileGeneration !== profileGeneration) {
-      throw new Error(mode === 'add'
-        ? 'The active server changed while setup was finishing. The new server was not added automatically.'
-        : 'The active server changed while setup was finishing. The installed server was not bound to a different profile; review the connection details and try Connect again.')
-    }
-    let targetProfileId = profileId
-    if (mode === 'add') {
-      const duplicate = health.server_identity
-        ? latest.profiles.find(profile => profile.serverIdentity === health.server_identity)
-        : null
-      if (duplicate) throw new Error(`This server is already saved as “${duplicate.name}”. Activate or edit that profile instead.`)
-      const added = await window.agentsDock.servers.add({
-        serverUrl,
-        accessToken,
-        serverIdentity: health.server_identity ?? null,
-        serverSetupComplete: true
-      })
-      const profiles = await window.agentsDock.servers.list()
-      useAppStore.setState({ profiles })
-      targetProfileId = added.id
-    }
-    const switched = mode === 'add'
-      ? await latest.switchServer(targetProfileId)
-      : await latest.switchServer(profileId, true, {
-          serverUrl,
-          accessToken,
-          resetServerIdentity: true,
-          serverSetupComplete: true
-        })
-    const reopened = useAppStore.getState()
-    if (!switched || reopened.activeProfileId !== targetProfileId || reopened.profileGeneration <= profileGeneration) {
-      throw new Error('AgentsDock could not reopen the configured server safely.')
-    }
-  }
-
-  const submit = async (event: FormEvent) => {
-    event.preventDefault()
-    const initiating = useAppStore.getState()
-    setSaving(true)
-    try {
-      await applyConnection(initiating.activeProfileId, initiating.profileGeneration, url.trim(), token)
-      setOpen(false)
-    } catch (error) {
-      useAppStore.getState().setError(message(error))
-    } finally {
-      setSaving(false)
-    }
-  }
-
   const install = async () => {
-    const initiating = useAppStore.getState()
     cancelRequestedRef.current = false
     setInstalling(true)
     setCancelling(false)
@@ -845,24 +807,32 @@ export function ServerOnboardingDialog() {
     setInstallStartedAt(Date.now())
     setElapsedSeconds(0)
     try {
-      const result = await window.agentsDock.setup.run({
-        target,
-        sshHost: target === 'ssh' ? sshHost.trim() : undefined,
-        port: Number(port),
+      await window.agentsDock.setup.run({
+        target: 'local',
+        port: 7850,
         track: intent === 'update-beta' ? 'beta' : 'stable',
-        ...(intent === 'update-beta' && !teamHubHost ? {} : { teamHubHost })
+        ...(intent === 'update-beta' && !teamHubHost ? {} : { teamHubHost: TEAM_NETWORK_UI_ENABLED && teamHubHost })
       })
       if (cancelRequestedRef.current) throw new Error('AgentsServer setup was cancelled.')
-      setURL(result.serverUrl)
-      setToken(result.accessToken)
       setProgress(current => [...current.slice(-49), { phase: 'complete', message: 'Connecting AgentsDock…' }])
-      await applyConnection(initiating.activeProfileId, initiating.profileGeneration, result.serverUrl, result.accessToken)
+      // The installer wrote the token file; the main process reads it, stores it and reconnects.
+      if (!await window.agentsDock.hub.adoptLocalToken()) throw new Error(t('hub.onboarding.tokenMissing'))
       setOpen(false)
     } catch (error) {
       setSetupError(cancelRequestedRef.current ? 'Setup cancelled. You can retry without losing existing chats.' : message(error))
     } finally {
       setInstalling(false)
       setCancelling(false)
+    }
+  }
+
+  // The user started the local server by hand: re-read its token file.
+  const retry = async () => {
+    setSetupError(null)
+    try {
+      if (!await window.agentsDock.hub.adoptLocalToken()) setSetupError(t('hub.onboarding.stillMissing'))
+    } catch (error) {
+      setSetupError(message(error))
     }
   }
 
@@ -960,23 +930,13 @@ export function ServerOnboardingDialog() {
   const validTeamNetworkServerName = Boolean(teamNetworkServerName.trim())
     && new TextEncoder().encode(teamNetworkServerName.trim()).byteLength <= 160
     && !/[\u0000-\u001f\u007f]/.test(teamNetworkServerName.trim())
-  const numericPort = Number(port)
-  const validServerPort = /^\d+$/.test(port) && Number.isInteger(numericPort) && numericPort >= 1024 && numericPort <= 65535
-  const dialogTitle = hostSetup ? t('teamNetwork.setup.title') : betaUpdate ? t('mergeDialogs.setup.betaTitle') : mode === 'add' ? t('mergeDialogs.setup.addTitle') : t('mergeDialogs.setup.title')
-  const dialogDescription = hostSetup
-    ? t('teamNetwork.setup.description')
-    : betaUpdate
-      ? t('mergeDialogs.setup.betaDescription')
-      : mode === 'add'
-        ? t('mergeDialogs.setup.addDescription')
-        : t('mergeDialogs.setup.description')
+  const dialogTitle = hostSetup ? t('teamNetwork.setup.title') : betaUpdate ? t('mergeDialogs.setup.betaTitle') : t('mergeDialogs.setup.title')
+  const dialogDescription = hostSetup ? t('teamNetwork.setup.description') : betaUpdate ? t('mergeDialogs.setup.betaDescription') : t('mergeDialogs.setup.description')
   const primaryActionLabel = installing
     ? betaUpdate ? t('ui.Dialogs.ServerOnboardingDialog.updating_dfe40ef') : t('ui.Dialogs.ServerOnboardingDialog.setting_up_c894bba')
     : setupError
       ? t('ui.Dialogs.ServerOnboardingDialog.retry_setup_8e08720')
-      : betaUpdate
-          ? target === 'ssh' ? t('ui.Dialogs.ServerOnboardingDialog.update_over_ssh_66bafb0') : t('ui.Dialogs.ServerOnboardingDialog.update_this_computer_3f5f0b1')
-          : target === 'ssh' ? t('ui.Dialogs.ServerOnboardingDialog.install_over_ssh_bc9dd1e') : t('ui.Dialogs.ServerOnboardingDialog.install_here_6066729')
+      : betaUpdate ? t('ui.Dialogs.ServerOnboardingDialog.update_this_computer_3f5f0b1') : t('ui.Dialogs.ServerOnboardingDialog.install_here_6066729')
 
   if (hostSetup) return <Shell open={open} onOpenChange={value => { if (!installing) setOpen(value) }} title={dialogTitle} description={dialogDescription} className="server-onboarding-dialog" closeDisabled={installing}>
     <div className="server-setup-body">
@@ -1007,41 +967,14 @@ export function ServerOnboardingDialog() {
 
   return <Shell open={open} onOpenChange={value => { if (!installing) setOpen(value) }} title={dialogTitle} description={dialogDescription} className="server-onboarding-dialog" closeDisabled={installing}>
     <div className="server-setup-body">
-      <div className="server-setup-tabs segmented">
-        <button type="button" className={view === 'setup' ? 'active' : ''} disabled={!capabilities?.available || installing} onClick={() => setView('setup')}>{t("ui.Dialogs.ServerOnboardingDialog.guided_setup_8ef7823")}</button>
-        <button type="button" className={view === 'manual' ? 'active' : ''} disabled={installing} onClick={() => setView('manual')}>{t("ui.Dialogs.ServerOnboardingDialog.connect_manually_978e5f8")}</button>
-      </div>
-      {view === 'setup' ? <div className="server-setup-flow">
+      <div className="server-setup-flow">
         <section className="server-setup-intro">
-          <span><Sparkles size={13} /> {betaUpdate ? t("ui.Dialogs.ServerOnboardingDialog.signed_beta_update_0664ad0") : t("ui.Dialogs.ServerOnboardingDialog.one_command_handled_for_you_49543ac")}</span>
-          <h3>{betaUpdate ? t("ui.Dialogs.ServerOnboardingDialog.where_is_this_server_running_cba67ef") : t("ui.Dialogs.ServerOnboardingDialog.where_should_your_agents_run_a20926f")}</h3>
-          <p>{betaUpdate ? t("ui.Dialogs.ServerOnboardingDialog.agentsdock_installs_the_verified_beta_pinn_d42fc02") : t("ui.Dialogs.ServerOnboardingDialog.agentsdock_installs_or_updates_agentsserve_18bd75e")}</p>
+          {betaUpdate
+            ? <><span><Sparkles size={13} /> {t("ui.Dialogs.ServerOnboardingDialog.signed_beta_update_0664ad0")}</span><p>{t("ui.Dialogs.ServerOnboardingDialog.agentsdock_installs_the_verified_beta_pinn_d42fc02")}</p></>
+            : <><h3>{t('hub.onboarding.title')}</h3><p>{t('hub.onboarding.body')}</p></>}
         </section>
-        <div className="server-setup-targets">
-          <button type="button" className={target === 'ssh' ? 'active' : ''} aria-pressed={target === 'ssh'} disabled={installing} onClick={() => setTarget('ssh')}>
-            <span className="server-target-icon"><Network size={19} /></span><span><strong>{t("ui.Dialogs.ServerOnboardingDialog.remote_machine_d9dd1af")}</strong><small>{t("ui.Dialogs.ServerOnboardingDialog.use_a_server_terminal_or_existing_ssh_acce_bf48cdb")}</small></span>{target === 'ssh' && <span className="server-target-check"><Check size={13} /></span>}
-          </button>
-          <button type="button" className={target === 'local' ? 'active' : ''} aria-pressed={target === 'local'} disabled={installing} onClick={() => setTarget('local')}>
-            <span className="server-target-icon"><Laptop size={19} /></span><span><strong>{t("ui.Dialogs.ServerOnboardingDialog.this_computer_26f9f95")}</strong><small>{t("ui.Dialogs.ServerOnboardingDialog.run_agents_alongside_agentsdock_4f38761")}</small></span>{target === 'local' && <span className="server-target-check"><Check size={13} /></span>}
-          </button>
-        </div>
-          {target === 'ssh' && !betaUpdate && <>
-          <button type="button" className="server-setup-guide prominent" disabled={installing} onClick={() => {
-            setView('manual')
-            void window.agentsDock.native.openExternal(AGENTS_SERVER_SETUP_GUIDE_URL)
-          }}>
-            <span className="server-setup-icon"><Command size={19} /></span>
-            <span><strong>{t("ui.Dialogs.ServerOnboardingDialog.no_ssh_key_install_from_the_server_termina_63b67eb")}</strong><small>{t("ui.Dialogs.ServerOnboardingDialog.use_password_ssh_a_cloud_console_or_a_loca_88a81ce")}</small></span>
-            <span className="server-setup-guide-action">{t("ui.Dialogs.ServerOnboardingDialog.open_guide_befbd50")}{" "}<ExternalLink size={13} /></span>
-          </button>
-          <div className="server-setup-divider"><span>{t("ui.Dialogs.ServerOnboardingDialog.or_install_automatically_with_existing_ssh_f08f261")}</span></div>
-        </>}
-        <div className={`server-setup-fields ${target === 'local' ? 'local' : ''}`}>
-          {target === 'ssh' && <label><span>{t("ui.Dialogs.ServerOnboardingDialog.ssh_host_7e873f3")}</span><div className="input-with-icon"><KeyRound size={15} /><input autoFocus value={sshHost} disabled={installing} onChange={event => setSSHHost(event.target.value)} placeholder={t("ui.Dialogs.ServerOnboardingDialog.user_server_or_ssh_alias_86bea1d")} autoCapitalize="none" autoCorrect="off" /></div></label>}
-          <label className="server-port-field"><span>{t("ui.Dialogs.ServerOnboardingDialog.agentsserver_port_93ea882")}</span><input name="agentsdock-server-http-port" autoComplete="off" inputMode="numeric" min={1024} max={65535} aria-invalid={port.length > 0 && !validServerPort} value={port} disabled={installing} onChange={event => setPort(event.target.value.replace(/\D/g, '').slice(0, 5))} /></label>
-        </div>
-        <p className="server-setup-help">{target === 'ssh' ? t("ui.Dialogs.ServerOnboardingDialog.ssh_host_key_and_connection_port_come_from_25c52e3") : t("ui.Dialogs.ServerOnboardingDialog.agentsserver_http_api_port_default_7850_po_9ba1d3d")}</p>
-        <label className="server-setup-team-hub"><input type="checkbox" checked={teamHubHost} disabled={installing} onChange={event => setTeamHubHost(event.target.checked)} /><span><strong>{t('teamNetwork.setup.start')}</strong><small>{betaUpdate ? t('teamNetwork.setup.preserveRole') : t('teamNetwork.setup.privateHost')}</small></span></label>
+        {!capabilities?.available && capabilities?.reason && <div className="server-setup-note"><Server size={15} /><span>{capabilities.reason}</span></div>}
+        {TEAM_NETWORK_UI_ENABLED && <label className="server-setup-team-hub"><input type="checkbox" checked={teamHubHost} disabled={installing} onChange={event => setTeamHubHost(event.target.checked)} /><span><strong>{t('teamNetwork.setup.start')}</strong><small>{betaUpdate ? t('teamNetwork.setup.preserveRole') : t('teamNetwork.setup.privateHost')}</small></span></label>}
         {installStartedAt !== null && <div className={`server-setup-status ${setupError ? 'failed' : installing ? 'running' : 'stopped'}`} role="status" aria-live="polite">
           <span className="server-setup-status-icon">{setupError ? <CircleAlert size={15} /> : installing ? <LoaderCircle className="spin" size={15} /> : <Clock3 size={15} />}</span>
           <span><strong>{setupError ? t("ui.Dialogs.ServerOnboardingDialog.setup_needs_attention_39d845b") : installing ? setupPhaseLabel(currentProgress?.phase) : t("ui.Dialogs.ServerOnboardingDialog.setup_stopped_2b28514")}</strong><small>{currentProgress?.message || t("ui.Dialogs.ServerOnboardingDialog.preparing_setup_305121e")}</small></span>
@@ -1066,18 +999,15 @@ export function ServerOnboardingDialog() {
           </div>
         </div>}
         <div className="server-setup-note"><Server size={16} /><span>{t('ui.setup.historyBefore')}<code>~/.agentsdock</code>{t('ui.setup.historyAfter')}</span></div>
-        <footer><button type="button" className="quiet-button" disabled={installing} onClick={() => setOpen(false)}>{t("ui.Dialogs.ServerOnboardingDialog.not_now_a0e63d7")}</button><div className="server-setup-footer-actions">{installing && <button type="button" className="quiet-button danger" disabled={cancelling} onClick={() => void cancelInstall()}>{cancelling ? <LoaderCircle className="spin" size={13} /> : <X size={13} />} {cancelling ? t("ui.Dialogs.ServerOnboardingDialog.cancelling_91b104d") : t("ui.Dialogs.ServerOnboardingDialog.cancel_setup_c17bac1")}</button>}<button type="button" className="primary-button" disabled={installing || !validServerPort || (target === 'ssh' && !sshHost.trim())} onClick={() => void install()}>{installing ? <LoaderCircle className="spin" size={14} /> : setupError ? <RefreshCw size={14} /> : <Download size={14} />} {primaryActionLabel}</button></div></footer>
-      </div> : <form onSubmit={submit} className="dialog-form server-setup-manual">
-        {capabilities?.reason && <div className="server-setup-note"><Server size={15} /><span>{capabilities.reason}</span></div>}
-        <button type="button" className="server-setup-guide" onClick={() => void window.agentsDock.native.openExternal(AGENTS_SERVER_SETUP_GUIDE_URL)}>
-          <span className="server-setup-icon"><Server size={19} /></span>
-          <span><strong>{t("ui.Dialogs.ServerOnboardingDialog.open_setup_guide_8d9f188")}</strong><small>{t("ui.Dialogs.ServerOnboardingDialog.manual_installation_tailscale_and_cli_auth_87a6a7d")}</small></span>
-          <ExternalLink size={15} />
-        </button>
-        <label><span>{t("ui.Dialogs.ServerOnboardingDialog.server_url_22f5ebc")}</span><div className="input-with-icon"><Server size={14} /><input autoFocus value={url} onChange={event => setURL(event.target.value)} placeholder="127.0.0.1:7850" autoCapitalize="none" autoCorrect="off" /></div></label>
-        <label><span>{t("ui.Dialogs.ServerOnboardingDialog.access_token_9a911b0")}</span><input type="password" value={token} onChange={event => setToken(event.target.value)} placeholder={t("ui.Dialogs.ServerOnboardingDialog.token_from_the_server_configuration_f33cbe7")} autoComplete="off" /></label>
-        <footer><button type="button" className="quiet-button" onClick={() => setOpen(false)}>{t("ui.Dialogs.ServerOnboardingDialog.not_now_a0e63d7")}</button><button className="primary-button" disabled={!url.trim() || saving}>{saving && <LoaderCircle className="spin" size={14} />}{" "}{t("ui.Dialogs.ServerOnboardingDialog.connect_1a2303e")}</button></footer>
-      </form>}
+        <footer>
+          <button type="button" className="quiet-button" disabled={installing} onClick={() => setOpen(false)}>{t("ui.Dialogs.ServerOnboardingDialog.not_now_a0e63d7")}</button>
+          <div className="server-setup-footer-actions">
+            {installing && <button type="button" className="quiet-button danger" disabled={cancelling} onClick={() => void cancelInstall()}>{cancelling ? <LoaderCircle className="spin" size={13} /> : <X size={13} />} {cancelling ? t("ui.Dialogs.ServerOnboardingDialog.cancelling_91b104d") : t("ui.Dialogs.ServerOnboardingDialog.cancel_setup_c17bac1")}</button>}
+            {!betaUpdate && <button type="button" className="quiet-button" disabled={installing} onClick={() => void retry()}><RefreshCw size={13} /> {t('hub.onboarding.retry')}</button>}
+            <button type="button" className="primary-button" disabled={installing || !capabilities?.available} onClick={() => void install()}>{installing ? <LoaderCircle className="spin" size={14} /> : setupError ? <RefreshCw size={14} /> : <Download size={14} />} {primaryActionLabel}</button>
+          </div>
+        </footer>
+      </div>
     </div>
   </Shell>
 }
@@ -1114,6 +1044,8 @@ function ConfirmDeleteDialog() {
   useLocale()
   const [session, setSession] = useState<Session | null>(null)
   const [deleting, setDeleting] = useState(false)
+  // Focus the delete button on open so Enter confirms, like a macOS default button.
+  const deleteButtonRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     const open = (event: Event) => setSession((event as CustomEvent<Session>).detail)
     window.addEventListener('agentsdock:confirm-delete', open)
@@ -1125,7 +1057,27 @@ function ConfirmDeleteDialog() {
     setDeleting(false)
     if (removed) setSession(null)
   }
-  return <Shell open={Boolean(session)} onOpenChange={open => { if (!open) setSession(null) }} title={t("ui.Dialogs.ConfirmDeleteDialog.delete_chat_80aaa1b")} description={session ? t("ui.Dialogs.ConfirmDeleteDialog.and_its_agentsdock_history_will_be_removed_19e5a63", { "chat": String(session.title) }) : ''} className="confirm-dialog"><div className="confirm-actions"><button type="button" className="quiet-button" onClick={() => setSession(null)}>{t("ui.Dialogs.ConfirmDeleteDialog.cancel_19766ed")}</button><button type="button" className="danger-button" disabled={deleting} onClick={() => void remove()}>{deleting && <LoaderCircle className="spin" size={13} />}{" "}{t("ui.Dialogs.ConfirmDeleteDialog.delete_chat_93291d9")}</button></div></Shell>
+  return <Shell open={Boolean(session)} onOpenChange={open => { if (!open) setSession(null) }} title={t("ui.Dialogs.ConfirmDeleteDialog.delete_chat_80aaa1b")} description={session ? t("ui.Dialogs.ConfirmDeleteDialog.and_its_agentsdock_history_will_be_removed_19e5a63", { "chat": String(session.title) }) : ''} className="confirm-dialog" initialFocusRef={deleteButtonRef}><div className="confirm-actions"><button type="button" className="quiet-button" onClick={() => setSession(null)}>{t("ui.Dialogs.ConfirmDeleteDialog.cancel_19766ed")}</button><button ref={deleteButtonRef} type="button" className="danger-button" disabled={deleting} onClick={() => void remove()}>{deleting && <LoaderCircle className="spin" size={13} />}{" "}{t("ui.Dialogs.ConfirmDeleteDialog.delete_chat_93291d9")}</button></div></Shell>
+}
+
+function ConfirmRestoreCheckpointDialog() {
+  useLocale()
+  const [target, setTarget] = useState<{ sessionId: string; runId: string } | null>(null)
+  const [restoring, setRestoring] = useState(false)
+  // Focus the restore button on open so Enter confirms, like a macOS default button.
+  const restoreButtonRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    const open = (event: Event) => setTarget((event as CustomEvent<{ sessionId: string; runId: string }>).detail)
+    window.addEventListener('agentsdock:confirm-restore-checkpoint', open)
+    return () => window.removeEventListener('agentsdock:confirm-restore-checkpoint', open)
+  }, [])
+  const restore = async () => {
+    if (!target) return; setRestoring(true)
+    const restored = await useAppStore.getState().restoreCheckpoint(target.sessionId, target.runId)
+    setRestoring(false)
+    if (restored) setTarget(null)
+  }
+  return <Shell open={Boolean(target)} onOpenChange={open => { if (!open) setTarget(null) }} title={t('timeline.rewind.restoreCheckpoint')} description={t('sessionRewind.confirmRestore')} className="confirm-dialog" initialFocusRef={restoreButtonRef}><div className="confirm-actions"><button type="button" className="quiet-button" onClick={() => setTarget(null)}>{t('sessionRewind.cancel')}</button><button ref={restoreButtonRef} type="button" className="danger-button" disabled={restoring} onClick={() => void restore()}>{restoring && <LoaderCircle className="spin" size={13} />}{" "}{t('timeline.rewind.restoreCheckpoint')}</button></div></Shell>
 }
 
 export function RenameChatDialog() {
@@ -1171,6 +1123,52 @@ export function RenameChatDialog() {
     <form onSubmit={event => void submit(event)} className="dialog-form">
       <label><span>{t("ui.Dialogs.RenameChatDialog.chat_name_09c3e4c")}</span><input autoFocus disabled={saving} value={title} onChange={event => setTitle(event.target.value)} onFocus={event => event.currentTarget.select()} /></label>
       <footer><button type="button" className="quiet-button" disabled={saving} onClick={close}>{t("ui.Dialogs.RenameChatDialog.cancel_19766ed")}</button><button className="primary-button" disabled={saving || !title.trim()}>{saving && <LoaderCircle className="spin" size={14} />}{" "}{t("ui.Dialogs.RenameChatDialog.rename_3064d79")}</button></footer>
+    </form>
+  </Shell>
+}
+
+export function RenameFolderDialog() {
+  useLocale()
+  const [folder, setFolder] = useState<string | null>(null)
+  const [name, setName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+  useEffect(() => {
+    const open = (event: Event) => {
+      if (savingRef.current) return
+      const next = (event as CustomEvent<{ folder: string }>).detail.folder
+      setFolder(next)
+      setName(next)
+      savingRef.current = false
+      setSaving(false)
+    }
+    window.addEventListener('agentsdock:rename-folder', open)
+    return () => window.removeEventListener('agentsdock:rename-folder', open)
+  }, [])
+  const close = () => {
+    if (savingRef.current) return
+    setFolder(null)
+  }
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (folder === null || savingRef.current) return
+    const clean = name.trim()
+    if (!clean) return
+    if (clean === folder) {
+      setFolder(null)
+      return
+    }
+    savingRef.current = true
+    setSaving(true)
+    const renamed = await useAppStore.getState().renameFolder(folder, clean)
+    savingRef.current = false
+    setSaving(false)
+    if (renamed) setFolder(null)
+  }
+  return <Shell open={folder !== null} onOpenChange={open => { if (!open) close() }} title={t('ui.Dialogs.RenameFolderDialog.title')} description={t('ui.Dialogs.RenameFolderDialog.description')} closeDisabled={saving}>
+    <form onSubmit={event => void submit(event)} className="dialog-form">
+      <label><span>{t('ui.Dialogs.RenameFolderDialog.folderName')}</span><input autoFocus disabled={saving} value={name} onChange={event => setName(event.target.value)} onFocus={event => event.currentTarget.select()} /></label>
+      <footer><button type="button" className="quiet-button" disabled={saving} onClick={close}>{t('ui.Dialogs.RenameFolderDialog.cancel')}</button><button className="primary-button" disabled={saving || !name.trim()}>{saving && <LoaderCircle className="spin" size={14} />}{" "}{t('ui.Dialogs.RenameFolderDialog.rename')}</button></footer>
     </form>
   </Shell>
 }
@@ -2951,7 +2949,7 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
       if (!selectableChatBackends(state.health, state.runtimeCatalog).includes(backend)) throw new Error(`${backendLabel(backend)} is unavailable on this AgentsServer.`)
       const runtimeError = runtimeSelectionError(state.health, state.runtimeCatalog, backend, model, codex_provider)
       if (runtimeError) throw new Error(runtimeError)
-      const input = { title: title.trim() || 'New chat', folder: folder.trim() || 'General', cwd: cwd.trim(), backend, codex_provider, model: model || null, effort: effort || null, system_prompt: systemPrompt.trim() || null, cursor_permission_mode: backend === 'cursor' ? 'default' as const : null, opencode_permission_mode: backend === 'opencode' ? 'default' as const : null }
+      const input = { title: title.trim() || 'New chat', folder: folder.trim() || 'General', cwd: cwd.trim(), backend, codex_provider, model: model || null, effort: effort || null, system_prompt: systemPrompt.trim() || null }
       const session = mode === 'resume' ? await window.agentsDock.sessions.resume({ ...input, providerId: providerId.trim() }) : await window.agentsDock.sessions.create(input)
       if (mode === 'newChat') {
         trackEvent('chat_created')
@@ -3350,7 +3348,6 @@ export function ImportChatsDialog() {
         model: null,
         effort: null,
         system_prompt: null,
-        cursor_permission_mode: resumeBackend === 'cursor' ? 'default' : null,
         providerId
       })
       if (!currentImportDialogScope(origin, epoch, requestEpoch.current)) return

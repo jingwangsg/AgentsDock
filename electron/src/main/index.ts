@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { registerIpc } from './ipc'
+import { installGlobalHotkey } from './global-hotkey'
 import { appLog } from './logger'
 import { reportStorageError } from './storage-health'
 import { AppService } from './service'
@@ -15,6 +16,7 @@ import { AppUpdateManager } from './updater'
 import { CoordinatedUpdateManager, fileCoordinatedUpdateStore, type SignedServerRelease } from './coordinated-updates'
 import { installWindowCloseFlush } from './window-close'
 import { parseMediaURL } from '../shared/media-url'
+import { CANVAS_SCHEME, canvasErrorPage, canvasNotFoundResponse, parseCanvasURL } from './canvas-protocol'
 import { shortcutAccelerator } from '../shared/shortcuts'
 import { workspacePathFromInternalLink } from '../shared/workspace-link-url'
 import { LazyTeamHubService } from './team-hub-lazy-service'
@@ -27,7 +29,8 @@ import {
 } from './secure-peer-deep-link'
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'agentsdock-media', privileges: { standard: true, secure: true, stream: true } }
+  { scheme: 'agentsdock-media', privileges: { standard: true, secure: true, stream: true } },
+  { scheme: CANVAS_SCHEME, privileges: { standard: true, secure: true } }
 ])
 
 process.on('uncaughtException', error => { reportStorageError(error); appLog('fatal', 'uncaught exception', errorDetails(error)) })
@@ -189,6 +192,18 @@ if (!app.requestSingleInstanceLock()) {
           return mediaNotFoundResponse()
         }
       })
+      session.defaultSession.protocol.handle(CANVAS_SCHEME, async request => {
+        const resource = parseCanvasURL(request.url)
+        if (!service || !resource) return canvasNotFoundResponse()
+        try {
+          return await service.canvasPageResponse(resource.profileId, resource.profileGeneration, resource.sessionId, resource.name, resource.theme)
+        } catch (error) {
+          return new Response(
+            canvasErrorPage('Canvas unavailable', error instanceof Error ? error.message : String(error)),
+            { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } }
+          )
+        }
+      })
       createMenu(() => mainWindow)
       mainWindow = createWindow()
       installSecurePeerDeepLinkWindow(mainWindow, securePeerDeepLinks)
@@ -233,6 +248,12 @@ if (!app.requestSingleInstanceLock()) {
       } else {
         mainWindow?.show()
       }
+    })
+    // Global hotkey: same path as clicking the Dock icon, plus stealing focus from the current app.
+    installGlobalHotkey(() => {
+      if (BrowserWindow.getAllWindows().length === 0) app.emit('activate')
+      else showMainWindow()
+      app.focus({ steal: true })
     })
     powerMonitor.on('resume', () => language?.refreshSystemLocale())
   }).catch(error => {

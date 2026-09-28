@@ -922,3 +922,38 @@ describe('multi-server cache foundations', () => {
     expect(value.searchAllSessions(['server-a'], 'server b')).toEqual([])
   })
 })
+
+describe('history rewind cache surgery', () => {
+  const gaps = (value: LocalCache) => (value as unknown as { eventWriteGaps: Map<string, { after: number; error: unknown }> }).eventWriteGaps
+
+  it('removes only the closed sequence range together with its search rows', () => {
+    const value = cache()
+    value.putSession('server-a', session('chat'))
+    value.putEvents('server-a', 'chat', [0, 1, 2, 3, 4].map(index => event('chat', index, `needle ${index}`)))
+    expect(value.searchEvents('server-a', 'chat', 'needle')).toHaveLength(5)
+
+    value.removeEventRange('server-a', 'chat', 3, 4)
+
+    expect(value.events('server-a', 'chat').map(item => item.seq)).toEqual([1, 2, 5])
+    expect(value.searchEvents('server-a', 'chat', 'needle').map(item => item.event_id).sort())
+      .toEqual(['chat-event-0', 'chat-event-1', 'chat-event-4'])
+  })
+
+  it('clears a dropped-batch gap only when the gap starts inside the removed range', () => {
+    const value = cache()
+    value.putSession('server-a', session('chat'))
+    value.putEvents('server-a', 'chat', [0, 1, 2, 3, 4].map(index => event('chat', index, `event ${index}`)))
+    const key = JSON.stringify(['server-a', 'chat'])
+    const error = new Error('dropped batch')
+
+    // A gap below the range may still hide a surviving event: keep it.
+    gaps(value).set(key, { after: 1, error })
+    value.removeEventRange('server-a', 'chat', 3, 5)
+    expect(() => value.putEvents('server-a', 'chat', [event('chat', 5, 'later')])).toThrow(error)
+
+    // A gap whose missing interval lies wholly inside the range is moot.
+    gaps(value).set(key, { after: 2, error })
+    value.removeEventRange('server-a', 'chat', 3, 5)
+    expect(() => value.putEvents('server-a', 'chat', [event('chat', 5, 'later')])).not.toThrow()
+  })
+})

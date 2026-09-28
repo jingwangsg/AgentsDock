@@ -1,5 +1,5 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from '../shared/provider-usage'
-import { app, BrowserWindow, dialog, nativeImage, Notification, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, shell } from 'electron'
 import { applyOpenCodeSessionEvent } from '../shared/opencode'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { open, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -7,9 +7,11 @@ import { createHash, randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { basename, dirname, join } from 'node:path'
-import { isImportedProviderControlMetadata, mergeProviderInterruptionEvent } from '../shared/provider-origin'
+import { isImportedHistoryRecord, isImportedProviderControlMetadata, mergeProviderInterruptionEvent } from '../shared/provider-origin'
 import type { ChatShareMode, CreateChatShareInput } from '../shared/chat-shares'
-import type { WorkspaceGitAction, WorkspaceGitView } from '../shared/workspace-git'
+import type { WorkspaceGitAction, WorkspaceGitStatus, WorkspaceGitView } from '../shared/workspace-git'
+import type { CanvasRecord, CanvasSummary, CodexKillWritersResult } from '../shared/types'
+import { buildCanvasPage, canvasErrorPage, type CanvasHostTheme } from './canvas-protocol'
 import { parseMailHintPageAcknowledgment, TEAM_MAIL_HINTS_ENABLED, type MailHintPageAcknowledgment, type MailHintScope } from '../shared/team-mail-hints'
 import { TeamMailHintController } from './team-mail-hint-controller'
 import { ActivityHealthProjection, type ActivityHealthRequest } from './activity-health'
@@ -63,7 +65,6 @@ import type {
   CodexServerSettingsScope,
   CodexOperationAccepted,
   CodexPendingInteraction,
-  CodexPermissionProfile,
   CodexReviewInput,
   CodexRollbackInput,
   CodexRollbackResult,
@@ -93,9 +94,10 @@ import type {
   ProfileSessionSearchResult,
   ProviderCommandsSnapshot,
   PublicServerProfile,
-  PublicServerSettings,
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
+  RemoteServerDeployInput,
+  RemoteServerDeployJob,
   QueuedTurn,
   ResumeSessionInput,
   RuntimeCatalog,
@@ -104,10 +106,11 @@ import type {
   ServerForceRestartConfirmation,
   ServerRestartRequest,
   ServerRestartStatus,
-  ServerSettings,
+  ServerSetupProgress,
   ServerUpdateStatus,
   ServerUpdateTrack,
   Session,
+  SessionRewindResult,
   SessionSnapshot,
   SubagentSnapshot,
   TerminalAction,
@@ -117,7 +120,6 @@ import type {
   TimelinePage,
   TimelineTracePage,
   TimelineSearchResult,
-  TestServerConnectionInput,
   TmuxPane,
   TurnStopResult,
   UpdateAgentCrossChatRouteInput,
@@ -137,12 +139,15 @@ import type {
 } from '../shared/types'
 import { updateQueuedTurns } from '../shared/queue'
 import { runtimeCatalogHasSelectableModels } from '../shared/runtime-catalog'
-import { incompleteLeadingRunId, isNativeGoalSteerEvent } from '../shared/semantic-timeline'
-import { normalizeServerURL } from '../shared/server-url'
+import { incompleteLeadingRunId, isNativeGoalSteerEvent, isNativeSteerTransitionStop } from '../shared/semantic-timeline'
+import { DEFAULT_SERVER_URL, normalizeServerURL } from '../shared/server-url'
+import { t } from '../shared/i18n'
 import { isLoopbackHostname, normalizeDirectIPTeamHubURL, normalizeTailscaleServeTeamHubURL } from '../shared/team-hub-url'
 import { agentFileBelongsToSession, isolateSessionEvent } from '../shared/session-files'
+import { collectChatOutputs, type ChatOutputsSummary } from '../shared/chat-outputs'
 import { buildWorkspaceMediaURL, isValidMediaIdentifier } from '../shared/media-url'
 import {
+  CACHED_TIMELINE_MAX_RAW_EVENT_LIMIT,
   CacheNamespaceCollisionError,
   LocalCache,
   TIMELINE_PAGING_SCHEMA_VERSION
@@ -162,6 +167,7 @@ import { PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL, PortTunnelManager } from './port-tu
 import { FileUploadGrantRegistry } from './file-upload-grants'
 import { SettingsStore, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
+import { planHubRemoteProfiles, readLocalHubToken } from './local-hub'
 import { clearStorageError, localStorageWasFull, observeStorageErrors, reportStorageError } from './storage-health'
 import { SubagentEventProjector } from './subagent-projection'
 import { mergeTimelineSearchResults } from './search'
@@ -236,6 +242,7 @@ const INACTIVE_PROFILE_HEALTH_MAX_CONCURRENCY = 2
 const INACTIVE_PROFILE_HEALTH_FRESH_MS = 75_000
 const MAX_REMEMBERED_EMERGENCY_ALERT_IDS = 4_096
 const MAX_PENDING_NOTIFICATION_ROUTES = 32
+const MAX_DECIDED_TURN_ENDS = 200
 const REMOTE_AGENT_ROUTE_UNAVAILABLE = 'Remote agent routes cannot be used from @Chat. Use @@ Team Network Inbox for cross-server messages.'
 const SERVER_RESTART_RECONNECT_TIMEOUT_MS = 45_000
 const SERVER_RESTART_POLL_DELAY_MS = 500
@@ -390,11 +397,19 @@ export class AppService {
   private profileHealthPollTimer: NodeJS.Timeout | null = null
   private profileRemovals = new Map<string, Promise<boolean>>()
   private profileAuthorityOperations = new Map<string, Promise<void>>()
+  /** The hub deploy this client is currently polling, if any; lets Cancel reach both the poll loop and the server-side job. */
+  private remoteDeploy: { scope: ConnectionScope; jobId: string; cancelled: boolean } | null = null
   private pendingProfileAuthorityNamespaces = new Map<string, string[]>()
   private windows = new Set<BrowserWindow>()
   private focusedSessionId: string | null = null
   private seenEmergencyAlertIds = new Set<string>()
   private notifiedEmergencyAlertIds = new Set<string>()
+  /** `${sessionId}:${seq}` of turn ends already decided; the streamed terminal and the polled summary carry the same seq. */
+  private decidedTurnEnds = new Set<string>()
+  /** latest_agent_event_seq per chat from the previous sessions poll; null until the first poll of a scope. */
+  private polledAgentSeq: Map<string, number> | null = null
+  /** Newest latest_agent_event_at (server clock, ms) the previous poll had seen. */
+  private polledAgentWatermark = 0
   private timelineSubscriptions = new Map<string, TimelineSubscription>()
   private emergencyStreamStop: (() => void) | null = null
   private emergencyStreamGeneration: number | null = null
@@ -430,7 +445,7 @@ export class AppService {
   private sessions: Session[] = []
   private jobs: Job[] = []
   private runtimeCatalog: RuntimeCatalog | null = null
-  private runtimeRefreshInFlight = new Map<number, { task: Promise<void>; forceProbe: boolean }>()
+  private runtimeRefreshInFlight = new Map<number, { task: Promise<void>; forceProbe: boolean; handoff: boolean }>()
   private runtimeRefreshNextAt = 0
   /** Last server process we fetched a runtime catalog from. A different
    * instance means the server was restarted or upgraded, so its CLI versions
@@ -593,7 +608,8 @@ export class AppService {
 
   start(): void {
     if (this.running) return
-    if (!this.clientAvailable) this.activateProfile(this.activeProfileId, false, true)
+    const adopted = this.adoptLocalHubToken()
+    if (!this.clientAvailable || (adopted && this.hubProfile()?.id === this.activeProfileId)) this.activateProfile(this.activeProfileId, false, true)
     this.running = true
     void this.runBackgroundRefresh(true, this.captureScope())
     void this.refreshInactiveProfileHealth()
@@ -690,46 +706,6 @@ export class AppService {
     const payload = this.loadCachedBootstrap(scope)
     appLog('bootstrap', 'cache bootstrap finished', { sessions: payload.sessions.length, jobs: payload.jobs.length })
     return payload
-  }
-
-  publicSettings(): PublicServerSettings { return this.settings.publicSettings() }
-
-  async applySettings(value: ServerSettings): Promise<Health> {
-    const intent = ++this.profileSelectionIntent
-    const profileId = this.settings.getActiveProfileId()
-    const revision = this.settings.connectionRevision(profileId)
-    const token = value.accessToken === '__KEEP__'
-      ? await this.settings.accessTokenForConnectionAsync(profileId)
-      : value.accessToken
-    this.assertProfileSelection(profileId, intent, revision)
-    const nextClient = this.clientFactory(normalizeServerURL(value.serverUrl), token)
-    // Commit and retire the old scope together; an auth await between them
-    // would let old-server health bind its identity to the newly saved URL.
-    try { this.settings.update(value) }
-    catch (error) { nextClient.dispose(); throw error }
-    const scope = this.activateProfile(profileId, false, true, nextClient)
-    const health = await this.readActivityHealth(scope, () => scope.client.health())
-    if (!this.isCurrentScope(scope)) throw staleProfileError()
-    if (health.ok !== true) {
-      const error = new Error('Server health check reported unavailable.')
-      this.setProfileRuntime(scope.profileId, {
-        connectionState: 'offline',
-        lastConnectionError: error.message,
-        lastConnectionCheckedAt: Date.now()
-      })
-      this.emitConnection(scope, false, undefined, error.message)
-      throw error
-    }
-    const adopted = this.adoptHealth(scope, health)
-    this.setProfileRuntime(adopted.profileId, {
-      connectionState: connectionStateForHealth(health),
-      lastConnectionError: connectionWarningForHealth(health),
-      lastConnectionCheckedAt: Date.now()
-    })
-    this.emitConnection(adopted, true, health)
-    await this.refreshAll(true, true, adopted)
-    void this.refreshRuntime(true, false, this.captureScope())
-    return health
   }
 
   listServers(): PublicServerProfile[] {
@@ -1498,6 +1474,136 @@ export class AppService {
     return this.settings.getProfile(profile.id, this.runtimeForProfile(profile.id)) ?? profile
   }
 
+  private hubProfile(): PublicServerProfile | undefined {
+    return this.settings.listProfiles().find(profile => profile.serverUrl === DEFAULT_SERVER_URL)
+  }
+
+  /** The hub profile has no token yet: take the one install.sh wrote for the local server. True when a token was adopted. */
+  private adoptLocalHubToken(): boolean {
+    const hub = this.hubProfile()
+    if (!hub || hub.hasAccessToken) return false
+    const token = readLocalHubToken()
+    if (!token) return false
+    this.settings.updateProfile(hub.id, { accessToken: token, serverSetupComplete: true })
+    appLog('hub', 'adopted the local server token', { profileId: hub.id })
+    return true
+  }
+
+  /** Onboarding Retry / after a local install: re-read the env file so a reinstalled server's rotated token is picked up. */
+  async retryLocalHubToken(): Promise<boolean> {
+    const hub = this.hubProfile()
+    if (!hub) return false
+    const token = readLocalHubToken()
+    if (!token) return hub.hasAccessToken
+    const current = hub.hasAccessToken ? await this.settings.accessTokenForConnectionAsync(hub.id).catch(() => '') : ''
+    if (token !== current) this.settings.updateProfile(hub.id, { accessToken: token, serverSetupComplete: true })
+    if (hub.id === this.activeProfileId) {
+      const scope = this.activateProfile(hub.id, false, true)
+      void this.runBackgroundRefresh(true, scope)
+    } else this.invalidateProfileHealthProbe(hub.id)
+    return true
+  }
+
+  /** Copies the hub token for pairing a phone; the token never crosses into the renderer. */
+  async copyHubToken(): Promise<boolean> {
+    const hub = this.hubProfile()
+    const token = hub?.hasAccessToken ? await this.settings.accessTokenForConnectionAsync(hub.id).catch(() => '') : ''
+    if (token) clipboard.writeText(token)
+    return Boolean(token)
+  }
+
+  private lastHubRemoteCount: number | null = null
+  private hubReconcile: Promise<PublicServerProfile[]> | null = null
+
+  /**
+   * The profile list mirrors the hub registry (server/remote_servers.py). `hub` is the active scope or the
+   * throwaway client of an inactive-profile health probe; `stillValid` guards against a stale caller.
+   */
+  private reconcileHubRemotes(
+    hub: { profileId: string; serverUrl: string; client: AgentServerClient },
+    stillValid: () => boolean
+  ): Promise<PublicServerProfile[]> {
+    if (this.hubReconcile) return this.hubReconcile
+    const run = (async () => {
+      const { servers } = await hub.client.listRemoteServers()
+      if (!stillValid()) throw staleProfileError()
+      const plan = planHubRemoteProfiles(hub.serverUrl, servers, this.settings.listProfiles())
+      // The active profile cannot be removed (`removeServer` throws); leave the count unset so the next pass retries.
+      const removable = plan.remove.filter(id => id !== this.activeProfileId)
+      for (const id of removable) await this.removeServer(id)
+      for (const { id, sshHost } of plan.update) this.settings.updateProfile(id, { sshHost })
+      if (plan.add.length) {
+        const accessToken = await this.settings.accessTokenForConnectionAsync(hub.profileId)
+        if (!stillValid()) throw staleProfileError()
+        for (const add of plan.add) this.addServer({ ...add, accessToken, serverSetupComplete: true })
+      }
+      this.lastHubRemoteCount = removable.length === plan.remove.length ? servers.length : null
+      this.emitProfiles()
+      return this.publicProfiles()
+    })()
+    this.hubReconcile = run
+    return run.finally(() => { if (this.hubReconcile === run) this.hubReconcile = null })
+  }
+
+  /**
+   * Deploy a remote server over SSH through the local hub (server/remote_servers.py);
+   * the new `/api/remote/{id}` profile appears through the registry reconcile.
+   */
+  async deployRemoteServerViaHub(
+    expected: WorkspaceProfileScope,
+    input: RemoteServerDeployInput,
+    onProgress: (value: ServerSetupProgress) => void
+  ): Promise<PublicServerProfile> {
+    const scope = this.requireWorkspaceScope(expected)
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    if (!this.health?.capabilities?.remote_servers_v1?.available) {
+      throw new Error('This server does not support deploying remote servers over SSH.')
+    }
+    if (this.remoteDeploy) throw new Error('A remote server deployment is already running.')
+    const started = await scope.client.startRemoteDeploy(input)
+    const state = { scope, jobId: started.job_id, cancelled: false }
+    this.remoteDeploy = state
+    try {
+      let seen = 0
+      for (;;) {
+        this.assertCurrentScope(scope)
+        const job: RemoteServerDeployJob = await scope.client.remoteDeployStatus(state.jobId)
+        for (const entry of job.log.slice(seen)) onProgress({ phase: entry.phase as ServerSetupProgress['phase'], message: entry.message })
+        seen = job.log.length
+        if (job.done) {
+          if (state.cancelled) throw new Error('The deployment was cancelled.')
+          if (job.error) throw new Error(job.error)
+          if (!job.server) throw new Error('The deployment finished without reporting the new server.')
+          this.assertCurrentScope(scope)
+          const serverUrl = normalizeServerURL(`${scope.serverUrl}${job.server.proxy_path}`)
+          const profile = (await this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope))).find(candidate => candidate.serverUrl === serverUrl)
+          if (!profile) throw new Error('The deployment finished, but the hub did not list the new server.')
+          return profile
+        }
+        await new Promise(resolve => setTimeout(resolve, 1_000))
+      }
+    } finally {
+      if (this.remoteDeploy === state) this.remoteDeploy = null
+    }
+  }
+
+  /** Stops the poll loop in `deployRemoteServerViaHub` and asks the hub to cancel the job. Silently a no-op with nothing running. */
+  async cancelRemoteDeploy(): Promise<void> {
+    const state = this.remoteDeploy
+    if (!state) return
+    state.cancelled = true
+    await state.scope.client.cancelRemoteDeploy(state.jobId).catch(() => {})
+  }
+
+  async removeRemoteServer(expected: WorkspaceProfileScope, remoteId: string): Promise<void> {
+    const scope = this.requireWorkspaceScope(expected)
+    await this.ensureValidatedScope(scope)
+    await scope.client.removeRemoteServer(remoteId)
+    this.assertCurrentScope(scope)
+    await this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope))
+  }
+
   async updateServer(profileId: string, patch: UpdateServerProfilePatch): Promise<PublicServerProfile> {
     return patch.resetServerIdentity || this.profileAuthorityOperations.has(profileId)
       ? this.withProfileAuthorityOperation(profileId, () => this.updateServerOnce(profileId, patch))
@@ -1770,32 +1876,6 @@ export class AppService {
     }
     await this.refreshAll(false, true, scope)
     return this.loadCachedBootstrap(this.requireProfileScope(profileId, profileGeneration))
-  }
-
-  async testServerConnection(input: TestServerConnectionInput): Promise<Health> {
-    const shutdownEpoch = this.shutdownEpoch
-    const profile = input.profileId ? this.settings.getProfile(input.profileId) : null
-    if (input.profileId && !profile) throw new Error(`Unknown server profile: ${input.profileId}`)
-    const revision = input.profileId ? this.settings.connectionRevision(input.profileId) : null
-    const assertProfile = (): void => {
-      if (this.shutdownEpoch !== shutdownEpoch) throw staleProfileError()
-      if (input.profileId) {
-        this.requireProfileNotRemoving(input.profileId)
-        if (this.settings.connectionRevision(input.profileId) !== revision) throw staleProfileError()
-      }
-    }
-    const token = (input.accessToken === undefined || input.accessToken === '__KEEP__') && input.profileId
-      ? await this.settings.accessTokenForConnectionAsync(input.profileId)
-      : input.accessToken ?? ''
-    assertProfile()
-    const client = this.clientFactory(input.serverUrl, token)
-    try {
-      const health = await client.health()
-      assertProfile()
-      if (health.ok !== true) throw new Error('Server health check reported unavailable.')
-      return health
-    }
-    finally { client.dispose() }
   }
 
   async previewChatShare(expected: WorkspaceProfileScope, sessionId: string) {
@@ -2510,6 +2590,26 @@ export class AppService {
     this.cache.putSessions(scope.namespace, this.sessions)
     this.emitSessions(scope, this.sessions)
     return response.session
+  }
+
+  async rewindSession(sessionId: string, toRunId: string, expectedLatestSeq: number): Promise<SessionRewindResult> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const response = await scope.client.rewindSession(sessionId, toRunId, expectedLatestSeq)
+    this.assertCurrentScope(scope)
+    // The tombstone will also arrive on the socket; trim the local cache now so
+    // a reload before it lands cannot resurrect the removed turns.
+    this.applyHistoryRewind(scope, sessionId, response.from_seq, response.through_seq)
+    this.upsertSession(scope, response.session)
+    return response
+  }
+
+  async restoreCheckpoint(sessionId: string, runId: string, expectedRevision: string): Promise<WorkspaceGitStatus> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const status = await scope.client.restoreCheckpoint(sessionId, runId, expectedRevision)
+    this.assertCurrentScope(scope)
+    return status
   }
 
   async reorderSession(sessionId: string, relativeTo: string, placement: 'before' | 'after', targetFolder?: string): Promise<Session[]> {
@@ -3274,6 +3374,7 @@ export class AppService {
         return
       }
       if (acceptReconcileEvent && !acceptReconcileEvent(event)) return
+      if (event.type === 'history_rewound') this.applyHistoryRewind(scope, sessionId, event.from_seq, event.through_seq)
       this.emitAgentEvent(scope, event)
       this.enqueueEventCache(scope, event)
       if (JOB_REFRESH_EVENT_TYPES.has(event.type) && !isImportedProviderControlMetadata(event)) void this.refreshJobs(scope)
@@ -3567,10 +3668,6 @@ export class AppService {
       interactionId,
       response
     ))
-  }
-
-  async codexPermissionProfiles(sessionId: string): Promise<CodexPermissionProfile[]> {
-    return this.codexRequest(scope => scope.client.codexPermissionProfiles(sessionId))
   }
 
   async codexGoal(sessionId: string): Promise<CodexGoalSnapshot> {
@@ -4217,6 +4314,88 @@ export class AppService {
     return page
   }
 
+  async killCodexWriters(sessionId: string): Promise<CodexKillWritersResult> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const result = await scope.client.killCodexWriters(sessionId)
+    this.assertCurrentScope(scope)
+    return result
+  }
+
+  async listCanvases(sessionId: string): Promise<{ canvases: CanvasSummary[] }> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const result = await scope.client.listCanvases(sessionId)
+    this.assertCurrentScope(scope)
+    return result
+  }
+
+  async getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const record = await scope.client.getCanvas(sessionId, name)
+    this.assertCurrentScope(scope)
+    return record
+  }
+
+  /** Aggregates the whole cached history so the panel is not limited to the renderer's event window. */
+  async chatOutputs(sessionId: string): Promise<ChatOutputsSummary> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    let canvases: CanvasSummary[] = []
+    try {
+      canvases = (await scope.client.listCanvases(sessionId)).canvases
+    } catch (error) {
+      // Servers without the canvas endpoint return 404; the other rows must still render.
+      appLog('canvas', 'canvas list unavailable for chat outputs', { sessionId, error: errorText(error) })
+    }
+    this.assertCurrentScope(scope)
+    return collectChatOutputs(this.cache.events(scope.namespace, sessionId, CACHED_TIMELINE_MAX_RAW_EVENT_LIMIT), canvases)
+  }
+
+  async putCanvasState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const result = await scope.client.putCanvasState(sessionId, name, state)
+    this.assertCurrentScope(scope)
+    return result
+  }
+
+  /** shell.html + vendor.js per server and runtime version; the bundle itself changes per canvas. */
+  private readonly canvasRuntimeCache = new Map<string, { shell: string; vendor: string }>()
+
+  /** Document for an agentsdock-canvas:// frame: the compiled report wrapped in the server's runtime. */
+  async canvasPageResponse(
+    profileId: string,
+    profileGeneration: number,
+    sessionId: string,
+    name: string,
+    theme: CanvasHostTheme
+  ): Promise<Response> {
+    const scope = this.captureScope()
+    if (scope.profileId !== profileId || scope.generation !== profileGeneration) throw staleProfileError()
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    const record = await scope.client.getCanvas(sessionId, name)
+    this.assertCurrentScope(scope)
+    const html = (body: string) => new Response(body, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } })
+    if (record.diagnostics || !record.javascript) {
+      return html(canvasErrorPage('The Canvas did not compile', record.diagnostics ?? 'The compiled bundle is empty.'))
+    }
+    const cacheKey = `${scope.profileId}:${record.runtime_version ?? ''}`
+    let runtime = this.canvasRuntimeCache.get(cacheKey)
+    if (!runtime) {
+      const [shell, vendor] = await Promise.all([
+        scope.client.canvasRuntimeAsset('shell.html'),
+        scope.client.canvasRuntimeAsset('vendor.js')
+      ])
+      this.assertCurrentScope(scope)
+      runtime = { shell, vendor }
+      this.canvasRuntimeCache.set(cacheKey, runtime)
+    }
+    return html(buildCanvasPage({ shell: runtime.shell, vendor: runtime.vendor, javascript: record.javascript, state: record.state ?? {}, theme }))
+  }
+
   async workspaceSearch(sessionId: string, query = '', limit = 100): Promise<WorkspaceSearchPage> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
@@ -4548,10 +4727,10 @@ export class AppService {
     this.assertCurrentScope(scope)
     return sent
   }
-  async runtime(refresh = false): Promise<RuntimeCatalog> {
+  async runtime(refresh = false, handoff = false): Promise<RuntimeCatalog> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
-    await this.refreshRuntime(true, refresh, scope, refresh)
+    await this.refreshRuntime(true, refresh, scope, refresh, handoff)
     this.assertCurrentScope(scope)
     if (!this.runtimeCatalog) throw new Error('The server runtime catalog is unavailable. Check the server version and connection, then retry.')
     return this.runtimeCatalog
@@ -4816,18 +4995,27 @@ export class AppService {
 
   async notify(payload: ProfileNotificationPayload): Promise<void> {
     const scope = this.captureScope()
-    if (payload.profileId !== scope.profileId) return
+    if (payload.profileId !== scope.profileId) {
+      appLog('notify', 'dropped: renderer profile is not the active scope', { payloadProfileId: payload.profileId, scopeProfileId: scope.profileId, sessionId: payload.sessionId })
+      return
+    }
     this.showProfileNotification(payload)
   }
 
   private showProfileNotification(payload: ProfileNotificationPayload): void {
-    if (!Notification.isSupported()) return
+    if (!Notification.isSupported()) { appLog('notify', 'dropped: Notification.isSupported() is false', { sessionId: payload.sessionId }); return }
     const profile = this.settings.getProfile(payload.profileId)
-    if (!profile || (profile.serverIdentity ?? null) !== payload.serverIdentity) return
+    if (!profile || (profile.serverIdentity ?? null) !== payload.serverIdentity) {
+      appLog('notify', 'dropped: profile/serverIdentity mismatch', { profileFound: Boolean(profile), profileIdentity: profile?.serverIdentity ?? null, payloadIdentity: payload.serverIdentity, sessionId: payload.sessionId })
+      return
+    }
     const session = payload.profileId === this.activeProfileId
       ? this.sessions.find(candidate => candidate.id === payload.sessionId)
       : this.cache.session(profileNamespace(profile), payload.sessionId)
-    if (!session) return
+    if (!session) {
+      appLog('notify', 'dropped: session not in main session list', { sessionId: payload.sessionId, knownSessions: this.sessions.length, activeProfile: payload.profileId === this.activeProfileId })
+      return
+    }
     const emergencyAlertId = payload.emergencyAlertId?.trim() || null
     if (emergencyAlertId) {
       if (!/^emergency_[0-9a-f]{32}$/.test(emergencyAlertId) || session.emergency_alert?.id !== emergencyAlertId) return
@@ -4844,7 +5032,12 @@ export class AppService {
       const window = this.focusMainWindow()
       if (window && !window.isDestroyed()) this.deliverOrQueueNotificationRoute(window, route)
     })
+    notification.on('show', () => appLog('notify', 'shown', { sessionId: payload.sessionId }))
+    // macOS posts through UNUserNotificationCenter; a request it refuses only
+    // reports back through this event, so without a listener it is invisible.
+    notification.on('failed', (_event, error) => appLog('notify', 'failed', { sessionId: payload.sessionId, error }))
     notification.show()
+    appLog('notify', 'posted', { sessionId: payload.sessionId, title: payload.title, emergency: Boolean(emergencyAlertId) })
   }
 
   private notificationRouteIsCurrent(route: ProfileNotificationRoute): boolean {
@@ -5123,6 +5316,12 @@ export class AppService {
       if (this.healthFailureCount >= 2 && !this.hasConnectedTimelineSubscription()) this.emitConnection(scope, false, undefined, message)
     }
 
+    if (announcedError && !announce && scope.serverUrl === DEFAULT_SERVER_URL
+      && !this.settings.getProfile(scope.profileId)?.hasAccessToken && this.adoptLocalHubToken()) {
+      const adopted = this.activateProfile(scope.profileId, false, true)
+      void this.runBackgroundRefresh(true, adopted)
+      return
+    }
     if (announcedError) {
       if (announce) throw announcedError
       return
@@ -5153,6 +5352,7 @@ export class AppService {
       const changed = !jsonEqual(this.sessions, mergedSessions)
       this.disposeUnavailablePortTunnels(this.sessions, mergedSessions)
       this.sessions = mergedSessions
+      this.noticePolledTurnEnds(activeScope, mergedSessions)
       if (changed) {
         this.cache.putSessions(activeScope.namespace, mergedSessions)
         this.scheduleSearchBackfill()
@@ -5215,12 +5415,12 @@ export class AppService {
     }
   }
 
-  private refreshRuntime(force = false, forceProbe = false, scope = this.captureScope(), announce = false): Promise<void> {
+  private refreshRuntime(force = false, forceProbe = false, scope = this.captureScope(), announce = false, handoff = false): Promise<void> {
     if (!this.isValidatedScope(scope)) return Promise.resolve()
     const existing = this.runtimeRefreshInFlight.get(scope.generation)
     if (existing) {
-      if (!forceProbe || existing.forceProbe) return existing.task
-      return existing.task.then(() => this.refreshRuntime(true, true, scope, announce))
+      if ((!forceProbe || existing.forceProbe) && (!handoff || existing.handoff)) return existing.task
+      return existing.task.then(() => this.refreshRuntime(true, true, scope, announce, handoff))
     }
     // Checked before the refresh window so it cannot be suppressed by a
     // later cache load pushing runtimeRefreshNextAt back out: the server
@@ -5232,17 +5432,17 @@ export class AppService {
       forceProbe = true
     }
     if (!force && Date.now() < this.runtimeRefreshNextAt) return Promise.resolve()
-    const task = this.loadRuntimeCatalog(scope, forceProbe, announce)
-    this.runtimeRefreshInFlight.set(scope.generation, { task, forceProbe })
+    const task = this.loadRuntimeCatalog(scope, forceProbe, announce, handoff)
+    this.runtimeRefreshInFlight.set(scope.generation, { task, forceProbe, handoff })
     return task.finally(() => {
       if (this.runtimeRefreshInFlight.get(scope.generation)?.task === task) this.runtimeRefreshInFlight.delete(scope.generation)
     })
   }
 
-  private async loadRuntimeCatalog(scope: ConnectionScope, forceProbe = false, announce = false): Promise<void> {
+  private async loadRuntimeCatalog(scope: ConnectionScope, forceProbe = false, announce = false, handoff = false): Promise<void> {
     const started = Date.now()
     try {
-      const catalog = await scope.client.runtimeCatalog(forceProbe)
+      const catalog = await scope.client.runtimeCatalog(forceProbe, handoff)
       if (!this.isCurrentScope(scope)) return
       if (!runtimeCatalogHasSelectableModels(catalog)) {
         throw new Error('Server returned no selectable Claude/Codex models')
@@ -5353,6 +5553,10 @@ export class AppService {
       } catch { this.mailHints.retire() }
     } else this.mailHints.retire()
     if (!portForwardingCapabilityAvailable(health)) this.portTunnels.disposeAll()
+    const remotes = health.capabilities?.remote_servers_v1
+    if (scope.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotes.count !== this.lastHubRemoteCount) {
+      void this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope)).catch(error => appLog('hub', 'remote reconcile failed', { message: errorText(error) }))
+    }
     return scope
   }
 
@@ -5764,6 +5968,25 @@ export class AppService {
     }
   }
 
+  /** Mirrors a server-side history rewind in the durable cache and the landmark index. */
+  private applyHistoryRewind(scope: ConnectionScope, sessionId: string, fromSeq: number | null | undefined, throughSeq: number | null | undefined): void {
+    if (!Number.isSafeInteger(fromSeq) || !Number.isSafeInteger(throughSeq)) return
+    // Buffered live events may fall inside the removed range; persist them
+    // first so the single range delete below covers them too.
+    this.flushEventCache()
+    try {
+      this.cache.removeEventRange(scope.namespace, sessionId, fromSeq!, throughSeq!)
+    } catch (error) {
+      reportStorageError(error)
+      appLog('cache', 'failed to remove rewound events', {
+        profileId: scope.profileId, generation: scope.generation, sessionId, fromSeq, throughSeq, error: errorText(error)
+      })
+    }
+    this.timelineIndexes.delete(`${scope.namespace}:${sessionId}`)
+    // The server deletes the artifacts of rewound turns; bypass the 30 s throttle so they leave the file list now.
+    void this.refreshTimelineFiles(scope, sessionId, true)
+  }
+
   private flushEventCache(): void {
     if (this.eventCacheTimer) clearTimeout(this.eventCacheTimer)
     this.eventCacheTimer = null
@@ -6106,6 +6329,7 @@ export class AppService {
     if (this.searchBackfillTimer) clearTimeout(this.searchBackfillTimer)
     this.searchBackfillTimer = null
     this.healthFailureCount = 0
+    this.lastHubRemoteCount = null
     this.validatedGeneration = null
     this.lastSyncState = ''
     this.runtimeRefreshNextAt = 0
@@ -6279,6 +6503,9 @@ export class AppService {
   private loadScopeCache(scope: ConnectionScope): void {
     this.sessions = this.cache.sessions(scope.namespace)
     this.seenEmergencyAlertIds = new Set<string>()
+    this.decidedTurnEnds.clear()
+    this.polledAgentSeq = null
+    this.polledAgentWatermark = 0
     for (const session of this.sessions) {
       const alertId = session.emergency_alert?.status === 'active'
         ? session.emergency_alert.id
@@ -6452,6 +6679,12 @@ export class AppService {
           expectedIdentity,
           token,
         )
+        // A remote deleted on the hub while another profile is active must not linger in the switcher.
+        const remotes = health.capabilities?.remote_servers_v1
+        if (profile.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotes.count !== this.lastHubRemoteCount) {
+          await this.reconcileHubRemotes({ profileId, serverUrl: profile.serverUrl, client }, () => this.profileHealthProbeIsCurrent(profileId, revision, epoch))
+            .catch(error => appLog('hub', 'remote reconcile failed', { message: errorText(error) }))
+        }
       } else {
         this.stopInactiveEmergencyStream(profileId)
       }
@@ -6734,10 +6967,67 @@ export class AppService {
     })
   }
 
+  private anyWindowFocused(): boolean {
+    return [...(this.windows ?? new Set<BrowserWindow>())]
+      .some(window => !window.isDestroyed() && typeof window.isFocused === 'function' && window.isFocused())
+  }
+
+  /**
+   * "Response finished" is decided here, not in the renderer: the renderer only
+   * receives streamed events for chats open in a pane, and a 30 s health poll
+   * misses turns shorter than its interval. The streamed terminal covers open
+   * chats; the sessions poll covers background chats via latest_agent_event_seq.
+   */
+  private decideTurnEndNotification(scope: ConnectionScope, sessionId: string, seq: number, source: 'stream' | 'poll'): void {
+    const key = `${sessionId}:${seq}`
+    if (this.decidedTurnEnds.has(key)) return
+    this.decidedTurnEnds.add(key)
+    if (this.decidedTurnEnds.size > MAX_DECIDED_TURN_ENDS) this.decidedTurnEnds.delete(this.decidedTurnEnds.values().next().value!)
+    // The renderer subscribes exactly the chats open in a pane, so a live
+    // timeline subscription is the main-process view of "on screen".
+    const onScreen = this.timelineSubscriptions.has(sessionId) && this.anyWindowFocused()
+    const session = this.sessions.find(candidate => candidate.id === sessionId)
+    const profile = this.settings.getProfile(scope.profileId)
+    appLog('notify', 'turn end', { sessionId, seq, source, onScreen, known: Boolean(session) })
+    if (onScreen || !session || !profile) return
+    this.showProfileNotification({
+      title: session.title,
+      body: t('notifications.turnFinished'),
+      profileId: scope.profileId,
+      serverIdentity: profile.serverIdentity ?? null,
+      sessionId
+    })
+  }
+
+  private noticePolledTurnEnds(scope: ConnectionScope, sessions: Session[]): void {
+    const previous = this.polledAgentSeq
+    const next = new Map<string, number>()
+    let watermark = this.polledAgentWatermark
+    for (const session of sessions) {
+      const seq = session.latest_agent_event_seq
+      if (typeof seq !== 'number' || !Number.isSafeInteger(seq)) continue
+      next.set(session.id, seq)
+      const at = Date.parse(session.latest_agent_event_at ?? '')
+      if (at > watermark) watermark = at
+      // The first poll of a scope only records a baseline; the cached list could
+      // otherwise replay turn ends from before this app run.
+      if (!previous) continue
+      const before = previous.get(session.id)
+      // A chat first listed after the baseline (created by another client, or
+      // created and finished inside one poll interval) counts only when its
+      // terminal is newer than everything the previous poll had seen; imported
+      // or restored history carries older server timestamps.
+      if (before === undefined ? !(at > this.polledAgentWatermark) : seq <= before) continue
+      if (session.latest_agent_event_type !== 'turn_finished' && session.latest_agent_event_type !== 'turn_stopped') continue
+      this.decideTurnEndNotification(scope, session.id, seq, 'poll')
+    }
+    this.polledAgentSeq = next
+    this.polledAgentWatermark = watermark
+  }
+
   private notifyNewEmergencyAlerts(scope: ConnectionScope, sessions: Session[]): void {
     const seen = this.seenEmergencyAlertIds ??= new Set<string>()
-    const focusedWindow = [...(this.windows ?? new Set<BrowserWindow>())]
-      .some(window => !window.isDestroyed() && typeof window.isFocused === 'function' && window.isFocused())
+    const focusedWindow = this.anyWindowFocused()
     const profile = this.settings.getProfile(scope.profileId)
     if (!profile) return
     for (const session of sessions) {
@@ -6765,6 +7055,10 @@ export class AppService {
 
   private emitAgentEvent(scope: ConnectionScope, event: Event): void {
     if (!this.isCurrentScope(scope)) return
+    if ((event.type === 'turn_finished' || event.type === 'turn_stopped') && Number.isSafeInteger(event.seq)
+      && !isImportedHistoryRecord(event) && !isImportedProviderControlMetadata(event) && !isNativeSteerTransitionStop(event)) {
+      this.decideTurnEndNotification(scope, event.session_id, event.seq, 'stream')
+    }
     const previousHealth = this.health
     const projectedHealth = this.activityHealth.observe(this.activityScope(scope), event)
     // Activity cannot re-establish authority after a failed identity/health

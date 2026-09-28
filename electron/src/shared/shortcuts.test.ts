@@ -28,6 +28,8 @@ describe('app shortcut catalog', () => {
   it('rejects display-only shortcuts as native accelerators', () => {
     expect(() => shortcutAccelerator('toggleTerminal')).toThrow('not registered')
     expect(() => shortcutAccelerator('focusLeftChatPane')).toThrow('not registered')
+    expect(() => shortcutAccelerator('stopTurn')).toThrow('not registered')
+    expect(() => shortcutAccelerator('switchServerByNumber')).toThrow('not registered')
   })
 
   it('does not advertise macOS-only terminal chords as available elsewhere', () => {
@@ -43,6 +45,9 @@ describe('app shortcut catalog', () => {
     expect(shortcutKeycaps('attachFiles', 'other')).toEqual(['Ctrl', 'Shift', 'O'])
     expect(shortcutKeycaps('sendMessage', 'mac')).toEqual(['↩'])
     expect(shortcutKeycaps('settings', 'other')).toEqual(['Ctrl', ','])
+    expect(shortcutKeycaps('stopTurn', 'mac')).toEqual(['⎋'])
+    expect(shortcutKeycaps('switchServerByNumber', 'mac')).toEqual(['⇧', '⌘', '1…9'])
+    expect(shortcutKeycaps('switchServerByNumber', 'other')).toEqual(['Ctrl', 'Shift', '1…9'])
   })
 
   it('groups every registered shortcut exactly once for settings', () => {

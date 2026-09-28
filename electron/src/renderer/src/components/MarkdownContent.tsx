@@ -2,13 +2,15 @@
 import { t } from '@shared/i18n'
 import { useLocale, type Locale } from '../lib/i18n'
 import { createContext, memo, useCallback, useContext, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
 import ReactMarkdown, { defaultUrlTransform, type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
+import remarkCjkFriendly from 'remark-cjk-friendly'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
-import { Check, ChevronDown, ChevronUp, Copy, FileCode2 } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, Copy, FileCode2, Maximize2, X } from 'lucide-react'
 import { isEditorTextFile } from '@shared/file-content-type'
 import { internalWorkspaceLinkURL } from '@shared/workspace-link-url'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
@@ -17,6 +19,7 @@ import { chatReferenceDisplayText, parseStoredChatReferences } from '../lib/chat
 import { saveAgentFile } from '../lib/file-actions'
 import { parseStoredTeamReferences, teamReferenceText } from '../lib/team-references'
 import { openTeamMessageLink, parseTeamMessageLink } from '../lib/team-message-links'
+import { useTransientClose } from '../lib/transient-close'
 import {
   parseWorkspaceCodeReference,
   requestOpenAgentFile,
@@ -26,7 +29,9 @@ import { useAppStore } from '../store/app-store'
 
 const COLLAPSED_CHARACTERS = 6300
 const COLLAPSED_LINES = 72
-const REMARK_PLUGINS = [remarkGfm, remarkMath]
+// remarkCjkFriendly: CommonMark refuses `**…：**Ruijie` as bold because the
+// closing `**` sits between CJK punctuation and a letter; models write this constantly.
+const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkCjkFriendly]
 const REHYPE_PLUGINS = [rehypeHighlight, rehypeKatex]
 const EMPTY_FILES: AgentFile[] = []
 const EMPTY_CHAT_REFERENCES: readonly ChatReference[] = []
@@ -91,6 +96,10 @@ export const MarkdownContent = memo(function MarkdownContent({
     if (!href) return
     if (openTeamMessageLink(href)) return
     if (/^(?:https?:\/\/|mailto:)/i.test(href)) { void window.agentsDock.native.openExternal(href); return }
+    if (/\.canvas\.tsx(?:[?#].*)?$/i.test(href)) {
+      window.dispatchEvent(new CustomEvent('agentsdock:open-canvas', { detail: { sessionId: sessionId ?? null, path: href } }))
+      return
+    }
     if (canonicalSecurePeerInvite(href)) {
       window.dispatchEvent(new CustomEvent('agentsdock:open-secure-peer-invite', { detail: { invite: href } }))
       return
@@ -200,7 +209,7 @@ export const MarkdownContent = memo(function MarkdownContent({
         ? <code className="math-fallback" title={t("ui.MarkdownContent.this_equation_could_not_be_rendered_0390d07", undefined, uiLocale)}>{children}</code>
         : <span className={className} {...props}>{children}</span>
     },
-    table: ({ children }) => <div className="table-scroll"><table>{children}</table></div>,
+    table: ({ children }) => <MarkdownTable>{children}</MarkdownTable>,
     input: props => <input {...props} readOnly />
   }), [onChatReferenceClick, onLink, preparedChatReferences.markers, resolveImageSource, restoredNormalized, sessionId, shown])
   return (
@@ -471,6 +480,34 @@ function CodeBlock({ children, fullSource }: { children: ReactNode; fullSource: 
     <div className="code-block">
       <div className="code-toolbar"><span>code</span><button type="button" title={t("ui.MarkdownContent.CodeBlock.copy_full_code_e0bb5a9", undefined, uiLocale)} onClick={() => void copy()}>{copied ? <Check size={13} /> : <Copy size={13} />}</button></div>
       <pre>{children}</pre>
+    </div>
+  )
+}
+
+function MarkdownTable({ children }: { children: ReactNode }) {
+  const uiLocale = useContext(MarkdownLocaleContext)
+  const [expanded, setExpanded] = useState(false)
+  useTransientClose(expanded, () => setExpanded(false))
+  const expandLabel = t('ui.MarkdownContent.expandTable', undefined, uiLocale)
+  return (
+    <div className="table-frame">
+      <div className="table-scroll"><table>{children}</table></div>
+      <button type="button" className="icon-button table-expand" aria-label={expandLabel} title={expandLabel} onClick={() => setExpanded(true)}><Maximize2 size={13} /></button>
+      {expanded && (
+        <Dialog.Root open onOpenChange={open => { if (!open) setExpanded(false) }}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="dialog-overlay" />
+            <Dialog.Content className="table-dialog" aria-describedby={undefined}>
+              <div className="table-dialog-head">
+                <Dialog.Title>{t('ui.MarkdownContent.table', undefined, uiLocale)}</Dialog.Title>
+                <Dialog.Close asChild><button type="button" className="icon-button" aria-label={t('ui.MarkdownContent.closeTable', undefined, uiLocale)}><X size={16} /></button></Dialog.Close>
+              </div>
+              {/* `children` are the rows react-markdown already rendered; mounting them again avoids a second parse of the message. */}
+              <div className="table-dialog-body markdown"><table>{children}</table></div>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
+      )}
     </div>
   )
 }

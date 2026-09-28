@@ -7,6 +7,7 @@ const rendererRoot = resolve(process.cwd(), 'src/renderer/src')
 // These variables represent live layout state supplied by WorkspaceEditor.tsx
 // or Radix. They are not design tokens and intentionally have no global value.
 const runtimeCustomProperties = new Set([
+  '--canvas-pane-user-width',
   '--workspace-editor-width',
   '--workspace-explorer-width',
   '--workspace-markdown-source-percent',

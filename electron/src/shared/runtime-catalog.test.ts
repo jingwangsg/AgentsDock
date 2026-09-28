@@ -344,6 +344,19 @@ describe('runtimeCatalogOptions', () => {
       { value: 'claude-fable-5', label: 'claude-fable-5' }
     ])
   })
+
+  it('keeps the server description on model choices in server order', () => {
+    const described: RuntimeCatalog = { backends: { claude: { models: [
+      { value: 'default', label: 'Default — Sonnet 4.6', description: 'Org default' },
+      { value: 'opus', label: 'Opus 5.5', description: 'Most capable for ambitious work' },
+      { value: 'claude-opus-4-8', label: 'Opus 4.8' }
+    ], efforts: [] } } }
+    expect(runtimeCatalogOptions(described, 'claude', 'models').slice(1)).toEqual([
+      { value: 'default', label: 'Default — Sonnet 4.6', description: 'Org default' },
+      { value: 'opus', label: 'Opus 5.5', description: 'Most capable for ambitious work' },
+      { value: 'claude-opus-4-8', label: 'Opus 4.8' }
+    ])
+  })
 })
 
 describe('model-scoped reasoning efforts', () => {

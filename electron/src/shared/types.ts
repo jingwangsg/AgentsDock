@@ -509,6 +509,8 @@ export interface RuntimeOption {
   locked?: boolean
   /** Human-readable reason to show alongside a locked option, e.g. "Requires a paid Cursor plan". */
   locked_reason?: string | null
+  /** Purpose text from the provider's own picker (e.g. "Fastest for quick answers"), shown under the label. */
+  description?: string | null
 }
 export interface RuntimeModelOption extends RuntimeOption {
   efforts?: RuntimeOption[]
@@ -1097,6 +1099,8 @@ export interface Event extends SharedChatAttribution {
   backend?: Backend | null
   prompt?: string | null
   file_ids?: string[] | null
+  /** `turn_started`: the provider command (skill) the user picked for this turn. */
+  skill_selection?: ProviderCommandSelection | null
   text?: string | null
   result_text?: string | null
   message?: string | null
@@ -1179,9 +1183,17 @@ export interface Event extends SharedChatAttribution {
   direction?: string | null
   positions?: QueuePosition[] | null
   diff_files?: CodeDiffFileSummary[] | null
+  /** Durable pre-turn workspace tree written with this turn's `code_diff`; only such runs can be restored. */
+  checkpoint_commit?: string | null
   files_changed?: number | null
   additions?: number | null
   deletions?: number | null
+  /** `history_rewound` tombstone: the removed closed sequence range and its provider action. */
+  from_seq?: number | null
+  through_seq?: number | null
+  to_run_id?: string | null
+  removed_events?: number | null
+  provider_rewind?: string | null
   byte_count?: number | null
   repository_root?: string | null
   interaction?: CodexPendingInteraction | null
@@ -1706,6 +1718,49 @@ export interface SessionForkCompletedPrefixCapability {
   supported_backends: Backend[]
 }
 
+export interface SessionRewindCapability {
+  available: boolean
+  version: number
+  supported_backends: Backend[]
+  checkpoint_restore?: boolean
+}
+
+export interface SessionRewindResult {
+  ok: boolean
+  from_seq: number
+  through_seq: number
+  removed_events: number
+  /** Opaque server label (e.g. claude_fork, codex_rollback); displayed, never branched on. */
+  provider_rewind: string | null
+  session: Session
+}
+
+export interface CodexKillWritersResult {
+  killed: number[]
+  /** This server restarted its own Codex app-server because nothing else held the thread. */
+  restarted_app_server?: boolean
+  /** Other chats mid-turn that prevented an app-server restart. */
+  busy_sessions?: string[]
+  /** Codex app-servers owned by other applications, which only the user can close. */
+  other_holders?: Array<{ pid: number; owner: string }>
+}
+
+export interface CanvasSummary {
+  name: string
+  path: string
+  revision: number
+  size: number
+  updated_at: string
+}
+
+export interface CanvasRecord extends Omit<CanvasSummary, 'size'> {
+  source: string
+  javascript: string
+  diagnostics: string | null
+  runtime_version: string | null
+  state: Record<string, unknown>
+}
+
 export interface HealthCapabilities {
   provider_usage?: { available: boolean; version: number; backends?: Backend[] }
   subagent_limit_v1?: { version: number; backends?: Backend[] }
@@ -1732,13 +1787,15 @@ export interface HealthCapabilities {
   team_hub_host_control_v1?: TeamHubHostControlCapability
   local_session_import_v1?: LocalSessionImportCapability
   session_fork_completed_prefix_v1?: SessionForkCompletedPrefixCapability
+  session_rewind_v1?: SessionRewindCapability
   agent_emergency_alerts_v1?: AgentEmergencyAlertsCapability
   team_mail_hints_v1?: TeamMailHintsCapability
   team_mail_hints_v2?: TeamActivityHintsCapability
   pinned_items?: PinnedItemsCapability
   port_forwarding_v1?: PortForwardingCapability
   websocket_auth_v1?: ServerCapability
-  [key: string]: SideQuestionsCapability | ServerCapability | ServerRestartCapability | TeamHubV1Capability | TeamHubHostControlCapability | LocalSessionImportCapability | SessionForkCompletedPrefixCapability | AgentEmergencyAlertsCapability | TeamMailHintsCapability | TeamActivityHintsCapability | AgentTeamMailCapability | AgentTeamMessagesCapability | TeamBulletinAliasCapability | TeamAllServersAliasCapability | PinnedItemsCapability | JsonValue | undefined
+  remote_servers_v1?: RemoteServersCapability
+  [key: string]: SideQuestionsCapability | ServerCapability | ServerRestartCapability | TeamHubV1Capability | TeamHubHostControlCapability | LocalSessionImportCapability | SessionForkCompletedPrefixCapability | SessionRewindCapability | AgentEmergencyAlertsCapability | TeamMailHintsCapability | TeamActivityHintsCapability | AgentTeamMailCapability | AgentTeamMessagesCapability | TeamBulletinAliasCapability | TeamAllServersAliasCapability | PinnedItemsCapability | RemoteServersCapability | JsonValue | undefined
 }
 
 export type ServerComponentHealth = {
@@ -1797,12 +1854,15 @@ export interface PublicServerProfile {
   cachedUnreadCount: number
   lastConnectionError?: string | null
   serverVersion?: string | null
+  /** SSH destination (alias or user@host) used to open this server's paths in Zed. */
+  sshHost?: string | null
 }
 
 export interface AddServerProfileInput {
   name?: string
   serverUrl: string
   accessToken?: string | null
+  sshHost?: string | null
   /** Canonical identity returned by a successful connection test. */
   serverIdentity?: string | null
   serverSetupComplete?: boolean
@@ -1811,6 +1871,8 @@ export interface AddServerProfileInput {
 export interface UpdateServerProfilePatch {
   name?: string
   serverUrl?: string
+  /** Undefined preserves the stored SSH host; null or an empty string removes it. */
+  sshHost?: string | null
   /** Undefined preserves the stored credential; null or an empty string removes it. */
   accessToken?: string | null
   /** Explicit user confirmation that this endpoint may establish a new canonical identity. */
@@ -1907,8 +1969,8 @@ export interface PublicServerSettings {
 }
 
 export interface ServerSetupInput {
-  target: 'local' | 'ssh'
-  sshHost?: string
+  /** Only the local install remains; remote servers are deployed by the local hub (server/remote_servers.py). */
+  target: 'local'
   port?: number
   track?: ServerUpdateTrack
   /** Explicitly designate a fresh install as the Team Network host. Omit during updates to preserve the existing role. */
@@ -1927,13 +1989,64 @@ export interface ServerSetupProgress {
   message: string
 }
 
+/** Reported by the active server's ssh tunnel supervisor for one registered remote. */
+export interface RemoteServerTunnelStatus {
+  state: 'starting' | 'connected' | 'reconnecting' | 'stopped'
+  restarts: number
+  last_error: string | null
+}
+
+/** A server reachable through the active server's hub proxy at `/api/remote/{id}`. Never carries the remote's own token. */
+export interface RemoteServer {
+  id: string
+  name: string
+  ssh_host: string
+  install_dir: string
+  remote_port: number
+  local_port: number
+  created_at: string
+  proxy_path: string
+  tunnel: RemoteServerTunnelStatus | null
+}
+
+export interface RemoteServerDeployInput {
+  sshHost: string
+  installDir?: string
+  name?: string
+}
+
+export interface RemoteServerDeployLogEntry {
+  phase: string
+  message: string
+  at: string
+}
+
+export interface RemoteServerDeployJob {
+  job_id: string
+  phase: string
+  done: boolean
+  error: string | null
+  log: RemoteServerDeployLogEntry[]
+  server: RemoteServer | null
+}
+
+export interface RemoteServersCapability {
+  available: boolean
+  required: boolean
+  version: number
+  proxy_prefix: string
+  admin_path: string
+  ssh_available: boolean
+  count: number
+}
+
 export interface ServerSetupDiagnostics {
   logPath: string
   state: 'idle' | 'running' | 'failed' | 'completed' | 'cancelled'
   tail: string[]
   startedAt?: string
   updatedAt?: string
-  target?: 'local' | 'ssh'
+  target?: 'local'
 }
 
 export interface ServerSetupResult {
@@ -2354,13 +2467,6 @@ export interface CreateSessionInput {
   effort?: string | null
   system_prompt?: string | null
   subagent_limit?: number | null
-  codex_approval_policy?: CodexApprovalPolicy | null
-  codex_sandbox_mode?: CodexSandboxMode | null
-  codex_permission_profile?: string | null
-  codex_approvals_reviewer?: CodexApprovalsReviewer | null
-  claude_permission_mode?: ClaudePermissionMode | null
-  cursor_permission_mode?: CursorPermissionMode | null
-  opencode_permission_mode?: OpenCodePermissionMode | null
 }
 export interface ResumeSessionInput extends CreateSessionInput { providerId: string }
 export interface LocalSessionCandidate {
@@ -2395,13 +2501,6 @@ export interface UpdateSessionInput {
   effort?: string | null
   system_prompt?: string | null
   subagent_limit?: number | null
-  codex_approval_policy?: CodexApprovalPolicy | null
-  codex_sandbox_mode?: CodexSandboxMode | null
-  codex_permission_profile?: string | null
-  codex_approvals_reviewer?: CodexApprovalsReviewer | null
-  claude_permission_mode?: ClaudePermissionMode | null
-  cursor_permission_mode?: CursorPermissionMode | null
-  opencode_permission_mode?: OpenCodePermissionMode | null
   provider_jobs_access?: ProviderJobsAccess
   pinned?: boolean
   archived?: boolean

@@ -555,6 +555,91 @@ describe('timeline pin state', () => {
     expect(screen.queryByRole('button', { name: /Route hint for Route/ })).not.toBeInTheDocument()
   })
 
+  it('offers turn editing on an idle user turn and checkpoint restore only with a checkpoint', () => {
+    const event: Event = {
+      id: 'turn-a', session_id: 'chat-1', seq: 3, type: 'turn_started',
+      ts: '2026-09-28T10:00:00Z', prompt: 'Rename the helper', run_id: 'run-a'
+    }
+    const base: MessageItem = { kind: 'message', id: 'turn-a', key: 'turn-a', seq: 3, event, events: [event], role: 'user', files: [], runId: 'run-a' }
+    const row = (item: MessageItem, rewindIdle: boolean) => (
+      <TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} rewindIdle={rewindIdle} checkpointRestoreSupported />
+    )
+
+    const view = render(row(base, true))
+    expect(screen.getByTitle('Edit this turn')).toBeInTheDocument()
+    expect(screen.queryByTitle('Restore checkpoint')).toBeNull()
+
+    view.rerender(row({ ...base, checkpointCommit: 'c'.repeat(40) }, true))
+    expect(screen.getByTitle('Restore checkpoint')).toBeInTheDocument()
+
+    view.rerender(row({ ...base, checkpointCommit: 'c'.repeat(40) }, false))
+    expect(screen.queryByTitle('Edit this turn')).toBeNull()
+    expect(screen.queryByTitle('Restore checkpoint')).toBeNull()
+
+    view.rerender(row({ ...base, runId: undefined, checkpointCommit: 'c'.repeat(40) }, true))
+    expect(screen.queryByTitle('Edit this turn')).toBeNull()
+    expect(screen.queryByTitle('Restore checkpoint')).toBeNull()
+
+    view.rerender(row({ ...base, pending: true, pendingPhase: 'submitting' }, true))
+    expect(screen.queryByTitle('Edit this turn')).toBeNull()
+  })
+
+  it('enters edit mode with the original prompt and asks for confirmation before a checkpoint restore', () => {
+    useAppStore.setState({ drafts: { 'chat-1': 'Half-typed follow-up' }, editingTurn: {} })
+    const event: Event = {
+      id: 'turn-a', session_id: 'chat-1', seq: 3, type: 'turn_started',
+      ts: '2026-09-28T10:00:00Z', prompt: 'Rename the helper', run_id: 'run-a'
+    }
+    const item: MessageItem = {
+      kind: 'message', id: 'turn-a', key: 'turn-a', seq: 3, event, events: [event], role: 'user', files: [],
+      runId: 'run-a', checkpointCommit: 'c'.repeat(40)
+    }
+    const confirm = vi.fn()
+    window.addEventListener('agentsdock:confirm-restore-checkpoint', confirm)
+    try {
+      render(<TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} rewindIdle checkpointRestoreSupported />)
+      fireEvent.click(screen.getByTitle('Edit this turn'))
+      expect(useAppStore.getState().editingTurn['chat-1']).toEqual({
+        runId: 'run-a', originalPrompt: 'Rename the helper', previousDraft: 'Half-typed follow-up'
+      })
+      expect(useAppStore.getState().drafts['chat-1']).toBe('Rename the helper')
+      fireEvent.click(screen.getByTitle('Restore checkpoint'))
+      expect(confirm).toHaveBeenCalledOnce()
+      expect((confirm.mock.calls[0][0] as CustomEvent<{ sessionId: string; runId: string }>).detail)
+        .toEqual({ sessionId: 'chat-1', runId: 'run-a' })
+    } finally {
+      window.removeEventListener('agentsdock:confirm-restore-checkpoint', confirm)
+    }
+  })
+
+  it('carries the run and checkpoint onto the user row from either code_diff or the hidden turn_checkpoint', () => {
+    const events: Event[] = [
+      { id: 'start-a', session_id: 'chat-1', seq: 1, type: 'turn_started', ts: '2026-09-28T10:00:00Z', prompt: 'First', run_id: 'run-a' },
+      { id: 'diff-a', session_id: 'chat-1', seq: 2, type: 'code_diff', ts: '2026-09-28T10:00:01Z', run_id: 'run-a', checkpoint_commit: 'a'.repeat(40) },
+      { id: 'finish-a', session_id: 'chat-1', seq: 3, type: 'turn_finished', ts: '2026-09-28T10:00:02Z', run_id: 'run-a', result_text: 'Done' },
+      { id: 'start-b', session_id: 'chat-1', seq: 4, type: 'turn_started', ts: '2026-09-28T10:01:00Z', prompt: 'Second', run_id: 'run-b' },
+      { id: 'checkpoint-b', session_id: 'chat-1', seq: 5, type: 'turn_checkpoint', ts: '2026-09-28T10:01:01Z', run_id: 'run-b', checkpoint_commit: 'b'.repeat(40) },
+      { id: 'finish-b', session_id: 'chat-1', seq: 6, type: 'turn_finished', ts: '2026-09-28T10:01:02Z', run_id: 'run-b', result_text: 'Done' },
+      { id: 'start-c', session_id: 'chat-1', seq: 7, type: 'turn_started', ts: '2026-09-28T10:02:00Z', prompt: 'Third', run_id: 'run-c' }
+    ]
+    const rows = renderTimelineItems(projectTimeline(events, []))
+    const users = rows.filter((row): row is MessageItem => row.kind === 'message' && row.role === 'user')
+    expect(users.map(row => [row.runId, row.checkpointCommit])).toEqual([
+      ['run-a', 'a'.repeat(40)], ['run-b', 'b'.repeat(40)], ['run-c', undefined]
+    ])
+    expect(rows.some(row => row.kind === 'system' && row.event.type === 'turn_checkpoint')).toBe(false)
+  })
+
+  it('renders history_rewound as a compact lifecycle card', () => {
+    const event: Event = {
+      id: 'rewound', session_id: 'chat-1', seq: 9, type: 'history_rewound', ts: '2026-09-28T10:03:00Z',
+      from_seq: 4, through_seq: 8, to_run_id: 'run-b', removed_events: 5, provider_rewind: 'codex_rollback'
+    }
+    const item: SystemItem = { kind: 'system', id: 'event:rewound', key: 'event:rewound', seq: 9, event }
+    render(<TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
+    expect(screen.getByText('Rewound to here')).toBeInTheDocument()
+  })
+
   it('renders a structured @Chat route inline and navigates by its immutable session id', async () => {
     const selectSession = vi.fn().mockResolvedValue(undefined)
     useAppStore.setState({

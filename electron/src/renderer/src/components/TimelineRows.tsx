@@ -3,7 +3,7 @@ import { useLocale } from '../lib/i18n'
 import { legacyOutgoingDeliveryStatus, outgoingDeliveryStatus } from '../lib/cross-chat-delivery-status'
 import { timelineCount, timelineEventLabel, timelineStatusLabel } from '../lib/timeline-labels'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Check, ChevronRight, Clock3, Code2, Copy, FileText, History, LoaderCircle, MessageSquareShare, Pin, Siren, Sparkles, TerminalSquare, Wrench } from 'lucide-react'
+import { AlertTriangle, Check, ChevronRight, Clock3, Code2, Copy, FileText, History, LoaderCircle, MessageSquareShare, Pencil, Pin, RotateCcw, Siren, Sparkles, TerminalSquare, Wrench } from 'lucide-react'
 import { compactToolOutputPreview } from '@shared/event-compaction'
 import { agentFileBelongsToSession } from '@shared/session-files'
 import { isImportedProviderInterruption } from '@shared/provider-origin'
@@ -25,11 +25,11 @@ import { CrossChatPeerLink } from './CrossChatPeerLink'
 import { chatMailboxAvailable } from '@shared/chat-inbox'
 import { isSharedChatCollaborator } from '@shared/chat-shares'
 
-export const TimelineRowView = memo(function TimelineRowView({ item, sessionId, profileScope, onFindFile, pinnedItemIds, codexLifecycleActive = false }: { item: RenderTimelineItem; sessionId: string; profileScope: WorkspaceProfileScope | null; onFindFile: (fileId: string) => void; pinnedItemIds: ReadonlySet<string>; codexLifecycleActive?: boolean }) {
+export const TimelineRowView = memo(function TimelineRowView({ item, sessionId, profileScope, onFindFile, pinnedItemIds, codexLifecycleActive = false, rewindIdle = false, checkpointRestoreSupported = false }: { item: RenderTimelineItem; sessionId: string; profileScope: WorkspaceProfileScope | null; onFindFile: (fileId: string) => void; pinnedItemIds: ReadonlySet<string>; codexLifecycleActive?: boolean; rewindIdle?: boolean; checkpointRestoreSupported?: boolean }) {
   useLocale()
   if (item.kind === 'message') {
     const pinned = pinnedItemIds.has(`message:${item.events[0]?.id ?? item.event.id}`)
-    return <div className={`turn-segment ${item.role}`}><Message item={item} sessionId={sessionId} profileScope={profileScope} pinned={pinned} /></div>
+    return <div className={`turn-segment ${item.role}`}><Message item={item} sessionId={sessionId} profileScope={profileScope} pinned={pinned} rewindIdle={rewindIdle} checkpointRestoreSupported={checkpointRestoreSupported} /></div>
   }
   if (item.kind === 'progress') return <div className="turn-segment activity-segment"><RunActivity item={item} sessionId={sessionId} profileScope={profileScope} /></div>
   if (item.kind === 'trace') return <div className="turn-segment trace-segment"><TraceDisclosure events={item.events} sessionId={sessionId} promotedCommentaryIds={item.promotedCommentaryIds} includeCommentary={!item.active} /></div>
@@ -43,7 +43,7 @@ function MediaRow({ item, sessionId, profileScope, onFindFile, pinnedItemIds }: 
   return <div className="turn-segment media-segment"><MediaGrid files={item.files} sessionId={sessionId} profileScope={profileScope} onFind={file => onFindFile(file.id)} pinnedItemIds={pinnedItemIds} /></div>
 }
 
-function Message({ item, sessionId, profileScope, pinned }: { item: MessageItem; sessionId: string; profileScope: WorkspaceProfileScope | null; pinned: boolean }) {
+function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpointRestoreSupported }: { item: MessageItem; sessionId: string; profileScope: WorkspaceProfileScope | null; pinned: boolean; rewindIdle: boolean; checkpointRestoreSupported: boolean }) {
   useLocale()
   const role = item.role
   const events = item.events
@@ -81,6 +81,8 @@ function Message({ item, sessionId, profileScope, pinned }: { item: MessageItem;
     window.dispatchEvent(new CustomEvent('agentsdock:pins-changed', { detail: sessionId }))
   }
   const copy = async () => { await window.agentsDock.native.writeClipboard(text); setCopied(true); window.setTimeout(() => setCopied(false), 1200) }
+  const canEditTurn = role === 'user' && !item.pending && rewindIdle && Boolean(item.runId)
+  const canRestoreCheckpoint = canEditTurn && checkpointRestoreSupported && Boolean(item.checkpointCommit)
   return (
     <div
       className={`message-row ${role}${item.pending ? ' pending' : ''}`}
@@ -96,6 +98,8 @@ function Message({ item, sessionId, profileScope, pinned }: { item: MessageItem;
             : <time>{formatTime(event.ts)}</time>}
           {!item.pending && <button type="button" className={`pin-button ${pinned ? 'active' : ''}`} aria-pressed={pinned} title={pinned ? t('timeline.ui.unpinMessage') : t('timeline.ui.pinMessage')} onClick={() => runTimelineAction(togglePin())}><Pin size={12} fill={pinned ? 'currentColor' : 'none'} /></button>}
           <button type="button" title={t('timeline.ui.copyFullMessage')} onClick={() => runTimelineAction(copy())}>{copied ? <Check size={12} /> : <Copy size={12} />}</button>
+          {canEditTurn && <button type="button" title={t('timeline.rewind.editTurn')} onClick={() => useAppStore.getState().beginEditingTurn(sessionId, item.runId!, primary.prompt ?? text)}><Pencil size={12} /></button>}
+          {canRestoreCheckpoint && <button type="button" title={t('timeline.rewind.restoreCheckpoint')} onClick={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-restore-checkpoint', { detail: { sessionId, runId: item.runId } }))}><RotateCcw size={12} /></button>}
         </header>
         <div className="message-parts">
           {events.map(part => <MarkdownContent
@@ -617,7 +621,7 @@ function TraceDisclosure({
     ? hasMore ? t('timeline.ui.loadMoreActivity') : t('timeline.ui.checkForNewerActivity')
     : t('timeline.ui.loadAvailableActivity')
   const activityHeader = runActivity
-    ? <RunActivityHeader item={runActivity} events={events} open={open} detailsId={detailsId} onToggle={toggleDetails} nativeCodex={nativeCodex} />
+    ? <RunActivityHeader item={runActivity} events={events} open={open} detailsId={detailsId} onToggle={toggleDetails} />
     : null
   return (
     <div className={`trace${runActivity ? ' run-activity' : ''}${nativeCodex ? ' codex-native-activity' : ''}${nativeClaude ? ' claude-native-activity' : ''} ${open ? 'open' : ''}`}>
@@ -662,7 +666,7 @@ function TraceDisclosure({
   )
 }
 
-function RunActivityHeader({ item, events, open, detailsId, onToggle, nativeCodex = false }: { item: ProgressItem; events: Event[]; open: boolean; detailsId: string; onToggle: () => void; nativeCodex?: boolean }) {
+function RunActivityHeader({ item, events, open, detailsId, onToggle }: { item: ProgressItem; events: Event[]; open: boolean; detailsId: string; onToggle: () => void }) {
   useLocale()
   const live = item.active !== false && !item.stoppedAt
   const stopped = Boolean(item.stoppedAt)
@@ -682,7 +686,7 @@ function RunActivityHeader({ item, events, open, detailsId, onToggle, nativeCode
       : t('timeline.activity.workedFor', { duration })
   if (live) {
     return <div className="run-activity-summary">
-      {!nativeCodex && <span className="activity-ring" aria-hidden="true" />}
+      <span className="activity-ring" aria-hidden="true" />
       <strong>{title}</strong>
     </div>
   }
@@ -763,7 +767,7 @@ function RunActivitySupportGroup({ parts, sessionId, profileScope, nativeCodex =
       aria-expanded={open}
       aria-controls={detailsId}
       onClick={() => setOpen(value => !value)}
-    >{toolsOnly || activeTool ? <TerminalSquare size={13} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}<span>{summary}</span>{(toolsOnly || activeTool) && <ChevronRight size={12} aria-hidden="true" />}</button>
+    >{toolsOnly || activeTool ? <TerminalSquare size={14} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}<span>{summary}</span>{(toolsOnly || activeTool) && <ChevronRight size={12} aria-hidden="true" />}</button>
     {open && <ol id={detailsId} className="run-activity-support-details" aria-label={summary}>
       {parts.map(part => nativeCodex && part.kind === 'activity' && part.entry.kind === 'tool'
         ? <ToolEvent key={part.entry.key} entry={part.entry} nativeCodex runLive={runLive} />
@@ -838,7 +842,7 @@ function CodexReasoningUpdate({ event, sessionId, active, expanded, labeled }: {
     <div className="trace-reasoning">
       {(labeled || event.phase === 'reasoning') && <small className="muted codex-reasoning-kind">{t(event.phase === 'reasoning' ? 'timeline.activity.providerReasoning' : 'timeline.activity.reasoningSummary')}</small>}
       <button type="button" className={`codex-activity-line${active ? ' is-active' : ''}${open ? ' is-expanded' : ''}`} aria-label={boundedTracePreview(headline, TRACE_REASONING_ACCESSIBLE_CHARS)} aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen(value => !value)} title={headline}>
-        <span className={open ? 'sr-only' : undefined}>{headline}</span><ChevronRight size={12} aria-hidden="true" />
+        {!open && <Sparkles size={14} aria-hidden="true" />}<span className={open ? 'sr-only' : undefined}>{headline}</span><ChevronRight size={12} aria-hidden="true" />
       </button>
       {event.partial === true && <small className="muted codex-partial-summary">{t(event.phase === 'reasoning' ? 'timeline.activity.partialProviderReasoning' : 'timeline.ui.partialThinkingSummary')}</small>}
       {open && <div id={detailsId} className="trace-reasoning-body codex-reasoning-detail"><MarkdownContent text={text} sessionId={sessionId} fold={false} /></div>}
@@ -914,7 +918,7 @@ function ToolEvent({ entry, nativeCodex = false, active = false, runLive = false
     : !entry.finished ? t('timeline.ui.stopped')
     : status.tone === 'success' ? t('timeline.activity.ran') : status.label
   const headline = nativeCodex ? <>
-    <TerminalSquare size={13} aria-hidden="true" /><span>{nativeLabel} {toolHeadline(event)}</span>
+    <TerminalSquare size={14} aria-hidden="true" /><span>{nativeLabel} {toolHeadline(event)}</span>
     {hasDetails && <ChevronRight size={12} aria-hidden="true" />}
   </> : <>
     <strong>{name}</strong>
@@ -960,6 +964,10 @@ function SystemView({ item, sessionId, profileScope, pinned, codexLifecycleActiv
   if (event.type.startsWith('cross_chat_')) return <CrossChatView item={item} sessionId={sessionId} profileScope={profileScope} />
   if (event.type === 'team_message_sent') return <TeamMessageSentView event={event} profileScope={profileScope} />
   if (event.type === 'emergency_alert_raised') return <EmergencyAlertView event={event} sessionId={sessionId} />
+  if (event.type === 'history_rewound' || event.type === 'workspace_checkpoint_restored') return <article className="system-row" data-event-id={event.id}>
+    <span className="system-icon"><History size={15} /></span>
+    <div><header><strong>{t(event.type === 'history_rewound' ? 'timeline.rewind.rewoundHere' : 'timeline.rewind.checkpointRestored')}</strong><time>{formatTime(event.ts)}</time></header></div>
+  </article>
   const error = isTimelineError(event)
   const digest = isHandoffDigestEvent(event)
   const providerBackgroundTask = event.type === 'provider_background_task_update'

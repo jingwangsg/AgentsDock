@@ -8,7 +8,7 @@ import {
   type CollisionDetection, type DragEndEvent, type DragOverEvent, type DragStartEvent
 } from '@dnd-kit/core'
 import {
-  Archive, ArchiveRestore, ChevronDown, ChevronRight, Folder, FolderPlus, GripVertical, Inbox, MoreHorizontal,
+  Archive, ArchiveRestore, ChevronDown, ChevronRight, Folder, FolderPlus, GripVertical, Inbox, LoaderCircle, MoreHorizontal,
   Columns2, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, Trash2, Undo2, UsersRound
 } from 'lucide-react'
 import type { Session } from '@shared/types'
@@ -16,8 +16,9 @@ import { completedPrefixForkAvailable } from '@shared/session-fork'
 import { localSessionImportSupported } from '@shared/local-session-import'
 import { trackEvent } from '../lib/analytics'
 import { activeEmergencyAlert } from '../lib/emergency-alert'
-import { backendLabel, runtimeLabel } from '../lib/format'
+import { backendLabel, shortRelativeTime, workingDirectoryTail } from '../lib/format'
 import { openSessionHistoryResult } from '../lib/session-history-search'
+import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 import { rankSessionsForSearch } from '../lib/sessions'
 import { getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
 import { handleMenuCommand, selectMailHintPending, selectBulletinHintPending, sessionUnread, useAppStore } from '../store/app-store'
@@ -67,7 +68,6 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const folderOrder = useAppStore(state => state.folderOrder)
   const collapsed = useAppStore(state => state.collapsedFolders)
   const archivedCollapsed = useAppStore(state => state.archivedCollapsed)
-  const catalog = useAppStore(state => state.runtimeCatalog)
   const chatCount = sessions.filter(session => !session.archived).length
   const [dragging, setDragging] = useState<{ id: string; label: string; type: 'session' | 'folder' } | null>(null)
   const [drop, setDrop] = useState<DropIndicator | null>(null)
@@ -240,7 +240,7 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
       </div>
       <ServerSelector />
       <div className="sidebar-actions">
-        <button className="sidebar-action sidebar-action-labeled sidebar-team-network-action" title={t('teamNetwork.openBeta')} aria-label={t('teamNetwork.open')} aria-describedby={newMailArrivals || newBulletinUpdates ? 'sidebar-new-mail-arrivals' : undefined} disabled={Boolean(switchingProfileId)} onClick={() => window.dispatchEvent(new CustomEvent('agentsdock:open-teamspace', { detail: { section: newBulletinUpdates && !newMailArrivals ? 'feed' : 'mail' } }))}><UsersRound size={15} /><span>{t('teamNetwork.name')} <small className="team-network-beta">{t('teamNetwork.beta')}</small></span>{(newMailArrivals || newBulletinUpdates) && <><span className="status-dot" aria-hidden="true" /><span id="sidebar-new-mail-arrivals" className="sr-only">{t(newMailArrivals && newBulletinUpdates ? 'teamNetwork.newTeamActivity' : newMailArrivals ? 'teamNetwork.newMailArrivals' : 'teamNetwork.newBulletinUpdates')}</span></>}</button>
+        {TEAM_NETWORK_UI_ENABLED && <button className="sidebar-action sidebar-action-labeled sidebar-team-network-action" title={t('teamNetwork.openBeta')} aria-label={t('teamNetwork.open')} aria-describedby={newMailArrivals || newBulletinUpdates ? 'sidebar-new-mail-arrivals' : undefined} disabled={Boolean(switchingProfileId)} onClick={() => window.dispatchEvent(new CustomEvent('agentsdock:open-teamspace', { detail: { section: newBulletinUpdates && !newMailArrivals ? 'feed' : 'mail' } }))}><UsersRound size={15} /><span>{t('teamNetwork.name')} <small className="team-network-beta">{t('teamNetwork.beta')}</small></span>{(newMailArrivals || newBulletinUpdates) && <><span className="status-dot" aria-hidden="true" /><span id="sidebar-new-mail-arrivals" className="sr-only">{t(newMailArrivals && newBulletinUpdates ? 'teamNetwork.newTeamActivity' : newMailArrivals ? 'teamNetwork.newMailArrivals' : 'teamNetwork.newBulletinUpdates')}</span></>}</button>}
         <button className="sidebar-action sidebar-action-labeled" title={t("ui.Sidebar.Sidebar.resume_chat_790e1b9")} aria-label={t("ui.Sidebar.Sidebar.resume_chat_790e1b9")} disabled={Boolean(switchingProfileId)} onClick={() => {
           const store = useAppStore.getState()
           store.setModal(localSessionImportSupported(store.health) ? 'importChats' : 'resume', true)
@@ -263,7 +263,6 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
               chatPanes={chatPanes}
               collapsed={section.kind === 'archived' ? archivedCollapsed : section.kind === 'folder' && collapsed.has(section.title)}
               drop={drop}
-              runtime={(session) => runtimeLabel(session, catalog)}
               suppressClick={suppressClick}
               folders={folders}
               isSidebarScrolling={isSidebarScrolling}
@@ -280,8 +279,8 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   )
 }
 
-function SidebarSection({ section, selectedId, chatPanes, collapsed, drop, runtime, suppressClick, folders, isSidebarScrolling }: {
-  section: Section; selectedId: string | null; chatPanes: { primary: string | null; secondary: string | null }; collapsed: boolean; drop: DropIndicator | null; runtime: (session: Session) => string; suppressClick: (id: string) => boolean
+function SidebarSection({ section, selectedId, chatPanes, collapsed, drop, suppressClick, folders, isSidebarScrolling }: {
+  section: Section; selectedId: string | null; chatPanes: { primary: string | null; secondary: string | null }; collapsed: boolean; drop: DropIndicator | null; suppressClick: (id: string) => boolean
   folders: string[]; isSidebarScrolling: () => boolean
 }) {
   useLocale()
@@ -302,7 +301,7 @@ function SidebarSection({ section, selectedId, chatPanes, collapsed, drop, runti
     <section ref={droppable.setNodeRef} className={`sidebar-section ${boundaryIndicator}`}>
       <FolderHeader section={section} collapsed={collapsed} drop={drop} onToggle={toggle} suppressClick={suppressClick} />
       {!collapsed && section.sessions.map(session => (
-        <SessionRow key={session.id} session={session} selected={session.id === selectedId} visiblePane={splitOpen ? chatPanes.primary === session.id ? 'primary' : chatPanes.secondary === session.id ? 'secondary' : null : null} sectionId={section.id} dropIndicator={drop?.id === `session:${session.id}` ? `drop-${drop.placement}` : ''} runtime={runtime(session)} suppressClick={suppressClick} folders={folders} isSidebarScrolling={isSidebarScrolling} />
+        <SessionRow key={session.id} session={session} selected={session.id === selectedId} visiblePane={splitOpen ? chatPanes.primary === session.id ? 'primary' : chatPanes.secondary === session.id ? 'secondary' : null : null} sectionId={section.id} dropIndicator={drop?.id === `session:${session.id}` ? `drop-${drop.placement}` : ''} suppressClick={suppressClick} folders={folders} isSidebarScrolling={isSidebarScrolling} />
       ))}
     </section>
   )
@@ -322,13 +321,18 @@ function FolderHeader({ section, collapsed, drop, onToggle, suppressClick }: { s
       </button>
     </div>
   )
-  if (section.kind !== 'folder' || section.title.toLocaleLowerCase() === 'general') return header
+  if (section.kind !== 'folder') return header
+  const deletable = section.title.toLocaleLowerCase() !== 'general'
   return (
     <ContextMenu.Root>
       <ContextMenu.Trigger asChild>{header}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content className="menu-content">
-          <MenuItem icon={Trash2} label={t("ui.Sidebar.FolderHeader.delete_folder_0fac016")} danger onSelect={() => void useAppStore.getState().deleteFolder(section.title)} />
+          <MenuItem icon={Plus} label={t('ui.sidebar.newClaudeChat')} onSelect={() => void useAppStore.getState().requestNewChat({ folder: section.title, backend: 'claude' })} />
+          <MenuItem icon={Plus} label={t('ui.sidebar.newCodexChat')} onSelect={() => void useAppStore.getState().requestNewChat({ folder: section.title, backend: 'codex' })} />
+          {deletable && <ContextMenu.Separator className="menu-separator" />}
+          {deletable && <MenuItem icon={Pencil} label={t('ui.sidebar.renameFolder')} onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:rename-folder', { detail: { folder: section.title } }))} />}
+          {deletable && <MenuItem icon={Trash2} label={t("ui.Sidebar.FolderHeader.delete_folder_0fac016")} danger onSelect={() => void useAppStore.getState().deleteFolder(section.title)} />}
         </ContextMenu.Content>
       </ContextMenu.Portal>
     </ContextMenu.Root>
@@ -341,13 +345,12 @@ interface SessionRowProps {
   visiblePane: 'primary' | 'secondary' | null
   sectionId: string
   dropIndicator: string
-  runtime: string
   suppressClick: (id: string) => boolean
   folders: string[]
   isSidebarScrolling: () => boolean
 }
 
-const SessionRow = memo(function SessionRow({ session, selected, visiblePane, sectionId, dropIndicator, runtime, suppressClick, folders, isSidebarScrolling }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({ session, selected, visiblePane, sectionId, dropIndicator, suppressClick, folders, isSidebarScrolling }: SessionRowProps) {
   useLocale()
   const id = `session:${session.id}`
   const searchResult = sectionId === 'search'
@@ -394,17 +397,28 @@ const SessionRow = memo(function SessionRow({ session, selected, visiblePane, se
           {...draggable.listeners}
           {...draggable.attributes}
         >
-          <BackendMark backend={session.backend} size={18} />
-          <span className="session-copy"><strong>{session.title}</strong><small title={emergency?.message || (needsUserAction ? t("ui.Sidebar.SessionRow.this_agent_is_paused_until_you_respond_82dc6e8") : undefined)}>{emergency ? t("ui.Sidebar.SessionRow.emergency_89e4490", { "message": String(emergency.message) }) : needsUserAction ? t("ui.Sidebar.SessionRow.action_needed_c2d066a", { "chat": String(backendLabel(session.backend)) }) : `${backendLabel(session.backend)} · ${runtime}${running ? ' · running' : unread ? ' · new' : ''}`}</small></span>
+          {running
+            ? <LoaderCircle className="spin session-spinner" size={18} aria-label={t('ui.sidebar.running')} />
+            : <BackendMark backend={session.backend} size={18} />}
+          <span className="session-copy"><strong>{session.title}</strong><small title={emergency?.message || (needsUserAction ? t("ui.Sidebar.SessionRow.this_agent_is_paused_until_you_respond_82dc6e8") : session.cwd || undefined)}>{emergency ? t("ui.Sidebar.SessionRow.emergency_89e4490", { "message": String(emergency.message) }) : needsUserAction ? t("ui.Sidebar.SessionRow.action_needed_c2d066a", { "chat": String(backendLabel(session.backend)) }) : sessionSubline(session, unread)}</small></span>
           {emergency && <span key={emergency.id} className="sr-only" role="alert">{t('ui.sidebar.emergency', { title: session.title, message: emergency.message })}</span>}
           {visiblePane && <span className="sr-only">{t(visiblePane === 'primary' ? 'ui.sidebar.firstPane' : 'ui.sidebar.secondPane')}</span>}
-          {(emergency || needsUserAction || running || unread) && <span className={`status-dot ${emergency ? 'emergency' : needsUserAction ? 'attention' : running ? 'running' : 'unread'}`} aria-hidden="true" />}
+          {(emergency || needsUserAction || unread) && <span className={`status-dot ${emergency ? 'emergency' : needsUserAction ? 'attention' : 'unread'}`} aria-hidden="true" />}
         </div>
       </ContextMenu.Trigger>
       <SessionContextMenu session={session} unread={unread} folders={folders} />
     </ContextMenu.Root>
   )
 }, sessionRowPropsEqual)
+
+/** Zed-style thread meta line: "project / dir • 3m", plus a marker for unread activity. */
+function sessionSubline(session: Session, unread: boolean): string {
+  const parts = [
+    workingDirectoryTail(session.cwd),
+    shortRelativeTime(session.latest_event_at ?? session.updated_at ?? session.created_at)
+  ].filter(Boolean)
+  return `${parts.join(' • ')}${unread ? ' • new' : ''}`
+}
 
 function SessionContextMenu({ session, unread, folders }: { session: Session; unread: boolean; folders: string[] }) {
   useLocale()
@@ -480,7 +494,6 @@ function sessionRowPropsEqual(current: SessionRowProps, next: SessionRowProps): 
     || current.visiblePane !== next.visiblePane
     || current.sectionId !== next.sectionId
     || current.dropIndicator !== next.dropIndicator
-    || current.runtime !== next.runtime
     || current.suppressClick !== next.suppressClick
     || current.isSidebarScrolling !== next.isSidebarScrolling
     || !stringArraysEqual(current.folders, next.folders)
@@ -492,6 +505,9 @@ function sessionRowPropsEqual(current: SessionRowProps, next: SessionRowProps): 
     && left.title === right.title
     && left.folder === right.folder
     && left.backend === right.backend
+    && left.cwd === right.cwd
+    && left.latest_event_at === right.latest_event_at
+    && left.updated_at === right.updated_at
     && left.pinned === right.pinned
     && left.archived === right.archived
     && left.manual_unread === right.manual_unread

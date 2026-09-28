@@ -6,8 +6,6 @@ import type { AgentsDockAPI } from '@shared/ipc'
 import { setLocale } from '@shared/i18n'
 import type { TeamHubStatus, TeamHubTeamDetails, TeamHubWorkspace } from '@shared/team-hub'
 import type { AgentCrossChatRoute, AgentFile, ChatReference, ClaudeRuntimeSnapshot, CodexRuntimeSnapshot, CrossChatHandoffsCapability, Health, PublicServerProfile, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
-import { queueClaudePermissionUpdate } from '../lib/claude-permission-updates'
-import { queueCodexPermissionUpdate } from '../lib/codex-permission-updates'
 import { closeTopTransient, resetTransientCloseStackForTests } from '../lib/transient-close'
 import { loadTeamNetworkCore, loadTeamNetworkWorkspace, resetTeamNetworkSnapshotCacheForTests, seedTeamNetworkRoster } from '../lib/team-network-snapshot-cache'
 import { flushActiveWorkspace, useAppStore } from '../store/app-store'
@@ -179,6 +177,7 @@ describe('Composer', () => {
       uploadsBySession: {},
       uploadPathsBySession: {},
       drafts: {},
+      editingTurn: {},
       chatReferencesBySession: {},
       teamReferencesBySession: {},
       agentRoutesBySession: {},
@@ -198,6 +197,72 @@ describe('Composer', () => {
   it('mounts with empty per-chat upload state without an external-store render loop', () => {
     render(<Composer />)
     expect(screen.getByPlaceholderText('Message')).toBeInTheDocument()
+  })
+
+  it('shows the edit-turn banner with the seeded prompt and restores the previous draft on cancel', async () => {
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message')
+    act(() => {
+      useAppStore.getState().setDraftForSession('chat-1', 'Half-typed follow-up')
+      useAppStore.getState().beginEditingTurn('chat-1', 'run-2', 'Original second prompt')
+    })
+    expect(screen.getByText(/Editing an earlier turn/)).toBeInTheDocument()
+    await waitFor(() => expect(editor).toHaveValue('Original second prompt'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel edit' }))
+
+    expect(screen.queryByText(/Editing an earlier turn/)).toBeNull()
+    expect(editor).toHaveValue('Half-typed follow-up')
+    expect(useAppStore.getState().editingTurn['chat-1']).toBeNull()
+  })
+
+  it('rewinds before admitting and sending an edited turn', async () => {
+    const calls: string[] = []
+    const original = useAppStore.getState()
+    useAppStore.setState({
+      rewindSession: vi.fn(async () => { calls.push('rewind'); return true }),
+      beginTurnAdmission: sessionId => { calls.push('admission'); return original.beginTurnAdmission(sessionId) },
+      sendPromptForSession: vi.fn(async () => { calls.push('send'); return true })
+    })
+    try {
+      render(<Composer />)
+      act(() => useAppStore.getState().beginEditingTurn('chat-1', 'run-2', 'Edited prompt'))
+      const editor = screen.getByPlaceholderText('Message')
+      await waitFor(() => expect(editor).toHaveValue('Edited prompt'))
+
+      fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+      await waitFor(() => expect(calls).toEqual(['rewind', 'admission', 'send']))
+      expect(useAppStore.getState().rewindSession).toHaveBeenCalledExactlyOnceWith('chat-1', 'run-2')
+    } finally {
+      useAppStore.setState({
+        rewindSession: original.rewindSession,
+        beginTurnAdmission: original.beginTurnAdmission,
+        sendPromptForSession: original.sendPromptForSession,
+        editingTurn: {}
+      })
+    }
+  })
+
+  it('keeps the edit banner and the draft when the rewind is refused', async () => {
+    const original = useAppStore.getState()
+    const beginTurnAdmission = vi.fn(original.beginTurnAdmission)
+    useAppStore.setState({ rewindSession: vi.fn(async () => false), beginTurnAdmission })
+    try {
+      render(<Composer />)
+      act(() => useAppStore.getState().beginEditingTurn('chat-1', 'run-2', 'Edited prompt'))
+      const editor = screen.getByPlaceholderText('Message')
+      await waitFor(() => expect(editor).toHaveValue('Edited prompt'))
+
+      fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+      await waitFor(() => expect(useAppStore.getState().rewindSession).toHaveBeenCalledOnce())
+      expect(beginTurnAdmission).not.toHaveBeenCalled()
+      expect(editor).toHaveValue('Edited prompt')
+      expect(screen.getByText(/Editing an earlier turn/)).toBeInTheDocument()
+    } finally {
+      useAppStore.setState({ rewindSession: original.rewindSession, beginTurnAdmission: original.beginTurnAdmission, editingTurn: {} })
+    }
   })
 
   it('shows an active-turn submission immediately in the queue shelf', () => {
@@ -1433,6 +1498,26 @@ describe('Composer', () => {
     await waitFor(() => expect(update).toHaveBeenLastCalledWith('chat-1', { model: 'provider/unlisted', effort: null }))
   })
 
+  it('shows the native model description under each Claude model row', async () => {
+    useAppStore.setState({
+      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude', model: 'opus' }],
+      runtimeCatalog: { backends: { claude: { models: [
+        { value: 'default', label: 'Default — Sonnet 4.6', description: 'Org default' },
+        { value: 'opus', label: 'Opus 5.5', description: 'Most capable for ambitious work' },
+        { value: 'claude-opus-4-8', label: 'Opus 4.8' }
+      ], efforts: [] } } }
+    })
+    const user = userEvent.setup()
+    const { container } = render(<Composer />)
+    await user.click(container.querySelector<HTMLButtonElement>('.runtime-chip')!)
+
+    const opus = screen.getByRole('menuitemcheckbox', { name: /Opus 5\.5/ })
+    expect(opus).toBeChecked()
+    expect(within(opus).getByText('Most capable for ambitious work')).toHaveClass('menu-item-description')
+    expect(within(screen.getByRole('menuitemcheckbox', { name: /Default — Sonnet 4\.6/ })).getByText('Org default')).toBeInTheDocument()
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Opus 4.8' }).querySelector('.menu-item-description')).toBeNull()
+  })
+
   it('sends a custom Codex chat independently of normal OpenAI sign-in', async () => {
     const session: Session = { id: 'chat-1', title: 'Chat', backend: 'codex', codex_provider: 'custom', model: 'gpt-6-astra' }
     const send = vi.fn().mockResolvedValue({ session: { ...session, backend_locked: true }, queued: false })
@@ -1760,6 +1845,34 @@ describe('Composer', () => {
     confirm.mockRestore()
   })
 
+  it('stops the running turn with Esc unless another control already handled the key', async () => {
+    const stop = vi.fn().mockResolvedValue({ stopped: true, pending: false, message: '' })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        turns: { stop }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({ activeSessionIds: new Set(['chat-1']), stoppingSessionIds: new Set() })
+    render(<Composer />)
+
+    // A dialog or palette that consumed Esc, or a modified Esc, leaves the turn alone.
+    const consumed = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    consumed.preventDefault()
+    window.dispatchEvent(consumed)
+    fireEvent.keyDown(window, { key: 'Escape', shiftKey: true })
+    expect(stop).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(stop).toHaveBeenCalledExactlyOnceWith('chat-1'))
+    await waitFor(() => expect(useAppStore.getState().activeSessionIds).not.toContain('chat-1'))
+
+    // Nothing running: Esc is left to whoever else wants it.
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
   it.each(['idle', 'cached', 'syncing', 'reconnecting', 'offline', 'error'] as const)(
     'shows only a neutral sync status for an unknown active origin while chat sync is %s', status => {
       useAppStore.setState({
@@ -1891,7 +2004,7 @@ describe('Composer', () => {
       value: {
         preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
         sessions: { update },
-        codex: composerCodexBridge(vi.fn().mockResolvedValue([]), {
+        codex: composerCodexBridge({
           approval_policy: 'on-request', sandbox_mode: 'workspace-write', approvals_reviewer: 'user'
         }),
         events: { on: vi.fn().mockReturnValue(() => undefined) }
@@ -1935,60 +2048,6 @@ describe('Composer', () => {
     await user.click(screen.getByRole('button', { name: 'GPT-5.6-Luna · Max' }))
     expect(screen.getByRole('menuitemcheckbox', { name: 'Max' })).toBeChecked()
     expect(screen.queryByRole('menuitemcheckbox', { name: 'Ultra' })).not.toBeInTheDocument()
-  })
-
-  it('keeps consequential Codex permissions visible and edits them from the composer under Strict Mode', async () => {
-    const update = vi.fn(async (_sessionId: string, patch: Record<string, unknown>) => ({
-      ...useAppStore.getState().sessions.find(session => session.id === 'chat-1'),
-      ...definedValues(patch)
-    }))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update },
-        codex: composerCodexBridge(vi.fn().mockResolvedValue([]), {
-          approval_policy: 'on-request', sandbox_mode: 'workspace-write', approvals_reviewer: 'user'
-        }),
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{
-        id: 'chat-1',
-        title: 'Chat',
-        backend: 'codex',
-        codex_sandbox_mode: 'danger-full-access',
-        codex_approval_policy: 'never',
-        codex_approvals_reviewer: 'auto_review'
-      }]
-    })
-    const user = userEvent.setup()
-    render(<StrictMode><CodexComposerHarness /></StrictMode>)
-
-    const trigger = screen.getByRole('button', {
-      name: 'Codex permissions: Full access; approval prompts: never prompt; reviewer: Automatic reviewer'
-    })
-    expect(trigger).toHaveTextContent('Full access')
-    expect(trigger).toHaveTextContent('No prompts')
-    expect(trigger).not.toHaveClass('warning')
-
-    await user.click(trigger)
-    expect(screen.getByRole('heading', { name: 'Codex permissions' })).toBeInTheDocument()
-    expect(screen.getByText('Applies to future turns in this chat.')).toBeInTheDocument()
-    expect(screen.getByLabelText('Approval prompts')).toHaveDisplayValue('Never prompt')
-    expect(screen.getByLabelText('Who approves?')).toHaveDisplayValue('Automatic reviewer')
-    expect(screen.getByText('Codex can run commands anywhere without prompting.')).toHaveClass('codex-permission-hint')
-    expect(screen.getByText('The selected reviewer is inactive while approval prompts are disabled.')).toBeInTheDocument()
-    await user.selectOptions(screen.getByLabelText('Filesystem sandbox'), 'workspace-write')
-
-    await waitFor(() => expect(update).toHaveBeenCalledWith('chat-1', expect.objectContaining({
-      codex_sandbox_mode: 'workspace-write'
-    })))
-    await waitFor(() => expect(screen.getByRole('button', {
-      name: 'Codex permissions: Workspace write; approval prompts: never prompt; reviewer: Automatic reviewer'
-    })).toBeInTheDocument())
-    expect(await screen.findByText('Saved')).toBeInTheDocument()
   })
 
   it('shows exact Codex context usage beside the composer controls and opens thread controls', async () => {
@@ -2039,456 +2098,6 @@ describe('Composer', () => {
     await user.click(indicator)
     expect(await screen.findByRole('heading', { name: 'Codex thread controls' })).toBeInTheDocument()
     expect(runtimeBridge.runtime).toHaveBeenCalled()
-  })
-
-  it('discovers profile names lazily and keeps custom sandbox state while a profile is active', async () => {
-    const permissionProfiles = vi.fn().mockResolvedValue([{ id: ':workspace', name: 'Workspace', allowed: true }])
-    const update = vi.fn(async (_sessionId: string, patch: Record<string, unknown>) => ({
-      ...useAppStore.getState().sessions.find(session => session.id === 'chat-1'),
-      ...definedValues(patch)
-    }))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update },
-        codex: composerCodexBridge(permissionProfiles),
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{
-        id: 'chat-1',
-        title: 'Chat',
-        backend: 'codex',
-        codex_sandbox_mode: 'read-only',
-        codex_approval_policy: 'on-request',
-        codex_approvals_reviewer: 'user'
-      }]
-    })
-    const user = userEvent.setup()
-    render(<CodexComposerHarness />)
-
-    await user.click(screen.getByRole('button', { name: /Codex permissions: Read only/ }))
-    expect(screen.getByLabelText('Approval prompts')).toHaveDisplayValue('Ask when more access is needed')
-    expect(screen.getByLabelText('Who approves?')).toHaveDisplayValue('Me (Codex default)')
-    expect(screen.getByText('Codex asks before it needs to cross the current sandbox boundary.')).toBeInTheDocument()
-    expect(screen.getByText('Approval requests pause for your decision.')).toBeInTheDocument()
-    const profileOption = await screen.findByRole('option', { name: 'Workspace' })
-    expect(permissionProfiles).toHaveBeenCalledWith('chat-1')
-    await user.selectOptions(screen.getByLabelText('Permission profile'), profileOption)
-
-    await waitFor(() => expect(screen.getByRole('button', { name: /Codex permissions: Workspace/ })).toBeInTheDocument())
-    expect(screen.getByLabelText('Filesystem sandbox')).toBeDisabled()
-    expect(screen.getByLabelText('Filesystem sandbox')).toHaveValue('read-only')
-
-    await user.selectOptions(screen.getByLabelText('Permission profile'), '')
-    await waitFor(() => expect(screen.getByLabelText('Filesystem sandbox')).toBeEnabled())
-    expect(screen.getByLabelText('Filesystem sandbox')).toHaveValue('read-only')
-  })
-
-  it('finishes serialized rapid permission edits after switching chats', async () => {
-    const firstResponse = deferred<void>()
-    const update = vi.fn(async (_sessionId: string, patch: Record<string, unknown>) => {
-      const response = {
-        ...useAppStore.getState().sessions.find(session => session.id === 'chat-1'),
-        ...definedValues(patch)
-      }
-      if (update.mock.calls.length === 1) await firstResponse.promise
-      return response
-    })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update },
-        codex: composerCodexBridge(),
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [
-        {
-          id: 'chat-1', title: 'Chat', backend: 'codex',
-          codex_sandbox_mode: 'danger-full-access', codex_approval_policy: 'never',
-          codex_approvals_reviewer: 'user'
-        },
-        { id: 'chat-2', title: 'Other chat', backend: 'claude' }
-      ]
-    })
-    const user = userEvent.setup()
-    render(<CodexComposerHarness />)
-
-    await user.click(screen.getByRole('button', { name: /Codex permissions: Full access/ }))
-    await user.selectOptions(screen.getByLabelText('Filesystem sandbox'), 'workspace-write')
-    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
-    await user.selectOptions(screen.getByLabelText('Approval prompts'), 'on-request')
-    expect(update).toHaveBeenCalledTimes(1)
-    act(() => useAppStore.setState({ selectedSessionId: 'chat-2' }))
-
-    firstResponse.resolve()
-    await waitFor(() => expect(update).toHaveBeenCalledTimes(2))
-    expect(update).toHaveBeenLastCalledWith('chat-1', expect.objectContaining({
-      codex_sandbox_mode: 'workspace-write',
-      codex_approval_policy: 'on-request',
-      codex_approvals_reviewer: 'user'
-    }))
-    await waitFor(() => expect(useAppStore.getState().sessions.find(session => session.id === 'chat-1')).toEqual(
-      expect.objectContaining({
-        codex_sandbox_mode: 'workspace-write',
-        codex_approval_policy: 'on-request',
-        codex_approvals_reviewer: 'user'
-      })
-    ))
-  })
-
-  it('keeps an explicit custom profile when the runtime snapshot still reports an older profile', async () => {
-    const codex = composerCodexBridge(vi.fn().mockResolvedValue([]), {
-      approval_policy: 'never',
-      sandbox_mode: 'danger-full-access',
-      permission_profile: ':workspace',
-      approvals_reviewer: 'user'
-    })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        codex,
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{
-        id: 'chat-1', title: 'Chat', backend: 'codex',
-        codex_sandbox_mode: 'danger-full-access', codex_approval_policy: 'never',
-        codex_permission_profile: null, codex_approvals_reviewer: 'user'
-      }]
-    })
-
-    render(<CodexComposerHarness />)
-
-    await waitFor(() => expect(codex.runtime).toHaveBeenCalledWith('chat-1'))
-    expect(screen.getByRole('button', {
-      name: 'Codex permissions: Full access; approval prompts: never prompt; reviewer: Me (Codex default)'
-    })).toBeInTheDocument()
-  })
-
-  it('waits for a permission update before sending the next Codex turn', async () => {
-    const permissionResponse = deferred<void>()
-    const update = vi.fn(async (_sessionId: string, patch: Record<string, unknown>) => {
-      await permissionResponse.promise
-      return {
-        ...useAppStore.getState().sessions.find(session => session.id === 'chat-1'),
-        ...definedValues(patch)
-      }
-    })
-    const send = vi.fn().mockResolvedValue({
-      session: { id: 'chat-1', title: 'Chat', backend: 'codex' },
-      queued: false
-    })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update },
-        turns: { send },
-        codex: composerCodexBridge(),
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{
-        id: 'chat-1', title: 'Chat', backend: 'codex',
-        codex_sandbox_mode: 'danger-full-access', codex_approval_policy: 'never',
-        codex_approvals_reviewer: 'user'
-      }]
-    })
-    const user = userEvent.setup()
-    render(<CodexComposerHarness />)
-
-    await user.type(screen.getByPlaceholderText('Message'), 'Use the new policy')
-    await user.click(screen.getByRole('button', { name: /Codex permissions: Full access/ }))
-    await user.selectOptions(screen.getByLabelText('Filesystem sandbox'), 'workspace-write')
-    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
-    await user.click(screen.getByRole('button', { name: 'Send message' }))
-
-    expect(send).not.toHaveBeenCalled()
-    expect(useAppStore.getState().pendingTurnSubmissions['chat-1']?.prompt).toBe('Use the new policy')
-    expect(screen.getByRole('status').textContent).toContain('Starting…')
-    expect((screen.getByPlaceholderText('Message') as HTMLTextAreaElement).value).toBe('')
-    expect((screen.getByTitle('Wait for the message to be accepted before changing backend') as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.change(screen.getByPlaceholderText('Message'), { target: { value: 'Draft the next request' } })
-    permissionResponse.resolve()
-    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: 'chat-1', prompt: 'Use the new policy'
-    })))
-    expect((screen.getByPlaceholderText('Message') as HTMLTextAreaElement).value).toBe('Draft the next request')
-  }, 30_000)
-
-  it('restores the authoritative permission policy when auto-save fails', async () => {
-    const update = vi.fn().mockRejectedValue(new Error('Policy update denied'))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update },
-        codex: composerCodexBridge(),
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{
-        id: 'chat-1', title: 'Chat', backend: 'codex',
-        codex_sandbox_mode: 'danger-full-access', codex_approval_policy: 'never',
-        codex_approvals_reviewer: 'user'
-      }]
-    })
-    const user = userEvent.setup()
-    render(<CodexComposerHarness />)
-
-    await user.click(screen.getByRole('button', { name: /Codex permissions: Full access/ }))
-    await user.selectOptions(screen.getByLabelText('Filesystem sandbox'), 'workspace-write')
-
-    expect(await screen.findByText('Not saved')).toBeInTheDocument()
-    expect(screen.getByRole('alert')).toHaveTextContent('Policy update denied')
-    expect(screen.getByRole('button', {
-      name: 'Codex permissions: Full access; approval prompts: never prompt; reviewer: Me (Codex default)'
-    })).toBeInTheDocument()
-  })
-
-  it('shows a loading state rather than guessing a missing Codex policy', async () => {
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        codex: composerCodexBridge(vi.fn().mockResolvedValue([]), {}),
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-
-    render(<CodexComposerHarness />)
-
-    const trigger = screen.getByRole('button', { name: 'Codex permissions loading' })
-    expect(trigger).toBeDisabled()
-    expect(trigger).toHaveTextContent('Loading permissions')
-  })
-
-  it('does not show Codex permissions for Claude chats', () => {
-    useAppStore.setState({ sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude' }] })
-    render(<Composer />)
-
-    expect(screen.queryByRole('button', { name: /Codex permissions/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Open Codex controls for context usage' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('progressbar', { name: 'Codex context usage' })).not.toBeInTheDocument()
-  })
-
-  it('explains when the connected server cannot apply interactive Codex permissions', () => {
-    useAppStore.setState({
-      sessions: [{
-        id: 'chat-1', title: 'Chat', backend: 'codex',
-        codex_sandbox_mode: 'danger-full-access', codex_approval_policy: 'never', codex_approvals_reviewer: 'user'
-      }]
-    })
-    render(<Composer />)
-
-    expect(screen.getByRole('button', {
-      name: 'Codex permissions unavailable; update AgentsServer and use Codex app-server'
-    })).toBeDisabled()
-  })
-
-  it('shows every native Claude permission mode and persists the selected mode', async () => {
-    const update = vi.fn(async (_sessionId: string, patch: Record<string, unknown>) => ({
-      ...useAppStore.getState().sessions.find(session => session.id === 'chat-1'),
-      ...definedValues(patch)
-    }))
-    const claude = composerClaudeBridge({ permission_mode: 'default' })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update },
-        claude,
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({ sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude' }] })
-    const user = userEvent.setup()
-    render(<ClaudeComposerHarness />)
-
-    const trigger = await screen.findByRole('button', { name: 'Claude permissions: Ask for access' })
-    await user.click(trigger)
-    expect(screen.getByRole('heading', { name: 'Claude permissions' })).toBeInTheDocument()
-    expect(screen.getByText('Applies to future interactive Claude SDK turns in this chat.')).toBeInTheDocument()
-    expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual([
-      'Ask for access',
-      'Auto-approve edits',
-      'Plan only',
-      'Bypass permissions',
-      "Don't ask; deny unapproved",
-      'Automatic approvals'
-    ])
-
-    await user.selectOptions(screen.getByLabelText('Permission mode'), 'acceptEdits')
-
-    await waitFor(() => expect(update).toHaveBeenCalledWith('chat-1', {
-      claude_permission_mode: 'acceptEdits'
-    }))
-    expect(await screen.findByText('Saved')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Claude permissions: Auto-approve edits' })).toBeInTheDocument()
-  })
-
-  it('changes future Claude permissions while preserving the active turn access', async () => {
-    const update = vi.fn(async (_sessionId: string, patch: Record<string, unknown>) => ({
-      ...useAppStore.getState().sessions.find(session => session.id === 'chat-1'),
-      ...definedValues(patch)
-    }))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update },
-        claude: composerClaudeBridge({ permission_mode: 'default' }),
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude', claude_permission_mode: 'default' }],
-      activeSessionIds: new Set(['chat-1'])
-    })
-    const user = userEvent.setup()
-    render(<ClaudeComposerHarness />)
-
-    const trigger = await screen.findByRole('button', { name: 'Claude permissions: Ask for access' })
-    expect(trigger).toBeEnabled()
-    await user.click(trigger)
-
-    const mode = screen.getByLabelText('Permission mode')
-    expect(mode).toBeEnabled()
-    expect(screen.getByText('This change applies to the next turn; the active turn keeps its current access.')).toBeInTheDocument()
-    await user.selectOptions(mode, 'plan')
-    await waitFor(() => expect(update).toHaveBeenCalledWith('chat-1', {
-      claude_permission_mode: 'plan'
-    }))
-    const close = screen.getByRole('button', { name: 'Close Claude permissions' })
-    expect(close).toBeEnabled()
-    await user.click(close)
-    expect(screen.queryByRole('heading', { name: 'Claude permissions' })).not.toBeInTheDocument()
-  })
-
-  it('does not write Claude permission fields to an older server without the explicit feature gate', async () => {
-    const update = vi.fn()
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update },
-        claude: composerClaudeBridge({ permission_mode: 'default' }, false),
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude', claude_permission_mode: 'default' }]
-    })
-    render(<ClaudeComposerHarness />)
-
-    const trigger = await screen.findByRole('button', {
-      name: 'Claude permission modes unavailable; update AgentsServer'
-    })
-    expect(trigger).toBeDisabled()
-    expect(trigger).toHaveTextContent('Update server')
-    expect(update).not.toHaveBeenCalled()
-  })
-
-  it('fails closed when a runtime advertises control without its authoritative mode list', async () => {
-    const update = vi.fn()
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update },
-        claude: composerClaudeBridge({ permission_mode: 'default' }, true, null),
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude', claude_permission_mode: 'default' }]
-    })
-    render(<ClaudeComposerHarness />)
-
-    expect(await screen.findByRole('button', {
-      name: 'Claude permission modes unavailable; update AgentsServer'
-    })).toBeDisabled()
-    expect(update).not.toHaveBeenCalled()
-  })
-
-  it('waits for a Claude permission update before sending the next turn', async () => {
-    const permissionResponse = deferred<void>()
-    const update = vi.fn(async (_sessionId: string, patch: Record<string, unknown>) => {
-      await permissionResponse.promise
-      return {
-        ...useAppStore.getState().sessions.find(session => session.id === 'chat-1'),
-        ...definedValues(patch)
-      }
-    })
-    const send = vi.fn().mockResolvedValue({
-      session: { id: 'chat-1', title: 'Chat', backend: 'claude' },
-      queued: false
-    })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update },
-        turns: { send },
-        claude: composerClaudeBridge({ permission_mode: 'default' }),
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude', claude_permission_mode: 'default' }]
-    })
-    const user = userEvent.setup()
-    render(<ClaudeComposerHarness />)
-
-    await user.type(screen.getByPlaceholderText('Message'), 'Use the new Claude policy')
-    await user.click(await screen.findByRole('button', { name: 'Claude permissions: Ask for access' }))
-    await user.selectOptions(screen.getByLabelText('Permission mode'), 'acceptEdits')
-    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
-    await user.click(screen.getByRole('button', { name: 'Send message' }))
-
-    expect(send).not.toHaveBeenCalled()
-    expect(useAppStore.getState().pendingTurnSubmissions['chat-1']?.prompt).toBe('Use the new Claude policy')
-    expect(screen.getByRole('status').textContent).toContain('Starting…')
-    expect((screen.getByPlaceholderText('Message') as HTMLTextAreaElement).value).toBe('')
-    permissionResponse.resolve()
-    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: 'chat-1', prompt: 'Use the new Claude policy'
-    })))
-  }, 30_000)
-
-  it('restores the authoritative Claude permission mode when auto-save fails', async () => {
-    const update = vi.fn().mockRejectedValue(new Error('Claude policy update denied'))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update },
-        claude: composerClaudeBridge({ permission_mode: 'default' }),
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude', claude_permission_mode: 'default' }]
-    })
-    const user = userEvent.setup()
-    render(<ClaudeComposerHarness />)
-
-    await user.click(await screen.findByRole('button', { name: 'Claude permissions: Ask for access' }))
-    await user.selectOptions(screen.getByLabelText('Permission mode'), 'acceptEdits')
-
-    expect(await screen.findByText('Not saved')).toBeInTheDocument()
-    expect(screen.getByRole('alert')).toHaveTextContent('Claude policy update denied')
-    expect(screen.getByRole('button', { name: 'Claude permissions: Ask for access' })).toBeInTheDocument()
   })
 
   it('scopes an image attachment URL by the active profile', () => {
@@ -2629,133 +2238,6 @@ describe('Composer', () => {
     await waitFor(() => expect(persist).toHaveBeenCalledWith('draft:chat-1', 'Keep this on profile A'))
     releasePersistence?.()
     await promises[0]
-  })
-
-  it('includes queued Codex permission writes in the workspace flush while a profile switch is marked', async () => {
-    const releaseUpdate = deferred<void>()
-    const update = vi.fn(async (_sessionId: string, patch: Record<string, unknown>) => {
-      await releaseUpdate.promise
-      return {
-        id: 'chat-1',
-        title: 'Chat',
-        backend: 'codex' as const,
-        ...definedValues(patch)
-      }
-    })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{
-        id: 'chat-1', title: 'Chat', backend: 'codex',
-        codex_approval_policy: 'never', codex_sandbox_mode: 'danger-full-access',
-        codex_permission_profile: null, codex_approvals_reviewer: 'user'
-      }]
-    })
-    render(<Composer />)
-
-    const queued = queueCodexPermissionUpdate('chat-1', {
-      codex_approval_policy: 'on-request',
-      codex_sandbox_mode: 'workspace-write',
-      codex_permission_profile: null,
-      codex_approvals_reviewer: 'auto_review'
-    })
-    act(() => useAppStore.setState({ switchingProfileId: 'profile-b' }))
-    const promises: Promise<unknown>[] = []
-    act(() => window.dispatchEvent(new CustomEvent('agentsdock:flush-draft', { detail: { promises } })))
-
-    expect(promises).toHaveLength(1)
-    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
-    let flushFinished = false
-    void promises[0].then(() => { flushFinished = true })
-    await Promise.resolve()
-    expect(flushFinished).toBe(false)
-
-    releaseUpdate.resolve()
-    await expect(queued).resolves.toBeUndefined()
-    await expect(promises[0]).resolves.toBeUndefined()
-    expect(update).toHaveBeenCalledWith('chat-1', expect.objectContaining({
-      codex_approval_policy: 'on-request',
-      codex_sandbox_mode: 'workspace-write',
-      codex_approvals_reviewer: 'auto_review'
-    }))
-  })
-
-  it('includes queued Claude permission writes in the workspace flush while a profile switch is marked', async () => {
-    const releaseUpdate = deferred<void>()
-    const update = vi.fn(async (_sessionId: string, patch: Record<string, unknown>) => {
-      await releaseUpdate.promise
-      return {
-        id: 'chat-1',
-        title: 'Chat',
-        backend: 'claude' as const,
-        ...definedValues(patch)
-      }
-    })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude', claude_permission_mode: 'default' }]
-    })
-    render(<Composer />)
-
-    const queued = queueClaudePermissionUpdate('chat-1', { claude_permission_mode: 'plan' })
-    act(() => useAppStore.setState({ switchingProfileId: 'profile-b' }))
-    const promises: Promise<unknown>[] = []
-    act(() => window.dispatchEvent(new CustomEvent('agentsdock:flush-draft', { detail: { promises } })))
-
-    expect(promises).toHaveLength(1)
-    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
-    let flushFinished = false
-    void promises[0].then(() => { flushFinished = true })
-    await Promise.resolve()
-    expect(flushFinished).toBe(false)
-
-    releaseUpdate.resolve()
-    await expect(queued).resolves.toBeUndefined()
-    await expect(promises[0]).resolves.toBeUndefined()
-    expect(update).toHaveBeenCalledWith('chat-1', { claude_permission_mode: 'plan' })
-  })
-
-  it('propagates a failed queued Codex permission write through the workspace flush', async () => {
-    const update = vi.fn().mockRejectedValue(new Error('Policy update denied'))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        sessions: { update }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      sessions: [{
-        id: 'chat-1', title: 'Chat', backend: 'codex',
-        codex_approval_policy: 'never', codex_sandbox_mode: 'danger-full-access',
-        codex_permission_profile: null, codex_approvals_reviewer: 'user'
-      }]
-    })
-    render(<Composer />)
-
-    const queued = queueCodexPermissionUpdate('chat-1', {
-      codex_approval_policy: 'on-request',
-      codex_sandbox_mode: 'workspace-write',
-      codex_permission_profile: null,
-      codex_approvals_reviewer: 'user'
-    })
-    const queuedFailure = expect(queued).rejects.toThrow('Policy update denied')
-    const flushFailure = expect(flushActiveWorkspace()).rejects.toThrow('Policy update denied')
-
-    await queuedFailure
-    await flushFailure
-    expect(update).toHaveBeenCalledTimes(1)
   })
 
   it('ignores a late draft load from another profile with the same session ID', async () => {
@@ -4589,7 +4071,7 @@ describe('Composer', () => {
       configurable: true,
       value: {
         preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        codex: composerCodexBridge(vi.fn().mockResolvedValue([]), {
+        codex: composerCodexBridge({
           approval_policy: 'on-request', sandbox_mode: 'workspace-write', approvals_reviewer: 'user'
         }),
         events: { on: vi.fn().mockReturnValue(() => undefined) }
@@ -4633,8 +4115,6 @@ describe('Composer', () => {
     expect(screen.getByRole('option', { name: /Send Team Network mail/ })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: /^Goal/ })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /^MCP servers/ })).not.toBeInTheDocument()
-    expect(await screen.findByRole('option', { name: /^Permissions/ })).toBeInTheDocument()
-    expect(screen.queryByRole('option', { name: /Plan mode/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /^Schedule/ })).not.toBeInTheDocument()
     expect(screen.getByRole('option', { name: /^Import Chat/ })).toBeInTheDocument()
 
@@ -4989,12 +4469,12 @@ describe('Composer', () => {
     expect(screen.getByRole('option', { name: /^Second chat command/ })).toBeInTheDocument()
   })
 
-  it('offers Claude plan controls only when the server and session make them actionable', async () => {
+  it('offers Claude MCP controls without a Codex goal command', async () => {
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
       value: {
         preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        claude: composerClaudeBridge({ permission_mode: 'plan' }),
+        claude: composerClaudeBridge(),
         events: { on: vi.fn().mockReturnValue(() => undefined) }
       } as unknown as AgentsDockAPI
     })
@@ -5008,8 +4488,7 @@ describe('Composer', () => {
           claude_controls: {
             available: true, required: false, message: '', action: null,
             version: 3,
-            features: { permission_mode_control: true, mcp_management: true },
-            permission_modes: ['default', 'plan']
+            features: { mcp_management: true }
           }
         }
       }
@@ -5019,8 +4498,6 @@ describe('Composer', () => {
 
     await user.type(screen.getByPlaceholderText('Message'), '/')
 
-    expect(screen.getByRole('option', { name: /^Permissions/ })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: /Plan mode.*On/ })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: /^MCP servers/ })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /^Goal/ })).not.toBeInTheDocument()
   })
@@ -5728,12 +5205,12 @@ describe('Composer', () => {
     expect(useAppStore.getState().selectedSessionId).toBe('chat-2')
   })
 
-  it('registers slash, runtime, and permissions as close-first Cmd/Ctrl+W transients', async () => {
+  it('registers slash and runtime menus as close-first Cmd/Ctrl+W transients', async () => {
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
       value: {
         preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
-        codex: composerCodexBridge(vi.fn().mockResolvedValue([]), {
+        codex: composerCodexBridge({
           approval_policy: 'on-request', sandbox_mode: 'workspace-write', approvals_reviewer: 'user'
         }),
         events: { on: vi.fn().mockReturnValue(() => undefined) }
@@ -5772,13 +5249,6 @@ describe('Composer', () => {
     expect(await screen.findByRole('menuitem', { name: 'Reload Codex' })).toBeInTheDocument()
     act(() => { expect(closeTopTransient()).toBe(true) })
     await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Reload Codex' })).not.toBeInTheDocument())
-
-    await user.click(editor)
-    await user.type(editor, '/permissions')
-    fireEvent.keyDown(editor, { key: 'Enter' })
-    expect(await screen.findByRole('heading', { name: 'Codex permissions' })).toBeInTheDocument()
-    act(() => { expect(closeTopTransient()).toBe(true) })
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Codex permissions' })).not.toBeInTheDocument())
     expect(useAppStore.getState().chatPanes).toEqual({ primary: 'chat-1', secondary: null })
   })
 
@@ -6677,10 +6147,7 @@ function ClaudeComposerHarness() {
   </ClaudeRuntimeProvider>
 }
 
-function composerCodexBridge(
-  permissionProfiles = vi.fn().mockResolvedValue([]),
-  policy?: CodexRuntimeSnapshot['policy']
-) {
+function composerCodexBridge(policy?: CodexRuntimeSnapshot['policy']) {
   const runtime: CodexRuntimeSnapshot = {
     available: true,
     transport: 'app_server',
@@ -6694,10 +6161,7 @@ function composerCodexBridge(
     ...(policy === undefined ? {} : { policy }),
     background_terminals_supported: true
   }
-  return {
-    runtime: vi.fn().mockResolvedValue(runtime),
-    permissionProfiles
-  }
+  return { runtime: vi.fn().mockResolvedValue(runtime) }
 }
 
 function composerClaudeBridge(

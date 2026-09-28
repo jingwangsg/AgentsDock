@@ -33,10 +33,12 @@ import { SideChatController } from './lib/side-chat'
 import { Sidebar } from './components/Sidebar'
 import { TerminalDock } from './components/TerminalDock'
 import { TeamNetwork, type PendingSecurePeerInvite, type TeamNetworkMailboxTarget, type TeamNetworkMessageTarget, type TeamNetworkSection } from './components/TeamNetwork'
+import { CanvasPane, canvasNameFromPath, type CanvasTarget } from './components/CanvasPane'
 import { Timeline } from './components/Timeline'
 import { WelcomeChat } from './components/WelcomeChat'
 import { WorkspaceEditor } from './components/WorkspaceEditor'
 import { trackEvent } from './lib/analytics'
+import { TEAM_NETWORK_UI_ENABLED } from './lib/team-network-ui'
 import { activeEmergencyAlert } from './lib/emergency-alert'
 import { isTerminalToggleShortcut } from './lib/workspace-shortcuts'
 import {
@@ -171,6 +173,7 @@ export function App() {
   const readySplitWorkspaceKeyRef = useRef<string | null>(null)
   const splitWorkspaceOverlayRef = useRef<HTMLDivElement | null>(null)
   const [splitWorkspaceTarget, setSplitWorkspaceTarget] = useState<SplitWorkspaceTarget | null>(null)
+  const [canvasTarget, setCanvasTarget] = useState<CanvasTarget | null>(null)
   const [slowBoot, setSlowBoot] = useState(false)
   const [retryingStorage, setRetryingStorage] = useState(false)
   useEffect(() => {
@@ -214,7 +217,9 @@ export function App() {
   const reviewTarget = scopedReviewTarget?.profileId === activeProfileId && scopedReviewTarget.profileGeneration === profileGeneration
     ? scopedReviewTarget.target
     : null
-  const teamspaceOpen = teamspaceScopeKey === activeRenderKey
+  // With the Team Network UI hidden the pane never opens, whatever sets the scope key.
+  const teamspaceOpen = TEAM_NETWORK_UI_ENABLED && teamspaceScopeKey === activeRenderKey
+  const canvasOpen = Boolean(canvasTarget && selectedSession && canvasTarget.sessionId === selectedSession.id && !teamspaceOpen)
   const previousTeamspaceOpen = useRef(false)
   useEffect(() => {
     if (teamspaceOpen && !previousTeamspaceOpen.current) trackEvent('team_network_opened')
@@ -619,6 +624,7 @@ export function App() {
   }, [activeProfileId, activeServerIdentity, initialized, presentQueuedSecurePeerInvite, switchingProfileId])
   useEffect(() => {
     const open = (event: Event) => {
+      if (!TEAM_NETWORK_UI_ENABLED) return
       const section = (event as CustomEvent<{ section?: unknown }>).detail?.section
       const detail = (event as CustomEvent<{
         teamId?: unknown; messageId?: unknown; mailboxBox?: unknown
@@ -665,6 +671,17 @@ export function App() {
       window.removeEventListener('agentsdock:close-teamspace', close)
     }
   }, [activeRenderKey])
+  useEffect(() => {
+    const open = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string | null; path: string }>).detail
+      const name = canvasNameFromPath(detail.path)
+      const sessionId = detail.sessionId || useAppStore.getState().selectedSessionId
+      if (!name || !sessionId) return
+      setCanvasTarget({ sessionId, name })
+    }
+    window.addEventListener('agentsdock:open-canvas', open)
+    return () => window.removeEventListener('agentsdock:open-canvas', open)
+  }, [])
   useEffect(() => {
     const closeSurface = () => {
       if (closeTopTransient()) return
@@ -859,7 +876,7 @@ export function App() {
     <main ref={shellRef} className={`app-shell ${sidebarVisible ? '' : 'sidebar-hidden '}${visibleDockOpen ? 'inspector-open' : ''}${reviewVisible && !teamspaceOpen ? ' review-open' : ''}${teamspaceOpen ? ' teamspace-open' : ''}${switchingProfileId ? ' profile-switching' : ''}`} style={columnStyle}>
       <ChatFontApplier />
       <Sidebar key={`sidebar:${activeRenderKey}`} hidden={!sidebarVisible} />
-      <section className={`conversation-pane${teamspaceOpen ? ' teamspace-pane' : splitOpen ? ' split-open' : selectedSession ? ' workspace-editor-open' : ''}`} aria-busy={Boolean(switchingProfileId)} inert={switchingProfileId ? true : undefined}>
+      <section className={`conversation-pane${teamspaceOpen ? ' teamspace-pane' : splitOpen ? ' split-open' : selectedSession ? ' workspace-editor-open' : ''}${canvasOpen ? ' canvas-open' : ''}`} aria-busy={Boolean(switchingProfileId)} inert={switchingProfileId ? true : undefined}>
         {teamspaceOpen
           ? <TeamNetwork
             key={`teamspace:${activeRenderKey}`}
@@ -938,6 +955,13 @@ export function App() {
                 {singleConversation}
               </CodexRuntimeProvider>
             </ClaudeRuntimeProvider>}
+        {canvasOpen && selectedSession && canvasTarget && <CanvasPane
+          key={`canvas:${selectedRenderKey}`}
+          workspaceKey={activeProfileKey}
+          session={selectedSession}
+          target={canvasTarget}
+          onClose={() => setCanvasTarget(null)}
+        />}
       </section>
       <InspectorDock
         open={visibleDockOpen}

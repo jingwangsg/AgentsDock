@@ -3,7 +3,7 @@ import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useEffect, useMemo, useState } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { Archive, ArchiveRestore, ArrowLeftRight, Check, ChevronRight, Columns2, Copy, Folder, GitFork, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pin, RefreshCw, SquareTerminal, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowLeftRight, Check, ChevronRight, Columns2, Copy, Folder, GitFork, Layers, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pin, RefreshCw, SquareTerminal, Trash2, X } from 'lucide-react'
 import type { Session } from '@shared/types'
 import { completedPrefixForkAvailable } from '@shared/session-fork'
 import { backendLabel, shortId } from '../lib/format'
@@ -21,8 +21,10 @@ export function ChatHeader({
   focused = true,
   sidebarVisible = true,
   terminalOpen = false,
+  outputsOpen = false,
   onSidebarToggle,
   onTerminalToggle,
+  onOutputsToggle,
   onOpenSplit,
   onSwapPanes,
   onClosePane
@@ -31,8 +33,10 @@ export function ChatHeader({
   focused?: boolean
   sidebarVisible?: boolean
   terminalOpen?: boolean
+  outputsOpen?: boolean
   onSidebarToggle?: () => void
   onTerminalToggle?: () => void
+  onOutputsToggle?: () => void
   onOpenSplit?: (sessionId: string) => void
   onSwapPanes?: () => void
   onClosePane?: () => void
@@ -177,6 +181,15 @@ export function ChatHeader({
           aria-pressed={terminalOpen}
           onClick={onTerminalToggle}
         ><SquareTerminal size={16} /></button></ShortcutTooltip>}
+        {onOutputsToggle && <button
+          type="button"
+          className={`icon-button outputs-toggle${outputsOpen ? ' active' : ''}`}
+          title={t('chatOutputs.title')}
+          aria-label={t('chatOutputs.title')}
+          aria-pressed={outputsOpen}
+          data-chat-outputs-toggle=""
+          onClick={onOutputsToggle}
+        ><Layers size={16} /></button>}
         <CodexStatusButton />
         <ClaudeStatusButton />
         {(running || admitting) && (

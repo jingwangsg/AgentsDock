@@ -17,6 +17,8 @@ import type {
   JobRunHistoryPage,
   LocalSessionCandidate,
   ReasoningSummaryStreamSnapshot,
+  RemoteServer,
+  RemoteServersCapability,
   RuntimeCatalog,
   ServerRestartRequest,
   ServerRestartStatus,
@@ -33,6 +35,7 @@ import type {
   WorkspaceRemoveResult,
   WorkspaceRenameResult
 } from '../shared/types'
+import { DEFAULT_SERVER_URL } from '../shared/server-url'
 
 const electronHarness = vi.hoisted(() => ({
   notificationSupported: false,
@@ -3564,6 +3567,14 @@ async function settleBackgroundWork(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
   await new Promise(resolve => setTimeout(resolve, 0))
+}
+
+function hubRemotesCapability(count: number): RemoteServersCapability {
+  return { available: true, required: false, version: 1, proxy_prefix: '/api/remote/', admin_path: '/api/remote', ssh_available: true, count }
+}
+
+function hubRemote(id: string): RemoteServer {
+  return { id, name: id, ssh_host: `${id}.example`, install_dir: '/opt/agentsdock', remote_port: 7850, local_port: 7851, created_at: '2026-07-17T12:00:00Z', proxy_path: `/api/remote/${id}`, tunnel: null }
 }
 
 async function probeInactiveProfiles(service: AppService) {
@@ -7743,7 +7754,6 @@ describe('credential-free profile metadata and asynchronous authentication', () 
 
   it.each([2, 3])('uses zero credential reads for display and one asynchronous read for an ordinary %i-profile switch', async count => {
     const { service, settings, read, readAsync, clientFactory } = prepare(count)
-    service.publicSettings()
     service.getActiveServer()
     service.teamHubServerScope()
     service.scopedPreference({ profileId: 'a', profileGeneration: 1, serverIdentity: null }, 'display-only', false)
@@ -7862,47 +7872,6 @@ describe('credential-free profile metadata and asynchronous authentication', () 
     expect((await service.bootstrap()).activeProfileId).toBe('c')
   })
 
-  it('does not test a draft URL using a credential that changed during the read', async () => {
-    const { service, readAsync, clientFactory } = prepare(2)
-    const token = deferred<string>()
-    readAsync.mockReturnValue(token.promise)
-    const testing = service.testServerConnection({ profileId: 'b', serverUrl: 'https://draft.test' })
-    const rejected = expect(testing).rejects.toThrow(/changed|stale/i)
-    await service.updateServer('b', { accessToken: 'fake-new' })
-    token.resolve('fake-b')
-    await rejected
-    expect(clientFactory).not.toHaveBeenCalled()
-  })
-
-  it('does not start a connection test after shutdown while a credential is pending', async () => {
-    const { service, readAsync, clientFactory } = prepare(2)
-    const token = deferred<string>()
-    readAsync.mockReturnValue(token.promise)
-    const testing = service.testServerConnection({ profileId: 'b', serverUrl: 'https://b.test' })
-    const rejected = expect(testing).rejects.toThrow('superseded')
-    service.stop()
-    token.resolve('fake-b')
-    await rejected
-    expect(clientFactory).not.toHaveBeenCalled()
-  })
-
-  it('keeps settings and the active scope aligned while a kept credential is pending', async () => {
-    const { service, settings, readAsync, clientFactory } = prepare(2)
-    const token = deferred<string>()
-    readAsync.mockReturnValue(token.promise)
-    const applying = service.applySettings({ serverUrl: 'https://changed.test', accessToken: '__KEEP__' })
-    const rejected = expect(applying).rejects.toThrow(/changed|superseded/)
-    expect(settings.serverUrl('a')).toBe('https://a.test')
-    expect(service.teamHubServerScope().serverUrl).toBe('https://a.test')
-    // Old-server identity adoption while the read is pending must fence it,
-    // never stamp that old identity onto the not-yet-committed new endpoint.
-    settings.setProfileServerIdentity('a', 'old-server')
-    token.resolve('fake-a')
-    await rejected
-    expect(settings.serverUrl('a')).toBe('https://a.test')
-    expect(settings.serverIdentity('a')).toBe('old-server')
-    expect(clientFactory).not.toHaveBeenCalled()
-  })
 })
 
 describe('server profile lifecycle', () => {
@@ -8365,7 +8334,7 @@ describe('server profile lifecycle', () => {
     await settleBackgroundWork()
 
     expect(client.runtimeCatalog).toHaveBeenCalled()
-    expect(client.runtimeCatalog).toHaveBeenLastCalledWith(true)
+    expect(client.runtimeCatalog).toHaveBeenLastCalledWith(true, false)
   })
 
   it('keeps trusting the cached catalog while the server instance is unchanged', async () => {
@@ -8398,9 +8367,9 @@ describe('server profile lifecycle', () => {
       'http://a.test:7850': [client]
     })
 
-    const result = await service.runtime(true)
+    const result = await service.runtime(true, true)
 
-    expect(client.runtimeCatalog).toHaveBeenLastCalledWith(true)
+    expect(client.runtimeCatalog).toHaveBeenLastCalledWith(true, true)
     expect(result).toEqual(refreshedCatalog)
   })
 
@@ -8417,16 +8386,16 @@ describe('server profile lifecycle', () => {
       'http://a.test:7850': [client]
     })
 
-    const pending = service.runtime(true)
+    const pending = service.runtime(true, true)
     await settleBackgroundWork()
 
     expect(client.runtimeCatalog).toHaveBeenCalledTimes(1)
-    expect(client.runtimeCatalog).toHaveBeenNthCalledWith(1, false)
+    expect(client.runtimeCatalog).toHaveBeenNthCalledWith(1, false, false)
     backgroundCatalog.resolve(runtimeCatalog)
 
     await expect(pending).resolves.toEqual(refreshedCatalog)
     expect(client.runtimeCatalog).toHaveBeenCalledTimes(2)
-    expect(client.runtimeCatalog).toHaveBeenNthCalledWith(2, true)
+    expect(client.runtimeCatalog).toHaveBeenNthCalledWith(2, true, true)
   })
 
   it('surfaces a queued forced CLI probe failure after an in-flight background refresh', async () => {
@@ -8440,14 +8409,14 @@ describe('server profile lifecycle', () => {
       'http://a.test:7850': [client]
     })
 
-    const pending = service.runtime(true)
+    const pending = service.runtime(true, true)
     await settleBackgroundWork()
-    expect(client.runtimeCatalog).toHaveBeenNthCalledWith(1, false)
+    expect(client.runtimeCatalog).toHaveBeenNthCalledWith(1, false, false)
     backgroundCatalog.resolve(runtimeCatalog)
 
     await expect(pending).rejects.toThrow('Queued CLI probe timed out')
     expect(client.runtimeCatalog).toHaveBeenCalledTimes(2)
-    expect(client.runtimeCatalog).toHaveBeenNthCalledWith(2, true)
+    expect(client.runtimeCatalog).toHaveBeenNthCalledWith(2, true, true)
   })
 
   it('reports a failed explicit runtime recheck instead of silently returning stale cached status', async () => {
@@ -8463,8 +8432,8 @@ describe('server profile lifecycle', () => {
       cache.putPreference('profile:a', 'runtimeCatalog:v1', runtimeCatalog)
     })
 
-    await expect(service.runtime(true)).rejects.toThrow('CLI probe timed out')
-    expect(client.runtimeCatalog).toHaveBeenLastCalledWith(true)
+    await expect(service.runtime(true, true)).rejects.toThrow('CLI probe timed out')
+    expect(client.runtimeCatalog).toHaveBeenLastCalledWith(true, true)
   })
 
   it('atomically persists an active connection edit and swaps to exactly one prepared client', async () => {
@@ -8890,19 +8859,6 @@ describe('server profile lifecycle', () => {
     expect((await service.bootstrap()).health).toBeNull()
   })
 
-  it('rejects and disposes an explicit unavailable connection test response', async () => {
-    const unavailable = fakeClient({ health: async () => ({ ok: false }) })
-    const { service } = createProfileService({
-      'http://a.test:7850': [fakeClient()],
-      'http://b.test:7850': [fakeClient()],
-      'http://probe.test:7850': [unavailable]
-    })
-
-    await expect(service.testServerConnection({ serverUrl: 'http://probe.test:7850' }))
-      .rejects.toThrow('Server health check reported unavailable.')
-    expect(unavailable.dispose).toHaveBeenCalledOnce()
-  })
-
   it('reports two independently verified servers online while keeping only one active', async () => {
     const a = fakeClient({ health: async () => ({ ok: true, server_identity: 'server-a' }) })
     const bProbe = fakeClient({ health: async () => ({ ok: true, server_identity: 'server-b' }) })
@@ -8995,6 +8951,54 @@ describe('server profile lifecycle', () => {
       connectionState: 'online',
       lastConnectionError: null
     }))
+  })
+
+  it('reconciles the hub registry from the inactive health sweep while a remote profile is active', async () => {
+    const hubProbe = Object.assign(
+      fakeClient({ health: async () => ({ ok: true, server_identity: 'server-hub', capabilities: { remote_servers_v1: hubRemotesCapability(1) } }) }),
+      { listRemoteServers: vi.fn(async () => ({ servers: [hubRemote('r1')] })) }
+    )
+    const { service, settings } = createProfileService({
+      [`${DEFAULT_SERVER_URL}/api/remote/r1`]: [fakeClient()],
+      [`${DEFAULT_SERVER_URL}/api/remote/r2`]: [fakeClient()],
+      [DEFAULT_SERVER_URL]: [hubProbe]
+    }, undefined, undefined, undefined, undefined, `${DEFAULT_SERVER_URL}/api/remote/r1`)
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    settings.setProfileServerIdentity('b', 'server-hub')
+    const stale = settings.addProfile({ name: 'Stale', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r2` })
+    const send = vi.fn()
+    ;(service as unknown as { windows: Set<unknown> }).windows = new Set([
+      { isDestroyed: () => false, webContents: { send, isDestroyed: () => false, isLoadingMainFrame: () => false } }
+    ])
+
+    const profiles = await probeInactiveProfiles(service)
+
+    expect(hubProbe.listRemoteServers).toHaveBeenCalledOnce()
+    expect(settings.getProfile(stale.id)).toBeNull()
+    expect(profiles.map(profile => profile.id)).toEqual(['a', 'b'])
+    const emitted = send.mock.calls.filter(([channel]) => channel === 'server:profiles').at(-1)?.[1] as { profiles: Array<{ id: string }> }
+    expect(emitted.profiles.map(profile => profile.id)).toEqual(['a', 'b'])
+    expect(hubProbe.dispose).toHaveBeenCalledOnce()
+  })
+
+  it('never removes the active proxied profile when the hub registry drops it', async () => {
+    const hubProbe = Object.assign(
+      fakeClient({ health: async () => ({ ok: true, server_identity: 'server-hub', capabilities: { remote_servers_v1: hubRemotesCapability(0) } }) }),
+      { listRemoteServers: vi.fn(async () => ({ servers: [] })) }
+    )
+    const { service, settings } = createProfileService({
+      [`${DEFAULT_SERVER_URL}/api/remote/r1`]: [fakeClient()],
+      [DEFAULT_SERVER_URL]: [hubProbe]
+    }, undefined, undefined, undefined, undefined, `${DEFAULT_SERVER_URL}/api/remote/r1`)
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    settings.setProfileServerIdentity('b', 'server-hub')
+
+    const profiles = await probeInactiveProfiles(service)
+
+    expect(hubProbe.listRemoteServers).toHaveBeenCalledOnce()
+    expect(profiles.map(profile => profile.id)).toEqual(['a', 'b'])
+    // Left unset so the next pass retries once the user switches away from the stale remote.
+    expect((service as unknown as { lastHubRemoteCount: number | null }).lastHubRemoteCount).toBeNull()
   })
 
   it('isolates an inactive health failure and recovers it on the next successful probe', async () => {
@@ -9483,6 +9487,80 @@ describe('server profile lifecycle', () => {
         silent: false
       }
     })
+  })
+
+  it('notifies once from a streamed turn end unless the chat is open in a focused window', async () => {
+    electronHarness.notificationSupported = true
+    const streams = new Map<string, { onEvent: (event: Event) => void; onState: (connected: boolean, error?: string) => void }>()
+    const client = fakeClient({
+      sessionPage: async sessionId => ({ ...emptyTimelinePage(sessionId), session: { id: sessionId, title: 'Open chat', backend: 'codex' } }),
+      stream: (sessionId, _after, onEvent, onState) => { streams.set(sessionId, { onEvent, onState }); return vi.fn() }
+    })
+    const { service } = createProfileService({ 'http://a.test:7850': [client] })
+    Object.assign(service, { validatedGeneration: 1 })
+    ;(service as unknown as { sessions: Session[] }).sessions = [{ id: 'chat', title: 'Open chat', backend: 'codex' }]
+    let focused = false
+    service.addWindow({
+      isDestroyed: () => false, isFocused: () => focused, on: vi.fn(),
+      webContents: { send: vi.fn(), isDestroyed: () => false, isLoadingMainFrame: () => false }
+    } as never)
+    await service.subscribeTimeline('chat', 0)
+    await settleBackgroundWork()
+    streams.get('chat')!.onState(true)
+    const turnEnd = (seq: number): Event => ({ id: `event-${seq}`, session_id: 'chat', seq, type: 'turn_finished', ts: 'now', run_id: 'run-1' })
+
+    streams.get('chat')!.onEvent(turnEnd(3))
+    expect(electronHarness.notifications).toHaveLength(1)
+    expect(electronHarness.notifications[0].options).toEqual({ title: 'Open chat', body: 'Response finished', silent: false })
+    // A redelivered terminal is the same turn.
+    streams.get('chat')!.onEvent(turnEnd(3))
+    expect(electronHarness.notifications).toHaveLength(1)
+    // The chat is open in a pane and the window is focused: the user is looking at it.
+    focused = true
+    streams.get('chat')!.onEvent(turnEnd(7))
+    expect(electronHarness.notifications).toHaveLength(1)
+  })
+
+  it('notifies once when a polled summary advances a background chat to a turn end, after a baseline poll', async () => {
+    electronHarness.notificationSupported = true
+    const summary = (seq: number, type: string, id = 'back', title = 'Background job', at = `2026-09-28T08:00:${String(seq).padStart(2, '0')}Z`): Session => (
+      { id, title, backend: 'codex', latest_agent_event_seq: seq, latest_agent_event_type: type, latest_agent_event_at: at }
+    )
+    const client = fakeClient({ sessions: async () => [summary(4, 'turn_finished')] })
+    const { service } = createProfileService({ 'http://a.test:7850': [client] })
+    service.addWindow({
+      isDestroyed: () => false, isFocused: () => true, on: vi.fn(),
+      webContents: { send: vi.fn(), isDestroyed: () => false, isLoadingMainFrame: () => false }
+    } as never)
+    const internals = service as unknown as { scope: unknown; runBackgroundRefresh(includeJobs: boolean, scope: unknown): Promise<void> }
+    const poll = async (rows: Session[]) => {
+      client.sessions.mockResolvedValueOnce(rows)
+      await internals.runBackgroundRefresh(false, internals.scope)
+    }
+
+    // The first poll of a scope is a baseline: a turn that ended before this run stays quiet.
+    await internals.runBackgroundRefresh(false, internals.scope)
+    expect(electronHarness.notifications).toHaveLength(0)
+    // Progress inside a turn is not a turn end.
+    await poll([summary(6, 'assistant_text')])
+    expect(electronHarness.notifications).toHaveLength(0)
+    // No pane shows this chat, so the focused window does not suppress it.
+    await poll([summary(9, 'turn_finished')])
+    expect(electronHarness.notifications).toHaveLength(1)
+    expect(electronHarness.notifications[0].options).toEqual({ title: 'Background job', body: 'Response finished', silent: false })
+    // The same summary polled again is the same turn.
+    await poll([summary(9, 'turn_finished')])
+    expect(electronHarness.notifications).toHaveLength(1)
+    // A chat created and finished inside one poll interval is first listed already
+    // at its turn end; its server timestamp is newer than anything seen before.
+    // An imported chat surfaces the same way but with an old timestamp and stays quiet.
+    await poll([
+      summary(9, 'turn_finished'),
+      summary(8, 'turn_finished', 'fresh', 'Quick question', '2026-09-28T08:00:30Z'),
+      summary(300, 'turn_finished', 'imported', 'Old transcript', '2025-01-01T00:00:00Z')
+    ])
+    expect(electronHarness.notifications).toHaveLength(2)
+    expect(electronHarness.notifications[1].options).toEqual({ title: 'Quick question', body: 'Response finished', silent: false })
   })
 })
 
@@ -10134,5 +10212,81 @@ describe('rapid profile resource teardown', () => {
       service?.stop()
       vi.useRealTimers()
     }
+  })
+})
+
+describe('history rewind cache surgery', () => {
+  function rewindHarness() {
+    const streams: Array<{ event: (event: Event) => void }> = []
+    const client = fakeClient({
+      sessionPage: async sessionId => emptyTimelinePage(sessionId),
+      stream: (_sessionId, _after, event) => { streams.push({ event }); return vi.fn() }
+    })
+    const { service, cache } = createProfileService({ 'http://a.test:7850': [client], 'http://b.test:7850': [fakeClient()] })
+    Object.assign(service, { validatedGeneration: 1 })
+    const internals = service as unknown as {
+      scope: { namespace: string }
+      timelineIndexes: Map<string, TimelineIndex>
+      flushEventCache(): void
+    }
+    return { streams, client, service, cache, internals }
+  }
+  const chatEvent = (seq: number, patch: Partial<Event> = {}): Event => ({
+    id: `chat-${seq}`, session_id: 'chat', seq, type: 'assistant_text', ts: 'now', text: `event ${seq}`, ...patch
+  })
+  const index: TimelineIndex = { session_id: 'chat', landmarks: [], latest_seq: 5, event_count: 5 }
+
+  it('drops the tombstoned range from the durable cache and the landmark index when history_rewound streams in', async () => {
+    const { streams, client, service, cache, internals } = rewindHarness()
+    const files = vi.fn(async () => ({ files: [], total: 0 }))
+    Object.assign(client, { files })
+    const send = vi.fn()
+    service.addWindow({ isDestroyed: () => false, on: vi.fn(), webContents: { send } } as never)
+    await service.subscribeTimeline('chat', 0)
+    await settleBackgroundWork()
+    files.mockClear()
+    for (const seq of [1, 2, 3, 4]) streams[0].event(chatEvent(seq))
+    internals.flushEventCache()
+    const key = `${internals.scope.namespace}:chat`
+    internals.timelineIndexes.set(key, index)
+    // Event 5 is still buffered when the tombstone arrives; the handler must
+    // persist it first so the single range delete covers it too.
+    streams[0].event(chatEvent(5))
+    streams[0].event(chatEvent(6, {
+      type: 'history_rewound', text: undefined, from_seq: 3, through_seq: 5,
+      to_run_id: 'run-3', removed_events: 3, provider_rewind: 'codex_rollback'
+    }))
+    internals.flushEventCache()
+
+    expect(cache.events(internals.scope.namespace, 'chat').map(event => event.seq)).toEqual([1, 2, 6])
+    expect(internals.timelineIndexes.has(key)).toBe(false)
+    expect(send).toHaveBeenCalledWith('server:event', expect.objectContaining({
+      event: expect.objectContaining({ type: 'history_rewound', seq: 6 })
+    }))
+    // Rewound artifacts are deleted server-side: the file list must refresh past its throttle.
+    await settleBackgroundWork()
+    expect(files).toHaveBeenCalledExactlyOnceWith('chat', 0, expect.any(Number))
+  })
+
+  it('applies the same local surgery right after a successful rewind request', async () => {
+    const { streams, client, service, cache, internals } = rewindHarness()
+    const session: Session = { id: 'chat', title: 'chat', backend: 'codex', latest_event_seq: 2 }
+    const rewindSession = vi.fn(async () => ({
+      ok: true, from_seq: 3, through_seq: 5, removed_events: 3, provider_rewind: 'codex_rollback', session
+    }))
+    Object.assign(client, { rewindSession })
+    await service.subscribeTimeline('chat', 0)
+    await settleBackgroundWork()
+    for (const seq of [1, 2, 3, 4, 5]) streams[0].event(chatEvent(seq))
+    internals.flushEventCache()
+    const key = `${internals.scope.namespace}:chat`
+    internals.timelineIndexes.set(key, index)
+
+    await expect(service.rewindSession('chat', 'run-3', 5)).resolves.toMatchObject({ through_seq: 5 })
+
+    expect(rewindSession).toHaveBeenCalledExactlyOnceWith('chat', 'run-3', 5)
+    expect(cache.events(internals.scope.namespace, 'chat').map(event => event.seq)).toEqual([1, 2])
+    expect(internals.timelineIndexes.has(key)).toBe(false)
+    expect(cache.session(internals.scope.namespace, 'chat')).toMatchObject({ latest_event_seq: 2 })
   })
 })

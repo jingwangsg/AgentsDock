@@ -1,10 +1,11 @@
+import { LOCAL_URL_PATTERN } from '@shared/local-url'
+
 export interface DetectedTerminalPort {
   remotePort: number
   url: string
   label: string
 }
 
-const LOCAL_URL_PATTERN = /http:\/\/(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])(?::(\d{1,5}))(?=[/?#\s)'"\]}>,]|$)[^\s)'"\]}>,]*/gi
 const ANSI_SEQUENCE_PATTERN = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g
 
 /**

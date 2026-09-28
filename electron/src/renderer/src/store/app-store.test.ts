@@ -429,6 +429,126 @@ describe('chat forking', () => {
   })
 })
 
+describe('turn editing and history rewind', () => {
+  const rewindHealth: Health = { ok: true, capabilities: { session_rewind_v1: {
+    available: true, version: 1, supported_backends: ['codex'], checkpoint_restore: true
+  } } }
+  const gitStatus = (revision: string) => ({
+    root: '/work', branch: 'main', head: 'abc', revision, operation: null, files: [], staged_count: 0, conflict_count: 0
+  })
+  const seeded = () => {
+    const events = [1, 2, 3, 4, 5].map(seq => eventFor('chat-1', seq))
+    useAppStore.setState({
+      activeProfileId: 'local', profileGeneration: 1, switchingProfileId: null, profiles: [],
+      sessions: [{ ...sessionFor('chat-1'), latest_event_seq: 4 }],
+      snapshots: { 'chat-1': { ...snapshot('chat-1', events), generation: 2, timelineListGeneration: 0, eventsTotal: 5 } },
+      activeSessionIds: new Set(), turnAdmissionTokens: {}, drafts: { 'chat-1': 'Half-typed follow-up' }, editingTurn: {},
+      health: rewindHealth, error: null
+    })
+  }
+
+  it('seeds the draft with the original prompt on edit and restores the previous draft on cancel', () => {
+    seeded()
+    useAppStore.getState().beginEditingTurn('chat-1', 'run-3', 'Original third prompt')
+    expect(useAppStore.getState().editingTurn['chat-1']).toEqual({
+      runId: 'run-3', originalPrompt: 'Original third prompt', previousDraft: 'Half-typed follow-up'
+    })
+    expect(useAppStore.getState().drafts['chat-1']).toBe('Original third prompt')
+
+    useAppStore.getState().cancelEditingTurn('chat-1')
+
+    expect(useAppStore.getState().editingTurn['chat-1']).toBeNull()
+    expect(useAppStore.getState().drafts['chat-1']).toBe('Half-typed follow-up')
+  })
+
+  it('sends the freshest known latest seq, trims the rewound range locally, and leaves edit mode', async () => {
+    seeded()
+    const rewind = vi.fn().mockResolvedValue({
+      ok: true, from_seq: 3, through_seq: 5, removed_events: 3, provider_rewind: 'codex_rollback', session: sessionFor('chat-1')
+    })
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { sessions: { rewind } } as unknown as AgentsDockAPI })
+    useAppStore.getState().beginEditingTurn('chat-1', 'run-3', 'Original third prompt')
+
+    await expect(useAppStore.getState().rewindSession('chat-1', 'run-3')).resolves.toBe(true)
+
+    // The rendered tail (seq 5) is newer than the published session field (4).
+    expect(rewind).toHaveBeenCalledExactlyOnceWith('chat-1', 'run-3', 5)
+    const next = useAppStore.getState().snapshots['chat-1']
+    expect(next.events.map(event => event.seq)).toEqual([1, 2])
+    expect(next.generation).toBe(3)
+    expect(next.timelineListGeneration).toBe(1)
+    expect(useAppStore.getState().editingTurn['chat-1']).toBeNull()
+    expect(useAppStore.getState().drafts['chat-1']).toBe('Original third prompt')
+    expect(useAppStore.getState().error).toBeNull()
+  })
+
+  const refusals: Array<[string, () => void, string]> = [
+    ['a running turn', () => useAppStore.setState({ activeSessionIds: new Set(['chat-1']) }),
+      'Wait for the current turn to finish before editing an earlier turn or restoring a checkpoint.'],
+    ['a pending admission', () => useAppStore.setState({ turnAdmissionTokens: { 'chat-1': 'admission-1' } }),
+      'Wait for the current turn to finish before editing an earlier turn or restoring a checkpoint.'],
+    ['an older server', () => useAppStore.setState({ health: { ok: true } }),
+      'Update AgentsServer to edit earlier turns or restore checkpoints in this chat.']
+  ]
+  it.each(refusals)('refuses to rewind during %s without calling the server', async (_label, arrange, message) => {
+    seeded()
+    const rewind = vi.fn()
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { sessions: { rewind } } as unknown as AgentsDockAPI })
+    arrange()
+    useAppStore.getState().beginEditingTurn('chat-1', 'run-3', 'Original third prompt')
+
+    await expect(useAppStore.getState().rewindSession('chat-1', 'run-3')).resolves.toBe(false)
+
+    expect(rewind).not.toHaveBeenCalled()
+    expect(useAppStore.getState().error).toBe(message)
+    expect(useAppStore.getState().editingTurn['chat-1']).toMatchObject({ runId: 'run-3' })
+  })
+
+  it('surfaces the server refusal without the IPC prefix and keeps edit mode for a retry', async () => {
+    seeded()
+    const rewind = vi.fn().mockRejectedValue(new Error(
+      "Error invoking remote method 'sessions:rewind': Error: Wait for the active turn to finish."
+    ))
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { sessions: { rewind } } as unknown as AgentsDockAPI })
+    useAppStore.getState().beginEditingTurn('chat-1', 'run-3', 'Original third prompt')
+
+    await expect(useAppStore.getState().rewindSession('chat-1', 'run-3')).resolves.toBe(false)
+
+    expect(useAppStore.getState().error).toBe('Wait for the active turn to finish.')
+    expect(useAppStore.getState().editingTurn['chat-1']).toMatchObject({ runId: 'run-3' })
+    expect(useAppStore.getState().snapshots['chat-1'].events).toHaveLength(5)
+  })
+
+  it('restores the checkpoint against the current git revision, refreshes the changes panel, then rewinds', async () => {
+    seeded()
+    const calls: string[] = []
+    const status = vi.fn(async () => { calls.push('status'); return gitStatus('r'.repeat(64)) })
+    const restoreCheckpoint = vi.fn(async () => { calls.push('restore'); return gitStatus('s'.repeat(64)) })
+    const rewind = vi.fn(async () => {
+      calls.push('rewind')
+      return { ok: true, from_seq: 3, through_seq: 5, removed_events: 3, provider_rewind: 'codex_rollback', session: sessionFor('chat-1') }
+    })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { rewind, restoreCheckpoint }, workspaceGit: { status } } as unknown as AgentsDockAPI
+    })
+    const changed = vi.fn()
+    window.addEventListener('agentsdock:workspace-git-changed', changed)
+    try {
+      await expect(useAppStore.getState().restoreCheckpoint('chat-1', 'run-3')).resolves.toBe(true)
+    } finally {
+      window.removeEventListener('agentsdock:workspace-git-changed', changed)
+    }
+
+    expect(calls).toEqual(['status', 'restore', 'rewind'])
+    expect(status).toHaveBeenCalledWith({ profileId: 'local', profileGeneration: 1, serverIdentity: null }, 'chat-1')
+    expect(restoreCheckpoint).toHaveBeenCalledExactlyOnceWith('chat-1', 'run-3', 'r'.repeat(64))
+    expect(changed).toHaveBeenCalledOnce()
+    expect((changed.mock.calls[0][0] as CustomEvent<string>).detail).toBe('chat-1')
+    expect(useAppStore.getState().snapshots['chat-1'].events.map(event => event.seq)).toEqual([1, 2])
+  })
+})
+
 describe('snapshot file isolation', () => {
   it('removes explicit foreign file ownership without collapsing a paginated total', () => {
     const local: AgentFile = { id: 'local', session_id: 'chat-1', filename: 'local.txt' }
@@ -471,99 +591,6 @@ describe('session refresh identity', () => {
     expect(reconciled[0]).toBe(previous[0])
     expect(reconciled[1]).not.toBe(previous[1])
     expect(reconciled[1].title).toBe('Updated B')
-  })
-})
-
-describe('Codex permission session updates', () => {
-  it('preserves every permission field in the renderer-to-server patch', async () => {
-    const session = sessionFor('chat-1')
-    const update = vi.fn().mockImplementation(async (_sessionId: string, patch: Partial<Session>) => ({
-      ...session,
-      ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined))
-    }))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: { sessions: { update } } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      activeProfileId: 'local',
-      profileGeneration: 1,
-      switchingProfileId: null,
-      sessions: [session],
-      error: null
-    })
-
-    await useAppStore.getState().updateSession('chat-1', {
-      codex_approval_policy: 'on-request',
-      codex_sandbox_mode: 'workspace-write',
-      codex_permission_profile: ':workspace',
-      codex_approvals_reviewer: 'auto_review'
-    })
-
-    expect(update).toHaveBeenCalledWith('chat-1', expect.objectContaining({
-      codex_approval_policy: 'on-request',
-      codex_sandbox_mode: 'workspace-write',
-      codex_permission_profile: ':workspace',
-      codex_approvals_reviewer: 'auto_review'
-    }))
-    expect(useAppStore.getState().sessions[0]).toEqual(expect.objectContaining({
-      codex_approval_policy: 'on-request',
-      codex_sandbox_mode: 'workspace-write',
-      codex_permission_profile: ':workspace',
-      codex_approvals_reviewer: 'auto_review'
-    }))
-  })
-})
-
-describe('Claude permission session updates', () => {
-  it('preserves the SDK permission mode in the renderer-to-server patch', async () => {
-    const session = { ...sessionFor('chat-1'), backend: 'claude' as const, claude_permission_mode: 'default' as const }
-    const update = vi.fn().mockImplementation(async (_sessionId: string, patch: Partial<Session>) => ({
-      ...session,
-      ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined))
-    }))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: { sessions: { update } } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      activeProfileId: 'local',
-      profileGeneration: 1,
-      switchingProfileId: null,
-      sessions: [session],
-      error: null
-    })
-
-    await useAppStore.getState().updateSession('chat-1', { claude_permission_mode: 'acceptEdits' })
-
-    expect(update).toHaveBeenCalledWith('chat-1', { claude_permission_mode: 'acceptEdits' })
-    expect(useAppStore.getState().sessions[0].claude_permission_mode).toBe('acceptEdits')
-  })
-})
-
-describe('Cursor permission session updates', () => {
-  it('preserves the Cursor CLI mode in the renderer-to-server patch', async () => {
-    const session = { ...sessionFor('chat-1'), backend: 'cursor' as const, cursor_permission_mode: 'default' as const }
-    const update = vi.fn().mockImplementation(async (_sessionId: string, patch: Partial<Session>) => ({
-      ...session,
-      ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined))
-    }))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: { sessions: { update } } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      activeProfileId: 'local',
-      profileGeneration: 1,
-      switchingProfileId: null,
-      sessions: [session],
-      error: null
-    })
-
-    await useAppStore.getState().updateSession('chat-1', { cursor_permission_mode: 'plan' })
-
-    expect(update).toHaveBeenCalledWith('chat-1', { cursor_permission_mode: 'plan' })
-    expect(useAppStore.getState().sessions[0].cursor_permission_mode).toBe('plan')
   })
 })
 
@@ -1178,6 +1205,63 @@ describe('folder deletion', () => {
     expect(update).not.toHaveBeenCalled()
     expect(useAppStore.getState().folderOrder).toEqual(['General'])
     expect(useAppStore.getState().collapsedFolders.has('Empty')).toBe(false)
+  })
+})
+
+describe('folder rename', () => {
+  it('moves every matching chat and renames the folder preferences in place', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ ...sessionFor(sessionId), ...patch }))
+    const setPreference = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: setPreference } } as unknown as AgentsDockAPI
+    })
+    const research = { ...sessionFor('research'), folder: 'Research' }
+    const pinned = { ...sessionFor('pinned'), folder: 'Research', pinned: true }
+    const general = { ...sessionFor('general'), folder: 'General' }
+    useAppStore.setState({
+      sessions: [research, pinned, general],
+      snapshots: { research: snapshot('research', []) },
+      folderOrder: ['Research', 'General'],
+      collapsedFolders: new Set(['Research']),
+      error: null
+    })
+
+    await expect(useAppStore.getState().renameFolder('Research', '  Papers ')).resolves.toBe(true)
+
+    expect(update).toHaveBeenCalledTimes(2)
+    expect(update).toHaveBeenCalledWith('research', { folder: 'Papers' })
+    expect(update).toHaveBeenCalledWith('pinned', { folder: 'Papers' })
+    expect(useAppStore.getState().sessions.map(session => session.folder)).toEqual(['Papers', 'Papers', 'General'])
+    expect(useAppStore.getState().snapshots.research.session.folder).toBe('Papers')
+    expect(useAppStore.getState().folderOrder).toEqual(['Papers', 'General'])
+    expect([...useAppStore.getState().collapsedFolders]).toEqual(['Papers'])
+    expect(setPreference).toHaveBeenCalledWith('folderOrder', ['Papers', 'General'])
+    expect(setPreference).toHaveBeenCalledWith('collapsedFolders', ['Papers'])
+    expect(useAppStore.getState().error).toBeNull()
+  })
+
+  it('refuses General, unchanged names, and names that already exist in any case', async () => {
+    const update = vi.fn()
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: vi.fn() } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ ...sessionFor('general'), folder: 'General' }, { ...sessionFor('research'), folder: 'Research' }],
+      folderOrder: ['Research', 'Archive', 'General'],
+      collapsedFolders: new Set(),
+      error: null
+    })
+
+    await expect(useAppStore.getState().renameFolder('General', 'Inbox')).resolves.toBe(false)
+    await expect(useAppStore.getState().renameFolder('Research', 'Research')).resolves.toBe(false)
+    expect(useAppStore.getState().error).toBeNull()
+    await expect(useAppStore.getState().renameFolder('Research', 'archive')).resolves.toBe(false)
+    expect(useAppStore.getState().error).toBe('A folder named archive already exists.')
+
+    expect(update).not.toHaveBeenCalled()
+    expect(useAppStore.getState().folderOrder).toEqual(['Research', 'Archive', 'General'])
   })
 })
 
@@ -2651,6 +2735,26 @@ describe('selected live timeline', () => {
         event: eventFor('chat-a', 2, { type: 'provider_session_reset', backend: 'opencode', previous_provider_session_id: 'ses-native' }) })
       await vi.advanceTimersByTimeAsync(1_000)
       expect(useAppStore.getState().sessions[0]).toMatchObject({ opencode_session_id: null, session_id: null, backend_locked: true })
+    } finally { vi.useRealTimers() }
+  })
+
+  it('drops a history_rewound range from the live snapshot and restarts the list epoch', async () => {
+    vi.useFakeTimers()
+    try {
+      const handlers = await initializeLiveEventHandlers()
+      const events = [1, 2, 3, 4, 5].map(seq => eventFor('chat-a', seq))
+      useAppStore.setState({ snapshots: { 'chat-a': { ...snapshot('chat-a', events), generation: 4, timelineListGeneration: 1, eventsTotal: 5 } } })
+      handlers.get('server:event')?.({ profileId: null, profileGeneration: 0,
+        event: eventFor('chat-a', 6, {
+          type: 'history_rewound', text: undefined, from_seq: 3, through_seq: 5,
+          to_run_id: 'run-3', removed_events: 3, provider_rewind: 'codex_rollback'
+        }) })
+      await vi.advanceTimersByTimeAsync(1_000)
+      const next = useAppStore.getState().snapshots['chat-a']
+      expect(next.events.map(event => event.seq)).toEqual([1, 2, 6])
+      expect(next.generation).toBe(5)
+      expect(next.timelineListGeneration).toBe(2)
+      expect(next.eventsTotal).toBe(2)
     } finally { vi.useRealTimers() }
   })
 
@@ -5101,7 +5205,6 @@ describe('emergency alert store integration', () => {
       sessionId: 'deployment-watch',
       emergencyAlertId: emergency.emergency_alert?.id
     })
-    expect(notify).not.toHaveBeenCalledWith(expect.objectContaining({ body: 'New agent message' }))
     focus.mockRestore()
   })
 
@@ -5302,39 +5405,6 @@ describe('server profile switching', () => {
       cancelPendingSteering()
       await expect(pendingSteer).rejects.toThrow('active server changed')
     }
-  })
-
-  it('creates profile-addressed notifications for background agent messages', async () => {
-    const profileA = { ...profileFor('profile-a'), serverIdentity: 'server-a' }
-    const handlers = new Map<string, (payload: any) => void>()
-    const notify = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        bootstrap: vi.fn().mockResolvedValue(profileBootstrap(profileA, [profileA], 1)),
-        native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined), notify },
-        events: { on: vi.fn((channel: string, handler: (payload: any) => void) => { handlers.set(channel, handler); return () => {} }) }
-      } as unknown as AgentsDockAPI
-    })
-    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
-    useAppStore.setState({ initialized: false, sessions: [], selectedSessionId: null })
-    await useAppStore.getState().initialize()
-    useAppStore.setState({ sessions: [{ ...sessionFor('same'), title: 'Agent result', latest_agent_event_seq: 1 }] })
-
-    handlers.get('server:sessions')?.({
-      profileId: profileA.id,
-      profileGeneration: 1,
-      sessions: [{ ...sessionFor('same'), title: 'Agent result', latest_agent_event_seq: 2 }]
-    })
-
-    expect(notify).toHaveBeenCalledWith({
-      title: 'Agent result',
-      body: 'New agent message',
-      profileId: 'profile-a',
-      serverIdentity: 'server-a',
-      sessionId: 'same'
-    })
-    vi.restoreAllMocks()
   })
 
   it('switches and verifies a notification profile before selecting a reused session ID', async () => {
@@ -6276,12 +6346,6 @@ function startupCleanupMarker(session: Session): { version: 1; fingerprint: stri
       model: session.model?.trim() || null,
       effort: session.effort?.trim() || null,
       systemPrompt: session.system_prompt ?? null,
-      codexApprovalPolicy: session.codex_approval_policy ?? null,
-      codexSandboxMode: session.codex_sandbox_mode ?? null,
-      codexPermissionProfile: session.codex_permission_profile ?? null,
-      codexApprovalsReviewer: session.codex_approvals_reviewer ?? null,
-      claudePermissionMode: session.claude_permission_mode ?? null,
-      cursorPermissionMode: session.cursor_permission_mode ?? null,
       providerJobsAccess: session.provider_jobs_access ?? null
     })
   }

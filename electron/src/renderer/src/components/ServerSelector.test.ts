@@ -85,6 +85,21 @@ describe('server selector labels', () => {
     })).toBeNull()
   })
 
+  it('prefers the SSH host of a hub-managed remote over its proxy URL', () => {
+    expect(profileHostSubtitle({
+      name: 'OSMO',
+      serverUrl: 'http://127.0.0.1:7850/api/remote/abc123def456',
+      serverIdentity: 'server-osmo',
+      sshHost: 'osmo_9000'
+    })).toBe('osmo_9000')
+    expect(profileHostSubtitle({
+      name: 'osmo_9000',
+      serverUrl: 'http://127.0.0.1:7850/api/remote/abc123def456',
+      serverIdentity: 'server-osmo',
+      sshHost: 'osmo_9000'
+    })).toBeNull()
+  })
+
   it('announces the target server while a switch is in progress', () => {
     useAppStore.setState({
       profiles: [alpha, beta],
@@ -152,5 +167,47 @@ describe('server selector labels', () => {
 
     await waitFor(() => expect(analytics.trackEvent).toHaveBeenCalledExactlyOnceWith('server_switched', { success: true }))
     expect(switchServer).toHaveBeenCalledExactlyOnceWith('beta')
+  })
+
+  it('shows numbered servers while the chord is held and switches on the digit', async () => {
+    Object.defineProperty(window.navigator, 'platform', { value: 'MacIntel', configurable: true })
+    const switchServer = vi.fn(async (profileId: string) => {
+      useAppStore.setState({ activeProfileId: profileId })
+      return true
+    })
+    useAppStore.setState({
+      profiles: [alpha, beta],
+      activeProfileId: alpha.id,
+      switchingProfileId: null,
+      switchServer
+    })
+    try {
+      render(createElement(ServerSelector))
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+
+      fireEvent.keyDown(window, { key: 'Shift', metaKey: true, shiftKey: true })
+      const beta_item = await screen.findByRole('menuitem', { name: /Beta/ })
+      expect(beta_item.querySelector('kbd')).toHaveTextContent('2')
+      expect(screen.getByRole('menuitem', { name: /Alpha/ }).querySelector('kbd')).toHaveTextContent('1')
+
+      // Shift turns the digit row into symbols on many layouts, so the code decides.
+      fireEvent.keyDown(window, { key: '@', code: 'Digit2', metaKey: true, shiftKey: true })
+      await waitFor(() => expect(switchServer).toHaveBeenCalledExactlyOnceWith('beta'))
+      await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+
+      // Releasing the chord without choosing closes the list and puts focus
+      // back where it was instead of on the trigger.
+      const input = document.body.appendChild(document.createElement('input'))
+      input.focus()
+      fireEvent.keyDown(window, { key: 'Meta', metaKey: true, shiftKey: true })
+      await screen.findByRole('menu')
+      fireEvent.keyUp(window, { key: 'Meta', shiftKey: true })
+      await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+      await waitFor(() => expect(input).toHaveFocus())
+      expect(switchServer).toHaveBeenCalledTimes(1)
+      input.remove()
+    } finally {
+      delete (window.navigator as { platform?: string }).platform
+    }
   })
 })

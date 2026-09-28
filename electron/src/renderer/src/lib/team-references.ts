@@ -1,4 +1,5 @@
 import type { ChatReference, TeamRecipientReference, TeamReference, TeamSkillReference } from '@shared/types'
+import { TEAM_NETWORK_UI_ENABLED } from './team-network-ui'
 
 export interface TeamMentionTrigger {
   kind: '@@'
@@ -40,6 +41,7 @@ export function teamMessagesAvailable(health: {
     send_requires_mention?: boolean
   } }
 } | null | undefined): boolean {
+  if (!TEAM_NETWORK_UI_ENABLED) return false
   const capability = health?.capabilities?.agent_team_messages_v1
   return capability?.available === true
     && capability.version === 1

@@ -2,7 +2,7 @@
 import { t, getLocale } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import * as Popover from '@radix-ui/react-popover'
-import { ArrowUp, ChevronRight, Folder, FolderOpen, LoaderCircle, RotateCcw } from 'lucide-react'
+import { ArrowUp, ChevronRight, ExternalLink, Folder, FolderOpen, LoaderCircle, RotateCcw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { Session, WorkingDirectoryCompletion } from '@shared/types'
 import { parentDirectory } from '../lib/working-directory-path'
@@ -130,6 +130,19 @@ export function WorkingDirectoryPopover({ session }: { session: Session }) {
                 disabled={loading || !canGoToParent}
                 onClick={() => load(parentPath)}
               ><ArrowUp size={13} aria-hidden="true" /></button>
+              <button
+                type="button"
+                className="cwd-popover-parent"
+                aria-label={t('openInZed.action')}
+                title={t('openInZed.action')}
+                disabled={!session.cwd?.trim()}
+                onClick={() => {
+                  const state = useAppStore.getState()
+                  const profile = state.profiles.find(candidate => candidate.id === state.activeProfileId)
+                  window.agentsDock.native.openInZed({ path: session.cwd!.trim(), sshHost: profile?.sshHost ?? null })
+                    .catch((error: unknown) => state.setError(error instanceof Error ? error.message : String(error)))
+                }}
+              ><ExternalLink size={13} aria-hidden="true" /></button>
               <input
                 aria-label={t("ui.WorkingDirectoryPopover.WorkingDirectoryPopover.folder_path_98bca2f")}
                 value={pathDraft}

@@ -244,68 +244,39 @@ describe('Team Mail metadata websocket', () => {
   })
 })
 
-describe('AgentServerClient Claude session policy', () => {
+describe('AgentServerClient session rewind', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
-  it('includes the additive Claude permission mode when creating a chat', async () => {
-    const calls: Array<{ url: string; init: RequestInit }> = []
-    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
-      calls.push({ url: String(input), init })
-      return new Response(JSON.stringify({
-        session: {
-          id: 'claude-chat', title: 'Claude', folder: 'General', cwd: '/work', backend: 'claude',
-          claude_permission_mode: 'acceptEdits'
-        }
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  it('retries a stale latest-seq guard once with the server value', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init: RequestInit = {}) => {
+      bodies.push(JSON.parse(String(init.body)))
+      return bodies.length === 1
+        ? json(409, { detail: { code: 'stale_latest_seq', message: 'Chat history changed.', latest_seq: 44 } })
+        : json(200, { ok: true, from_seq: 30, through_seq: 44, removed_events: 15, provider_rewind: 'codex_rollback', session: { id: 'chat-1', title: 'Chat', backend: 'codex' } })
     }))
     const client = new AgentServerClient('http://example.test:7850', 'token')
 
-    await client.createSession({
-      title: 'Claude',
-      folder: 'General',
-      cwd: '/work',
-      backend: 'claude',
-      claude_permission_mode: 'acceptEdits'
-    })
+    await expect(client.rewindSession('chat-1', 'run-3', 41)).resolves.toMatchObject({ ok: true, through_seq: 44 })
+    expect(bodies).toEqual([
+      { to_run_id: 'run-3', expected_latest_seq: 41, confirmed: true },
+      { to_run_id: 'run-3', expected_latest_seq: 44, confirmed: true }
+    ])
+  })
 
-    expect(calls).toHaveLength(1)
-    expect(JSON.parse(String(calls[0].init.body))).toEqual(expect.objectContaining({
-      backend: 'claude',
-      claude_permission_mode: 'acceptEdits'
-    }))
+  it('surfaces every other refusal message without retrying', async () => {
+    const fetchMock = vi.fn(async () => json(409, { detail: { code: 'session_busy', message: 'Wait for the active turn to finish.' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new AgentServerClient('http://example.test:7850', 'token')
+
+    await expect(client.rewindSession('chat-1', 'run-3', 41)).rejects.toThrow('Wait for the active turn to finish.')
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 })
 
 describe('AgentServerClient Cursor session policy', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
-
-  it('includes the additive Cursor permission mode when creating a chat', async () => {
-    const calls: Array<{ url: string; init: RequestInit }> = []
-    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
-      calls.push({ url: String(input), init })
-      return new Response(JSON.stringify({
-        session: {
-          id: 'cursor-chat', title: 'Cursor', folder: 'General', cwd: '/work', backend: 'cursor',
-          cursor_permission_mode: 'full_access'
-        }
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }))
-    const client = new AgentServerClient('http://example.test:7850', 'token')
-
-    await client.createSession({
-      title: 'Cursor',
-      folder: 'General',
-      cwd: '/work',
-      backend: 'cursor',
-      cursor_permission_mode: 'full_access'
-    })
-
-    expect(calls).toHaveLength(1)
-    expect(JSON.parse(String(calls[0].init.body))).toEqual(expect.objectContaining({
-      backend: 'cursor',
-      cursor_permission_mode: 'full_access'
-    }))
-  })
 
   it('resumes Cursor provider context without claiming to import its transcript', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = []
@@ -345,27 +316,6 @@ describe('AgentServerClient Cursor session policy', () => {
     expect(JSON.parse(String(calls[0].init.body))).toEqual(expect.objectContaining({ import_history: true }))
   })
 
-  it('normalizes legacy auto-review writes to the safe Cursor default', async () => {
-    const calls: Array<{ url: string; init: RequestInit }> = []
-    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
-      calls.push({ url: String(input), init })
-      return new Response(JSON.stringify({
-        session: { id: 'cursor-chat', title: 'Cursor', folder: 'General', cwd: '/work', backend: 'cursor', cursor_permission_mode: 'default' }
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }))
-    const client = new AgentServerClient('http://example.test:7850', 'token')
-
-    await client.createSession({
-      title: 'Cursor', folder: 'General', cwd: '/work', backend: 'cursor',
-      cursor_permission_mode: 'auto_review'
-    } as unknown as Parameters<AgentServerClient['createSession']>[0])
-    await client.updateSession('cursor-chat', {
-      cursor_permission_mode: 'auto_review'
-    } as unknown as Parameters<AgentServerClient['updateSession']>[1])
-
-    expect(JSON.parse(String(calls[0].init.body))).toEqual(expect.objectContaining({ cursor_permission_mode: 'default' }))
-    expect(JSON.parse(String(calls[1].init.body))).toEqual({ cursor_permission_mode: 'default' })
-  })
 })
 
 describe('AgentServerClient scheduled-job serialization', () => {
@@ -2082,14 +2032,16 @@ describe('AgentServerClient live stream', () => {
   })
 
   it('can force a fresh provider runtime probe', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ backends: {} }), {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({ backends: {} }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
-    }))
+    })))
     vi.stubGlobal('fetch', fetchMock)
     const client = new AgentServerClient('http://example.test:7850', 'secret')
     await client.runtimeCatalog(true)
     expect(fetchMock.mock.calls[0]?.[0]).toBe('http://example.test:7850/api/runtime/catalog?refresh=true')
+    await client.runtimeCatalog(true, true)
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('http://example.test:7850/api/runtime/catalog?refresh=true&handoff=true')
   })
 
   it('uses authenticated, encoded workspace routes and revision-checked mutations', async () => {
@@ -3053,7 +3005,6 @@ describe('AgentServerClient live stream', () => {
     await client.codexRuntime('chat one')
     await client.loadCodexThread('chat one')
     await client.resolveCodexInteraction('chat one', 'request/1', { decision: 'accept' })
-    await client.codexPermissionProfiles('chat one')
     await client.codexGoal('chat one')
     await client.setCodexGoal('chat one', {
       objective: 'Finish the migration',
@@ -3082,7 +3033,6 @@ describe('AgentServerClient live stream', () => {
       'http://example.test:7850/api/sessions/chat%20one/codex/runtime',
       'http://example.test:7850/api/sessions/chat%20one/codex/load',
       'http://example.test:7850/api/sessions/chat%20one/codex/interactions/request%2F1/resolve',
-      'http://example.test:7850/api/sessions/chat%20one/codex/permission-profiles',
       'http://example.test:7850/api/sessions/chat%20one/codex/goal',
       'http://example.test:7850/api/sessions/chat%20one/codex/goal',
       'http://example.test:7850/api/sessions/chat%20one/codex/goal',
@@ -3096,31 +3046,31 @@ describe('AgentServerClient live stream', () => {
     ])
     expect(calls.every(([, init]) => new Headers(init.headers).get('X-AgentsDock-Token') === 'secret')).toBe(true)
     expect(calls.map(([, init]) => init.method ?? 'GET')).toEqual([
-      'GET', 'POST', 'POST', 'GET', 'GET', 'PUT', 'DELETE', 'POST', 'POST', 'POST', 'POST', 'GET', 'POST', 'POST'
+      'GET', 'POST', 'POST', 'GET', 'PUT', 'DELETE', 'POST', 'POST', 'POST', 'POST', 'GET', 'POST', 'POST'
     ])
     expect(JSON.parse(String(calls[2][1].body))).toEqual({ response: { decision: 'accept' } })
-    expect(JSON.parse(String(calls[5][1].body))).toEqual({
+    expect(JSON.parse(String(calls[4][1].body))).toEqual({
       objective: 'Finish the migration',
       token_budget: 20_000,
       time_budget_seconds: 3_600
     })
-    expect(JSON.parse(String(calls[8][1].body))).toEqual({
+    expect(JSON.parse(String(calls[7][1].body))).toEqual({
       num_turns: 2,
       confirmed: true
     })
-    expect(JSON.parse(String(calls[9][1].body))).toEqual({
+    expect(JSON.parse(String(calls[8][1].body))).toEqual({
       target: { type: 'baseBranch', branch: 'main' },
       delivery: 'inline'
     })
-    expect(JSON.parse(String(calls[10][1].body))).toEqual({
+    expect(JSON.parse(String(calls[9][1].body))).toEqual({
       command: 'git status --short',
       confirmed: true
     })
-    expect(JSON.parse(String(calls[12][1].body))).toEqual({
+    expect(JSON.parse(String(calls[11][1].body))).toEqual({
       process_id: 'process/1',
       confirmed: true
     })
-    expect(JSON.parse(String(calls[13][1].body))).toEqual({ confirmed: true })
+    expect(JSON.parse(String(calls[12][1].body))).toEqual({ confirmed: true })
   })
 
   it('sets and clears Claude goals through the actual native HTTP transport', async () => {

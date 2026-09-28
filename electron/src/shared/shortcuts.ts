@@ -11,6 +11,7 @@ export const APP_SHORTCUTS = {
   focusRightChatPane: { label: 'Focus right chat pane', mac: '⌥⌘→', other: 'Ctrl+Alt+→' },
   nextServer: { label: 'Next server', accelerator: 'CmdOrCtrl+Shift+]', mac: '⇧⌘]', other: 'Ctrl+Shift+]' },
   previousServer: { label: 'Previous server', accelerator: 'CmdOrCtrl+Shift+[', mac: '⇧⌘[', other: 'Ctrl+Shift+[' },
+  switchServerByNumber: { label: 'Switch to server 1-9', mac: '⇧⌘1…9', other: 'Ctrl+Shift+1…9' },
   toggleSidebar: { label: 'Toggle chat list', mac: '⌘/', other: 'Ctrl+/' },
   toggleInspector: { label: 'Toggle inspector', accelerator: 'CmdOrCtrl+L', mac: '⌘L', other: 'Ctrl+L' },
   jumpLatest: { label: 'Jump to latest', accelerator: 'CmdOrCtrl+Down', mac: '⌘↓', other: 'Ctrl+↓' },
@@ -21,7 +22,8 @@ export const APP_SHORTCUTS = {
   terminalSplitDown: { label: 'Split pane down', mac: '⇧⌘D', other: 'Ctrl+Shift+D' },
   terminalFind: { label: 'Find in terminal', mac: '⌘F', other: 'Ctrl+F' },
   sendMessage: { label: 'Send message', mac: '↩', other: 'Enter' },
-  steerMessage: { label: 'Steer now', mac: '⌘↩', other: 'Ctrl+Enter' }
+  steerMessage: { label: 'Steer now', mac: '⌘↩', other: 'Ctrl+Enter' },
+  stopTurn: { label: 'Stop response', mac: '⎋', other: 'Esc' }
 } as const
 
 export type AppShortcutId = keyof typeof APP_SHORTCUTS
@@ -41,7 +43,7 @@ export const APP_SHORTCUT_GROUPS = [
   },
   {
     id: 'navigation',
-    shortcuts: ['nextWorkspaceTab', 'previousWorkspaceTab', 'focusLeftChatPane', 'focusRightChatPane', 'nextServer', 'previousServer', 'toggleSidebar', 'toggleInspector', 'jumpLatest']
+    shortcuts: ['nextWorkspaceTab', 'previousWorkspaceTab', 'focusLeftChatPane', 'focusRightChatPane', 'nextServer', 'previousServer', 'switchServerByNumber', 'toggleSidebar', 'toggleInspector', 'jumpLatest']
   },
   {
     id: 'terminal',
@@ -49,7 +51,7 @@ export const APP_SHORTCUT_GROUPS = [
   },
   {
     id: 'messaging',
-    shortcuts: ['sendMessage', 'steerMessage']
+    shortcuts: ['sendMessage', 'steerMessage', 'stopTurn']
   }
 ] as const satisfies ReadonlyArray<{
   id: AppShortcutGroupId

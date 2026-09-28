@@ -1,36 +1,81 @@
 // Localized display strings use semantic catalog keys.
 import { t, getLocale } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
+import { useEffect, useRef, useState } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { Check, ChevronDown, LoaderCircle, Plus, Settings } from 'lucide-react'
 import type { PublicServerProfile, ServerConnectionState } from '@shared/types'
 import { trackEvent } from '../lib/analytics'
 import { useAppStore } from '../store/app-store'
-import { ShortcutTooltip } from './ShortcutTooltip'
+import { currentShortcutPlatform, ShortcutTooltip } from './ShortcutTooltip'
 
 export const ADD_SERVER_EVENT = 'agentsdock:add-server'
 export const MANAGE_SERVERS_EVENT = 'agentsdock:manage-servers'
+
+function chooseProfile(profileId: string) {
+  const state = useAppStore.getState()
+  if (profileId === state.activeProfileId || profileId === state.switchingProfileId) return
+  void Promise.resolve(state.switchServer(profileId)).then(switched => {
+    if (!switched || useAppStore.getState().activeProfileId !== profileId) return
+    trackEvent('server_switched', { success: true })
+  }).catch(error => {
+    trackEvent('server_switched', { success: false })
+    useAppStore.getState().setError(error instanceof Error ? error.message : String(error))
+  })
+}
 
 export function ServerSelector() {
   useLocale()
   const profiles = useAppStore(state => state.profiles)
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
-  const switchServer = useAppStore(state => state.switchServer)
   const active = profiles.find(profile => profile.id === activeProfileId) ?? profiles[0] ?? null
   const switchingProfile = profiles.find(profile => profile.id === switchingProfileId) ?? null
   const activeHost = active ? profileHostSubtitle(active) : null
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [chordHeld, setChordHeld] = useState(false)
+  // Radix moves focus into the menu on open and to the trigger on close; a
+  // chord-opened menu returns it to where it was, so releasing the chord
+  // without choosing changes nothing. Only a chord ever sets this.
+  const focusBeforeChord = useRef<HTMLElement | null>(null)
 
-  const chooseProfile = (profileId: string) => {
-    if (profileId === activeProfileId || profileId === switchingProfileId) return
-    void Promise.resolve(switchServer(profileId)).then(switched => {
-      if (!switched || useAppStore.getState().activeProfileId !== profileId) return
-      trackEvent('server_switched', { success: true })
-    }).catch(error => {
-      trackEvent('server_switched', { success: false })
-      useAppStore.getState().setError(error instanceof Error ? error.message : String(error))
-    })
-  }
+  // Holding ⇧⌘ (Ctrl+Shift elsewhere) shows the list with a digit on each
+  // server; that digit switches to it. `code` rather than `key`: with Shift
+  // held the digit row reports "!" "@" … on many layouts.
+  useEffect(() => {
+    const modifier = currentShortcutPlatform() === 'mac' ? 'Meta' : 'Control'
+    const isChord = (event: KeyboardEvent) => event.shiftKey && !event.altKey
+      && (modifier === 'Meta' ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isChord(event)) return
+      if (event.key === 'Shift' || event.key === modifier) {
+        const focused = document.activeElement
+        if (focused instanceof HTMLElement && !focused.closest('[role="menu"]')) focusBeforeChord.current = focused
+        setChordHeld(true)
+        return
+      }
+      const digit = /^(?:Digit|Numpad)([1-9])$/.exec(event.code)?.[1]
+      const profile = digit ? useAppStore.getState().profiles[Number(digit) - 1] : undefined
+      if (!profile) return
+      event.preventDefault()
+      event.stopPropagation()
+      setChordHeld(false)
+      chooseProfile(profile.id)
+    }
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Shift' || event.key === modifier) setChordHeld(false)
+    }
+    const release = () => setChordHeld(false)
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keyup', onKeyUp, true)
+    window.addEventListener('blur', release)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+      window.removeEventListener('blur', release)
+    }
+  }, [])
+
   const openServerSettings = () => {
     window.dispatchEvent(new CustomEvent('agentsdock:app-settings-section', { detail: 'server' }))
     useAppStore.getState().setModal('appSettings', true)
@@ -45,8 +90,8 @@ export function ServerSelector() {
   }
 
   return <>
-    <DropdownMenu.Root>
-      <ShortcutTooltip label={t("ui.ServerSelector.ServerSelector.switch_server_6fb2a18")} shortcut={['previousServer', 'nextServer']} side="right"><DropdownMenu.Trigger className="server-selector-trigger" disabled={Boolean(switchingProfileId)} aria-label={switchingProfile
+    <DropdownMenu.Root open={menuOpen || chordHeld} onOpenChange={setMenuOpen}>
+      <ShortcutTooltip label={t("ui.ServerSelector.ServerSelector.switch_server_6fb2a18")} shortcut={['previousServer', 'nextServer', 'switchServerByNumber']} side="right"><DropdownMenu.Trigger className="server-selector-trigger" disabled={Boolean(switchingProfileId)} aria-label={switchingProfile
         ? t("ui.ServerSelector.ServerSelector.switching_to_please_wait_4563ec6", { "server": String(switchingProfile.name) })
         : active
           ? t("ui.ServerSelector.ServerSelector.choose_agentsserver_35d4c4a", { "server": String(active.name), "state": String(profileConnectionLabel(active)), "unread": active.cachedUnreadCount ? t('ui.server.unreadSuffix', { count: active.cachedUnreadCount }) : '' })
@@ -60,9 +105,21 @@ export function ServerSelector() {
         {switchingProfileId ? <LoaderCircle className="spin server-selector-spinner" size={13} /> : <ChevronDown size={13} />}
       </DropdownMenu.Trigger></ShortcutTooltip>
       <DropdownMenu.Portal>
-        <DropdownMenu.Content className="menu-content server-selector-menu" align="start" sideOffset={5} collisionPadding={10}>
+        <DropdownMenu.Content
+          className="menu-content server-selector-menu"
+          align="start"
+          sideOffset={5}
+          collisionPadding={10}
+          onCloseAutoFocus={event => {
+            const target = focusBeforeChord.current
+            if (!target) return
+            focusBeforeChord.current = null
+            event.preventDefault()
+            target.focus({ preventScroll: true })
+          }}
+        >
           <DropdownMenu.Label className="menu-label">{t("ui.ServerSelector.ServerSelector.servers_68d7beb")}</DropdownMenu.Label>
-          {profiles.map(profile => {
+          {profiles.map((profile, index) => {
             const current = profile.id === activeProfileId
             const switching = profile.id === switchingProfileId
             const host = profileHostSubtitle(profile)
@@ -79,6 +136,7 @@ export function ServerSelector() {
               </span>
               {profile.cachedUnreadCount > 0 && <UnreadBadge count={profile.cachedUnreadCount} />}
               {switching ? <LoaderCircle className="spin server-profile-mark" size={13} /> : current ? <Check className="server-profile-mark" size={14} /> : null}
+              {chordHeld && index < 9 && <kbd className="server-profile-hotkey" aria-hidden="true">{index + 1}</kbd>}
             </DropdownMenu.Item>
           })}
           {!profiles.length && <DropdownMenu.Label className="server-selector-empty">{t("ui.ServerSelector.ServerSelector.no_saved_servers_b03b0d0")}</DropdownMenu.Label>}
@@ -103,8 +161,8 @@ function UnreadBadge({ count }: { count: number }) {
   return <span className="server-unread-badge" aria-label={t(count === 1 ? 'ui.server.unreadOne' : 'ui.server.unreadMany', { count })}>{label}</span>
 }
 
-export function profileHostSubtitle(profile: Pick<PublicServerProfile, 'name' | 'serverUrl' | 'serverIdentity'>): string | null {
-  const host = serverProfileHost(profile.serverUrl)
+export function profileHostSubtitle(profile: Pick<PublicServerProfile, 'name' | 'serverUrl' | 'serverIdentity' | 'sshHost'>): string | null {
+  const host = profile.sshHost || serverProfileHost(profile.serverUrl)
   if (!host) return null
   const normalizedHost = host.toLocaleLowerCase()
   if (profile.name.trim().toLocaleLowerCase() === normalizedHost) return null

@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -151,62 +151,6 @@ mv "\$SOURCE" "\$DESTINATION"
 `
 }
 
-export function remoteReleaseBootstrap(release: PinnedServerRelease): string {
-  return `set -eu
-${SERVER_SETUP_PATH_BOOTSTRAP}
-PORT="\${1:-7850}"
-TEAM_HUB_HOST="\${2:-false}"
-case "$TEAM_HUB_HOST" in
-  true|false) ;;
-  *) printf 'Invalid Team Network host choice.\n' >&2; exit 2 ;;
-esac
-VERSION="${release.version}"
-RELEASE_URL="${release.url}"
-EXPECTED_SHA="${release.sha256}"
-DIR="\$(mktemp -d)"
-trap 'rm -rf "\$DIR"' EXIT
-ARCHIVE="\$DIR/agents-server.tar.gz"
-printf '[AgentsDock setup] Downloading pinned AgentsServer %s\\n' "\$VERSION"
-curl --fail --location --silent --show-error --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 "\$RELEASE_URL" -o "\$ARCHIVE"
-printf '[AgentsDock setup] Verifying downloaded archive\\n'
-if command -v shasum >/dev/null 2>&1 && shasum -a 256 /dev/null >/dev/null 2>&1; then
-  ACTUAL_SHA="\$(shasum -a 256 "\$ARCHIVE" | awk '{print \$1}')"
-elif command -v sha256sum >/dev/null 2>&1 && sha256sum /dev/null >/dev/null 2>&1; then
-  ACTUAL_SHA="\$(sha256sum "\$ARCHIVE" | awk '{print \$1}')"
-else
-  printf 'No working SHA-256 tool was found.\\n' >&2
-  exit 2
-fi
-if [ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" ]; then
-  printf 'AgentsServer archive verification failed. Expected %s but received %s.\\n' "\$EXPECTED_SHA" "\$ACTUAL_SHA" >&2
-  exit 2
-fi
-tar -xzf "\$ARCHIVE" -C "\$DIR"
-SOURCE="\$DIR/agents-server-\$VERSION"
-test "\$(tr -d '[:space:]' < "\$SOURCE/VERSION")" = "\$VERSION"
-INSTALL_PID=""
-cancel_remote_install() {
-  if [ -n "\$INSTALL_PID" ] && kill -0 "\$INSTALL_PID" >/dev/null 2>&1; then
-    kill -TERM "\$INSTALL_PID" >/dev/null 2>&1 || true
-    wait "\$INSTALL_PID" 2>/dev/null || true
-  fi
-  exit 130
-}
-trap cancel_remote_install HUP INT TERM
-if [ "$TEAM_HUB_HOST" = "true" ]; then
-  set -- --non-interactive --port "$PORT" --team-hub-host
-else
-  set -- --non-interactive --port "$PORT"
-fi
-"\$SOURCE/install.sh" "$@" &
-INSTALL_PID="\$!"
-INSTALL_STATUS=0
-wait "\$INSTALL_PID" || INSTALL_STATUS="\$?"
-INSTALL_PID=""
-exit "\$INSTALL_STATUS"
-`
-}
-
 export function serverSetupCapabilities(): ServerSetupCapabilities {
   const supportedPlatform = process.platform === 'darwin' || process.platform === 'linux'
   const sandboxed = Boolean(process.mas)
@@ -220,9 +164,8 @@ export function serverSetupCapabilities(): ServerSetupCapabilities {
   }
 }
 
-export function validateServerSetupInput(input: ServerSetupInput): Required<Pick<ServerSetupInput, 'target' | 'port' | 'track'>> & Pick<ServerSetupInput, 'teamHubHost'> & { sshHost?: string } {
-  const target = input.target
-  if (target !== 'local' && target !== 'ssh') throw new Error('Choose where to install AgentsServer.')
+export function validateServerSetupInput(input: ServerSetupInput): Required<Pick<ServerSetupInput, 'target' | 'port' | 'track'>> & Pick<ServerSetupInput, 'teamHubHost'> {
+  if (input.target !== 'local') throw new Error('Choose where to install AgentsServer.')
   const track = input.track ?? 'stable'
   if (track !== 'stable' && track !== 'beta') throw new Error('Choose the Stable or Beta AgentsServer channel.')
   const teamHubHost = input.teamHubHost
@@ -231,15 +174,9 @@ export function validateServerSetupInput(input: ServerSetupInput): Required<Pick
   }
   const port = Number(input.port ?? 7850)
   if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-    throw new Error('Port must be between 1024 and 65535. This is the AgentsServer HTTP API port, not the SSH port; SSH uses your SSH config.')
+    throw new Error('Port must be between 1024 and 65535.')
   }
-  const hostChoice = teamHubHost === undefined ? {} : { teamHubHost }
-  if (target === 'local') return { target, port, track, ...hostChoice }
-  const sshHost = input.sshHost?.trim() || ''
-  if (!sshHost || sshHost.startsWith('-') || !/^[A-Za-z0-9_.@%+:[\]-]+$/.test(sshHost)) {
-    throw new Error('Enter an SSH host such as user@server or a configured SSH alias.')
-  }
-  return { target, port, track, sshHost, ...hostChoice }
+  return { target: 'local', port, track, ...(teamHubHost === undefined ? {} : { teamHubHost }) }
 }
 
 export function parseServerSetupResult(line: string): ServerSetupResult | null {
@@ -255,23 +192,6 @@ export function parseServerSetupResult(line: string): ServerSetupResult | null {
     tailscaleIP: typeof raw.tailscale_ip === 'string' ? raw.tailscale_ip : '',
     serverVersion: typeof raw.server_version === 'string' ? raw.server_version : undefined
   }
-}
-
-export function remoteFallbackURL(sshHost: string, port: number, resolvedHost?: string): string {
-  let host = resolvedHost?.trim() || sshHost.slice(sshHost.lastIndexOf('@') + 1)
-  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1)
-  if (host.includes(':') && !host.startsWith('[')) host = `[${host}]`
-  return `http://${host}:${port}`
-}
-
-export function parseSSHConfigHostname(output: string, sshHost: string): string {
-  const configured = output
-    .split(/\r\n|\r|\n/)
-    .map(line => line.trim().match(/^hostname\s+(.+)$/i)?.[1]?.trim() || '')
-    .find(Boolean)
-  const fallback = sshHost.slice(sshHost.lastIndexOf('@') + 1).replace(/^\[|\]$/g, '')
-  const candidate = configured || fallback
-  return /^[A-Za-z0-9_.:%+-]+$/.test(candidate) ? candidate : fallback
 }
 
 export function serverSetupFailureMessage(lines: readonly string[], exitCode: number | null): string {
@@ -377,9 +297,7 @@ export class ServerSetupManager {
       this.throwIfCancelled()
       this.recordDiagnostic(`Setup started (${validated.target}, port ${validated.port}, ${release.track} AgentsServer ${release.version}).`)
       appLog('server-setup', 'setup started', { target: validated.target, port: validated.port, track: release.track, version: release.version })
-      const result = validated.target === 'local'
-        ? await this.runLocal(validated.port, progress, validated.teamHubHost, release)
-        : await this.runRemote(validated.sshHost!, validated.port, progress, validated.teamHubHost, release)
+      const result = await this.runLocal(validated.port, progress, validated.teamHubHost, release)
       this.throwIfCancelled()
       this.state = 'completed'
       this.updatedAt = new Date().toISOString()
@@ -436,32 +354,6 @@ export class ServerSetupManager {
     }
   }
 
-  private async runRemote(
-    sshHost: string,
-    port: number,
-    progress: (value: ServerSetupProgress) => void,
-    teamHubHost = false,
-    release: PinnedServerRelease
-  ): Promise<ServerSetupResult> {
-    const resolvedHost = await resolveSSHConfigHost(sshHost)
-    if (resolvedHost !== sshHost.slice(sshHost.lastIndexOf('@') + 1)) {
-      this.recordDiagnostic(`Resolved the SSH destination to ${resolvedHost}.`, 'connect')
-    }
-    this.emitProgress(progress, { phase: 'connect', message: `Connecting to ${sshHost}…` })
-    await this.runProcess(sshCommand(), remoteShellArgs(sshHost, 'sh'), SERVER_SETUP_PREFLIGHT_SCRIPT + serverSetupVersionGuard(release), progress, false, {
-      phase: 'connect',
-      message: `Connecting to ${sshHost}…`
-    })
-    this.throwIfCancelled()
-    const result = await this.runInstaller(sshCommand(), [
-      ...remoteShellArgs(sshHost, 'sh'), String(port), teamHubHost ? 'true' : 'false'
-    ], remoteReleaseBootstrap(release), progress, { phase: 'download', message: `Downloading verified AgentsServer ${release.version} on ${sshHost}…` })
-    if (result.serverUrl.startsWith('http://127.0.0.1:') && !result.tailscaleIP) {
-      result.serverUrl = remoteFallbackURL(sshHost, port, resolvedHost)
-    }
-    return result
-  }
-
   private async runInstaller(
     command: string,
     args: string[],
@@ -494,7 +386,8 @@ export class ServerSetupManager {
     stdin: string | undefined,
     progress: (value: ServerSetupProgress) => void,
     expectResult: boolean,
-    options: ProcessRunOptions = {}
+    options: ProcessRunOptions = {},
+    onLine?: (line: string) => void
   ): Promise<ServerSetupResult | null> {
     return new Promise((resolve, reject) => {
       if (this.cancelRequested) {
@@ -541,6 +434,7 @@ export class ServerSetupManager {
       }
       const consumeLine = (line: string): void => {
         lastActivityAt = Date.now()
+        onLine?.(line)
         updatePhase(line)
         try {
           const parsed = parseServerSetupResult(line)
@@ -658,35 +552,6 @@ export class ServerSetupManager {
       throw new Error(`AgentsServer setup exceeded the ${formatDuration(this.timings.overallTimeoutMs)} overall limit. Retry and open the setup log if it happens again.`)
     }
   }
-}
-
-function sshCommand(): string { return process.platform === 'darwin' ? '/usr/bin/ssh' : 'ssh' }
-
-export function resolveSSHConfigHost(sshHost: string): Promise<string> {
-  return new Promise(resolve => {
-    execFile(sshCommand(), ['-G', sshHost], {
-      encoding: 'utf8',
-      env: { ...process.env, PATH: serverSetupProcessPath(process.env.PATH), LC_ALL: 'C', LANG: 'C' },
-      timeout: 5_000,
-      maxBuffer: 256 * 1024
-    }, (_error, stdout) => {
-      resolve(parseSSHConfigHostname(String(stdout || ''), sshHost))
-    })
-  })
-}
-
-export function remoteShellArgs(sshHost: string, shell: 'sh' | 'bash'): string[] {
-  return [
-    '-o', 'BatchMode=yes',
-    '-o', 'ConnectTimeout=15',
-    '-o', 'ConnectionAttempts=2',
-    '-o', 'ServerAliveInterval=15',
-    '-o', 'ServerAliveCountMax=4',
-    '-o', 'TCPKeepAlive=yes',
-    '-o', 'StrictHostKeyChecking=accept-new',
-    sshHost,
-    shell, '-s', '--'
-  ]
 }
 
 export function serverSetupProcessPath(currentPath = ''): string {

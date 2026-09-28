@@ -1,0 +1,32 @@
+/*
+ * Zed skin, hand-tuned chrome. Loaded after zed-skin.generated.css so these
+ * win over the mechanical color re-routing. Zed's layout language: the
+ * sidebar, inspector and conversation pane sit on panel.background
+ * (--surface); the user card, composer and code blocks inside the pane sit on
+ * editor.background (--bg), one step darker (zed-skin.timeline.css). The only
+ * visible borders are the hairlines that separate panels, headers and
+ * floating surfaces. Everything else is flat and borderless.
+ */
+
+/* Side panels and their seam to the conversation pane */
+:root[data-skin="zed"] .sidebar,
+:root[data-skin="zed"] .inspector,
+:root[data-skin="zed"] .inspector-dock { background: var(--surface); }
+:root[data-skin="zed"] .sidebar { border-right: 1px solid var(--border); }
+:root[data-skin="zed"] .conversation-pane { border-left: 0; }
+
+/* Sidebar rows: dense and flat; selection is a filled row */
+:root[data-skin="zed"] .session-row { min-height: 40px; margin: 0; border-radius: var(--radius-compact); }
+:root[data-skin="zed"] .session-row:hover { background: var(--surface-2); }
+:root[data-skin="zed"] .session-row.selected { color: var(--text); background: var(--surface-3); }
+
+/* Header bars end in a hairline */
+:root[data-skin="zed"] .sidebar-topbar,
+:root[data-skin="zed"] .chat-header,
+:root[data-skin="zed"] .review-header,
+:root[data-skin="zed"] .canvas-pane-header { background: var(--surface); border-bottom: 1px solid var(--border); box-shadow: none; }
+
+/* Floating surfaces keep a real border and a light shadow (menus: zed-skin.controls.css) */
+:root[data-skin="zed"] .cwd-popover,
+:root[data-skin="zed"] .timeline-minimap-popover { border: 1px solid var(--border); box-shadow: var(--shadow-popover); border-radius: var(--radius-popover); }
+:root[data-skin="zed"] .dialog-overlay > * { border: 1px solid var(--border); box-shadow: var(--shadow-dialog); }

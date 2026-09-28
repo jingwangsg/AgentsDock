@@ -21,11 +21,13 @@ export function applyChatFont(size: number, family: string): void {
   document.documentElement.style.setProperty('--chat-font-size', `${size}px`)
   document.documentElement.style.setProperty(
     '--chat-font-family',
+    // "system" and "mono" follow the UI tokens so a skin (see zed-skin.css) can
+    // supply its own faces; without a skin the tokens resolve to the system stacks.
     family === 'mono'
-      ? '"SFMono-Regular", Menlo, monospace'
+      ? 'var(--font-mono)'
       : family === 'rounded'
         ? 'ui-rounded, "SF Pro Rounded", -apple-system, sans-serif'
-        : '-apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif'
+        : 'var(--font-ui)'
   )
 }
 

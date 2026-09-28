@@ -48,7 +48,7 @@ export interface CachedRawTimelinePage {
 }
 
 const CACHED_TIMELINE_TAIL_EVENT_LIMIT = 720
-const CACHED_TIMELINE_MAX_RAW_EVENT_LIMIT = 2_000
+export const CACHED_TIMELINE_MAX_RAW_EVENT_LIMIT = 2_000
 // v3 re-audits semantic timelines after essential file/diff events became
 // non-optional. Without this bump, a v2 cache can permanently hide media that
 // an older server response omitted even after the server is upgraded.
@@ -941,6 +941,37 @@ export class LocalCache {
       this.db.exec('COMMIT')
       this.eventWriteGaps.delete(JSON.stringify([serverId, sessionId]))
       if (this.storageFailure) this.temporaryEventSessions.add(JSON.stringify([serverId, sessionId]))
+    } catch (error) {
+      this.rollbackTransaction()
+      throw error
+    }
+  }
+
+  /** Drops the closed sequence range a `history_rewound` tombstone removed on the server. */
+  removeEventRange(serverId: string, sessionId: string, fromSeq: number, throughSeq: number): void {
+    const key = JSON.stringify([serverId, sessionId])
+    const removedIds = `SELECT event_id FROM events WHERE server_id = ? AND session_id = ? AND seq >= ? AND seq <= ?`
+    this.db.exec('BEGIN')
+    try {
+      this.statement(`
+        DELETE FROM event_search
+        WHERE rowid IN (
+          SELECT search_rowid FROM event_search_keys
+          WHERE server_id = ? AND session_id = ? AND search_rowid IS NOT NULL
+            AND event_id IN (${removedIds})
+        )
+      `).run(serverId, sessionId, serverId, sessionId, fromSeq, throughSeq)
+      this.statement(`
+        DELETE FROM event_search_keys
+        WHERE server_id = ? AND session_id = ? AND event_id IN (${removedIds})
+      `).run(serverId, sessionId, serverId, sessionId, fromSeq, throughSeq)
+      this.statement('DELETE FROM events WHERE server_id = ? AND session_id = ? AND seq >= ? AND seq <= ?')
+        .run(serverId, sessionId, fromSeq, throughSeq)
+      this.db.exec('COMMIT')
+      // A dropped-batch gap that starts inside the removed range no longer
+      // hides any surviving event; an older gap still does and must stay.
+      const gap = this.eventWriteGaps.get(key)
+      if (gap && gap.after >= fromSeq - 1) this.eventWriteGaps.delete(key)
     } catch (error) {
       this.rollbackTransaction()
       throw error

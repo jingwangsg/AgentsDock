@@ -1,6 +1,7 @@
 import { createReadStream, openAsBlob } from 'node:fs'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../shared/provider-usage'
 import { parseCodexAuthStatus } from '../shared/codex-auth'
+import type { CanvasRecord, CanvasSummary, CodexKillWritersResult } from '../shared/types'
 import { parseCodexProviderConfiguration, parseCodexProviderModels, parseCodexProviderTestResult, validateCodexProviderInput, validateCodexProviderModelTestInput, validateCodexProviderSelection } from '../shared/codex-provider'
 import { randomUUID } from 'node:crypto'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
@@ -56,7 +57,6 @@ import type {
   CodexSubagentsConfiguration,
   CodexOperationAccepted,
   CodexPendingInteraction,
-  CodexPermissionProfile,
   CodexReviewInput,
   CodexRollbackInput,
   CodexRollbackResult,
@@ -83,6 +83,9 @@ import type {
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
   QueuedTurn,
+  RemoteServer,
+  RemoteServerDeployInput,
+  RemoteServerDeployJob,
   ResumeSessionInput,
   RuntimeCatalog,
   ServerRestartRequest,
@@ -90,6 +93,7 @@ import type {
   ServerUpdateStatus,
   ServerUpdateTrack,
   Session,
+  SessionRewindResult,
   SubagentSnapshot,
   TerminalAction,
   TerminalConnectOptions,
@@ -115,8 +119,6 @@ import type {
   WorkspaceSearchPage,
   WorkingDirectoryCompletion
 } from '../shared/types'
-import { normalizeCursorPermissionMode } from '../shared/cursor-permissions'
-import { normalizeOpenCodePermissionMode } from '../shared/opencode-permissions'
 import { t } from '../shared/i18n'
 import { normalizeServerURL } from '../shared/server-url'
 import { teamNetworkValidationMessage } from '../shared/server-errors'
@@ -431,8 +433,10 @@ export class AgentServerClient {
     return parseProviderUsage(await this.privilegedNativeRequest<unknown>(`/api/runtime/usage?${query}`), backend)
   }
 
-  async runtimeCatalog(refresh = false): Promise<RuntimeCatalog> {
-    return this.get(`/api/runtime/catalog${refresh ? '?refresh=true' : ''}`)
+  async runtimeCatalog(refresh = false, handoff = false): Promise<RuntimeCatalog> {
+    // handoff = the user's explicit recheck. The server retires its Codex
+    // process for it, so automatic refreshes must never set it.
+    return this.get(`/api/runtime/catalog${refresh ? '?refresh=true' : ''}${refresh && handoff ? '&handoff=true' : ''}`)
   }
   async serverUpdateStatus(target?: ServerUpdateTarget): Promise<ServerUpdateStatus> {
     const query = target ? `?${new URLSearchParams([
@@ -868,6 +872,27 @@ export class AgentServerClient {
       body: JSON.stringify({ enabled })
     })
   }
+  // Hub for SSH-only remote servers (see server/remote_servers.py): this
+  // server can deploy and proxy other AgentsServer installs it reaches by
+  // SSH. Never returns a remote's own token; the client keeps using the hub's.
+  listRemoteServers(): Promise<{ servers: RemoteServer[] }> {
+    return this.privilegedNativeRequest('/api/admin/remote-servers')
+  }
+  startRemoteDeploy(input: RemoteServerDeployInput): Promise<{ job_id: string }> {
+    return this.privilegedNativeRequest('/api/admin/remote-servers/deploy', {
+      method: 'POST',
+      body: JSON.stringify({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name })
+    })
+  }
+  remoteDeployStatus(jobId: string): Promise<RemoteServerDeployJob> {
+    return this.privilegedNativeRequest(`/api/admin/remote-servers/deploy/${encodeURIComponent(jobId)}`)
+  }
+  cancelRemoteDeploy(jobId: string): Promise<{ cancelled: boolean }> {
+    return this.privilegedNativeRequest(`/api/admin/remote-servers/deploy/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' })
+  }
+  removeRemoteServer(remoteId: string): Promise<void> {
+    return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, { method: 'DELETE' }, undefined, 204)
+  }
   async sessions(): Promise<Session[]> { return (await this.get<{ sessions: Session[] }>('/api/sessions?summary=true')).sessions }
   async jobs(): Promise<Job[]> { return (await this.get<{ jobs: Job[] }>('/api/jobs')).jobs }
 
@@ -937,17 +962,6 @@ export class AgentServerClient {
       effort: input.effort || null,
       system_prompt: input.system_prompt || null,
       ...(input.subagent_limit !== undefined ? { subagent_limit: input.subagent_limit } : {}),
-      codex_approval_policy: input.codex_approval_policy ?? null,
-      codex_sandbox_mode: input.codex_sandbox_mode ?? null,
-      codex_permission_profile: input.codex_permission_profile ?? null,
-      codex_approvals_reviewer: input.codex_approvals_reviewer ?? null,
-      claude_permission_mode: input.claude_permission_mode ?? null,
-      cursor_permission_mode: input.backend === 'cursor'
-        ? normalizeCursorPermissionMode(input.cursor_permission_mode)
-        : null,
-      opencode_permission_mode: input.backend === 'opencode'
-        ? normalizeOpenCodePermissionMode(input.opencode_permission_mode)
-        : null,
       provider_session_id: providerId,
       // Keep legacy manual-ID resume compatible. Cursor text-snapshot import
       // uses the capability-gated local picker and bulk endpoint instead.
@@ -984,18 +998,7 @@ export class AgentServerClient {
   async updateSession(sessionId: string, patch: UpdateSessionInput): Promise<Session> {
     const codexProvider = validateCodexProviderSelection(patch.codex_provider)
     if (codexProvider === 'custom' && patch.backend !== undefined && patch.backend !== 'codex') throw new Error('Custom endpoints require Codex.')
-    const openCodePatch = patch.opencode_permission_mode === undefined ? patch : {
-      ...patch, opencode_permission_mode: patch.opencode_permission_mode === null ? null : normalizeOpenCodePermissionMode(patch.opencode_permission_mode)
-    }
-    const normalizedPatch = openCodePatch.cursor_permission_mode === undefined
-      ? openCodePatch
-      : {
-          ...openCodePatch,
-          cursor_permission_mode: patch.cursor_permission_mode === null
-            ? null
-            : normalizeCursorPermissionMode(patch.cursor_permission_mode)
-        }
-    return (await this.patch<{ session: Session }>(`/api/sessions/${encodeURIComponent(sessionId)}`, normalizedPatch)).session
+    return (await this.patch<{ session: Session }>(`/api/sessions/${encodeURIComponent(sessionId)}`, patch)).session
   }
 
   async reloadProvider(sessionId: string): Promise<ProviderReloadResult> {
@@ -1023,6 +1026,24 @@ export class AgentServerClient {
 
   async forkSession(sessionId: string): Promise<{ session: Session; sessions?: Session[] }> {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {})
+  }
+
+  async rewindSession(sessionId: string, toRunId: string, expectedLatestSeq: number): Promise<SessionRewindResult> {
+    const rewind = (latestSeq: number) => this.post<SessionRewindResult>(`/api/sessions/${encodeURIComponent(sessionId)}/rewind`, {
+      to_run_id: toRunId, expected_latest_seq: latestSeq, confirmed: true
+    })
+    try {
+      return await rewind(expectedLatestSeq)
+    } catch (error) {
+      // Anything appended after the client's known tail also lies after the
+      // target turn, so a stale guard is retried once with the server's value.
+      const detail = error instanceof ServerError && error.status === 409
+        ? error.detail as { code?: unknown; latest_seq?: unknown; latest_event_seq?: unknown } | undefined
+        : undefined
+      const latest = detail?.latest_seq ?? detail?.latest_event_seq
+      if (detail?.code !== 'stale_latest_seq' || !Number.isSafeInteger(latest)) throw error
+      return rewind(latest as number)
+    }
   }
 
   async reorderSession(sessionId: string, targetId: string, placement: 'before' | 'after', targetFolder?: string): Promise<Session[]> {
@@ -1303,12 +1324,6 @@ export class AgentServerClient {
       `/api/sessions/${encodeURIComponent(sessionId)}/claude/interactions/${encodeURIComponent(interactionId)}/resolve`,
       { response }
     )).interaction
-  }
-
-  async codexPermissionProfiles(sessionId: string): Promise<CodexPermissionProfile[]> {
-    return (await this.get<{ profiles: CodexPermissionProfile[] }>(
-      `/api/sessions/${encodeURIComponent(sessionId)}/codex/permission-profiles`
-    )).profiles
   }
 
   codexGoal(sessionId: string): Promise<CodexGoalSnapshot> {
@@ -1696,9 +1711,45 @@ export class AgentServerClient {
     }, 120_000, 200, 16 * 1024 * 1024))
   }
 
+  async restoreCheckpoint(sessionId: string, runId: string, expectedRevision: string) {
+    return parseWorkspaceGitStatus(await this.privilegedNativeRequest(`/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/git/checkpoint/restore`, {
+      method: 'POST', body: JSON.stringify({ run_id: runId, expected_revision: expectedRevision, confirmed: true })
+    }, 120_000, 200, 16 * 1024 * 1024))
+  }
+
+  killCodexWriters(sessionId: string): Promise<CodexKillWritersResult> {
+    return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/codex/kill-writers`, {})
+  }
+
   workspaceEntries(sessionId: string, path = '', offset = 0, limit = 500): Promise<WorkspaceEntriesPage> {
     const query = new URLSearchParams({ path, offset: String(offset), limit: String(limit) })
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/entries?${query}`)
+  }
+
+  listCanvases(sessionId: string): Promise<{ canvases: CanvasSummary[] }> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases`)
+  }
+
+  getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}`)
+  }
+
+  putCanvasState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }> {
+    return this.put(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/state`, { state })
+  }
+
+  /** Static runtime files (shell.html, vendor.js) that frame the compiled Canvas bundle. */
+  async canvasRuntimeAsset(asset: 'shell.html' | 'vendor.js'): Promise<string> {
+    const configuration = this.configuration
+    const headers = new Headers()
+    this.applyAuth(headers, configuration)
+    const response = await fetch(configurationURL(configuration, `/api/canvas-runtime/${asset}`), {
+      headers,
+      redirect: 'error',
+      signal: combineAbortSignals(configuration.abortController.signal, AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS))
+    })
+    if (!response.ok) throw new Error(`Canvas runtime asset ${asset} is unavailable (${response.status}).`)
+    return response.text()
   }
 
   workspaceSearch(sessionId: string, query = '', limit = 100): Promise<WorkspaceSearchPage> {
@@ -3128,10 +3179,10 @@ function isPrivilegedNativeControlTarget(
   if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/claude\/goal$/.test(path)) {
     return !target.search && (method === 'PUT' || method === 'DELETE')
   }
-  const workspaceGit = /^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/workspace\/git(?:\/(diff|conflict|action))?$/.exec(path)
+  const workspaceGit = /^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/workspace\/git(?:\/(diff|conflict|action|checkpoint\/restore))?$/.exec(path)
   if (workspaceGit) {
     const operation = workspaceGit[1]
-    if (!operation || operation === 'action') return !target.search && method === (operation ? 'POST' : 'GET')
+    if (!operation || operation === 'action' || operation === 'checkpoint/restore') return !target.search && method === (operation ? 'POST' : 'GET')
     const keys = [...target.searchParams.keys()]
     return method === 'GET' && keys.length === (operation === 'diff' ? 2 : 1)
       && keys.includes('path') && (operation !== 'diff' || keys.includes('view'))
@@ -3171,6 +3222,18 @@ function isPrivilegedNativeControlTarget(
       && keys.includes('expected_server_instance_id')
     )
   }
+  // Hub for SSH-only remote servers (server/remote_servers.py). Only the
+  // routes this client actually calls are allowlisted; `add`, `redeploy`,
+  // and `status` are server capabilities this desktop client does not use.
+  if (/^\/api\/admin\/remote-servers\/deploy\/[A-Za-z0-9_-]{1,128}\/cancel$/.test(path)) {
+    return !target.search && method === 'POST'
+  }
+  if (/^\/api\/admin\/remote-servers\/deploy\/[A-Za-z0-9_-]{1,128}$/.test(path)) {
+    return !target.search && method === 'GET'
+  }
+  if (path === '/api/admin/remote-servers/deploy') return !target.search && method === 'POST'
+  if (/^\/api\/admin\/remote-servers\/[A-Za-z0-9_-]{1,128}$/.test(path)) return !target.search && method === 'DELETE'
+  if (path === '/api/admin/remote-servers') return !target.search && method === 'GET'
   return !target.search && method === 'POST' && (
     path === '/api/admin/update/check'
     || path === '/api/admin/update/start'

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import { MarkdownContent } from './MarkdownContent'
@@ -23,6 +23,12 @@ describe('MarkdownContent', () => {
   })
 
   afterEach(cleanup)
+
+  it('renders bold whose closing ** sits between CJK punctuation and a letter', () => {
+    const { container } = render(<MarkdownContent text="**04:12，训练配置：**Ruijie 说 job 已启动。" sessionId="chat-7" />)
+    expect(container.querySelector('strong')?.textContent).toBe('04:12，训练配置：')
+    expect(container.textContent).not.toContain('**')
+  })
 
   it('opens an exact Team Message hyperlink locally without file or external dispatch', () => {
     const href = 'agentsdock://team-message?section=mail&teamId=team-1&messageId=message-7&mailboxBox=inbox'
@@ -78,6 +84,25 @@ describe('MarkdownContent', () => {
     const link = screen.getByRole('link', { name: 'OpenAI' })
     expect(link.tagName).toBe('A')
     expect(link).toHaveAttribute('href', 'https://openai.com')
+  })
+
+  it('opens a workspace .canvas.tsx link in the Canvas pane', () => {
+    const open = vi.fn()
+    window.addEventListener('agentsdock:open-canvas', open, { once: true })
+    render(<MarkdownContent text="[report](canvases/report.canvas.tsx)" sessionId="chat-7" />)
+    fireEvent.click(screen.getByRole('link', { name: 'report' }))
+    expect((open.mock.calls[0][0] as CustomEvent).detail).toEqual({ sessionId: 'chat-7', path: 'canvases/report.canvas.tsx' })
+    expect(openLinked).not.toHaveBeenCalled()
+  })
+
+  it('opens a web link that merely ends in .canvas.tsx externally, not as a Canvas', () => {
+    const open = vi.fn()
+    window.addEventListener('agentsdock:open-canvas', open)
+    render(<MarkdownContent text="[demo](https://github.com/x/y/blob/main/demo.canvas.tsx)" sessionId="chat-7" />)
+    fireEvent.click(screen.getByRole('link', { name: 'demo' }))
+    expect(openExternal).toHaveBeenCalledWith('https://github.com/x/y/blob/main/demo.canvas.tsx')
+    expect(open).not.toHaveBeenCalled()
+    window.removeEventListener('agentsdock:open-canvas', open)
   })
 
   it('renders only a validated structured chat reference as an inline route chip', () => {
@@ -502,5 +527,29 @@ v_{\text{OBJ}}$$`
     const { container } = render(<MarkdownContent text={'```tex\n\\[ h_t = 1 \\]\n```'} />)
     expect(container.querySelector('.katex')).toBeNull()
     expect(container.querySelector('code')?.textContent).toContain('\\[ h_t = 1 \\]')
+  })
+
+  const twoTables = '| Name | Score |\n| --- | --- |\n| Alpha | 1 |\n\nBetween\n\n| City | Temp |\n| --- | --- |\n| Oslo | 3 |'
+
+  it('renders one expand button per table and no lightbox until asked', () => {
+    const { container } = render(<MarkdownContent text={twoTables} />)
+    expect(container.querySelectorAll('.table-scroll table')).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: 'Expand table' })).toHaveLength(2)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('opens the clicked table in a lightbox and closes it on Escape', () => {
+    const { container } = render(<MarkdownContent text={twoTables} />)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Expand table' })[1])
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('City')).toBeInTheDocument()
+    expect(within(dialog).getByText('Oslo')).toBeInTheDocument()
+    expect(within(dialog).queryByText('Alpha')).toBeNull()
+    expect(within(dialog).getByRole('button', { name: 'Close table' })).toBeInTheDocument()
+    // The inline table stays mounted underneath the overlay.
+    expect(container.querySelectorAll('.table-scroll table')).toHaveLength(2)
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })

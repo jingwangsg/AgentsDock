@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import type { Event, Health, RuntimeCatalog, Session } from './types'
 import { opencodeBackendAvailable, opencodeBackendSupported, runtimeSelectionError, runtimeEffortAfterModelChange, selectableChatBackendChoices, selectableChatBackends } from './runtime-catalog'
 import { applyOpenCodeSessionEvent, openCodeProviderCommandsAvailable } from './opencode'
-import { normalizeOpenCodePermissionMode, supportedOpenCodePermissionModes } from './opencode-permissions'
 
 const health: Health = { ok: true, capabilities: {
   opencode_backend: { available: true, required: false, action: null, version: 1, message: 'Supported' },
@@ -47,12 +46,9 @@ describe('OpenCode optional backend contract', () => {
     expect(runtimeSelectionError(unavailable, catalog, 'opencode')).toContain('CLI is missing')
   })
 
-  it('gates skills independently and keeps only native permission modes', () => {
+  it('gates skills independently', () => {
     expect(openCodeProviderCommandsAvailable(health)).toBe(true)
     expect(openCodeProviderCommandsAvailable({ ok: true })).toBe(false)
     expect(openCodeProviderCommandsAvailable({ ...health, capabilities: { opencode_backend: health.capabilities!.opencode_backend } })).toBe(false)
-    expect(normalizeOpenCodePermissionMode('auto_review')).toBe('default')
-    expect(normalizeOpenCodePermissionMode('plan')).toBe('plan')
-    expect(supportedOpenCodePermissionModes(['default', 'plan', 'bypassPermissions'])).toEqual(['default', 'plan'])
   })
 })

@@ -1,0 +1,159 @@
+/*
+ * Zed skin, controls. Zed's ui crate: buttons are 22px (Default) / 28px
+ * (Medium) tall with rounded_sm (4px) corners; the default button is "Subtle"
+ * (no border, no background until hover), the primary action is a filled
+ * accent, inputs carry one hairline border, focus is a 1px accent ring and
+ * nothing casts a shadow. Borders are reserved for structure (see
+ * zed-skin.chrome.css); controls stay borderless.
+ */
+
+/* ---------- focus ---------- */
+:root[data-skin="zed"] button:focus-visible,
+:root[data-skin="zed"] input:focus-visible,
+:root[data-skin="zed"] textarea:focus-visible,
+:root[data-skin="zed"] select:focus-visible,
+:root[data-skin="zed"] [role="button"]:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* ---------- text buttons ---------- */
+:root[data-skin="zed"] .quiet-button,
+:root[data-skin="zed"] .primary-button,
+:root[data-skin="zed"] .stop-button {
+  min-height: var(--control-height-md);
+  padding: 0 8px;
+  gap: 6px;
+  border-radius: var(--radius-control);
+  font-size: var(--text-size-label);
+  font-weight: var(--text-weight-body);
+  box-shadow: none;
+  white-space: nowrap;
+  transition: background-color 80ms ease, color 80ms ease;
+}
+:root[data-skin="zed"] .quiet-button { color: var(--text); background: transparent; border: 1px solid transparent; }
+:root[data-skin="zed"] .quiet-button:hover:not(:disabled) { background: var(--interaction-hover); }
+:root[data-skin="zed"] .quiet-button:active:not(:disabled) { background: var(--interaction-pressed); }
+:root[data-skin="zed"] .quiet-button.danger { color: var(--danger-text); }
+:root[data-skin="zed"] .quiet-button.danger:hover:not(:disabled) { background: var(--danger-surface); }
+:root[data-skin="zed"] .primary-button { color: var(--text-on-accent); background: var(--accent); border: 1px solid transparent; }
+:root[data-skin="zed"] .primary-button:hover:not(:disabled) { background: var(--accent-hover); }
+:root[data-skin="zed"] .stop-button { color: var(--danger); background: transparent; border: 1px solid transparent; }
+:root[data-skin="zed"] .stop-button:hover:not(:disabled) { background: var(--danger-surface); }
+:root[data-skin="zed"] .quiet-button:disabled,
+:root[data-skin="zed"] .primary-button:disabled,
+:root[data-skin="zed"] .stop-button:disabled { opacity: .5; }
+
+/* ---------- icon buttons: 22px ghost squares ---------- */
+:root[data-skin="zed"] .icon-button,
+:root[data-skin="zed"] .composer-icon,
+:root[data-skin="zed"] .media-actions button,
+:root[data-skin="zed"] .message-surface header button:not(.quiet-button),
+:root[data-skin="zed"] .system-row header button:not(.quiet-button),
+:root[data-skin="zed"] .nested-icon,
+:root[data-skin="zed"] .output-panel button,
+:root[data-skin="zed"] .queued-row button:not(.steer-action):not(.queue-body-toggle),
+:root[data-skin="zed"] .pin-button,
+:root[data-skin="zed"] .cwd-popover-parent {
+  width: var(--control-height-sm); height: var(--control-height-sm);
+  border-radius: var(--radius-icon);
+  color: var(--muted); background: transparent; border: 0; box-shadow: none;
+}
+/* text buttons inside queued rows ("Send now") keep their own width */
+:root[data-skin="zed"] .queued-row .steer-action { height: var(--control-height-sm); padding: 0 8px; border-radius: var(--radius-control); white-space: nowrap; }
+:root[data-skin="zed"] .icon-button:hover:not(:disabled),
+:root[data-skin="zed"] .composer-icon:hover:not(:disabled),
+:root[data-skin="zed"] .message-surface header button:not(.quiet-button):hover:not(:disabled),
+:root[data-skin="zed"] .system-row header button:not(.quiet-button):hover:not(:disabled),
+:root[data-skin="zed"] .cwd-popover-parent:hover:not(:disabled) { color: var(--text); background: var(--interaction-hover); }
+/* Upstream's light theme fills .send-button with --text and darkens it on hover; the skin keeps it
+   on --surface, so that hover (specificity 0,5,0; survives the generator) needs a matching step. */
+:root[data-skin="zed"][data-theme="light"] .send-button:hover:not(:disabled) { background: var(--surface-2); }
+
+/* Sidebar toolbar actions: subtle text buttons */
+:root[data-skin="zed"] .sidebar-action { min-height: var(--control-height-md); border-radius: var(--radius-control); color: var(--muted); background: transparent; border: 0; font-size: var(--text-size-label); }
+:root[data-skin="zed"] .sidebar-action:hover:not(:disabled) { color: var(--text); background: var(--interaction-hover); }
+
+/* ---------- inputs: the one place a hairline belongs ---------- */
+:root[data-skin="zed"] .dialog-form input:not([type="checkbox"]),
+:root[data-skin="zed"] .dialog-form textarea,
+:root[data-skin="zed"] .dialog-form select,
+:root[data-skin="zed"] .input-with-icon,
+:root[data-skin="zed"] .cwd-popover-path > input,
+:root[data-skin="zed"] .app-settings-select {
+  min-height: 26px;
+  padding: 3px 8px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-soft);
+  background: var(--field-surface);
+  color: var(--field-text);
+  font-size: var(--text-size-label);
+  box-shadow: none;
+}
+:root[data-skin="zed"] .dialog-form input:not([type="checkbox"]):focus,
+:root[data-skin="zed"] .dialog-form textarea:focus,
+:root[data-skin="zed"] .dialog-form select:focus,
+:root[data-skin="zed"] .input-with-icon:focus-within { border-color: var(--accent); outline: none; }
+:root[data-skin="zed"] .input-with-icon > input { border: 0; background: transparent; min-height: 0; padding: 0; }
+:root[data-skin="zed"] .dialog-form label > span { color: var(--muted); font-size: var(--text-size-meta); }
+
+/* ---------- chips: borderless labels that light up on hover ---------- */
+:root[data-skin="zed"] .cwd-pill,
+:root[data-skin="zed"] .composer-context-control,
+:root[data-skin="zed"] .runtime-chip,
+:root[data-skin="zed"] .attachment-chip,
+:root[data-skin="zed"] .codex-permission-chip,
+:root[data-skin="zed"] .job-status-pill {
+  height: var(--control-height-sm); min-height: var(--control-height-sm);
+  padding: 0 7px;
+  border-radius: var(--radius-control);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-size-meta);
+  box-shadow: none;
+}
+:root[data-skin="zed"] .cwd-pill:hover,
+:root[data-skin="zed"] .composer-context-control:hover,
+:root[data-skin="zed"] .runtime-chip:hover { color: var(--text); background: var(--interaction-hover); }
+
+/* ---------- segmented ---------- */
+:root[data-skin="zed"] .segmented { padding: 2px; gap: 2px; border-radius: var(--radius-control); background: var(--surface-2); border: 0; }
+:root[data-skin="zed"] .segmented button { min-height: 20px; padding: 0 8px; border-radius: 3px; font-size: var(--text-size-meta); }
+:root[data-skin="zed"] .segmented button.active { background: var(--surface-3); color: var(--text); }
+
+/* ---------- menus & popovers (floating, so they keep a border) ---------- */
+:root[data-skin="zed"] .menu-content { padding: 4px; border-radius: var(--radius-popover); border: 1px solid var(--border); background: var(--surface); box-shadow: var(--shadow-popover); }
+:root[data-skin="zed"] .menu-item { min-height: 24px; padding: 0 8px; border-radius: 3px; font-size: var(--text-size-label); }
+:root[data-skin="zed"] .menu-item[data-highlighted],
+:root[data-skin="zed"] .menu-item:hover { background: var(--surface-2); }
+:root[data-skin="zed"] .menu-separator { margin: 4px 0; background: var(--border-soft); }
+:root[data-skin="zed"] .menu-label { color: var(--faint); font-size: var(--text-size-caption); }
+
+/* ---------- tabs: flat strip, the active tab merges with the editor surface ---------- */
+:root[data-skin="zed"] .workspace-editor-file-tab,
+:root[data-skin="zed"] .terminal-window-tab,
+:root[data-skin="zed"] .inspector-workspace-tabs button {
+  min-height: 28px; padding: 0 10px;
+  border-radius: 0; border: 0;
+  background: transparent; color: var(--muted);
+  font-size: var(--text-size-label); box-shadow: none;
+}
+:root[data-skin="zed"] .workspace-editor-file-tab.active,
+:root[data-skin="zed"] .workspace-editor-file-tab[aria-selected="true"],
+:root[data-skin="zed"] .terminal-window-tab.active,
+:root[data-skin="zed"] .terminal-window-tab[aria-selected="true"],
+:root[data-skin="zed"] .inspector-workspace-tabs button.active,
+:root[data-skin="zed"] .inspector-workspace-tabs button[aria-selected="true"] { background: var(--bg); color: var(--text); }
+
+/* ---------- messages (layout lives in zed-skin.timeline.css) ---------- */
+:root[data-skin="zed"] .message-surface > header,
+:root[data-skin="zed"] .system-row header { font-size: var(--text-size-caption); }
+/* Trace details keep no focus frame (their box is reset in zed-skin.timeline.css); inline code renders as plain text */
+:root[data-skin="zed"] .trace-details:focus-visible { border: 0; box-shadow: none; }
+:root[data-skin="zed"] .inline-code,
+:root[data-skin="zed"] .inline-code-link { border: 0; background: var(--surface-2); color: var(--text); border-radius: 3px; }
+:root[data-skin="zed"] .inline-code-link:hover { background: var(--surface-3); }
+
+/* ---------- misc surfaces ---------- */
+:root[data-skin="zed"] .runtime-health-row,
+:root[data-skin="zed"] .server-setup-status,
+:root[data-skin="zed"] .provider-reload-toast { border-radius: var(--radius-control); border: 0; background: var(--surface); box-shadow: none; }
+:root[data-skin="zed"] .status-dot { width: 7px; height: 7px; }

@@ -74,6 +74,13 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
 
   useEffect(() => { if (active) void refresh() }, [active, refresh])
 
+  // A checkpoint restore rewrites the working tree outside this panel's own actions.
+  useEffect(() => {
+    const changed = (event: Event) => { if (active && (event as CustomEvent<string>).detail === owner.sessionId) void refresh() }
+    window.addEventListener('agentsdock:workspace-git-changed', changed)
+    return () => window.removeEventListener('agentsdock:workspace-git-changed', changed)
+  }, [active, owner, refresh])
+
   useEffect(() => {
     const git = window.agentsDock.workspaceGit
     if (!active || !selection || !status || mutation.current || !git) return

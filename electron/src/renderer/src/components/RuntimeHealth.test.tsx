@@ -275,7 +275,7 @@ describe('RuntimeHealthPanel tmux prerequisite', () => {
 
     await user.click(screen.getByRole('button', { name: 'Recheck CLIs' }))
 
-    expect(window.agentsDock.runtime.catalog).toHaveBeenCalledWith(true)
+    expect(window.agentsDock.runtime.catalog).toHaveBeenCalledWith(true, true)
     await waitFor(() => expect(screen.getByText('Codex is installed and authenticated.')).toBeInTheDocument())
     expect(screen.queryByText('Codex is not available.')).not.toBeInTheDocument()
   })
@@ -302,7 +302,7 @@ describe('RuntimeHealthPanel tmux prerequisite', () => {
 
     await user.click(screen.getByRole('button', { name: 'Recheck Codex CLI status' }))
 
-    expect(window.agentsDock.runtime.catalog).toHaveBeenCalledWith(true)
+    expect(window.agentsDock.runtime.catalog).toHaveBeenCalledWith(true, true)
     await waitFor(() => expect(screen.queryByText('Codex is not available.')).not.toBeInTheDocument())
     expect(screen.queryByRole('button', { name: 'Recheck Codex CLI status' })).not.toBeInTheDocument()
   })

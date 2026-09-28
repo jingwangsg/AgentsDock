@@ -73,6 +73,23 @@ describe('ChatHeader', () => {
     expect(screen.queryByRole('navigation', { name: 'Chat workspace' })).not.toBeInTheDocument()
   })
 
+  it('toggles the outputs panel from the header and reflects its open state', async () => {
+    const toggle = vi.fn()
+    useAppStore.setState({
+      sessions: [{ id: 'chat', title: 'Chat', backend: 'codex' }],
+      selectedSessionId: 'chat'
+    })
+    const view = render(<ChatHeader outputsOpen={false} onOutputsToggle={toggle} />)
+
+    const button = screen.getByRole('button', { name: 'Outputs & sources' })
+    expect(button).toHaveAttribute('aria-pressed', 'false')
+    await userEvent.setup().click(button)
+    expect(toggle).toHaveBeenCalledOnce()
+
+    view.rerender(<ChatHeader outputsOpen onOutputsToggle={toggle} />)
+    expect(screen.getByRole('button', { name: 'Outputs & sources' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
   it('shows the chat-list restore control only while the sidebar is collapsed', () => {
     const toggle = vi.fn()
     useAppStore.setState({

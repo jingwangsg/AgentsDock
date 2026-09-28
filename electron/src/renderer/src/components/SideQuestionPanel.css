@@ -47,8 +47,9 @@
 .side-chat .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .chat-workspace-composer { position: relative; min-width: 0; }
 /* Follow the composer's 17px gutters and 1120px maximum width. */
-.side-chat-anchor { position: absolute; right: max(17px, calc((100% - 1120px) / 2)); top: calc(-1 * var(--space-4)); z-index: 13; }
-.side-chat-anchor + .composer-dock > .composer-context-row { padding-right: calc(var(--control-height-lg) + var(--space-4)); }
+.side-chat-anchor { position: absolute; right: max(17px, calc((100% - 1120px) / 2)); top: var(--space-1); z-index: 13; }
+/* The folder row grows to the button height so the button sits below the timeline divider instead of straddling it. */
+.side-chat-anchor + .composer-dock > .composer-context-row { min-height: calc(var(--control-height-lg) + var(--space-1)); padding-right: calc(var(--control-height-lg) + var(--space-4)); }
 .side-chat-trigger { width: var(--control-height-lg); height: var(--control-height-lg); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-control); box-shadow: var(--shadow-tooltip); }
 .side-chat-trigger.active { color: var(--accent); border-color: var(--accent); }
 .side-chat-popover { z-index: 80; display: flex; flex-direction: column; width: min(400px, calc(100vw - 24px)); max-height: min(520px, var(--radix-popover-content-available-height), calc(100dvh - 24px)); min-height: 0; overflow: hidden; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-dialog); box-shadow: var(--shadow-popover); }

@@ -47,6 +47,14 @@ describe('Team Hub IPC registration', () => {
     expect(harness.handlers.has('codex:auth:api-key')).toBe(false)
   })
 
+  it('routes chat outputs to the service', async () => {
+    const chatOutputs = vi.fn().mockResolvedValue({ outputs: [], sources: [] })
+    registerIpc({ chatOutputs } as unknown as AppService, {} as AppUpdateManager)
+
+    await expect(harness.handlers.get('chat:outputs')?.(trustedEvent, 'chat-a')).resolves.toEqual({ outputs: [], sources: [] })
+    expect(chatOutputs).toHaveBeenCalledExactlyOnceWith('chat-a')
+  })
+
   it('routes synced side-chat operations through scoped native IPC', async () => {
     const methods = { readSyncedSideChat: vi.fn(), submitSyncedSideChat: vi.fn(), stopSyncedSideChat: vi.fn(), clearSyncedSideChat: vi.fn() }
     registerIpc(methods as unknown as AppService, {} as AppUpdateManager)

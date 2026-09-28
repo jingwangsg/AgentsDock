@@ -30,6 +30,24 @@ export function formatBytes(bytes?: number | null): string {
   return `${index === 0 ? Math.round(value) : value.toFixed(1)} ${units[index]}`
 }
 
+/** "now", "3m", "2h", "5d": the compact age Zed shows next to a thread. */
+export function shortRelativeTime(iso?: string | null, now = Date.now()): string {
+  if (!iso) return ''
+  const then = Date.parse(iso)
+  if (!Number.isFinite(then)) return ''
+  const seconds = Math.max(0, Math.round((now - then) / 1000))
+  if (seconds < 60) return 'now'
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
+  return `${Math.floor(seconds / 86400)}d`
+}
+
+/** Last two path segments, "project / dir", the way Zed labels a worktree. */
+export function workingDirectoryTail(cwd?: string | null): string {
+  const parts = (cwd || '').split('/').filter(Boolean)
+  return parts.slice(-2).join(' / ')
+}
+
 export function formatDuration(seconds?: number | null): string {
   if (!seconds || seconds < 0) return t('editor.durationSeconds', { seconds: 0 })
   if (seconds < 60) return t('editor.durationSeconds', { seconds: Math.floor(seconds) })

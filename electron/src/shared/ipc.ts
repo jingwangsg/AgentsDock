@@ -1,4 +1,6 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from './provider-usage'
+import type { CanvasRecord, CanvasSummary, CodexKillWritersResult } from './types'
+import type { ChatOutputsSummary } from './chat-outputs'
 import type {
   AgentFile,
   AgentCrossChatRoute,
@@ -8,7 +10,6 @@ import type {
   AgentTextFile,
   AppUpdateStatus,
   AppUpdateTrack,
-  AddServerProfileInput,
   BootstrapPayload,
   BulkImportSessionItem,
   BulkImportSessionResult,
@@ -32,7 +33,6 @@ import type {
   CodexServerSettingsScope,
   CodexOperationAccepted,
   CodexPendingInteraction,
-  CodexPermissionProfile,
   CodexReviewInput,
   CodexRollbackInput,
   CodexRollbackResult,
@@ -70,17 +70,15 @@ import type {
   ProfileSessionSearchResult,
   ProviderCommandsSnapshot,
   PublicServerProfile,
-  PublicServerSettings,
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
   QueuedTurn,
+  RemoteServerDeployInput,
   ResumeSessionInput,
   RuntimeCatalog,
   SendTurnInput,
-  ServerSettings,
   ServerForceRestartConfirmation,
   ServerRestartStatus,
-  TestServerConnectionInput,
   ServerSetupCapabilities,
   ServerSetupDiagnostics,
   ServerSetupInput,
@@ -88,6 +86,7 @@ import type {
   ServerUpdateStatus,
   ServerUpdateTrack,
   Session,
+  SessionRewindResult,
   SessionSnapshot,
   TimelineIndex,
   TimelinePage,
@@ -339,21 +338,15 @@ export interface AgentsDockAPI {
     retryServers(profileId: string): Promise<AppUpdateStatus>
     setTrack(track: AppUpdateTrack): Promise<AppUpdateStatus>
   }
-  settings: {
-    get(): Promise<PublicServerSettings>
-    apply(settings: ServerSettings): Promise<Health>
-  }
   servers: {
     list(): Promise<PublicServerProfile[]>
     getActive(): Promise<PublicServerProfile>
-    add(input: AddServerProfileInput): Promise<PublicServerProfile>
     update(profileId: string, patch: UpdateServerProfilePatch): Promise<PublicServerProfile>
     updateAndSwitch(profileId: string, patch: UpdateServerProfilePatch): Promise<ProfileBootstrapPayload>
     remove(profileId: string): Promise<boolean>
     reorder(profileIds: string[]): Promise<PublicServerProfile[]>
     switch(profileId: string, force?: boolean): Promise<ProfileBootstrapPayload>
     refresh(profileId: string, profileGeneration: number): Promise<ProfileBootstrapPayload>
-    testConnection(input: TestServerConnectionInput): Promise<Health>
     restartStatus(scope: WorkspaceProfileScope): Promise<ServerRestartStatus>
     restart(
       scope: WorkspaceProfileScope,
@@ -374,6 +367,20 @@ export interface AgentsDockAPI {
     diagnostics(): Promise<ServerSetupDiagnostics>
     openLog(): Promise<boolean>
   }
+  remoteServers: {
+    deploy(scope: WorkspaceProfileScope, input: RemoteServerDeployInput): Promise<PublicServerProfile>
+    cancel(): Promise<void>
+    remove(scope: WorkspaceProfileScope, remoteId: string): Promise<void>
+  }
+  /** The local AgentsServer on 127.0.0.1:7850 that every client connects to. */
+  hub: {
+    /** Re-reads the token install.sh wrote for the local server and reconnects; true when the hub has a token. */
+    adoptLocalToken(): Promise<boolean>
+    /** `http://<tailnet name or IP>:7850` for pairing a phone, or null when no address is known. */
+    pairingUrl(): Promise<string | null>
+    /** Copies the hub token to the clipboard inside the main process. */
+    copyToken(): Promise<boolean>
+  }
   sessions: {
     list(): Promise<Session[]>
     create(input: CreateSessionInput): Promise<Session>
@@ -382,6 +389,10 @@ export interface AgentsDockAPI {
     reloadProvider(sessionId: string): Promise<ProviderReloadResult>
     remove(sessionId: string): Promise<boolean>
     fork(sessionId: string): Promise<Session>
+    /** Truncates history to before `toRunId`'s turn; the server rejects a stale `expectedLatestSeq` with 409. */
+    rewind(sessionId: string, toRunId: string, expectedLatestSeq: number): Promise<SessionRewindResult>
+    /** Reverts workspace files to the checkpoint written before `runId`; pair with `rewind` for the chat. */
+    restoreCheckpoint(sessionId: string, runId: string, expectedRevision: string): Promise<import('./workspace-git').WorkspaceGitStatus>
     reorder(sessionId: string, relativeTo: string, placement: 'before' | 'after', targetFolder?: string): Promise<Session[]>
     searchHistory(query: string, limit?: number): Promise<TimelineSearchResult[]>
     searchAllProfiles(query: string, limit?: number): Promise<ProfileSessionSearchResult[]>
@@ -435,7 +446,6 @@ export interface AgentsDockAPI {
       interactionId: string,
       response: Record<string, JsonValue>
     ): Promise<CodexPendingInteraction>
-    permissionProfiles(sessionId: string): Promise<CodexPermissionProfile[]>
     goal(sessionId: string): Promise<CodexGoalSnapshot>
     setGoal(sessionId: string, input: CodexGoalInput): Promise<CodexGoalSnapshot>
     clearGoal(sessionId: string): Promise<CodexGoalSnapshot>
@@ -443,6 +453,8 @@ export interface AgentsDockAPI {
     rollback(sessionId: string, input: CodexRollbackInput): Promise<CodexRollbackResult>
     review(sessionId: string, input: CodexReviewInput): Promise<CodexOperationAccepted>
     shell(sessionId: string, input: CodexShellInput): Promise<CodexOperationAccepted>
+    /** Releases a thread stuck behind "already has an active writer": unsubscribes it and kills foreign codex app-servers on the host. */
+    killWriters(sessionId: string): Promise<CodexKillWritersResult>
     backgroundTerminals(sessionId: string): Promise<CodexBackgroundTerminalsSnapshot>
     terminateBackgroundTerminal(
       sessionId: string,
@@ -537,6 +549,15 @@ export interface AgentsDockAPI {
     beginDrag(sessionId: string, file: AgentFile): Promise<boolean>
     mediaURL(profileId: string, profileGeneration: number, sessionId: string, fileId: string): string
   }
+  canvas: {
+    list(sessionId: string): Promise<{ canvases: CanvasSummary[] }>
+    get(sessionId: string, name: string): Promise<CanvasRecord>
+    putState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }>
+  }
+  chat: {
+    /** Outputs and sources aggregated over the whole cached history, not just the renderer's window. */
+    outputs(sessionId: string): Promise<ChatOutputsSummary>
+  }
   workspace: {
     info(sessionId: string): Promise<WorkspaceInfo>
     entries(sessionId: string, path?: string, offset?: number, limit?: number): Promise<WorkspaceEntriesPage>
@@ -563,7 +584,7 @@ export interface AgentsDockAPI {
   }
   runtime: {
     usage?(scope: ProviderUsageScope, backend: UsageBackend, sessionId: string, refresh?: boolean): Promise<ProviderUsageSnapshot>
-    catalog(refresh?: boolean): Promise<RuntimeCatalog>
+    catalog(refresh?: boolean, handoff?: boolean): Promise<RuntimeCatalog>
   }
   processes: {
     list(sessionId: string): Promise<ProcessSnapshot>
@@ -614,11 +635,16 @@ export interface AgentsDockAPI {
     analyticsDisabled: boolean
     openExternal(url: string): Promise<void>
     showItemInFolder(path: string): Promise<void>
+    /** Opens a server path in Zed; remote servers go through their configured SSH host. */
+    openInZed(input: { path: string; sshHost?: string | null }): Promise<void>
     setBadge(count: number): Promise<void>
     notify(payload: ProfileNotificationPayload): Promise<void>
     log(scope: string, message: string, data?: unknown): Promise<void>
     readClipboard(): Promise<string>
     writeClipboard(text: string): Promise<void>
+    /** System-wide bring-to-front shortcut; `accelerator` null = disabled, `error` = accelerator that failed to register. */
+    getGlobalHotkey(): Promise<{ accelerator: string | null; error: string | null }>
+    setGlobalHotkey(accelerator: string | null): Promise<{ accelerator: string | null; error: string | null }>
     readyForNotifications(): Promise<boolean>
     readyForSecurePeerInvite(): Promise<boolean>
     closeWindow(): Promise<void>

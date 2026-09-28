@@ -1,0 +1,5 @@
+.codex-writer-release { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
+.codex-writer-release .quiet-button { height: 24px; width: auto; padding: 0 8px; white-space: nowrap; font-size: var(--text-size-caption); }
+.codex-writer-release.compact .quiet-button { height: 22px; }
+.codex-writer-release small { color: var(--muted); font-size: var(--text-size-caption); max-width: 320px; white-space: normal; }
+.system-row header .codex-writer-release { margin-left: 8px; }

@@ -162,6 +162,20 @@ describe('sidebar chat rename', () => {
     expect(screen.getByText('Original chat')).toBeInTheDocument()
   })
 
+  it('dispatches agentsdock:rename-folder from the folder context menu', async () => {
+    useAppStore.setState({ sessions: [{ ...session, folder: 'Research' }], folderOrder: ['Research', 'General'] })
+    const renameFolder = vi.fn()
+    window.addEventListener('agentsdock:rename-folder', renameFolder, { once: true })
+    const user = userEvent.setup()
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByText('Research').closest('.section-header')!)
+    await user.click(await screen.findByRole('menuitem', { name: 'Rename Folder…' }))
+
+    expect(renameFolder).toHaveBeenCalledOnce()
+    expect((renameFolder.mock.calls[0][0] as CustomEvent<{ folder: string }>).detail).toEqual({ folder: 'Research' })
+  })
+
   it('turns the entire chat row amber when an active agent needs user action', () => {
     useAppStore.setState({
       sessions: [{ ...session, backend: 'claude', claude_needs_user_action: true, manual_unread: true }],
@@ -178,7 +192,6 @@ describe('sidebar chat rename', () => {
     expect(row).toHaveTextContent('Claude · action needed')
     expect(row).not.toHaveTextContent('running')
     expect(row?.querySelector('.status-dot')).toHaveClass('attention')
-    expect(row?.querySelector('.status-dot')).not.toHaveClass('running')
   })
 
   it('gives a critical emergency red priority over action-needed, running, and unread states', () => {
@@ -210,6 +223,6 @@ describe('sidebar chat rename', () => {
     expect(row).not.toHaveTextContent('running')
     expect(screen.getByRole('alert')).toHaveTextContent('Emergency in Original chat: The production deploy is failing.')
     expect(row?.querySelector('.status-dot')).toHaveClass('emergency')
-    expect(row?.querySelector('.status-dot')).not.toHaveClass('attention', 'running', 'unread')
+    expect(row?.querySelector('.status-dot')).not.toHaveClass('attention', 'unread')
   })
 })

@@ -6,7 +6,7 @@ import { setLocale, t } from '@shared/i18n'
 import type { AppUpdateStatus, AppUpdateTrack, ChatReference, CrossChatHandoffsCapability, Health, ProfileBootstrapPayload, PublicServerProfile, RuntimeCatalog, Session, TeamReference, TimelineSearchResult } from '@shared/types'
 import { clearSessionHistorySearchCache } from '../lib/session-history-search'
 import { useAppStore } from '../store/app-store'
-import { AppSettingsDialog, DigestDialog, JobDialog, RenameChatDialog, SearchDialog, ServerOnboardingDialog, SessionDialog } from './Dialogs'
+import { AppSettingsDialog, DigestDialog, JobDialog, RenameChatDialog, RenameFolderDialog, SearchDialog, ServerOnboardingDialog, SessionDialog } from './Dialogs'
 
 afterEach(() => setLocale('en'))
 
@@ -55,6 +55,39 @@ describe('Dialog close controls', () => {
     await user.click(screen.getByRole('button', { name: 'Close Rename chat' }))
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename chat' })).not.toBeInTheDocument())
+  })
+})
+
+describe('RenameFolderDialog', () => {
+  afterEach(cleanup)
+
+  it('renames the folder when Enter submits the form and then closes', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ id: sessionId, title: sessionId, backend: 'codex' as const, ...patch }))
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: vi.fn().mockResolvedValue(undefined) } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ id: 'chat-1', title: 'Paper', backend: 'codex', folder: 'Research' }],
+      folderOrder: ['Research', 'General'],
+      collapsedFolders: new Set(),
+      switchingProfileId: null,
+      error: null
+    })
+    const user = userEvent.setup()
+    render(<RenameFolderDialog />)
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:rename-folder', { detail: { folder: 'Research' } }))
+    })
+    const input = screen.getByRole('textbox', { name: 'Folder name' })
+    expect(input).toHaveValue('Research')
+    await user.clear(input)
+    await user.type(input, 'Papers{Enter}')
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith('chat-1', { folder: 'Papers' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename folder' })).not.toBeInTheDocument())
+    expect(useAppStore.getState().folderOrder).toEqual(['Papers', 'General'])
   })
 })
 
@@ -186,8 +219,10 @@ describe('AppSettingsDialog', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Keyboard shortcuts' }))
     expect(within(dialog).getByRole('button', { name: 'Keyboard shortcuts' })).toHaveAttribute('aria-current', 'page')
     expect(within(dialog).getByRole('heading', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
-    expect(within(dialog).getAllByRole('listitem')).toHaveLength(23)
+    expect(within(dialog).getAllByRole('listitem')).toHaveLength(25)
     expect(within(dialog).getByText('Toggle chat list')).toBeInTheDocument()
+    expect(within(dialog).getByText('Stop response')).toBeInTheDocument()
+    expect(within(dialog).getByText('Switch to server 1-9')).toBeInTheDocument()
 
     act(() => window.dispatchEvent(new CustomEvent('agentsdock:app-settings-section', { detail: 'appearance' })))
     expect(within(dialog).getByRole('button', { name: 'General' })).toHaveAttribute('aria-current', 'page')
@@ -322,193 +357,115 @@ describe('AppSettingsDialog', () => {
 
 describe('ServerOnboardingDialog', () => {
   afterEach(cleanup)
+  beforeEach(() => useAppStore.setState({ connected: false, health: null, profiles: [], activeProfileId: null, profileGeneration: 1, switchingProfileId: null, error: null }))
 
-  it('points a fresh install to AgentsServer and accepts connection settings', async () => {
-    const get = vi.fn().mockResolvedValue({
-      serverUrl: 'http://127.0.0.1:7850',
-      hasAccessToken: false,
-      serverIdentity: null,
-      serverSetupComplete: false
-    })
-    const switchServer = vi.fn().mockRejectedValue(new Error('Not connected yet'))
-    const testConnection = vi.fn().mockResolvedValue({ ok: true, server_identity: 'server-1' })
-    const openExternal = vi.fn().mockResolvedValue(undefined)
+  const hub = (overrides: Partial<PublicServerProfile> = {}): PublicServerProfile => ({
+    id: 'hub', name: 'This Mac', serverUrl: 'http://127.0.0.1:7850', serverIdentity: null,
+    hasAccessToken: false, serverSetupComplete: false, connectionState: 'offline', cachedUnreadCount: 0,
+    ...overrides
+  })
+  const capabilities = (available = true) => vi.fn().mockResolvedValue(available
+    ? { available: true, local: true, ssh: false }
+    : { available: false, local: false, ssh: false, reason: 'Use the server terminal.' })
+  function mockAgentsDock(overrides: Record<string, unknown> = {}) {
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
       value: {
-        settings: { get },
-        servers: { testConnection },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: false, local: false, ssh: false, reason: 'Use the guide.' }) },
-        native: { openExternal },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
+        setup: { capabilities: capabilities() },
+        hub: { adoptLocalToken: vi.fn().mockResolvedValue(true) },
+        events: { on: vi.fn().mockReturnValue(() => undefined) },
+        ...overrides
       } as unknown as AgentsDockAPI
     })
-    useAppStore.setState({ connected: false, activeProfileId: 'default-profile', profileGeneration: 1, switchingProfileId: null, switchServer, error: null })
-    const user = userEvent.setup()
+  }
+
+  it('opens while the active local hub has no token and is not connected', async () => {
+    mockAgentsDock({ setup: { capabilities: capabilities(false) } })
+    useAppStore.setState({ profiles: [hub()], activeProfileId: 'hub' })
     render(<ServerOnboardingDialog />)
 
     expect(await screen.findByRole('heading', { name: 'Set up AgentsServer' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /Open setup guide/ }))
-    expect(openExternal).toHaveBeenCalledWith('https://github.com/ZhengyiLuo/AgentsServer/tree/v0.1.20#guided-setup')
-
-    await user.clear(screen.getByLabelText('Server URL'))
-    await user.type(screen.getByLabelText('Server URL'), 'server.example.com:7850')
-    await user.type(screen.getByLabelText('Access token'), 'secret')
-    await user.click(screen.getByRole('button', { name: 'Connect' }))
-    await waitFor(() => expect(testConnection).toHaveBeenCalledWith({
-      serverUrl: 'server.example.com:7850',
-      accessToken: 'secret'
-    }))
-    await waitFor(() => expect(switchServer).toHaveBeenCalledWith('default-profile', true, {
-      serverUrl: 'server.example.com:7850',
-      accessToken: 'secret',
-      resetServerIdentity: true,
-      serverSetupComplete: true
-    }))
+    expect(screen.getByText('No local AgentsServer detected on 127.0.0.1:7850')).toBeInTheDocument()
+    expect(await screen.findByText('Use the server terminal.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Install on this computer' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
+    expect(screen.queryByLabelText('Server URL')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('AgentsServer port')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Remote machine|This computer|Connect manually/ })).not.toBeInTheDocument()
   })
 
-  it('does not bind setup results to a different profile when the active server changes during health verification', async () => {
-    let resolveHealth: (health: Health) => void = () => undefined
-    const testConnection = vi.fn(() => new Promise<Health>(resolve => { resolveHealth = resolve }))
-    const switchServer = vi.fn()
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: false, serverSetupComplete: false }) },
-        servers: { testConnection },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: false, local: false, ssh: false, reason: 'Use the guide.' }) },
-        native: { openExternal: vi.fn().mockResolvedValue(undefined) },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({
-      connected: false,
-      activeProfileId: 'default-profile',
-      profileGeneration: 1,
-      switchingProfileId: null,
-      switchServer,
-      error: null
-    })
+  it('stays closed when the hub already has a token or a remote is the active server', async () => {
+    mockAgentsDock()
+    useAppStore.setState({ profiles: [hub({ hasAccessToken: true, serverSetupComplete: true })], activeProfileId: 'hub' })
+    render(<ServerOnboardingDialog />)
+    await waitFor(() => expect(window.agentsDock.setup.capabilities).toHaveBeenCalled())
+    expect(screen.queryByRole('heading', { name: 'Set up AgentsServer' })).not.toBeInTheDocument()
+
+    const remote: PublicServerProfile = { ...hub({ id: 'remote', name: 'OSMO' }), serverUrl: 'http://127.0.0.1:7850/api/remote/abc123def456', sshHost: 'osmo_9000' }
+    act(() => useAppStore.setState({ profiles: [hub(), remote], activeProfileId: 'remote' }))
+    expect(screen.queryByRole('heading', { name: 'Set up AgentsServer' })).not.toBeInTheDocument()
+  })
+
+  it('installs on this computer, adopts the local token and closes', async () => {
+    const run = vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', accessToken: 'generated-private-token-0123456789', service: 'launch-agent', tailscaleIP: '' })
+    const adoptLocalToken = vi.fn().mockResolvedValue(true)
+    mockAgentsDock({ setup: { capabilities: capabilities(), run }, hub: { adoptLocalToken } })
+    useAppStore.setState({ profiles: [hub()], activeProfileId: 'hub' })
     const user = userEvent.setup()
     render(<ServerOnboardingDialog />)
 
-    await user.click(await screen.findByRole('button', { name: /Open setup guide/ }))
-    await user.clear(screen.getByLabelText('Server URL'))
-    await user.type(screen.getByLabelText('Server URL'), 'server.example.com:7850')
-    await user.type(screen.getByLabelText('Access token'), 'secret')
-    await user.click(screen.getByRole('button', { name: 'Connect' }))
-    await waitFor(() => expect(testConnection).toHaveBeenCalledOnce())
+    const install = await screen.findByRole('button', { name: 'Install on this computer' })
+    await waitFor(() => expect(install).toBeEnabled())
+    await user.click(install)
 
-    act(() => {
-      useAppStore.setState({ activeProfileId: 'other-profile', profileGeneration: 2 })
-      resolveHealth({ ok: true, server_identity: 'server-1' })
-    })
-
-    await waitFor(() => expect(useAppStore.getState().error).toMatch(/active server changed while setup was finishing/i))
-    expect(switchServer).not.toHaveBeenCalled()
+    await waitFor(() => expect(run).toHaveBeenCalledWith({ target: 'local', port: 7850, track: 'stable', teamHubHost: true }))
+    await waitFor(() => expect(adoptLocalToken).toHaveBeenCalledOnce())
+    expect(run.mock.invocationCallOrder[0]).toBeLessThan(adoptLocalToken.mock.invocationCallOrder[0])
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Set up AgentsServer' })).not.toBeInTheDocument())
   })
 
-  it('surfaces the no-key terminal guide before the SSH installer', async () => {
-    const openExternal = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: false, serverSetupComplete: false }) },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }) },
-        native: { openExternal },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({ connected: false, activeProfileId: 'default-profile', profileGeneration: 1, switchingProfileId: null, error: null })
+  it('keeps setup open when the installed server token cannot be read', async () => {
+    const run = vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', accessToken: 'generated-private-token-0123456789', service: 'launch-agent', tailscaleIP: '' })
+    const adoptLocalToken = vi.fn().mockResolvedValue(false)
+    mockAgentsDock({ setup: { capabilities: capabilities(), run }, hub: { adoptLocalToken } })
+    useAppStore.setState({ profiles: [hub()], activeProfileId: 'hub' })
     const user = userEvent.setup()
     render(<ServerOnboardingDialog />)
 
-    const guide = await screen.findByRole('button', { name: /No SSH key\? Install from the server terminal/ })
-    const sshHost = screen.getByPlaceholderText('user@server or SSH alias')
-    expect(screen.getByRole('button', { name: /Remote machine/ })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: /This computer/ })).toHaveAttribute('aria-pressed', 'false')
-    expect(guide.compareDocumentPosition(sshHost) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(screen.getByText(/SSH host, key, and connection port come from your SSH config/)).toBeInTheDocument()
-    const serverPort = screen.getByLabelText('AgentsServer port')
-    await user.clear(serverPort)
-    await user.type(serverPort, '22')
-    expect(screen.getByRole('button', { name: 'Install over SSH' })).toBeDisabled()
-    expect(serverPort).toHaveAttribute('aria-invalid', 'true')
+    const install = await screen.findByRole('button', { name: 'Install on this computer' })
+    await waitFor(() => expect(install).toBeEnabled())
+    await user.click(install)
 
-    await user.click(guide)
-
-    expect(openExternal).toHaveBeenCalledWith('https://github.com/ZhengyiLuo/AgentsServer/tree/v0.1.20#guided-setup')
-    expect(screen.getByLabelText('Server URL')).toBeInTheDocument()
-    expect(screen.getByLabelText('Access token')).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent('The local server was installed, but its access token could not be read. Start it and retry.')
+    expect(screen.getByRole('heading', { name: 'Set up AgentsServer' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry setup' })).toBeEnabled()
   })
 
-  it('installs on an SSH host and connects with the generated token', async () => {
-    const get = vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: false, serverSetupComplete: false })
-    const switchServer = vi.fn(async () => {
-      useAppStore.setState(state => ({ profileGeneration: state.profileGeneration + 1 }))
-      return true
-    })
-    const run = vi.fn().mockResolvedValue({
-      serverUrl: 'http://100.64.0.10:7850',
-      accessToken: 'generated-private-token-0123456789',
-      service: 'systemd-user',
-      tailscaleIP: '100.64.0.10'
-    })
-    const testConnection = vi.fn().mockResolvedValue({ ok: true, server_identity: 'server-1' })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get },
-        servers: { testConnection },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }), run },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({ connected: false, activeProfileId: 'default-profile', profileGeneration: 1, switchingProfileId: null, switchServer, error: null })
+  it('retries token discovery for a server started by hand', async () => {
+    const adoptLocalToken = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    mockAgentsDock({ hub: { adoptLocalToken } })
+    useAppStore.setState({ profiles: [hub()], activeProfileId: 'hub' })
     const user = userEvent.setup()
     render(<ServerOnboardingDialog />)
 
-    expect(await screen.findByRole('checkbox', { name: /Start a Team Network on this server/ })).toBeChecked()
-    await user.type(await screen.findByPlaceholderText('user@server or SSH alias'), 'user@server')
-    await user.click(screen.getByRole('button', { name: 'Install over SSH' }))
+    await user.click(await screen.findByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Still no local AgentsServer token. Start the server on this computer, then retry.')
 
-    await waitFor(() => expect(run).toHaveBeenCalledWith({ target: 'ssh', sshHost: 'user@server', port: 7850, track: 'stable', teamHubHost: true }))
-    expect(testConnection).toHaveBeenCalledWith({
-      serverUrl: 'http://100.64.0.10:7850',
-      accessToken: 'generated-private-token-0123456789'
-    })
-    await waitFor(() => expect(switchServer).toHaveBeenCalledWith('default-profile', true, {
-      serverUrl: 'http://100.64.0.10:7850',
-      accessToken: 'generated-private-token-0123456789',
-      resetServerIdentity: true,
-      serverSetupComplete: true
-    }))
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(adoptLocalToken).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    // The main process reconnects after adopting the token; the dialog closes on connect.
+    act(() => useAppStore.setState({ connected: true, profiles: [hub({ hasAccessToken: true, serverSetupComplete: true })] }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Set up AgentsServer' })).not.toBeInTheDocument())
   })
 
-  it('shows a dedicated signed Beta update flow for legacy servers', async () => {
-    const run = vi.fn().mockResolvedValue({
-      serverUrl: 'http://127.0.0.1:7850',
-      accessToken: 'generated-private-token-0123456789',
-      service: 'launch-agent',
-      tailscaleIP: ''
-    })
-    const testConnection = vi.fn().mockResolvedValue({ ok: true, server_identity: 'server-1' })
-    const switchServer = vi.fn(async () => {
-      useAppStore.setState(state => ({ profileGeneration: state.profileGeneration + 1 }))
-      return true
-    })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://server.test:7850', hasAccessToken: true, serverSetupComplete: true }) },
-        servers: { testConnection },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }), run },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({ connected: true, activeProfileId: 'default-profile', profileGeneration: 1, switchingProfileId: null, switchServer, error: null })
+  it('shows a dedicated signed Beta update flow for the local server', async () => {
+    const run = vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', accessToken: 'generated-private-token-0123456789', service: 'launch-agent', tailscaleIP: '' })
+    const adoptLocalToken = vi.fn().mockResolvedValue(true)
+    mockAgentsDock({ setup: { capabilities: capabilities(), run }, hub: { adoptLocalToken } })
+    useAppStore.setState({ connected: true, profiles: [hub({ hasAccessToken: true, serverSetupComplete: true })], activeProfileId: 'hub' })
     render(<ServerOnboardingDialog />)
-    await waitFor(() => expect(window.agentsDock.settings.get).toHaveBeenCalled())
+    await waitFor(() => expect(window.agentsDock.setup.capabilities).toHaveBeenCalled())
 
     act(() => {
       window.dispatchEvent(new CustomEvent('agentsdock:server-setup', { detail: { intent: 'update-beta' } }))
@@ -519,55 +476,32 @@ describe('ServerOnboardingDialog', () => {
     expect(screen.getByText(/verified Beta pinned by this app/)).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: /Start a Team Network on this server/ })).not.toBeChecked()
     expect(screen.getByText(/preserve the server’s current Team Network role/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Update over SSH' })).toBeDisabled()
-    const serverPort = screen.getByLabelText('AgentsServer port')
-    fireEvent.change(serverPort, { target: { value: '22' } })
-    expect(serverPort).toHaveValue('22')
-    expect(screen.getByRole('button', { name: 'Update over SSH' })).toBeDisabled()
-    act(() => {
-      window.dispatchEvent(new CustomEvent('agentsdock:server-setup', { detail: { intent: 'update-beta' } }))
-    })
-    expect(screen.getByLabelText('AgentsServer port')).toHaveValue('7850')
-    fireEvent.click(screen.getByRole('button', { name: /This computer/ }))
-    expect(screen.getByRole('button', { name: 'Update this computer' })).toBeEnabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Update this computer' }))
-    await waitFor(() => expect(run).toHaveBeenCalledWith({
-      target: 'local',
-      sshHost: undefined,
-      port: 7850,
-      track: 'beta'
-    }))
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('AgentsServer port')).not.toBeInTheDocument()
+    const update = screen.getByRole('button', { name: 'Update this computer' })
+    await waitFor(() => expect(update).toBeEnabled())
+    fireEvent.click(update)
+    await waitFor(() => expect(run).toHaveBeenCalledWith({ target: 'local', port: 7850, track: 'beta' }))
+    await waitFor(() => expect(adoptLocalToken).toHaveBeenCalledOnce())
   })
 
   it('lets a Beta update explicitly designate the server as the Team Network host', async () => {
     const run = vi.fn().mockRejectedValue(new Error('stop after input capture'))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://server.test:7850', hasAccessToken: true, serverSetupComplete: true }) },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }), run },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({ connected: true, activeProfileId: 'default-profile', profileGeneration: 1, switchingProfileId: null, error: null })
+    mockAgentsDock({ setup: { capabilities: capabilities(), run } })
+    useAppStore.setState({ connected: true, profiles: [hub({ hasAccessToken: true, serverSetupComplete: true })], activeProfileId: 'hub' })
     const user = userEvent.setup()
     render(<ServerOnboardingDialog />)
-    await waitFor(() => expect(window.agentsDock.settings.get).toHaveBeenCalled())
+    await waitFor(() => expect(window.agentsDock.setup.capabilities).toHaveBeenCalled())
 
     act(() => {
       window.dispatchEvent(new CustomEvent('agentsdock:server-setup', { detail: { intent: 'update-beta' } }))
     })
-    await user.click(await screen.findByRole('button', { name: /This computer/ }))
-    await user.click(screen.getByRole('checkbox', { name: /Start a Team Network on this server/ }))
-    await user.click(screen.getByRole('button', { name: 'Update this computer' }))
+    await user.click(await screen.findByRole('checkbox', { name: /Start a Team Network on this server/ }))
+    const update = screen.getByRole('button', { name: 'Update this computer' })
+    await waitFor(() => expect(update).toBeEnabled())
+    await user.click(update)
 
-    await waitFor(() => expect(run).toHaveBeenCalledWith({
-      target: 'local',
-      sshHost: undefined,
-      port: 7850,
-      track: 'beta',
-      teamHubHost: true
-    }))
+    await waitFor(() => expect(run).toHaveBeenCalledWith({ target: 'local', port: 7850, track: 'beta', teamHubHost: true }))
   })
 
   it.each(['en', 'zh-CN'] as const)('creates the Team Network and host on the originating server with localized controls in %s', async locale => {
@@ -576,15 +510,7 @@ describe('ServerOnboardingDialog', () => {
     const configureServerRole = vi.fn().mockResolvedValue({
       profileId: 'studio', profileGeneration: 2, serverIdentity: 'server-studio', designatedHost: true
     })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://100.64.0.3:7850', hasAccessToken: true, serverSetupComplete: true }) },
-        teamHub: { configureServerRole },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }), run },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
+    mockAgentsDock({ teamHub: { configureServerRole }, setup: { capabilities: capabilities(), run } })
     useAppStore.setState({
       connected: true,
       activeProfileId: 'studio',
@@ -606,7 +532,7 @@ describe('ServerOnboardingDialog', () => {
     })
     const user = userEvent.setup()
     render(<ServerOnboardingDialog />)
-    await waitFor(() => expect(window.agentsDock.settings.get).toHaveBeenCalled())
+    await waitFor(() => expect(window.agentsDock.setup.capabilities).toHaveBeenCalled())
     const opened = vi.fn()
     window.addEventListener('agentsdock:open-teamspace', opened, { once: true })
 
@@ -631,9 +557,7 @@ describe('ServerOnboardingDialog', () => {
     expect(screen.queryByRole('option', { name: 'Member' })).not.toBeInTheDocument()
     expect(screen.getByText(t('teamNetwork.setup.hostHint'))).toBeInTheDocument()
     expect(screen.getByLabelText(t('teamNetwork.setup.serverName'))).toHaveValue('Studio')
-    expect(screen.queryByRole('button', { name: /Remote machine|This computer/ })).not.toBeInTheDocument()
-    expect(screen.queryByPlaceholderText('user@server or SSH alias')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('AgentsServer port')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Install on this computer|Update this computer/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
 
     await user.clear(screen.getByLabelText(t('teamNetwork.setup.serverName')))
@@ -651,15 +575,7 @@ describe('ServerOnboardingDialog', () => {
 
   it('keeps an unsupported create action host-only instead of exposing the unrelated member role', async () => {
     const configureServerRole = vi.fn().mockRejectedValue(new Error('The connected AgentsServer build does not include Team Network host control. Install a build that includes host control, then reconnect.'))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: true, serverSetupComplete: true }) },
-        teamHub: { configureServerRole },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: false, local: false, ssh: false, reason: 'Use the server terminal.' }) },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
+    mockAgentsDock({ teamHub: { configureServerRole }, setup: { capabilities: capabilities(false) } })
     useAppStore.setState({
       connected: true,
       activeProfileId: 'studio',
@@ -687,8 +603,7 @@ describe('ServerOnboardingDialog', () => {
     })
 
     expect(await screen.findByRole('heading', { name: 'Create Team Network on this server' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Connect manually' })).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Server URL')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Install on this computer' })).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: 'Role' })).not.toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'Member' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create network' })).toBeEnabled()
@@ -701,63 +616,21 @@ describe('ServerOnboardingDialog', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
   })
 
-  it('keeps setup open and does not persist a server that fails the post-install health check', async () => {
-    const run = vi.fn().mockResolvedValue({
-      serverUrl: 'http://unreachable.test:7850',
-      accessToken: 'generated-private-token-0123456789',
-      service: 'launch-agent',
-      tailscaleIP: ''
-    })
-    const testConnection = vi.fn().mockRejectedValue(new Error('fetch failed'))
-    const switchServer = vi.fn()
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: false, serverSetupComplete: false }) },
-        servers: { testConnection },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }), run },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({ connected: false, activeProfileId: 'default-profile', profileGeneration: 1, switchingProfileId: null, switchServer, error: null })
-    const user = userEvent.setup()
-    render(<ServerOnboardingDialog />)
-
-    await user.click(await screen.findByRole('button', { name: /This computer/ }))
-    await user.click(screen.getByRole('button', { name: 'Install here' }))
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Could not connect to AgentsServer at http://unreachable.test:7850: fetch failed'
-    )
-    expect(testConnection).toHaveBeenCalledWith({
-      serverUrl: 'http://unreachable.test:7850',
-      accessToken: 'generated-private-token-0123456789'
-    })
-    expect(switchServer).not.toHaveBeenCalled()
-    expect(screen.getByRole('heading', { name: 'Set up AgentsServer' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Retry setup' })).toBeEnabled()
-  })
-
   it('shows a clean setup failure and leaves guided setup ready to retry', async () => {
-    const get = vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: false, serverSetupComplete: false })
     const run = vi.fn().mockRejectedValue(new Error("Error invoking remote method 'server-setup:run': Error: macOS could not restart AgentsServer. Running as root is not required."))
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }), run },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({ connected: false, activeProfileId: 'default-profile', profileGeneration: 1, switchingProfileId: null, error: null })
+    const adoptLocalToken = vi.fn()
+    mockAgentsDock({ setup: { capabilities: capabilities(), run }, hub: { adoptLocalToken } })
+    useAppStore.setState({ profiles: [hub()], activeProfileId: 'hub' })
     const user = userEvent.setup()
     render(<ServerOnboardingDialog />)
 
-    await user.click(await screen.findByRole('button', { name: /This computer/ }))
-    await user.click(screen.getByRole('button', { name: 'Install here' }))
+    const install = await screen.findByRole('button', { name: 'Install on this computer' })
+    await waitFor(() => expect(install).toBeEnabled())
+    await user.click(install)
 
     expect(await screen.findByRole('alert')).toHaveTextContent('macOS could not restart AgentsServer. Running as root is not required.')
     expect(useAppStore.getState().error).toBeNull()
+    expect(adoptLocalToken).not.toHaveBeenCalled()
     expect(screen.getByRole('heading', { name: 'Set up AgentsServer' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry setup' })).toBeEnabled()
     expect(screen.getByRole('status')).toHaveTextContent('Setup needs attention')
@@ -772,25 +645,22 @@ describe('ServerOnboardingDialog', () => {
       rejectRun?.(new Error('AgentsServer setup was cancelled.'))
       return Promise.resolve(true)
     })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: false, serverSetupComplete: false }) },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }), run, cancel },
-        events: {
-          on: vi.fn((_name, listener) => {
-            progressListener = listener
-            return () => undefined
-          })
-        }
-      } as unknown as AgentsDockAPI
+    mockAgentsDock({
+      setup: { capabilities: capabilities(), run, cancel },
+      events: {
+        on: vi.fn((_name, listener) => {
+          progressListener = listener
+          return () => undefined
+        })
+      }
     })
-    useAppStore.setState({ connected: false, activeProfileId: 'default-profile', profileGeneration: 1, switchingProfileId: null, error: null })
+    useAppStore.setState({ profiles: [hub()], activeProfileId: 'hub' })
     const user = userEvent.setup()
     render(<ServerOnboardingDialog />)
 
-    await user.click(await screen.findByRole('button', { name: /This computer/ }))
-    await user.click(screen.getByRole('button', { name: 'Install here' }))
+    const install = await screen.findByRole('button', { name: 'Install on this computer' })
+    await waitFor(() => expect(install).toBeEnabled())
+    await user.click(install)
     act(() => progressListener?.({ phase: 'download', message: 'Downloading signed release…' }))
 
     expect(screen.getByRole('status')).toHaveTextContent('Downloading AgentsServer')
@@ -809,56 +679,37 @@ describe('ServerOnboardingDialog', () => {
     const diagnostics = vi.fn().mockResolvedValue({
       logPath: '/tmp/agentsdock-server-setup.log',
       state: 'failed',
-      target: 'ssh',
+      target: 'local',
       startedAt: '2026-07-24T18:00:00.000Z',
       updatedAt: '2026-07-24T18:00:05.000Z',
-      tail: ['Downloading release…', 'SSH connection closed.']
+      tail: ['Downloading release…', 'launchctl bootstrap failed.']
     })
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: false, serverSetupComplete: false }) },
-        setup: {
-          capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }),
-          run: vi.fn().mockRejectedValue(new Error('SSH connection closed.')),
-          diagnostics,
-          openLog
-        },
-        native: { writeClipboard },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
+    mockAgentsDock({
+      setup: {
+        capabilities: capabilities(),
+        run: vi.fn().mockRejectedValue(new Error('launchctl bootstrap failed.')),
+        diagnostics,
+        openLog
+      },
+      native: { writeClipboard }
     })
-    useAppStore.setState({ connected: false, activeProfileId: 'default-profile', profileGeneration: 1, switchingProfileId: null, error: null })
+    useAppStore.setState({ profiles: [hub()], activeProfileId: 'hub' })
     const user = userEvent.setup()
     render(<ServerOnboardingDialog />)
 
-    await user.type(await screen.findByPlaceholderText('user@server or SSH alias'), 'user@server')
-    await user.click(screen.getByRole('button', { name: 'Install over SSH' }))
+    const install = await screen.findByRole('button', { name: 'Install on this computer' })
+    await waitFor(() => expect(install).toBeEnabled())
+    await user.click(install)
     await screen.findByRole('alert')
     await user.click(screen.getByRole('button', { name: 'Copy diagnostics' }))
 
     await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith(expect.stringContaining('State: failed')))
-    expect(writeClipboard).toHaveBeenCalledWith(expect.stringContaining('SSH connection closed.'))
+    expect(writeClipboard).toHaveBeenCalledWith(expect.stringContaining('launchctl bootstrap failed.'))
     expect(screen.getByText('Diagnostics copied.')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Open log' }))
     await waitFor(() => expect(openLog).toHaveBeenCalledTimes(1))
     expect(screen.getByText('Opened the setup log.')).toBeInTheDocument()
-  })
-
-  it('does not interrupt an already configured install', async () => {
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://server.test', hasAccessToken: true, serverIdentity: 'server-1', serverSetupComplete: true }) },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }) },
-        events: { on: vi.fn().mockReturnValue(() => undefined) }
-      } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({ connected: false })
-    render(<ServerOnboardingDialog />)
-    await waitFor(() => expect(window.agentsDock.settings.get).toHaveBeenCalled())
-    expect(screen.queryByRole('heading', { name: 'Connect your agent server' })).not.toBeInTheDocument()
   })
 })
 
@@ -1179,8 +1030,7 @@ describe('SessionDialog runtime selection', () => {
 
     await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
       backend: 'cursor',
-      model: 'auto',
-      cursor_permission_mode: 'default'
+      model: 'auto'
     })))
   })
 

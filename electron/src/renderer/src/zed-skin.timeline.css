@@ -1,0 +1,156 @@
+/* Zed agent-panel layout for the chat timeline.
+ * Reference: zed/crates/agent_ui/src/conversation_view/thread_view.rs
+ *   user message   = full-width editor-background card, 1px border, 6px radius, no name/time label
+ *   assistant text = plain markdown, no card; per-turn controls fade in on hover at the bottom
+ *   tool/think row = 24px row, 13px muted text, 14px icon left, hover-only chevron right
+ *   expanded body  = left rail (1px border), never a box
+ *   working        = small spinner at the bottom of the turn, no hairlines between turns
+ */
+
+/* ---------- pane surfaces: panel = surface; user card, composer, code blocks = bg ---------- */
+:root[data-skin="zed"] .conversation-pane,
+:root[data-skin="zed"] .timeline { background: var(--surface); }
+:root[data-skin="zed"] .composer { background: var(--bg); border-color: var(--border); border-radius: var(--radius-popover); box-shadow: none; }
+:root[data-skin="zed"] .composer:focus-within { border-color: var(--border-focused); }
+/* code blocks: buffer font on the editor surface, no frame */
+:root[data-skin="zed"] .code-block { background: var(--bg); border: 0; border-radius: var(--radius-compact); }
+:root[data-skin="zed"] .code-block > pre { color: var(--text); font: 12.5px/1.55 var(--font-mono); }
+:root[data-skin="zed"] .markdown code { font-family: var(--font-mono); }
+
+/* content column: 850px, 20px insets */
+:root[data-skin="zed"] .virtual-row { max-width: 850px; padding: 0 20px; }
+
+/* ---------- user message ---------- */
+:root[data-skin="zed"] .turn-segment.user { padding-top: 0; }
+:root[data-skin="zed"] .message-row { margin: 0; }
+:root[data-skin="zed"] .message-row.user { justify-content: stretch; padding: 8px 0 12px; }
+:root[data-skin="zed"] .message-row.user .message-surface {
+  position: relative;
+  width: 100%; max-width: none;
+  padding: 12px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / .1), 0 2px 4px -2px rgb(0 0 0 / .1);
+}
+:root[data-skin="zed"] .message-row.user .message-surface:hover { border-color: color-mix(in srgb, var(--border-focused) 80%, transparent); }
+:root[data-skin="zed"] .message-row.user .markdown { font-family: var(--font-mono); font-size: 13px; line-height: 1.55; }
+/* actions float above the top-right corner and only show on hover, like Zed's editor buttons */
+:root[data-skin="zed"] .message-row.user .message-surface > header {
+  position: absolute; top: -13px; right: 12px; z-index: 1;
+  min-height: 24px; margin: 0; padding: 0 2px 0 8px; gap: 4px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  opacity: 0; transition: opacity .12s ease;
+}
+:root[data-skin="zed"] .message-row.user .message-surface:hover > header,
+:root[data-skin="zed"] .message-row.user .message-surface:focus-within > header,
+:root[data-skin="zed"] .message-row.user.pending .message-surface > header { opacity: 1; }
+:root[data-skin="zed"] .message-row.user .message-surface > header > span:first-child { display: none; }
+
+/* ---------- assistant message ---------- */
+:root[data-skin="zed"] .message-row.assistant { padding: 6px 0; }
+:root[data-skin="zed"] .message-row.assistant .message-surface { display: flex; flex-direction: column; padding: 0 12px; }
+:root[data-skin="zed"] .message-row.assistant .message-surface > header {
+  order: 10;
+  justify-content: flex-end;
+  min-height: 22px; margin: 6px 0 0;
+  opacity: .4; transition: opacity .12s ease;
+}
+:root[data-skin="zed"] .message-row.assistant .message-surface:hover > header { opacity: 1; }
+:root[data-skin="zed"] .message-row.assistant .message-surface > header > span:first-child { display: none; }
+
+/* ---------- run activity (tool calls, thinking, status) ---------- */
+:root[data-skin="zed"] .run-activity { display: flex; flex-direction: column; margin: 2px 0 6px; }
+:root[data-skin="zed"] .trace-details,
+:root[data-skin="zed"] .run-activity .trace-details { margin: 0; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+:root[data-skin="zed"] .codex-native-activity .trace-activity { padding: 0; }
+:root[data-skin="zed"] .codex-native-activity .trace-activity-item,
+:root[data-skin="zed"] .run-activity .trace-activity-item { padding: 2px 0; }
+:root[data-skin="zed"] .run-activity .trace-commentary { padding: 4px 12px; color: var(--text); }
+
+/* status line: live spinner sits at the bottom of the turn (Zed's generating indicator) */
+:root[data-skin="zed"] .run-activity-summary,
+:root[data-skin="zed"] .codex-native-activity .run-activity-summary {
+  width: max-content; min-height: 24px;
+  margin: 0; padding: 4px 6px;
+  color: var(--muted); background: transparent;
+  border: 0; border-radius: var(--radius-control);
+  font-size: 12px;
+}
+:root[data-skin="zed"] div.run-activity-summary { order: 10; margin-top: 4px; }
+:root[data-skin="zed"] button.run-activity-summary:hover { color: var(--text); background: var(--interaction-hover); }
+:root[data-skin="zed"] .run-activity-summary > strong,
+:root[data-skin="zed"] .codex-native-activity .run-activity-summary > strong { font-weight: 400; }
+:root[data-skin="zed"] .run-activity-summary > svg { color: var(--muted); }
+:root[data-skin="zed"] .run-activity-summary .activity-ring,
+:root[data-skin="zed"] .timeline-live-status .activity-ring { width: 10px; height: 10px; border: 1.5px solid var(--muted); border-top-color: transparent; }
+
+/* rows: 24px, 13px muted, icon left, chevron right (hover only) */
+:root[data-skin="zed"] .codex-native-activity .codex-activity-line,
+:root[data-skin="zed"] .run-activity .tool-event-toggle,
+:root[data-skin="zed"] .run-activity .trace-reasoning-toggle,
+:root[data-skin="zed"] .run-activity-support-toggle,
+:root[data-skin="zed"] .codex-native-activity .run-activity-support-toggle {
+  width: 100%; max-width: 100%; min-height: 24px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 4px;
+  color: var(--muted); background: transparent;
+  border: 0; border-radius: 3px;
+  font-size: 13px; font-weight: 400; line-height: 1.4; text-align: left;
+}
+:root[data-skin="zed"] .run-activity button.codex-activity-line:hover,
+:root[data-skin="zed"] .run-activity button.tool-event-toggle:hover,
+:root[data-skin="zed"] .run-activity .trace-reasoning-toggle:hover,
+:root[data-skin="zed"] .run-activity-support-toggle:hover { color: var(--muted); background: color-mix(in srgb, var(--surface-2) 50%, transparent); }
+:root[data-skin="zed"] .run-activity .tool-event-toggle > strong { flex: 0 1 auto; font-weight: 400; }
+:root[data-skin="zed"] .run-activity .trace-reasoning-preview { font-size: 13px; font-weight: 400; }
+:root[data-skin="zed"] .codex-native-activity .codex-activity-line > svg,
+:root[data-skin="zed"] .run-activity .tool-event-toggle > svg,
+:root[data-skin="zed"] .run-activity .trace-reasoning-toggle > svg,
+:root[data-skin="zed"] .run-activity-support-toggle > svg { flex: 0 0 auto; order: 0; color: var(--muted); opacity: 1; transition: opacity .12s ease; }
+/* trailing chevron: far right, visible on hover or when expanded */
+:root[data-skin="zed"] .codex-native-activity .codex-activity-line > svg:last-child:not(:first-child),
+:root[data-skin="zed"] .run-activity .tool-event-toggle > svg:last-child:not(:first-child),
+:root[data-skin="zed"] .run-activity .trace-reasoning-toggle > svg:last-child:not(:first-child),
+:root[data-skin="zed"] .run-activity-support-toggle > svg:last-child:not(:first-child) { margin-left: auto; opacity: 0; }
+:root[data-skin="zed"] .codex-native-activity .codex-activity-line:hover > svg:last-child:not(:first-child),
+:root[data-skin="zed"] .run-activity .tool-event-toggle:hover > svg:last-child:not(:first-child),
+:root[data-skin="zed"] .run-activity .trace-reasoning-toggle:hover > svg:last-child:not(:first-child),
+:root[data-skin="zed"] .run-activity-support-toggle:hover > svg:last-child:not(:first-child),
+:root[data-skin="zed"] .codex-native-activity .codex-activity-line[aria-expanded="true"] > svg:last-child:not(:first-child),
+:root[data-skin="zed"] .run-activity .tool-event-toggle[aria-expanded="true"] > svg:last-child:not(:first-child),
+:root[data-skin="zed"] .run-activity .trace-reasoning-toggle[aria-expanded="true"] > svg:last-child:not(:first-child),
+:root[data-skin="zed"] .run-activity-support.open > .run-activity-support-toggle > svg:last-child:not(:first-child) { opacity: .8; }
+:root[data-skin="zed"] .run-activity .trace-reasoning-toggle small { order: 0; color: var(--faint); background: transparent; font-size: 11px; }
+:root[data-skin="zed"] .run-activity .tool-event-status { order: 0; font-size: 11px; }
+/* an expanded Codex summary keeps only its chevron, floated right of the detail text */
+:root[data-skin="zed"] .codex-native-activity .codex-activity-line.is-expanded { width: 24px; min-height: 20px; padding: 0; float: right; }
+:root[data-skin="zed"] .codex-reasoning-kind,
+:root[data-skin="zed"] .codex-partial-summary { padding-left: 4px; color: var(--faint); }
+
+/* expanded bodies: left rail, no box */
+:root[data-skin="zed"] .run-activity .tool-event-body,
+:root[data-skin="zed"] .run-activity .trace-reasoning-body,
+:root[data-skin="zed"] .codex-native-activity .trace-reasoning-body.codex-reasoning-detail,
+:root[data-skin="zed"] .claude-native-activity .trace-reasoning > .trace-reasoning-body,
+:root[data-skin="zed"] .run-activity-support-details {
+  margin: 2px 0 6px 10px; padding: 0 0 0 14px;
+  color: var(--muted); background: transparent;
+  border: 0; border-left: 1px solid var(--border); border-radius: 0; box-shadow: none;
+}
+:root[data-skin="zed"] .run-activity .tool-event-body,
+:root[data-skin="zed"] .run-activity .tool-event-body section + section { border-top: 0; }
+:root[data-skin="zed"] .tool-event-body section > small { padding: 4px 0 0; color: var(--faint); font: 10px/1.6 var(--font-mono); letter-spacing: 0; text-transform: none; }
+:root[data-skin="zed"] .tool-event pre { padding: 2px 0 8px; color: var(--muted); font: 12px/17px var(--font-mono); }
+:root[data-skin="zed"] .run-activity .trace-reasoning-body .markdown,
+:root[data-skin="zed"] .codex-reasoning-detail .markdown { color: var(--muted); font-size: 13px; line-height: 1.55; }
+:root[data-skin="zed"] .trace-reasoning-update + .trace-reasoning-update { border-top: 0; padding-top: 0; margin-top: 8px; }
+
+/* load-more / compact actions: quiet text links */
+:root[data-skin="zed"] .run-activity .trace-detail-actions { margin: 2px 0 0; padding: 0 4px; }
+:root[data-skin="zed"] .run-activity .trace-detail-actions button { color: var(--muted); font-size: 11px; }
+:root[data-skin="zed"] .run-activity .trace-detail-actions button:hover:not(:disabled) { color: var(--text); }
+:root[data-skin="zed"] .codex-activity-history-toggle { margin: 2px 4px; color: var(--faint); font-size: 11px; }
