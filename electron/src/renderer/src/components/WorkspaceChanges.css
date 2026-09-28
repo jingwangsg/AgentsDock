@@ -48,10 +48,18 @@
 .workspace-changes-groups button:hover, .workspace-changes-view-switch button:hover { background: var(--interaction-hover); }
 .workspace-changes-groups button[aria-pressed="true"], .workspace-changes-view-switch button[aria-pressed="true"] { color: var(--text); background: var(--surface-3); }
 .workspace-changes-groups button > span { font-size: var(--text-size-caption); color: var(--muted); }
-.workspace-changes-bulk { display: flex; gap: var(--space-2); padding: 0 var(--space-5) var(--space-4); border-bottom: 1px solid var(--border); }
+.workspace-changes-bulk { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 0 var(--space-5) var(--space-4); border-bottom: 1px solid var(--border); }
 .workspace-changes-bulk .quiet-button { min-width: 0; padding-inline: var(--space-3); font-size: var(--text-size-meta); }
-.workspace-changes-file-list { flex: 1; min-height: 70px; }
-.workspace-changes-file { display: flex; align-items: center; height: 39px; padding: 0 var(--space-2); border-bottom: 1px solid var(--border-soft); }
+.workspace-changes-bulk .review-view-toggle { margin-left: auto; }
+/* Tree rows override --tree-depth inline; flat rows inherit the 0 declared here. */
+.workspace-changes-file-list { --tree-depth: 0; flex: 1; min-height: 70px; }
+.workspace-changes-file { display: flex; align-items: center; height: 39px; padding: 0 var(--space-2) 0 calc(var(--space-2) + var(--tree-depth) * 14px); border-bottom: 1px solid var(--border-soft); }
+.workspace-changes-directory { width: 100%; height: 31px; display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-4) 0 calc(var(--space-4) + var(--tree-depth) * 14px); color: var(--muted); background: transparent; border-bottom: 1px solid var(--border-soft); text-align: left; font-size: var(--text-size-label); }
+.workspace-changes-directory:hover { background: var(--interaction-hover); }
+.workspace-changes-directory > svg:first-child { transition: transform 100ms ease; }
+.workspace-changes-directory[aria-expanded="true"] > svg:first-child { transform: rotate(90deg); }
+.workspace-changes-directory > span:first-of-type { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text); }
+.workspace-changes-directory > span:last-child { flex-shrink: 0; color: var(--faint); font-family: var(--font-mono); font-size: var(--text-size-caption); }
 .workspace-changes-file:hover { background: var(--interaction-hover); }
 .workspace-changes-file.selected { background: var(--surface-3); box-shadow: inset 2px 0 var(--accent); }
 .workspace-changes-file-name { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-3); text-align: left; color: var(--text); background: transparent; font-size: var(--text-size-label); }
@@ -71,6 +79,7 @@
 .workspace-changes-commit p { color: var(--muted); font-size: var(--text-size-meta); }
 .workspace-changes-commit textarea { width: 100%; height: 64px; min-height: 48px; max-height: 150px; resize: vertical; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-control); padding: var(--space-4); font: inherit; }
 .workspace-changes-diff { min-height: 0; flex: 1; display: flex; flex-direction: column; }
+.workspace-changes-diff > .review-monaco { flex: 1; }
 .workspace-changes-diff-lines { flex: 1; min-height: 80px; }
 .workspace-changes-diff-line { display: flex; min-height: 21px; font-family: var(--font-mono); font-size: 12px; line-height: 21px; }
 .workspace-changes-diff-line > span { width: 48px; flex-shrink: 0; padding-right: var(--space-4); color: var(--faint); text-align: right; user-select: none; }

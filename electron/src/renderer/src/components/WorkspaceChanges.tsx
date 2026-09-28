@@ -1,16 +1,28 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { AlertTriangle, Check, FileDiff, GitBranch, GitCommitHorizontal, LoaderCircle, Minus, Plus, RefreshCw, Search, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronRight, Columns2, FileDiff, Folder, GitBranch, GitCommitHorizontal, LoaderCircle, Minus, Plus, RefreshCw, Rows3, Search, TextWrap, X } from 'lucide-react'
 import { Virtuoso } from 'react-virtuoso'
+import { t } from '@shared/i18n'
+import { buildFileTree, type FileTreeDirectory, type FileTreeNode } from '@shared/file-tree'
 import type { WorkspaceProfileScope } from '@shared/types'
 import type { WorkspaceGitAction, WorkspaceGitConflict, WorkspaceGitDiff, WorkspaceGitStatus } from '@shared/workspace-git'
+import { useLocale } from '../lib/i18n'
+import { buildMonacoDiffModel } from '../lib/monaco-diff-model'
+import { parseReviewableDiff } from '../lib/timeline'
 import { useWorkspaceGitLabels } from '../lib/workspace-git-labels'
+import { MonacoDiffEditor } from './MonacoDiffEditor'
 import './WorkspaceChanges.css'
 
 type Selection = { path: string; view: 'staged' | 'unstaged' | 'conflict' }
 type Filter = 'all' | 'staged' | 'unstaged' | 'untracked' | 'conflicts'
 type Detail = { kind: 'diff'; value: WorkspaceGitDiff } | { kind: 'conflict'; value: WorkspaceGitConflict }
 type FileEntry = WorkspaceGitStatus['files'][number]
+type FileRow = { kind: 'file'; file: FileEntry; name: string; depth: number } | { kind: 'directory'; node: FileTreeDirectory; depth: number }
+
+const TREE_VIEW_KEY = 'agentsdock:changes-tree-view'
+// Shared with the per-turn review pane so both diff views agree on layout.
+const SIDE_BY_SIDE_KEY = 'agentsdock:review-side-by-side'
+const WORD_WRAP_KEY = 'agentsdock:review-word-wrap'
 
 export interface WorkspaceChangesProps {
   scope: WorkspaceProfileScope
@@ -43,6 +55,13 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
   const [abortOpen, setAbortOpen] = useState(false)
   const [discard, setDiscard] = useState<{ run: () => void } | null>(null)
   const [detailVersion, setDetailVersion] = useState(0)
+  const [treeView, setTreeView] = useState(() => localStorage.getItem(TREE_VIEW_KEY) !== '0')
+  // Directories start expanded; the set holds the exceptions.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  const [sideBySide, setSideBySide] = useState(() => localStorage.getItem(SIDE_BY_SIDE_KEY) !== '0')
+  const [wordWrap, setWordWrap] = useState(() => localStorage.getItem(WORD_WRAP_KEY) === '1')
+  // Set when Monaco fails to load; the pane then keeps the line renderer for this mount.
+  const [editorFailure, setEditorFailure] = useState<string | null>(null)
   const mounted = useRef(true)
   const statusEpoch = useRef(0)
   const detailEpoch = useRef(0)
@@ -159,6 +178,22 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
       : filter === 'unstaged' ? file.unstaged && !file.conflicted && !file.untracked : file.untracked)
     return inGroup && file.path.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
   }), [allFiles, filter, query])
+  // Both views feed one virtualized list: the tree is flattened to its visible rows.
+  const rows = useMemo<FileRow[]>(() => {
+    if (!treeView) return files.map(file => ({ kind: 'file', file, name: file.path, depth: 0 }))
+    const flatten = (nodes: FileTreeNode[], depth: number): FileRow[] => nodes.flatMap<FileRow>(node => node.kind === 'file'
+      ? [{ kind: 'file', file: files[node.index], name: node.name, depth }]
+      : [{ kind: 'directory', node, depth }, ...(collapsed.has(node.path) ? [] : flatten(node.children, depth + 1))])
+    return flatten(buildFileTree(files.map(file => file.path)), 0)
+  }, [files, treeView, collapsed])
+  const chooseView = (tree: boolean) => { setTreeView(tree); localStorage.setItem(TREE_VIEW_KEY, tree ? '1' : '0') }
+  const toggleDirectory = (path: string) => setCollapsed(current => {
+    const next = new Set(current)
+    if (!next.delete(path)) next.add(path)
+    return next
+  })
+  const chooseLayout = (value: boolean) => { setSideBySide(value); localStorage.setItem(SIDE_BY_SIDE_KEY, value ? '1' : '0') }
+  const toggleWordWrap = () => { setWordWrap(!wordWrap); localStorage.setItem(WORD_WRAP_KEY, wordWrap ? '0' : '1') }
   const blocked = busy || loading || readOnly
   const selectedFile = selection ? allFiles.find(file => file.path === selection.path) : null
   const conflict = detail?.kind === 'conflict' ? detail.value : null
@@ -192,16 +227,30 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
         <div className="workspace-changes-bulk">
           <button type="button" className="quiet-button" disabled={blocked || conflictDirty || !allFiles.some(file => !file.conflicted && (file.unstaged || file.untracked))} onClick={() => void run({ action: 'stage', paths: allFiles.filter(file => !file.conflicted && (file.unstaged || file.untracked)).map(file => file.path) })}><Plus size={13} />{labels.stageAll}</button>
           <button type="button" className="quiet-button" disabled={blocked || conflictDirty || !counts.staged} onClick={() => void run({ action: 'unstage', paths: allFiles.filter(file => file.staged && !file.conflicted).map(file => file.path) })}><Minus size={13} />{labels.unstageAll}</button>
+          <div className="segmented review-view-toggle">
+            <button type="button" className={treeView ? 'active' : ''} aria-pressed={treeView} onClick={() => chooseView(true)}>{t('review.viewTree')}</button>
+            <button type="button" className={treeView ? '' : 'active'} aria-pressed={!treeView} onClick={() => chooseView(false)}>{t('review.viewFlat')}</button>
+          </div>
         </div>
-        {files.length > 0 ? <Virtuoso className="workspace-changes-file-list" data={files} computeItemKey={(_index, file) => file.path} itemContent={(_index, file) => <div className={`workspace-changes-file${selection?.path === file.path ? ' selected' : ''}`}>
-          <button type="button" className="workspace-changes-file-name" disabled={busy} title={file.original_path ? `${file.original_path} → ${file.path}` : file.path} onClick={() => select({ path: file.path, view: file.conflicted ? 'conflict' : filter === 'staged' || (!file.unstaged && !file.untracked && file.staged) ? 'staged' : 'unstaged' })}>
-            <span className={file.conflicted ? 'workspace-changes-danger' : ''}>{file.conflicted ? <AlertTriangle size={14} /> : <FileDiff size={14} />}</span><span>{file.path}</span><code>{file.conflicted ? '!' : `${file.index_status}${file.worktree_status}`}</code>
-          </button>
-          {!file.conflicted && <div className="workspace-changes-file-actions">
-            {(file.unstaged || file.untracked) && <button type="button" className="icon-button" disabled={blocked || conflictDirty} title={labels.stage} aria-label={`${labels.stage} ${file.path}`} onClick={() => void run({ action: 'stage', paths: [file.path] })}><Plus size={14} /></button>}
-            {file.staged && <button type="button" className="icon-button" disabled={blocked || conflictDirty} title={labels.unstage} aria-label={`${labels.unstage} ${file.path}`} onClick={() => void run({ action: 'unstage', paths: [file.path] })}><Minus size={14} /></button>}
-          </div>}
-        </div>} /> : <div className="workspace-changes-empty">{loading && !status ? <LoaderCircle size={18} className="spin" /> : counts.all ? labels.noMatches : status ? labels.clean : labels.unavailable}</div>}
+        {rows.length > 0 ? <Virtuoso className="workspace-changes-file-list" data={rows} computeItemKey={(_index, row) => row.kind === 'directory' ? `dir:${row.node.path}` : row.file.path} itemContent={(_index, row) => {
+          const depth = { '--tree-depth': row.depth } as CSSProperties
+          if (row.kind === 'directory') {
+            const count = fileCount(row.node)
+            return <button type="button" className="workspace-changes-directory" style={depth} aria-expanded={!collapsed.has(row.node.path)} aria-label={`${row.node.path}, ${t(count === 1 ? 'review.fileCount.one' : 'review.fileCount.other', { count })}`} title={row.node.path} onClick={() => toggleDirectory(row.node.path)}>
+              <ChevronRight size={12} aria-hidden="true" /><Folder size={14} aria-hidden="true" /><span>{row.node.name}</span><span>{count}</span>
+            </button>
+          }
+          const { file } = row
+          return <div className={`workspace-changes-file${selection?.path === file.path ? ' selected' : ''}`} style={depth}>
+            <button type="button" className="workspace-changes-file-name" disabled={busy} title={file.original_path ? `${file.original_path} → ${file.path}` : file.path} aria-label={file.path} onClick={() => select({ path: file.path, view: file.conflicted ? 'conflict' : filter === 'staged' || (!file.unstaged && !file.untracked && file.staged) ? 'staged' : 'unstaged' })}>
+              <span className={file.conflicted ? 'workspace-changes-danger' : ''}>{file.conflicted ? <AlertTriangle size={14} /> : <FileDiff size={14} />}</span><span>{row.name}</span><code>{file.conflicted ? '!' : `${file.index_status}${file.worktree_status}`}</code>
+            </button>
+            {!file.conflicted && <div className="workspace-changes-file-actions">
+              {(file.unstaged || file.untracked) && <button type="button" className="icon-button" disabled={blocked || conflictDirty} title={labels.stage} aria-label={`${labels.stage} ${file.path}`} onClick={() => void run({ action: 'stage', paths: [file.path] })}><Plus size={14} /></button>}
+              {file.staged && <button type="button" className="icon-button" disabled={blocked || conflictDirty} title={labels.unstage} aria-label={`${labels.unstage} ${file.path}`} onClick={() => void run({ action: 'unstage', paths: [file.path] })}><Minus size={14} /></button>}
+            </div>}
+          </div>
+        }} /> : <div className="workspace-changes-empty">{loading && !status ? <LoaderCircle size={18} className="spin" /> : counts.all ? labels.noMatches : status ? labels.clean : labels.unavailable}</div>}
       </aside>
       <main className="workspace-changes-main">
         {reviewRevision && <section className="workspace-changes-commit" aria-label={labels.reviewTitle}>
@@ -220,6 +269,15 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
             {selectedFile.staged && <button type="button" aria-pressed={selection.view === 'staged'} onClick={() => select({ path: selection.path, view: 'staged' })}>{labels.staged}</button>}
             {(selectedFile.unstaged || selectedFile.untracked) && <button type="button" aria-pressed={selection.view === 'unstaged'} onClick={() => select({ path: selection.path, view: 'unstaged' })}>{selectedFile.untracked ? labels.untracked : labels.unstaged}</button>}
           </div>}
+          {selection.view !== 'conflict' && !editorFailure && <>
+            <div className="segmented review-layout-toggle">
+              <button type="button" className={sideBySide ? 'active' : ''} aria-pressed={sideBySide} onClick={() => chooseLayout(true)}><Columns2 size={13} aria-hidden="true" />{t('review.layoutSideBySide')}</button>
+              <button type="button" className={sideBySide ? '' : 'active'} aria-pressed={!sideBySide} onClick={() => chooseLayout(false)}><Rows3 size={13} aria-hidden="true" />{t('review.layoutInline')}</button>
+            </div>
+            <div className="segmented review-layout-toggle">
+              <button type="button" className={wordWrap ? 'active' : ''} aria-pressed={wordWrap} onClick={toggleWordWrap}><TextWrap size={13} aria-hidden="true" />{t('review.wordWrap')}</button>
+            </div>
+          </>}
         </div>}
         {detailLoading ? <div className="workspace-changes-empty" role="status"><LoaderCircle className="spin" size={18} />{labels.loading}</div>
           : detailError ? <div className="workspace-changes-empty" role="alert">{detailError}<button type="button" className="quiet-button" onClick={() => setDetailVersion(value => value + 1)}>{labels.refresh}</button></div>
@@ -235,7 +293,7 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
               <textarea className="workspace-changes-result" aria-label={labels.result} value={result} readOnly={blocked} spellCheck={false} onChange={event => setResult(event.target.value)} />
               <div className="workspace-changes-resolution-footer">{hasMarkers && <span>{labels.markers}</span>}<button type="button" className="primary-button" disabled={blocked || staleConflict || hasMarkers} onClick={() => void run({ action: 'resolve', path: conflict.path, content: result }, conflict.revision)}><Check size={14} />{labels.saveResolution}</button></div>
             </>}
-          </div> : detail?.kind === 'diff' ? <DiffPreview diff={detail.value} /> : <div className="workspace-changes-empty"><FileDiff size={28} /><span>{status?.files.length ? labels.select : status ? labels.empty : labels.unavailable}</span></div>}
+          </div> : detail?.kind === 'diff' ? <DiffPreview diff={detail.value} sideBySide={sideBySide} wordWrap={wordWrap} editorFailure={editorFailure} onEditorUnavailable={setEditorFailure} /> : <div className="workspace-changes-empty"><FileDiff size={28} /><span>{status?.files.length ? labels.select : status ? labels.empty : labels.unavailable}</span></div>}
       </main>
     </div>
     <ConfirmDialog open={active && abortOpen} title={labels.abortTitle} description={labels.abortHint} confirm={labels.abortConfirm} disabled={busy} onCancel={() => setAbortOpen(false)} onConfirm={() => void run({ action: 'abort', confirmed: true })} />
@@ -243,13 +301,28 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
   </section>
 }
 
-function DiffPreview({ diff }: { diff: WorkspaceGitDiff }) {
+function DiffPreview({ diff, sideBySide, wordWrap, editorFailure, onEditorUnavailable }: { diff: WorkspaceGitDiff; sideBySide: boolean; wordWrap: boolean; editorFailure: string | null; onEditorUnavailable: (message: string) => void }) {
   const labels = useWorkspaceGitLabels()
+  const locale = useLocale()
   const lines = useMemo(() => diff.diff.split('\n'), [diff.diff])
+  // A truncated diff can stop mid-hunk and a rename (git diff --no-renames) arrives
+  // as two file blocks; both stay on the line renderer, which shows the text as
+  // received. The gap placeholder is baked into the documents, so the model also
+  // follows the locale.
+  const model = useMemo(() => {
+    if (diff.binary || diff.truncated) return null
+    const files = parseReviewableDiff(diff.diff)
+    return files.length === 1 ? buildMonacoDiffModel(files[0], unchanged => unchanged == null
+      ? '⋯'
+      : `⋯ ${t(unchanged === 1 ? 'review.unmodifiedLines.one' : 'review.unmodifiedLines.other', { count: unchanged.toLocaleString() })}`) : null
+  }, [diff, locale])
   if (diff.binary || !diff.diff) return <div className="workspace-changes-empty">{diff.binary ? labels.binary : labels.noDiff}</div>
   return <div className="workspace-changes-diff">
+    {editorFailure && <p className="workspace-changes-notice" title={editorFailure}>{t('review.editorUnavailable')}</p>}
     {diff.truncated && <p className="workspace-changes-notice">{labels.truncated}</p>}
-    <Virtuoso className="workspace-changes-diff-lines" data={lines} itemContent={(index, line) => <div className={`workspace-changes-diff-line ${line.startsWith('+') && !line.startsWith('+++') ? 'addition' : line.startsWith('-') && !line.startsWith('---') ? 'deletion' : line.startsWith('@@') ? 'hunk' : ''}`}><span aria-hidden="true">{index + 1}</span><code>{line || ' '}</code></div>} />
+    {model && !editorFailure
+      ? <MonacoDiffEditor path={diff.path} model={model} sideBySide={sideBySide} wordWrap={wordWrap} onUnavailable={onEditorUnavailable} />
+      : <Virtuoso className="workspace-changes-diff-lines" data={lines} itemContent={(index, line) => <div className={`workspace-changes-diff-line ${line.startsWith('+') && !line.startsWith('+++') ? 'addition' : line.startsWith('-') && !line.startsWith('---') ? 'deletion' : line.startsWith('@@') ? 'hunk' : ''}`}><span aria-hidden="true">{index + 1}</span><code>{line || ' '}</code></div>} />}
   </div>
 }
 
@@ -258,6 +331,10 @@ function ConfirmDialog({ open, title, description, confirm, disabled, onCancel, 
   return <Dialog.Root open={open} onOpenChange={next => { if (!next && !disabled) onCancel() }}><Dialog.Portal><Dialog.Overlay className="workspace-changes-dialog-overlay" /><Dialog.Content className="workspace-changes-dialog" onEscapeKeyDown={event => { if (disabled) event.preventDefault() }} onPointerDownOutside={event => event.preventDefault()}>
     <Dialog.Title>{title}</Dialog.Title><Dialog.Description>{description}</Dialog.Description><div><button type="button" className="quiet-button" disabled={disabled} onClick={onCancel}>{labels.cancel}</button><button type="button" className="danger-button" disabled={disabled} onClick={onConfirm}>{confirm}</button></div>
   </Dialog.Content></Dialog.Portal></Dialog.Root>
+}
+
+function fileCount(node: FileTreeDirectory): number {
+  return node.children.reduce((sum, child) => sum + (child.kind === 'file' ? 1 : fileCount(child)), 0)
 }
 
 function matchesSelection(file: FileEntry, selection: Selection): boolean {
