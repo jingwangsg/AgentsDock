@@ -76,3 +76,30 @@ describe('CanvasPane width', () => {
     expect(localStorage.getItem(canvasWidthStorageKey('server:alpha'))).toBeNull()
   })
 })
+
+describe('CanvasPane view toggle', () => {
+  it('switches between Preview and Source with labelled buttons that stay visible in both views', async () => {
+    const record = { name: 'report', path: 'canvases/report.tsx', source: 'export const a = 1', javascript: '', diagnostics: null, state: {} }
+    vi.stubGlobal('agentsDock', { canvas: {
+      list: vi.fn().mockResolvedValue({ canvases: [{ name: 'report', path: record.path }] }),
+      get: vi.fn().mockResolvedValue(record),
+      putState: vi.fn()
+    } })
+    renderCanvas()
+    await screen.findByText('Canvas did not compile', { exact: false }).catch(() => null)
+
+    const source = screen.getByRole('button', { name: 'Source' })
+    const preview = screen.getByRole('button', { name: 'Preview' })
+    expect(preview).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(source)
+    expect(await screen.findByText('export const a = 1')).toBeInTheDocument()
+    expect(source).toHaveAttribute('aria-pressed', 'true')
+    // The way back is the same labelled control, not a mode-dependent icon.
+    expect(screen.getByRole('button', { name: 'Preview' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    expect(screen.queryByText('export const a = 1')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Preview' })).toHaveAttribute('aria-pressed', 'true')
+  })
+})

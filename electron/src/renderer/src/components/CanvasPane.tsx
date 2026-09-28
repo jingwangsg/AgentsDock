@@ -318,9 +318,11 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
       {canvases.length > 1 && <select value={name} aria-label={t('canvas.title')} onChange={event => { setName(event.target.value); setSelection(null); setSelecting(false) }}>
         {canvases.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
       </select>}
-      <button type="button" aria-pressed={view === 'source'} title={view === 'source' ? t('canvas.preview') : t('canvas.source')} onClick={() => setView(view === 'source' ? 'preview' : 'source')}>
-        {view === 'source' ? <Eye size={14} /> : <FileCode2 size={14} />}
-      </button>
+      <div className="segmented canvas-pane-view-toggle" role="group" aria-label={t('canvas.view')}>
+        <button type="button" className={view === 'preview' ? 'active' : ''} aria-pressed={view === 'preview'} onClick={() => setView('preview')}><Eye size={13} aria-hidden="true" />{t('canvas.preview')}</button>
+        <button type="button" className={view === 'source' ? 'active' : ''} aria-pressed={view === 'source'} onClick={() => setView('source')}><FileCode2 size={13} aria-hidden="true" />{t('canvas.source')}</button>
+      </div>
+      <span className="canvas-pane-header-spacer" aria-hidden="true" />
       <button type="button" aria-pressed={selecting} disabled={!src || view !== 'preview'} title={t('canvas.selectElement')} onClick={toggleSelecting}><Crosshair size={14} /></button>
       <button type="button" title={t('canvas.reload')} onClick={() => { setPageError(null); setReloadToken(token => token + 1) }}><RefreshCw size={14} /></button>
       <button type="button" title={t('canvas.close')} aria-label={t('canvas.close')} onClick={onClose}><X size={14} /></button>

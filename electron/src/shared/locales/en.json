@@ -36,6 +36,7 @@
   "canvas.close": "Close Canvas",
   "canvas.source": "Source",
   "canvas.preview": "Preview",
+  "canvas.view": "Canvas view",
   "canvas.selectElement": "Select element",
   "canvas.selecting": "Click an element in the Canvas (shift-click for more)",
   "canvas.feedbackPlaceholder": "What should change about the selected elements?",

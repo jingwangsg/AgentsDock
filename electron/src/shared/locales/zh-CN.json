@@ -36,6 +36,7 @@
   "canvas.close": "关闭 Canvas",
   "canvas.source": "源码",
   "canvas.preview": "预览",
+  "canvas.view": "Canvas 视图",
   "canvas.selectElement": "选取元素",
   "canvas.selecting": "在 Canvas 里点选一个元素（按住 Shift 可多选）",
   "canvas.feedbackPlaceholder": "选中的部分要怎么改？",
