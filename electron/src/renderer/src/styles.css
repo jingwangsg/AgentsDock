@@ -1950,6 +1950,10 @@ button.tool-event-toggle:hover { background: #242424; }
 .network-person-invitation-receipt code { color: var(--text); overflow-wrap: anywhere; }
 .import-chats-dialog { width: min(520px, calc(100vw - 60px)); }
 .import-chats-status { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--muted); font-size: var(--text-size-meta); }
+.import-chats-search { position: relative; display: flex; align-items: center; }
+.import-chats-search > svg { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
+.dialog-form .import-chats-search input { padding-left: 30px; }
+.import-chats-item-copy mark { padding: 0; border-radius: 0; color: inherit; background: color-mix(in srgb, var(--accent) 30%, transparent); }
 .import-chats-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: var(--text-size-meta); }
 .import-chats-toolbar div { display: flex; gap: 6px; }
 .import-chats-toolbar .quiet-button { min-height: var(--control-height-sm); padding: 0 var(--space-4); color: var(--muted); background: transparent; border-color: transparent; font-size: var(--font-size-sm); }

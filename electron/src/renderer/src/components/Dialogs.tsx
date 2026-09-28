@@ -7,7 +7,8 @@ import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, u
 import * as Dialog from '@radix-ui/react-dialog'
 import { ArrowRight, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, Copy, Download, FileText, FolderOpen, GitFork, Import, KeyRound, LoaderCircle, RefreshCw, RotateCcw, Search, Server, Sparkles, X } from 'lucide-react'
 import type { AppUpdateStatus, AppUpdateTrack, Backend, BulkImportSessionItem, BulkImportSessionResult, ChatReference, ChatReferenceAction, CoordinatedServerUpdate, CreateJobInput, Health, Job, JobContextMode, JobScheduleKind, LocalSessionCandidate, ServerRestartBlockerSnapshot, ServerSetupCapabilities, ServerSetupProgress, ServerUpdateStatus, ServerUpdateTrack, Session, TeamReference, UpdateJobInput, WorkspaceProfileScope } from '@shared/types'
-import { cursorLocalSessionImportSupported, localSessionImportKey, localSessionImportSupported } from '@shared/local-session-import'
+import { fuzzyScore } from '@shared/fuzzy'
+import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, cursorLocalSessionImportSupported, localSessionImportCapability, localSessionImportKey, localSessionImportListLimit, localSessionImportSupported } from '@shared/local-session-import'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { opencodeBackendAvailable, opencodeBackendUnavailableReason, chatBackendSelection, codexCustomProviderAvailable, cursorBackendAvailable, cursorBackendUnavailableReason, runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, selectableChatBackendChoices, selectableChatBackends, type ChatBackendChoice } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
@@ -3088,6 +3089,8 @@ export function ImportChatsDialog() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [results, setResults] = useState<BulkImportSessionResult[]>([])
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [query, setQuery] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
   const [resumeId, setResumeId] = useState('')
   const [resumeBackend, setResumeBackend] = useState<Backend>('codex')
   const [resumeCwd, setResumeCwd] = useState('')
@@ -3113,6 +3116,7 @@ export function ImportChatsDialog() {
     setImporting(false)
     setLoading(false)
     setCollapsed(new Set())
+    setQuery('')
     setResumeId('')
     setResumeNeedsDetails(false)
     setResumeNeedsChoice(false)
@@ -3196,20 +3200,46 @@ export function ImportChatsDialog() {
     return matches
   }, [candidates, resumeId, sessions])
 
+  const searching = query.trim().length > 0
+  // One haystack per row (label, folder, provider) so a query such as
+  // "codex parser" can span fields; the "\n" separators never match because
+  // fuzzyScore drops whitespace from the query. Sorting is stable, so equal
+  // scores keep the server's updated_at order.
+  const { visible, highlights } = useMemo(() => {
+    if (!searching) return { visible: candidates, highlights: new Map<string, Set<number>>() }
+    const matches: { candidate: LocalSessionCandidate; score: number; hits: Set<number> }[] = []
+    for (const candidate of candidates) {
+      const match = fuzzyScore(query, `${candidate.label}\n${candidate.cwd ?? ''}\n${backendLabel(candidate.backend)}`)
+      if (!match) continue
+      const labelLength = Array.from(candidate.label).length
+      matches.push({ candidate, score: match.score, hits: new Set(match.indices.filter(index => index < labelLength)) })
+    }
+    matches.sort((a, b) => b.score - a.score)
+    return {
+      visible: matches.map(match => match.candidate),
+      highlights: new Map(matches.map(match => [localSessionImportKey(match.candidate.backend, match.candidate.provider_session_id), match.hits]))
+    }
+  }, [candidates, query, searching])
+  // The server caps the scan at min(max_list_items, client hard limit); a
+  // list that fills the cap may be missing older chats, so say so next to
+  // the search box.
+  const capability = localSessionImportCapability(health)
+  const listLimit = capability ? localSessionImportListLimit(capability) : LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT
+
   // Local Claude/Codex transcripts have no AgentsDock "folder"; their only
   // folder-like grouping is the working directory (cwd) the session ran in,
   // which is exactly how Claude Code lays them out on disk. Group by cwd,
   // preserving the updated_at ordering so the most recent project leads.
   const groups = useMemo(() => {
     const byCwd = new Map<string, { cwd: string | null; items: LocalSessionCandidate[] }>()
-    for (const candidate of candidates) {
+    for (const candidate of visible) {
       const key = candidate.cwd ?? '\0'
       const existing = byCwd.get(key)
       if (existing) existing.items.push(candidate)
       else byCwd.set(key, { cwd: candidate.cwd, items: [candidate] })
     }
     return [...byCwd.values()]
-  }, [candidates])
+  }, [visible])
   // Show the folder headers whenever at least one real working directory is
   // present, so the "we sorted these into folders" structure is obvious even
   // when everything happens to sit in one project.
@@ -3218,11 +3248,13 @@ export function ImportChatsDialog() {
 
   // Collapse folders by default so the folder structure is the first thing
   // users see — they expand the ones they want. Only when there are real
-  // folders to expand (a flat, folderless list must stay visible).
+  // folders to expand (a flat, folderless list must stay visible). A search
+  // must show its matches, so folders open while a query is active and go
+  // back to the collapsed default once it is cleared.
   useEffect(() => {
     if (!candidates.some(candidate => candidate.cwd)) return
-    setCollapsed(new Set(candidates.map(candidate => candidate.cwd ?? '__none__')))
-  }, [candidates])
+    setCollapsed(searching ? new Set() : new Set(candidates.map(candidate => candidate.cwd ?? '__none__')))
+  }, [candidates, searching])
 
   const submit = async () => {
     if (activeOperationEpoch.current !== null) return
@@ -3363,7 +3395,7 @@ export function ImportChatsDialog() {
 
   const operationBusy = importing || resumingById
 
-  return <Shell open={open} onOpenChange={value => useAppStore.getState().setModal('importChats', value)} title={t("ui.Dialogs.ImportChatsDialog.import_chat_ed32942")} description={cursorLocalSessionImportSupported(health) ? t('ui.Dialogs.ImportChatsDialog.cursor_snapshot_history') : t("ui.Dialogs.ImportChatsDialog.bring_in_your_local_claude_code_and_codex__0ffcba9")}>
+  return <Shell open={open} onOpenChange={value => useAppStore.getState().setModal('importChats', value)} initialFocusRef={searchRef} title={t("ui.Dialogs.ImportChatsDialog.import_chat_ed32942")} description={cursorLocalSessionImportSupported(health) ? t('ui.Dialogs.ImportChatsDialog.cursor_snapshot_history') : t("ui.Dialogs.ImportChatsDialog.bring_in_your_local_claude_code_and_codex__0ffcba9")}>
     <div className="dialog-form import-chats-dialog">
       <form className="import-chats-resume" onSubmit={event => void submitResumeById(event)}>
         <div className="import-chats-resume-heading">
@@ -3405,17 +3437,23 @@ export function ImportChatsDialog() {
         {resumeError && <small className="import-chats-resume-error" role="alert">{resumeError}</small>}
       </form>
       <div className="import-chats-resume-heading"><Import size={15} aria-hidden="true" /><strong>{t('ui.import.localHistory')}</strong></div>
+      {!loadError && <div className="import-chats-search">
+        <Search size={14} aria-hidden="true" />
+        <input ref={searchRef} type="search" value={query} onChange={event => setQuery(event.target.value)} aria-label={t('ui.Dialogs.ImportChatsDialog.search_local_chats')} placeholder={t('ui.Dialogs.ImportChatsDialog.search_local_chats')} maxLength={256} />
+      </div>}
       {loading && <p className="import-chats-status"><LoaderCircle className="spin" size={14} />{" "}{t("ui.Dialogs.ImportChatsDialog.scanning_local_chat_history_9b94771")}</p>}
       {!loading && loadError && <p className="import-chats-status" role="alert">{loadError}</p>}
       {!loading && !loadError && candidates.length === 0 && <p className="import-chats-status">{t("ui.Dialogs.ImportChatsDialog.no_un_imported_local_chats_found_93e16e7")}</p>}
-      {!loading && !loadError && candidates.length > 0 && <>
+      {!loading && !loadError && candidates.length >= listLimit && <p className="import-chats-status">{t('ui.Dialogs.ImportChatsDialog.list_truncated', { count: candidates.length })}</p>}
+      {!loading && !loadError && candidates.length > 0 && visible.length === 0 && <p className="import-chats-status">{t('ui.Dialogs.ImportChatsDialog.no_matching_local_chats')}</p>}
+      {!loading && !loadError && visible.length > 0 && <>
         <div className="import-chats-toolbar">
           <span>{showGroupHeaders
-            ? t('ui.import.groupedCounts', { count: candidates.length, chats: candidates.length === 1 ? 'chat' : 'chats', folders: folderCount, folderLabel: folderCount === 1 ? 'folder' : 'folders', selected: selected.size })
-            : t('ui.import.selectedCounts', { selected: selected.size, count: candidates.length })}</span>
+            ? t('ui.import.groupedCounts', { count: visible.length, chats: visible.length === 1 ? 'chat' : 'chats', folders: folderCount, folderLabel: folderCount === 1 ? 'folder' : 'folders', selected: selected.size })
+            : t('ui.import.selectedCounts', { selected: selected.size, count: visible.length })}</span>
           <div>
             {showGroupHeaders && groups.length > 1 && <button type="button" className="quiet-button" disabled={operationBusy} onClick={() => setCollapsed(prev => prev.size ? new Set() : new Set(groups.map(group => group.cwd ?? '__none__')))}>{collapsed.size ? t("ui.Dialogs.ImportChatsDialog.expand_all_a3e586b") : t("ui.Dialogs.ImportChatsDialog.collapse_all_25f7b37")}</button>}
-            <button type="button" className="quiet-button" disabled={operationBusy} onClick={() => setSelected(new Set(candidates
+            <button type="button" className="quiet-button" disabled={operationBusy} onClick={() => setSelected(new Set(visible
               .filter(candidate => resultFor(candidate)?.code !== 'client_status_unknown')
               .map(candidate => localSessionImportKey(candidate.backend, candidate.provider_session_id))))}>{t("ui.Dialogs.ImportChatsDialog.select_all_1fc9a38")}</button>
             <button type="button" className="quiet-button" disabled={operationBusy} onClick={() => setSelected(new Set())}>{t("ui.Dialogs.ImportChatsDialog.select_none_41afe0e")}</button>
@@ -3450,12 +3488,13 @@ export function ImportChatsDialog() {
                   const key = localSessionImportKey(candidate.backend, candidate.provider_session_id)
                   const result = resultFor(candidate)
                   const retryBlocked = result?.code === 'client_status_unknown'
+                  const hits = highlights.get(key)
                   return <li key={key} className="import-chats-item">
                     <label>
                       <input type="checkbox" checked={selected.has(key)} disabled={operationBusy || retryBlocked} onChange={() => toggle(key)} />
                       <BackendMark backend={candidate.backend} size={14} />
                       <span className="import-chats-item-copy">
-                        <strong>{candidate.label}</strong>
+                        <strong>{hits ? Array.from(candidate.label).map((char, index) => hits.has(index) ? <mark key={index}>{char}</mark> : char) : candidate.label}</strong>
                         <small>{formatTime(candidate.updated_at)}</small>
                       </span>
                     </label>

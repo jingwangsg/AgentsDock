@@ -625,4 +625,103 @@ describe('ImportChatsDialog', () => {
     })
     await waitFor(() => expect(selectSession).toHaveBeenCalledWith('resumed-chat'))
   })
+
+  it('focuses the local history search when the dialog opens', async () => {
+    const listLocal = vi.fn().mockResolvedValue(candidates)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { listLocal } } as unknown as AgentsDockAPI
+    })
+    render(<ImportChatsDialog />)
+
+    await screen.findByText('Codex chat')
+    expect(screen.getByRole('searchbox', { name: 'Search local chats' })).toHaveFocus()
+    expect(screen.queryByText(/most recent local chats/)).not.toBeInTheDocument()
+  })
+
+  it('filters rows by fuzzy match, highlights matched characters, and restores the list when cleared', async () => {
+    const listLocal = vi.fn().mockResolvedValue(candidates)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { listLocal } } as unknown as AgentsDockAPI
+    })
+    const user = userEvent.setup()
+    render(<ImportChatsDialog />)
+    await screen.findByText('Codex chat')
+    const search = screen.getByRole('searchbox', { name: 'Search local chats' })
+
+    await user.type(search, 'cdx')
+    expect(screen.queryByText('Claude chat')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1)
+    expect([...document.querySelectorAll('.import-chats-item mark')].map(mark => mark.textContent).join('')).toBe('Cdx')
+    expect(screen.getByText(/selected/)).toHaveTextContent('0 of 1 selected')
+
+    await user.clear(search)
+    await user.type(search, 'zzz')
+    expect(screen.getByText('No local chats match your search.')).toBeInTheDocument()
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+
+    await user.clear(search)
+    expect(screen.getByText('Claude chat')).toBeInTheDocument()
+    expect(screen.getByText('Codex chat')).toBeInTheDocument()
+    expect(document.querySelector('.import-chats-item mark')).toBeNull()
+    expect(screen.getByText(/selected/)).toHaveTextContent('0 of 2 selected')
+  })
+
+  it('matches folder and provider, ranks by score, opens folders while searching, and selects only visible rows', async () => {
+    const listLocal = vi.fn().mockResolvedValue([
+      { provider_session_id: 'a', backend: 'claude', label: 'Fix login', updated_at: '2026-08-03T00:00:00Z', cwd: '/home/site' },
+      { provider_session_id: 'b', backend: 'codex', label: 'Refactor parser', updated_at: '2026-08-02T00:00:00Z', cwd: '/work/api' },
+      { provider_session_id: 'c', backend: 'claude', label: 'Codex notes', updated_at: '2026-08-01T00:00:00Z', cwd: '/work/api' }
+    ] satisfies LocalSessionCandidate[])
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { listLocal } } as unknown as AgentsDockAPI
+    })
+    const user = userEvent.setup()
+    render(<ImportChatsDialog />)
+    const folderApi = (await screen.findByTitle('/work/api')).closest('button') as HTMLElement
+    await waitFor(() => expect(folderApi).toHaveAttribute('aria-expanded', 'false'))
+    const search = screen.getByRole('searchbox', { name: 'Search local chats' })
+
+    // "codex" hits the Claude chat titled "Codex notes" (consecutive, word
+    // start) ahead of the Codex chat matched through its provider name.
+    await user.type(search, 'codex')
+    expect(folderApi).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.queryByText('Fix login')).not.toBeInTheDocument()
+    expect([...document.querySelectorAll('.import-chats-item strong')].map(node => node.textContent)).toEqual(['Codex notes', 'Refactor parser'])
+
+    // A working-directory match shows the row with an unhighlighted label.
+    await user.clear(search)
+    await user.type(search, 'site')
+    expect(screen.getByText('Fix login')).toBeInTheDocument()
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1)
+
+    await user.click(screen.getByRole('button', { name: 'Select all' }))
+    expect(screen.getByRole('button', { name: 'Import 1' })).toBeInTheDocument()
+
+    // Clearing the query returns folders to their collapsed default. The
+    // /work/api group was unmounted while it had no matches, so re-query it.
+    await user.clear(search)
+    await waitFor(() => expect(screen.getByTitle('/work/api').closest('button')).toHaveAttribute('aria-expanded', 'false'))
+    expect(folderApi.isConnected).toBe(false)
+  })
+
+  it('notes when the loaded list filled the server cap so search covers only what is loaded', async () => {
+    useAppStore.setState({
+      health: {
+        ...supportedHealth,
+        capabilities: { local_session_import_v1: { available: true, required: false, message: '', action: null, version: 1, max_batch_items: 25, max_list_items: 2 } }
+      }
+    })
+    const listLocal = vi.fn().mockResolvedValue(candidates)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { listLocal } } as unknown as AgentsDockAPI
+    })
+    render(<ImportChatsDialog />)
+
+    await screen.findByText('Codex chat')
+    expect(screen.getByText('Showing the 2 most recent local chats; search covers only these.')).toBeInTheDocument()
+  })
 })
