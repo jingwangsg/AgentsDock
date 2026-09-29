@@ -593,7 +593,7 @@ class Tunnel:
         if self._proc is proc and proc.returncode is None:
             self.status = {**self.status, "state": "connected", "last_error": None}
             self._backoff = MIN_BACKOFF
-            if self._site_args and self._route is not None and (self._git_task is None or self._git_task.done()):
+            if self._site_args and (self._git_task is None or self._git_task.done()):
                 self._git_task = asyncio.create_task(self._point_git_at_forwards(self._route), name=f"ssh-tunnel-git:{self.server.id}")
             if isinstance(self.server, SSHForward) and self.server.remote_port == 22 and self._monitor_task is None:
                 self._monitor_task = asyncio.create_task(self._monitor_forward(proc), name=f"ssh-forward-health:{self.server.id}")
