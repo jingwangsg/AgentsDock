@@ -14,7 +14,7 @@ const mocks = {
   'lucide-react-native': `export const Maximize2 = 'Maximize2';`,
   '@bsky.app/react-native-uitextview': `export const UITextView = 'SelectableText';`,
   'react-native-svg': `export const SvgXml = 'SvgXml';`,
-  'react-native-markdown-display': `export default 'Markdown'; export class MarkdownIt { core = { ruler: { push() {} } }; use() { return this } }`,
+  'react-native-markdown-display': `export default 'Markdown'; export class MarkdownIt { core = { ruler: { push() {} } }; use() { return this } } export const renderRules = { image: node => ({ libraryImage: node.attributes.src }) };`,
   '../lib/math-markdown': `export const installMathMarkdown = value => value;`,
   '../lib/tex-svg': `export const texToSvg = () => null;`,
   '../lib/canvas-links': `export const openCanvasLink = () => false;`,
@@ -63,5 +63,20 @@ test('compact Markdown and math preserve the user font scale and conversation ti
     assert.equal(normal.style.body.color, '#eeeeee')
     assert.equal(normal.rules.math_inline(mathNode, [], [], {}, {}).props.fontSize, 15.5)
     assert.equal(normal.rules.math_inline(mathNode, [], [], {}, {}).props.color, '#eeeeee')
+  } finally { await act(async () => renderer.unmount()) }
+})
+
+test('a server-local image is a link that opens it; a loadable one stays an image', async () => {
+  let renderer
+  await act(async () => { renderer = TestRenderer.create(React.createElement(MarkdownContent, { value: 'Chart' })) })
+  try {
+    const { rules } = renderer.root.findByType('Markdown').props
+    const handlers = ['data:image/png;base64', 'https://', 'http://']
+    const image = (src, alt, parents = []) => rules.image({ key: 'img', attributes: { src, alt } }, [], parents, { link: {} }, handlers, 'https://')
+    assert.equal(image('../tmp/loss.png', 'Loss chart').props.children, 'Loss chart')
+    assert.equal(typeof image('../tmp/loss.png', 'Loss chart').props.onPress, 'function')
+    assert.equal(image('../tmp/loss.png', '').props.children, '../tmp/loss.png')
+    assert.equal(image('../tmp/loss.png', '', [{ type: 'blocklink' }]).props.onPress, undefined)
+    assert.deepEqual(image('https://example.com/a.png', ''), { libraryImage: 'https://example.com/a.png' })
   } finally { await act(async () => renderer.unmount()) }
 })

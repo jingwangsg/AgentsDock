@@ -126,6 +126,19 @@ try {
   assert.equal(state.profiles.find(value => value.id === 'direct')?.serverIdentity, 'direct-old')
   assert.equal(await savedIdentity('direct'), 'direct-old')
 
+  // Inactive servers get a live status dot from the background probe.
+  assert.equal(await useAppStore.getState().switchServerProfile('hub'), true)
+  await waitFor(() => useAppStore.getState().connected && useAppStore.getState().activeProfileId === 'hub', 'the hub did not reconnect')
+  await useAppStore.getState().probeInactiveProfiles()
+  state = useAppStore.getState()
+  assert.equal(remoteProfile()?.connectionState, 'online')
+  // A changed identity is left for selection to settle, not reported as online.
+  assert.equal(state.profiles.find(value => value.id === 'direct')?.connectionState, 'cached')
+  direct.closeAllConnections?.()
+  await new Promise<void>(resolve => direct.close(() => resolve()))
+  await useAppStore.getState().probeInactiveProfiles()
+  assert.equal(useAppStore.getState().profiles.find(value => value.id === 'direct')?.connectionState, 'offline')
+
   console.log('hub remote identity store regressions passed')
 } finally {
   globalThis.setInterval = originalSetInterval

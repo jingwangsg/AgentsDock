@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -9,7 +9,15 @@ const require = createRequire(import.meta.url)
 const directory = await mkdtemp(join(process.env.TMPDIR || resolve(projectRoot, '../..'), 'agentsdock-file-transfer-tests-'))
 const outfile = join(directory, 'test.mjs')
 const mocks = resolve(projectRoot, 'tests/file-transfer-mocks.tsx')
-const icons = ['Download', 'File', 'Images', 'Maximize2', 'Pin', 'Play', 'X', 'ChevronLeft', 'ChevronRight', 'FileImage', 'FileText', 'Film', 'MoreHorizontal', 'Share2', 'AlertCircle', 'FilePlus', 'Folder', 'FolderPlus', 'Link', 'Pencil', 'RefreshCw', 'Search', 'Trash2']
+// Every icon the app imports, so a new icon in any bundled component cannot break this runner.
+const icons = new Set()
+for (const file of await readdir(resolve(projectRoot, 'src'), { recursive: true })) {
+  if (!/\.[jt]sx?$/.test(file)) continue
+  const source = await readFile(resolve(projectRoot, 'src', file), 'utf8')
+  for (const [, names] of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*'lucide-react-native'/g)) {
+    for (const name of names.split(',').map(value => value.trim().split(/\s+as\s+/)[0])) if (name && !name.startsWith('type ')) icons.add(name)
+  }
+}
 try {
   await build({
     absWorkingDir: projectRoot,
@@ -28,7 +36,7 @@ try {
           if (/\/(?:FilePreview|ArtifactVideoPlayer|VideoThumbnailLoader|TextPromptDialog)$/.test(args.path)) return { path: mocks }
           return undefined
         })
-        context.onLoad({ filter: /.*/, namespace: 'transfer-test' }, () => ({ contents: icons.map(name => `export const ${name} = '${name}'`).join('\n') }))
+        context.onLoad({ filter: /.*/, namespace: 'transfer-test' }, () => ({ contents: [...icons].map(name => `export const ${name} = '${name}'`).join('\n') }))
       },
     }],
   })

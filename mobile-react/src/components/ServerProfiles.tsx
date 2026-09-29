@@ -670,18 +670,15 @@ function ServerManagementRow({ profile, index, count, active, switching, disable
   const colors = usePalette()
   const status = profileConnectionLabel(profile)
   const details = [profile.serverIdentity ? `Identity: ${profile.serverIdentity}` : '', profile.serverVersion ? `AgentsServer ${profile.serverVersion}` : ''].filter(Boolean).join(' · ')
-  const actions: MenuAction[] = [
-    { id: 'up', title: `Move ${profile.name} Up`, image: 'arrow.up', attributes: { disabled: disabled || index === 0 } },
-    { id: 'down', title: `Move ${profile.name} Down`, image: 'arrow.down', attributes: { disabled: disabled || index === count - 1 } },
+  // An Alert, not MenuView: MenuView does not open inside this sheet's Modal on Android, and the
+  // row has at most three actions, Android's Alert limit (tapping outside cancels there; iOS
+  // ignores `cancelable`, so it gets a Cancel button).
+  const rowActions = [
+    ...(index > 0 ? [{ text: 'Move up', onPress: () => onMove(-1) }] : []),
+    ...(index < count - 1 ? [{ text: 'Move down', onPress: () => onMove(1) }] : []),
+    ...(removable && !active ? [{ text: 'Remove', style: 'destructive' as const, onPress: onRemove }] : []),
   ]
-  if (removable) {
-    actions.push({
-      id: 'remove',
-      title: active ? 'Active Server Cannot Be Removed' : `Remove ${profile.name}`,
-      image: 'trash',
-      attributes: { disabled: disabled || active, destructive: !active },
-    })
-  }
+  const alertButtons = Platform.OS === 'ios' ? [...rowActions, { text: 'Cancel', style: 'cancel' as const }] : rowActions
   return <View style={[styles.profileRow, { borderColor: colors.border, backgroundColor: active ? `${colors.blue}10` : colors.surface }]}>
     <ServerConnectionDot state={switching ? 'connecting' : profile.connectionState} label={switching ? `Connecting to ${profile.name}` : status} />
     <View style={styles.profileCopy}>
@@ -695,29 +692,7 @@ function ServerManagementRow({ profile, index, count, active, switching, disable
     </View>
     {!active ? <SecondaryButton label={switching ? 'Using…' : 'Use'} disabled={disabled} busy={switching} accessibilityLabel={`Use ${profile.name}`} compact onPress={onSwitch} /> : null}
     <IconButton icon={Pencil} disabled={disabled} onPress={onEdit} label={`Edit ${profile.name}`} />
-    {disabled ? <View style={styles.rowMenu}><View
-      accessible
-      accessibilityRole="button"
-      accessibilityLabel={`More actions for ${profile.name}`}
-      accessibilityState={{ disabled: true }}
-      style={[styles.moreButton, { opacity: 0.35 }]}
-    ><MoreHorizontal size={19} color={colors.muted} /></View></View> : <MenuView
-      title={profile.name}
-      actions={actions}
-      onPressAction={event => {
-        if (event.nativeEvent.event === 'up') onMove(-1)
-        else if (event.nativeEvent.event === 'down') onMove(1)
-        else if (event.nativeEvent.event === 'remove') onRemove()
-      }}
-      style={styles.rowMenu}
-    >
-      <View
-        accessible
-        accessibilityRole="button"
-        accessibilityLabel={`More actions for ${profile.name}`}
-        style={styles.moreButton}
-      ><MoreHorizontal size={19} color={colors.muted} /></View>
-    </MenuView>}
+    <IconButton icon={MoreHorizontal} disabled={disabled || rowActions.length === 0} onPress={() => Alert.alert(profile.name, undefined, alertButtons, { cancelable: true })} label={`More actions for ${profile.name}`} />
   </View>
 }
 
@@ -812,8 +787,6 @@ const styles = StyleSheet.create({
   profileDetail: { fontSize: 9, lineHeight: 13 },
   activeBadge: { minHeight: 18, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2, alignItems: 'center', justifyContent: 'center' },
   activeBadgeText: { fontSize: 8, fontWeight: '800', textTransform: 'uppercase' },
-  rowMenu: { width: 44, height: 44 },
-  moreButton: { width: 44, height: 44, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
   noProfiles: { minHeight: 150, padding: 20, alignItems: 'center', justifyContent: 'center', gap: 7 },
   noProfilesTitle: { fontSize: 15, fontWeight: '800' },
   feedback: { minHeight: 42, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, padding: 10, justifyContent: 'center' },

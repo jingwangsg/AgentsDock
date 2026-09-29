@@ -143,6 +143,7 @@ let historyPagingEpoch = 0
 let timelineSeekIntentEpoch = 0
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 let periodicRefreshInFlight = false
+let inactiveProbeInFlight = false
 let appStateSubscription: { remove(): void } | null = null
 let healthFailureCount = 0
 let syncInFlight: { sessionId: string; epoch: number; promise: Promise<void> } | null = null
@@ -510,6 +511,7 @@ interface AppState {
   reorderServerProfiles(profileIds: string[]): Promise<void>
   switchServerProfile(profileId: string): Promise<boolean>
   reconnect(): Promise<void>
+  probeInactiveProfiles(): Promise<void>
   retryConnection(): Promise<void>
   cancelPendingServerUpdate(expectedGeneration?: number): Promise<boolean>
   refreshRuntime(): Promise<void>
@@ -731,6 +733,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     const profileId = get().activeProfileId
     if (!profileId) throw new Error('No active server profile.')
     await get().updateServerProfile(profileId, { serverURL: normalizeServerURL(rawURL), accessToken: token })
+  },
+
+  async probeInactiveProfiles() {
+    const inactive = get().profiles.filter(profile => profile.id !== get().activeProfileId && profile.serverConfigured)
+    // Two at a time, like the desktop: a hub proxies every remote through one connection.
+    for (let index = 0; index < inactive.length; index += 2) {
+      await Promise.all(inactive.slice(index, index + 2).map(async profile => {
+        let patch: Parameters<typeof updateProfileRuntime>[2]
+        try {
+          const health = await probeServerHealth(profile.serverURL, await loadProfileToken(profile.id, profile.credentialVersion))
+          // A changed identity is settled when the server is selected, not by a background check;
+          // until then the row shows its cached state, not the new server's.
+          patch = profile.serverIdentity && health.server_identity !== profile.serverIdentity
+            ? { connectionState: 'cached' }
+            : { connectionState: 'online', lastConnectionError: null, serverVersion: healthVersion(health) }
+        } catch (error) {
+          patch = { connectionState: 'offline', lastConnectionError: errorMessage(error) }
+        }
+        set(state => state.activeProfileId === profile.id ? {} : {
+          profiles: updateProfileRuntime(state.profiles, profile.id, { ...patch, lastConnectionCheckedAt: Date.now() }),
+        })
+      }))
+    }
   },
 
   async testServerProfile(input) {
@@ -4318,11 +4343,13 @@ function stopForegroundRefreshTimer(): void {
 function startForegroundRefreshTimer(get: () => AppState): void {
   if (refreshTimer || NativeAppState.currentState !== 'active') return
   refreshTimer = setInterval(() => {
-    if (
-      NativeAppState.currentState !== 'active'
-      || !shouldAutoConnectServer(get())
-      || periodicRefreshInFlight
-    ) return
+    if (NativeAppState.currentState !== 'active' || !shouldAutoConnectServer(get())) return
+    // Separate flags: a slow inactive server must not hold back the active server's refresh.
+    if (!inactiveProbeInFlight) {
+      inactiveProbeInFlight = true
+      void get().probeInactiveProfiles().finally(() => { inactiveProbeInFlight = false })
+    }
+    if (periodicRefreshInFlight) return
     periodicRefreshInFlight = true
     const operation = get().connected ? get().refreshSessions() : get().reconnect()
     void operation.finally(() => { periodicRefreshInFlight = false })

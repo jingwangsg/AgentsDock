@@ -54,14 +54,18 @@ test('connection edits carry only the freshly tested identity', () => {
 test('server removal and identity reset require native confirmation', () => {
   assert.match(source, /Alert\.alert\([\s\S]*?Remove server/)
   assert.match(source, /Alert\.alert\([\s\S]*?Allow identity reset/)
-  assert.match(source, /attributes: \{ disabled: disabled \|\| active, destructive: !active \}/)
+  assert.match(source, /removable && !active \? \[\{ text: 'Remove'/)
 })
 
 test('server management controls retain touch-safe minimum dimensions', () => {
   assert.match(source, /input: \{ minHeight: 44/)
   assert.match(source, /primaryButton: \{ minHeight: 44/)
   assert.match(source, /secondaryButton: \{ minHeight: 44/)
-  assert.match(source, /moreButton: \{ width: 44, height: 44/)
+})
+
+test('row actions open an Alert (MenuView does not open inside a Modal on Android), with Cancel on iOS', () => {
+  assert.match(source, /icon=\{MoreHorizontal\}[^\n]*Alert\.alert\(profile\.name, undefined, alertButtons/)
+  assert.match(source, /Platform\.OS === 'ios' \? \[\.\.\.rowActions, \{ text: 'Cancel', style: 'cancel' as const \}\] : rowActions/)
 })
 
 test('remotes are reconciled from the hub registry; deploy only appears while the hub itself is active; the remote\'s own token is never exposed', () => {

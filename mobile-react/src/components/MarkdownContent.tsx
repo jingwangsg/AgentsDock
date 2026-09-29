@@ -3,7 +3,7 @@ import { UITextView as SelectableText } from '@bsky.app/react-native-uitextview'
 import { Linking, Platform, ScrollView, StyleSheet, Text as NativeText, View, type TextStyle } from 'react-native'
 import { Maximize2 } from 'lucide-react-native'
 import markdownItCjkFriendly from 'markdown-it-cjk-friendly'
-import Markdown, { MarkdownIt, type ASTNode, type RenderRules } from 'react-native-markdown-display'
+import Markdown, { MarkdownIt, renderRules, type ASTNode, type RenderRules } from 'react-native-markdown-display'
 import { SvgXml } from 'react-native-svg'
 
 import type { ChatReference } from '../types'
@@ -134,6 +134,20 @@ export function MarkdownContent({
         {children}
       </SelectableText>
     ),
+    // A server-local image cannot load (the library would fetch `https://<path>`). Inside a link
+    // (a blocklink, since images are block tokens) the tap follows that link.
+    image: (node, children, parents, styles, allowedImageHandlers, defaultImageHandler) => {
+      const { src, alt } = node.attributes
+      if (allowedImageHandlers.some(prefix => src.toLowerCase().startsWith(prefix.toLowerCase()))) {
+        return renderRules.image!(node, children, parents, styles, allowedImageHandlers, defaultImageHandler)
+      }
+      const insideLink = parents.some(parent => parent.type === 'blocklink')
+      return (
+        <SelectableText key={node.key} style={styles.link} onPress={insideLink ? undefined : () => openLink(src)}>
+          {alt || src}
+        </SelectableText>
+      )
+    },
     code_inline: (node, _children, _parents, styles, inheritedStyles) => (
       <SelectableText key={node.key} style={[inheritedStyles, styles.code_inline]}>
         {restoreInlineRouteMarkerText(node.content, prepared.markers)}
