@@ -21,6 +21,9 @@ import type {
   ClaudeMcpSnapshot,
   ClaudeRuntimeSnapshot,
   ChatReference,
+  CanvasCommentAnchor,
+  CanvasCommentInput,
+  CanvasCommentThread,
   CanvasRecord,
   CanvasSummary,
   TeamReference,
@@ -467,8 +470,8 @@ export class AgentServerClient {
       method: 'POST', body: JSON.stringify({ run_id: runId, expected_revision: expectedRevision, confirmed: true }),
     }, 120_000, false, 'native-control')
   }
-  async reorderSession(sessionId: string, targetId: string, placement: 'before' | 'after'): Promise<Session[]> {
-    return (await this.post<{ sessions: Session[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/order`, { target_id: targetId, placement })).sessions
+  async reorderSession(sessionId: string, targetId: string, placement: 'before' | 'after', targetFolder?: string): Promise<Session[]> {
+    return (await this.post<{ sessions: Session[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/order`, { target_id: targetId, placement, ...(targetFolder ? { target_folder: targetFolder } : {}) })).sessions
   }
   async markRead(sessionId: string, seq?: number | null): Promise<Session> {
     return (await this.post<{ session: Session }>(`/api/sessions/${encodeURIComponent(sessionId)}/read`, { last_read_agent_event_seq: seq ?? null })).session
@@ -572,6 +575,26 @@ export class AgentServerClient {
   }
   putCanvasState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }> {
     return this.put(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/state`, { state })
+  }
+  /** Saves an edited source; the server answers 409 when the canvas changed after `baseRevision`. */
+  putCanvasSource(sessionId: string, name: string, source: string, baseRevision: number): Promise<CanvasRecord> {
+    return this.put(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/source`, { source, base_revision: baseRevision })
+  }
+  listCanvasComments(sessionId: string, name: string): Promise<{ threads: CanvasCommentThread[] }> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/comments`)
+  }
+  /** Stores the thread and starts its turn; the server refuses both together. */
+  createCanvasComment(sessionId: string, name: string, anchor: CanvasCommentAnchor, input: CanvasCommentInput): Promise<{ thread: CanvasCommentThread }> {
+    return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/comments`, { anchor, ...input })
+  }
+  replyCanvasComment(sessionId: string, name: string, threadId: string, input: CanvasCommentInput): Promise<{ thread: CanvasCommentThread }> {
+    return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/comments/${encodeURIComponent(threadId)}/messages`, input)
+  }
+  setCanvasCommentStatus(sessionId: string, name: string, threadId: string, status: CanvasCommentThread['status']): Promise<{ thread: CanvasCommentThread }> {
+    return this.patch(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/comments/${encodeURIComponent(threadId)}`, { status })
+  }
+  deleteCanvasComment(sessionId: string, name: string, threadId: string): Promise<{ deleted: string }> {
+    return this.delete(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/comments/${encodeURIComponent(threadId)}`)
   }
   /** shell.html / vendor.js for the Canvas page: text bodies, so this bypasses request()'s JSON decoding. */
   async canvasRuntimeAsset(asset: 'shell.html' | 'vendor.js'): Promise<string> {

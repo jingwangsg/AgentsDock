@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { CANVAS_PAGE_MESSAGE_SOURCE, buildCanvasPage, canvasFindScript, canvasNameFromPath, parseCanvasPageMessage, type CanvasHostTheme } from './canvas-page'
+import { CANVAS_PAGE_MESSAGE_SOURCE, COMMENT_PINS_SCRIPT, buildCanvasPage, canvasCommentPinsScript, canvasFindScript, canvasFocusCommentScript, canvasNameFromPath, canvasSelectingScript, parseCanvasPageMessage, type CanvasHostTheme } from './canvas-page'
 
 const shell = '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src data:"></head><body><div id="root"></div><!--CANVAS_SCRIPTS--></body></html>'
 const theme: CanvasHostTheme = { background: '#282c33', foreground: '#dce0e5', muted: '#a9afbc', border: '#464b57', accent: '#74ade8', kind: 'dark' }
@@ -70,5 +70,28 @@ assert.equal(parseCanvasPageMessage('not json'), null)
 }
 // An empty query clears rather than collecting.
 assert.match(canvasFindScript(''), /if \(!request\.query \|\| !ok\(\)\) \{ clear\(\); post\(\); return; \}/)
+
+// --- comments: the shim installs the pins, and the injected calls are plain JS for the WebView
+{
+  const page = buildCanvasPage({ shell: '<body><!--CANVAS_SCRIPTS--></body>', vendor: '', javascript: '', state: {}, theme: { background: '#000', foreground: '#fff', muted: '#888', border: '#333', accent: '#4af', kind: 'dark' } })
+  const shim = new TextDecoder().decode(Uint8Array.from(atob(page.match(/base64,([^"]+)/)![1]), character => character.charCodeAt(0)))
+  assert.ok(shim.includes(COMMENT_PINS_SCRIPT), 'the bridge shim installs window.__agentsdockComments')
+  assert.match(COMMENT_PINS_SCRIPT, /post\(\{ kind: 'comment-open', id: pin\.id \}\)/)
+  // Every injected script must parse; a syntax error is silent inside the WebView.
+  for (const script of [
+    shim,
+    canvasSelectingScript(true),
+    canvasSelectingScript(false),
+    canvasCommentPinsScript([{ id: 'cmt_1', number: 1, canvasId: 'a"b', tag: 'td', text: '</script> x' }], 'cmt_1'),
+    canvasFocusCommentScript('cmt_1'),
+  ]) {
+    assert.doesNotThrow(() => new Function(script), script.slice(0, 80))
+  }
+  assert.match(canvasSelectingScript(false), /host\.setSelecting\(false\); host\.clearSelection\(\);/)
+  assert.deepEqual(
+    parseCanvasPageMessage(JSON.stringify({ source: CANVAS_PAGE_MESSAGE_SOURCE, message: { kind: 'comment-anchors', located: ['cmt_1'] } })),
+    { kind: 'comment-anchors', located: ['cmt_1'] },
+  )
+}
 
 console.log('canvas page tests passed')

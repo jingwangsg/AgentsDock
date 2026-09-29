@@ -14,8 +14,10 @@ test('timeline Markdown uses a pinned native UITextView range-selection surface'
   assert.match(lockfile, /'@bsky\.app\/react-native-uitextview@2\.7\.0':/)
   assert.match(markdown, /UITextView as SelectableText/)
   assert.match(markdown, /textgroup:[\s\S]*?<SelectableText key=\{node\.key\} selectable uiTextView style=\{styles\.textgroup\}>/)
-  assert.match(markdown, /code_block:[\s\S]*?<SelectableText key=\{node\.key\} selectable uiTextView style=\{\[inheritedStyles, styles\.code_block\]\}>/)
-  assert.match(markdown, /fence:[\s\S]*?<SelectableText key=\{node\.key\} selectable uiTextView style=\{\[inheritedStyles, styles\.fence\]\}>/)
+  // Code blocks keep the range-selection surface inside the frame that carries their copy button.
+  assert.match(markdown, /code_block:[\s\S]*?<CodeFrame key=\{node\.key\} code=\{code\}>\n\s*<SelectableText selectable uiTextView style=\{\[inheritedStyles, styles\.code_block, codeFrameStyles\.text\]\}>/)
+  assert.match(markdown, /fence:[\s\S]*?<CodeFrame key=\{node\.key\} code=\{code\}><SelectableText selectable uiTextView style=\{\[inheritedStyles, styles\.fence, codeFrameStyles\.text\]\}>/)
+  assert.match(markdown, /<CopyTextButton text=\{code\} label="Copy code" testID="markdown-code-copy" \/>/)
   assert.match(markdown, /strong:[\s\S]*?<SelectableText/)
   assert.match(markdown, /link:[\s\S]*?<SelectableText[\s\S]*?onPress=\{\(\) => openLink\(node\.attributes\.href\)\}/)
   assert.match(markdown, /code_inline:[\s\S]*?<SelectableText/)
@@ -31,7 +33,8 @@ test('indented Markdown keeps selectable text inside the measured list slot', ()
 test('inline native attachments retain the existing Markdown renderer', () => {
   assert.match(markdown, /containsInlineAttachment\(node\)/)
   assert.match(markdown, /node\.type === 'math_inline' \|\| node\.type === 'image'/)
-  assert.match(markdown, /return <NativeText key=\{node\.key\} selectable style=\{styles\.textgroup\}>/)
+  // Selectable everywhere but Android, where only non-selectable Text draws the layout its attachments were placed on.
+  assert.match(markdown, /return <NativeText key=\{node\.key\} selectable=\{Platform\.OS !== 'android'\} style=\{styles\.textgroup\}>/)
   assert.match(markdown, /if \(!rendered\) return <NativeText selectable/)
   assert.match(markdown, /rules=\{markdownRules\}/)
 })

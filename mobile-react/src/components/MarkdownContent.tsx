@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { UITextView as SelectableText } from '@bsky.app/react-native-uitextview'
-import { Linking, ScrollView, StyleSheet, Text as NativeText, View, type TextStyle } from 'react-native'
+import { Linking, Platform, ScrollView, StyleSheet, Text as NativeText, View, type TextStyle } from 'react-native'
 import { Maximize2 } from 'lucide-react-native'
 import markdownItCjkFriendly from 'markdown-it-cjk-friendly'
 import Markdown, { MarkdownIt, type ASTNode, type RenderRules } from 'react-native-markdown-display'
@@ -17,10 +17,14 @@ import {
   timelineChatReferenceIsRemote,
 } from '../lib/timeline-inline-references'
 import { openCanvasLink } from '../lib/canvas-links'
+import { codexFollowupPrompt, rewriteCodexDirectives } from '../lib/codex-directives'
 import { openWorkspacePathLink } from '../lib/workspace-path-links'
+import { highlightCode } from '../lib/code-highlight'
 import { texToSvg } from '../lib/tex-svg'
 import { scaleChatFont } from '../lib/typography'
-import { usePalette } from '../theme'
+import { useAppStore } from '../store/useAppStore'
+import { useAppColorScheme, usePalette } from '../theme'
+import { CopyTextButton } from './CopyTextButton'
 import { MarkdownTableSheet } from './MarkdownTableSheet'
 import { MermaidDiagram } from './MermaidDiagram'
 import { IconButton } from './ui'
@@ -52,6 +56,7 @@ export function MarkdownContent({
   expandableTables?: boolean
 }) {
   const colors = usePalette()
+  const colorScheme = useAppColorScheme()
   const textColor = color ?? colors.text
   const [expandedTable, setExpandedTable] = useState<string | null>(null)
   const markdownStyle = useMemo(
@@ -63,7 +68,19 @@ export function MarkdownContent({
     [inlineChatReferences, sourceSessionId, value],
   )
   const defaultMathFontSize = scaleChatFont(compact ? 12 : 15.5, fontScale)
+  // After route preparation, whose markers are matched against the original text.
+  const markdownText = useMemo(() => rewriteCodexDirectives(prepared.text), [prepared.text])
   const openLink = useCallback((url: string) => {
+    const followup = codexFollowupPrompt(url)
+    if (followup !== null) {
+      // A suggestion goes into the composer for review; it is never sent from here.
+      if (sourceSessionId) {
+        const store = useAppStore.getState()
+        const current = store.drafts[sourceSessionId] ?? ''
+        store.setSessionDraft(sourceSessionId, current.trim() ? `${current.replace(/\s+$/, '')}\n\n${followup}` : followup)
+      }
+      return false
+    }
     if (openCanvasLink(url, sourceSessionId ?? null)) return false
     if (openWorkspacePathLink(url, sourceSessionId ?? null)) return false
     void Linking.openURL(url).catch(() => undefined)
@@ -85,9 +102,13 @@ export function MarkdownContent({
     // each paragraph synchronously measured for FlashList. Inline native
     // attachments cannot live inside UITextView, so those uncommon blocks
     // retain the existing renderer instead of degrading math or images.
+    // On Android they are not selectable: only non-selectable Text draws the
+    // layout its attachments were placed on (withAndroidPreparedTextLayout);
+    // selectable Text is drawn by the platform TextView, which OEM text
+    // engines can lay out differently, moving formulas off their slot.
     textgroup: (node, children, _parents, styles) => {
       if (containsInlineAttachment(node)) {
-        return <NativeText key={node.key} selectable style={styles.textgroup}>{children}</NativeText>
+        return <NativeText key={node.key} selectable={Platform.OS !== 'android'} style={styles.textgroup}>{children}</NativeText>
       }
       return (
         <SelectableText key={node.key} selectable uiTextView style={styles.textgroup}>
@@ -155,20 +176,24 @@ export function MarkdownContent({
     span: (node, children, _parents, styles) => (
       <SelectableText key={node.key} style={styles.span}>{children}</SelectableText>
     ),
-    code_block: (node, _children, _parents, styles, inheritedStyles) => (
-      <SelectableText key={node.key} selectable uiTextView style={[inheritedStyles, styles.code_block]}>
-        {restoreInlineRouteMarkerText(trimTrailingCodeNewline(node.content), prepared.markers)}
-      </SelectableText>
-    ),
+    code_block: (node, _children, _parents, styles, inheritedStyles) => {
+      const code = restoreInlineRouteMarkerText(trimTrailingCodeNewline(node.content), prepared.markers)
+      return <CodeFrame key={node.key} code={code}>
+        <SelectableText selectable uiTextView style={[inheritedStyles, styles.code_block, codeFrameStyles.text]}>{code}</SelectableText>
+      </CodeFrame>
+    },
     fence: (node, _children, _parents, styles, inheritedStyles) => {
       const code = restoreInlineRouteMarkerText(trimTrailingCodeNewline(node.content), prepared.markers)
-      const block = (
-        <SelectableText key={node.key} selectable uiTextView style={[inheritedStyles, styles.fence]}>
-          {code}
-        </SelectableText>
-      )
       // The info string is on the raw token but missing from the typed AST node.
       const language = (node as ASTNode & { sourceInfo?: string }).sourceInfo?.trim().split(/\s+/)[0]
+      const runs = language === 'mermaid' ? null : highlightCode(code, language, colorScheme)
+      const block = (
+        <CodeFrame key={node.key} code={code}><SelectableText selectable uiTextView style={[inheritedStyles, styles.fence, codeFrameStyles.text]}>
+          {runs ? runs.map((run, index) => run.color || run.bold || run.italic
+            ? <SelectableText key={index} style={{ color: run.color, fontWeight: run.bold ? '700' : undefined, fontStyle: run.italic ? 'italic' : undefined }}>{run.text}</SelectableText>
+            : run.text) : code}
+        </SelectableText></CodeFrame>
+      )
       return language === 'mermaid' ? <MermaidDiagram key={node.key} source={code}>{block}</MermaidDiagram> : block
     },
     table: (node, children, _parents, markdownStyles) => {
@@ -248,11 +273,11 @@ export function MarkdownContent({
         block
       />
     ),
-  }), [colors.blue, colors.muted, textColor, defaultMathFontSize, expandableTables, onChatReferencePress, openLink, prepared.markers, tableColumnWidths])
+  }), [colors.blue, colors.muted, colorScheme, textColor, defaultMathFontSize, expandableTables, onChatReferencePress, openLink, prepared.markers, tableColumnWidths])
 
   return (
     <>
-      <Markdown markdownit={chatMarkdown} rules={markdownRules} style={markdownStyle} onLinkPress={openLink}>{prepared.text}</Markdown>
+      <Markdown markdownit={chatMarkdown} rules={markdownRules} style={markdownStyle} onLinkPress={openLink}>{markdownText}</Markdown>
       {/* Mounted only while open, so a collapsed table is laid out once, in the timeline. */}
       {expandedTable !== null ? (
         <MarkdownTableSheet onClose={() => setExpandedTable(null)}>
@@ -263,6 +288,21 @@ export function MarkdownContent({
     </>
   )
 }
+
+/** A code block with a copy button over its top-right corner, like the desktop's code toolbar. */
+function CodeFrame({ code, children }: { code: string; children: ReactNode }) {
+  return <View style={codeFrameStyles.frame}>
+    {children}
+    <View style={codeFrameStyles.copy}><CopyTextButton text={code} label="Copy code" testID="markdown-code-copy" /></View>
+  </View>
+}
+
+// The text keeps clear of the button so a long first line is not hidden under it.
+const codeFrameStyles = StyleSheet.create({
+  frame: { position: 'relative' },
+  text: { paddingRight: 40 },
+  copy: { position: 'absolute', top: 2, right: 2 },
+})
 
 function trimTrailingCodeNewline(content: string): string {
   return content.endsWith('\n') ? content.slice(0, -1) : content
@@ -292,6 +332,10 @@ function MathFormula({ source, raw, color, fontSize, mathDisplay, block }: { sou
       fallback={fallback}
       onError={() => undefined}
       pointerEvents="none"
+      // A text attachment's bottom edge sits on the baseline, which lifts
+      // subscripts and descenders above it. Draw the formula's depth below
+      // the baseline instead; the transform leaves the reserved box unchanged.
+      style={block ? undefined : { transform: [{ translateY: rendered.depthEm * fontSize }] }}
     />
   )
   if (!block) return svg

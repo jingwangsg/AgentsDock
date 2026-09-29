@@ -3,7 +3,7 @@ import { FlashList } from '@shopify/flash-list'
 import * as Clipboard from 'expo-clipboard'
 import * as FileSystem from 'expo-file-system/legacy'
 import { ActionSheetIOS, ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
-import { AlertCircle, ChevronLeft, ChevronRight, Download, File, FilePlus, Folder, FolderPlus, Link, MoreHorizontal, Pencil, RefreshCw, Search, Share2, Trash2, X } from 'lucide-react-native'
+import { AlertCircle, ChevronLeft, ChevronRight, Download, File, FileDiff, FilePlus, Folder, FolderPlus, Link, MoreHorizontal, Pencil, RefreshCw, Search, Share2, Trash2, X } from 'lucide-react-native'
 import type { AgentServerClient } from '../../api/AgentServerClient'
 import {
   inferredMobileFileContentType,
@@ -23,6 +23,7 @@ import { usePalette } from '../../theme'
 import type { WorkspaceEntry, WorkspaceFile, WorkspaceInfo } from '../../types'
 import { Text, TextInput } from '../AppText'
 import { EmptyState, IconButton, SheetCloseButton } from '../ui'
+import { WorkspaceChanges } from '../WorkspaceChanges'
 import { useTextPrompt } from '../TextPromptDialog'
 import { FilePreview, type FilePreviewEditController, type LoadedFileText } from './FilePreview'
 import type { WorkspaceFileViewerRequest } from './FileViewerContext'
@@ -141,6 +142,7 @@ function ScopedWorkspaceFileViewer({ request, connection, modalPadding, connecti
   const [selected, setSelected] = useState<WorkspaceEntry | null>(null)
   const fileTransfer = useFileTransfer(`${connection.key}:${request.sessionId}:${selected?.path ?? ''}`)
   const [query, setQuery] = useState('')
+  const [changesOpen, setChangesOpen] = useState(false)
   const [searchRevision, setSearchRevision] = useState(0)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -731,6 +733,11 @@ function ScopedWorkspaceFileViewer({ request, connection, modalPadding, connecti
       <SheetCloseButton onPress={onClose} label="Close workspace files" testID="workspace-file-viewer-close" activateOnPressIn />
       {layout === 'phone' && selected ? <IconButton icon={ChevronLeft} touchSize={44} onPress={goUp} label="Back to workspace files" activateOnPressIn /> : null}
       <View style={styles.headerIdentity}><Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>{layout === 'phone' && selected ? selected.name : title}</Text><Text style={[styles.headerSubtitle, { color: colors.muted }]} numberOfLines={1}>{layout === 'phone' && selected ? selected.path : info?.root ?? 'Browse this chat’s working directory'}</Text></View>
+      {/* The desktop's Changes tab sits beside the open files; here it is a sheet over the browser, so closing it returns here. */}
+      <Pressable testID="workspace-open-changes" accessibilityRole="button" accessibilityLabel="Changes" onPress={() => setChangesOpen(true)} style={({ pressed }) => [styles.changesButton, { backgroundColor: colors.raised, opacity: pressed ? 0.7 : 1 }]}>
+        <FileDiff size={16} color={colors.text} />
+        <Text style={[styles.changesButtonText, { color: colors.text }]}>Changes</Text>
+      </Pressable>
       {layout === 'pad' && mutationsAvailable ? <IconButton icon={FilePlus} disabled={mutationControlsDisabled} onPress={() => requestCreateWorkspaceEntry('file')} label="Create workspace file" testID="workspace-create-file" activateOnPressIn /> : null}
       {layout === 'pad' && mutationsAvailable ? <IconButton icon={FolderPlus} disabled={mutationControlsDisabled} onPress={() => requestCreateWorkspaceEntry('directory')} label="Create workspace folder" testID="workspace-create-folder" activateOnPressIn /> : null}
       {layout === 'pad' && mutationsAvailable && selected ? <IconButton icon={Pencil} disabled={mutationControlsDisabled} onPress={() => { const current = selectedRef.current; if (current) requestRenameWorkspaceEntry(current) }} label={`Rename ${selected.name}`} testID="workspace-rename-selected" activateOnPressIn /> : null}
@@ -777,6 +784,7 @@ function ScopedWorkspaceFileViewer({ request, connection, modalPadding, connecti
       </View> : null}
     </KeyboardAvoidingView>
     {textPromptDialog}
+    <WorkspaceChanges sessionId={request.sessionId} visible={changesOpen} onClose={() => setChangesOpen(false)} />
   </View>
 }
 
@@ -978,6 +986,8 @@ const styles = StyleSheet.create({
   headerIdentity: { flex: 1, minWidth: 0 },
   headerTitle: { flex: 1, fontSize: 15, fontWeight: '800' },
   headerSubtitle: { fontSize: 10, marginTop: 2 },
+  changesButton: { minHeight: 44, borderRadius: 8, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  changesButtonText: { fontSize: 13, fontWeight: '700' },
   viewerPanes: { flex: 1, minHeight: 0 },
   padBody: { flexDirection: 'row' },
   hiddenPane: { display: 'none' },

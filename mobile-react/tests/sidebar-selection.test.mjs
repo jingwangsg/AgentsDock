@@ -7,14 +7,14 @@ const source = fs.readFileSync(path.resolve('src/components/Sidebar.tsx'), 'utf8
 
 test('sidebar list explicitly invalidates recycled rows when selection changes', () => {
   assert.match(source, /const listState = useMemo\(\(\) => \(\{ active, selected, openingSearchResultId \}\)/)
-  assert.match(source, /<FlatList[\s\S]*?extraData=\{listState\}/)
+  assert.match(source, /<DraggableFlatList[\s\S]*?extraData=\{listState\}/)
   assert.match(source, /accessibilityState=\{\{ selected, disabled: opening \}\}/)
 })
 
 test('chat taps on both platforms stay on a plain native press target', () => {
   const rowPress = source.match(/const pressableRow = \(([\s\S]*?)\n  \)\n  \/\/ The chat identity/)?.[1] ?? ''
   assert.match(rowPress, /if \(!sessionScopeIsCurrent\(profileScope, session\.id\)\) return[\s\S]*?onPress\(\)/)
-  assert.match(source, /onLongPress=\{welcome \? undefined : Platform\.OS === 'ios' \? openActionSheet : \(\) => menu\.current\?\.show\(\)\}/)
+  assert.match(source, /onLongPress=\{welcome \? undefined : \(\) => onLift\(Platform\.OS === 'ios' \? openActionSheet : \(\) => menu\.current\?\.show\(\)\)\}/)
   assert.match(source, /if \(welcome \|\| Platform\.OS === 'ios'\) return pressableRow/)
   assert.doesNotMatch(source, /from 'react-native-gesture-handler\/ReanimatedSwipeable'|<ReanimatedSwipeable|SwipeableMethods/)
   assert.doesNotMatch(source, /<MenuView[^>]*>\{pressableRow\}<\/MenuView>/)
@@ -23,7 +23,7 @@ test('chat taps on both platforms stay on a plain native press target', () => {
 test('Android chat and folder actions open from a long press on a collapsed sibling anchor', () => {
   assert.match(source, /<View style=\{styles\.sessionShell\}>\{pressableRow\}<MenuView ref=\{menu\} testID=\{`chat-actions-\$\{session\.id\}`\}/)
   assert.match(source, /<View style=\{styles\.folderHeaderShell\}>\{header\}<MenuView ref=\{menu\} testID=\{`folder-actions-\$\{item\.folder\}`\}/)
-  assert.match(source, /onLongPress=\{!hasMenu \? undefined : Platform\.OS === 'ios' \? openActionSheet : \(\) => menu\.current\?\.show\(\)\}/)
+  assert.match(source, /onLongPress=\{!hasMenu \? undefined : \(\) => onLift\(Platform\.OS === 'ios' \? openActionSheet : \(\) => menu\.current\?\.show\(\)\)\}/)
   assert.match(source, /menuAnchor: \{ width: 0, justifyContent: 'flex-end', pointerEvents: 'none' \}/)
   // Compose only tracks a drawn (non-zero) anchor, so the trigger keeps a 1pt child.
   assert.match(source, /menuAnchorContent: \{ width: 1, height: 1 \}/)
@@ -112,4 +112,17 @@ test('Archived starts collapsed on every launch and its expansion is not persist
   // Toggling Archived flips session state instead of writing the persisted collapsed list.
   assert.match(source, /if \(item\.folder === 'Archived'\) \{ setArchivedExpanded\(expanded => !expanded\); return \}/)
   assert.match(source, /next\.delete\('Archived'\)/)
+})
+
+test('a long press lifts a chat or folder for dragging and still opens its menu when let go in place', () => {
+  assert.equal(source.match(/onLift=\{openMenu => lift\(openMenu, drag\)\}/g)?.length, 2)
+  assert.match(source, /if \(from === to\) \{ openMenu\?\.\(\); return \}/)
+  assert.match(source, /onPlaceholderIndexChange=\{\(\) => \{ liftedMenu\.current = null \}\}/)
+})
+
+test('a refused drop is drawn once, then undone, and a held order lasts only for its rows', () => {
+  // draggable-flatlist resets a dropped row only when the key order changes.
+  assert.match(source, /setDropped\(\{ base: rows, data, refused: !drop \}\)\s*if \(!drop\) return/)
+  assert.match(source, /if \(!dropped\?\.refused\) return\s*const undo = setImmediate\(\(\) => setDropped\(null\)\)/)
+  assert.match(source, /const listData = dropped\?\.base === rows \? dropped\.data : rows/)
 })

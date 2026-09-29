@@ -14,8 +14,11 @@ test('chat Markdown connects bounded math tokens to native SVG rendering', () =>
   assert.match(markdown, /texToSvg\(source, mathDisplay\)/)
   assert.match(markdown, /<SvgXml/)
   assert.match(markdown, /fallback=\{fallback\}/)
-  assert.doesNotMatch(markdown, /translateY: rendered\.depthEm/)
+  // Attachments sit bottom-on-baseline; only inline formulas drop their depth below it.
+  assert.match(markdown, /style=\{block \? undefined : \{ transform: \[\{ translateY: rendered\.depthEm \* fontSize \}\] \}\}/)
   assert.equal(packageJson.dependencies['mathjax-full'], '3.2.2')
+  // Android draws non-selectable Text from the measured layout its attachments were placed on.
+  assert.match(markdown, /containsInlineAttachment\(node\)\) \{\n\s*return <NativeText key=\{node\.key\} selectable=\{Platform\.OS !== 'android'\}/)
 })
 
 test('wide Markdown tables scroll horizontally without squeezing every column into the phone width', () => {

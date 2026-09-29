@@ -49,6 +49,7 @@ import { Text } from './AppText'
 import { ChatReferenceChips, CrossChatExchangeCard, CrossChatHandoffCard, CrossChatMessageCard } from './CrossChatTimelineCards'
 import { ImportedCrossChatDeliveryCard } from './ImportedCrossChatDeliveryCard'
 import { IconButton } from './ui'
+import { CopyTextButton } from './CopyTextButton'
 import { MarkdownContent } from './MarkdownContent'
 import { MediaGrid } from './MediaGrid'
 
@@ -468,7 +469,10 @@ function TraceRowView({ row, sessionId, onReview, fontScale, anchorSeq, includeC
               {text.trim()
                 ? event.type === 'reasoning_summary' || event.type === 'reasoning_text'
                   ? <MarkdownContent value={text} fontScale={fontScale} />
-                  : <Text selectable style={[styles.traceText, { color: colors.text }]}>{text}</Text>
+                  : <View style={styles.traceCode}>
+                    <Text selectable style={[styles.traceText, styles.traceCodeText, { color: colors.text }]}>{text}</Text>
+                    <CopyTextButton text={text} label="Copy" testID="trace-text-copy" />
+                  </View>
                 : null}
             </View>
           </View>
@@ -1015,7 +1019,7 @@ const styles = StyleSheet.create({
   fold: { alignSelf: 'flex-start', minHeight: 44, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 5, borderWidth: StyleSheet.hairlineWidth, justifyContent: 'center' }, collapse: { alignSelf: 'flex-start', minHeight: 44, paddingVertical: 5, justifyContent: 'center' },
   traceWrap: { paddingHorizontal: 14 }, traceHeader: { minHeight: 52, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 7 },
   traceHeading: { flex: 1, minWidth: 0, gap: 3 }, traceHeadingMeta: { flexDirection: 'row', alignItems: 'baseline', gap: 7 }, traceTitle: { flexShrink: 0, fontSize: 12, fontWeight: '700' }, traceMeta: { flex: 1, minWidth: 0, fontSize: 10.5 }, traceHeadline: { fontSize: 10.5, lineHeight: 15 }, traceAction: { flexShrink: 0, fontSize: 10.5, fontWeight: '800' }, review: { minHeight: 44, borderRadius: 5, paddingHorizontal: 8, paddingVertical: 5, justifyContent: 'center' },
-  traceBody: { marginHorizontal: 8, borderLeftWidth: StyleSheet.hairlineWidth, paddingVertical: 8, paddingLeft: 11, gap: 9 }, traceHidden: { fontSize: 10, fontWeight: '700' }, traceEvent: { flexDirection: 'row', gap: 8 }, traceEventBody: { flex: 1, minWidth: 0 }, traceEventType: { fontSize: 10, fontWeight: '700', textTransform: 'capitalize' }, traceText: { fontSize: 12, fontFamily: fonts.mono, lineHeight: 17, marginTop: 3 },
+  traceBody: { marginHorizontal: 8, borderLeftWidth: StyleSheet.hairlineWidth, paddingVertical: 8, paddingLeft: 11, gap: 9 }, traceHidden: { fontSize: 10, fontWeight: '700' }, traceEvent: { flexDirection: 'row', gap: 8 }, traceEventBody: { flex: 1, minWidth: 0 }, traceEventType: { fontSize: 10, fontWeight: '700', textTransform: 'capitalize' }, traceText: { fontSize: 12, fontFamily: fonts.mono, lineHeight: 17, marginTop: 3 }, traceCode: { flexDirection: 'row', alignItems: 'flex-start', gap: 4 }, traceCodeText: { flex: 1, minWidth: 0 },
   traceDetailActions: { gap: 7, paddingTop: 3 },
   traceDetailAction: { minHeight: 44, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   traceDetailActionText: { fontSize: 11, fontWeight: '800' },

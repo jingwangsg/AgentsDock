@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActionSheetIOS, Alert, FlatList, Image, Platform, Pressable, StyleSheet, View } from 'react-native'
+import { ActionSheetIOS, Alert, Image, Platform, Pressable, StyleSheet, View } from 'react-native'
+import DraggableFlatList, { ScaleDecorator, type DragEndParams } from 'react-native-draggable-flatlist'
 import { MenuView, type MenuAction, type MenuComponentRef } from '@expo/ui/community/menu'
 import { ChevronDown, ChevronRight, FolderPlus, Network, Plus, RefreshCw, Search, Server, Settings } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -7,7 +8,7 @@ import { useAppStore } from '../store/useAppStore'
 import { radius, usePalette } from '../theme'
 import type { Backend, Session, TimelineSearchResult } from '../types'
 import { backendLabel, formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
-import { compareSessions, orderedSessionSections, sessionSection } from '../lib/session-order'
+import { compareSessions, orderedSessionSections, resolveSidebarDrop, sessionSection } from '../lib/session-order'
 import { selectableChatBackends } from '../lib/runtime-catalog'
 import { sessionNeedsProviderInteraction, sessionPendingInteractionCount } from '../lib/claude-controls'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
@@ -260,7 +261,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     dismissSearchKeyboard()
     void promptText({
       title: 'New folder',
-      message: 'Create a folder, then move chats into it from the chat actions menu.',
+      message: 'Create a folder, then drag chats into it or use Move to Folder in the chat actions menu.',
       confirmLabel: 'Create',
       placeholder: 'Folder name',
     }).then(value => {
@@ -318,6 +319,44 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
       setFolderOrder(others, scope.profileGeneration)
       if (collapsed.has(folder)) setCollapsedFolders(collapsedFolders.filter(entry => entry !== folder), scope.profileGeneration)
     })
+  }
+  // A long press lifts a row for dragging; letting go where it started opens its
+  // actions menu instead, so a long press still reaches every chat and folder action.
+  const liftedMenu = useRef<(() => void) | null>(null)
+  // Holds the dropped order until the store catches up, so the row does not jump
+  // back while the server applies the move; newer rows (the server's answer, a
+  // collapse) replace it.
+  // load-bearing: draggable-flatlist clears a dropped row's offset only when the
+  // data's key order changes, so a refused drop must show its order once, then
+  // the old one again, or the row stays drawn where it was let go.
+  const [dropped, setDropped] = useState<{ base: Row[]; data: Row[]; refused: boolean } | null>(null)
+  const listData = dropped?.base === rows ? dropped.data : rows
+  useEffect(() => {
+    // After the refused order has rendered; undoing it in the same batch would
+    // leave the key order unchanged.
+    if (!dropped?.refused) return
+    const undo = setImmediate(() => setDropped(null))
+    return () => clearImmediate(undo)
+  }, [dropped])
+  const lift = (openMenu: () => void, drag: () => void) => {
+    // Search results are filtered and re-sorted; there is no order to change.
+    if (query.trim()) { openMenu(); return }
+    liftedMenu.current = openMenu
+    drag()
+  }
+  const onDragEnd = ({ data, from, to }: DragEndParams<Row>) => {
+    const openMenu = liftedMenu.current
+    liftedMenu.current = null
+    if (from === to) { openMenu?.(); return }
+    // A drop made while the server changed is refused (and drawn back) like any other.
+    const drop = profileScopeIsCurrent(profileScope) ? resolveSidebarDrop(data, to, sessions, folders) : null
+    if (drop?.kind === 'folder-order') { setFolderOrder(drop.order, profileScope.profileGeneration); return }
+    setDropped({ base: rows, data, refused: !drop })
+    if (!drop) return
+    void (drop.kind === 'reorder'
+      ? reorder(drop.sessionId, drop.targetId, drop.placement, profileScope.profileGeneration, drop.targetFolder)
+      : updateSession(drop.sessionId, { folder: drop.folder, pinned: false, archived: false }, profileScope.profileGeneration)
+    ).finally(() => setDropped(current => current?.data === data ? null : current))
   }
 
   return (
@@ -389,17 +428,23 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           style={({ pressed }) => [styles.searchRetry, { borderColor: colors.red, opacity: pressed ? 0.6 : 1 }]}
         ><Text style={[styles.searchRetryText, { color: colors.red }]}>Retry</Text></Pressable>
       </View> : null}
-      <FlatList
+      <DraggableFlatList
         pointerEvents={workspaceAdopting ? 'none' : 'auto'}
-        data={rows}
+        data={listData}
         extraData={listState}
         keyExtractor={item => item.key}
+        onDragEnd={onDragEnd}
+        // Dragged away, even if brought back: letting go is a move, not a menu request.
+        onPlaceholderIndexChange={() => { liftedMenu.current = null }}
+        // The library's wrapper view does not shrink by default; without this the list
+        // runs past the sidebar and its last rows and footer cannot be reached.
+        containerStyle={styles.listContainer}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         alwaysBounceVertical={Platform.OS === 'ios'}
         onScrollBeginDrag={dismissSearchKeyboard}
         contentContainerStyle={styles.list}
-        renderItem={({ item }) => item.kind === 'header' ? <FolderHeader
+        renderItem={({ item, drag }) => <ScaleDecorator activeScale={1.03}>{item.kind === 'header' ? <FolderHeader
           item={item}
           profileScope={profileScope}
           collapsed={collapsed.has(item.folder)}
@@ -407,6 +452,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           canMoveUp={folders.indexOf(item.folder) > 0}
           canMoveDown={folders.indexOf(item.folder) >= 0 && folders.indexOf(item.folder) < folders.length - 1}
           onDismissKeyboard={dismissSearchKeyboard}
+          onLift={openMenu => lift(openMenu, drag)}
           onToggle={() => {
             if (!profileScopeIsCurrent(profileScope)) return
             if (item.folder === 'Archived') { setArchivedExpanded(expanded => !expanded); return }
@@ -435,12 +481,13 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
             onMoveUp={() => { if (previousId && sessionScopeIsCurrent(profileScope, item.session.id)) void reorder(item.session.id, previousId, 'before', profileScope.profileGeneration) }}
             onMoveDown={() => { if (nextId && sessionScopeIsCurrent(profileScope, item.session.id)) void reorder(item.session.id, nextId, 'after', profileScope.profileGeneration) }}
             onDismissKeyboard={dismissSearchKeyboard}
+            onLift={openMenu => lift(openMenu, drag)}
             onPress={() => {
               openSessionRow(item.session, item.searchResult)
             }}
             promptText={promptText}
           />
-        })()}
+        })()}</ScaleDecorator>}
       />
       <View style={[styles.footer, { borderColor: colors.border, minHeight: 34 + insets.bottom, paddingBottom: insets.bottom }]}>
         <Text style={{ color: colors.muted, fontSize: 10 }}>{sessions.length} chats</Text>
@@ -457,7 +504,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   )
 }
 
-function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canMoveDown, onDismissKeyboard, onToggle, onMove, onNewChat, onRename, onDelete }: {
+function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canMoveDown, onDismissKeyboard, onLift, onToggle, onMove, onNewChat, onRename, onDelete }: {
   item: Extract<Row, { kind: 'header' }>
   profileScope: ProfileScope
   collapsed: boolean
@@ -465,6 +512,7 @@ function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canM
   canMoveUp: boolean
   canMoveDown: boolean
   onDismissKeyboard: () => void
+  onLift: (openMenu: () => void) => void
   onToggle: () => void
   onMove: (direction: 'up' | 'down') => void
   onNewChat: (backend: Backend) => void
@@ -511,7 +559,7 @@ function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canM
     accessibilityLabel={`${collapsed ? 'Expand' : 'Collapse'} ${item.title}`}
     accessibilityHint={hasMenu ? 'Long press for folder actions.' : undefined}
     onPress={() => { onDismissKeyboard(); onToggle() }}
-    onLongPress={!hasMenu ? undefined : Platform.OS === 'ios' ? openActionSheet : () => menu.current?.show()}
+    onLongPress={!hasMenu ? undefined : () => onLift(Platform.OS === 'ios' ? openActionSheet : () => menu.current?.show())}
     delayLongPress={350}
     style={[styles.header, hasMenu && Platform.OS !== 'ios' && styles.headerInShell]}
   >
@@ -523,7 +571,7 @@ function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canM
   return <View style={styles.folderHeaderShell}>{header}<MenuView ref={menu} testID={`folder-actions-${item.folder}`} title={item.title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>
 }
 
-function SessionRow({ session, profileScope, selected, running, searchSnippet, opening, folders, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onDismissKeyboard, onPress, promptText }: {
+function SessionRow({ session, profileScope, selected, running, searchSnippet, opening, folders, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onDismissKeyboard, onLift, onPress, promptText }: {
   session: Session
   profileScope: ProfileScope
   selected: boolean
@@ -536,6 +584,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   onMoveUp: () => void
   onMoveDown: () => void
   onDismissKeyboard: () => void
+  onLift: (openMenu: () => void) => void
   onPress: () => void
   promptText: (options: TextPromptOptions) => Promise<string | null>
 }) {
@@ -682,7 +731,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
       accessibilityState={{ selected, disabled: opening }}
       disabled={opening}
       delayLongPress={350}
-      onLongPress={welcome ? undefined : Platform.OS === 'ios' ? openActionSheet : () => menu.current?.show()}
+      onLongPress={welcome ? undefined : () => onLift(Platform.OS === 'ios' ? openActionSheet : () => menu.current?.show())}
       onPress={() => {
         if (!sessionScopeIsCurrent(profileScope, session.id)) return
         onPress()
@@ -736,6 +785,7 @@ const styles = StyleSheet.create({
   searchErrorText: { flex: 1, fontSize: 11.5, fontWeight: '600' },
   searchRetry: { minWidth: 64, minHeight: 44, paddingHorizontal: 10, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
   searchRetryText: { fontSize: 11.5, fontWeight: '800' },
+  listContainer: { flex: 1 },
   list: { paddingHorizontal: 6, paddingBottom: 24 },
   folderHeaderShell: { minHeight: 44, flexDirection: 'row', alignItems: 'stretch' },
   header: { minHeight: 44, paddingHorizontal: 5, flexDirection: 'row', alignItems: 'center', gap: 4 },

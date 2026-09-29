@@ -16,6 +16,24 @@ export interface CanvasHostTheme {
   kind: 'light' | 'dark'
 }
 
+/** One element the runtime's selection mode picked (tap in the WebView). */
+export interface CanvasSelectedElement {
+  id: string | null
+  tag: string
+  text: string
+  html: string
+}
+
+/** A numbered marker the page draws on the element an open comment thread is about. */
+export interface CanvasCommentPin {
+  id: string
+  number: number
+  canvasId: string | null
+  tag: string
+  text: string
+  label?: string
+}
+
 export type CanvasPageMessage =
   | { kind: 'ready' }
   | { kind: 'state'; key: string; value: unknown }
@@ -23,8 +41,12 @@ export type CanvasPageMessage =
   | { kind: 'link'; url: string }
   /** Injected in-page find reports its running match count back over the same channel. */
   | { kind: 'find-result'; total: number; active: number }
-  /** Element feedback and agent actions exist on the desktop only; the sheet ignores them. */
-  | { kind: 'action' | 'selection' }
+  | { kind: 'selection'; elements: CanvasSelectedElement[]; complete: boolean }
+  /** From the comment pins: a pin was tapped / which threads have their element in this revision. */
+  | { kind: 'comment-open'; id: string }
+  | { kind: 'comment-anchors'; located: string[] }
+  /** Agent actions exist on the desktop only; the sheet ignores them. */
+  | { kind: 'action' }
 
 /** `source` of the JSON envelopes the page posts through window.ReactNativeWebView. */
 export const CANVAS_PAGE_MESSAGE_SOURCE = 'agentsdock-canvas'
@@ -44,6 +66,78 @@ export function canvasNameFromPath(value: string | null | undefined): string | n
 }
 
 /**
+ * Comment pins, installed as window.__agentsdockComments: a numbered marker on the
+ * element each open thread is about, in a layer outside #root so React never sees
+ * it, re-placed whenever the report's layout changes. An anchor is found by
+ * data-canvas-id, then by tag and leading text; threads whose element is gone from
+ * this revision get no pin and are reported as not located.
+ * Mirrors electron/src/main/canvas-protocol.ts COMMENT_PINS_SCRIPT.
+ */
+export const COMMENT_PINS_SCRIPT = `
+  window.__agentsdockComments = (() => {
+    const norm = value => String(value || '').replace(/\\s+/g, ' ').trim();
+    let pins = [], active = null, layer = null, frame = 0, reported = '';
+    const locate = pin => {
+      const scope = pin.canvasId ? document.querySelector('[data-canvas-id="' + CSS.escape(pin.canvasId) + '"]') : null;
+      const want = norm(pin.text).slice(0, 120);
+      if (scope && scope.tagName.toLowerCase() === pin.tag && (!want || norm(scope.textContent).startsWith(want))) return scope;
+      const root = scope || document.getElementById('root');
+      if (root && want) for (const element of root.querySelectorAll(pin.tag)) if (norm(element.textContent).startsWith(want)) return element;
+      return scope;
+    };
+    const place = () => {
+      frame = 0;
+      if (!layer) {
+        const style = document.createElement('style');
+        style.textContent = '#agentsdock-comment-pins{position:absolute;left:0;top:0;z-index:2147483646}'
+          + '#agentsdock-comment-pins button{position:absolute;min-width:26px;height:26px;margin:0;padding:0 7px;border:2px solid var(--canvas-background);border-radius:13px 13px 13px 2px;background:var(--canvas-accent);color:var(--canvas-background);font:700 12px/20px -apple-system,sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.35)}'
+          + '#agentsdock-comment-pins button.active{transform:scale(1.2)}'
+          + '[data-agentsdock-comment]{outline:2px dashed var(--canvas-accent)!important;outline-offset:3px}';
+        document.head.appendChild(style);
+        layer = document.createElement('div');
+        layer.id = 'agentsdock-comment-pins';
+        document.body.appendChild(layer);
+        const root = document.getElementById('root') || document.body;
+        new ResizeObserver(schedule).observe(document.body);
+        new MutationObserver(schedule).observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'style'] });
+        window.addEventListener('resize', schedule);
+      }
+      for (const element of document.querySelectorAll('[data-agentsdock-comment]')) element.removeAttribute('data-agentsdock-comment');
+      layer.replaceChildren();
+      const located = [];
+      for (const pin of pins) {
+        const element = locate(pin);
+        if (!element) continue;
+        located.push(pin.id);
+        const rect = element.getBoundingClientRect();
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = String(pin.number);
+        button.title = pin.label || '';
+        if (pin.id === active) { button.className = 'active'; element.setAttribute('data-agentsdock-comment', 'active'); }
+        button.style.left = Math.max(0, rect.right + window.scrollX - 13) + 'px';
+        button.style.top = Math.max(0, rect.top + window.scrollY - 13) + 'px';
+        button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); post({ kind: 'comment-open', id: pin.id }); });
+        layer.appendChild(button);
+      }
+      const summary = located.join(',');
+      if (summary !== reported) { reported = summary; post({ kind: 'comment-anchors', located }); }
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(place); };
+    return {
+      set(next, nextActive) { pins = Array.isArray(next) ? next : []; active = nextActive || null; reported = null; schedule(); },
+      focus(id) {
+        active = id;
+        const pin = pins.find(candidate => candidate.id === id);
+        const element = pin && locate(pin);
+        if (element && element.scrollIntoView) element.scrollIntoView({ block: 'center', inline: 'nearest' });
+        schedule();
+      },
+    };
+  })();
+`
+
+/**
  * Runs before vendor.js. The runtime posts to the WKWebView handler
  * `window.webkit.messageHandlers.zedCanvas`; this routes it to
  * react-native-webview's channel. On iOS that library keeps its own handler in
@@ -52,15 +146,17 @@ export function canvasNameFromPath(value: string | null | undefined): string | n
 const BRIDGE_SHIM = `
 (() => {
   const PAGE = ${JSON.stringify(CANVAS_PAGE_MESSAGE_SOURCE)};
+  const post = message => window.ReactNativeWebView.postMessage(JSON.stringify({ source: PAGE, message }));
   const zedCanvas = { postMessage(raw) {
     let message = raw;
     try { message = JSON.parse(raw); } catch {}
-    window.ReactNativeWebView.postMessage(JSON.stringify({ source: PAGE, message }));
+    post(message);
   } };
   const webkit = window.webkit || (window.webkit = {});
   const handlers = webkit.messageHandlers || (webkit.messageHandlers = {});
   try { Object.defineProperty(handlers, 'zedCanvas', { value: zedCanvas, configurable: true }); }
   catch { webkit.messageHandlers = Object.assign(Object.create(handlers), { zedCanvas }); }
+${COMMENT_PINS_SCRIPT}
 })();
 `
 
@@ -126,6 +222,20 @@ export function canvasFindScript(query: string, options: { forward?: boolean; ma
   else { style(); state.ranges = collect(request.query); state.at = state.ranges.length ? 0 : -1; CSS.highlights.set('canvas-find', new Highlight(...state.ranges)); }
   paint(); post();
 })(); true;`
+}
+
+/** Injected calls into the page: the runtime's selection mode and the comment pins. Trailing `true;` as for find. */
+export function canvasSelectingScript(selecting: boolean): string {
+  const call = selecting ? 'host.setSelecting(true);' : 'host.setSelecting(false); host.clearSelection();'
+  return `(() => { const host = globalThis.__zedCanvasHost; if (host) { ${call} } })(); true;`
+}
+
+export function canvasCommentPinsScript(pins: readonly CanvasCommentPin[], active: string | null): string {
+  return `(() => { if (window.__agentsdockComments) window.__agentsdockComments.set(${JSON.stringify(pins)}, ${JSON.stringify(active)}); })(); true;`
+}
+
+export function canvasFocusCommentScript(id: string): string {
+  return `(() => { if (window.__agentsdockComments) window.__agentsdockComments.focus(${JSON.stringify(id)}); })(); true;`
 }
 
 /** Decodes one WebView `onMessage` payload; null for anything the bridge shim did not send. */

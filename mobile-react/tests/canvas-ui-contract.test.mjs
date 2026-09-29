@@ -7,6 +7,7 @@ function source(relativePath) {
   return fs.readFileSync(path.resolve(relativePath), 'utf8')
 }
 
+const threads = fs.readFileSync(path.resolve('src/components/CanvasCommentThreads.tsx'), 'utf8')
 const sheet = source('src/components/CanvasSheet.tsx')
 const page = source('src/lib/canvas-page.ts')
 const links = source('src/lib/canvas-links.ts')
@@ -61,13 +62,14 @@ test('runtime messages persist state with a debounce and surface errors with a s
   assert.match(sheet, /client\.putCanvasState\(sessionId, pending\.name, pending\.state\)/)
   assert.match(sheet, /useEffect\(\(\) => \(\) => \{ void flushSave\(\) \}, \[flushSave, name\]\)/, 'switching or closing flushes the last change')
   assert.match(sheet, /case 'error':\s+setPageError\(message\.error\)/)
-  assert.match(sheet, /<Notice title="The canvas reported an error" detail=\{pageError\} action=\{showSourceAction\} \/>/)
+  assert.match(sheet, /<Notice title="The canvas reported an error" detail=\{pageError\} actions=\{\[showSourceAction\]\} \/>/)
   assert.match(sheet, /const showSourceAction = \{ label: 'Show source', onPress: \(\) => setShowSource\(true\) \}/)
   assert.match(sheet, /<Text selectable testID="canvas-source" style=\{\[styles\.code, \{ color: colors\.text \}\]\}>\{record\.source\}<\/Text>/)
   assert.match(sheet, /code: \{ fontFamily: fonts\.mono/)
   // A compile failure shows the diagnostics instead of an empty page.
   assert.match(sheet, /const compiled = record && !record\.diagnostics && record\.javascript \? record : null/)
-  assert.match(sheet, /<Notice title="This canvas did not compile" detail=\{record\.diagnostics \?\? '[^']+'\} action=\{showSourceAction\} \/>/)
+  // A compile failure can also be handed to the agent, like the desktop pane's "Fix with agent".
+  assert.match(sheet, /<Notice title="This canvas did not compile" detail=\{record\.diagnostics \?\? '[^']+'\} actions=\{record\.diagnostics \? \[showSourceAction, \{ label: 'Fix with agent', onPress: fixWithAgent \}\] : \[showSourceAction\]\} \/>/)
 })
 
 test('a history rewind re-lists the canvases and closes the sheet when its canvas is gone', () => {
@@ -78,7 +80,9 @@ test('a history rewind re-lists the canvases and closes the sheet when its canva
 
 test('markdown .canvas.tsx links open the sheet instead of Linking', () => {
   assert.match(markdown, /import \{ openCanvasLink \} from '\.\.\/lib\/canvas-links'/)
-  assert.match(markdown, /const openLink = useCallback\(\(url: string\) => \{\n    if \(openCanvasLink\(url, sourceSessionId \?\? null\)\) return false\n    if \(openWorkspacePathLink\(url, sourceSessionId \?\? null\)\) return false\n    void Linking\.openURL\(url\)/)
+  // A Codex follow-up link fills the composer first; canvas and path links follow, Linking last.
+  assert.match(markdown, /const openLink = useCallback\(\(url: string\) => \{\n    const followup = codexFollowupPrompt\(url\)/)
+  assert.match(markdown, /if \(openCanvasLink\(url, sourceSessionId \?\? null\)\) return false\n    if \(openWorkspacePathLink\(url, sourceSessionId \?\? null\)\) return false\n    void Linking\.openURL\(url\)/)
   assert.match(links, /export const OPEN_CANVAS_EVENT = 'agentsdock:open-canvas'/)
   assert.match(links, /const name = canvasNameFromPath\(href\)\n  if \(!name\) return false\n  DeviceEventEmitter\.emit\(OPEN_CANVAS_EVENT, \{ sessionId, name \}/)
   assert.match(page, /if \(!clean\.endsWith\(CANVAS_SUFFIX\)\) return null/)
@@ -90,7 +94,7 @@ test('the sheet searches the rendered canvas by injecting a find script and rend
   // The WebView needs a ref so the search field can inject JS into it.
   assert.match(sheet, /const webViewRef = useRef<WebView>\(null\)/)
   assert.match(sheet, /ref=\{webViewRef\}/)
-  assert.match(sheet, /import \{ buildCanvasPage, canvasFindScript, parseCanvasPageMessage/)
+  assert.match(sheet, /import \{[^}]*\bbuildCanvasPage,[^}]*\bcanvasFindScript,[^}]*\bparseCanvasPageMessage,/)
   assert.match(sheet, /webViewRef\.current\?\.injectJavaScript\(canvasFindScript\(query, options\)\)/)
   // Typing injects the query; next/prev step the active match; the count comes back over onMessage.
   assert.match(sheet, /onChangeText=\{text => \{ setFindQuery\(text\); injectFind\(text\) \}\}/)
@@ -100,7 +104,8 @@ test('the sheet searches the rendered canvas by injecting a find script and rend
   assert.match(sheet, /testID="canvas-find-count"[\s\S]*?\$\{findResult\.active\}\/\$\{findResult\.total\}/)
   // Closing clears the highlights, and a reload re-runs the open query once the page mounts.
   assert.match(sheet, /const closeFind = \(\) => \{[\s\S]*?injectFind\(''\)/)
-  assert.match(sheet, /onLoadEnd=\{\(\) => \{ if \(findOpen && findQuery\) injectFind\(findQuery\) \}\}/)
+  // The fresh page also gets its comment pins back.
+  assert.match(sheet, /onLoadEnd=\{\(\) => \{ if \(findOpen && findQuery\) injectFind\(findQuery\); injectPins\(\) \}\}/)
   // The find script is a pure builder that highlights and reports back over the WebView channel.
   assert.match(page, /export function canvasFindScript\(query: string, options: \{ forward\?: boolean; matchCase\?: boolean; findNext\?: boolean \} = \{\}\): string/)
   assert.match(page, /CSS\.highlights\.set\('canvas-find'/)
@@ -113,4 +118,40 @@ test('the Outputs panel lists the chat canvases as Canvas rows that open the she
   assert.match(panel, /case 'canvas':\n\s+return <Row key=\{`canvas:\$\{item\.path\}`\} icon=\{Frame\} label=\{item\.label\} secondary="Canvas" onPress=\{\(\) => closeThen\(\(\) => onOpenCanvas\(item\.name\)\)\} \/>/)
   assert.match(collector, /const outputs: ChatOutputItem\[\] = canvases\.map\(canvas => \(\{\n\s+kind: 'canvas', label: canvasLinkText\.get\(canvas\.name\) \?\? canvas\.name, name: canvas\.name, path: canvas\.path,/)
   assert.match(chatScreen, /onOpenCanvas=\{setCanvasName\}/)
+})
+
+test('comments: pick an element, Ask or Edit it as a stored thread, and pin open threads', () => {
+  // Gated on the server, which stores threads and starts each comment's turn itself.
+  assert.match(sheet, /const commentsAvailable = canvasCapability\?\.comments === true/)
+  assert.match(sheet, /injectJavaScript\(canvasSelectingScript\(next\)\)/)
+  assert.match(sheet, /case 'selection':\n\s*if \(message\.elements\.length\) setSelection\(message\.elements\[0\]\)/)
+  assert.match(sheet, /client\.createCanvasComment\(sessionId, name, \{\n\s*canvas_id: selection\.id, tag: selection\.tag, text: selection\.text\.slice\(0, 400\), html: selection\.html\.slice\(0, 2000\),\n\s*\}, commentInput\(mode, commentText\.trim\(\)\)\)/)
+  assert.match(sheet, /client_capabilities: interactiveClientCapabilities\(session, state\.health\)/)
+  assert.match(sheet, /<CanvasCommentSubmit disabled=\{!commentText\.trim\(\) \|\| commentBusy\} onSubmit=\{mode => void submitComment\(mode\)\} \/>/)
+  // The composer sits at the bottom of a Modal: only keyboard-controller follows the IME in a
+  // Modal's window on edge-to-edge Android (React Native's KeyboardAvoidingView let it hide).
+  assert.match(sheet, /import \{ KeyboardAvoidingView \} from 'react-native-keyboard-controller'/)
+  assert.match(sheet, /<KeyboardAvoidingView behavior="padding" style=\{styles\.fill\}>/)
+  // The picking hint floats over the page instead of pushing it down under the finger.
+  assert.match(sheet, /selectingHint: \{ position: 'absolute'/)
+  assert.match(threads, /onPress=\{\(\) => onSubmit\('ask'\)\}/)
+  assert.match(threads, /onPress=\{\(\) => onSubmit\('edit'\)\}/)
+  // Pins follow the open threads and the page asks for a thread by tapping its pin.
+  assert.match(sheet, /thread\.status === 'open' \? \[\{\n\s*id: thread\.id, number: index \+ 1/)
+  assert.match(sheet, /injectJavaScript\(canvasCommentPinsScript\(pins, activeThread\)\)/)
+  assert.match(sheet, /case 'comment-open':\n\s*setCommentsOpen\(true\)\n\s*setActiveThread\(message\.id\)/)
+  // A turn starting or ending refreshes the threads and reloads a canvas the agent changed.
+  assert.match(sheet, /const running = useAppStore\(state => state\.activeSessionIds\.has\(sessionId\)\)/)
+  assert.match(sheet, /if \(current && current\.revision !== revisionLive\.current\) setReloadToken/)
+})
+
+test('source: edits save against the revision they started from and confirm before overwriting', () => {
+  assert.match(sheet, /const sourceEditable = canvasCapability\?\.source_edit === true/)
+  assert.match(sheet, /<MobileCodeEditor\n\s*ref=\{editorRef\}\n\s*testID="canvas-source-editor"/)
+  // A draft pins the editor's document so a reload after an agent edit cannot wipe the typing.
+  assert.match(sheet, /value=\{sourceDraft \? editorDocument\.current : \(editorDocument\.current = record\.source\)\}/)
+  assert.match(sheet, /client\.putCanvasSource\(sessionId, name, sourceDraft\.text, base\)/)
+  assert.match(sheet, /const base = overwrite \? \(await client\.getCanvas\(sessionId, name\)\)\.revision : sourceDraft\.baseRevision/)
+  assert.match(sheet, /if \(!overwrite && REVISION_CONFLICT\.test\(message\)\) \{\n\s*Alert\.alert\('The canvas changed'/)
+  assert.match(sheet, /state\.sendPrompt\(false, state\.profileGeneration, sessionId, \{\n\s*consumeComposer: false,/)
 })

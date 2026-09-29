@@ -23,7 +23,7 @@ test('the welcome surface has no server-backed dead controls or requests', () =>
   assert.match(chatScreen, /!welcome \? <CodexInteractionShelf/)
   assert.match(chatScreen, /!welcome \? <ClaudeInteractionShelf/)
   assert.match(sidebar, /if \(!clean \|\| needsServerSetup\)[\s\S]*?clearSearch\(\)[\s\S]*?return/)
-  assert.match(sidebar, /onLongPress=\{welcome \? undefined : Platform\.OS === 'ios' \? openActionSheet : \(\) => menu\.current\?\.show\(\)\}/)
+  assert.match(sidebar, /onLongPress=\{welcome \? undefined : \(\) => onLift\(Platform\.OS === 'ios' \? openActionSheet : \(\) => menu\.current\?\.show\(\)\)\}/)
   assert.match(sidebar, /if \(welcome \|\| Platform\.OS === 'ios'\) return pressableRow/)
   assert.match(sidebar, /if \(isWelcomeSession\(session\.id\)\) \{[\s\S]*?selectedSessionId: session\.id,[\s\S]*?syncStatus: 'cached',[\s\S]*?onOpenChat\?\.\(\)[\s\S]*?return[\s\S]*?const selection = select/)
   assert.match(composer, /if \(welcome\) \{[\s\S]*?appendWelcomeExchange\(snapshot, text\)[\s\S]*?return[\s\S]*?remoteComposerScopeIsCurrent/)

@@ -38,7 +38,10 @@ const runtimeRun = sourceSection(runtimeContext, '  const run = useCallback', '\
 test('Codex app-server controls are mounted in the active mobile chat', () => {
   assert.match(chatScreen, /<CodexRuntimeProvider sessionId=\{sessionId\}>/)
   assert.match(chatScreen, /<CodexInteractionShelf \/>/)
-  assert.match(chatHeader, /<CodexStatusButton compact=\{compact\} \/>/)
+  // A folded phone's two-pane chat header is too narrow for the label.
+  assert.match(chatHeader, /const phoneHeader = compact \|\| width < TABLET_HEADER_MIN_WIDTH/)
+  assert.match(chatHeader, /<CodexStatusButton compact=\{phoneHeader\} \/>/)
+  assert.doesNotMatch(chatHeader, /Ellipsis/, 'the sync chip has no trailing "⋯"')
   assert.match(chatHeader, /<CodexContextIndicator \/>/)
   assert.match(controls, /testID="codex-status"/)
   assert.match(controls, /testID="codex-context-usage"/)

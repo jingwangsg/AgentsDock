@@ -98,6 +98,7 @@ import { Text, TextInput } from './AppText'
 import { BackendMark } from './BackendMark'
 import { useCodexRuntime } from './CodexRuntimeContext'
 import { CodexGoalBar, CodexGoalEditorSheet } from './CodexGoalBar'
+import { WorkingDirectoryPicker } from './WorkingDirectoryPicker'
 import { useClaudeRuntime } from './ClaudeRuntimeContext'
 import { IconButton, SheetCloseButton } from './ui'
 import { FullscreenViewerCloseButton, SwipeDismissImage } from './FullscreenImageViewer'
@@ -300,6 +301,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const compactToolbar = composerWidth === 0 || isCompactComposerToolbar(composerWidth)
   const denseToolbar = compactToolbar && (composerWidth === 0 ? width < 352 : isDenseComposerToolbar(composerWidth))
   const viewportLimits = composerViewportLimits(width, height, keyboardVisible)
+  const [workingDirectoryOpen, setWorkingDirectoryOpen] = useState(false)
   const displayedInputHeight = Math.min(composerInputHeight(draft, inputHeight), viewportLimits.inputMaxHeight)
   const hasAuxiliaryContent = commandPaletteVisible || references.length > 0 || teamReferences.length > 0 || queued.length > 0 || Boolean(queuedRunStatus) || uploads.length > 0 || pending.length > 0 || failed.length > 0
   const validationRevision = client.validationRevision
@@ -621,7 +623,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       if (backend === 'codex') {
         await codexRuntime.updateGoal({ objective: argument, status: 'active' })
       } else if (backend === 'claude') {
-        // Same server path as desktop: AgentsServer turns the condition into a revision-bound native `/goal` turn.
+        // Same server path as desktop: AgentsServer turns the condition into a native `/goal` turn.
         if (argument.toLocaleLowerCase() === 'clear') await client.clearClaudeGoal(sessionId)
         else await client.setClaudeGoal(sessionId, argument)
         void refreshClaudeRuntime()
@@ -760,7 +762,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         if (sent) trackEvent('message_sent')
         if (consumeComposer && sent) providerCommandBindingRef.current = null
         if (!sent && outgoingSkillSelection && providerCommandsKey) {
-          // A refused selection is usually a stale inventory revision; drop the cache so the next palette open re-reads it.
+          // A refused selection usually means its command is gone; drop the cache so the next palette open re-reads it.
           forgetProviderCommands(providerCommandsKey)
           void loadProviderCommands(true)
         }
@@ -892,7 +894,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       }
       return
     }
-    // Claude compacts through its native `/compact`, sent as a revision-bound provider selection.
+    // Claude compacts through its native `/compact`, sent as a provider command selection.
     let snapshot = activeProviderCommandState.snapshot ?? (providerCommandsKey ? cachedProviderCommands(providerCommandsKey) : null)
     if (!snapshot && providerCommandsKey) {
       try {
@@ -936,7 +938,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       case 'model': case 'reasoning': openRuntimeSheet(command.id); break
       case 'new': onShellAction('new-chat'); break
       case 'schedule': onShellAction('job'); break
-      case 'status': case 'workdir': onShellAction('details'); break
+      case 'status': onShellAction('details'); break
+      case 'workdir': setWorkingDirectoryOpen(true); break
     }
   }
   const providerName = backend ? backendLabel(backend) : 'Claude'
@@ -1034,6 +1037,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
 
   return (
     <View testID="chat-composer" style={[styles.shell, { backgroundColor: colors.background }]}>
+      {/* The chip hides with the auxiliary rail so a landscape phone keeps Send above the keyboard; /workdir still opens the sheet. */}
+      {!welcome ? <WorkingDirectoryPicker sessionId={sessionId} chipVisible={viewportLimits.auxiliaryMaxHeight > 0} open={workingDirectoryOpen} onOpenChange={setWorkingDirectoryOpen} /> : null}
       {!welcome && backend === 'codex' ? <CodexGoalBar /> : null}
       {hasAuxiliaryContent && viewportLimits.auxiliaryMaxHeight > 0 ? <ScrollView
         testID="composer-auxiliary-scroll"
@@ -1558,6 +1563,31 @@ function AttachmentShelf({ sessionId, uploads, pending, failed, connectionReady,
   </ScrollView>
 }
 
+/**
+ * A queued message's attachment: a thumbnail while the file is (or may be) an
+ * image, else its name. Other devices never saw the upload, so an unknown file
+ * tries the image first and falls back to the name.
+ */
+function QueuedAttachment({ sessionId, fileId }: { sessionId: string; fileId: string }) {
+  const colors = usePalette()
+  const known = useAppStore(state => state.snapshots[sessionId]?.files.find(file => file.id === fileId))
+  const [failed, setFailed] = useState(false)
+  const name = known?.filename ?? 'Attachment'
+  if (!failed && (!known?.content_type || known.content_type.startsWith('image/'))) {
+    return <Image
+      accessibilityLabel={name}
+      source={{ uri: client.fileURL(sessionId, fileId), headers: client.authHeaders() }}
+      contentFit="cover"
+      style={[styles.queueThumb, { borderColor: colors.border, backgroundColor: colors.raised }]}
+      onError={() => setFailed(true)}
+    />
+  }
+  return <View style={[styles.queueFile, { borderColor: colors.border }]}>
+    <FileIcon size={12} color={colors.muted} />
+    <Text style={{ color: colors.muted, fontSize: 11 }} numberOfLines={1}>{name}</Text>
+  </View>
+}
+
 export function QueueShelf({ sessionId, profileId, profileGeneration, networkDisabled, onSent }: { sessionId: string; profileId: string | null; profileGeneration: number; networkDisabled: boolean; onSent: () => void }) {
   const colors = usePalette()
   const { width } = useWindowDimensions()
@@ -1775,7 +1805,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
             }}
             multiline
             style={[styles.queueInput, { color: colors.text }]}
-          /> : <Pressable accessibilityRole={crossChatDelivery ? undefined : 'button'} accessibilityLabel={agentMessage ? `${sender}: ${turnText}` : crossChatDelivery ? 'Incoming cross-chat delivery' : 'Edit queued message'} accessibilityState={{ disabled: crossChatDelivery || networkDisabled || queueBusy }} disabled={crossChatDelivery || networkDisabled || queueBusy} style={styles.queuePrompt} onPress={() => { if (remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) beginEdit(turn) }}>{agentMessage ? <Text style={{ color: colors.muted, fontSize: 11, fontWeight: '700' }}>{sender}</Text> : null}<Text style={[styles.queueText, { color: colors.text }]} numberOfLines={3}>{turnText}</Text>{crossChatDelivery && !agentMessage ? <Text style={{ color: colors.muted, fontSize: 10 }}>Cross-chat delivery · starts automatically</Text> : !agentMessage && pausedLabel ? <Text style={{ color: colors.orange, fontSize: 10 }}>{pausedLabel}</Text> : null}</Pressable>}
+          /> : <Pressable accessibilityRole={crossChatDelivery ? undefined : 'button'} accessibilityLabel={agentMessage ? `${sender}: ${turnText}` : crossChatDelivery ? 'Incoming cross-chat delivery' : 'Edit queued message'} accessibilityState={{ disabled: crossChatDelivery || networkDisabled || queueBusy }} disabled={crossChatDelivery || networkDisabled || queueBusy} style={styles.queuePrompt} onPress={() => { if (remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) beginEdit(turn) }}>{agentMessage ? <Text style={{ color: colors.muted, fontSize: 11, fontWeight: '700' }}>{sender}</Text> : null}<Text style={[styles.queueText, { color: colors.text }]} numberOfLines={3}>{turnText}</Text>{turn.file_ids.length ? <View style={styles.queueAttachments}>{turn.file_ids.map(fileId => <QueuedAttachment key={fileId} sessionId={sessionId} fileId={fileId} />)}</View> : null}{crossChatDelivery && !agentMessage ? <Text style={{ color: colors.muted, fontSize: 10 }}>Cross-chat delivery · starts automatically</Text> : !agentMessage && pausedLabel ? <Text style={{ color: colors.orange, fontSize: 10 }}>{pausedLabel}</Text> : null}</Pressable>}
           {!crossChatDelivery && rowReferences.length ? <ChatReferenceShelf
             references={rowReferences}
             referenceSupported={referenceSupported}
@@ -1890,7 +1920,7 @@ const styles = StyleSheet.create({
   queue: { gap: 5 }, queueLabel: { fontSize: 10, fontWeight: '800', textAlign: 'right' },
   queueStatus: { minHeight: 42, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingLeft: 10, flexDirection: 'row', alignItems: 'center', gap: 7 }, queueStatusText: { minWidth: 0, flex: 1, paddingVertical: 8, fontSize: 11.5, lineHeight: 16 },
   queueList: { gap: 5 },
-  queueRow: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, paddingTop: 6, gap: 4 }, queuePrompt: { width: '100%', minWidth: 60, minHeight: 44, justifyContent: 'center', paddingVertical: 6 }, queueText: { fontSize: 12.5, lineHeight: 17 }, queueInput: { width: '100%', minHeight: 52, fontSize: 12.5, lineHeight: 17, paddingVertical: 6 }, queueActions: { minHeight: 44, width: '100%', flexDirection: 'row', alignItems: 'center' }, runNow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 7 },
+  queueRow: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, paddingTop: 6, gap: 4 }, queuePrompt: { width: '100%', minWidth: 60, minHeight: 44, justifyContent: 'center', paddingVertical: 6 }, queueAttachments: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 }, queueThumb: { width: 44, height: 44, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth }, queueFile: { maxWidth: 180, minHeight: 24, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 6, flexDirection: 'row', alignItems: 'center', gap: 4 }, queueText: { fontSize: 12.5, lineHeight: 17 }, queueInput: { width: '100%', minHeight: 52, fontSize: 12.5, lineHeight: 17, paddingVertical: 6 }, queueActions: { minHeight: 44, width: '100%', flexDirection: 'row', alignItems: 'center' }, runNow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 7 },
   queueEditActions: { minHeight: 50, width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
   queueEditButton: { minWidth: 82, height: 44, borderRadius: 8, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 }, queueEditButtonText: { fontSize: 12, fontWeight: '800' },
 })

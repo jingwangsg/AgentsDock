@@ -1,6 +1,7 @@
+import { useState } from 'react'
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
 import { Image } from 'expo-image'
-import { ArrowLeft, Ellipsis, FolderOpen, Layers, PanelLeftClose, PanelLeftOpen, PanelRight, RefreshCw, Search, Server } from 'lucide-react-native'
+import { ArrowLeft, FolderOpen, Layers, PanelLeftClose, PanelLeftOpen, PanelRight, RefreshCw, Search, Server } from 'lucide-react-native'
 import { useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { runtimeSummary } from '../lib/format'
@@ -9,6 +10,11 @@ import { Text } from './AppText'
 import { CodexContextIndicator, CodexStatusButton } from './CodexControls'
 import { ClaudeContextIndicator } from './ClaudeContextIndicator'
 import { IconButton } from './ui'
+
+// A folded phone's two-pane chat header is ~440 pt wide: the tablet set of
+// controls left the title no room and pushed the sync chip off-screen. Below
+// this width the header uses the phone set (no Refresh, icon-only Codex).
+const TABLET_HEADER_MIN_WIDTH = 680
 
 export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, sidebarCollapsed, onToggleSidebar, onBack, onOptions, onSearch, onFiles, outputsOpen, onOutputs, onToggleInspector, onSetupServer }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; sidebarCollapsed: boolean; onToggleSidebar: () => void; onBack: () => void; onOptions: () => void; onSearch: () => void; onFiles: () => void; outputsOpen: boolean; onOutputs: () => void; onToggleInspector: () => void; onSetupServer: () => void }) {
   const colors = usePalette()
@@ -20,6 +26,7 @@ export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, sideb
   const syncError = useAppStore(state => state.syncError)
   const syncRetryAttempt = useAppStore(state => state.syncRetryAttempt)
   const retryConnection = useAppStore(state => state.retryConnection)
+  const [width, setWidth] = useState(0)
   if (!session) return null
   const sidebarButton = !compact ? <IconButton icon={sidebarCollapsed ? PanelLeftOpen : PanelLeftClose} onPress={onToggleSidebar} label={sidebarCollapsed ? 'Show chat list' : 'Hide chat list'} testID="chat-sidebar-toggle" /> : null
   if (isWelcomeSession(sessionId)) return <View style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border }]}>
@@ -43,26 +50,26 @@ export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, sideb
         : colors.muted
   const isSpinning = status === 'syncing' || status === 'reconnecting'
   const visibleSyncError = status !== 'live' && syncError ? syncError.replace(/\s+/g, ' ').trim().slice(0, 120) : ''
+  const phoneHeader = compact || width < TABLET_HEADER_MIN_WIDTH
   const handleStatusPress = () => {
     if (status === 'live') onOptions()
     else void retryConnection()
   }
-  return <View style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border }]}>
+  return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border }]}>
     {sidebarButton}
     {compact ? <IconButton icon={ArrowLeft} onPress={onBack} label="Chats" /> : null}
     <View style={styles.titleWrap}><Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{session.title}</Text><Text style={[styles.subtitle, { color: visibleSyncError ? colors.orange : colors.muted }]} numberOfLines={1}>{visibleSyncError || `${runtimeSummary(session)}${session.session_id || session.codex_thread_id || session.claude_session_id || session.cursor_session_id ? ` · session ${(session.session_id || session.codex_thread_id || session.claude_session_id || session.cursor_session_id)?.slice(0, 12)}` : ''}`}</Text></View>
-    {!compact ? <IconButton icon={RefreshCw} onPress={() => void retryConnection()} label="Refresh" /> : null}
+    {!phoneHeader ? <IconButton icon={RefreshCw} onPress={() => void retryConnection()} label="Refresh" /> : null}
     <IconButton icon={Search} onPress={onSearch} label="Find in chat" />
     <IconButton icon={FolderOpen} onPress={onFiles} label="Browse workspace files" testID="chat-workspace-files" />
     <IconButton icon={Layers} onPress={onOutputs} selected={outputsOpen} label="Outputs and sources" testID="chat-outputs" />
     {inlineInspectorAvailable ? <IconButton icon={PanelRight} onPress={onToggleInspector} label="Toggle details" /> : null}
     <CodexContextIndicator />
     <ClaudeContextIndicator />
-    <CodexStatusButton compact={compact} />
+    <CodexStatusButton compact={phoneHeader} />
     <Pressable testID="chat-details" accessibilityRole="button" accessibilityLabel={`${statusLabel}. ${syncError ? `${syncError}. ` : ''}${status === 'live' ? 'Open chat details' : 'Retry chat sync'}`} onPress={handleStatusPress} style={[styles.online, compact && styles.onlineCompact, { backgroundColor: colors.raised }]}>
       {isSpinning ? <ActivityIndicator size="small" color={statusColor} style={styles.spinner} /> : <View style={[styles.dot, { backgroundColor: statusColor }]} />}
       <Text style={[styles.statusLabel, { color: colors.text }]} numberOfLines={1}>{statusLabel}</Text>
-      {!compact ? <Ellipsis size={14} color={colors.muted} /> : null}
     </Pressable>
   </View>
 }

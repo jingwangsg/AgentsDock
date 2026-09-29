@@ -37,7 +37,8 @@ test('each AgentsDock command runs through an existing mobile surface', () => {
   // Per-chat permission controls were removed: full access is the server default.
   assert.doesNotMatch(composer, /case 'permissions'|case 'plan'|PermissionMenu/)
   assert.match(composer, /case 'schedule': onShellAction\('job'\); break/)
-  assert.match(composer, /case 'status': case 'workdir': onShellAction\('details'\); break/)
+  assert.match(composer, /case 'status': onShellAction\('details'\); break/)
+  assert.match(composer, /case 'workdir': setWorkingDirectoryOpen\(true\); break/)
   assert.match(composer, /if \(command\.id === 'mail'\) \{ chooseMailCommand\(\); return \}/)
   assert.match(composer, /<ComposerRuntimeSheet[\s\S]*?models=\{runtimeCatalogOptions\(runtime, backend, 'models', model\)\}[\s\S]*?efforts=\{backend === 'cursor' \? \[\] : runtimeEffortOptions\(runtime, backend, model, effort\)\}/)
   assert.match(runtimeSheet, /const detail = locked \? option\.locked_reason\?\.trim\(\) : option\.description\?\.trim\(\)/)

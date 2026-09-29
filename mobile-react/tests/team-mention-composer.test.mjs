@@ -36,6 +36,7 @@ const mocks = {
   './AppText': `import {forwardRef,createElement} from 'react'; export const Text='Text'; export const TextInput=forwardRef((props,ref)=>createElement('TextInput',{...props,ref}));`,
   './BackendMark': `export const BackendMark='BackendMark';`,
   './CodexGoalBar': `export const CodexGoalBar=()=>null, CodexGoalEditorSheet=()=>null;`,
+  './WorkingDirectoryPicker': `export const WorkingDirectoryPicker=()=>null;`,
   './TextPromptDialog': `export const useTextPrompt=()=>({promptText:async()=>null,textPromptDialog:null});`,
   './CodexRuntimeContext': `export const useCodexRuntime=()=>({refresh:async()=>{}});`,
   './ClaudeRuntimeContext': `export const useClaudeRuntime=()=>({refresh:async()=>{}});`,

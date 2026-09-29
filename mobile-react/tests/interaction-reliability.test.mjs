@@ -921,7 +921,7 @@ test('workspace mutations are capability-gated, revision-fenced, and adaptive', 
 })
 
 test('compact chat status remains readable and touch-safe', () => {
-  assert.match(chatHeader, /\{!compact \? <IconButton icon=\{RefreshCw\}/)
+  assert.match(chatHeader, /\{!phoneHeader \? <IconButton icon=\{RefreshCw\}/)
   assert.match(chatHeader, /<Text style=\{\[styles\.statusLabel/)
   assert.match(chatHeader, /online: \{ minHeight: 44/)
   assert.match(chatHeader, /onlineCompact: \{ minWidth: 78/)

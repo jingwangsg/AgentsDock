@@ -45,6 +45,45 @@ export function orderedSessionSections(
   return orderedFolders.map(folder => ({ id: folder, title: folder, sessions: [...(groups.get(folder) ?? [])].sort(compareSessions) }))
 }
 
+export type SidebarDropRow = { kind: 'header'; folder: string } | { kind: 'session'; session: Session }
+
+type SidebarDrop =
+  | { kind: 'folder-order'; order: string[] }
+  | { kind: 'reorder'; sessionId: string; targetId: string; placement: 'before' | 'after'; targetFolder?: string }
+  | { kind: 'move'; sessionId: string; folder: string }
+
+/**
+ * What dropping a dragged row means, given the list as it looks after the drop
+ * (`next`, dragged row at `to`) and `folders`, the current folder order.
+ * Same section rules as the server's reorder endpoint: a chat joins the section
+ * it lands under, may move into any folder, but never into Pinned or Archived from
+ * outside; folder headers reorder folders only. A pinned chat dropped into a folder
+ * is unpinned, like Move to Folder here (the desktop keeps it pinned). null means
+ * nothing changes.
+ */
+export function resolveSidebarDrop(next: SidebarDropRow[], to: number, sessions: Session[], folders: string[]): SidebarDrop | null {
+  const moved = next[to]
+  if (moved.kind === 'header') {
+    const order = next.flatMap(row => row.kind === 'header' && !['Pinned', 'Archived'].includes(row.folder) ? [row.folder] : [])
+    return order.join('\n') === folders.join('\n') ? null : { kind: 'folder-order', order }
+  }
+  let index = to - 1
+  while (index >= 0 && next[index].kind !== 'header') index -= 1
+  const header = next[index]
+  if (!header || header.kind !== 'header') return null
+  const section = header.folder
+  const source = sessionSection(moved.session)
+  if (section !== source && ['Pinned', 'Archived'].includes(section)) return null
+  const targetFolder = section !== source ? { targetFolder: section } : {}
+  const sessionId = moved.session.id
+  const previous = next[to - 1]
+  if (previous.kind === 'session') return { kind: 'reorder', sessionId, targetId: previous.session.id, placement: 'after', ...targetFolder }
+  // Right under a header, shown or collapsed: first in that folder.
+  const first = sessions.filter(peer => peer.id !== sessionId && sessionSection(peer) === section).sort(compareSessions)[0]
+  if (first) return { kind: 'reorder', sessionId, targetId: first.id, placement: 'before', ...targetFolder }
+  return section === source ? null : { kind: 'move', sessionId, folder: section }
+}
+
 /**
  * Folders exist only as a session attribute plus the persisted folder order,
  * so a folder whose last chat was archived or deleted would vanish while

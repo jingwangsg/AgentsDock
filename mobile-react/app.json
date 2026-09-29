@@ -51,6 +51,7 @@
       "./plugins/withAndroidCleartextTraffic.cjs",
       "./plugins/withAndroidReleaseSigning.cjs",
       "./plugins/withAndroidSideloadUpdater.cjs",
+      "./plugins/withAndroidPreparedTextLayout.cjs",
       "expo-secure-store",
       "expo-sharing",
       "expo-video",

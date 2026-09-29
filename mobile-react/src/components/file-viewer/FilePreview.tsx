@@ -20,6 +20,7 @@ import { fonts } from '../../lib/typography'
 import { Text, TextInput } from '../AppText'
 import { SwipeDismissImage } from '../FullscreenImageViewer'
 import { MarkdownContent } from '../MarkdownContent'
+import { PdfDocumentView } from './PdfDocumentView'
 
 export interface LoadedFileText {
   content: string
@@ -435,14 +436,10 @@ export function FilePreview({ name, path, contentType, size, layout, previewURL,
       }} style={StyleSheet.absoluteFill} />
     </SwipeDismissImage>
   }
+  // Android's WebView has no PDF renderer, so the downloaded file goes to the bundled pdf.js page.
   if (kind === 'pdf' && Platform.OS === 'android') {
-    return <PreviewProblem
-      title="Open PDF on Android"
-      message="Android WebView does not include a PDF renderer. Download or share this file to open it with the device PDF viewer."
-      onDownload={onDownload}
-    />
-  }
-  if (kind === 'pdf' && webSource) {
+    if (localPreview) return <PdfDocumentView key={localPreview} uri={localPreview} onError={setError} />
+  } else if (kind === 'pdf' && webSource) {
     return <WebView
       testID="file-viewer-pdf"
       source={webSource}

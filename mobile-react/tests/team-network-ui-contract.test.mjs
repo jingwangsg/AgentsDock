@@ -92,7 +92,8 @@ test('Team changes clear old content and preserve drafts under their owning team
 test('the Team Network entry points sit behind the build-time UI switch', () => {
   const composer = fs.readFileSync(path.resolve('src/components/Composer.tsx'), 'utf8')
   const flag = fs.readFileSync(path.resolve('src/lib/team-network-ui.ts'), 'utf8')
-  assert.match(flag, /process\.env\.EXPO_PUBLIC_AGENTSDOCK_TEAM_NETWORK_UI !== '0'/)
+  // Hidden unless the bundle opts in.
+  assert.match(flag, /process\.env\.EXPO_PUBLIC_AGENTSDOCK_TEAM_NETWORK_UI === '1'/)
   assert.match(flag, /process\.env\.NODE_TEST_CONTEXT\s*\?\s*true/)
   assert.match(sidebar, /TEAM_NETWORK_UI_ENABLED && !needsServerSetup \? <Pressable\s+testID="sidebar-team-network"/)
   assert.match(shell, /\{TEAM_NETWORK_UI_ENABLED \? <TeamNetwork /)

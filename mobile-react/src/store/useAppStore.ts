@@ -389,7 +389,7 @@ interface SendPromptOptions {
   admittedFiles?: AgentFile[]
   chatReferences?: ChatReference[]
   teamReferences?: TeamReference[]
-  /** Opaque, revision-bound provider command chosen from the composer palette. */
+  /** Opaque provider command chosen from the composer palette. */
   skillSelection?: ProviderCommandSelection
 }
 
@@ -549,7 +549,7 @@ interface AppState {
   /** Reverts the workspace to before `runId`, then rewinds the chat to it. */
   restoreCheckpoint(sessionId: string, runId: string, expectedGeneration?: number): Promise<boolean>
   deleteSession(sessionId: string, expectedGeneration?: number): Promise<void>
-  reorderSession(sessionId: string, targetId: string, placement: 'before' | 'after', expectedGeneration?: number): Promise<void>
+  reorderSession(sessionId: string, targetId: string, placement: 'before' | 'after', expectedGeneration?: number, targetFolder?: string): Promise<void>
   markRead(sessionId: string, expectedGeneration?: number): Promise<void>
   markUnread(sessionId: string, expectedGeneration?: number): Promise<void>
   acknowledgeEmergency(sessionId: string, alertId: string, expectedGeneration?: number): Promise<boolean>
@@ -2860,10 +2860,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (error) { if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) }) }
   },
-  async reorderSession(sessionId, targetId, placement, expectedGeneration) {
+  async reorderSession(sessionId, targetId, placement, expectedGeneration, targetFolder) {
     const scope = validatedConnectionOrReport(get, set, expectedGeneration)
     if (!scope) return
-    try { const sessions = await scope.client.reorderSession(sessionId, targetId, placement); if (connectionIsCurrent(scope)) set({ sessions }) }
+    try { const sessions = await scope.client.reorderSession(sessionId, targetId, placement, targetFolder); if (connectionIsCurrent(scope)) set({ sessions }) }
     catch (error) { if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) }) }
   },
   async markRead(sessionId, expectedGeneration) {

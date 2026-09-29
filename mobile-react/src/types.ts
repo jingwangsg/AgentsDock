@@ -1353,7 +1353,7 @@ export interface WorkspaceGitAction {
 export interface ProviderCommandSelection {
   /** Opaque AgentsServer-owned identifier. The client must never send a filesystem path. */
   id: string
-  /** Inventory revision used by AgentsServer to reject stale selections. */
+  /** Inventory revision the selection was chosen from; AgentsServer checks only its format. */
   revision: string
 }
 
@@ -1407,7 +1407,52 @@ export interface CanvasRecord extends Omit<CanvasSummary, 'size'> {
   state: Record<string, unknown>
 }
 
+/** Mirrors electron/src/shared/types.ts: the element a comment thread is about, as the runtime's selection reports it. */
+export interface CanvasCommentAnchor {
+  canvas_id: string | null
+  tag: string
+  text: string
+  html: string
+}
+
+/** 'ask' is answered in the chat without touching the canvas; 'edit' asks the agent to change it. */
+export type CanvasCommentMode = 'ask' | 'edit'
+
+export interface CanvasCommentReply {
+  status: 'queued' | 'running' | 'done' | 'failed' | 'stopped' | 'cancelled'
+  /** The turn's final answer once it is over. */
+  text?: string
+  finished_at?: string | null
+}
+
+export interface CanvasCommentMessage {
+  id: string
+  mode: CanvasCommentMode
+  body: string
+  revision: number
+  created_at: string
+  turn: { run_id: string | null; queued_id: string | null } | null
+  reply: CanvasCommentReply | null
+}
+
+export interface CanvasCommentThread {
+  id: string
+  anchor: CanvasCommentAnchor
+  status: 'open' | 'resolved'
+  created_at: string
+  updated_at: string
+  messages: CanvasCommentMessage[]
+}
+
+export interface CanvasCommentInput {
+  mode: CanvasCommentMode
+  body: string
+  revision: number
+  client_capabilities: string[]
+}
+
 export interface HealthCapabilities {
+  canvas_v1?: { available: boolean; version: number; comments?: boolean; source_edit?: boolean }
   local_provider_commands_v1?: LocalProviderCommandsCapability
   scheduled_jobs?: ScheduledJobsCapability
   session_rewind_v1?: SessionRewindCapability
