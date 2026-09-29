@@ -62,7 +62,9 @@ interface MarkdownItLike {
 
 /** Add lossless chat-math tokens before Markdown's backslash escaping rule. */
 export function installMathMarkdown<T extends MarkdownItLike>(markdown: T): T {
-  markdown.block.ruler.before('paragraph', 'agentsdock_math_display', mathMarkdownBlockRule, {
+  // load-bearing: must run before lheading, which looks ahead for a setext underline
+  // and would turn `$$` plus the lines above a lone `=` or `-` inside the formula into a heading.
+  markdown.block.ruler.before('lheading', 'agentsdock_math_display', mathMarkdownBlockRule, {
     alt: ['paragraph', 'reference', 'blockquote', 'list'],
   })
   markdown.inline.ruler.before('escape', 'agentsdock_math', mathMarkdownInlineRule)

@@ -73,6 +73,22 @@ test('standalone display math terminates paragraphs and supports multiline legac
   assert.equal(display?.block, true)
 })
 
+test('a lone = or - line inside display math is not a setext heading underline', () => {
+  const markdown = installMathMarkdown(new MarkdownIt({ typographer: true }).use(cjkFriendly))
+  for (const body of [
+    '\\operatorname{JVP}\\big(u_\\theta;(v,0,1)\\big)\n=\n\\frac{\\partial u_\\theta}{\\partial z}v\n+\n\\frac{\\partial u_\\theta}{\\partial t}',
+    'a\n-\nb',
+  ]) {
+    const tokens = markdown.parse(`因此需要计算：\n\n$$\n${body}\n$$\n\n这表示`, {})
+    assert.deepEqual(tokens.map(token => token.type), [
+      'paragraph_open', 'inline', 'paragraph_close',
+      'math_display',
+      'paragraph_open', 'inline', 'paragraph_close',
+    ])
+    assert.equal(tokens.find(token => token.type === 'math_display')?.content, `\n${body}\n`)
+  }
+})
+
 test('math plugin leaves code and currency literal and supports spaced legacy math', () => {
   const tokens = parseInline('Cost $5; code `$x$`; actual \\( x + y \\), arithmetic $2+2=4$.')
   const math = tokens.filter(token => token.type === 'math_inline')
