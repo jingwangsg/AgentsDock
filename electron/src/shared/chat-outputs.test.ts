@@ -24,6 +24,17 @@ describe('collectChatOutputs outputs', () => {
     ])
   })
 
+  it('keeps only the newest artifact published from each path, in the newest position', () => {
+    const v1 = { id: 'art_1', filename: 'resume.pdf', source_path: '/work/resume.pdf' }
+    const other = { id: 'art_2', filename: 'resume.pdf', source_path: '/work/old/resume.pdf' }
+    const brief = { id: 'art_3', filename: 'brief.md', source_path: '/work/brief.md' }
+    const v2 = { id: 'art_4', filename: 'resume.pdf', source_path: '/work/resume.pdf' }
+    // The trailing repeat of v1 is a duplicate event and must not bring the older version back.
+    const events = [v1, other, brief, v2, v1].map(artifact => event('artifact_created', { artifact }))
+    expect(collectChatOutputs(events, []).outputs.map(item => item.kind === 'artifact' ? `${item.file.id}@${item.eventId}` : item.kind))
+      .toEqual(['art_2@e2', 'art_3@e3', 'art_4@e4'])
+  })
+
   it('lists agent-produced files once, titled when a title exists, and points at the creating event', () => {
     const artifact = { id: 'art_1', filename: 'chart.png', content_type: 'image/png', title: 'Sales chart' }
     const report = { id: 'art_2', filename: 'report.pdf', content_type: 'application/pdf' }

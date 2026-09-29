@@ -418,6 +418,7 @@ export function registerIpc(
   handle('workspace:entries', (sessionId, path, offset, limit) => service.workspaceEntries(sessionId, path, offset, limit))
   handle('canvas:list', sessionId => service.listCanvases(sessionId))
   handle('canvas:get', (sessionId, name) => service.getCanvas(sessionId, name))
+  handle('canvas:export-html', (sessionId, name, theme) => service.exportCanvasHtml(sessionId, name, theme))
   handle('canvas:put-state', (sessionId, name, state) => service.putCanvasState(sessionId, name, state))
   handle('canvas:put-source', (sessionId, name, source, baseRevision) => service.canvasCall(client => client.putCanvasSource(sessionId, name, source, baseRevision)))
   handle('canvas:comments', (sessionId, name) => service.canvasCall(client => client.listCanvasComments(sessionId, name)))

@@ -5181,6 +5181,8 @@ export function handleMenuCommand(command: string, get: () => AppState, set: (va
     get().setModal('search', true)
   }
   else if (command === 'rename-chat') {
+    // Over an open dialog (including Rename itself) this would discard its input or stack a second one.
+    if (document.querySelector('[role="dialog"][data-state="open"], [aria-modal="true"]')) return
     const session = get().sessions.find(candidate => candidate.id === get().selectedSessionId)
     if (session) window.dispatchEvent(new CustomEvent('agentsdock:rename-chat', { detail: session }))
   }

@@ -1,5 +1,6 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from './provider-usage'
 import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult } from './types'
+import type { CanvasHostTheme } from './canvas'
 import type { ChatOutputsSummary } from './chat-outputs'
 import type {
   AgentFile,
@@ -562,6 +563,8 @@ export interface AgentsDockAPI {
   canvas: {
     list(sessionId: string): Promise<{ canvases: CanvasSummary[] }>
     get(sessionId: string, name: string): Promise<CanvasRecord>
+    /** Saves the Canvas as a standalone interactive HTML page through a save dialog; null when the user cancels. */
+    exportHtml(sessionId: string, name: string, theme: CanvasHostTheme): Promise<string | null>
     putState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }>
     putSource(sessionId: string, name: string, source: string, baseRevision: number): Promise<CanvasRecord>
     comments(sessionId: string, name: string): Promise<{ threads: CanvasCommentThread[] }>

@@ -281,10 +281,9 @@ if (!app.requestSingleInstanceLock()) {
 
 function installSecurePeerDeepLinkWindow(window: BrowserWindow, router: SecurePeerDeepLinkRouter): void {
   router.rendererUnavailable()
-  // Iframe loads also fire did-start-loading; only a new main document drops the handshake.
-  window.webContents.on('did-start-navigation', details => {
-    if (details.isMainFrame && !details.isSameDocument) router.rendererUnavailable()
-  })
+  // Iframe loads fire did-start-loading and blocked navigations did-start-navigation;
+  // only a committed new main document drops the handshake.
+  window.webContents.on('did-navigate', () => router.rendererUnavailable())
   window.on('closed', () => router.rendererUnavailable())
 }
 

@@ -47,6 +47,7 @@
   "canvas.title": "Canvas",
   "canvas.reload": "重新加载",
   "canvas.close": "关闭 Canvas",
+  "canvas.exportHtml": "导出为 HTML",
   "canvas.source": "源码",
   "canvas.preview": "预览",
   "canvas.view": "Canvas 视图",

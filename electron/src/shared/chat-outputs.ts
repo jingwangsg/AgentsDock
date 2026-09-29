@@ -38,6 +38,7 @@ export function humanizeServerId(id: string): string {
 export function collectChatOutputs(events: readonly Event[], canvases: readonly CanvasSummary[]): ChatOutputsSummary {
   const canvasLinkText = new Map<string, string>()
   const artifacts = new Map<string, ChatOutputItem>()
+  const seenArtifactIds = new Set<string>()
   const previews = new Map<string, ChatOutputItem>()
   const codeDiffByRun = new Map<string, Event>()
   const mcpServers = new Map<string, { label: string; count: number; eventId: string }>()
@@ -68,9 +69,15 @@ export function collectChatOutputs(events: readonly Event[], canvases: readonly 
       }
     }
 
-    if (event.type === 'artifact_created' && event.artifact && !artifacts.has(event.artifact.id)) {
+    if (event.type === 'artifact_created' && event.artifact) {
       const file = event.artifact
-      artifacts.set(file.id, {
+      // A repeated event keeps an artifact's first row; a newer artifact published from the
+      // same path replaces the older row and takes its position.
+      if (seenArtifactIds.has(file.id)) continue
+      seenArtifactIds.add(file.id)
+      const key = file.source_path || file.id
+      artifacts.delete(key)
+      artifacts.set(key, {
         kind: 'artifact',
         label: file.title?.trim() || file.filename,
         eventId: event.id,

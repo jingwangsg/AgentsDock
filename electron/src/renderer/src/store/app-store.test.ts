@@ -734,6 +734,14 @@ describe('server shortcut navigation', () => {
     handleMenuCommand('rename-chat', useAppStore.getState, value => useAppStore.setState(value))
     useAppStore.setState({ selectedSessionId: null })
     handleMenuCommand('rename-chat', useAppStore.getState, value => useAppStore.setState(value))
+    // An open dialog (Rename itself included) keeps its input.
+    useAppStore.setState({ selectedSessionId: 'chat-a' })
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    dialog.dataset.state = 'open'
+    document.body.append(dialog)
+    handleMenuCommand('rename-chat', useAppStore.getState, value => useAppStore.setState(value))
+    dialog.remove()
 
     window.removeEventListener('agentsdock:rename-chat', renameChat)
     expect(renameChat).toHaveBeenCalledOnce()

@@ -1,7 +1,7 @@
 import { CANVAS_HOST_MESSAGE_SOURCE, CANVAS_NAME_PATTERN, CANVAS_PAGE_MESSAGE_SOURCE, canvasPageURL, type CanvasHostTheme } from '@shared/canvas'
 import { t } from '@shared/i18n'
 import type { CanvasCommentMode, CanvasCommentThread, CanvasRecord, CanvasSummary, Session } from '@shared/types'
-import { ChevronDown, ChevronUp, Crosshair, Eye, FileCode2, MessageSquare, RefreshCw, Search, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Crosshair, Eye, FileCode2, FileDown, MessageSquare, RefreshCw, Search, X } from 'lucide-react'
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
@@ -526,6 +526,9 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
         <MessageSquare size={14} />{pins.length > 0 && <span className="canvas-pane-comment-count">{pins.length}</span>}
       </button>}
       <button type="button" title={t('canvas.reload')} onClick={() => { setPageError(null); setReloadToken(token => token + 1) }}><RefreshCw size={14} /></button>
+      <button type="button" disabled={!src} title={t('canvas.exportHtml')} aria-label={t('canvas.exportHtml')} onClick={() => {
+        void window.agentsDock.canvas.exportHtml(session.id, name, hostTheme()).catch(error => useAppStore.getState().setError(errorText(error)))
+      }}><FileDown size={14} /></button>
       <button type="button" title={t('canvas.close')} aria-label={t('canvas.close')} onClick={() => { if (discardUnsavedSource()) onClose() }}><X size={14} /></button>
     </header>
     <div className="canvas-pane-body">

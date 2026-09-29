@@ -47,6 +47,7 @@
   "canvas.title": "Canvas",
   "canvas.reload": "Reload",
   "canvas.close": "Close Canvas",
+  "canvas.exportHtml": "Export as HTML",
   "canvas.source": "Source",
   "canvas.preview": "Preview",
   "canvas.view": "Canvas view",

@@ -14,7 +14,7 @@ import { isImportedHistoryRecord, isImportedProviderControlMetadata, mergeProvid
 import type { ChatShareMode, CreateChatShareInput } from '../shared/chat-shares'
 import type { WorkspaceGitAction, WorkspaceGitStatus, WorkspaceGitView } from '../shared/workspace-git'
 import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, SessionExportFormat } from '../shared/types'
-import { buildCanvasPage, canvasErrorPage, type CanvasHostTheme } from './canvas-protocol'
+import { buildCanvasPage, type CanvasHostTheme } from './canvas-protocol'
 import { parseMailHintPageAcknowledgment, TEAM_MAIL_HINTS_ENABLED, type MailHintPageAcknowledgment, type MailHintScope } from '../shared/team-mail-hints'
 import { TeamMailHintController } from './team-mail-hint-controller'
 import { ActivityHealthProjection, type ActivityHealthRequest } from './activity-health'
@@ -572,11 +572,12 @@ export class AppService {
           this.noteForegroundInteraction()
         }
       })
-      window.webContents.on('did-start-loading', () => this.invalidateRendererFileGrants(rendererId, false))
-      // Only a new main document replaces the page that completed the readiness
-      // handshake; iframe loads (canvases, previews) also fire did-start-loading.
-      window.webContents.on('did-start-navigation', details => {
-        if (details.isMainFrame && !details.isSameDocument) this.rendererReadyWindows.delete(window)
+      // Only a committed new main document replaces the page that holds file grants and
+      // completed the readiness handshake: iframe loads (Canvas, previews) fire
+      // did-start-loading, and blocked navigations still fire did-start-navigation.
+      window.webContents.on('did-navigate', () => {
+        this.rendererReadyWindows.delete(window)
+        this.invalidateRendererFileGrants(rendererId, false)
       })
       window.webContents.on('destroyed', () => this.invalidateRendererFileGrants(rendererId, true))
     }
@@ -4444,9 +4445,8 @@ export class AppService {
     this.assertCurrentScope(scope)
     const record = await scope.client.getCanvas(sessionId, name)
     this.assertCurrentScope(scope)
-    const html = (body: string) => new Response(body, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } })
     if (record.diagnostics || !record.javascript) {
-      return html(canvasErrorPage('The Canvas did not compile', record.diagnostics ?? 'The compiled bundle is empty.'))
+      throw new Error(`The Canvas did not compile: ${record.diagnostics ?? 'the compiled bundle is empty.'}`)
     }
     const cacheKey = `${scope.profileId}:${record.runtime_version ?? ''}`
     let runtime = this.canvasRuntimeCache.get(cacheKey)
@@ -4459,7 +4459,9 @@ export class AppService {
       runtime = { shell, vendor }
       this.canvasRuntimeCache.set(cacheKey, runtime)
     }
-    return html(buildCanvasPage({ shell: runtime.shell, vendor: runtime.vendor, javascript: record.javascript, state: record.state ?? {}, theme }))
+    return new Response(buildCanvasPage({ shell: runtime.shell, vendor: runtime.vendor, javascript: record.javascript, state: record.state ?? {}, theme }), {
+      status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }
+    })
   }
 
   async workspaceSearch(sessionId: string, query = '', limit = 100): Promise<WorkspaceSearchPage> {
@@ -4553,14 +4555,17 @@ export class AppService {
   }
 
   async exportSession(sessionId: string, format: SessionExportFormat): Promise<string | null> {
-    const extension = SESSION_EXPORT_EXTENSIONS[format]
-    if (!extension) throw new Error(`Unsupported conversation export format: ${String(format)}`)
+    const [extension, filterName] = format === 'markdown' ? ['md', 'Markdown'] : ['jsonl', 'JSON Lines']
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
     const response = await scope.client.sessionExportRequest(sessionId, format)
     this.assertCurrentScope(scope)
     if (!response.ok) {
       const detail = (await response.text().catch(() => '')).trim().slice(0, 500)
+      // FastAPI's generic 404: an AgentsServer from before chat downloads has no export route.
+      if (response.status === 404 && detail === '{"detail":"Not Found"}') {
+        throw new Error('This server cannot export chats yet. Update its AgentsServer, then try again.')
+      }
       throw new Error(`Conversation download failed (${response.status})${detail ? `: ${detail}` : ''}`)
     }
     // Read before the dialog: the suggested name comes from the server, and a
@@ -4569,11 +4574,28 @@ export class AppService {
     const filename = linkedFilename(response, `conversation.${extension}`)
     const result = await dialog.showSaveDialog({
       defaultPath: join(app.getPath('downloads'), filename),
-      filters: [{ name: format === 'markdown' ? 'Markdown' : 'JSON Lines', extensions: [extension] }]
+      filters: [{ name: filterName, extensions: [extension] }]
     })
     if (result.canceled || !result.filePath) return null
     await writeFile(result.filePath, body)
     appLog('session-export', 'conversation saved', { sessionId, format, destination: result.filePath })
+    return result.filePath
+  }
+
+  /** Saves the Canvas page itself: runtime, code, state and theme are inlined, so it stays interactive in a browser. */
+  async exportCanvasHtml(sessionId: string, name: string, theme: CanvasHostTheme): Promise<string | null> {
+    const scope = this.captureScope()
+    const page = await (await this.canvasPageResponse(scope.profileId, scope.generation, sessionId, name, theme)).text()
+    // The page inlines the React runtime; a standalone copy must carry its license notices.
+    // Servers from before this asset was served export without them.
+    const notices = await scope.client.canvasRuntimeAsset('vendor.js.LEGAL.txt').catch(() => '')
+    const result = await dialog.showSaveDialog({
+      defaultPath: join(app.getPath('downloads'), `${name}.html`),
+      filters: [{ name: 'HTML', extensions: ['html'] }]
+    })
+    if (result.canceled || !result.filePath) return null
+    await writeFile(result.filePath, notices ? `${page}\n<!--\n${notices.replaceAll('-->', '- ->')}\n-->\n` : page)
+    appLog('canvas', 'html saved', { sessionId, name, destination: result.filePath })
     return result.filePath
   }
 
@@ -8178,7 +8200,6 @@ function semanticAttemptSucceeded(page: TimelinePage): boolean {
   return page.semantic_paging ?? (page.semantic_item_count != null)
 }
 
-const SESSION_EXPORT_EXTENSIONS: Record<SessionExportFormat, string> = { markdown: 'md', jsonl: 'jsonl' }
 
 function linkedFilename(response: Response, target: string): string {
   const disposition = response.headers.get('content-disposition') ?? ''

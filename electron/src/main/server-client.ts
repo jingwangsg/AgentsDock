@@ -1783,7 +1783,7 @@ export class AgentServerClient {
   }
 
   /** Static runtime files (shell.html, vendor.js) that frame the compiled Canvas bundle. */
-  async canvasRuntimeAsset(asset: 'shell.html' | 'vendor.js'): Promise<string> {
+  async canvasRuntimeAsset(asset: 'shell.html' | 'vendor.js' | 'vendor.js.LEGAL.txt'): Promise<string> {
     const configuration = this.configuration
     const headers = new Headers()
     this.applyAuth(headers, configuration)
@@ -1880,7 +1880,7 @@ export class AgentServerClient {
       method: 'GET',
       headers,
       redirect: 'error',
-      // A long chat's event log is several MB; the default request timeout also bounds reading it.
+      // The timeout also covers reading the body; a long chat's event log is several MB.
       signal: combineAbortSignals(configuration.abortController.signal, AbortSignal.timeout(SESSION_EXPORT_TIMEOUT_MS))
     })
   }

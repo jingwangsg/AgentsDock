@@ -3365,6 +3365,7 @@ interface FakeClientOptions {
   ) => Promise<Response>
   workspaceDownloadRequest?: (sessionId: string, path: string) => Promise<Response>
   sessionExportRequest?: (sessionId: string, format: string) => Promise<Response>
+  canvasRuntimeAsset?: (asset: string) => Promise<string>
   stream?: AgentServerClient['stream']
   emergencyStream?: (
     expectedServerIdentity: string,
@@ -3550,6 +3551,7 @@ function fakeClient(options: FakeClientOptions = {}) {
     workspacePreviewRequest: vi.fn(options.workspacePreviewRequest ?? (async () => new Response('workspace preview'))),
     workspaceDownloadRequest: vi.fn(options.workspaceDownloadRequest ?? (async () => new Response('workspace download'))),
     sessionExportRequest: vi.fn(options.sessionExportRequest ?? (async () => new Response('# Chat\n'))),
+    canvasRuntimeAsset: vi.fn(options.canvasRuntimeAsset ?? (async () => '')),
     upload: vi.fn(options.upload ?? (async (_sessionId, path) => ({
       id: `uploaded-${path}`,
       filename: path.split('/').at(-1) ?? path,
@@ -6825,6 +6827,26 @@ describe('workspace file scope safety', () => {
     expect(readFileSync(destination, 'utf8')).toBe('# 查找附近理疗松解诊所\n')
   })
 
+  it('saves a Canvas as its standalone page under the Canvas name in Downloads', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-canvas-export-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    const destination = join(directory, 'saved.html')
+    electronHarness.showSaveDialog.mockReset()
+    electronHarness.showSaveDialog.mockResolvedValue({ canceled: false, filePath: destination })
+    const { service } = createProfileService({ 'http://a.test:7850': [fakeClient({ canvasRuntimeAsset: async () => 'React (MIT) --> notice' })] })
+    const page = vi.spyOn(service, 'canvasPageResponse').mockResolvedValue(new Response('<!doctype html><p>report</p>'))
+    const theme = { background: '#fff', foreground: '#000', muted: '#666', border: '#ccc', accent: '#06c', kind: 'light' as const }
+
+    await expect(service.exportCanvasHtml('chat', 'loss_curves', theme)).resolves.toBe(destination)
+    expect(page).toHaveBeenCalledWith('a', expect.any(Number), 'chat', 'loss_curves', theme)
+    expect(electronHarness.showSaveDialog).toHaveBeenCalledWith({
+      defaultPath: join('/tmp', 'loss_curves.html'),
+      filters: [{ name: 'HTML', extensions: ['html'] }]
+    })
+    // The inlined runtime's license notices travel with the file, and cannot end the comment early.
+    expect(readFileSync(destination, 'utf8')).toBe('<!doctype html><p>report</p>\n<!--\nReact (MIT) - -> notice\n-->\n')
+  })
+
   it('reports a failed conversation export without opening the save dialog', async () => {
     electronHarness.showSaveDialog.mockClear()
     const a = fakeClient({
@@ -6837,6 +6859,13 @@ describe('workspace file scope safety', () => {
 
     await expect(service.exportSession('gone', 'jsonl')).rejects.toThrow('Conversation download failed (404)')
     expect(electronHarness.showSaveDialog).not.toHaveBeenCalled()
+  })
+
+  it('tells the user to update a server that predates chat downloads', async () => {
+    const a = fakeClient({ sessionExportRequest: async () => new Response('{"detail":"Not Found"}', { status: 404 }) })
+    const { service } = createProfileService({ 'http://a.test:7850': [a] })
+
+    await expect(service.exportSession('chat', 'markdown')).rejects.toThrow('This server cannot export chats yet. Update its AgentsServer')
   })
 
   it('downloads a complete binary workspace file through the native save dialog', async () => {
@@ -8159,7 +8188,7 @@ describe('server profile lifecycle', () => {
     await firstStarted.promise
     const signal = upload.mock.calls[0][2]
     expect(signal?.aborted).toBe(false)
-    webContentsHandlers.get('did-start-loading')?.()
+    webContentsHandlers.get('did-navigate')?.()
 
     await expect(uploading).rejects.toThrow(/renderer/i)
     expect(signal?.aborted).toBe(true)
@@ -9804,14 +9833,13 @@ describe('server profile lifecycle', () => {
     await service.notify({ title: 'Open chat', body: 'Response finished', profileId: 'a', serverIdentity: 'server-a', sessionId: 'chat' })
     const route = { profileId: 'a', serverIdentity: 'server-a', sessionId: 'chat' }
 
-    // A canvas or preview iframe loading must not undo the page's readiness handshake.
+    // A Canvas or preview iframe loading must not undo the page's readiness handshake.
     handlers.get('did-start-loading')?.()
-    handlers.get('did-start-navigation')?.({ isMainFrame: false, isSameDocument: false })
     shown[0].onOpen()
     expect(send).toHaveBeenCalledExactlyOnceWith('native:notification', route)
 
     // A new main document has to handshake again before a route is delivered.
-    handlers.get('did-start-navigation')?.({ isMainFrame: true, isSameDocument: false })
+    handlers.get('did-navigate')?.()
     shown[0].onOpen()
     expect(send).toHaveBeenCalledOnce()
     service.rendererReadyForNotificationRoutes(window as never)
