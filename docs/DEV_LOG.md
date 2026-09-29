@@ -1,5 +1,59 @@
 # Public development log
 
+## 2026-09-29 — Cluster notations for remote servers
+
+- A remote server's SSH host may be written `oci@<sky-cluster>` (a SkyPilot
+  cluster alias; both SSH hops are isolated and Sky's CA bundle is supplied) or
+  `osmo@<workflow>` (sshd in the workflow's lead task, reached as root through
+  `osmo workflow exec --raw`). Deploy, attach, the tunnel and start.sh revival
+  resolve the notation on every connection; an ended workflow shows as such in
+  the tunnel status. Optional hub settings `AGENTSDOCK_OCI_HOME` and
+  `AGENTSDOCK_OSMO_HOME` move a default install into the cluster's persistent
+  home. Open in Zed opens an `oci@` server through its Sky alias.
+- Exercised on an isolated hub: attached an existing install through `oci@`,
+  deployed to a running OSMO workflow through `osmo@`, answered a Claude turn
+  there, and reconnected both tunnels after a hub restart. Server tests cover
+  routes, deploy/upload/revive argv, CA environment and ended workflows.
+
+## 2026-09-29 — Queued slash commands survive unrelated command changes
+
+- A queued message that used a provider command (for example a skill) was
+  discarded when any other command appeared or disappeared before it ran, such
+  as after a plugin was uninstalled. Selections are now matched by their command
+  id alone; a command that is really gone is still rejected.
+- Reproduced on an isolated server (rejected before, queued and ran after);
+  provider-command and queue tests pass.
+
+## 2026-09-29 — Drag to reorder chats and folders on mobile
+
+- On mobile, long press lifts a chat or folder header; dragging reorders chats
+  within or across folders and reorders folders, and letting go in place still
+  opens the actions menu. Moves into Pinned or Archived are refused and drawn
+  back. On desktop, a dragged chat can now reach the first and last slot of a
+  folder.
+- Exercised on an Android emulator and in the desktop app against an isolated
+  server; iOS was not tested.
+
+## 2026-09-29 — Canvas comments and source editing
+
+- Canvases on desktop and mobile take comments on an element. Ask sends a
+  question the agent answers in the chat; Edit asks the agent to change the
+  canvas. Threads persist with the canvas and follow rewinds. The canvas source
+  can also be edited directly, with conflict detection.
+- Exercised on desktop and Android against an isolated server; server, desktop
+  and mobile tests pass.
+
+## 2026-09-29 — Chat rendering and composer details on both clients
+
+- Codex file citations and follow-up suggestions render as links (a follow-up
+  fills the composer, it never sends). Code blocks and tool input/output have
+  copy buttons. Queued messages show thumbnails of attached images.
+- Mobile: PDF preview on Android with an offline pdf.js page; code
+  highlighting; a working-directory picker; Changes in the workspace browser;
+  inline math aligned on Android. Team Network stays hidden unless enabled at
+  build time.
+- Exercised on an Android emulator and in the desktop app.
+
 ## 2026-09-29 — Start the local server from Server settings
 
 - When the local hub is offline or retrying, its row in Settings → Server shows
@@ -19,6 +73,11 @@
 - Not exercised: starting a stopped local hub from the installed app, with the
   rows turning green afterwards. The full Vitest suite passed in the local
   package build. Available as a local package; not installed.
+
+## 2026-09-29 — AgentsDock-managed local SSH forwards
+
+- Add a private SSH-forward registry and a separate user-service entry point. Reuse the server's SSH retry owner while preserving loopback bind modes, SSH proxy isolation, per-forward CA trust, and SSH-client ControlMaster access. This does not add an admin API or desktop UI.
+- Pass the focused server suite and live forward checks, including SSH-client access and a remote Dashboard response. The local service cutover is complete; no public release was made.
 
 ## 2026-09-29 — Open file and folder path links from chat
 
