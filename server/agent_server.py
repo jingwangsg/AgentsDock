@@ -1908,7 +1908,7 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Never detach required work with `nohup`, `disown`, `setsid`, shell `&`, or Bash `run_in_background`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a tracked Agent/workflow; background Bash does not guarantee a completion wake-up.
 - This is AgentsDock, not Slack; never use Slack file helpers.
 - Link editor-readable files with Markdown paths relative to the chat working directory, optionally with `#L42`; do not use `file://`.
-- Publish user-facing files only with the AgentsDock provider tool described below. Say “attached” only after a successful JSON receipt. Older-server fallback: write `{{"files":["/absolute/path.ext"]}}` to resolved `$AGENTSDOCK_MANIFEST_PATH` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
+- Publish user-facing files, images included, only with the AgentsDock provider tool described below; chat Markdown cannot display a local image (`![](path)` renders broken). Say “attached” only after a successful JSON receipt; if the tool returns an error, quote it and give the absolute path. Older-server fallback, only when the tool is absent: write `{{"files":["/absolute/path.ext"]}}` to resolved `$AGENTSDOCK_MANIFEST_PATH` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
 - Never use Claude's `Monitor`, `ScheduleWakeup`, `/loop`, or `CronCreate`; under AgentsDock they cannot durably deliver a later chat update. Only when explicitly asked, use the Jobs helper through the provider tool.
 - Use the run-bound AgentsDock provider tool described below for cross-chat messages.
 - Inspect `$AGENTSDOCK_TMUX_SESSION` read-only unless explicitly asked to operate it.
@@ -1941,7 +1941,7 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Never detach required work with `nohup`, `disown`, `setsid`, or shell `&`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a provider-tracked exec, Agent, or workflow; an explicitly requested durable service must use an observable service manager.
 - This is AgentsDock, not Slack; create files locally and never call Slack file helpers.
 - Link editor-readable files with Markdown paths relative to the chat working directory, optionally with `#L42`; do not use `file://`.
-- Publish user-facing files only with the AgentsDock provider tool described below. Say “attached” only after a successful JSON receipt. Older-server fallback: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
+- Publish user-facing files, images included, only with the AgentsDock provider tool described below; chat Markdown cannot display a local image (`![](path)` renders broken). Say “attached” only after a successful JSON receipt; if the tool returns an error, quote it and give the absolute path. Older-server fallback, only when the tool is absent: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
 - Never rely on provider-local timers, loops, or detached processes to wake this AgentsDock chat or deliver a later reply. Manage durable scheduled jobs only when explicitly asked through the run-bound provider tool; query it instead of relying on a prompt snapshot.
 - Use the run-bound AgentsDock provider tool described below for cross-chat messages.
 - The persistent terminal is tmux session `{terminal_session}`; inspect it read-only unless the user explicitly asks you to operate it.
@@ -1961,7 +1961,7 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Continue through ordinary inspection errors when a safe retry or narrow fix is available.
 - Never detach required work with `nohup`, `disown`, `setsid`, or shell `&`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a provider-tracked Agent/workflow; an explicitly requested durable service must use an observable service manager.
 - This is AgentsDock, not Slack; create files locally and never call Slack file helpers.
-- Publish user-facing files only through the run-bound AgentsDock provider tool. Say “attached” only after a successful JSON receipt. Older-server fallback: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
+- Publish user-facing files, images included, only through the run-bound AgentsDock provider tool; chat Markdown cannot display a local image (`![](path)` renders broken). Say “attached” only after a successful JSON receipt; if the tool returns an error, quote it and give the absolute path. Older-server fallback, only when the tool is absent: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
 - Never rely on provider-local timers, loops, or detached processes to wake this AgentsDock chat or deliver a later reply. Manage durable scheduled jobs only when explicitly asked and only through the Jobs helper in the run-bound provider tool.
 - Use the Chats helper through the run-bound provider tool for cross-chat messages.
 - The persistent terminal is tmux session `{terminal_session}`; inspect it read-only unless the user explicitly asks you to operate it.
@@ -33483,6 +33483,20 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
         if can_append
         else {}
     )
+    # Native Codex turn a goal run's current semantic item still collects (""
+    # until its first turn id arrives; absent when the item is not a goal item
+    # or a final answer closed it), and the seq -> item key of every split,
+    # which the semantic collector replays.
+    goal_native_turn_by_run: dict[str, str] = (
+        cached.get("goal_native_turn_by_run") or {}
+        if can_append
+        else {}
+    )
+    goal_native_turn_key_by_seq: dict[int, str] = (
+        cached.get("goal_native_turn_key_by_seq") or {}
+        if can_append
+        else {}
+    )
     job_by_run: dict[str, str] = (
         cached.get("job_by_run") or {}
         if can_append
@@ -34413,6 +34427,10 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                 active_turn_key = key
                 if run_id:
                     current_turn_by_run[run_id] = key
+                    if event.get("purpose") == "codex_goal_resume":
+                        goal_native_turn_by_run[run_id] = str(event.get("provider_turn_id") or "")
+                    else:
+                        goal_native_turn_by_run.pop(run_id, None)
                 if hidden_imported_prompt:
                     # Preserve routing for a following provider answer without
                     # exposing the generated input. The placeholder retains
@@ -34449,6 +34467,26 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                     record["prompt"] = prompt
                 continue
 
+            native_turn_id = (
+                str(event.get("provider_turn_id") or "")
+                if event.get("purpose") == "codex_goal_resume"
+                else ""
+            )
+            if run_id and native_turn_id:
+                if goal_native_turn_by_run.get(run_id) not in {"", native_turn_id}:
+                    # One goal operation runs many native turns under one run
+                    # id. Native Codex shows every turn's final answer, so each
+                    # turn is its own semantic item with its answer as primary.
+                    split_key = f"turn:{run_id}:start-{seq}"
+                    current_turn_by_run[run_id] = split_key
+                    active_turn_key = split_key
+                    goal_native_turn_key_by_seq[seq] = split_key
+                if event_type == "assistant_text" and event.get("phase") == "final_answer":
+                    # A final answer closes its item: a native turn can still
+                    # continue to a second final answer, which needs its own.
+                    goal_native_turn_by_run.pop(run_id, None)
+                else:
+                    goal_native_turn_by_run[run_id] = native_turn_id
             key = current_turn_by_run.get(run_id) if run_id else active_turn_key
             if run_id and not key:
                 key = f"turn:{run_id}"
@@ -34662,6 +34700,8 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
         "landmark_order": landmark_order,
         "active_turn_key": active_turn_key,
         "current_turn_by_run": current_turn_by_run,
+        "goal_native_turn_by_run": goal_native_turn_by_run,
+        "goal_native_turn_key_by_seq": goal_native_turn_key_by_seq,
         "job_by_run": job_by_run,
         "job_timeline_group_by_run": job_timeline_group_by_run,
         "job_timeline_group_by_occurrence": job_timeline_group_by_occurrence,
@@ -35424,6 +35464,7 @@ def collect_semantic_timeline_events(
     job_timeline_group_by_occurrence: dict[str, str],
     job_timeline_group_by_run_start_seq: dict[int, str],
     job_timeline_group_by_runless_event_seq: dict[int, str],
+    goal_native_turn_key_by_seq: dict[int, str],
     fork_internal_run_ids: set[str],
     internal_status_run_ids: set[str],
     event_limit: int,
@@ -35647,6 +35688,12 @@ def collect_semantic_timeline_events(
                     if run_id:
                         current_turn_by_run[run_id] = key
                 else:
+                    # Replay the index's goal native-turn split; a page scan
+                    # can start mid-run, where the turn change is not visible.
+                    native_turn_key = goal_native_turn_key_by_seq.get(seq)
+                    if native_turn_key:
+                        current_turn_by_run[run_id] = native_turn_key
+                        active_turn_key = native_turn_key
                     key = current_turn_by_run.get(run_id) if run_id else active_turn_key
                     if run_id and not key:
                         key = f"turn:{run_id}"
@@ -36044,6 +36091,9 @@ def read_semantic_timeline_page(
         job_timeline_group_by_runless_event_seq = dict(
             cached.get("job_timeline_group_by_runless_event_seq") or {}
         )
+        goal_native_turn_key_by_seq = dict(
+            cached.get("goal_native_turn_key_by_seq") or {}
+        )
         fork_internal_run_ids = set(cached.get("fork_internal_run_ids") or ())
         internal_status_run_ids = set(
             cached.get("internal_status_run_ids") or ()
@@ -36128,6 +36178,7 @@ def read_semantic_timeline_page(
         job_timeline_group_by_runless_event_seq=(
             job_timeline_group_by_runless_event_seq
         ),
+        goal_native_turn_key_by_seq=goal_native_turn_key_by_seq,
         fork_internal_run_ids=fork_internal_run_ids,
         internal_status_run_ids=internal_status_run_ids,
         history_repair_window=history_repair_window,
@@ -63541,7 +63592,9 @@ def session_file_for_link(session_id: str, target: str) -> dict[str, Any]:
     if len(exact) > 1:
         raise HTTPException(status_code=409, detail=f"linked file target is ambiguous: {clean}")
 
-    basename_matches = [
+    # A bare name may match a record by name; a path names one location, and a same-named file
+    # from another folder would open instead (404 lets the client open the path itself).
+    basename_matches = [] if clean_name != clean else [
         rec
         for rec in usable
         if clean_name in {
@@ -82159,6 +82212,27 @@ async def codex_provider_mcp(request: Request) -> Response:
     run_id = str(client_meta.get("agentsdock_run_id") or "")
     proof = str(client_meta.get("agentsdock_run_proof") or "")
     core_call_id = str(meta.get("callId") or "")
+    if not run_id and not proof and thread_id and turn_id:
+        # Codex starts a goal's continuation turns itself, without the per-turn metadata AgentsDock
+        # attaches at turn/start. Bind such a call to the one busy goal operation on this thread
+        # whose live native turn it is. The proof is minted here, so this path is gated by that
+        # scan and by the stored-owner and provider-authority checks below.
+        async with ACTIVE_LOCK:
+            goal_runs = [
+                (owner_id, str(active.get("run_id") or ""))
+                for owner_id, active in ACTIVE.items()
+                if (
+                    active.get("backend") == BACKEND_CODEX
+                    and active.get("transport") == CODEX_TRANSPORT_APP_SERVER
+                    and active.get("codex_native_operation_kind") == "goal_resume"
+                    and str(active.get("provider_thread_id") or "") == thread_id
+                    and str(active.get("provider_turn_id") or "") == turn_id
+                    and owner_id in BUSY_SESSIONS
+                )
+            ]
+        if len(goal_runs) == 1:
+            run_id = goal_runs[0][1]
+            proof = codex_provider_mcp_run_proof(goal_runs[0][0], thread_id, run_id)
     if (
         not thread_id
         or len(thread_id) > 256

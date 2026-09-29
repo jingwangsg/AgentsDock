@@ -1217,6 +1217,66 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
 
         executor.assert_not_awaited()
 
+    async def test_codex_provider_mcp_binds_goal_continuation_calls_to_the_live_goal_turn(self):
+        """Codex starts goal continuation turns itself, so their tool calls carry no AgentsDock run metadata."""
+        # An ordinary run that continues as a native goal keeps its run id and provider authority.
+        session_id, thread_id, run_id = "chat-goal", "thread-goal", "run_0123456789abcdef"
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "run",
+                "arguments": {"helper": "publish", "arguments": ["chart.png"]},
+                "_meta": {"callId": "call-goal", "x-codex-turn-metadata": {"thread_id": thread_id, "turn_id": "turn-2"}},
+            },
+        }
+        executor = AsyncMock(return_value=("published", False))
+
+        async def invoke(active: dict) -> dict:
+            body = json.dumps(payload).encode("utf-8")
+
+            async def receive():
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            request = http_request(
+                "POST",
+                agent_server.CODEX_PROVIDER_MCP_PATH,
+                headers=[(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode("ascii"))],
+                receive=receive,
+            )
+            request.state.codex_provider_mcp_authenticated = True
+            with patch.object(agent_server.STORE, "sessions", {
+                session_id: {"id": session_id, "backend": agent_server.BACKEND_CODEX, "codex_thread_id": thread_id},
+            }), patch.object(agent_server, "ACTIVE", {session_id: active}), patch.object(
+                agent_server, "BUSY_SESSIONS", {session_id},
+            ), patch.object(agent_server, "DELETING_SESSIONS", set()), patch.object(
+                agent_server, "DELETED_SESSION_TOMBSTONES", set(),
+            ), patch.object(agent_server, "ACTIVE_LOCK", asyncio.Lock()), patch.object(
+                agent_server, "execute_provider_tool_once", executor,
+            ):
+                return json.loads((await agent_server.codex_provider_mcp(request)).body)
+
+        goal = {
+            "run_id": run_id,
+            "backend": agent_server.BACKEND_CODEX,
+            "transport": agent_server.CODEX_TRANSPORT_APP_SERVER,
+            "provider_thread_id": thread_id,
+            "provider_turn_id": "turn-2",
+            "codex_native_operation_kind": "goal_resume",
+        }
+        self.assertEqual((await invoke(goal))["result"]["content"][0]["text"], "published")
+        self.assertEqual(executor.await_args.args[:2], (session_id, run_id))
+
+        executor.reset_mock()
+        for label, active in (
+            ("an earlier goal turn", {**goal, "provider_turn_id": "turn-1"}),
+            ("an ordinary turn", {**goal, "codex_native_operation_kind": None, "run_id": "run_live"}),
+        ):
+            with self.subTest(case=label):
+                self.assertEqual((await invoke(active))["error"], {"code": -32602, "message": "Incomplete turn metadata"})
+        executor.assert_not_awaited()
+
     async def test_agent_helper_rejects_missing_unknown_and_ambiguous_capability_before_body(self):
         async def body_must_not_be_read():
             self.fail("agent-helper body was read before capability authentication")

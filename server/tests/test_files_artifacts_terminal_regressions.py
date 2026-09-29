@@ -235,9 +235,13 @@ class FileLinkAndForkTests(IsolatedServerStateMixin, unittest.TestCase):
                     )
                     with self.assertRaises(HTTPException) as ambiguous:
                         agent_server.session_file_for_link("chat", "report.pdf")
+                    # A path in another folder is not a same-named artifact.
+                    with self.assertRaises(HTTPException) as elsewhere:
+                        agent_server.session_file_for_link("chat", "/tmp/plots/report.pdf")
 
         self.assertEqual(exact["id"], "art_first")
         self.assertEqual(ambiguous.exception.status_code, 409)
+        self.assertEqual(elsewhere.exception.status_code, 404)
 
     def test_fork_copies_owned_diff_and_session_cleanup_removes_diff_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
