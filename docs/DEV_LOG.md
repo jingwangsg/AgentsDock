@@ -1,5 +1,13 @@
 # Public development log
 
+## 2026-09-29 — One Claude token for the hub and its remotes
+
+- The hub now reads the `claude setup-token` value from `CLAUDE_CODE_OAUTH_TOKEN`
+  (was `AGENTSDOCK_REMOTE_CLAUDE_CODE_OAUTH_TOKEN`). The same variable
+  authenticates the hub's local Claude chats, which inherit it, so local chats
+  no longer depend on the `/login` credentials that concurrent Claude processes
+  refresh and invalidate.
+
 ## 2026-09-29 — Remote servers: one install per cluster, site tunnel options, shared Claude token
 
 - With `AGENTSDOCK_OCI_HOME` or `AGENTSDOCK_OSMO_HOME` set, a deploy that keeps

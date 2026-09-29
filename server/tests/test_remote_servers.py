@@ -665,7 +665,7 @@ time.sleep(30)
     def test_hub_claude_token_reaches_the_bootstrap_on_stdin_only(self) -> None:
         calls = self.fake_host(existing_port=7860)
         token = "sk-ant-oat01-" + "t" * 40
-        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_REMOTE_CLAUDE_CODE_OAUTH_TOKEN": token}))
+        self.enterContext(mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": token}))
         manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))
         assert job.done and job.error is None, job.log
         probe, bootstrap = [json.loads(line) for line in calls.read_text().splitlines()]

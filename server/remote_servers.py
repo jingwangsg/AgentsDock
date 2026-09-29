@@ -1111,9 +1111,9 @@ class RemoteServerManager:
             args = [*remote_shell_args(route.destination), install_dir, str(remote_port), probe["home"]]
             if existing is not None:
                 args.append("restart")
-            # A long-lived Claude token (`claude setup-token`) from the hub's environment rides at
-            # the head of the script on stdin: never in argv, ps output or the job log.
-            token = os.environ.get("AGENTSDOCK_REMOTE_CLAUDE_CODE_OAUTH_TOKEN", "")
+            # The hub's own long-lived Claude token (`claude setup-token`) rides at the head of the
+            # script on stdin: never in argv, ps output or the job log.
+            token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
             prelude = f"AGENTSDOCK_CLAUDE_TOKEN={shlex.quote(token)}\n".encode() if token else b""
             result_lines = await self._run_ssh(
                 job, route, args, stdin=prelude + BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,
