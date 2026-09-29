@@ -768,13 +768,14 @@ exit 0
         self.assertIn('"$SCRIPT_DIR/team_hub_host.py"', source)
         self.assertIn('"$SCRIPT_DIR/agentsdock_team_hub/"', source)
         self.assert_smoke_check_imports(
-            source, {"claude_agent_sdk", "croniter", "cryptography", "dateutil", "tzdata"},
+            source, {"claude_agent_sdk", "croniter", "cryptography", "dateutil", "markdown_it", "tzdata"},
         )
         self.assertIn(r'version(\"claude-agent-sdk\")', source)
         self.assertIn(r'raise SystemExit(0 if sdk_version == \"0.2.130\"', source)
         self.assertIn("'claude-agent-sdk==0.2.130'", source)
         self.assertIn("--no-binary claude-agent-sdk", source)
         self.assertIn("python-dateutil>=2.9,<3", source)
+        self.assertIn("'markdown-it-py>=4,<5'", source)
         self.assertIn("'$REMOTE_SERVER_DIR/claude_sdk_client.py'", source)
         self.assertIn("'$REMOTE_SERVER_DIR/codex_app_server.py'", source)
         self.assertIn("'$REMOTE_SERVER_DIR/cursor_agent_client.py'", source)

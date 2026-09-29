@@ -1,4 +1,4 @@
-"""Download a chat as Markdown or as its raw event log."""
+"""Download a chat as Markdown, HTML, or its raw event log."""
 
 import json
 import unittest
@@ -17,10 +17,10 @@ EVENTS = [
     {"seq": 3, "type": "reasoning_summary", "ts": "2026-09-29T01:00:06Z", "run_id": "r1", "text": "private reasoning"},
     {"seq": 4, "type": "tool_started", "ts": "2026-09-29T01:00:07Z", "run_id": "r1",
      "tool": {"name": "Bash", "input": {"command": "cat <<'EOF'\n```python\n# Notes\nEOF"}}},
-    {"seq": 5, "type": "assistant_text", "ts": "2026-09-29T01:00:09Z", "run_id": "r1", "text": "Here are three clinics."},
+    {"seq": 5, "type": "assistant_text", "ts": "2026-09-29T01:00:09Z", "run_id": "r1", "text": "Here are three clinics.\n\n| Name | km |\n| --- | --- |\n| A | 1 |"},
     {"seq": 6, "type": "turn_finished", "ts": "2026-09-29T01:00:10Z", "run_id": "r1", "result_text": "Here are three clinics."},
     {"seq": 7, "type": "turn_started", "ts": "2026-09-29T02:00:00Z", "run_id": "r2", "prompt": "Which is closest?"},
-    {"seq": 8, "type": "turn_finished", "ts": "2026-09-29T02:00:30Z", "run_id": "r2", "result_text": "The first one."},
+    {"seq": 8, "type": "turn_finished", "ts": "2026-09-29T02:00:30Z", "run_id": "r2", "result_text": "The first one. <script>alert(1)</script>"},
     {"seq": 9, "type": "error", "ts": "2026-09-29T02:01:00Z", "run_id": "r3", "message": "Claude is not authenticated on this server."},
 ]
 
@@ -60,6 +60,24 @@ class SessionExportTests(unittest.TestCase):
         self.assertIn("**Error · 2026-09-29 02:01 UTC:** Claude is not authenticated on this server.", text)
         self.assertNotIn("private reasoning", text)
         self.assertLess(text.index("找附近"), text.index("Which is closest?"))
+
+    def test_html_is_a_standalone_page_that_renders_markdown_and_escapes_markup(self):
+        response = self.get("html")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers["content-type"].startswith("text/html"))
+        self.assertIn('filename="nearby.html"', response.headers["content-disposition"])
+        page = response.text
+        self.assertIn("<title>理疗诊所 / nearby</title>", page)
+        self.assertIn('<section class="you"><h2>You<small> · 2026-09-29 01:00 UTC</small></h2><p>找附近的理疗诊所</p>', page)
+        self.assertIn("<td>A</td>", page)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertNotIn("<script", page)
+        # Opening the file fetches nothing, e.g. an image URL an agent wrote into a message.
+        self.assertIn("content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\"", page)
+        self.assertIn('<p class="tool"><code>Bash</code> cat &lt;&lt;&#x27;EOF&#x27; ```python # Notes EOF</p>', page)
+        self.assertIn('<p class="error"><strong>Error · 2026-09-29 02:01 UTC:</strong>', page)
+        self.assertNotIn("private reasoning", page)
 
     def test_jsonl_is_the_client_safe_event_log(self):
         response = self.get("jsonl")

@@ -433,15 +433,15 @@ rsync -a --delete --delete-excluded \
 
 echo "Checking server runtime dependencies"
 ssh "$REMOTE_HOST" "
-  if ! '$REMOTE_PYTHON' -c 'from importlib.metadata import version; import claude_agent_sdk, croniter, cryptography, dateutil, tzdata; sdk_version = version(\"claude-agent-sdk\"); raise SystemExit(0 if sdk_version == \"0.2.130\" else f\"expected claude-agent-sdk 0.2.130, got {sdk_version}\")' >/dev/null 2>&1; then
+  if ! '$REMOTE_PYTHON' -c 'from importlib.metadata import version; import claude_agent_sdk, croniter, cryptography, dateutil, markdown_it, tzdata; sdk_version = version(\"claude-agent-sdk\"); raise SystemExit(0 if sdk_version == \"0.2.130\" else f\"expected claude-agent-sdk 0.2.130, got {sdk_version}\")' >/dev/null 2>&1; then
     if [[ -x \"\$HOME/.local/bin/uv\" ]]; then
       \"\$HOME/.local/bin/uv\" pip install --python '$REMOTE_PYTHON' \
         --no-binary claude-agent-sdk \
-        'claude-agent-sdk==0.2.130' 'croniter>=6,<7' 'cryptography>=44,<47' 'python-dateutil>=2.9,<3' 'tzdata>=2025.2'
+        'claude-agent-sdk==0.2.130' 'croniter>=6,<7' 'cryptography>=44,<47' 'python-dateutil>=2.9,<3' 'markdown-it-py>=4,<5' 'tzdata>=2025.2'
     else
       '$REMOTE_PYTHON' -m pip install \
         --no-binary claude-agent-sdk \
-        'claude-agent-sdk==0.2.130' 'croniter>=6,<7' 'cryptography>=44,<47' 'python-dateutil>=2.9,<3' 'tzdata>=2025.2'
+        'claude-agent-sdk==0.2.130' 'croniter>=6,<7' 'cryptography>=44,<47' 'python-dateutil>=2.9,<3' 'markdown-it-py>=4,<5' 'tzdata>=2025.2'
     fi
   fi
   PYTHONPATH='$REMOTE_SERVER_DIR' '$REMOTE_PYTHON' -c 'from importlib.metadata import version; import codex_auth, codex_provider, side_questions, codex_side_question, claude_side_question, agentsdock_team_hub, claude_agent_sdk, cursor_agent_client, cursor_provider_mcp, cursor_process_guard, secure_peer_delivery, secure_peer_runtime, team_hub_host, agentsdock_mail, agentsdock_team, provider_commands, opencode_agent_client; from agentsdock_team_hub import secure_peer, secure_peer_hub; sdk_version = version(\"claude-agent-sdk\"); raise SystemExit(0 if sdk_version == \"0.2.130\" else f\"expected claude-agent-sdk 0.2.130, got {sdk_version}\")'

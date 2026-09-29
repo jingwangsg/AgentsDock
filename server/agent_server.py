@@ -21,6 +21,7 @@ import fcntl
 import glob
 import hashlib
 import hmac
+import html
 import ipaddress
 import importlib.util
 import inspect
@@ -67,6 +68,7 @@ from dateutil.tz import datetime_exists
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from markdown_it import MarkdownIt
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.routing import Match
 from starlette.datastructures import Headers
@@ -87565,16 +87567,38 @@ async def delete_session_timeline_pin(
     return timeline_pin_json_response(state)
 
 
+SESSION_EXPORT_CSS = """
+:root { color-scheme: light dark; --muted: #6b7280; --line: #d1d5db; --you: #eef2ff; --code: #f3f4f6; }
+@media (prefers-color-scheme: dark) { :root { --muted: #9ca3af; --line: #374151; --you: #1e2433; --code: #1f2937; } }
+body { font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif; max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; overflow-wrap: anywhere; }
+h1 { font-size: 1.6em; margin: 0 0 8px; }
+.facts { color: var(--muted); font-size: 13px; padding-left: 18px; margin: 0 0 24px; }
+section { margin: 20px 0; }
+section.you { background: var(--you); border-radius: 10px; padding: 2px 14px; }
+h2 { font-size: 14px; margin: 12px 0 4px; }
+h2 small { color: var(--muted); font-weight: normal; }
+.tool { color: var(--muted); font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 4px 0; }
+.error { color: #dc2626; }
+pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+pre { background: var(--code); padding: 10px 12px; border-radius: 8px; overflow-x: auto; }
+:not(pre) > code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
+table { border-collapse: collapse; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--line); padding: 4px 10px; }
+blockquote { border-left: 3px solid var(--line); margin-left: 0; padding-left: 12px; color: var(--muted); }
+img { max-width: 100%; }
+"""
+
+
 @app.get("/api/sessions/{session_id}/export")
-async def export_session(session_id: str, format: Literal["markdown", "jsonl"] = "markdown") -> Response:
-    """Download a chat: readable Markdown, or its client-safe event log."""
+async def export_session(session_id: str, format: Literal["markdown", "html", "jsonl"] = "markdown") -> Response:
+    """Download a chat: readable Markdown or HTML, or its client-safe event log."""
 
     ensure_session_not_initializing(session_id)
     sess = STORE.sessions.get(session_id)
     if not sess:
         raise HTTPException(status_code=404, detail="session not found")
     title = str(sess.get("title") or "Conversation")
-    extension = "md" if format == "markdown" else "jsonl"
+    extension = {"markdown": "md", "html": "html", "jsonl": "jsonl"}[format]
     stem = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]+', " ", title).split())
     # Most filesystems cap a name at 255 bytes; CJK titles reach that well before 255 characters.
     stem = stem.encode()[:200].decode("utf-8", "ignore").strip() or "conversation"
@@ -87604,16 +87628,16 @@ async def export_session(session_id: str, format: Literal["markdown", "jsonl"] =
         event.get("run_id") for event in events
         if event.get("type") == "assistant_text" and str(event.get("text") or "").strip()
     }
-    lines = [
-        f"# {title}",
-        "",
-        f"- Backend: {sess.get('backend') or DEFAULT_BACKEND}" + (f" · model {sess['model']}" if sess.get("model") else ""),
-        f"- Working directory: {sess.get('cwd') or DEFAULT_CWD}",
-        f"- Created: {sess.get('created_at') or ''} · exported: {now_iso()}",
-        f"- AgentsDock session: {session_id}",
+    facts = [
+        ("Backend", f"{sess.get('backend') or DEFAULT_BACKEND}" + (f" · model {sess['model']}" if sess.get("model") else "")),
+        ("Working directory", str(sess.get("cwd") or DEFAULT_CWD)),
+        ("Created", f"{sess.get('created_at') or ''} · exported: {now_iso()}"),
+        ("AgentsDock session", session_id),
     ]
     if provider_id := session_provider_id(sess):
-        lines.append(f"- Provider session: {provider_id}")
+        facts.append(("Provider session", provider_id))
+    # (kind, " · <time> UTC" or the tool name, text)
+    blocks: list[tuple[str, str, str]] = []
     for event in events:
         event_type = event.get("type")
         stamp = str(event.get("ts") or "").replace("T", " ").removesuffix("Z")[:16]
@@ -87621,21 +87645,55 @@ async def export_session(session_id: str, format: Literal["markdown", "jsonl"] =
         if event_type == "turn_started" or is_native_goal_steer_event(event):
             text = str(event.get("prompt") or "").strip()
             if text:
-                lines.extend(["", f"## You{suffix}", "", text])
+                blocks.append(("You", suffix, text))
         elif event_type == "assistant_text" or (event_type == "turn_finished" and event.get("run_id") not in assistant_runs):
             text = clean_assistant_text(str(event.get("text") or event.get("result_text") or "")).strip()
             if text:
-                lines.extend(["", f"## Assistant{suffix}", "", text])
+                blocks.append(("Assistant", suffix, text))
         elif event_type == "tool_started":
             tool = event.get("tool") if isinstance(event.get("tool"), dict) else {}
             # One line: a multi-line command could otherwise open a code fence or heading for the rest of the file.
             summary = " ".join(summarize_tool_input(tool.get("input"), 300).split())
-            lines.append(f"- Tool `{tool.get('name') or event.get('tool_id') or 'tool'}`" + (f": {summary}" if summary else ""))
+            blocks.append(("Tool", str(tool.get("name") or event.get("tool_id") or "tool"), summary))
         elif event_type == "error":
             text = str(event.get("message") or "").strip()
             if text:
-                lines.extend(["", f"**Error{suffix}:** {text}"])
-    return Response("\n".join(lines) + "\n", media_type="text/markdown; charset=utf-8", headers=headers)
+                blocks.append(("Error", suffix, text))
+
+    if format == "markdown":
+        lines = [f"# {title}", "", *(f"- {label}: {value}" for label, value in facts)]
+        for kind, label, text in blocks:
+            if kind == "Tool":
+                lines.append(f"- Tool `{label}`" + (f": {text}" if text else ""))
+            elif kind == "Error":
+                lines.extend(["", f"**Error{label}:** {text}"])
+            else:
+                lines.extend(["", f"## {kind}{label}", "", text])
+        return Response("\n".join(lines) + "\n", media_type="text/markdown; charset=utf-8", headers=headers)
+
+    def render_page() -> str:
+        # js-default escapes raw HTML in messages instead of rendering it, so the page runs no chat-supplied markup.
+        markdown = MarkdownIt("js-default")
+        parts = [f"<h1>{html.escape(title)}</h1>", "<ul class=\"facts\">"]
+        parts.extend(f"<li>{label}: {html.escape(value)}</li>" for label, value in facts)
+        parts.append("</ul>")
+        for kind, label, text in blocks:
+            if kind == "Tool":
+                parts.append(f"<p class=\"tool\"><code>{html.escape(label)}</code> {html.escape(text)}</p>")
+            elif kind == "Error":
+                parts.append(f"<p class=\"error\"><strong>Error{html.escape(label)}:</strong> {html.escape(text)}</p>")
+            else:
+                parts.append(f"<section class=\"{kind.lower()}\"><h2>{kind}<small>{html.escape(label)}</small></h2>{markdown.render(text)}</section>")
+        # The CSP keeps an opened page from fetching anything, e.g. an image URL an agent wrote into a message.
+        return (
+            "<!doctype html>\n<html><head><meta charset=\"utf-8\">"
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            f"<title>{html.escape(title)}</title><style>{SESSION_EXPORT_CSS}</style></head>\n<body>\n" + "\n".join(parts) + "\n</body></html>\n"
+        )
+
+    # Rendering a long chat takes seconds; off the event loop, other requests keep being served.
+    return Response(await asyncio.to_thread(render_page), media_type="text/html; charset=utf-8", headers=headers)
 
 
 @app.get("/api/sessions/{session_id}")
