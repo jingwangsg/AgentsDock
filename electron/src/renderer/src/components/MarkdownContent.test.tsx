@@ -558,6 +558,20 @@ describe('MarkdownContent', () => {
     window.removeEventListener('agentsdock:open-agent-file', open)
   })
 
+  it('shows a chat image as a link that opens it, since chat cannot load it as an image', () => {
+    const { container } = render(<MarkdownContent text={'![Loss chart](../../../tmp/loss.png)'} sessionId="chat-7" />)
+
+    expect(container.querySelector('img')).toBeNull()
+    expect(screen.getByRole('link', { name: 'Loss chart' })).toBeInTheDocument()
+  })
+
+  it('shows a chat image inside a link as that link\'s text, not a nested link', () => {
+    const { container } = render(<MarkdownContent text={'[![Build](../ci/badge.svg)](https://ci.example.com/run/1)'} sessionId="chat-7" />)
+
+    expect(container.querySelectorAll('a')).toHaveLength(1)
+    expect(screen.getByRole('link', { name: 'Build' })).toHaveAttribute('href', 'https://ci.example.com/run/1')
+  })
+
   it('keeps raw HTML inert unless a trusted preview explicitly enables it', () => {
     const resolveImageSource = vi.fn((source: string) => `agentsdock-media:${source}`)
     const { container } = render(<MarkdownContent

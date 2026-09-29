@@ -40,6 +40,7 @@ const EMPTY_FILES: AgentFile[] = []
 const EMPTY_CHAT_REFERENCES: readonly ChatReference[] = []
 const EMPTY_TEAM_REFERENCES: readonly TeamReference[] = []
 const MarkdownLocaleContext = createContext<Locale>('en')
+const InsideLinkContext = createContext(false)
 
 interface MarkdownContentProps {
   text: string
@@ -166,19 +167,24 @@ export const MarkdownContent = memo(function MarkdownContent({
     }
     if (sessionId) void window.agentsDock.files.openLinked(sessionId, href)
   }, [files, sessionId])
+  const link = useCallback((href: string | undefined, children: ReactNode) => isWorkspaceLink(href)
+    ? <a
+      href={internalWorkspaceLinkURL(href!)}
+      className="workspace-reference-link"
+      title={`Open ${decodeLinkTarget(href!)}`}
+      onClick={event => onLink(event, href)}
+    >{children}</a>
+    : <a href={href} onClick={event => onLink(event, href)}>{children}</a>, [onLink])
   // Locale travels through context so updating labels does not replace these
   // React component types and discard selection, scroll or code-block state.
   const components = useMemo<Components>(() => ({
-    a: ({ href, children }) => isWorkspaceLink(href)
-      ? <a
-        href={internalWorkspaceLinkURL(href!)}
-        className="workspace-reference-link"
-        title={`Open ${decodeLinkTarget(href!)}`}
-        onClick={event => onLink(event, href)}
-      >{children}</a>
-      : <a href={href} onClick={event => onLink(event, href)}>{children}</a>,
+    a: ({ href, children }) => link(href, <InsideLinkContext.Provider value>{children}</InsideLinkContext.Provider>),
     img: ({ src, alt, node: _node, ...props }) => {
-      const resolved = src && resolveImageSource ? resolveImageSource(src) : src
+      const insideLink = useContext(InsideLinkContext)
+      // Chat has no image source: the page policy blocks remote images and a server path is not a
+      // page resource. Inside a link the image is plain text, so a click follows that link alone.
+      if (!resolveImageSource) return !src ? null : insideLink ? alt || src : link(src, alt || src)
+      const resolved = src ? resolveImageSource(src) : undefined
       return resolved ? <img {...props} src={resolved} alt={alt ?? ''} loading="lazy" /> : null
     },
     code: ({ className, children, node, ...props }) => {
@@ -263,7 +269,7 @@ export const MarkdownContent = memo(function MarkdownContent({
     },
     table: ({ children }) => <MarkdownTable>{children}</MarkdownTable>,
     input: props => <input {...props} readOnly />
-  }), [onChatReferenceClick, onLink, preparedChatReferences.markers, resolveImageSource, restoredNormalized, sessionId, shown])
+  }), [link, onChatReferenceClick, preparedChatReferences.markers, resolveImageSource, restoredNormalized, sessionId, shown])
   return (
     <div className={`markdown ${compact ? 'compact' : ''}`}>
       <MarkdownLocaleContext.Provider value={uiLocale}>
