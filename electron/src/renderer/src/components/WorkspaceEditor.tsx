@@ -355,7 +355,7 @@ export function WorkspaceEditor({
   const [editorNavigation, setEditorNavigation] = useState<EditorNavigationRequest | null>(null)
   const [editorSplit, setEditorSplit] = useState(readEditorSplitPreference)
   const [filePresentation, setFilePresentation] = useState<FilePresentation>(() => (
-    memoryMatches ? memory.filePresentation ?? 'full' : 'full'
+    memoryMatches ? memory.filePresentation ?? 'split' : 'split'
   ))
   const [markdownViewModes, setMarkdownViewModes] = useState<Map<string, MarkdownViewMode>>(() => (
     memoryMatches ? new Map(memory.markdownViewModes ?? []) : new Map()
@@ -632,6 +632,12 @@ export function WorkspaceEditor({
     observer.observe(panel)
     return () => observer.disconnect()
   }, [activePath, editorPanelShown, filePresentation])
+
+  // A file opens beside the chat; full screen lasts until the last file closes (showing the pinned
+  // Chat tab keeps it). A chat left with a file open restores the presentation it was left in.
+  useEffect(() => {
+    if (openFiles.length === 0 && revealedDirectory === null && filePresentation !== 'split') setFilePresentation('split')
+  }, [openFiles.length, revealedDirectory, filePresentation])
 
   useEffect(() => {
     referenceRequestSequence.current += 1
@@ -1891,8 +1897,10 @@ export function WorkspaceEditor({
         && Boolean(editorPanelRef.current?.contains(focusedElement))
       const fileTabOwnsFocus = focusedElement instanceof Element
         && Boolean(focusedElement.closest('.workspace-editor-file-tab'))
+      // The split-chats overlay (onReturnToChat) always shows files full screen, whatever the presentation.
       if (
         filePresentationRef.current !== 'full'
+        && !onReturnToChat
         && !editorOwnsFocus
         && !fileTabOwnsFocus
       ) return
@@ -1901,7 +1909,7 @@ export function WorkspaceEditor({
     }
     window.addEventListener('agentsdock:new-active-surface', createOnActiveSurface)
     return () => window.removeEventListener('agentsdock:new-active-surface', createOnActiveSurface)
-  }, [capabilityVersion, creationAvailable, focusedPath, session.archived])
+  }, [capabilityVersion, creationAvailable, focusedPath, onReturnToChat, session.archived])
 
   const copyWorkspaceEntryPath = async (entry: WorkspaceEntry, relative: boolean) => {
     const value = relative ? entry.path : absoluteWorkspacePath(workspaceRoot, entry.path)

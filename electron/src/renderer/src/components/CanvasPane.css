@@ -6,7 +6,8 @@
 
 .canvas-pane {
   position: absolute; z-index: 85; top: 0; right: 0; bottom: 0; width: var(--canvas-pane-width);
-  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); min-width: 0; min-height: 0;
+  container-type: inline-size;
   background: var(--bg); border-left: 1px solid var(--border); color: var(--text);
 }
 .canvas-pane-resize-handle { width: 9px; position: absolute; z-index: 3; top: 0; bottom: 0; left: -5px; cursor: col-resize; touch-action: none; outline: none; }
@@ -19,7 +20,11 @@ body.canvas-resizing .canvas-pane iframe { pointer-events: none; }
   display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; min-height: 38px;
   border-bottom: 1px solid var(--border); background: var(--surface); font-size: var(--text-size-label);
 }
-/* The view toggle sits right after the title so it is visible however wide the pane is; the spacer pushes the rest right. */
+/* The view toggle sits right after the title; the spacer pushes the rest right. The title shortens
+   first; only when the controls alone no longer fit (about 420px, 640px with the Canvas picker) does
+   the header wrap, so Comment, Reload, Export and Close stay reachable. */
+@container (max-width: 440px) { .canvas-pane-header { flex-wrap: wrap; } }
+@container (max-width: 660px) { .canvas-pane-header:has(> select) { flex-wrap: wrap; } }
 .canvas-pane-header strong { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--text-weight-label); }
 .canvas-pane-header-spacer { flex: 1; }
 .canvas-pane-view-toggle { flex: none; }

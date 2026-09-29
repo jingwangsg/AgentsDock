@@ -440,7 +440,7 @@ describe('WorkspaceEditor', () => {
     expect(window.agentsDock.preferences.setScoped).toHaveBeenCalledWith(
       expect.any(Object),
       'workspace-editor:chat-a',
-      expect.objectContaining({ version: 5, filePresentation: 'full' })
+      expect.objectContaining({ version: 5, filePresentation: 'split' })
     )
 
     await act(flush)
@@ -1352,6 +1352,7 @@ describe('WorkspaceEditor', () => {
       }))
     })
     await screen.findByRole('textbox', { name: 'Contents of deep/nested/src/App.tsx' })
+    await user.click(screen.getByRole('button', { name: 'Show file workspace full screen' }))
 
     const create = new Event('agentsdock:new-active-surface', { cancelable: true })
     act(() => { window.dispatchEvent(create) })
@@ -1436,6 +1437,7 @@ describe('WorkspaceEditor', () => {
       }))
     })
     await screen.findByRole('textbox', { name: 'Contents of src/App.tsx' })
+    await user.click(screen.getByRole('button', { name: 'Show file workspace full screen' }))
 
     const fullFileNew = new Event('agentsdock:new-active-surface', { cancelable: true })
     act(() => { window.dispatchEvent(fullFileNew) })
@@ -1491,6 +1493,7 @@ describe('WorkspaceEditor', () => {
       }))
     })
     await screen.findByRole('textbox', { name: 'Contents of src/App.tsx' })
+    fireEvent.click(screen.getByRole('button', { name: 'Show file workspace full screen' }))
 
     const create = new Event('agentsdock:new-active-surface', { cancelable: true })
     act(() => { window.dispatchEvent(create) })
@@ -2085,23 +2088,48 @@ describe('WorkspaceEditor', () => {
     expect(window.agentsDock.files.open).toHaveBeenCalledWith('chat-a', file)
   })
 
-  it('opens files full screen by default while keeping Chat pinned as a tab', async () => {
+  it('opens files beside the chat by default and keeps Chat pinned as a tab in full screen', async () => {
     const user = userEvent.setup()
     const view = renderEditor()
 
     fireEvent.keyDown(window, { key: 'o', metaKey: true })
     await user.click(await screen.findByRole('option', { name: /README\.md/i }))
 
+    const content = view.container.querySelector('.workspace-editor-content')
+    expect(content).toHaveClass('workspace-editor-content-split', 'workspace-editor-right')
+    expect(screen.getByText('Chat timeline')).toBeVisible()
+    expect(screen.getByRole('separator', { name: 'Resize chat and file editor' })).toHaveAttribute('aria-valuenow', '58')
+    expect(screen.getByRole('navigation', { name: 'Workspace tabs' })).toHaveClass('workspace-editor-tab-strip-split')
+
+    await user.click(screen.getByRole('button', { name: 'Show file workspace full screen' }))
     expect(screen.getByText('Chat timeline')).not.toBeVisible()
     expect(screen.getByRole('button', { name: /Chat.*pinned/i })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.queryByRole('separator', { name: 'Resize chat and file editor' })).not.toBeInTheDocument()
-    expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-editor-only')
-    expect(screen.getByRole('navigation', { name: 'Workspace tabs' })).not.toHaveClass('workspace-editor-tab-strip-split')
+    expect(content).toHaveClass('workspace-editor-content-editor-only')
     expect(screen.getByRole('tab', { name: 'README.md' }).closest('.workspace-editor-file-tabs')).not.toBeNull()
     await user.click(screen.getByRole('button', { name: /Chat.*pinned/i }))
     expect(screen.getByText('Chat timeline')).toBeVisible()
-    expect(screen.queryByRole('separator', { name: 'Resize chat and file editor' })).not.toBeInTheDocument()
-    expect(view.container.querySelector('.workspace-editor-content')).not.toHaveClass('workspace-editor-content-split')
+    expect(content).not.toHaveClass('workspace-editor-content-split')
+    // Viewing the pinned chat is not closing the file: its tab returns to full screen.
+    await user.click(screen.getByRole('tab', { name: 'README.md' }))
+    expect(content).toHaveClass('workspace-editor-content-editor-only')
+  })
+
+  it('consumes New in the split-chats file overlay, which always shows files full screen', async () => {
+    renderEditor('server-a:chat-a', 5, undefined, undefined, vi.fn())
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
+        detail: { sessionId: 'chat-a', path: 'src/App.tsx' }
+      }))
+    })
+    await screen.findByRole('textbox', { name: 'Contents of src/App.tsx' })
+    ;(document.activeElement as HTMLElement | null)?.blur()
+
+    const create = new Event('agentsdock:new-active-surface', { cancelable: true })
+    act(() => { window.dispatchEvent(create) })
+
+    expect(create.defaultPrevented).toBe(true)
+    expect(screen.getByRole('textbox', { name: 'Contents of Untitled-1' })).toBeVisible()
   })
 
   it('returns a transient file workspace to its preserved chat layout', async () => {
@@ -2192,33 +2220,27 @@ describe('WorkspaceEditor', () => {
     expect(onReturnToChat).toHaveBeenCalledOnce()
   })
 
-  it('restores the chat split on demand and returns to the default full-screen file view', async () => {
+  it('keeps full screen until the last file closes, then opens the next file beside the chat', async () => {
     const user = userEvent.setup()
     const view = renderEditor()
 
     fireEvent.keyDown(window, { key: 'o', metaKey: true })
     await user.click(await screen.findByRole('option', { name: /README\.md/i }))
-
     const content = view.container.querySelector('.workspace-editor-content')
+    await user.click(screen.getByRole('button', { name: 'Show file workspace full screen' }))
     expect(content).toHaveClass('workspace-editor-content-editor-only')
-    expect(content).not.toHaveClass('workspace-editor-content-split')
-    expect(screen.getByText('Chat timeline')).not.toBeVisible()
-    expect(screen.queryByRole('separator', { name: 'Resize chat and file editor' })).not.toBeInTheDocument()
-    expect(screen.getByRole('tabpanel')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Restore chat split view' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('navigation', { name: 'Workspace tabs' })).not.toHaveClass('workspace-editor-tab-strip-split')
 
     await user.click(screen.getByRole('button', { name: 'Restore chat split view' }))
-
-    expect(content).toHaveClass('workspace-editor-content-split', 'workspace-editor-right')
-    expect(content).not.toHaveClass('workspace-editor-content-editor-only')
-    expect(screen.getByText('Chat timeline')).toBeVisible()
-    expect(screen.getByRole('separator', { name: 'Resize chat and file editor' })).toHaveAttribute('aria-valuenow', '58')
+    expect(content).toHaveClass('workspace-editor-content-split')
     expect(screen.getByRole('button', { name: 'Show file workspace full screen' })).toHaveAttribute('aria-pressed', 'false')
 
     await user.click(screen.getByRole('button', { name: 'Show file workspace full screen' }))
-    expect(content).toHaveClass('workspace-editor-content-editor-only')
-    expect(screen.getByText('Chat timeline')).not.toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Close README.md' }))
+    fireEvent.keyDown(window, { key: 'o', metaKey: true })
+    await user.click(await screen.findByRole('option', { name: /README\.md/i }))
+    expect(content).toHaveClass('workspace-editor-content-split')
+    expect(screen.getByText('Chat timeline')).toBeVisible()
   })
 
   it('scrolls overflowing file tabs sideways with a vertical wheel while pinned controls stay fixed', async () => {
@@ -2227,7 +2249,6 @@ describe('WorkspaceEditor', () => {
 
     fireEvent.keyDown(window, { key: 'o', metaKey: true })
     await user.click(await screen.findByRole('option', { name: /README\.md/i }))
-    await user.click(screen.getByRole('button', { name: 'Restore chat split view' }))
 
     const tabList = screen.getByRole('tablist', { name: 'Open files' })
     Object.defineProperties(tabList, {
@@ -2253,13 +2274,13 @@ describe('WorkspaceEditor', () => {
     expect(tabList.scrollLeft).toBe(420)
   })
 
-  it('restores the per-chat split presentation after the editor remounts', async () => {
+  it('restores a chat left in full screen after the editor remounts', async () => {
     const user = userEvent.setup()
     const first = renderEditor()
     fireEvent.keyDown(window, { key: 'o', metaKey: true })
     await user.click(await screen.findByRole('option', { name: /README\.md/i }))
-    await user.click(screen.getByRole('button', { name: 'Restore chat split view' }))
-    expect(first.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-split')
+    await user.click(screen.getByRole('button', { name: 'Show file workspace full screen' }))
+    expect(first.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-editor-only')
 
     const promises: Promise<unknown>[] = []
     window.dispatchEvent(new CustomEvent('agentsdock:flush-draft', { detail: { promises } }))
@@ -2268,8 +2289,8 @@ describe('WorkspaceEditor', () => {
 
     const restored = renderEditor()
     expect(await screen.findByRole('tab', { name: 'README.md' })).toHaveAttribute('aria-selected', 'true')
-    expect(restored.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-split')
-    expect(screen.getByText('Chat timeline')).toBeVisible()
+    expect(restored.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-editor-only')
+    expect(screen.getByText('Chat timeline')).not.toBeVisible()
   })
 
   it('restores a persisted split presentation while legacy states remain full screen', async () => {
@@ -2710,7 +2731,6 @@ describe('WorkspaceEditor', () => {
 
     fireEvent.keyDown(window, { key: 'o', metaKey: true })
     await user.click(await screen.findByRole('option', { name: /src\/App\.tsx/i }))
-    await user.click(screen.getByRole('button', { name: 'Restore chat split view' }))
 
     const content = view.container.querySelector<HTMLElement>('.workspace-editor-content')!
     vi.spyOn(content, 'getBoundingClientRect').mockReturnValue({
