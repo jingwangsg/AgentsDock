@@ -6,7 +6,8 @@ import test from 'node:test'
 
 import {
   MIN_ELECTRON_MAIN_ENTRY_BYTES,
-  verifyElectronCompileOutput
+  verifyElectronCompileOutput,
+  verifyMonacoCodiconFont
 } from '../verify_electron_compile_output.mjs'
 
 function createProject(t, { main = './out/main/index.js', size = MIN_ELECTRON_MAIN_ENTRY_BYTES } = {}) {
@@ -48,4 +49,35 @@ test('rejects a main entry outside the Electron project', t => {
     () => verifyElectronCompileOutput(project),
     /escapes its project directory/
   )
+})
+
+function createRendererAssets(t, files) {
+  const project = mkdtempSync(join(tmpdir(), 'agentsdock-electron-assets-'))
+  t.after(() => rmSync(project, { recursive: true, force: true }))
+  const assets = join(project, 'out', 'renderer', 'assets')
+  mkdirSync(assets, { recursive: true })
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(assets, name), content)
+  return project
+}
+
+test('accepts a Monaco stylesheet whose codicon font was emitted', t => {
+  const project = createRendererAssets(t, {
+    'monaco-abc.css': '.monaco-editor{}@font-face{font-family:codicon;font-display:block;src:url(./codicon-x1.ttf) format("truetype")}',
+    'codicon-x1.ttf': 'font'
+  })
+  assert.deepEqual(verifyMonacoCodiconFont(project), { stylesheet: 'monaco-abc.css', font: './codicon-x1.ttf' })
+})
+
+test('rejects a Monaco build that shipped codicon classes without the font', t => {
+  const project = createRendererAssets(t, {
+    'monaco-abc.css': '.monaco-editor{}.codicon-diff-insert:before{content:"\\ea60"}'
+  })
+  assert.throws(() => verifyMonacoCodiconFont(project), /No built stylesheet declares the Monaco codicon font/)
+})
+
+test('rejects a codicon font-face whose font file is missing', t => {
+  const project = createRendererAssets(t, {
+    'monaco-abc.css': '@font-face{font-family:"codicon";src:url(./codicon-x1.ttf) format("truetype")}'
+  })
+  assert.throws(() => verifyMonacoCodiconFont(project), /codicon-x1\.ttf referenced by monaco-abc\.css is missing/)
 })

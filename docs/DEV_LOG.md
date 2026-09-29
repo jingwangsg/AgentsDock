@@ -83,6 +83,23 @@
   build time.
 - Exercised on an Android emulator and in the desktop app.
 
+## 2026-09-29 — Diff gutter markers render again in Changes
+
+- In the Changes diff, the +/- markers beside line numbers rendered as boxes.
+  The Monaco entry point the app loads (`editor/editor.api`) does not include
+  `codicon.css`, so the codicon classes shipped without their font and fell
+  back to the monospace font. The app now also imports Monaco's
+  `features/codicon/register`. `verify_electron_compile_output.mjs` now fails
+  the build when no built stylesheet declares the codicon font, or when the
+  font file it references is missing.
+- Observed in an isolated native instance of the production build, on a
+  throwaway chat over a scratch repository. Before the fix, the marker elements
+  resolved to the monospace font and no codicon font face existed. After it,
+  they resolve to `codicon` and the font loads; the screenshot shows + and −.
+  Monaco-related tests pass, as do the verifier tests, including a case for
+  the missing font. The verifier rejected the pre-fix build and accepts the
+  fixed one.
+
 ## 2026-09-29 — Start the local server from Server settings
 
 - When the local hub is offline or retrying, its row in Settings → Server shows

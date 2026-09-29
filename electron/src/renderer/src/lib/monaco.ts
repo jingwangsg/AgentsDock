@@ -3,6 +3,9 @@
 // main bundle. Only tokenizers are loaded: no TypeScript/JSON/CSS/HTML services.
 import * as monaco from 'monaco-editor/editor/editor.api'
 import 'monaco-editor/basic-languages/monaco.contribution'
+// load-bearing: editor.api does not bring codicon.css; without it the diff
+// gutter's +/- markers (and every other codicon) render as tofu boxes.
+import 'monaco-editor/features/codicon/register'
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
 
 self.MonacoEnvironment = { getWorker: () => new EditorWorker() }

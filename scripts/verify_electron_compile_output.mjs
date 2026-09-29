@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { lstatSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -50,6 +50,20 @@ export function verifyElectronCompileOutput(projectDirectory, options = {}) {
   return { mainPath: realMainPath, size: entryStat.size }
 }
 
+// Monaco's diff gutter markers are codicon glyphs. An entry point that skips
+// codicon.css still ships the classes, and every glyph renders as a tofu box.
+export function verifyMonacoCodiconFont(projectDirectory) {
+  const assets = resolve(realpathSync(resolve(projectDirectory)), 'out', 'renderer', 'assets')
+  for (const name of readdirSync(assets).filter(file => file.endsWith('.css'))) {
+    const source = /@font-face\{[^}]*font-family:"?codicon"?[;"][^}]*url\(([^)]+)\)/.exec(readFileSync(resolve(assets, name), 'utf8'))?.[1]
+    if (!source) continue
+    const font = source.replace(/^["']|["']$/g, '').replace(/[?#].*$/, '')
+    if (font.startsWith('data:') || existsSync(resolve(assets, font))) return { stylesheet: name, font: font.slice(0, 80) }
+    throw new Error(`Monaco codicon font ${font} referenced by ${name} is missing from out/renderer/assets.`)
+  }
+  throw new Error('No built stylesheet declares the Monaco codicon font; the Changes diff would render its +/- markers as boxes.')
+}
+
 const scriptPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null
 if (scriptPath === import.meta.url) {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -57,6 +71,8 @@ if (scriptPath === import.meta.url) {
   try {
     const result = verifyElectronCompileOutput(projectDirectory)
     console.log(`Verified Electron main entry: ${result.mainPath} (${result.size} bytes)`)
+    const codicon = verifyMonacoCodiconFont(projectDirectory)
+    console.log(`Verified Monaco codicon font: ${codicon.font} (from ${codicon.stylesheet})`)
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1
