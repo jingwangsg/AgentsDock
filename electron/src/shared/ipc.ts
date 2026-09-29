@@ -1,5 +1,5 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from './provider-usage'
-import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult } from './types'
+import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, RuntimeCliUpdate } from './types'
 import type { CanvasHostTheme } from './canvas'
 import type { ChatOutputsSummary } from './chat-outputs'
 import type {
@@ -604,6 +604,7 @@ export interface AgentsDockAPI {
   runtime: {
     usage?(scope: ProviderUsageScope, backend: UsageBackend, sessionId: string, refresh?: boolean): Promise<ProviderUsageSnapshot>
     catalog(refresh?: boolean, handoff?: boolean): Promise<RuntimeCatalog>
+    updateCli(scope: Pick<WorkspaceProfileScope, 'profileId' | 'profileGeneration'>, backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate>
   }
   processes: {
     list(sessionId: string): Promise<ProcessSnapshot>

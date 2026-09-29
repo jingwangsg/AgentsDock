@@ -396,6 +396,7 @@ const api: AgentsDockAPI = {
   },
   runtime: {
     catalog: (refresh, handoff) => ipcRenderer.invoke('runtime:catalog', refresh, handoff),
+    updateCli: (scope, backend) => ipcRenderer.invoke('runtime:update-cli', scope, backend),
     usage: (scope, backend, sessionId, refresh) => ipcRenderer.invoke('runtime:usage', scope, backend, sessionId, refresh)
   },
   processes: {

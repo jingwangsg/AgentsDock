@@ -11,7 +11,7 @@ export async function saveAgentFile(sessionId: string, file: AgentFile): Promise
   }
 }
 
-function cleanIPCError(message: string): string {
+export function cleanIPCError(message: string): string {
   return message
     .replace(/^Error invoking remote method '[^']+':\s*/i, '')
     .replace(/^Error:\s*/i, '')

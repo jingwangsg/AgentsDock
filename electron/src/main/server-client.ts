@@ -1,7 +1,7 @@
 import { createReadStream, openAsBlob } from 'node:fs'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../shared/provider-usage'
 import { parseCodexAuthStatus } from '../shared/codex-auth'
-import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, SessionExportFormat } from '../shared/types'
+import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, RuntimeCliUpdate, SessionExportFormat } from '../shared/types'
 import { parseCodexProviderConfiguration, parseCodexProviderModels, parseCodexProviderTestResult, validateCodexProviderInput, validateCodexProviderModelTestInput, validateCodexProviderSelection } from '../shared/codex-provider'
 import { randomUUID } from 'node:crypto'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
@@ -821,6 +821,10 @@ export class AgentServerClient {
       // load-bearing: never forward the server's error body; it may echo the submitted token.
       throw new Error(error instanceof ServerError && [400, 413].includes(error.status) ? 'CLAUDE_TOKEN_INVALID' : 'CLAUDE_TOKEN_FAILED')
     }
+  }
+  /** The server stops the CLI after 10 minutes; a download can take several. */
+  updateRuntimeCli(backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate> {
+    return this.privilegedNativeRequest(`/api/admin/runtimes/${backend}/update`, { method: 'POST' }, 11 * 60_000, 200)
   }
   codexServerSubagents(): Promise<CodexSubagentsConfiguration> {
     return this.privilegedNativeRequest('/api/admin/codex/subagents')
@@ -3270,6 +3274,7 @@ function isPrivilegedNativeControlTarget(
   }
   if (path === '/api/admin/codex/auth') return !target.search && method === 'GET'
   if (path === '/api/admin/claude/token') return !target.search && method === 'PUT'
+  if (/^\/api\/admin\/runtimes\/(claude|codex)\/update$/.test(path)) return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider') return !target.search && ['GET', 'PUT', 'DELETE'].includes(method)
   if (path === '/api/admin/codex/provider/test') return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider/models') return method === 'GET' && (!target.search

@@ -444,6 +444,7 @@ export function registerIpc(
   handle('digest:preview', input => service.previewDigest(input))
   handle('digest:send', input => service.sendDigest(input))
   handle('runtime:catalog', (refresh, handoff) => service.runtime(Boolean(refresh), Boolean(handoff)))
+  handle('runtime:update-cli', (scope, backend) => service.updateRuntimeCli(scope, backend))
   handle('runtime:usage', (scope, backend, sessionId, refresh) => service.providerUsage(scope, backend, sessionId, Boolean(refresh)))
   handle('processes:list', sessionId => service.processes(sessionId))
   handle('processes:tail', (sessionId, path, lines) => service.processLog(sessionId, path, lines))

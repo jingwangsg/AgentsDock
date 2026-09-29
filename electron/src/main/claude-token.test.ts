@@ -31,6 +31,23 @@ describe('native Claude token transport', () => {
     for (const header of ['origin', 'cookie', 'authorization']) expect(calls[0].headers[header]).toBeUndefined()
   })
 
+  it('runs a CLI update through the native admin route under a mounted remote prefix', async () => {
+    const calls: Array<{ method?: string; url?: string; headers: IncomingMessage['headers'] }> = []
+    await withServer((req, res) => {
+      calls.push({ method: req.method, url: req.url, headers: req.headers })
+      res.end(JSON.stringify({ output: 'Claude Code is up to date', diagnostic: { backend: 'claude', status: 'ready', available: true, message: '' } }))
+    }, async url => {
+      const client = new AgentServerClient(`${url}/api/remote/abc123`, 'synthetic-admin-token')
+      try {
+        await expect(client.updateRuntimeCli('claude')).resolves.toMatchObject({ output: 'Claude Code is up to date' })
+        await expect(client.updateRuntimeCli('cursor' as 'claude')).rejects.toThrow('Privileged native control route is invalid.')
+      } finally { client.dispose() }
+    })
+    expect(calls.map(call => [call.method, call.url])).toEqual([['POST', '/api/remote/abc123/api/admin/runtimes/claude/update']])
+    expect(calls[0].headers['x-agentsdock-token']).toBe('synthetic-admin-token')
+    expect(calls[0].headers.authorization).toBeUndefined()
+  })
+
   it.each([[400, 'INVALID'], [413, 'INVALID'], [401, 'FAILED'], [500, 'FAILED']])(
     'maps HTTP %s to CLAUDE_TOKEN_%s without echoing the server body', async (status, code) => {
       await withServer((_req, res) => { res.statusCode = Number(status); res.end(JSON.stringify({ detail: fakeToken })) }, async url => {

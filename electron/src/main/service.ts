@@ -105,6 +105,7 @@ import type {
   QueuedTurn,
   ResumeSessionInput,
   RuntimeCatalog,
+  RuntimeCliUpdate,
   SendTurnInput,
   ServerConnectionState,
   ServerForceRestartConfirmation,
@@ -2332,6 +2333,15 @@ export class AppService {
     await this.ensureValidatedScope(scope)
     this.assertCurrentScope(scope)
     await scope.client.setClaudeToken(token)
+  }
+
+  async updateRuntimeCli(expected: Pick<WorkspaceProfileScope, 'profileId' | 'profileGeneration'>, backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate> {
+    const scope = this.requireProfileScope(expected?.profileId, expected?.profileGeneration)
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    const result = await scope.client.updateRuntimeCli(backend)
+    this.assertCurrentScope(scope)
+    return result
   }
 
   async codexProvider(expected: CodexServerSettingsScope): Promise<CodexProviderConfiguration> {

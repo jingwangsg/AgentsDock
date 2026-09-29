@@ -18,6 +18,7 @@ import {
 import { memo, useState } from 'react'
 import { useAppStore } from '../store/app-store'
 import { eventErrorText, isTimelineError } from '../lib/timeline'
+import { cleanIPCError } from '../lib/file-actions'
 
 export const RuntimeHealthNotice = memo(function RuntimeHealthNotice({ backend, sessionId, codexProvider }: { backend: Backend; sessionId: string; codexProvider?: CodexProvider }) {
   useLocale()
@@ -183,6 +184,7 @@ function RuntimeStatus({
       <small>{detail}</small>
       {action ? <small className="runtime-action">{action}</small> : null}
       {needsClaudeToken ? <ClaudeTokenForm onSaved={onRecheck} /> : null}
+      {!compact && (backend === 'claude' || backend === 'codex') && diagnostic?.installed ? <CliUpdate backend={backend} /> : null}
     </div>
     {compact && providerNeedsAttention && onRecheck
       ? <button
@@ -198,6 +200,34 @@ function RuntimeStatus({
       ? <CodexWriterRelease sessionId={sessionId} compact />
       : null}
     {!compact && diagnostic?.version ? <code>{diagnostic.version}</code> : null}
+  </div>
+}
+
+function CliUpdate({ backend }: { backend: 'claude' | 'codex' }) {
+  const available = useAppStore(state => Boolean(state.health?.capabilities?.runtime_cli_update_v1?.available))
+  const profileId = useAppStore(state => state.activeProfileId)
+  const profileGeneration = useAppStore(state => state.profileGeneration)
+  const [updating, setUpdating] = useState(false)
+  const [result, setResult] = useState<{ text: string; failed: boolean } | null>(null)
+  const update = async () => {
+    if (!profileId) return
+    setUpdating(true)
+    setResult(null)
+    try {
+      const { output, diagnostic } = await window.agentsDock.runtime.updateCli({ profileId, profileGeneration }, backend)
+      useAppStore.setState(state => ({ health: state.health && { ...state.health, runtimes: { ...state.health.runtimes, [backend]: diagnostic } } }))
+      setResult({ text: output.split('\n').at(-1) || t('runtimeUpdate.done'), failed: false })
+    } catch (error) {
+      setResult({ text: cleanIPCError(error instanceof Error ? error.message : String(error)), failed: true })
+    } finally {
+      setUpdating(false)
+    }
+  }
+  if (!available) return null
+  return <div className="runtime-cli-update">
+    <button type="button" className="quiet-button" disabled={updating} onClick={() => void update()}>
+      <RefreshCw className={updating ? 'spin' : ''} size={12} />{" "}{t(updating ? 'runtimeUpdate.updating' : 'runtimeUpdate.update')}</button>
+    {result ? <small role={result.failed ? 'alert' : 'status'}>{result.text}</small> : null}
   </div>
 }
 

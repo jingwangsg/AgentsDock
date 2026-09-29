@@ -532,6 +532,11 @@ export interface RuntimeDiagnostic {
   /** Claude only; undefined from servers that predate token-only Claude auth. */
   oauth_token_configured?: boolean
 }
+export interface RuntimeCliUpdate {
+  /** The last lines the CLI printed. */
+  output: string
+  diagnostic: RuntimeDiagnostic
+}
 export interface RuntimeBackendCatalog {
   /** Safe metadata only; credentials stay on the server. */
   custom_provider?: {
@@ -1814,6 +1819,7 @@ export interface HealthCapabilities {
   codex_provider_v1?: { available?: boolean; version?: number; per_chat?: boolean; per_chat_models?: boolean; model_discovery?: boolean; model_compatibility?: boolean }
   side_questions?: SideQuestionsCapability
   tmux?: ServerCapability
+  runtime_cli_update_v1?: { available: boolean }
   workspace_files?: WorkspaceFilesCapability
   working_directory_completion?: WorkingDirectoryCompletionCapability
   scheduled_jobs?: ScheduledJobsCapability
