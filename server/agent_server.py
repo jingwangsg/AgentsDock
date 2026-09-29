@@ -5537,7 +5537,7 @@ def restore_session_canvases_sync(
         for path in list(directory.iterdir()):
             if not (path.is_file() and path.name.endswith(agentsdock_canvas.CANVAS_SUFFIX)) or path.name in wanted:
                 continue
-            for stale in (path, agentsdock_canvas.state_path(path), agentsdock_canvas.build_cache_path(path)):
+            for stale in (path, agentsdock_canvas.state_path(path), agentsdock_canvas.build_cache_path(path), agentsdock_canvas.comments_path(path)):
                 with suppress(OSError):
                     stale.unlink()
             removed.append(agentsdock_canvas.canvas_name(path))
@@ -97740,8 +97740,15 @@ workspace_git.register_workspace_git_routes(
     app, authorize=require_native_admin_control, workspace_root=session_workspace_root,
     checkpoint_restore=session_checkpoint_restore,
 )
+async def start_canvas_comment_turn(session_id: str, prompt: str, display_prompt: str, client_capabilities: list[str]) -> dict[str, Any]:
+    """A Canvas comment's turn goes through the composer's own admission, queue and transport."""
+    return await post_turn(session_id, TurnRequest(prompt=prompt, display_prompt=display_prompt, client_capabilities=client_capabilities))
+
+
 agentsdock_canvas.register_canvas_routes(
     app, state_dir=STATE_DIR, session_exists=lambda session_id: session_id in STORE.sessions,
+    # iter_session_events is defined further down this module.
+    session_events=lambda session_id: iter_session_events(session_id), start_turn=start_canvas_comment_turn,
 )
 # Hub for SSH-only remote servers: registry, tunnels, deploy, and the /api/remote/{id} proxy.
 REMOTE_SERVERS = remote_servers.RemoteServerManager(STATE_DIR, source_dir=SERVER_ROOT)

@@ -489,9 +489,12 @@ class RewindOutputsTests(RewindFixture):
         directory = self.canvas_dir()
         (directory / "board.canvas.tsx").write_text("v3")
         (directory / "board.canvas.data.json").write_text('{"kept": true}')
+        # Comment threads are the user's, like UI state: kept with a surviving canvas, gone with a removed one.
+        (directory / "board.canvas.comments.json").write_text('{"threads": []}')
         (directory / "extra.canvas.tsx").write_text("extra")
         (directory / "extra.canvas.data.json").write_text("{}")
         (directory / ".extra.canvas.build.json").write_text("{}")
+        (directory / "extra.canvas.comments.json").write_text('{"threads": []}')
         artifact_dir = self.publish_artifact()
 
         with self.claude_transcript():
@@ -500,7 +503,7 @@ class RewindOutputsTests(RewindFixture):
         self.assertEqual(result["provider_rewind"], "claude_fork")
         self.assertEqual((directory / "board.canvas.tsx").read_text(), "v2")
         self.assertEqual((directory / "board.canvas.data.json").read_text(), '{"kept": true}')
-        self.assertEqual(sorted(path.name for path in directory.iterdir()), ["board.canvas.data.json", "board.canvas.tsx"])
+        self.assertEqual(sorted(path.name for path in directory.iterdir()), ["board.canvas.comments.json", "board.canvas.data.json", "board.canvas.tsx"])
         self.assertFalse(artifact_dir.exists())
         self.assertEqual(sorted(path.name for path in server.canvas_checkpoints_dir("chat").iterdir()), ["second"])
         tombstone = self.stored_events()[-1]
