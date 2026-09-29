@@ -2909,7 +2909,7 @@ class RunQueuedTurnNowTests(unittest.IsolatedAsyncioTestCase):
         agent_server.QUEUED_TURNS["chat-1"] = deque([stale, successor])
         start = AsyncMock(side_effect=[
             agent_server.ProviderCommandSelectionInvalid(
-                "the provider command list changed; choose the command again"
+                "the selected provider command is no longer available"
             ),
             {"run_id": "run-successor", "queued": False},
         ])

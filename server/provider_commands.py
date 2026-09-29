@@ -744,8 +744,7 @@ def _inventory_revision(
         "cwd": cwd,
         "truncated": truncated,
         # Provider order is presentation-only and may change across otherwise
-        # identical cold connects. A semantic inventory revision must not
-        # invalidate a queued selection solely because that order changed.
+        # identical cold connects; keep the revision independent of it.
         "commands": sorted(
             (record.public for record in records),
             key=lambda item: str(item.get("id") or ""),

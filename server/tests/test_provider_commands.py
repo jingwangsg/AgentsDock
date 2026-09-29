@@ -441,9 +441,9 @@ class ProviderCommandInventoryTests(unittest.TestCase):
             "_private",
             "plugin:task",
         ])
-        # Connection generation is a private launch fence, not semantic
-        # inventory identity. Reconnecting with the same commands must not
-        # invalidate a durable queued selection.
+        # Connection generation is a private launch fence, not part of the
+        # public id or revision; a queued selection is matched by that id.
+        self.assertEqual(first.commands[0]["id"], next_generation.commands[0]["id"])
         self.assertEqual(first.revision, next_generation.revision)
         self.assertEqual(first.records[0].native, {
             "name": "_private",

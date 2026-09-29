@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 import agent_server
-from provider_commands import ProviderCommandRecord, codex_provider_command_inventory
+from provider_commands import ProviderCommandRecord, claude_provider_command_inventory, codex_provider_command_inventory
 
 
 class ProviderCommandAPIContractTests(unittest.IsolatedAsyncioTestCase):
@@ -121,7 +121,7 @@ class ProviderCommandAPIContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["support"]["mode"], "unavailable")
         self.assertEqual(inventory.records, ())
 
-    async def test_selection_is_revalidated_and_stale_or_mismatched_is_409(self) -> None:
+    async def test_selection_is_revalidated_and_missing_or_mismatched_is_409(self) -> None:
         record = ProviderCommandRecord(
             public={
                 "id": "pcmd_" + "a" * 32,
@@ -170,13 +170,31 @@ class ProviderCommandAPIContractTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIs(resolved, record)
 
-            with self.assertRaises(agent_server.ProviderCommandSelectionInvalid) as stale:
+            # Chosen from an older list (another command since added or
+            # removed): the chosen command itself is unchanged, so it runs.
+            older_list = await agent_server.resolve_provider_command_selection(
+                "chat-a",
+                session,
+                agent_server.SkillSelection(
+                    id=record.public["id"],
+                    revision="pcmdrev_" + "c" * 32,
+                ),
+                prompt="/review",
+                purpose=None,
+                provider_context_mode="chat",
+                client_capabilities=[
+                    agent_server.CODEX_INTERACTIVE_CLIENT_CAPABILITY
+                ],
+            )
+            self.assertIs(older_list, record)
+
+            with self.assertRaises(agent_server.ProviderCommandSelectionInvalid) as gone:
                 await agent_server.resolve_provider_command_selection(
                     "chat-a",
                     session,
                     agent_server.SkillSelection(
-                        id=record.public["id"],
-                        revision="pcmdrev_" + "c" * 32,
+                        id="pcmd_" + "d" * 32,
+                        revision=inventory.revision,
                     ),
                     prompt="/review",
                     purpose=None,
@@ -185,7 +203,7 @@ class ProviderCommandAPIContractTests(unittest.IsolatedAsyncioTestCase):
                         agent_server.CODEX_INTERACTIVE_CLIENT_CAPABILITY
                     ],
                 )
-            self.assertEqual(stale.exception.status_code, 409)
+            self.assertEqual(gone.exception.status_code, 409)
 
             with self.assertRaises(agent_server.ProviderCommandSelectionInvalid) as mismatch:
                 await agent_server.resolve_provider_command_selection(
@@ -200,6 +218,58 @@ class ProviderCommandAPIContractTests(unittest.IsolatedAsyncioTestCase):
                     ],
                 )
             self.assertEqual(mismatch.exception.status_code, 409)
+
+    async def test_queued_claude_command_survives_an_unrelated_plugin_removal(self) -> None:
+        # A /gear message queued while a plugin's commands were listed must
+        # still run after that plugin is uninstalled and Claude reconnects.
+        kwargs = {"cwd": "/work", "selector_secret": "a" * 64, "binding_context": "chat-a"}
+        queued_from = claude_provider_command_inventory(
+            {"commands": [{"name": "gear"}, {"name": "brainstorming"}]},
+            control_generation="1",
+            **kwargs,
+        )
+        current = claude_provider_command_inventory(
+            {"commands": [{"name": "gear"}]},
+            control_generation="2",
+            **kwargs,
+        )
+        self.assertNotEqual(queued_from.revision, current.revision)
+        snapshot = {
+            "backend": "claude",
+            "revision": current.revision,
+            "support": {"available": True, "mode": "native"},
+            "commands": current.commands,
+        }
+        gear = next(command for command in queued_from.commands if command["name"] == "gear")
+        brainstorming = next(command for command in queued_from.commands if command["name"] == "brainstorming")
+        session = {"id": "chat-a", "backend": "claude", "cwd": "/work"}
+        with patch.object(
+            agent_server,
+            "discover_session_provider_commands",
+            AsyncMock(return_value=(snapshot, current)),
+        ):
+            resolved = await agent_server.resolve_provider_command_selection(
+                "chat-a",
+                session,
+                agent_server.SkillSelection(id=gear["id"], revision=queued_from.revision),
+                prompt="/gear connect oci@host",
+                purpose=None,
+                provider_context_mode="chat",
+                client_capabilities=[agent_server.CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY],
+            )
+            self.assertEqual(resolved.native["name"], "gear")
+            self.assertEqual(resolved.native["control_generation"], "2")
+
+            with self.assertRaises(agent_server.ProviderCommandSelectionInvalid):
+                await agent_server.resolve_provider_command_selection(
+                    "chat-a",
+                    session,
+                    agent_server.SkillSelection(id=brainstorming["id"], revision=queued_from.revision),
+                    prompt="/brainstorming",
+                    purpose=None,
+                    provider_context_mode="chat",
+                    client_capabilities=[agent_server.CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY],
+                )
 
     async def test_unavailable_selection_is_typed_for_terminal_queue_handling(self) -> None:
         session = {"id": "chat-a", "backend": "codex", "cwd": "/tmp"}

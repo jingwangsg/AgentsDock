@@ -61587,10 +61587,9 @@ async def resolve_provider_command_selection(
         raise ProviderCommandSelectionUnavailable(
             detail="provider command discovery is temporarily unavailable",
         )
-    if selection.revision != inventory.revision:
-        raise ProviderCommandSelectionInvalid(
-            detail="the provider command list changed; choose the command again",
-        )
+    # Match by id, not by list revision: the id binds chat, backend, cwd, name
+    # and native identity (Claude name, Codex path, OpenCode path and content
+    # digest), so other commands appearing or disappearing must not reject it.
     record = inventory.resolve(selection.id)
     if record is None:
         raise ProviderCommandSelectionInvalid(
