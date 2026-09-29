@@ -2930,6 +2930,7 @@
   "composer.agentQueue.sendNowRunning": "Stop the current turn and start this agent message. Other queued messages keep their order.",
   "chatShare.menu": "Share chat…",
   "sessionExport.markdown": "Download as Markdown",
+  "sessionExport.html": "Download as HTML",
   "sessionExport.jsonl": "Download event log (JSONL)",
   "chatShare.collaborator": "Collaborator",
   "chatShare.title": "Share chat",

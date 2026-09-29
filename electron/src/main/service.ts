@@ -4555,7 +4555,7 @@ export class AppService {
   }
 
   async exportSession(sessionId: string, format: SessionExportFormat): Promise<string | null> {
-    const [extension, filterName] = format === 'markdown' ? ['md', 'Markdown'] : ['jsonl', 'JSON Lines']
+    const [extension, filterName] = { markdown: ['md', 'Markdown'], html: ['html', 'HTML'], jsonl: ['jsonl', 'JSON Lines'] }[format]
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
     const response = await scope.client.sessionExportRequest(sessionId, format)
@@ -4565,6 +4565,10 @@ export class AppService {
       // FastAPI's generic 404: an AgentsServer from before chat downloads has no export route.
       if (response.status === 404 && detail === '{"detail":"Not Found"}') {
         throw new Error('This server cannot export chats yet. Update its AgentsServer, then try again.')
+      }
+      // ...and its 422 for an unknown format: one from before HTML export.
+      if (response.status === 422 && format === 'html') {
+        throw new Error('This server cannot export chats as HTML yet. Update its AgentsServer, then try again.')
       }
       throw new Error(`Conversation download failed (${response.status})${detail ? `: ${detail}` : ''}`)
     }

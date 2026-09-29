@@ -6868,6 +6868,13 @@ describe('workspace file scope safety', () => {
     await expect(service.exportSession('chat', 'markdown')).rejects.toThrow('This server cannot export chats yet. Update its AgentsServer')
   })
 
+  it('tells the user to update a server that predates HTML export', async () => {
+    const a = fakeClient({ sessionExportRequest: async () => new Response('{"detail":[{"type":"literal_error"}]}', { status: 422 }) })
+    const { service } = createProfileService({ 'http://a.test:7850': [a] })
+
+    await expect(service.exportSession('chat', 'html')).rejects.toThrow('This server cannot export chats as HTML yet. Update its AgentsServer')
+  })
+
   it('downloads a complete binary workspace file through the native save dialog', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'agentsdock-workspace-download-'))
     cleanup.push(() => rmSync(directory, { recursive: true, force: true }))

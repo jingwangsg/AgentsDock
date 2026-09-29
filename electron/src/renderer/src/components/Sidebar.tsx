@@ -455,6 +455,7 @@ function SessionContextMenu({ session, unread, folders }: { session: Session; un
           detail: { session, scope: { profileId: shareProfileId, profileGeneration: shareGeneration, serverIdentity: shareIdentity } }
         }))} />
         <MenuItem icon={Download} label={t('sessionExport.markdown')} onSelect={() => void useAppStore.getState().exportSession(session.id, 'markdown')} />
+        <MenuItem icon={Download} label={t('sessionExport.html')} onSelect={() => void useAppStore.getState().exportSession(session.id, 'html')} />
         <MenuItem icon={Download} label={t('sessionExport.jsonl')} onSelect={() => void useAppStore.getState().exportSession(session.id, 'jsonl')} />
         <MenuItem icon={session.pinned ? PinOff : Pin} label={session.pinned ? t("ui.Sidebar.SessionContextMenu.unpin_chat_e260efa") : t("ui.Sidebar.SessionContextMenu.pin_chat_633b23e")} onSelect={() => void update({ pinned: !session.pinned })} />
         {!session.archived && <ContextMenu.Sub><ContextMenu.SubTrigger className="menu-item"><Folder size={14} />{t("ui.Sidebar.SessionContextMenu.move_to_folder_91d631e")}<ChevronRight size={13} className="submenu-arrow" /></ContextMenu.SubTrigger><ContextMenu.Portal><ContextMenu.SubContent className="menu-content" sideOffset={3}>{folders.map(folder => <ContextMenu.Item className="menu-item" key={folder} onSelect={() => void update(sidebarFolderAssignmentPatch(folder))}>{folder}</ContextMenu.Item>)}</ContextMenu.SubContent></ContextMenu.Portal></ContextMenu.Sub>}

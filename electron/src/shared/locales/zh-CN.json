@@ -2930,6 +2930,7 @@
   "composer.agentQueue.sendNowRunning": "停止当前轮次并开始此 Agent 消息，其他排队消息保持原有顺序。",
   "chatShare.menu": "分享会话…",
   "sessionExport.markdown": "下载为 Markdown",
+  "sessionExport.html": "下载为 HTML",
   "sessionExport.jsonl": "下载事件日志（JSONL）",
   "chatShare.collaborator": "协作者",
   "chatShare.title": "分享会话",

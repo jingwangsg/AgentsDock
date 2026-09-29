@@ -130,7 +130,7 @@ describe('ChatHeader', () => {
     expect(screen.getByRole('menuitem', { name: 'Fork chat' })).toBeInTheDocument()
   })
 
-  it.each([['Download as Markdown', 'markdown'], ['Download event log (JSONL)', 'jsonl']] as const)(
+  it.each([['Download as Markdown', 'markdown'], ['Download as HTML', 'html'], ['Download event log (JSONL)', 'jsonl']] as const)(
     'downloads the conversation from the chat menu: %s', async (label, format) => {
       const exportSession = vi.fn().mockResolvedValue('/tmp/chat')
       Object.defineProperty(window, 'agentsDock', {

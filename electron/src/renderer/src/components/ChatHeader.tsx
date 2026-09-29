@@ -169,6 +169,7 @@ export function ChatHeader({
           <DropdownMenu.Separator className="menu-separator" />
           <DropdownMenu.Item className="menu-item" disabled={session.backend === 'opencode'} onSelect={() => void useAppStore.getState().importHistory(session.id)}><RefreshCw size={14} />{t("ui.ChatHeader.ChatHeader.refresh_provider_history_9d88960")}</DropdownMenu.Item>
           <DropdownMenu.Item className="menu-item" onSelect={() => void useAppStore.getState().exportSession(session.id, 'markdown')}><Download size={14} />{t('sessionExport.markdown')}</DropdownMenu.Item>
+          <DropdownMenu.Item className="menu-item" onSelect={() => void useAppStore.getState().exportSession(session.id, 'html')}><Download size={14} />{t('sessionExport.html')}</DropdownMenu.Item>
           <DropdownMenu.Item className="menu-item" onSelect={() => void useAppStore.getState().exportSession(session.id, 'jsonl')}><Download size={14} />{t('sessionExport.jsonl')}</DropdownMenu.Item>
           <DropdownMenu.Separator className="menu-separator" />
           <DropdownMenu.Item className="menu-item" onSelect={() => void useAppStore.getState().updateSession(session.id, { archived: !session.archived })}>{session.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}{session.archived ? t("ui.ChatHeader.ChatHeader.unarchive_chat_54953a7") : t("ui.ChatHeader.ChatHeader.archive_chat_9bd687c")}</DropdownMenu.Item>
