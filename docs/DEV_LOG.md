@@ -1,5 +1,41 @@
 # Public development log
 
+## 2026-09-30 — Goal turns can use AgentsDock tools; fixes found while debugging a missing chart
+
+- When a chat turn continues as a Codex goal, the continuation turns Codex
+  starts itself can call the AgentsDock tools again (publish, jobs, chats).
+  Every such call used to fail with "Incomplete turn metadata" because those
+  turns carry no AgentsDock run proof; a call is now bound to the one busy goal
+  operation whose live turn it is. A goal started with Resume goal still has no
+  provider authority for these tools.
+- Every reply of a long Codex goal shows after a reload. A goal's native turns
+  were one history item, so only its latest reply survived a reload (earlier
+  ones were only seen live); each native turn is now its own item. Goal turns
+  imported from Codex history are not covered yet.
+- Agents are told that chat Markdown cannot show a local image and to publish
+  images instead; on a publish error they report it instead of claiming the file
+  was attached, and use the manifest fallback only when the tool is absent.
+- Opening a linked file whose path names a folder no longer falls back to any
+  published file with the same name (which could open a different file, or fail
+  as ambiguous); an unmatched path now opens as a path.
+- Desktop Settings → Servers lists every server; the list no longer scrolls
+  inside a 230px box that hid the fourth server.
+- Remote deploys install tmux with the system package manager when it is missing
+  and the deploying user is root or has passwordless sudo, so chat terminals work.
+
+## 2026-09-30 — Move a hub remote to another host in place
+
+- `PATCH /api/admin/remote-servers/{id}` changes a registered remote's name,
+  SSH host or install directory without changing its id, so desktop and
+  Android keep the same server entry. A new host or directory redeploys there.
+  Chats belong to their machine: a new host gets its own fresh install (on
+  cluster storage, `.agentsdock-server-<target>`) unless an install directory is
+  given; the previous server and its chats are left as they were.
+- Desktop and Android accept a hub remote's new server identity without asking:
+  the hub vouches for the move, so the app resets the pinned identity (clearing
+  the old server's cached chats) and reconnects, active profile included. A
+  server added directly by URL still asks before trusting a new identity.
+
 ## 2026-09-29 — Update Claude Code and Codex from the app
 
 - Server settings (desktop) and Agent runtimes (Android) have an Update CLI

@@ -152,6 +152,8 @@ let refreshJobsInFlight: { scope: ConnectionScope; promise: Promise<void>; dirty
 let quickCreateSessionInFlight: { scope: ConnectionScope; promise: Promise<boolean> } | null = null
 /** The hub deploy `deployHubRemoteServer` is currently polling, if any; lets cancelHubDeploy reach both the poll loop and the server-side job. */
 let hubDeployInFlight: { scope: ConnectionScope; jobId: string; cancelled: boolean } | null = null
+/** The automatic identity reset of a hub-proxied remote (see acceptHealthIdentity), so repeated health checks start it once. */
+let hubIdentityResetInFlight: Promise<void> | null = null
 let readReceiptTimer: ReturnType<typeof setTimeout> | null = null
 let pinSaveQueue: Promise<void> = Promise.resolve()
 const notifiedEvents = new Set<string>()
@@ -3841,7 +3843,14 @@ async function acceptHealthIdentity(
     const profile = get().profiles.find(value => value.id === scope.profileId)
     if (!profile || get().activeProfileId !== scope.profileId) throw new Error('Active server profile is missing.')
     if (profile.serverIdentity && profile.serverIdentity !== identity) {
-      throw new Error(`Server identity mismatch: expected ${profile.serverIdentity}, received ${identity}.`)
+      // A saved hub decides which server answers at `<hub>/api/remote/{id}`; moving or redeploying that remote
+      // installs a fresh server there. Accept it through the same reset as "Allow a new server identity".
+      const proxiedByHub = get().profiles.some(hub => normalizeServerURL(profile.serverURL).startsWith(normalizeServerURL(hub.serverURL) + HUB_PROXY_PREFIX))
+      if (!proxiedByHub) throw new Error(`Server identity mismatch: expected ${profile.serverIdentity}, received ${identity}.`)
+      hubIdentityResetInFlight ??= get().updateServerProfile(profile.id, { resetServerIdentity: true })
+        .catch(error => { if (get().activeProfileId === profile.id) set({ error: errorMessage(error) }) })
+        .finally(() => { hubIdentityResetInFlight = null })
+      throw new Error(`Server identity changed from ${profile.serverIdentity} to ${identity} behind the hub. Reconnecting to the new server.`)
     }
     const duplicate = findDuplicateProfileByIdentity(get().profiles, identity, profile.id)
     if (duplicate) throw new Error(`Server identity ${identity} already belongs to ${duplicate.name}.`)
