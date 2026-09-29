@@ -6001,8 +6001,9 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                     "session_id": "provider",
                     "terminal_reason": "aborted_streaming",
                 })
-                result = await asyncio.wait_for(force_send, 0.5)
-                await asyncio.wait_for(cleanup_entered.wait(), 0.5)
+                # Hang guards, not speed checks: a loaded test run can take well over 0.5 s here.
+                result = await asyncio.wait_for(force_send, 5)
+                await asyncio.wait_for(cleanup_entered.wait(), 5)
 
                 self.assertFalse(result["ok"])
                 self.assertTrue(result["deferred"])

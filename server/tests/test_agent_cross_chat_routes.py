@@ -115,6 +115,9 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         for task in wakes:
             task.cancel()
         await asyncio.gather(*wakes, return_exceptions=True)
+        # A cancelled task's ledger write keeps running in its worker thread and recreates the
+        # sqlite WAL while rmtree runs; wait for every such thread before the directory goes.
+        await asyncio.get_running_loop().shutdown_default_executor()
         agent_server.CROSS_CHAT_CAPABILITIES.clear()
         agent_server.CROSS_CHAT = self.original["cross_chat"]
         agent_server.CROSS_CHAT_AUTHORITY_ROOT = self.original["authority_root"]

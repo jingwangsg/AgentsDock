@@ -1303,8 +1303,10 @@ print("{not-json", flush=True)
         )
 
     async def test_absolute_timeout_applies_despite_continuous_output(self) -> None:
+        # The startup timeout stays out of the way: under a loaded test run the fake CLI can take
+        # longer than a short one to print its first event, which is not what this test is about.
         with patch.object(
-            agent_server, "OPENCODE_STARTUP_TIMEOUT_SECONDS", 0.5
+            agent_server, "OPENCODE_STARTUP_TIMEOUT_SECONDS", 5.0
         ), patch.object(
             agent_server, "OPENCODE_TURN_TIMEOUT_SECONDS", 0.6
         ), patch.object(
