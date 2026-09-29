@@ -38,6 +38,19 @@ seq = 0
 seq = 0
 {
   const events = [
+    { id: 'art_1', filename: 'resume.pdf', source_path: '/work/resume.pdf' },
+    { id: 'art_2', filename: 'resume.pdf', source_path: '/work/old/resume.pdf' },
+    { id: 'art_3', filename: 'brief.md', source_path: '/work/brief.md' },
+    { id: 'art_4', filename: 'resume.pdf', source_path: '/work/resume.pdf' },
+    { id: 'art_1', filename: 'resume.pdf', source_path: '/work/resume.pdf' },
+  ].map(artifact => event('artifact_created', { artifact }))
+  assertEqual(collectChatOutputs(events).outputs.map(item => item.kind === 'artifact' ? item.eventId : item.kind),
+    ['e2', 'e3', 'e4'], 'only the newest artifact published from each path is listed, in the newest position')
+}
+
+seq = 0
+{
+  const events = [
     event('assistant_text', { text: 'Open http://localhost:5173/app. Or http://LOCALHOST:5173/other' }),
     event('tool_finished', { output: 'Listening on http://127.0.0.1:8000 and http://[::1]:8000/ and https://localhost:9999' }),
     event('tool_started', { output: 'http://localhost:4000 is not scanned on tool start' }),

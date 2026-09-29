@@ -1,17 +1,35 @@
 # Public development log
 
+## 2026-09-29 — Canvas HTML export, one output row per path, review fixes
+
+- A Canvas can be exported as a standalone HTML page from its toolbar. The page
+  inlines its runtime, data and state, so charts and controls keep working in a
+  browser; it carries the runtime's license notices. A Canvas that does not
+  compile fails the export instead of saving its error page.
+- Outputs & sources shows one row per published path, the newest version; files
+  with the same name in different folders stay separate.
+- Agents are told to name a Canvas and its link after what it shows, and to give
+  published files self-explanatory names, so outputs are recognizable.
+- Chat downloads apply the same filtering and redaction as every other client
+  read, and the Markdown matches what the timeline shows.
+- Codex import follows the segment chain Codex records, so turns Codex dropped
+  (for example after editing an earlier message) are not imported.
+- Loading an iframe (Canvas, preview) no longer revokes the window's file access
+  or aborts an upload; only a new main document does.
+- Session index backups are ordered by time and skip unchanged copies.
+
 ## 2026-09-29 — Download a chat, ⌘R rename, Codex segments, safer session index
 
-- Desktop and Android can download the current chat as Markdown (each message,
-  tool calls as one line, reasoning left out) or as its raw event log (JSONL):
+- Desktop and Android can download a chat as Markdown (each message, tool calls
+  as one line, reasoning left out) or as its event log (JSONL):
   desktop from the chat's ⋯ menu or the sidebar menu with a save dialog, Android
   from Chat details through the share sheet. The server serves both from
   `GET /api/sessions/{id}/export?format=markdown|jsonl`, for hub and remote chats.
 - ⌘R (Ctrl+R) opens Rename chat for the current chat. Development builds move
   Reload to ⌥⌘R.
-- Codex 0.158+ splits one thread into several rollout files. Import now reads all
-  of them in order, and history sync continues across a new segment instead of
-  stopping; before, an import could come out empty or partial.
+- Newer Codex versions split one thread into several rollout files. Import now
+  reads the whole thread, and history sync continues across a new segment
+  instead of stopping; before, an import could come out empty or partial.
 - The desktop completion banner's Open works again after the window has loaded
   any iframe (canvas, preview). An iframe load was treated as a page reload, so
   Open only raised the window; secure-peer invite links had the same problem.

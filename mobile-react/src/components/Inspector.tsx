@@ -100,13 +100,12 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
   const conversationTransfer = useFileTransfer(`${activeProfileId ?? 'none'}:${profileGeneration}:${sessionId}`)
   const downloadConversation = () => {
     if (!session || !scopeIsCurrent()) return
-    const start = (format: ConversationExportFormat) => {
-      if (scopeIsCurrent()) void conversationTransfer.start(conversationTransferRequest(session, client, format, () => scopeIsCurrent() && useAppStore.getState().connected))
-    }
+    const start = (format: ConversationExportFormat) => void conversationTransfer.start(conversationTransferRequest(session, client, format, () => scopeIsCurrent() && useAppStore.getState().connected))
+    // Android lays three buttons out as neutral, negative, positive and ignores style: 'cancel'.
     Alert.alert('Download conversation', 'Choose a format, then pick where to keep it in the share sheet.', [
-      { text: 'Markdown (.md)', onPress: () => start('markdown') },
-      { text: 'Event log (.jsonl)', onPress: () => start('jsonl') },
       { text: 'Cancel', style: 'cancel' },
+      { text: 'Event log (.jsonl)', onPress: () => start('jsonl') },
+      { text: 'Markdown (.md)', onPress: () => start('markdown') },
     ])
   }
   const copySessionId = async () => {

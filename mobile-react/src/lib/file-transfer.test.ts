@@ -185,7 +185,7 @@ test('conversation export shares the chat title as a file from its authenticated
   assert.deepEqual(calls, [], 'Credentials resolve only when the transfer starts')
   assert.deepEqual(markdown.source(), { url: 'https://example.invalid/export?format=markdown', headers: { Authorization: 'Bearer fixture-only' } })
   const log = conversationTransferRequest({ id: 'chat', title: 'Fix a/b rendering' }, client, 'jsonl', () => true)
-  assert.equal(safeDownloadFilename(log.filename), 'Fix a-b rendering.jsonl', 'A slash in the title must not truncate the name')
+  assert.equal(safeDownloadFilename(log.filename), 'Fix a b rendering.jsonl', 'The server and desktop name: separators become one space')
   assert.equal(log.contentType, 'application/x-ndjson')
   assert.equal(safeDownloadFilename(conversationTransferRequest({ id: 'chat', title: '  ' }, client, 'jsonl', () => true).filename), 'Conversation.jsonl')
   log.source()
