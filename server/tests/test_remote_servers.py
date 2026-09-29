@@ -22,8 +22,9 @@ from unittest import mock
 import httpx
 import uvicorn
 import websockets
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from websockets.asyncio.client import connect as websocket_connect
 
@@ -224,6 +225,55 @@ class RemoteServerTests(unittest.TestCase):
                 payload[field] = value
                 with self.assertRaises(ValidationError):
                     rs.RemoteServerCreate(**payload)
+
+    def test_update_changes_an_entry_in_place_and_redeploys_a_moved_one(self) -> None:
+        async def main() -> None:
+            manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
+            manager.servers["abcdef123456"] = make_server()
+            deploys: list[tuple[str | None, bool]] = []
+            live_tunnel = mock.Mock(server=manager.servers["abcdef123456"])
+            manager.tunnels["abcdef123456"] = live_tunnel
+            with mock.patch.object(manager, "start_deploy", side_effect=lambda request, *, redeploy_id, keep_port: deploys.append((redeploy_id, keep_port)) or rs.DeployJob(job_id="job")):
+                renamed, job = manager.update("abcdef123456", rs.RemoteServerUpdate(name=" lab "))
+                assert (renamed.name, job, deploys) == ("lab", None, [])
+                # A rename keeps the live forward instead of restarting it.
+                assert manager.tunnels["abcdef123456"] is live_tunnel and live_tunnel.server.name == "lab"
+
+                with mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/lustre/me"}):
+                    moved, job = manager.update("abcdef123456", rs.RemoteServerUpdate(ssh_host="oci@new_cluster"))
+                # The old port may belong to the previous install's server; the new install picks its own.
+                assert job is not None and deploys == [("abcdef123456", False)]
+                with mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/lustre/me"}), self.assertRaises(HTTPException) as odd:
+                    manager.update("abcdef123456", rs.RemoteServerUpdate(ssh_host="oci@a:b"))
+                assert odd.exception.status_code == 422
+            # Same id, so client profiles stay; chats belong to their machine, so the new host gets
+            # its own install on the shared storage instead of the old host's state.
+            saved = rs.load_registry(manager.path)[0]
+            assert (saved.id, saved.name, saved.ssh_host) == ("abcdef123456", "lab", "oci@new_cluster")
+            assert saved.install_dir == "/mnt/lustre/me/.agentsdock-server-new_cluster"
+
+            running = asyncio.get_running_loop().create_future()
+            manager.jobs["busy"] = rs.DeployJob(job_id="busy", task=asyncio.ensure_future(running))
+            with self.assertRaises(HTTPException) as busy:
+                manager.update("abcdef123456", rs.RemoteServerUpdate(install_dir="/mnt/lustre/other"))
+            assert busy.exception.status_code == 409 and manager.servers["abcdef123456"].install_dir == saved.install_dir
+            running.cancel()
+            with self.assertRaises(HTTPException) as unknown:
+                manager.update("000000000000", rs.RemoteServerUpdate(name="x"))
+            assert unknown.exception.status_code == 404
+
+        asyncio.run(main())
+
+    def test_update_route_rejects_unsafe_fields(self) -> None:
+        manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server()
+        hub = FastAPI()
+        rs.register_remote_server_routes(hub, manager=manager, authorize_admin=lambda request: None, websocket_authorized=lambda ws: True)
+        client = TestClient(hub)
+        assert client.patch(f"{rs.ADMIN_PATH}/abcdef123456", json={"ssh_host": "-oProxyCommand=x"}).status_code == 422
+        response = client.patch(f"{rs.ADMIN_PATH}/abcdef123456", json={"name": "lab"})
+        assert response.status_code == 200 and response.json()["server"]["name"] == "lab" and response.json()["job_id"] is None
+        assert "token" not in response.json()["server"]
 
     def test_deploy_request_defaults_and_port_zero(self) -> None:
         request = rs.RemoteDeployRequest(ssh_host="user@host")

@@ -77,7 +77,7 @@ DEFAULT_INSTALL_DIR = "~/.agentsdock-server"
 SKY_CA_BUNDLE = Path.home() / ".sky" / "certs" / "requests-ca-bundle.pem"
 # A cluster container's own ~ does not outlive it. When the hub's environment names
 # the persistent cluster home that holds the Claude and Codex logins, a default
-# install goes there, one per cluster or workflow (see _deploy); mount points are
+# install goes there, one per cluster or workflow (see default_install_dir); mount points are
 # site-specific, so they stay out of the source.
 CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOME"}
 # No leading "-": workflow and task names are passed to the osmo CLI as arguments.
@@ -99,6 +99,16 @@ def validate_remote_dir(value: str) -> str:
     if not directory or directory.startswith("-") or not REMOTE_DIR_RE.match(directory):
         raise ValueError("Invalid remote install directory.")
     return directory
+
+
+def default_install_dir(ssh_host: str) -> str:
+    """The home of a cluster target is shared storage: one install per target keeps each
+    machine's chats apart, and no two servers ever write one state directory. The install
+    stays a direct child of the home, which the probe then uses as HOME."""
+    home = next((os.environ.get(name, "") for prefix, name in CLUSTER_HOME_ENV.items() if ssh_host.startswith(prefix)), "")
+    if not home:
+        return DEFAULT_INSTALL_DIR
+    return validate_remote_dir(f"{home.rstrip('/')}/.agentsdock-server-{ssh_host.split('@', 1)[1]}")
 
 
 def validate_port(value: int) -> int:
@@ -203,6 +213,18 @@ class SSHForward(BaseModel):
         if not REMOTE_ID_RE.fullmatch(value):
             raise ValueError("Invalid forward id.")
         return value
+
+
+class RemoteServerUpdate(BaseModel):
+    """Change a registered server in place; its id, and so every client profile, stays valid."""
+
+    name: str | None = None
+    ssh_host: str | None = None
+    install_dir: str | None = None
+
+    _name = field_validator("name")(classmethod(lambda cls, value: RemoteServer._name(value) if value is not None else None))
+    _host = field_validator("ssh_host")(classmethod(lambda cls, value: validate_ssh_host(value) if value is not None else None))
+    _dir = field_validator("install_dir")(classmethod(lambda cls, value: validate_remote_dir(value) if value is not None else None))
 
 
 class RemoteDeployRequest(BaseModel):
@@ -1028,6 +1050,33 @@ class RemoteServerManager:
             await tunnel.stop()
         self._save()
 
+    def update(self, remote_id: str, request: RemoteServerUpdate) -> tuple[RemoteServer, DeployJob | None]:
+        """A new host or install dir redeploys there. Chats belong to their machine: a new host
+        gets its target's fresh install unless install_dir is given. The previous server keeps
+        running and keeps its chats."""
+        server = self.servers.get(remote_id)
+        if server is None:
+            raise HTTPException(status_code=404, detail="Unknown remote server.")
+        changes = {key: value for key, value in request.model_dump(exclude_none=True).items() if getattr(server, key) != value}
+        if "ssh_host" in changes and request.install_dir is None:
+            try:
+                changes["install_dir"] = default_install_dir(changes["ssh_host"])
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from None
+        server = server.model_copy(update=changes)
+        moved = "ssh_host" in changes or "install_dir" in changes
+        # load-bearing order: start_deploy raises (409 busy, 503 no ssh) before the registry
+        # changes, and its task reads the entry only after this synchronous method returns.
+        job = self.start_deploy(None, redeploy_id=remote_id, keep_port=False) if moved else None
+        self.servers[remote_id] = server
+        self._save()
+        if moved:
+            self._ensure_tunnel(server)
+        elif remote_id in self.tunnels:
+            # A rename keeps the live forward; restarting it would drop every connection through it.
+            self.tunnels[remote_id].server = server
+        return server, job
+
     async def probe_health(self, server: RemoteServer) -> dict[str, Any] | None:
         try:
             response = await self.http.get(
@@ -1045,7 +1094,8 @@ class RemoteServerManager:
 
     # -- deploy ---------------------------------------------------------------
 
-    def start_deploy(self, request: RemoteDeployRequest | RemoteAttachRequest | None, *, redeploy_id: str | None = None) -> DeployJob:
+    def start_deploy(self, request: RemoteDeployRequest | RemoteAttachRequest | None, *, redeploy_id: str | None = None,
+                     keep_port: bool = True) -> DeployJob:
         if any(job.task is not None and not job.task.done() for job in self.jobs.values()):
             raise HTTPException(status_code=409, detail="Another remote deployment is already running.")
         if redeploy_id is not None and redeploy_id not in self.servers:
@@ -1057,7 +1107,7 @@ class RemoteServerManager:
         del_ids = [job_id for job_id, old in list(self.jobs.items()) if old.done][:-20]
         for job_id in del_ids:
             self.jobs.pop(job_id, None)
-        job.task = asyncio.create_task(self._deploy(job, request, redeploy_id), name=f"remote-deploy:{job.job_id}")
+        job.task = asyncio.create_task(self._deploy(job, request, redeploy_id, keep_port), name=f"remote-deploy:{job.job_id}")
         return job
 
     def job(self, job_id: str) -> DeployJob | None:
@@ -1070,23 +1120,22 @@ class RemoteServerManager:
         job.task.cancel()
         return True
 
-    async def _deploy(self, job: DeployJob, request: RemoteDeployRequest | RemoteAttachRequest | None, redeploy_id: str | None) -> None:
+    async def _deploy(self, job: DeployJob, request: RemoteDeployRequest | RemoteAttachRequest | None, redeploy_id: str | None,
+                      keep_port: bool = True) -> None:
         try:
             existing = self.servers[redeploy_id] if redeploy_id else None
             attach = isinstance(request, RemoteAttachRequest)
             if existing is not None:
-                ssh_host, install_dir, requested_port = existing.ssh_host, existing.install_dir, existing.remote_port
+                # A moved server takes its new install's own port or a free one: the bootstrap stops
+                # whatever serves the port it is given, which may be the previous install's server.
+                ssh_host, install_dir = existing.ssh_host, existing.install_dir
+                requested_port = existing.remote_port if keep_port else 0
             else:
                 assert request is not None
                 ssh_host, install_dir = request.ssh_host, request.install_dir
                 requested_port = request.port if isinstance(request, RemoteDeployRequest) else 0
-                home = next((os.environ.get(name, "") for prefix, name in CLUSTER_HOME_ENV.items() if ssh_host.startswith(prefix)), "")
-                if home and install_dir == DEFAULT_INSTALL_DIR:
-                    # The home is shared storage: one install per target keeps each cluster's
-                    # chats apart, and no two servers ever write one state directory. The
-                    # install stays a direct child of the home, which the probe then uses as HOME.
-                    target = ssh_host.split("@", 1)[1]
-                    install_dir = validate_remote_dir(f"{home.rstrip('/')}/.agentsdock-server-{target}")
+                if install_dir == DEFAULT_INSTALL_DIR:
+                    install_dir = default_install_dir(ssh_host)
 
             job.progress("connect", f"Probing {ssh_host}…")
             route = await ssh_route(ssh_host)
@@ -1097,7 +1146,7 @@ class RemoteServerManager:
             remote_port = requested_port or probe.get("existing_port") or probe["free_port"]
             job.progress("connect", f"Host: {probe.get('os')} {probe.get('arch')}, uid {probe.get('uid')}, home {probe['home']}; remote port {remote_port}.")
             if not probe.get("tmux"):
-                job.progress("connect", "tmux is not installed on the host; the server will run under nohup and chat terminals stay disabled.")
+                job.progress("connect", "tmux is not installed on the host; setup will try to install it.")
 
             if attach:
                 job.progress("install", f"Checking the AgentsServer install on {ssh_host}…")
@@ -1344,6 +1393,12 @@ def register_remote_server_routes(
     async def remote_servers_redeploy(request: Request, remote_id: str) -> dict[str, Any]:
         authorize_admin(request)
         return {"job_id": manager.start_deploy(None, redeploy_id=remote_id).job_id}
+
+    @app.patch(f"{ADMIN_PATH}/{{remote_id}}")
+    async def remote_servers_update(request: Request, remote_id: str, body: RemoteServerUpdate) -> dict[str, Any]:
+        authorize_admin(request)
+        server, job = manager.update(remote_id, body)
+        return {"server": public_view(server, manager.tunnel_status(remote_id)), "job_id": job.job_id if job else None}
 
     @app.get(f"{ADMIN_PATH}/{{remote_id}}/status")
     async def remote_servers_status(request: Request, remote_id: str) -> dict[str, Any]:

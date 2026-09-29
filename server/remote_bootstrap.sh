@@ -86,6 +86,25 @@ if ! PATH="$HOME_DIR/.local/bin:$PATH" command -v node >/dev/null 2>&1; then
   rm -f node.tgz
 fi
 
+# Chat terminals and a detached server session need tmux. Install it through the system
+# package manager where this user may (root or passwordless sudo); start.sh below then uses it.
+if ! command -v tmux >/dev/null 2>&1; then
+  if [ "$(id -u)" = 0 ]; then AS_ROOT=""; elif sudo -n true 2>/dev/null; then AS_ROOT="sudo -n"; else AS_ROOT=none; fi
+  if [ "$AS_ROOT" != none ]; then
+    log "Installing tmux"
+    if command -v apt-get >/dev/null 2>&1; then
+      # A fresh container often has no package lists yet.
+      $AS_ROOT apt-get update -q >/dev/null 2>&1 || true
+      $AS_ROOT env DEBIAN_FRONTEND=noninteractive apt-get install -y -q tmux >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null 2>&1; then
+      $AS_ROOT dnf install -y -q tmux >/dev/null 2>&1 || true
+    elif command -v yum >/dev/null 2>&1; then
+      $AS_ROOT yum install -y -q tmux >/dev/null 2>&1 || true
+    fi
+  fi
+  command -v tmux >/dev/null 2>&1 || log "tmux could not be installed here; the server runs under nohup and chat terminals stay disabled"
+fi
+
 if [ ! -f env ]; then
   log "Generating access token"
   TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
