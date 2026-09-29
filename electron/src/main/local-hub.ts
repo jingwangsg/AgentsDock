@@ -48,6 +48,11 @@ export interface HubRemotePlan {
   remove: string[]
 }
 
+/** A `<hub>/api/remote/<id>` URL: the hub, not the URL, decides which server answers there. */
+export function isHubRemoteUrl(hubUrl: string, serverUrl: string): boolean {
+  return normalizeServerURL(serverUrl).startsWith(`${normalizeServerURL(hubUrl)}/api/remote/`)
+}
+
 /** Stored profiles under `<hub>/api/remote/` must equal the hub registry; every other profile is left alone. */
 export function planHubRemoteProfiles(
   hubUrl: string,
@@ -55,12 +60,11 @@ export function planHubRemoteProfiles(
   profiles: readonly PublicServerProfile[]
 ): HubRemotePlan {
   const hub = normalizeServerURL(hubUrl)
-  const prefix = `${hub}/api/remote/`
   const wanted = new Map(remotes.map(remote => [normalizeServerURL(`${hub}${remote.proxy_path}`), remote]))
   const plan: HubRemotePlan = { add: [], update: [], remove: [] }
   for (const profile of profiles) {
     const serverUrl = normalizeServerURL(profile.serverUrl)
-    if (!serverUrl.startsWith(prefix)) continue
+    if (!isHubRemoteUrl(hub, serverUrl)) continue
     const remote = wanted.get(serverUrl)
     if (!remote) { plan.remove.push(profile.id); continue }
     wanted.delete(serverUrl)

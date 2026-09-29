@@ -9277,6 +9277,55 @@ describe('server profile lifecycle', () => {
     expect(wrongServer.dispose).toHaveBeenCalledOnce()
   })
 
+  it('resets an inactive hub remote that reports a new identity and pins it on the next switch', async () => {
+    const remoteUrl = `${DEFAULT_SERVER_URL}/api/remote/r1`
+    const movedProbe = fakeClient({ health: async () => ({ ok: true, server_identity: 'remote-new' }) })
+    const selected = fakeClient({ health: async () => ({ ok: true, server_identity: 'remote-new' }) })
+    const { service, settings, cache } = createProfileService({
+      [DEFAULT_SERVER_URL]: [fakeClient()],
+      [remoteUrl]: [movedProbe, selected]
+    }, undefined, undefined, undefined, undefined, DEFAULT_SERVER_URL)
+    settings.updateProfile('b', { name: 'Remote', serverUrl: remoteUrl })
+    settings.setProfileServerIdentity('b', 'remote-old')
+    cache.putSession('remote-old', { id: 'old-chat', title: 'Old machine chat', backend: 'codex' })
+
+    const profiles = await probeInactiveProfiles(service)
+
+    expect(settings.getProfile('b')?.serverIdentity).toBeNull()
+    expect(cache.cachedServerIds()).not.toContain('remote-old')
+    expect(profiles.find(profile => profile.id === 'b')).toEqual(expect.objectContaining({ connectionState: 'cached', lastConnectionError: null }))
+    expect(movedProbe.dispose).toHaveBeenCalledOnce()
+
+    const switched = await service.switchServer('b')
+    await service.refreshServer('b', switched.profileGeneration)
+
+    expect(settings.getProfile('b')?.serverIdentity).toBe('remote-new')
+    expect(service.getActiveServer()).toEqual(expect.objectContaining({ id: 'b', connectionState: 'online', lastConnectionError: null }))
+  })
+
+  it('keeps asking before a direct profile adopts a changed identity while a hub is paired', async () => {
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [fakeClient({ health: async () => ({ ok: true, server_identity: 'unexpected-a' }) })],
+      'http://b.test:7850': [fakeClient({ health: async () => ({ ok: true, server_identity: 'unexpected-b' }) })],
+      [DEFAULT_SERVER_URL]: [fakeClient()]
+    })
+    settings.addProfile({ name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    settings.setProfileServerIdentity('a', 'expected-a')
+    settings.setProfileServerIdentity('b', 'server-b')
+    const before = await service.bootstrap()
+
+    await service.refreshServer('a', before.profileGeneration)
+    const profiles = await probeInactiveProfiles(service)
+    await settleBackgroundWork()
+
+    expect((await service.bootstrap()).profileGeneration).toBe(before.profileGeneration)
+    expect(settings.getProfile('a')?.serverIdentity).toBe('expected-a')
+    expect(settings.getProfile('b')?.serverIdentity).toBe('server-b')
+    for (const id of ['a', 'b']) {
+      expect(profiles.find(profile => profile.id === id)?.lastConnectionError).toContain('Confirm the change before reconnecting this profile.')
+    }
+  })
+
   it('keeps an unpinned inactive profile unknown after a successful health response', async () => {
     const a = fakeClient()
     const unpinned = fakeClient({ health: async () => ({ ok: true, server_identity: 'new-server-b' }) })
@@ -9457,6 +9506,84 @@ describe('server profile lifecycle', () => {
     expect(cache.session('expected-a', 'same')).toEqual(expect.objectContaining({ title: 'Trusted cache' }))
     expect(cache.sessions('unexpected-a')).toEqual([])
     expect(service.getActiveServer().lastConnectionError).toContain('Server identity changed')
+  })
+
+  it('reopens the active hub remote under the identity the hub now routes to', async () => {
+    const remoteUrl = `${DEFAULT_SERVER_URL}/api/remote/r1`
+    const moved = fakeClient({ health: async () => ({ ok: true, server_identity: 'remote-new' }) })
+    const reopened = fakeClient({
+      health: async () => ({ ok: true, server_identity: 'remote-new' }),
+      sessions: async () => [{ id: 'new-chat', title: 'New machine chat', backend: 'codex' }]
+    })
+    const { service, settings, cache } = createProfileService({
+      [remoteUrl]: [moved, reopened]
+    }, undefined, undefined, undefined, undefined, remoteUrl)
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    settings.setProfileServerIdentity('a', 'remote-old')
+    cache.putSession('remote-old', { id: 'old-chat', title: 'Old machine chat', backend: 'codex' })
+    const before = await service.bootstrap()
+
+    await (service as unknown as {
+      refreshAll(announce: boolean, includeJobs: boolean): Promise<void>
+    }).refreshAll(false, true)
+    expect(service.getActiveServer().lastConnectionError).toContain('behind the hub. Reconnecting to the new server.')
+    await vi.waitFor(() => expect(service.getActiveServer().connectionState).toBe('online'))
+
+    const after = await service.bootstrap()
+    expect(after.profileGeneration).toBeGreaterThan(before.profileGeneration)
+    expect(settings.getProfile('a')?.serverIdentity).toBe('remote-new')
+    expect(service.getActiveServer().lastConnectionError).toBeNull()
+    expect(after.sessions.map(session => session.id)).toEqual(['new-chat'])
+    expect(cache.cachedServerIds()).not.toContain('remote-old')
+    expect(moved.dispose).toHaveBeenCalledOnce()
+  })
+
+  it('lets a server switch the user started win over a hub remote identity reset', async () => {
+    const remoteUrl = `${DEFAULT_SERVER_URL}/api/remote/r1`
+    const health = deferred<Health>()
+    const moved = fakeClient({ health: () => health.promise })
+    const hubClient = fakeClient({ health: async () => ({ ok: true, server_identity: 'server-hub' }) })
+    const { service, settings } = createProfileService({
+      [remoteUrl]: [moved, fakeClient({ health: async () => ({ ok: true, server_identity: 'remote-new' }) })],
+      [DEFAULT_SERVER_URL]: [hubClient]
+    }, undefined, undefined, undefined, undefined, remoteUrl)
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    settings.setProfileServerIdentity('a', 'remote-old')
+    await service.bootstrap()
+
+    const refresh = (service as unknown as { refreshAll(announce: boolean, includeJobs: boolean): Promise<void> }).refreshAll(false, true)
+    const token = deferred<string>()
+    const original = settings.accessTokenForConnectionAsync.bind(settings)
+    vi.spyOn(settings, 'accessTokenForConnectionAsync').mockImplementation(profileId => profileId === 'b' ? token.promise : original(profileId))
+    const userSwitch = service.switchServer('b')
+    health.resolve({ ok: true, server_identity: 'remote-new' })
+    await refresh
+    token.resolve('')
+
+    await expect(userSwitch).resolves.toEqual(expect.objectContaining({ activeProfileId: 'b' }))
+    await settleBackgroundWork()
+    expect(service.getActiveServer().id).toBe('b')
+  })
+
+  it('shows a failed cleanup of an automatic hub remote reset on the profile', async () => {
+    const remoteUrl = `${DEFAULT_SERVER_URL}/api/remote/r1`
+    const { service, settings } = createProfileService({
+      [remoteUrl]: [
+        fakeClient({ health: async () => ({ ok: true, server_identity: 'remote-new' }) }),
+        fakeClient({ health: async () => ({ ok: true, server_identity: 'remote-new' }) })
+      ]
+    }, undefined, undefined, async () => { throw new Error('teamspace down') }, undefined, remoteUrl)
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    settings.setProfileServerIdentity('a', 'remote-old')
+    const send = vi.fn()
+    service.addWindow({ isDestroyed: () => false, on: vi.fn(), webContents: { id: 73, on: vi.fn(), send } } as never)
+    await service.bootstrap()
+
+    await (service as unknown as { refreshAll(announce: boolean, includeJobs: boolean): Promise<void> }).refreshAll(false, true)
+
+    await vi.waitFor(() => expect(service.getActiveServer().lastConnectionError).toContain('teamspace down'))
+    expect(service.getActiveServer().connectionState).toBe('offline')
+    expect(send).toHaveBeenCalledWith('server:sessions', expect.objectContaining({ sessions: [] }))
   })
 
   it('rejects a canonical identity already owned by another profile', async () => {

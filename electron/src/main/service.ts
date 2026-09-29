@@ -172,7 +172,7 @@ import { PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL, PortTunnelManager } from './port-tu
 import { FileUploadGrantRegistry } from './file-upload-grants'
 import { SettingsStore, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
-import { planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
+import { isHubRemoteUrl, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
 import { clearStorageError, localStorageWasFull, observeStorageErrors, reportStorageError } from './storage-health'
 import { SubagentEventProjector } from './subagent-projection'
 import { mergeTimelineSearchResults } from './search'
@@ -388,6 +388,8 @@ export class AppService {
   private activeProfileId: string
   private profileGeneration = 1
   private profileSelectionIntent = 0
+  /** Switches in flight; a hub remote's automatic identity reset waits for them instead of superseding one. */
+  private profileSwitchesInFlight = 0
   private shutdownEpoch = 0
   private validatedGeneration: number | null = null
   private scope: ConnectionScope
@@ -1496,6 +1498,15 @@ export class AppService {
     return this.settings.listProfiles().find(profile => profile.serverUrl === DEFAULT_SERVER_URL)
   }
 
+  /**
+   * A remote the paired hub proxies. Moving or redeploying it installs a fresh server behind the same URL, so its
+   * changed identity is accepted like the manual "new server identity" reset instead of waiting for confirmation.
+   */
+  private isHubRemoteProfile(serverUrl: string): boolean {
+    const hub = this.hubProfile()
+    return hub !== undefined && isHubRemoteUrl(hub.serverUrl, serverUrl)
+  }
+
   /** The hub profile has no token yet: take the one install.sh wrote for the local server. True when a token was adopted. */
   private adoptLocalHubToken(): boolean {
     const hub = this.hubProfile()
@@ -1691,11 +1702,16 @@ export class AppService {
 
   async updateServerAndSwitch(profileId: string, patch: UpdateServerProfilePatch): Promise<ProfileBootstrapPayload> {
     const intent = ++this.profileSelectionIntent
-    return patch.resetServerIdentity
-      || this.profileAuthorityOperations.has(profileId)
-      || this.pendingProfileAuthorityNamespaces.has(profileId)
-      ? this.withProfileAuthorityOperation(profileId, () => this.updateServerAndSwitchOnce(profileId, patch, intent))
-      : this.updateServerAndSwitchOnce(profileId, patch, intent)
+    this.profileSwitchesInFlight += 1
+    try {
+      return await (patch.resetServerIdentity
+        || this.profileAuthorityOperations.has(profileId)
+        || this.pendingProfileAuthorityNamespaces.has(profileId)
+        ? this.withProfileAuthorityOperation(profileId, () => this.updateServerAndSwitchOnce(profileId, patch, intent))
+        : this.updateServerAndSwitchOnce(profileId, patch, intent))
+    } finally {
+      this.profileSwitchesInFlight -= 1
+    }
   }
 
   private async updateServerAndSwitchOnce(profileId: string, patch: UpdateServerProfilePatch, intent: number): Promise<ProfileBootstrapPayload> {
@@ -1876,9 +1892,14 @@ export class AppService {
   async switchServer(profileId: string, force = false): Promise<ProfileBootstrapPayload> {
     const intent = ++this.profileSelectionIntent
     this.requireProfileNotRemoving(profileId)
-    return this.profileAuthorityOperations.has(profileId) || this.pendingProfileAuthorityNamespaces.has(profileId)
-      ? this.withProfileAuthorityOperation(profileId, () => this.switchServerOnce(profileId, force, intent))
-      : this.switchServerOnce(profileId, force, intent)
+    this.profileSwitchesInFlight += 1
+    try {
+      return await (this.profileAuthorityOperations.has(profileId) || this.pendingProfileAuthorityNamespaces.has(profileId)
+        ? this.withProfileAuthorityOperation(profileId, () => this.switchServerOnce(profileId, force, intent))
+        : this.switchServerOnce(profileId, force, intent))
+    } finally {
+      this.profileSwitchesInFlight -= 1
+    }
   }
 
   private async switchServerOnce(profileId: string, force: boolean, intent: number): Promise<ProfileBootstrapPayload> {
@@ -5684,6 +5705,22 @@ export class AppService {
     const previousIdentity = profile.serverIdentity?.trim() || null
     const identity = health.server_identity?.trim() || null
     if (previousIdentity && identity !== previousIdentity) {
+      if (identity && this.isHubRemoteProfile(profile.serverUrl) && this.profileSwitchesInFlight === 0) {
+        // The same reopen the manual reset of an active profile uses; an operation already in flight covers this one.
+        if (!this.profileAuthorityOperations.has(scope.profileId)) {
+          void this.updateServerAndSwitch(scope.profileId, { resetServerIdentity: true })
+            .then(payload => {
+              if (!payload.profileTransitionWarning) return this.runBackgroundRefresh(true, this.captureScope())
+              // The manual path shows this in the dialog; here the profile row is the only place, and
+              // refreshes stay paused until the reset is retried.
+              this.setProfileRuntime(scope.profileId, { connectionState: 'offline', lastConnectionError: payload.profileTransitionWarning, lastConnectionCheckedAt: null })
+              this.emitSessions(this.captureScope(), [])
+              this.emitProfiles()
+            })
+            .catch(error => appLog('hub', 'remote identity reset failed', { profileId: scope.profileId, message: errorText(error) }))
+        }
+        throw new Error(`Server identity changed from ${previousIdentity} to ${identity} behind the hub. Reconnecting to the new server.`)
+      }
       throw new Error(`Server identity changed from ${previousIdentity} to ${identity ?? 'an unverified server'}. Confirm the change before reconnecting this profile.`)
     }
     if (identity) {
@@ -6878,6 +6915,11 @@ export class AppService {
       const expectedIdentity = profile.serverIdentity?.trim() || null
       const actualIdentity = health.server_identity?.trim() || null
       if (expectedIdentity && actualIdentity !== expectedIdentity) {
+        if (actualIdentity && this.isHubRemoteProfile(profile.serverUrl) && this.profileSwitchesInFlight === 0) {
+          // The manual reset of an inactive profile; the next activation pins the new identity.
+          await this.updateServer(profileId, { resetServerIdentity: true })
+          return
+        }
         throw new Error(`Server identity changed from ${expectedIdentity} to ${actualIdentity ?? 'an unverified server'}. Confirm the change before reconnecting this profile.`)
       }
       const serverVersion = health.server_version?.trim() || null
