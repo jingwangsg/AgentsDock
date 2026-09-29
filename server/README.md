@@ -82,6 +82,12 @@ Named instances retain separate legacy service units. The default server keeps
 the current split service lifecycle; `--execution-mode split` is rejected for
 named instances to avoid taking over the default gateway.
 
+## Managed local SSH forwards
+
+The SSH forward service (`ssh_forward_service.py`) reads a private `<state-dir>/ssh-forwards.json` registry at startup and retries a forward when its SSH process exits. Each entry names an SSH host, local and remote ports, an IPv4-only or dual-loopback bind, and an optional CA bundle path. Forwards to SSH port 22 also probe the forwarded channel and maintain a local ControlMaster for clients such as Zed. Run the service under a user service manager so it restarts after a crash or login. The SSH host may also be `oci@<sky-cluster>` or `osmo@<workflow>`, resolved as for remote servers; `oci@` sets Sky's CA bundle itself. For remote-server deploys to these hosts, `AGENTSDOCK_OCI_HOME` and `AGENTSDOCK_OSMO_HOME` in the hub's environment name the cluster's persistent home; a deploy that keeps the default install directory then installs to `<home>/.agentsdock-server`, which outlives the cluster container.
+
+The SSH forward registry is separate from `remote-servers.json`: a forwarded service is never treated as an AgentsServer install or started by its tunnel manager. When a remote cluster is recreated under another SSH host name, update that entry's host in the private registry and restart the SSH forward service. There is no admin API or desktop UI for these forwards yet.
+
 ## Updating
 
 For the default server installed from a checkout:

@@ -82,7 +82,7 @@ class UploadResumeTests(unittest.TestCase):
         (self.state / "plan").write_text("drop:400000 refuse ok")
         job = rs.DeployJob(job_id="job")
 
-        asyncio.run(self.manager._upload(job, "fake-host", "~/.agentsdock-server", data))
+        asyncio.run(self.manager._upload(job, rs.SSHRoute([], "fake-host", rs.ssh_env()), "~/.agentsdock-server", data))
 
         self.assertEqual((self.state / "upload.tgz").read_bytes(), data)
         cats = [c for c in self.commands() if c.startswith(("mkdir", "cat"))]
@@ -99,7 +99,7 @@ class UploadResumeTests(unittest.TestCase):
         job = rs.DeployJob(job_id="job")
 
         with self.assertRaises(rs.SSHConnectionLost):
-            asyncio.run(self.manager._upload(job, "fake-host", "~/.agentsdock-server", data))
+            asyncio.run(self.manager._upload(job, rs.SSHRoute([], "fake-host", rs.ssh_env()), "~/.agentsdock-server", data))
 
         self.assertEqual(sum("resuming the upload" in entry["message"] for entry in job.log), 3)
 
@@ -107,7 +107,7 @@ class UploadResumeTests(unittest.TestCase):
         data = os.urandom(rs.UPLOAD_CHUNK // 2)
         job = rs.DeployJob(job_id="job")
 
-        asyncio.run(self.manager._upload(job, "fake-host", "~/.agentsdock-server", data))
+        asyncio.run(self.manager._upload(job, rs.SSHRoute([], "fake-host", rs.ssh_env()), "~/.agentsdock-server", data))
 
         self.assertEqual((self.state / "upload.tgz").read_bytes(), data)
         self.assertEqual(len(self.commands()), 1)  # no size probe when nothing dropped

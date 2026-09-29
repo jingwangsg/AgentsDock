@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import shlex
 import socket
 import stat
 import subprocess
@@ -33,8 +34,8 @@ HUB_TOKEN = "hub-token-" + "h" * 30
 REMOTE_TOKEN = "remote-token-" + "r" * 40
 
 # Plays the host for deploy/attach jobs: answers the probe and the bootstrap from
-# host.json and records every ssh argv (the part after ``bash -s --``; None for
-# a plain remote command such as the upload's ``cat >``).
+# host.json and logs each call's full argv, its SSL_CERT_FILE, and ``tail``, the part
+# after ``bash -s --`` (None for a plain remote command such as the upload's ``cat >``).
 FAKE_SSH = r'''#!{python}
 import json, os, sys
 state = {state!r}
@@ -42,7 +43,7 @@ argv = sys.argv[1:]
 sys.stdin.buffer.read()
 tail = argv[argv.index("--") + 1:] if "--" in argv else None
 with open(os.path.join(state, "calls.jsonl"), "a") as log:
-    log.write(json.dumps(dict(tail=tail, command=None if tail is not None else argv[-1])) + "\n")
+    log.write(json.dumps(dict(tail=tail, command=None if tail is not None else argv[-1], argv=argv, ca=os.environ.get("SSL_CERT_FILE"))) + "\n")
 host = json.load(open(os.path.join(state, "host.json")))
 if tail is not None and len(tail) == 1:  # probe: bash -s -- <install_dir>
     print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=host["existing_port"])))
@@ -250,6 +251,112 @@ class RemoteServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rs.tunnel_args("-oProxyCommand=x", 7851, 7850)
 
+    def test_plain_ssh_forward_persists_and_preserves_its_mapping(self) -> None:
+        profile = rs.SSHForward(
+            id="123456abcdef", name="herorun dashboard", ssh_host="herorun-288g-recovery-e0b3",
+            local_port=8266, remote_port=8265, bind_mode="ipv4",
+            channel_timeout="direct-tcpip=2m", ca_bundle_path="/tmp/sky-ca.pem",
+            created_at="2026-09-28T00:00:00Z",
+        )
+        path = self.tmp_path / "state" / "ssh-forwards.json"
+        rs.save_forward_registry(path, [profile])
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert rs.load_forward_registry(path) == [profile]
+        args = rs.tunnel_args(profile.ssh_host, profile.local_port, profile.remote_port,
+                              bind_mode=profile.bind_mode, channel_timeout=profile.channel_timeout)
+        assert args[-5:] == ["-o", "ChannelTimeout=direct-tcpip=2m", "-L",
+                             "127.0.0.1:8266:127.0.0.1:8265", profile.ssh_host]
+        assert rs.tunnel_args("jing-debug-1e47", 9000, 22, bind_mode="dual")[-3:] == [
+            "-L", "9000:127.0.0.1:22", "jing-debug-1e47",
+        ]
+        with self.assertRaises(ValidationError):
+            rs.SSHForward(id="abcdef123456", created_at="2026-09-28T00:00:00Z",
+                          name="bad", ssh_host="-oProxyCommand=x", local_port=9000, remote_port=22)
+        with self.assertRaises(ValidationError):
+            rs.SSHForward(id="abcdef123456", created_at="2026-09-28T00:00:00Z",
+                          name="bad", ssh_host="jing-debug-1e47", local_port=9000, remote_port=0)
+
+    def test_plain_ssh_forward_loads_after_manager_restart(self) -> None:
+        async def main() -> None:
+            manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
+            original = rs.SSHForward(
+                id="abcdef123456", created_at="2026-09-28T00:00:00Z", name="debug ssh",
+                ssh_host="jing-debug-1e47", local_port=9000, remote_port=22, bind_mode="dual",
+            )
+            rs.save_forward_registry(manager.forward_path, [original])
+            await manager.start()
+            assert manager.list_forwards()[0]["ssh_host"] == "jing-debug-1e47"
+            await manager.stop()
+
+            rs.save_forward_registry(manager.forward_path, [original.model_copy(update={"ssh_host": "jing-debug-3edd"})])
+            restarted = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
+            await restarted.start()
+            assert restarted.list_forwards()[0]["ssh_host"] == "jing-debug-3edd"
+            await restarted.stop()
+
+        asyncio.run(main())
+
+    def test_plain_ssh_forward_retries_after_process_exit(self) -> None:
+        script = self.tmp_path / "ssh"
+        calls = self.tmp_path / "forward-calls.jsonl"
+        script.write_text(f'''#!{sys.executable}
+import json, os, socket, sys, time
+args = sys.argv[1:]
+if "-G" in args:
+    print("proxycommand ssh -tt -W '[%h]:%p' root@127.0.0.1")
+    sys.exit(0)
+with open({str(calls)!r}, "a") as out:
+    out.write(json.dumps({{"args": args, "ca": os.environ.get("SSL_CERT_FILE"),
+                          "requests_ca": os.environ.get("REQUESTS_CA_BUNDLE")}}) + "\\n")
+count = len(open({str(calls)!r}).readlines())
+if count == 1:
+    print("channel 1: open failed: connect failed: Connection refused", file=sys.stderr)
+    sys.exit(255)
+binding = args[args.index("-L") + 1].split(":")
+with socket.socket() as listener:
+    listener.bind((binding[0], int(binding[1])))
+    listener.listen(1)
+    print("debug1: Local forwarding listening on %s port %s." % (binding[0], binding[1]),
+          file=sys.stderr, flush=True)
+    time.sleep(30)
+''')
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        self.enterContext(mock.patch.object(rs, "MIN_BACKOFF", 0.05))
+        self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
+        local_port = free_port()
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
+        forward = rs.SSHForward(
+            id="123456abcdef", name="debug", ssh_host="jing-debug-1e47", local_port=local_port,
+            remote_port=20034, bind_mode="ipv4", ca_bundle_path=str(self.tmp_path / "sky-ca.pem"),
+            created_at="2026-09-28T00:00:00Z",
+        )
+        rs.save_forward_registry(manager.forward_path, [forward])
+
+        async def main() -> None:
+            await manager.start()
+            try:
+                for _ in range(100):
+                    status = manager.list_forwards()[0]["tunnel"]
+                    if status["state"] == "connected" and status["restarts"] == 1:
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    self.fail(f"forward did not reconnect: {status}")
+                with socket.create_connection(("127.0.0.1", local_port), timeout=1):
+                    pass
+            finally:
+                await manager.stop()
+
+        asyncio.run(main())
+        records = [json.loads(line) for line in calls.read_text().splitlines()]
+        assert len(records) == 2
+        assert all(record["ca"] == str(self.tmp_path / "sky-ca.pem")
+                   and record["requests_ca"] == record["ca"] for record in records)
+        assert all("ConnectTimeout=30" in record["args"] for record in records)
+        assert all(any(arg.startswith("ProxyCommand=ssh -S none -o ControlMaster=no -o ControlPath=none")
+                       for arg in record["args"]) for record in records)
+
     def test_backoff_and_revive_detection(self) -> None:
         values = []
         current = rs.MIN_BACKOFF
@@ -322,6 +429,138 @@ class RemoteServerTests(unittest.TestCase):
         sessions = [json.loads(line)["tail"] for line in calls.read_text().splitlines()]
         assert sessions == [["/mnt/lustre/.agentsdock-server"], ["/mnt/lustre/.agentsdock-server", "7860", "/h"]]
         assert "download" not in {entry["phase"] for entry in job.log}
+
+    def fake_osmo(self) -> None:
+        """Put an ``osmo`` first on PATH that answers ``workflow query``."""
+        bin_dir = self.tmp_path / "bin"
+        bin_dir.mkdir()
+        script = bin_dir / "osmo"
+        script.write_text(f"""#!{sys.executable}
+import json, sys
+workflow = sys.argv[3]
+tasks = [dict(name="worker_1", lead=False), dict(name="master", lead=True)]
+answers = {{
+    "wf-running": dict(status="RUNNING", groups=[dict(tasks=tasks)]),
+    "wf-done": dict(status="COMPLETED", groups=[dict(tasks=tasks)]),
+    "wf-garbled": dict(status="RUNNING", groups=[dict(tasks=[None])]),
+}}
+if workflow not in answers:
+    print("Workflow " + workflow + " not found", file=sys.stderr)
+    sys.exit(1)
+print(json.dumps(answers[workflow]))
+""")
+        script.chmod(0o700)
+        self.enterContext(mock.patch.dict(os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}))
+
+    def test_cluster_notations_resolve_to_ssh_routes(self) -> None:
+        self.fake_osmo()
+        plain = asyncio.run(rs.ssh_route("osmo_9000"))
+        assert (plain.options, plain.destination) == ([], "osmo_9000")
+
+        route = asyncio.run(rs.ssh_route("osmo@wf-running"))
+        osmo = shlex.quote(str(self.tmp_path / "bin" / "osmo"))
+        assert route.destination == "root@wf-running"
+        assert route.options == [
+            "-o", "ConnectTimeout=30",
+            "-o", f"ProxyCommand={osmo} workflow exec wf-running master --raw --raw-port 22",
+            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+        ]
+        for host, message in (("osmo@wf-done", "is COMPLETED"), ("osmo@wf-missing", "not found"),
+                              ("osmo@wf-garbled", "unexpected result"), ("osmo@a%b", "Invalid OSMO workflow id"),
+                              ("osmo@-x", "Invalid OSMO workflow id")):
+            with self.assertRaisesRegex(OSError, message):
+                asyncio.run(rs.ssh_route(host))
+
+        ca = self.tmp_path / "sky-ca.pem"
+        ca.write_text("ca")
+        with (mock.patch.object(rs, "SKY_CA_BUNDLE", ca),
+              mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])) as isolated):
+            route = asyncio.run(rs.ssh_route("oci@sky-cluster"))
+            isolated.assert_awaited_once_with("sky-cluster")
+            assert (route.options, route.destination) == (["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x"], "sky-cluster")
+            assert route.env["SSL_CERT_FILE"] == route.env["REQUESTS_CA_BUNDLE"] == str(ca)
+            isolated.return_value = []
+            with self.assertRaisesRegex(OSError, "no ssh entry"):
+                asyncio.run(rs.ssh_route("oci@gone-cluster"))
+
+    def test_osmo_workflow_deploys_and_revives_through_its_proxy_command(self) -> None:
+        calls = self.fake_host(existing_port=None)
+        self.fake_osmo()
+        manager, job = self.run_job(rs.RemoteDeployRequest(ssh_host="osmo@wf-running", install_dir="/mnt/shared/u/.agentsdock-server"))
+        assert job.done and job.error is None, job.log
+        [server] = rs.load_registry(manager.path)
+        # The registry keeps the notation, so every reconnect resolves the workflow's lead task again.
+        assert server.ssh_host == "osmo@wf-running"
+        assert server.install_dir == "/mnt/shared/u/.agentsdock-server"  # an explicit directory is kept
+        asyncio.run(rs.start_remote_server(server))
+        route = asyncio.run(rs.ssh_route("osmo@wf-running"))
+        records = [json.loads(line) for line in calls.read_text().splitlines()]
+        # probe, upload, bootstrap, start.sh: each ssh call goes through the workflow's route.
+        assert [record["tail"] is not None for record in records] == [True, False, True, False]
+        for record in records:
+            argv = record["argv"]
+            assert argv[:len(route.options)] == route.options and argv.count("root@wf-running") == 1 and "osmo@wf-running" not in argv
+
+    def test_cluster_installs_default_to_the_configured_cluster_homes(self) -> None:
+        calls = self.fake_host(existing_port=7860)
+        self.fake_osmo()
+        ca = self.tmp_path / "sky-ca.pem"
+        ca.write_text("ca")
+        self.enterContext(mock.patch.object(rs, "SKY_CA_BUNDLE", ca))
+        self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
+        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OSMO_HOME": "/mnt/osmo-home/u", "AGENTSDOCK_OCI_HOME": "/mnt/oci-home/u/"}))
+        for host, home in (("osmo@wf-running", "/mnt/osmo-home/u"), ("oci@sky-cluster", "/mnt/oci-home/u")):
+            manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host=host))
+            assert job.done and job.error is None, job.log
+            server = next(server for server in rs.load_registry(manager.path) if server.ssh_host == host)
+            assert server.install_dir == f"{home}/.agentsdock-server"
+        # Sky's websocket proxy runs inside the oci@ ssh calls (the last two) and needs the CA bundle there.
+        records = [json.loads(line) for line in calls.read_text().splitlines()]
+        assert [record["ca"] for record in records[2:]] == [str(ca), str(ca)]
+        # Without a configured home the usual default stays.
+        del os.environ["AGENTSDOCK_OSMO_HOME"]
+        manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo@wf-running"))
+        assert [server.install_dir for server in rs.load_registry(manager.path) if server.ssh_host == "osmo@wf-running"][-1] == rs.DEFAULT_INSTALL_DIR
+
+    def test_osmo_tunnel_forwards_through_the_workflow_and_reports_an_ended_one(self) -> None:
+        self.fake_osmo()
+        script = self.tmp_path / "ssh"
+        calls = self.tmp_path / "tunnel-calls.jsonl"
+        script.write_text(f"""#!{sys.executable}
+import json, sys, time
+with open({str(calls)!r}, "a") as out:
+    out.write(json.dumps(sys.argv[1:]) + "\\n")
+time.sleep(30)
+""")
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
+        running_port = free_port()
+        rs.save_registry(manager.path, [
+            make_server(id="aaaaaaaaaaaa", ssh_host="osmo@wf-running", local_port=running_port),
+            make_server(id="bbbbbbbbbbbb", ssh_host="osmo@wf-done", local_port=free_port()),
+        ])
+
+        async def main() -> dict:
+            await manager.start()
+            try:
+                for _ in range(200):
+                    running = manager.tunnel_status("aaaaaaaaaaaa")
+                    ended = manager.tunnel_status("bbbbbbbbbbbb")
+                    if running["state"] == "connected" and ended["state"] == "reconnecting" and calls.exists():
+                        return ended
+                    await asyncio.sleep(0.05)
+                self.fail(f"tunnels did not settle: {running} {ended}")
+            finally:
+                await manager.stop()
+
+        ended = asyncio.run(main())
+        assert "OSMO workflow wf-done is COMPLETED" in ended["last_error"]
+        route = asyncio.run(rs.ssh_route("osmo@wf-running"))
+        [argv] = [json.loads(line) for line in calls.read_text().splitlines()]
+        assert argv[:len(route.options)] == route.options
+        assert argv[-3:] == ["-L", f"127.0.0.1:{running_port}:127.0.0.1:7850", "root@wf-running"]
 
     def test_attach_fails_when_the_host_has_no_install(self) -> None:
         calls = self.fake_host(existing_port=None)

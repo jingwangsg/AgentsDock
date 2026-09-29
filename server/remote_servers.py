@@ -3,10 +3,9 @@
 The hub keeps a registry of remote servers, holds an ``ssh -L`` tunnel open to
 each one, deploys or updates the server source on demand, and reverse-proxies
 ``/api/remote/{id}/...`` (HTTP and WebSocket) to the tunnel so clients only ever
-hold the hub's URL and token. This is the server-side port of the Electron
-main-process implementation (``electron/src/main/ssh-tunnel.ts``,
-``ssh-tunnel-bootstrap.ts`` and ``server-setup.ts#runSSHTunnel``) so that
-phones, which have neither ssh nor the server source, get the same capability.
+hold the hub's URL and token; phones, which have neither ssh nor the server
+source, get the same capability. Hosts are ssh destinations or the cluster
+notations ``oci@<sky-cluster>`` and ``osmo@<workflow>`` (see ``ssh_route``).
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import tarfile
@@ -27,7 +27,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 from urllib.parse import parse_qsl, urlencode
 
 import httpx
@@ -50,7 +50,8 @@ TOKEN_SUBPROTOCOL_PREFIX = "agentsdock-token."
 PROXY_PREFIX = "/api/remote"
 ADMIN_PATH = "/api/admin/remote-servers"
 
-# Same rules as electron/src/main/settings.ts so both clients accept the same hosts.
+# Same syntax as electron/src/main/settings.ts. Only the hub resolves oci@/osmo@ (ssh_route);
+# elsewhere ssh_host is a literal ssh destination.
 SSH_HOST_RE = re.compile(r"^[A-Za-z0-9_.@%+:\[\]-]+$")
 REMOTE_DIR_RE = re.compile(r"^[A-Za-z0-9_.~/-]+$")
 REMOTE_ID_RE = re.compile(r"^[a-z0-9]{12}$")
@@ -62,12 +63,24 @@ MIN_BACKOFF = 2.0
 MAX_BACKOFF = 10.0
 REVIVE_INTERVAL = 120.0
 SETTLE_SECONDS = 3.0
+SSH_FORWARD_PROBE_INTERVAL = 10.0
+SSH_FORWARD_PROBE_TIMEOUT = 30.0
+SSH_FORWARD_PROBE_FAILURES = 3
 UPLOAD_CHUNK = 256 * 1024
 # Forwarded ssh hops drop mid-transfer; each retry appends from the byte count
 # the host reports, so a hop that flaps every couple of minutes still finishes
 # a multi-minute upload instead of restarting it.
 UPLOAD_RETRIES = 8
 UPLOAD_RETRY_DELAY = 5.0
+
+DEFAULT_INSTALL_DIR = "~/.agentsdock-server"
+SKY_CA_BUNDLE = Path.home() / ".sky" / "certs" / "requests-ca-bundle.pem"
+# A cluster container's own ~ does not outlive it. When the hub's environment names
+# the persistent cluster home that holds the Claude and Codex logins, a default
+# install goes there; mount points are site-specific, so they stay out of the source.
+CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOME"}
+# No leading "-": workflow and task names are passed to the osmo CLI as arguments.
+OSMO_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 
 NO_MULTIPLEX = ["-o", "ControlMaster=no", "-o", "ControlPath=none"]
 SSH_BATCH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new", *NO_MULTIPLEX]
@@ -90,6 +103,12 @@ def validate_remote_dir(value: str) -> str:
 def validate_port(value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1024 <= value <= 65535:
         raise ValueError("Ports must be between 1024 and 65535.")
+    return value
+
+
+def validate_remote_port(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
+        raise ValueError("Remote port must be between 1 and 65535.")
     return value
 
 
@@ -144,9 +163,50 @@ class RemoteServerCreate(BaseModel):
     _token = field_validator("token")(classmethod(lambda cls, value: validate_token(value)))
 
 
+class SSHForward(BaseModel):
+    id: str
+    name: str
+    ssh_host: str
+    local_port: int
+    remote_port: int
+    bind_mode: Literal["ipv4", "dual"] = "ipv4"
+    channel_timeout: Literal["direct-tcpip=2m"] | None = None
+    ca_bundle_path: str | None = None
+    created_at: str
+
+    _host = field_validator("ssh_host")(classmethod(lambda cls, value: validate_ssh_host(value)))
+    _local_port = field_validator("local_port")(classmethod(lambda cls, value: validate_port(value)))
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Name is required.")
+        return value.strip()[:120]
+
+    @field_validator("remote_port")
+    @classmethod
+    def _remote_port(cls, value: int) -> int:
+        return validate_remote_port(value)
+
+    @field_validator("ca_bundle_path")
+    @classmethod
+    def _ca_bundle_path(cls, value: str | None) -> str | None:
+        if value is not None and not Path(value).is_absolute():
+            raise ValueError("CA bundle path must be absolute.")
+        return value
+
+    @field_validator("id")
+    @classmethod
+    def _id(cls, value: str) -> str:
+        if not REMOTE_ID_RE.fullmatch(value):
+            raise ValueError("Invalid forward id.")
+        return value
+
+
 class RemoteDeployRequest(BaseModel):
     ssh_host: str
-    install_dir: str = "~/.agentsdock-server"
+    install_dir: str = DEFAULT_INSTALL_DIR
     name: str | None = None
     port: int = 0  # 0 = let the host pick (or keep an existing install's port)
 
@@ -163,7 +223,7 @@ class RemoteAttachRequest(BaseModel):
     """Register an install another hub deployed: nothing is uploaded and the server keeps its port and token."""
 
     ssh_host: str
-    install_dir: str = "~/.agentsdock-server"
+    install_dir: str = DEFAULT_INSTALL_DIR
     name: str | None = None
 
     _host = field_validator("ssh_host")(classmethod(lambda cls, value: validate_ssh_host(value)))
@@ -181,15 +241,33 @@ def load_registry(path: Path) -> list[RemoteServer]:
     return [RemoteServer.model_validate(item) for item in raw.get("servers", [])]
 
 
+def load_forward_registry(path: Path) -> list[SSHForward]:
+    if not path.exists():
+        return []
+    raw = json.loads(path.read_text("utf-8"))
+    if raw.get("version") != 1 or "forwards" not in raw:
+        raise ValueError("Invalid SSH forward registry.")
+    return [SSHForward.model_validate(item) for item in raw["forwards"]]
+
+
 def save_registry(path: Path, servers: list[RemoteServer]) -> None:
     """Atomic private write: the registry holds every remote's access token."""
+
+    _save_private_registry(path, "servers", [server.model_dump() for server in servers])
+
+
+def save_forward_registry(path: Path, forwards: list[SSHForward]) -> None:
+    _save_private_registry(path, "forwards", [forward.model_dump() for forward in forwards])
+
+
+def _save_private_registry(path: Path, key: str, entries: list[dict[str, Any]]) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump({"version": 1, "servers": [server.model_dump() for server in servers]}, stream, indent=2)
+            json.dump({"version": 1, key: entries}, stream, indent=2)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -227,19 +305,135 @@ def remote_shell_args(ssh_host: str) -> list[str]:
     return [*SSH_BATCH_OPTIONS, validate_ssh_host(ssh_host), "bash", "-s", "--"]
 
 
-def tunnel_args(ssh_host: str, local_port: int, remote_port: int) -> list[str]:
-    return [
+def tunnel_args(
+    ssh_host: str,
+    local_port: int,
+    remote_port: int,
+    *,
+    bind_mode: Literal["ipv4", "dual"] = "ipv4",
+    channel_timeout: Literal["direct-tcpip=2m"] | None = None,
+    connect_timeout: int = 10,
+    verbose: bool = False,
+) -> list[str]:
+    local_binding = f"127.0.0.1:{validate_port(local_port)}" if bind_mode == "ipv4" else str(validate_port(local_port))
+    args = [
         "-N",
         "-o", "BatchMode=yes",
         "-o", "ExitOnForwardFailure=yes",
-        "-o", "ConnectTimeout=10",
+        "-o", f"ConnectTimeout={connect_timeout}",
         "-o", "ServerAliveInterval=30",
         "-o", "ServerAliveCountMax=3",
         "-o", "StrictHostKeyChecking=accept-new",
         *NO_MULTIPLEX,
-        "-L", f"127.0.0.1:{validate_port(local_port)}:127.0.0.1:{validate_port(remote_port)}",
-        validate_ssh_host(ssh_host),
     ]
+    if verbose:
+        args.append("-v")
+    if channel_timeout is not None:
+        args.extend(["-o", f"ChannelTimeout={channel_timeout}"])
+    return [*args, "-L", f"{local_binding}:127.0.0.1:{validate_remote_port(remote_port)}", validate_ssh_host(ssh_host)]
+
+
+async def isolated_proxy_args(ssh_host: str) -> list[str]:
+    # Sky-generated aliases have an inner ssh hop; the outer -o options do not isolate it.
+    config = await asyncio.create_subprocess_exec(
+        ssh_binary(), "-G", ssh_host, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        output, _ = await asyncio.wait_for(config.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        config.kill()
+        await config.wait()
+        raise
+    if config.returncode:
+        raise OSError(f"ssh -G failed for {ssh_host}")
+    prefix = "proxycommand ssh "
+    for line in output.decode("utf-8", "replace").splitlines():
+        if line.startswith(prefix):
+            return ["-o", "ProxyCommand=ssh -S none -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=30 " + line[len(prefix):]]
+    return []
+
+
+@dataclass
+class SSHRoute:
+    """ssh options, destination and environment that reach a registered host."""
+
+    options: list[str]
+    destination: str
+    env: dict[str, str]
+
+
+async def osmo_lead_task(workflow: str) -> tuple[str, str]:
+    """The osmo CLI path and the lead task of a running workflow."""
+
+    if not OSMO_NAME_RE.fullmatch(workflow):
+        raise OSError(f"Invalid OSMO workflow id: {workflow}")
+    # launchd starts the hub with a minimal PATH; the osmo CLI installs into one of these.
+    search = os.pathsep.join([os.environ.get("PATH", ""), "/usr/local/bin", "/opt/homebrew/bin", str(Path.home() / ".local" / "bin")])
+    osmo = shutil.which("osmo", path=search)
+    if osmo is None:
+        raise OSError("The osmo CLI is not installed on this server.")
+    # load-bearing: Tunnel._supervise retries only OSError; any other exception ends the tunnel task.
+    query = await asyncio.create_subprocess_exec(
+        osmo, "workflow", "query", workflow, "-t", "json",
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        output, error = await asyncio.wait_for(query.communicate(), timeout=60)
+    except asyncio.TimeoutError:
+        raise OSError(f"osmo workflow query {workflow} timed out.") from None
+    finally:
+        if query.returncode is None:  # timed out, or the tunnel or deploy was cancelled
+            query.kill()
+            await query.wait()
+    if query.returncode:
+        raise OSError(last_line(error.decode("utf-8", "replace")) or f"osmo workflow query {workflow} failed.")
+    try:
+        data = json.loads(output)
+        status = data["status"]
+        leads = [task["name"] for group in data["groups"] for task in group["tasks"] if task.get("lead")]
+    except (ValueError, LookupError, TypeError, AttributeError):
+        raise OSError(f"osmo workflow query {workflow} returned an unexpected result.") from None
+    if status != "RUNNING":
+        raise OSError(f"OSMO workflow {workflow} is {status}.")
+    lead = next((name for name in leads if isinstance(name, str) and OSMO_NAME_RE.fullmatch(name)), None)
+    if lead is None:
+        raise OSError(f"OSMO workflow {workflow} has no lead task.")
+    return osmo, lead
+
+
+async def ssh_route(ssh_host: str) -> SSHRoute:
+    """Resolve the cluster notations; any other host is a plain ssh destination.
+
+    ``oci@<cluster>``: a Sky-generated alias. Its inner hop needs isolation, and Sky's
+    websocket proxy needs Sky's CA bundle, which a launchd-started hub does not inherit.
+    ``osmo@<workflow>``: sshd in the workflow's lead task, reached as root with
+    ``osmo workflow exec --raw`` as the ProxyCommand.
+    """
+
+    env = ssh_env()
+    # A Sky connection took 13-14 s end to end when measured; the 10-15 s ConnectTimeout
+    # used elsewhere is too short for either proxy. Route options come first, so this wins.
+    slow_proxy = ["-o", "ConnectTimeout=30"]
+    if ssh_host.startswith("oci@"):
+        cluster = ssh_host.removeprefix("oci@")
+        options = await isolated_proxy_args(cluster)
+        if not options:
+            raise OSError(f"Sky has no ssh entry for {cluster}; refresh it with `sky status -r` in its workspace.")
+        if SKY_CA_BUNDLE.exists():
+            env["SSL_CERT_FILE"] = env["REQUESTS_CA_BUNDLE"] = str(SKY_CA_BUNDLE)
+        return SSHRoute([*slow_proxy, *options], cluster, env)
+    if ssh_host.startswith("osmo@"):
+        workflow = ssh_host.removeprefix("osmo@")
+        osmo, task = await osmo_lead_task(workflow)
+        return SSHRoute([
+            *slow_proxy,
+            # The shell runs ProxyCommand after ssh expands % tokens; workflow and task match OSMO_NAME_RE.
+            "-o", f"ProxyCommand={shlex.quote(osmo).replace('%', '%%')} workflow exec {workflow} {task} --raw --raw-port 22",
+            # Every task pod has its own host key; OSMO already authenticated the exec channel.
+            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+        ], f"root@{workflow}", env)
+    return SSHRoute([], ssh_host, env)
 
 
 def revive_args(ssh_host: str, install_dir: str) -> list[str]:
@@ -281,9 +475,10 @@ def ssh_env() -> dict[str, str]:
 async def start_remote_server(server: RemoteServer) -> None:
     """Run ``<install_dir>/start.sh`` on the host; used when the forward finds no listener."""
 
+    route = await ssh_route(server.ssh_host)
     proc = await asyncio.create_subprocess_exec(
-        ssh_binary(), *revive_args(server.ssh_host, server.install_dir),
-        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=ssh_env(),
+        ssh_binary(), *route.options, *revive_args(route.destination, server.install_dir),
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=route.env,
     )
     try:
         output, _ = await asyncio.wait_for(proc.communicate(), 120)
@@ -305,14 +500,18 @@ def last_line(text: str) -> str:
 
 
 class Tunnel:
-    """Keeps one ``ssh -N -L`` forward alive with backoff and remote revival."""
+    """Keeps one ``ssh -N -L`` forward alive with backoff and optional remote revival."""
 
-    def __init__(self, server: RemoteServer, revive: Callable[[RemoteServer], Awaitable[None]]):
+    def __init__(self, server: RemoteServer | SSHForward, revive: Callable[[RemoteServer], Awaitable[None]] | None):
         self.server = server
+        # The route of the running ssh; the forward probe logs in with its destination and options.
+        self._route: SSHRoute | None = None
         self.status: dict[str, Any] = {"state": "starting", "restarts": 0, "last_error": None}
         self._revive = revive
         self._task: asyncio.Task[None] | None = None
         self._revive_task: asyncio.Task[None] | None = None
+        self._monitor_task: asyncio.Task[None] | None = None
+        self._master_proc: asyncio.subprocess.Process | None = None
         self._proc: asyncio.subprocess.Process | None = None
         self._stopped = False
         self._backoff = MIN_BACKOFF
@@ -324,11 +523,29 @@ class Tunnel:
     async def _supervise(self) -> None:
         while not self._stopped:
             try:
+                route = await ssh_route(self.server.ssh_host)
+                env = route.env
+                if isinstance(self.server, SSHForward):
+                    args = tunnel_args(
+                        route.destination, self.server.local_port, self.server.remote_port,
+                        bind_mode=self.server.bind_mode, channel_timeout=self.server.channel_timeout,
+                        connect_timeout=30, verbose=True,
+                    )
+                    # Forwards registered by a bare Sky alias still get their inner hop isolated.
+                    options = route.options or await isolated_proxy_args(route.destination)
+                    if self.server.ca_bundle_path is not None:
+                        env["SSL_CERT_FILE"] = self.server.ca_bundle_path
+                        env["REQUESTS_CA_BUNDLE"] = self.server.ca_bundle_path
+                else:
+                    args = tunnel_args(route.destination, self.server.local_port, self.server.remote_port)
+                    options = route.options
+                self._route = route
                 proc = await asyncio.create_subprocess_exec(
-                    ssh_binary(), *tunnel_args(self.server.ssh_host, self.server.local_port, self.server.remote_port),
-                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, env=ssh_env(),
+                    ssh_binary(), *options, *args,
+                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE, env=env,
                 )
-            except OSError as exc:
+            except (OSError, asyncio.TimeoutError) as exc:
                 self._mark_reconnecting(f"could not start ssh: {exc}")
                 await asyncio.sleep(self._backoff)
                 self._backoff = next_backoff(self._backoff)
@@ -336,16 +553,26 @@ class Tunnel:
             self._proc = proc
             # The forward is established quickly; a process that survives the
             # connect window counts as connected and resets the backoff.
-            settle = asyncio.get_running_loop().call_later(SETTLE_SECONDS, self._mark_connected, proc)
+            settle = (None if isinstance(self.server, SSHForward)
+                      else asyncio.get_running_loop().call_later(SETTLE_SECONDS, self._mark_connected, proc))
             tail = ""
             assert proc.stderr is not None
             async for raw in proc.stderr:
                 line = raw.decode("utf-8", "replace")
                 tail = (tail + line)[-4000:]
+                if isinstance(self.server, SSHForward) and (
+                    f"Local forwarding listening on 127.0.0.1 port {self.server.local_port}." in line
+                ):
+                    self._mark_connected(proc)
                 if needs_revive(line):
                     self._schedule_revive()
             code = await proc.wait()
-            settle.cancel()
+            if settle is not None:
+                settle.cancel()
+            if self._monitor_task is not None:
+                self._monitor_task.cancel()
+                await asyncio.gather(self._monitor_task, return_exceptions=True)
+                self._monitor_task = None
             self._proc = None
             if self._stopped:
                 return
@@ -358,11 +585,79 @@ class Tunnel:
         if self._proc is proc and proc.returncode is None:
             self.status = {**self.status, "state": "connected", "last_error": None}
             self._backoff = MIN_BACKOFF
+            if isinstance(self.server, SSHForward) and self.server.remote_port == 22 and self._monitor_task is None:
+                self._monitor_task = asyncio.create_task(self._monitor_forward(proc), name=f"ssh-forward-health:{self.server.id}")
+
+    async def _monitor_forward(self, outer: asyncio.subprocess.Process) -> None:
+        assert isinstance(self.server, SSHForward) and self._route is not None
+        host, port = self._route.destination, str(self.server.local_port)
+        control_args = [
+            "-o", "BatchMode=yes", "-o", "ProxyCommand=none", "-o", "HostName=127.0.0.1",
+            "-o", "ConnectTimeout=30", "-o", "ConnectionAttempts=1", "-o", "LogLevel=ERROR",
+            "-p", port,
+            # After ProxyCommand=none, which therefore still wins; carries osmo@'s host-key options.
+            *self._route.options,
+        ]
+        healthy_once = False
+        failures = 0
+        probe: asyncio.subprocess.Process | None = None
+        try:
+            while not self._stopped and self._proc is outer and outer.returncode is None:
+                await asyncio.sleep(SSH_FORWARD_PROBE_INTERVAL)
+                probe = await asyncio.create_subprocess_exec(
+                    ssh_binary(), "-S", "none", *NO_MULTIPLEX, *control_args,
+                    host, "exit", "0", stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                )
+                try:
+                    code = await asyncio.wait_for(probe.wait(), SSH_FORWARD_PROBE_TIMEOUT)
+                except asyncio.TimeoutError:
+                    probe.kill()
+                    await probe.wait()
+                    code = 124
+                probe = None
+                if code == 0:
+                    healthy_once = True
+                    failures = 0
+                    if self._master_proc is None or self._master_proc.returncode is not None:
+                        check = await asyncio.create_subprocess_exec(
+                            ssh_binary(), *control_args, "-O", "check", host,
+                            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        if await check.wait() != 0:
+                            self._master_proc = await asyncio.create_subprocess_exec(
+                                ssh_binary(), *control_args, "-N", "-o", "ControlMaster=auto",
+                                "-o", "ControlPersist=no", "-o", "ServerAliveInterval=15",
+                                "-o", "ServerAliveCountMax=3", host,
+                                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+                                stderr=asyncio.subprocess.DEVNULL,
+                            )
+                elif healthy_once:
+                    failures += 1
+                    if failures >= SSH_FORWARD_PROBE_FAILURES:
+                        logger.info("SSH forward %s probe failed %d times; reconnecting", self.server.id, failures)
+                        outer.terminate()
+                        return
+        finally:
+            if probe is not None and probe.returncode is None:
+                probe.kill()
+                await probe.wait()
+            master, self._master_proc = self._master_proc, None
+            if master is not None and master.returncode is None:
+                master.terminate()
+                try:
+                    await asyncio.wait_for(master.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    master.kill()
+                    await master.wait()
 
     def _mark_reconnecting(self, reason: str) -> None:
         self.status = {"state": "reconnecting", "restarts": self.status["restarts"] + 1, "last_error": reason}
 
     def _schedule_revive(self) -> None:
+        if self._revive is None:
+            return
         now = time.monotonic()
         if now - self._last_revive < REVIVE_INTERVAL or (self._revive_task and not self._revive_task.done()):
             return
@@ -371,6 +666,8 @@ class Tunnel:
 
     async def _run_revive(self) -> None:
         try:
+            assert self._revive is not None
+            assert isinstance(self.server, RemoteServer)
             await self._revive(self.server)
             logger.info("remote server start requested for %s", self.server.id)
         except Exception as exc:  # noqa: BLE001 - reported, never fatal for the tunnel
@@ -378,13 +675,20 @@ class Tunnel:
 
     async def stop(self) -> None:
         self._stopped = True
-        if self._proc is not None and self._proc.returncode is None:
+        proc = self._proc
+        if proc is not None and proc.returncode is None:
             with suppress(ProcessLookupError):
-                self._proc.terminate()
-        tasks = [task for task in (self._task, self._revive_task) if task is not None]
+                proc.terminate()
+        tasks = [task for task in (self._task, self._revive_task, self._monitor_task) if task is not None]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if proc is not None and proc.returncode is None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
         self.status = {**self.status, "state": "stopped"}
 
 
@@ -553,11 +857,14 @@ class RemoteServerManager:
         revive: Callable[[RemoteServer], Awaitable[None]] = start_remote_server,
     ) -> None:
         self.path = state_dir / "remote-servers.json"
+        self.forward_path = state_dir / "ssh-forwards.json"
         self.source_dir = source_dir
         self.manage_tunnels = manage_tunnels
         self._revive = revive
         self.servers: dict[str, RemoteServer] = {}
         self.tunnels: dict[str, Tunnel] = {}
+        self.forwards: dict[str, SSHForward] = {}
+        self.forward_tunnels: dict[str, Tunnel] = {}
         self.jobs: dict[str, DeployJob] = {}
         # keepalive_expiry must stay well below the remote uvicorn's idle keep-alive
         # (default 5 s). Both timers used to be 5 s, and over an ssh forward the
@@ -575,6 +882,8 @@ class RemoteServerManager:
             self.http.headers.pop(name, None)
 
     async def start(self) -> None:
+        for forward in load_forward_registry(self.forward_path):
+            self.forwards[forward.id] = forward
         changed = False
         for server in load_registry(self.path):
             if self.manage_tunnels and not local_port_free(server.local_port):
@@ -588,17 +897,22 @@ class RemoteServerManager:
         if self.manage_tunnels:
             for server in self.servers.values():
                 self._ensure_tunnel(server)
+            for forward in self.forwards.values():
+                self._ensure_forward(forward)
 
     async def stop(self) -> None:
         for job in list(self.jobs.values()):
             if job.task is not None and not job.task.done():
                 job.task.cancel()
-        await asyncio.gather(*(tunnel.stop() for tunnel in self.tunnels.values()), return_exceptions=True)
+        await asyncio.gather(*(tunnel.stop() for tunnel in [*self.tunnels.values(), *self.forward_tunnels.values()]),
+                             return_exceptions=True)
         self.tunnels.clear()
+        self.forward_tunnels.clear()
         await self.http.aclose()
 
     def _reserved_ports(self) -> set[int]:
-        return {server.local_port for server in self.servers.values()}
+        return ({server.local_port for server in self.servers.values()}
+                | {forward.local_port for forward in self.forwards.values()})
 
     def _ensure_tunnel(self, server: RemoteServer) -> None:
         if not self.manage_tunnels:
@@ -612,6 +926,20 @@ class RemoteServerManager:
         self.tunnels[server.id] = tunnel
         logger.info("ssh tunnel starting for %s (%s, local %d -> remote %d)", server.id, server.ssh_host, server.local_port, server.remote_port)
         tunnel.start()
+
+    def _ensure_forward(self, forward: SSHForward) -> None:
+        if not self.manage_tunnels:
+            return
+        tunnel = Tunnel(forward, None)
+        self.forward_tunnels[forward.id] = tunnel
+        logger.info("ssh forward starting for %s (%s, local %d -> remote %d)",
+                    forward.id, forward.ssh_host, forward.local_port, forward.remote_port)
+        tunnel.start()
+
+    def list_forwards(self) -> list[dict[str, Any]]:
+        return [{**forward.model_dump(), "tunnel": dict(self.forward_tunnels[forward.id].status)
+                 if forward.id in self.forward_tunnels else None}
+                for forward in self.forwards.values()]
 
     def tunnel_status(self, remote_id: str) -> dict[str, Any] | None:
         tunnel = self.tunnels.get(remote_id)
@@ -703,9 +1031,13 @@ class RemoteServerManager:
                 assert request is not None
                 ssh_host, install_dir = request.ssh_host, request.install_dir
                 requested_port = request.port if isinstance(request, RemoteDeployRequest) else 0
+                home = next((os.environ.get(name, "") for prefix, name in CLUSTER_HOME_ENV.items() if ssh_host.startswith(prefix)), "")
+                if home and install_dir == DEFAULT_INSTALL_DIR:
+                    install_dir = validate_remote_dir(f"{home.rstrip('/')}/.agentsdock-server")
 
             job.progress("connect", f"Probing {ssh_host}…")
-            probe_lines = await self._run_ssh(job, [*remote_shell_args(ssh_host), install_dir], stdin=PROBE_SCRIPT.read_bytes(), idle_timeout=60)
+            route = await ssh_route(ssh_host)
+            probe_lines = await self._run_ssh(job, route, [*remote_shell_args(route.destination), install_dir], stdin=PROBE_SCRIPT.read_bytes(), idle_timeout=60)
             probe = parse_probe(probe_lines)
             if attach and not probe.get("existing_port"):
                 raise RuntimeError(f"No AgentsServer install was found at {install_dir} on {ssh_host}. Deploy a new server instead.")
@@ -719,15 +1051,15 @@ class RemoteServerManager:
             else:
                 job.progress("download", f"Uploading AgentsServer source to {ssh_host}…")
                 tarball = await asyncio.to_thread(build_source_tarball, self.source_dir)
-                await self._upload(job, ssh_host, install_dir, tarball)
+                await self._upload(job, route, install_dir, tarball)
                 job.progress("install", f"Installing AgentsServer on {ssh_host}…")
             # Without upload.tgz on the host the bootstrap only makes sure the server
             # is running and reports its port and token (see remote_bootstrap.sh).
-            args = [*remote_shell_args(ssh_host), install_dir, str(remote_port), probe["home"]]
+            args = [*remote_shell_args(route.destination), install_dir, str(remote_port), probe["home"]]
             if existing is not None:
                 args.append("restart")
             result_lines = await self._run_ssh(
-                job, args, stdin=BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,
+                job, route, args, stdin=BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,
                 on_line=lambda line: job.progress("install", setup_log_message(line) or "") if setup_log_message(line) else None,
             )
             result = parse_setup_result(result_lines)
@@ -773,10 +1105,11 @@ class RemoteServerManager:
                     job.proc.kill()
             job.proc = None
 
-    async def _run_ssh(self, job: DeployJob, args: list[str], *, stdin: bytes, idle_timeout: float, on_line: Callable[[str], None] | None = None) -> list[str]:
+    async def _run_ssh(self, job: DeployJob, route: SSHRoute, args: list[str], *, stdin: bytes, idle_timeout: float,
+                       on_line: Callable[[str], None] | None = None) -> list[str]:
         proc = await asyncio.create_subprocess_exec(
-            ssh_binary(), *args,
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=ssh_env(),
+            ssh_binary(), *route.options, *args,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=route.env,
         )
         job.proc = proc
         lines: list[str] = []
@@ -809,17 +1142,17 @@ class RemoteServerManager:
             raise RuntimeError(detail or f"ssh exited {code}")
         return lines
 
-    async def _upload(self, job: DeployJob, ssh_host: str, install_dir: str, data: bytes) -> None:
+    async def _upload(self, job: DeployJob, route: SSHRoute, install_dir: str, data: bytes) -> None:
         offset, attempts = 0, 0
         while True:
             try:
                 if attempts:
-                    offset = await self._uploaded_bytes(job, ssh_host, install_dir)
+                    offset = await self._uploaded_bytes(job, route, install_dir)
                     if offset > len(data):
                         offset = 0  # the host holds more than was sent: start over rather than append to it
-                await self._upload_from(job, ssh_host, install_dir, data, offset)
+                await self._upload_from(job, route, install_dir, data, offset)
                 if attempts:
-                    held = await self._uploaded_bytes(job, ssh_host, install_dir)
+                    held = await self._uploaded_bytes(job, route, install_dir)
                     if held != len(data):
                         raise RuntimeError(f"Uploading the server source failed: the host holds {held} of {len(data)} bytes.")
                 return
@@ -830,20 +1163,21 @@ class RemoteServerManager:
                 job.progress("download", f"{exc}; resuming the upload ({attempts}/{UPLOAD_RETRIES})…")
                 await asyncio.sleep(UPLOAD_RETRY_DELAY)
 
-    async def _uploaded_bytes(self, job: DeployJob, ssh_host: str, install_dir: str) -> int:
+    async def _uploaded_bytes(self, job: DeployJob, route: SSHRoute, install_dir: str) -> int:
         lines = await self._run_ssh(
-            job, [*SSH_BATCH_OPTIONS, ssh_host, f"wc -c < {install_dir}/upload.tgz 2>/dev/null || echo 0"], stdin=b"", idle_timeout=60,
+            job, route, [*SSH_BATCH_OPTIONS, route.destination, f"wc -c < {install_dir}/upload.tgz 2>/dev/null || echo 0"],
+            stdin=b"", idle_timeout=60,
         )
         # ssh warnings share the stream; the byte count is the last all-digit line.
         return next((int(line) for line in reversed(lines) if line.strip().isdigit()), 0)
 
-    async def _upload_from(self, job: DeployJob, ssh_host: str, install_dir: str, data: bytes, offset: int) -> None:
+    async def _upload_from(self, job: DeployJob, route: SSHRoute, install_dir: str, data: bytes, offset: int) -> None:
         # install_dir is validated to [A-Za-z0-9_.~/-]; unquoted so ~ expands on the host.
         target = f"{install_dir}/upload.tgz"
         command = f"mkdir -p {install_dir} && cat > {target}" if offset == 0 else f"cat >> {target}"
         proc = await asyncio.create_subprocess_exec(
-            ssh_binary(), *SSH_BATCH_OPTIONS, ssh_host, command,
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=ssh_env(),
+            ssh_binary(), *route.options, *SSH_BATCH_OPTIONS, route.destination, command,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=route.env,
         )
         job.proc = proc
         assert proc.stdin is not None
