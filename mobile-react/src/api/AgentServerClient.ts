@@ -256,6 +256,9 @@ export class AgentServerClient {
   workspaceDownloadURL(sessionId: string, path: string): string {
     return this.url(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/download?path=${encodeURIComponent(path)}`)
   }
+  sessionExportURL(sessionId: string, format: 'markdown' | 'jsonl'): string {
+    return this.url(`/api/sessions/${encodeURIComponent(sessionId)}/export?format=${format}`)
+  }
   authHeaders(): Record<string, string> {
     this.assertValidated()
     return authHeaders(this.configuration.token)

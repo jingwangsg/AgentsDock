@@ -31,3 +31,13 @@ test('Copy session uses the full provider identifier and reports clipboard succe
   assert.match(copy, /AccessibilityInfo\.announceForAccessibility\('Session ID copied'\)/)
   assert.match(copy, /Alert\.alert\('Could not copy session ID'/)
 })
+
+test('Download conversation offers Markdown and the event log and shares only the current chat', () => {
+  assert.match(inspector, /testID="inspector-download-conversation" disabled=\{!connected \|\| conversationTransfer\.busy\} onPress=\{downloadConversation\}/)
+  const download = inspector.slice(inspector.indexOf('const downloadConversation ='), inspector.indexOf('const copySessionId ='))
+  assert.match(download, /if \(!session \|\| !scopeIsCurrent\(\)\) return/)
+  assert.match(download, /\{ text: 'Markdown \(\.md\)', onPress: \(\) => start\('markdown'\) \}/)
+  assert.match(download, /\{ text: 'Event log \(\.jsonl\)', onPress: \(\) => start\('jsonl'\) \}/)
+  assert.match(download, /conversationTransferRequest\(session, client, format, \(\) => scopeIsCurrent\(\) && useAppStore\.getState\(\)\.connected\)/)
+  assert.match(inspector, /<FileTransferNotice state=\{conversationTransfer\.state\} onCancel=\{conversationTransfer\.cancel\} onDismiss=\{conversationTransfer\.dismiss\} \/>/)
+})

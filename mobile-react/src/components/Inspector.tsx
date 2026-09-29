@@ -2,20 +2,23 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { AccessibilityInfo, ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { useShallow } from 'zustand/react/shallow'
-import { Archive, Check, ChevronDown, Copy, FileDiff, FileText, GitFork, Pause, Pencil, Pin, Play, Plus, RefreshCw, Search, SquareTerminal, Trash2, X } from 'lucide-react-native'
+import { Archive, Check, ChevronDown, Copy, Download, FileDiff, FileText, GitFork, Pause, Pencil, Pin, Play, Plus, RefreshCw, Search, SquareTerminal, Trash2, X } from 'lucide-react-native'
 import { describeJobSchedule, effectiveScheduleKind } from '../lib/job-schedule'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
+import { conversationTransferRequest, type ConversationExportFormat } from '../lib/file-transfer'
 import { filesNewestFirst } from '../lib/format'
 import { mobileFileViewerKind } from '../lib/file-viewer'
 import { runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError } from '../lib/runtime-catalog'
 import { PROVIDER_JOBS_ACCESS_MODES, providerJobsAccessDescription, providerJobsAccessLabel, providerJobsAccessState } from '../lib/provider-jobs-access'
-import { useAppStore } from '../store/useAppStore'
+import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { ProviderJobsAccess, RuntimeOption } from '../types'
 import { Text, TextInput } from './AppText'
 import { MediaGrid } from './MediaGrid'
 import { IconButton, SectionHeader } from './ui'
 import { useFileViewer } from './file-viewer/FileViewerContext'
+import { FileTransferNotice } from './file-viewer/FileTransferNotice'
+import { useFileTransfer } from './file-viewer/useFileTransfer'
 
 type JobRunFeedback = {
   phase: 'requesting' | 'deferred' | 'started' | 'failed'
@@ -94,6 +97,18 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
   }
   const providerSessionId = session?.session_id?.trim() || session?.codex_thread_id?.trim() || session?.claude_session_id?.trim() || session?.cursor_session_id?.trim() || ''
   const forkDisabled = !connected || running || stopping || admitting
+  const conversationTransfer = useFileTransfer(`${activeProfileId ?? 'none'}:${profileGeneration}:${sessionId}`)
+  const downloadConversation = () => {
+    if (!session || !scopeIsCurrent()) return
+    const start = (format: ConversationExportFormat) => {
+      if (scopeIsCurrent()) void conversationTransfer.start(conversationTransferRequest(session, client, format, () => scopeIsCurrent() && useAppStore.getState().connected))
+    }
+    Alert.alert('Download conversation', 'Choose a format, then pick where to keep it in the share sheet.', [
+      { text: 'Markdown (.md)', onPress: () => start('markdown') },
+      { text: 'Event log (.jsonl)', onPress: () => start('jsonl') },
+      { text: 'Cancel', style: 'cancel' },
+    ])
+  }
   const copySessionId = async () => {
     if (!providerSessionId || !scopeIsCurrent()) return
     try {
@@ -208,6 +223,7 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       <Command icon={GitFork} label="Fork" testID="inspector-fork-chat" disabled={forkDisabled} hint={stopping ? 'Wait for the current turn to stop before forking this chat.' : running ? 'Wait for the active turn to finish before forking this chat.' : admitting ? 'Wait for the pending message to be accepted before forking this chat.' : !connected ? 'Connect to the server to fork this chat.' : undefined} onPress={() => { if (!forkDisabled && scopeIsCurrent()) void fork(sessionId, profileGeneration) }} />
       <Command icon={providerSessionId && copiedSessionId === providerSessionId ? Check : Copy} label={providerSessionId && copiedSessionId === providerSessionId ? 'Copied' : 'Copy session'} testID="inspector-copy-session-id" disabled={!providerSessionId} hint={providerSessionId ? 'Copies the full provider session ID.' : 'Available after the chat agent starts a provider session.'} onPress={() => void copySessionId()} />
       <Command icon={FileText} label="Digest" onPress={() => { if (scopeIsCurrent()) onDigest() }} />
+      <Command icon={Download} label="Download conversation" testID="inspector-download-conversation" disabled={!connected || conversationTransfer.busy} onPress={downloadConversation} />
       <Command icon={Pin} label={session.pinned ? 'Unpin' : 'Pin'} onPress={() => { if (scopeIsCurrent()) void update(sessionId, { pinned: !session.pinned }, profileGeneration) }} />
       <Command icon={Archive} label={session.archived ? 'Unarchive' : 'Archive'} onPress={() => { if (scopeIsCurrent()) void update(sessionId, { archived: !session.archived }, profileGeneration) }} />
       <Command icon={FileDiff} label="Changes" testID="inspector-changes" onPress={() => { if (scopeIsCurrent()) onChanges() }} />
@@ -216,6 +232,7 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       <Command icon={SquareTerminal} label="Tmux panes" onPress={() => { if (scopeIsCurrent()) onTmux() }} />
       <Command icon={Trash2} label="Delete" destructive onPress={() => { if (!scopeIsCurrent()) return; Alert.alert('Delete chat?', 'This removes the chat from the server.', [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: () => { if (scopeIsCurrent()) void remove(sessionId, profileGeneration) } }]) }} />
     </View>
+    <FileTransferNotice state={conversationTransfer.state} onCancel={conversationTransfer.cancel} onDismiss={conversationTransfer.dismiss} />
 
     <View style={[styles.card, { backgroundColor: colors.raised }]}>
       <SectionHeader title={`Pinned ${pins.length}`} />

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  artifactTransferRequest, createFileTransferRunner, isFileTransferBusy,
+  artifactTransferRequest, conversationTransferRequest, createFileTransferRunner, isFileTransferBusy,
   numberedDownloadFilename, safeDownloadFilename, workspaceTransferRequest,
   type FileTransferDependencies, type FileTransferRequest, type FileTransferState,
 } from './file-transfer'
@@ -170,6 +170,26 @@ test('artifact and workspace requests resolve only their authenticated chat-scop
   workspace.source()
   assert.equal(workspace.expectedBytes, undefined, 'Mutable workspace file metadata must not reject a newer complete version')
   assert.deepEqual(calls, ['artifact:chat:file-id', 'workspace:chat:/server/project/source.txt'])
+})
+
+test('conversation export shares the chat title as a file from its authenticated export endpoint', () => {
+  const calls: string[] = []
+  const client = {
+    sessionExportURL(session: string, format: string) { calls.push(`${session}:${format}`); return `https://example.invalid/export?format=${format}` },
+    authHeaders() { return { Authorization: 'Bearer fixture-only' } },
+  } as unknown as AgentServerClient
+  const markdown = conversationTransferRequest({ id: 'chat', title: ' 查找附近理疗松解诊所 ' }, client, 'markdown', () => true)
+  assert.equal(markdown.action, 'share')
+  assert.equal(safeDownloadFilename(markdown.filename), '查找附近理疗松解诊所.md')
+  assert.equal(markdown.contentType, 'text/markdown')
+  assert.deepEqual(calls, [], 'Credentials resolve only when the transfer starts')
+  assert.deepEqual(markdown.source(), { url: 'https://example.invalid/export?format=markdown', headers: { Authorization: 'Bearer fixture-only' } })
+  const log = conversationTransferRequest({ id: 'chat', title: 'Fix a/b rendering' }, client, 'jsonl', () => true)
+  assert.equal(safeDownloadFilename(log.filename), 'Fix a-b rendering.jsonl', 'A slash in the title must not truncate the name')
+  assert.equal(log.contentType, 'application/x-ndjson')
+  assert.equal(safeDownloadFilename(conversationTransferRequest({ id: 'chat', title: '  ' }, client, 'jsonl', () => true).filename), 'Conversation.jsonl')
+  log.source()
+  assert.deepEqual(calls, ['chat:markdown', 'chat:jsonl'])
 })
 
 test('only actual transfer phases keep controls busy', () => {

@@ -132,6 +132,21 @@ export function workspaceTransferRequest(entry: WorkspaceEntry, sessionId: strin
   }
 }
 
+export type ConversationExportFormat = 'markdown' | 'jsonl'
+
+// Shared rather than saved: the exported text lives on the server, so the share
+// sheet lets the user pick Files, Drive or another app for it.
+export function conversationTransferRequest(session: { id: string; title?: string | null }, client: AgentServerClient, format: ConversationExportFormat, isCurrent: () => boolean): FileTransferRequest {
+  const title = session.title?.trim() || 'Conversation'
+  return {
+    // A title's "/" would otherwise be read as a path separator by safeDownloadFilename.
+    action: 'share', filename: `${title.replace(/[\\/]/g, '-')}${format === 'markdown' ? '.md' : '.jsonl'}`, title,
+    contentType: format === 'markdown' ? 'text/markdown' : 'application/x-ndjson',
+    isCurrent,
+    source: () => ({ url: client.sessionExportURL(session.id, format), headers: client.authHeaders() }),
+  }
+}
+
 export function safeDownloadFilename(value: string): string {
   const leaf = value.replace(/\\/g, '/').split('/').at(-1) ?? ''
   const cleaned = leaf.replace(/[\u0000-\u001f\u007f<>:"|?*]/g, '_').replace(/^\.+/, '').trim() || 'download'
