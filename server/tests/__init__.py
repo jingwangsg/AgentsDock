@@ -3,10 +3,8 @@
 import os
 import tempfile
 
-# load-bearing: agent_server resolves its state and config directories at import. Tests
-# that fall back to the real ~/.agentsdock overwrite the running server's sessions.json
-# with fixtures (a suite run once replaced every hub chat), and the real config env
-# leaks its tokens into the tests. Override any inherited value on purpose.
+# load-bearing: agent_server resolves state/config dirs at import; without this, tests write
+# fixtures over the real ~/.agentsdock sessions.json and read its tokens. Overwrite, not setdefault.
 _ROOT = tempfile.mkdtemp(prefix="agentsdock-tests-")
 os.environ["AGENTSDOCK_STATE_DIR"] = os.path.join(_ROOT, "state")
 os.environ["AGENTS_SERVER_CONFIG_DIR"] = os.path.join(_ROOT, "config")

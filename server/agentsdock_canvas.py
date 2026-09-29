@@ -42,7 +42,8 @@ COMMENT_MODES = ("ask", "edit")
 FINAL_REPLY_STATUSES = frozenset({"done", "failed", "stopped", "cancelled"})
 TAG_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 COMPILE_TIMEOUT_SECONDS = 180
-RUNTIME_ASSETS = {"vendor.js": "application/javascript", "shell.html": "text/html"}
+# The LEGAL file carries the bundled runtime's license notices into exported standalone pages.
+RUNTIME_ASSETS = {"vendor.js": "application/javascript", "vendor.js.LEGAL.txt": "text/plain", "shell.html": "text/html"}
 AGENT_FILES = ("AUTHORING.md", "sdk.d.ts")
 
 
@@ -165,7 +166,9 @@ def prompt_section(state_dir: Path, session_id: str, *, directory_label: str | N
         f"Before writing or editing a Canvas, read {directory / 'AUTHORING.md'} and the SDK declarations at {directory / 'sdk.d.ts'}. "
         "Import only from `@zed/canvas`, default-export the component, and embed the data directly. "
         f"After saving, run `{check} {directory}/<name>.canvas.tsx` and fix every reported error. "
-        "Finish with a short conclusion and a Markdown link to the absolute .canvas.tsx path; do not paste the report into the chat."
+        "Name the file after what it shows (`training_loss_comparison`, not `canvas2`) and keep editing it for the same report. "
+        "Finish with a short conclusion and a Markdown link to the absolute .canvas.tsx path whose text is the report's title "
+        "(the app lists each Canvas by that text); do not paste the report into the chat."
     )
 
 

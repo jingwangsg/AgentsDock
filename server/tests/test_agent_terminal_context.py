@@ -241,7 +241,7 @@ class AgentTerminalContextTests(unittest.TestCase):
                     "message": legacy_message,
                 },
             }) + "\n")
-            items = agent_server.parse_codex_history(history_path, None)
+            items = agent_server.parse_codex_history_events(agent_server.bounded_jsonl_events(history_path), None)
 
         self.assertEqual(items, [{"kind": "user", "text": "Immutable user text."}])
 
@@ -282,7 +282,7 @@ class AgentTerminalContextTests(unittest.TestCase):
                 "\n".join(json.dumps(record) for record in records) + "\n",
                 encoding="utf-8",
             )
-            items = agent_server.parse_codex_history(history_path, None)
+            items = agent_server.parse_codex_history_events(agent_server.bounded_jsonl_events(history_path), None)
 
         self.assertEqual(items, [
             {"kind": "user", "text": "Latest steering text."},

@@ -26,7 +26,7 @@ def assistant(text="Public progress", *, shape="response_item", phase=None, time
 def projection():
     ns = load_projection()
     names = {
-        "normalized_history_sync_cursor", "load_provider_history_with_cursor", "codex_segments_through",
+        "normalized_history_sync_cursor", "load_provider_history_with_cursor",
         "history_dedup_key", "history_timeline_message_keys", "is_native_goal_steer_event",
         "history_message_match_details", "history_messages_match", "history_message_match_tokens", "clean_assistant_text",
         "reconcile_cursor_history_items", "unsynced_history_items",
@@ -46,6 +46,8 @@ def projection():
         "MAX_WORKSPACE_PATH_CHARS": 4096, "MAX_LOCAL_TRANSCRIPT_BYTES": 100_000_000,
         "MAX_LOCAL_TRANSCRIPT_LINE_BYTES": 4 * 1024 * 1024,
         "event_files_belong_to_session": lambda event, chat: event.get("session_id") == chat,
+        # These transcripts are stubbed single files, never later segments of a thread.
+        "codex_predecessors": lambda path: [],
     })
     exec(compile(module, str(SOURCE), "exec"), ns)
     return ns
