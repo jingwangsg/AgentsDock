@@ -40,10 +40,11 @@ FAKE_SSH = r'''#!{python}
 import json, os, sys
 state = {state!r}
 argv = sys.argv[1:]
-sys.stdin.buffer.read()
+stdin = sys.stdin.buffer.read()
 tail = argv[argv.index("--") + 1:] if "--" in argv else None
 with open(os.path.join(state, "calls.jsonl"), "a") as log:
-    log.write(json.dumps(dict(tail=tail, command=None if tail is not None else argv[-1], argv=argv, ca=os.environ.get("SSL_CERT_FILE"))) + "\n")
+    log.write(json.dumps(dict(tail=tail, command=None if tail is not None else argv[-1], argv=argv, ca=os.environ.get("SSL_CERT_FILE"),
+                              stdin_head=stdin[:120].decode("utf-8", "replace"))) + "\n")
 host = json.load(open(os.path.join(state, "host.json")))
 if tail is not None and len(tail) == 1:  # probe: bash -s -- <install_dir>
     print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=host["existing_port"])))
@@ -276,6 +277,32 @@ class RemoteServerTests(unittest.TestCase):
             rs.SSHForward(id="abcdef123456", created_at="2026-09-28T00:00:00Z",
                           name="bad", ssh_host="jing-debug-1e47", local_port=9000, remote_port=0)
 
+    def test_restart_moves_a_busy_port_clear_of_every_registered_port(self) -> None:
+        # Seen live: the first server's port was still held by the old hub's ssh, and the
+        # replacement was the port the second server, loaded later, was registered with.
+        script = self.tmp_path / "ssh"
+        script.write_text("#!/bin/sh\nexec sleep 30\n")
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        first_free = rs.find_free_local_port(set())
+        with socket.socket() as busy:
+            busy.bind(("127.0.0.1", 0))
+            held = busy.getsockname()[1]
+            manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
+            rs.save_registry(manager.path, [
+                make_server(id="aaaaaaaaaaaa", local_port=held),
+                make_server(id="bbbbbbbbbbbb", local_port=first_free),
+            ])
+
+            async def main() -> None:
+                await manager.start()
+                await manager.stop()
+
+            asyncio.run(main())
+        ports = {server.id: server.local_port for server in rs.load_registry(manager.path)}
+        assert ports["bbbbbbbbbbbb"] == first_free
+        assert ports["aaaaaaaaaaaa"] not in (held, first_free)
+
     def test_plain_ssh_forward_loads_after_manager_restart(self) -> None:
         async def main() -> None:
             manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
@@ -501,7 +528,7 @@ print(json.dumps(answers[workflow]))
             argv = record["argv"]
             assert argv[:len(route.options)] == route.options and argv.count("root@wf-running") == 1 and "osmo@wf-running" not in argv
 
-    def test_cluster_installs_default_to_the_configured_cluster_homes(self) -> None:
+    def test_cluster_installs_default_to_one_install_per_target_in_the_configured_homes(self) -> None:
         calls = self.fake_host(existing_port=7860)
         self.fake_osmo()
         ca = self.tmp_path / "sky-ca.pem"
@@ -513,7 +540,7 @@ print(json.dumps(answers[workflow]))
             manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host=host))
             assert job.done and job.error is None, job.log
             server = next(server for server in rs.load_registry(manager.path) if server.ssh_host == host)
-            assert server.install_dir == f"{home}/.agentsdock-server"
+            assert server.install_dir == f"{home}/.agentsdock-server-{host.split('@')[1]}"
         # Sky's websocket proxy runs inside the oci@ ssh calls (the last two) and needs the CA bundle there.
         records = [json.loads(line) for line in calls.read_text().splitlines()]
         assert [record["ca"] for record in records[2:]] == [str(ca), str(ca)]
@@ -521,6 +548,51 @@ print(json.dumps(answers[workflow]))
         del os.environ["AGENTSDOCK_OSMO_HOME"]
         manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo@wf-running"))
         assert [server.install_dir for server in rs.load_registry(manager.path) if server.ssh_host == "osmo@wf-running"][-1] == rs.DEFAULT_INSTALL_DIR
+
+    def test_oci_server_tunnel_carries_the_configured_site_forwards(self) -> None:
+        script = self.tmp_path / "ssh"
+        calls = self.tmp_path / "tunnel-calls.jsonl"
+        script.write_text(f"""#!{sys.executable}
+import json, sys, time
+with open({str(calls)!r}, "a") as out:
+    out.write(json.dumps(sys.argv[1:]) + "\\n")
+if "-N" in sys.argv:
+    time.sleep(30)
+""")
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
+        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_TUNNEL_SSH_ARGS": "-R 12052:git.example:12051 -o ExitOnForwardFailure=no"}))
+        self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
+        rs.save_registry(manager.path, [
+            make_server(id="aaaaaaaaaaaa", ssh_host="oci@sky-cluster", local_port=free_port()),
+            make_server(id="bbbbbbbbbbbb", ssh_host="plain-host", local_port=free_port()),
+        ])
+
+        async def main() -> None:
+            await manager.start()
+            try:
+                for _ in range(200):
+                    if calls.exists() and len(calls.read_text().splitlines()) == 3:
+                        return
+                    await asyncio.sleep(0.05)
+                self.fail("tunnels did not start")
+            finally:
+                await manager.stop()
+
+        asyncio.run(main())
+        records = [json.loads(line) for line in calls.read_text().splitlines()]
+        argvs = {argv[-1]: argv for argv in records if "-N" in argv}
+        oci = argvs["sky-cluster"]
+        # Before the tunnel's own options, so ExitOnForwardFailure=no wins over its =yes.
+        assert oci[:9] == ["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x", "-R", "12052:git.example:12051", "-o", "ExitOnForwardFailure=no", "-N"]
+        assert "-R" not in argvs["plain-host"]
+        # Once connected, git on the host is pointed at the forward, in the server's HOME.
+        [rewrite] = [argv for argv in records if "-N" not in argv]
+        assert rewrite[-2] == "sky-cluster" and "-R" not in rewrite
+        assert rewrite[-1].startswith("set -a; . /mnt/lustre/.agentsdock-server/env; set +a; ")
+        assert "url.ssh://git@127.0.0.1:12052/.insteadOf" in rewrite[-1] and "ssh://git@git.example:12051/" in rewrite[-1]
 
     def test_osmo_tunnel_forwards_through_the_workflow_and_reports_an_ended_one(self) -> None:
         self.fake_osmo()
@@ -590,6 +662,18 @@ time.sleep(30)
 
         asyncio.run(main())
 
+    def test_hub_claude_token_reaches_the_bootstrap_on_stdin_only(self) -> None:
+        calls = self.fake_host(existing_port=7860)
+        token = "sk-ant-oat01-" + "t" * 40
+        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_REMOTE_CLAUDE_CODE_OAUTH_TOKEN": token}))
+        manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))
+        assert job.done and job.error is None, job.log
+        probe, bootstrap = [json.loads(line) for line in calls.read_text().splitlines()]
+        assert bootstrap["stdin_head"].startswith(f"AGENTSDOCK_CLAUDE_TOKEN={token}\n")
+        assert not probe["stdin_head"].startswith("AGENTSDOCK_CLAUDE_TOKEN")
+        assert all(token not in json.dumps(record["argv"]) for record in (probe, bootstrap))
+        assert token not in json.dumps(job.log)
+
     def test_bootstrap_without_a_tarball_leaves_a_healthy_install_alone(self) -> None:
         # $HOME/.local/bin is the first PATH entry the script prepends, so fakes
         # placed there shadow the real uv/curl/claude/tmux and record every call.
@@ -597,7 +681,8 @@ time.sleep(30)
         bin_dir = home / ".local" / "bin"
         bin_dir.mkdir(parents=True)
         calls = self.tmp_path / "calls.log"
-        for name in ("uv", "curl", "claude", "tmux"):
+        # node present: the bootstrap then installs nothing.
+        for name in ("uv", "curl", "claude", "tmux", "node"):
             (bin_dir / name).write_text(f"#!/bin/sh\necho {name} \"$@\" >> '{calls}'\n")
             (bin_dir / name).chmod(0o700)
         install = self.tmp_path / "install"
@@ -619,6 +704,17 @@ time.sleep(30)
         # The only external call is start.sh's health check, which found the server up.
         assert calls.read_text().splitlines() == [f"curl -fsS -m 3 -H Authorization: Bearer {REMOTE_TOKEN} http://127.0.0.1:7860/api/health"]
         assert (install / "env").read_text() == f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTSDOCK_AGENT_PORT=7860\n"
+
+        # A token handed over by the hub lands in env once, without echoing it.
+        token = "sk-ant-oat01-" + "t" * 40
+        for _ in range(2):
+            proc = subprocess.run(
+                ["bash", "-s", "--", str(install), "7860", str(home)], input=f"AGENTSDOCK_CLAUDE_TOKEN={token}\n".encode() + rs.BOOTSTRAP_SCRIPT.read_bytes(),
+                capture_output=True, env={**os.environ, "HOME": str(home)}, timeout=60,
+            )
+            assert proc.returncode == 0 and token not in proc.stdout.decode() + proc.stderr.decode(), proc.stderr.decode()
+        assert (install / "env").read_text().count(f"export CLAUDE_CODE_OAUTH_TOKEN={token}\n") == 1
+        assert stat.S_IMODE((install / "env").stat().st_mode) == 0o600
 
     # --- header rewriting -----------------------------------------------------
 

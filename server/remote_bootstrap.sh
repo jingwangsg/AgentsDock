@@ -64,6 +64,25 @@ if ! PATH="$HOME_DIR/.local/bin:$PATH" command -v claude >/dev/null 2>&1; then
   fi
 fi
 
+# Canvas compiles reports with node, which a non-interactive ssh PATH often lacks
+# even when the user's own shell has it (conda, nvm). Install the current Node.js
+# 22 LTS under the server's HOME, checked against nodejs.org's published checksums.
+if ! PATH="$HOME_DIR/.local/bin:$PATH" command -v node >/dev/null 2>&1; then
+  log "Installing Node.js into $HOME_DIR/.local (Canvas needs node)"
+  NODE_DIST=https://nodejs.org/dist/latest-v22.x
+  case "$(uname -m)" in x86_64) NODE_ARCH=x64 ;; aarch64|arm64) NODE_ARCH=arm64 ;; *) NODE_ARCH=unsupported ;; esac
+  NODE_SUM="$(curl -fsSL "$NODE_DIST/SHASUMS256.txt" 2>/dev/null | grep -E " node-v[0-9.]+-linux-$NODE_ARCH\.tar\.gz\$" | head -1 || true)"
+  if [ -n "$NODE_SUM" ] && curl -fsSL "$NODE_DIST/${NODE_SUM##* }" -o node.tgz \
+    && [ "$(sha256sum node.tgz | cut -d' ' -f1)" = "${NODE_SUM%% *}" ] \
+    && rm -rf "$HOME_DIR/.local/node" && mkdir -p "$HOME_DIR/.local/node" "$HOME_DIR/.local/bin" \
+    && tar -xzf node.tgz -C "$HOME_DIR/.local/node" --strip-components=1; then
+    ln -sf "$HOME_DIR/.local/node/bin/node" "$HOME_DIR/.local/bin/node"
+  else
+    log "Node.js install failed; Canvas stays unavailable until node is on the server PATH"
+  fi
+  rm -f node.tgz
+fi
+
 if [ ! -f env ]; then
   log "Generating access token"
   TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
@@ -84,6 +103,17 @@ if [ ! -f env ]; then
 fi
 # Keep the requested port even for an existing install that was moved.
 sed -i.bak "s|^export AGENTSDOCK_AGENT_PORT=.*|export AGENTSDOCK_AGENT_PORT=$PORT|" env && rm -f env.bak
+# A Claude token the hub hands over (RemoteServerManager._deploy) replaces the host's
+# own login, which OAuth refresh rotation breaks when several hosts share one home.
+if [ -n "${AGENTSDOCK_CLAUDE_TOKEN:-}" ] && ! grep -qxF "export CLAUDE_CODE_OAUTH_TOKEN=$AGENTSDOCK_CLAUDE_TOKEN" env; then
+  (umask 077; { grep -v '^export CLAUDE_CODE_OAUTH_TOKEN=' env || true; printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$AGENTSDOCK_CLAUDE_TOKEN"; } > env.new && mv env.new env)
+  log "Installed the Claude token from the hub"
+  # A running server keeps its old environment: stop it so start.sh below starts one
+  # with the token, and wait, or start.sh would still find the old one healthy.
+  tmux kill-session -t "agentsdock-$PORT" 2>/dev/null || true
+  pkill -f "[a]gent_server.py serve.*--port $PORT$" 2>/dev/null || true
+  for _ in $(seq 1 30); do pgrep -f "[a]gent_server.py serve.*--port $PORT$" >/dev/null || break; sleep 1; done
+fi
 
 cat > start.sh <<'START'
 #!/usr/bin/env bash

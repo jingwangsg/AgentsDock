@@ -145,8 +145,14 @@ def prompt_section(state_dir: Path, session_id: str, *, directory_label: str | N
     per-chat path so a system prompt stays byte-identical across chats; the
     caller must export that variable to the agent process.
     """
-    if unavailable_reason():
-        return ""
+    reason = unavailable_reason()
+    if reason:
+        # Without this an agent asked for a Canvas quietly substitutes another format.
+        return (
+            "## Canvas\n"
+            f"Canvas is unavailable on this server: {reason} "
+            "If the user asks for a Canvas, tell them it is unavailable and why before offering another format."
+        )
     directory = ensure_session_dir(state_dir, session_id)
     if directory_label:
         directory = Path(directory_label)

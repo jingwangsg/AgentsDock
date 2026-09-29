@@ -1,5 +1,34 @@
 # Public development log
 
+## 2026-09-29 — Remote servers: one install per cluster, site tunnel options, shared Claude token
+
+- With `AGENTSDOCK_OCI_HOME` or `AGENTSDOCK_OSMO_HOME` set, a deploy that keeps
+  the default install directory now installs to
+  `<home>/.agentsdock-server-<cluster or workflow>`. Before, every cluster on
+  that shared home used one install, so chats from an earlier cluster
+  reappeared on the next one and two servers could write one state directory.
+- `AGENTSDOCK_OCI_TUNNEL_SSH_ARGS` adds ssh arguments to the tunnel of `oci@`
+  servers, for example a `-R` reverse forward to a git server that only the
+  hub's machine can reach. On every connect the tunnel adds the matching
+  `url.<forward>.insteadOf` rule to the host's global git config, so
+  repository URLs stay unchanged.
+- A long-lived Claude token (`claude setup-token`) in the hub's
+  `AGENTSDOCK_REMOTE_CLAUDE_CODE_OAUTH_TOKEN` is written into each remote
+  install's env on deploy and attach. It is sent on ssh stdin, not in argv or
+  logs; a new or changed token restarts that server. This avoids the logouts
+  that OAuth refresh rotation causes when several hosts share one home.
+- The bootstrap installs Node.js 22 (checksum-verified) into the server's home
+  when `node` is missing, so Canvas works on remote hosts. When Canvas is still
+  unavailable, the agent prompt states the reason and tells the agent to report
+  it before offering another format.
+- After a hub restart, a remote whose local port is taken moves to a port no
+  other registered remote uses; before, two remotes could end up on one port.
+- Exercised through the real hub: a Claude turn on a remote with the injected
+  token (the token appears in neither the job log nor the hub log), a GitLab
+  merge-request ref fetched over the reverse forward, and an existing remote
+  moved to its per-cluster install with its chats; Canvas reports available
+  there. Server remote-server and Canvas tests pass (47).
+
 ## 2026-09-29 — Cluster notations for remote servers
 
 - A remote server's SSH host may be written `oci@<sky-cluster>` (a SkyPilot

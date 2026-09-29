@@ -77,7 +77,8 @@ DEFAULT_INSTALL_DIR = "~/.agentsdock-server"
 SKY_CA_BUNDLE = Path.home() / ".sky" / "certs" / "requests-ca-bundle.pem"
 # A cluster container's own ~ does not outlive it. When the hub's environment names
 # the persistent cluster home that holds the Claude and Codex logins, a default
-# install goes there; mount points are site-specific, so they stay out of the source.
+# install goes there, one per cluster or workflow (see _deploy); mount points are
+# site-specific, so they stay out of the source.
 CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOME"}
 # No leading "-": workflow and task names are passed to the osmo CLI as arguments.
 OSMO_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
@@ -511,6 +512,8 @@ class Tunnel:
         self._task: asyncio.Task[None] | None = None
         self._revive_task: asyncio.Task[None] | None = None
         self._monitor_task: asyncio.Task[None] | None = None
+        self._git_task: asyncio.Task[None] | None = None
+        self._site_args: list[str] = []
         self._master_proc: asyncio.subprocess.Process | None = None
         self._proc: asyncio.subprocess.Process | None = None
         self._stopped = False
@@ -538,7 +541,12 @@ class Tunnel:
                         env["REQUESTS_CA_BUNDLE"] = self.server.ca_bundle_path
                 else:
                     args = tunnel_args(route.destination, self.server.local_port, self.server.remote_port)
-                    options = route.options
+                    # Site forwards the cluster's chats need, e.g. a git server that only this
+                    # Mac can reach, ride on this long-lived tunnel; never on the short deploy
+                    # connections, which would contend for the same remote port.
+                    self._site_args = (shlex.split(os.environ.get("AGENTSDOCK_OCI_TUNNEL_SSH_ARGS", ""))
+                                       if self.server.ssh_host.startswith("oci@") else [])
+                    options = [*route.options, *self._site_args]
                 self._route = route
                 proc = await asyncio.create_subprocess_exec(
                     ssh_binary(), *options, *args,
@@ -585,6 +593,8 @@ class Tunnel:
         if self._proc is proc and proc.returncode is None:
             self.status = {**self.status, "state": "connected", "last_error": None}
             self._backoff = MIN_BACKOFF
+            if self._site_args and self._route is not None and (self._git_task is None or self._git_task.done()):
+                self._git_task = asyncio.create_task(self._point_git_at_forwards(self._route), name=f"ssh-tunnel-git:{self.server.id}")
             if isinstance(self.server, SSHForward) and self.server.remote_port == 22 and self._monitor_task is None:
                 self._monitor_task = asyncio.create_task(self._monitor_forward(proc), name=f"ssh-forward-health:{self.server.id}")
 
@@ -652,6 +662,43 @@ class Tunnel:
                     master.kill()
                     await master.wait()
 
+    async def _point_git_at_forwards(self, route: SSHRoute) -> None:
+        """Send git on the host through each `-R port:host:hostport` this tunnel carries.
+
+        A forge whose ssh port only this Mac reaches is then reachable from the host's
+        chats with repository URLs unchanged. The rewrite goes into the global git config
+        of the server's HOME on every connect, so a new cluster, a new home or a reset
+        gitconfig needs no setup.
+        """
+        assert isinstance(self.server, RemoteServer)
+        commands = []
+        for flag, spec in zip(self._site_args, self._site_args[1:]):
+            forward = re.fullmatch(r"(\d+):([A-Za-z0-9.-]+):(\d+)", spec) if flag == "-R" else None
+            if forward:
+                port, host, host_port = forward.groups()
+                key = shlex.quote(f"url.ssh://git@127.0.0.1:{port}/.insteadOf")
+                value = shlex.quote(f"ssh://git@{host}:{host_port}/")
+                commands.append(f"{{ git config --global --get-all {key} | grep -qxF {value} || git config --global --add {key} {value}; }}")
+        if not commands:
+            return
+        # The install's env file sets the HOME whose git config the server's chats read.
+        script = f"set -a; . {validate_remote_dir(self.server.install_dir)}/env; set +a; " + " && ".join(commands)
+        proc = await asyncio.create_subprocess_exec(
+            ssh_binary(), *route.options, *SSH_BATCH_OPTIONS, route.destination, script,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, env=route.env,
+        )
+        try:
+            _, error = await asyncio.wait_for(proc.communicate(), 120)
+        except asyncio.TimeoutError:
+            error = b"timed out"
+        finally:
+            if proc.returncode is None:
+                with suppress(ProcessLookupError):
+                    proc.kill()
+                await proc.wait()
+        if proc.returncode:
+            logger.warning("git forward rewrite failed for %s: %s", self.server.id, last_line(error.decode("utf-8", "replace")))
+
     def _mark_reconnecting(self, reason: str) -> None:
         self.status = {"state": "reconnecting", "restarts": self.status["restarts"] + 1, "last_error": reason}
 
@@ -679,7 +726,7 @@ class Tunnel:
         if proc is not None and proc.returncode is None:
             with suppress(ProcessLookupError):
                 proc.terminate()
-        tasks = [task for task in (self._task, self._revive_task, self._monitor_task) if task is not None]
+        tasks = [task for task in (self._task, self._revive_task, self._monitor_task, self._git_task) if task is not None]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -884,14 +931,16 @@ class RemoteServerManager:
     async def start(self) -> None:
         for forward in load_forward_registry(self.forward_path):
             self.forwards[forward.id] = forward
+        # Load every server before moving any: a replacement port must avoid the
+        # ports of servers later in the registry too.
+        self.servers = {server.id: server for server in load_registry(self.path)}
         changed = False
-        for server in load_registry(self.path):
+        for server in self.servers.values():
             if self.manage_tunnels and not local_port_free(server.local_port):
                 # Another process took the port while we were down; keep the
                 # registry truthful before the tunnel binds.
                 server.local_port = find_free_local_port(self._reserved_ports())
                 changed = True
-            self.servers[server.id] = server
         if changed:
             save_registry(self.path, list(self.servers.values()))
         if self.manage_tunnels:
@@ -1033,7 +1082,11 @@ class RemoteServerManager:
                 requested_port = request.port if isinstance(request, RemoteDeployRequest) else 0
                 home = next((os.environ.get(name, "") for prefix, name in CLUSTER_HOME_ENV.items() if ssh_host.startswith(prefix)), "")
                 if home and install_dir == DEFAULT_INSTALL_DIR:
-                    install_dir = validate_remote_dir(f"{home.rstrip('/')}/.agentsdock-server")
+                    # The home is shared storage: one install per target keeps each cluster's
+                    # chats apart, and no two servers ever write one state directory. The
+                    # install stays a direct child of the home, which the probe then uses as HOME.
+                    target = ssh_host.split("@", 1)[1]
+                    install_dir = validate_remote_dir(f"{home.rstrip('/')}/.agentsdock-server-{target}")
 
             job.progress("connect", f"Probing {ssh_host}…")
             route = await ssh_route(ssh_host)
@@ -1058,8 +1111,12 @@ class RemoteServerManager:
             args = [*remote_shell_args(route.destination), install_dir, str(remote_port), probe["home"]]
             if existing is not None:
                 args.append("restart")
+            # A long-lived Claude token (`claude setup-token`) from the hub's environment rides at
+            # the head of the script on stdin: never in argv, ps output or the job log.
+            token = os.environ.get("AGENTSDOCK_REMOTE_CLAUDE_CODE_OAUTH_TOKEN", "")
+            prelude = f"AGENTSDOCK_CLAUDE_TOKEN={shlex.quote(token)}\n".encode() if token else b""
             result_lines = await self._run_ssh(
-                job, route, args, stdin=BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,
+                job, route, args, stdin=prelude + BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,
                 on_line=lambda line: job.progress("install", setup_log_message(line) or "") if setup_log_message(line) else None,
             )
             result = parse_setup_result(result_lines)

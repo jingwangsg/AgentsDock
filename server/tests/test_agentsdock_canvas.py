@@ -78,6 +78,12 @@ class CanvasTests(unittest.TestCase):
             second = canvas.build(path)
         assert second["javascript"] == first["javascript"]
 
+    def test_prompt_names_why_canvas_is_unavailable(self) -> None:
+        with patch.object(canvas, "node_binary", lambda: None):
+            section = canvas.prompt_section(self.tmp_path, "sess_1")
+        assert "Canvas is unavailable on this server" in section and "`node`" in section
+        assert "tell them it is unavailable and why" in section
+
     def test_build_does_not_cache_transient_compile_failures(self) -> None:
         path = self.tmp_path / "demo.canvas.tsx"
         path.write_text(VALID_SOURCE)
