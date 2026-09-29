@@ -3,7 +3,7 @@ import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useEffect, useMemo, useState } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { Archive, ArchiveRestore, ArrowLeftRight, Check, ChevronRight, Columns2, Copy, Folder, GitFork, Layers, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pin, RefreshCw, SquareTerminal, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowLeftRight, Check, ChevronRight, Columns2, Copy, Download, Folder, GitFork, Layers, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pin, RefreshCw, SquareTerminal, Trash2, X } from 'lucide-react'
 import type { Session } from '@shared/types'
 import { completedPrefixForkAvailable } from '@shared/session-fork'
 import { backendLabel, shortId } from '../lib/format'
@@ -168,6 +168,8 @@ export function ChatHeader({
           <DropdownMenu.Item className="menu-item" onSelect={() => void useAppStore.getState().updateSession(session.id, { pinned: !session.pinned })}><Pin size={14} fill={session.pinned ? 'currentColor' : 'none'} />{session.pinned ? t("ui.ChatHeader.ChatHeader.unpin_chat_1944e0e") : t("ui.ChatHeader.ChatHeader.pin_chat_a754adf")}</DropdownMenu.Item>
           <DropdownMenu.Separator className="menu-separator" />
           <DropdownMenu.Item className="menu-item" disabled={session.backend === 'opencode'} onSelect={() => void useAppStore.getState().importHistory(session.id)}><RefreshCw size={14} />{t("ui.ChatHeader.ChatHeader.refresh_provider_history_9d88960")}</DropdownMenu.Item>
+          <DropdownMenu.Item className="menu-item" onSelect={() => void useAppStore.getState().exportSession(session.id, 'markdown')}><Download size={14} />{t('sessionExport.markdown')}</DropdownMenu.Item>
+          <DropdownMenu.Item className="menu-item" onSelect={() => void useAppStore.getState().exportSession(session.id, 'jsonl')}><Download size={14} />{t('sessionExport.jsonl')}</DropdownMenu.Item>
           <DropdownMenu.Separator className="menu-separator" />
           <DropdownMenu.Item className="menu-item" onSelect={() => void useAppStore.getState().updateSession(session.id, { archived: !session.archived })}>{session.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}{session.archived ? t("ui.ChatHeader.ChatHeader.unarchive_chat_54953a7") : t("ui.ChatHeader.ChatHeader.archive_chat_9bd687c")}</DropdownMenu.Item>
           <DropdownMenu.Item className="menu-item danger" onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-delete', { detail: session }))}><Trash2 size={14} />{t("ui.ChatHeader.ChatHeader.delete_chat_93291d9")}</DropdownMenu.Item>

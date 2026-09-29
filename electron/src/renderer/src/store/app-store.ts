@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type {
   AgentCrossChatRoutesSnapshot, AgentFile, Backend, BootstrapPayload, ChatReference, ChatSyncStatus, CreateSessionInput, Event, ForwardedPort, Health, Job, NativeFileRef, QueuedTurn, TeamReference,
   ProfileBootstrapPayload, ProfileConnectionEvent, ProfileNotificationRoute, ProviderCommandSelection, PublicServerProfile, RuntimeCatalog, Session, SessionSnapshot,
-  ServerForceRestartConfirmation, TimelinePage, UpdateServerProfilePatch, WorkspaceProfileScope
+  ServerForceRestartConfirmation, SessionExportFormat, TimelinePage, UpdateServerProfilePatch, WorkspaceProfileScope
 } from '@shared/types'
 import { updateQueuedTurns as reduceQueuedTurns } from '@shared/queue'
 import type { TeamHubScope } from '@shared/team-hub'
@@ -272,6 +272,7 @@ interface AppState {
   /** Moves every session in `source` to `target`; resolves false (with `error` set for a duplicate name) when refused. */
   renameFolder(source: string, target: string): Promise<boolean>
   forkSession(sessionId: string): Promise<void>
+  exportSession(sessionId: string, format: SessionExportFormat): Promise<void>
   beginEditingTurn(sessionId: string, runId: string, prompt: string): void
   cancelEditingTurn(sessionId: string): void
   /** Truncates history to before `runId`'s turn; resolves false (with `error` set) when refused. */
@@ -2527,6 +2528,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) })
       return false
     }
+  },
+  async exportSession(sessionId, format) {
+    try {
+      await window.agentsDock.sessions.export(sessionId, format)
+    } catch (error) { set({ error: errorMessage(error) }) }
   },
   async importHistory(sessionId) {
     if (get().switchingProfileId) return
@@ -5173,6 +5179,10 @@ export function handleMenuCommand(command: string, get: () => AppState, set: (va
     // the chat switcher instead of stacking two modal surfaces.
     window.dispatchEvent(new Event('agentsdock:dismiss-workspace-file-picker'))
     get().setModal('search', true)
+  }
+  else if (command === 'rename-chat') {
+    const session = get().sessions.find(candidate => candidate.id === get().selectedSessionId)
+    if (session) window.dispatchEvent(new CustomEvent('agentsdock:rename-chat', { detail: session }))
   }
   else if (command === 'find-in-current-chat') {
     const activeSurfaceFind = new CustomEvent('agentsdock:find-active-surface', { cancelable: true })

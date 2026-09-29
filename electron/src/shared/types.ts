@@ -2530,6 +2530,7 @@ export interface LocalSessionCandidate {
   updated_at: string
   cwd: string | null
 }
+export type SessionExportFormat = 'markdown' | 'jsonl'
 export interface BulkImportSessionItem {
   provider_session_id: string
   backend: Backend

@@ -13,6 +13,7 @@ import type {
   BootstrapPayload,
   BulkImportSessionItem,
   BulkImportSessionResult,
+  SessionExportFormat,
   ClaudePendingInteraction,
   ClaudeMcpControlInput,
   ClaudeMcpSnapshot,
@@ -406,6 +407,8 @@ export interface AgentsDockAPI {
     importHistory(sessionId: string, force?: boolean): Promise<TimelinePage>
     listLocal(): Promise<LocalSessionCandidate[]>
     bulkImport(items: BulkImportSessionItem[]): Promise<BulkImportSessionResult[]>
+    /** Saves the chat's conversation through a native save dialog; null when cancelled. */
+    export(sessionId: string, format: SessionExportFormat): Promise<string | null>
   }
   providerCommands: {
     list(sessionId: string, refresh?: boolean): Promise<ProviderCommandsSnapshot>

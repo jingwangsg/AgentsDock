@@ -13,7 +13,7 @@ import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
 import { isImportedHistoryRecord, isImportedProviderControlMetadata, mergeProviderInterruptionEvent } from '../shared/provider-origin'
 import type { ChatShareMode, CreateChatShareInput } from '../shared/chat-shares'
 import type { WorkspaceGitAction, WorkspaceGitStatus, WorkspaceGitView } from '../shared/workspace-git'
-import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult } from '../shared/types'
+import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, SessionExportFormat } from '../shared/types'
 import { buildCanvasPage, canvasErrorPage, type CanvasHostTheme } from './canvas-protocol'
 import { parseMailHintPageAcknowledgment, TEAM_MAIL_HINTS_ENABLED, type MailHintPageAcknowledgment, type MailHintScope } from '../shared/team-mail-hints'
 import { TeamMailHintController } from './team-mail-hint-controller'
@@ -572,9 +572,11 @@ export class AppService {
           this.noteForegroundInteraction()
         }
       })
-      window.webContents.on('did-start-loading', () => {
-        this.rendererReadyWindows.delete(window)
-        this.invalidateRendererFileGrants(rendererId, false)
+      window.webContents.on('did-start-loading', () => this.invalidateRendererFileGrants(rendererId, false))
+      // Only a new main document replaces the page that completed the readiness
+      // handshake; iframe loads (canvases, previews) also fire did-start-loading.
+      window.webContents.on('did-start-navigation', details => {
+        if (details.isMainFrame && !details.isSameDocument) this.rendererReadyWindows.delete(window)
       })
       window.webContents.on('destroyed', () => this.invalidateRendererFileGrants(rendererId, true))
     }
@@ -4550,6 +4552,31 @@ export class AppService {
     return file
   }
 
+  async exportSession(sessionId: string, format: SessionExportFormat): Promise<string | null> {
+    const extension = SESSION_EXPORT_EXTENSIONS[format]
+    if (!extension) throw new Error(`Unsupported conversation export format: ${String(format)}`)
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const response = await scope.client.sessionExportRequest(sessionId, format)
+    this.assertCurrentScope(scope)
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => '')).trim().slice(0, 500)
+      throw new Error(`Conversation download failed (${response.status})${detail ? `: ${detail}` : ''}`)
+    }
+    // Read before the dialog: the suggested name comes from the server, and a
+    // slow user choice must not hold a streaming response open.
+    const body = Buffer.from(await response.arrayBuffer())
+    const filename = linkedFilename(response, `conversation.${extension}`)
+    const result = await dialog.showSaveDialog({
+      defaultPath: join(app.getPath('downloads'), filename),
+      filters: [{ name: format === 'markdown' ? 'Markdown' : 'JSON Lines', extensions: [extension] }]
+    })
+    if (result.canceled || !result.filePath) return null
+    await writeFile(result.filePath, body)
+    appLog('session-export', 'conversation saved', { sessionId, format, destination: result.filePath })
+    return result.filePath
+  }
+
   async downloadWorkspaceFile(sessionId: string, path: string): Promise<string | null> {
     const scope = this.captureScope()
     const filename = basename(path) || 'download'
@@ -5170,9 +5197,12 @@ export class AppService {
     ) {
       if (this.notificationRouteIsCurrent(route)) {
         window.webContents.send('native:notification', route)
+      } else {
+        appLog('notify', 'open dropped: chat or server identity changed', { sessionId: route.sessionId })
       }
       return
     }
+    appLog('notify', 'open queued until the page is ready', { sessionId: route.sessionId })
     const key = `${route.profileId}\0${route.serverIdentity ?? ''}\0${route.sessionId}`
     this.pendingNotificationRoutes = [
       ...this.pendingNotificationRoutes.filter(candidate => (
@@ -8147,6 +8177,8 @@ function timelinePageNextBefore(page: TimelinePage): number | null {
 function semanticAttemptSucceeded(page: TimelinePage): boolean {
   return page.semantic_paging ?? (page.semantic_item_count != null)
 }
+
+const SESSION_EXPORT_EXTENSIONS: Record<SessionExportFormat, string> = { markdown: 'md', jsonl: 'jsonl' }
 
 function linkedFilename(response: Response, target: string): string {
   const disposition = response.headers.get('content-disposition') ?? ''

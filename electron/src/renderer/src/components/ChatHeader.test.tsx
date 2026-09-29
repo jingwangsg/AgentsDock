@@ -130,6 +130,35 @@ describe('ChatHeader', () => {
     expect(screen.getByRole('menuitem', { name: 'Fork chat' })).toBeInTheDocument()
   })
 
+  it.each([['Download as Markdown', 'markdown'], ['Download event log (JSONL)', 'jsonl']] as const)(
+    'downloads the conversation from the chat menu: %s', async (label, format) => {
+      const exportSession = vi.fn().mockResolvedValue('/tmp/chat')
+      Object.defineProperty(window, 'agentsDock', {
+        configurable: true,
+        value: { ...window.agentsDock, sessions: { export: exportSession } } as unknown as AgentsDockAPI
+      })
+      useAppStore.setState({ sessions: [{ id: 'chat', title: 'Chat', backend: 'codex' }], selectedSessionId: 'chat' })
+      const user = userEvent.setup()
+      render(<ChatHeader />)
+      await user.click(screen.getByRole('button', { name: 'Chat actions' }))
+      await user.click(screen.getByRole('menuitem', { name: label }))
+      expect(exportSession).toHaveBeenCalledWith('chat', format)
+    }
+  )
+
+  it('shows a failed conversation download in the error surface', async () => {
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { ...window.agentsDock, sessions: { export: vi.fn().mockRejectedValue(new Error('Conversation download failed (404)')) } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({ sessions: [{ id: 'chat', title: 'Chat', backend: 'codex' }], selectedSessionId: 'chat', error: null })
+    const user = userEvent.setup()
+    render(<ChatHeader />)
+    await user.click(screen.getByRole('button', { name: 'Chat actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Download as Markdown' }))
+    await waitFor(() => expect(useAppStore.getState().error).toBe('Conversation download failed (404)'))
+  })
+
   it.each(['running', 'admitting'] as const)('forks a %s chat through its completed prefix on a capable server', async state => {
     const forkSession = vi.fn().mockResolvedValue(undefined)
     const session = { id: 'chat', title: 'Chat', backend: 'claude' as const }

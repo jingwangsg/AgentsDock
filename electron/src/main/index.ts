@@ -281,7 +281,10 @@ if (!app.requestSingleInstanceLock()) {
 
 function installSecurePeerDeepLinkWindow(window: BrowserWindow, router: SecurePeerDeepLinkRouter): void {
   router.rendererUnavailable()
-  window.webContents.on('did-start-loading', () => router.rendererUnavailable())
+  // Iframe loads also fire did-start-loading; only a new main document drops the handshake.
+  window.webContents.on('did-start-navigation', details => {
+    if (details.isMainFrame && !details.isSameDocument) router.rendererUnavailable()
+  })
   window.on('closed', () => router.rendererUnavailable())
 }
 
@@ -407,7 +410,8 @@ function createMenu(window: () => BrowserWindow | null): void {
   const send = (command: string): void => window()?.webContents.send('native:menu', { command })
   const devViewItems: MenuItemConstructorOptions[] = app.isPackaged
     ? []
-    : [{ role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' }, { type: 'separator' }]
+    // ⌘R renames the current chat, so the dev-only reload moves to ⌥⌘R.
+    : [{ role: 'reload', accelerator: 'CmdOrCtrl+Alt+R' }, { role: 'forceReload' }, { role: 'toggleDevTools' }, { type: 'separator' }]
   const viewMenu: MenuItemConstructorOptions = {
     label: t('native.view'),
     submenu: [
@@ -462,6 +466,7 @@ function createMenu(window: () => BrowserWindow | null): void {
     createEditMenu(send),
     { label: t('native.chat'), submenu: [
       { label: t('native.switchChat'), accelerator: shortcutAccelerator('findChat'), click: () => send('find-chat') },
+      { label: t('native.renameChat'), accelerator: shortcutAccelerator('renameChat'), click: () => send('rename-chat') },
       { label: t('native.find'), accelerator: shortcutAccelerator('findInChat'), click: () => send('find-in-current-chat') },
       { label: t('native.nextWorkspaceTab'), accelerator: shortcutAccelerator('nextWorkspaceTab'), click: () => send('next-workspace-tab') },
       { label: t('native.previousWorkspaceTab'), accelerator: shortcutAccelerator('previousWorkspaceTab'), click: () => send('previous-workspace-tab') },

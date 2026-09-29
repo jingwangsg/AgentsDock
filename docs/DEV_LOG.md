@@ -1,5 +1,24 @@
 # Public development log
 
+## 2026-09-29 — Download a chat, ⌘R rename, Codex segments, safer session index
+
+- Desktop and Android can download the current chat as Markdown (each message,
+  tool calls as one line, reasoning left out) or as its raw event log (JSONL):
+  desktop from the chat's ⋯ menu or the sidebar menu with a save dialog, Android
+  from Chat details through the share sheet. The server serves both from
+  `GET /api/sessions/{id}/export?format=markdown|jsonl`, for hub and remote chats.
+- ⌘R (Ctrl+R) opens Rename chat for the current chat. Development builds move
+  Reload to ⌥⌘R.
+- Codex 0.158+ splits one thread into several rollout files. Import now reads all
+  of them in order, and history sync continues across a new segment instead of
+  stopping; before, an import could come out empty or partial.
+- The desktop completion banner's Open works again after the window has loaded
+  any iframe (canvas, preview). An iframe load was treated as a page reload, so
+  Open only raised the window; secure-peer invite links had the same problem.
+- The server keeps a copy of its session index from each of the last ten starts.
+  Server tests now always run against a temporary state directory; before, some
+  tests could overwrite a local server's real session index.
+
 ## 2026-09-29 — Claude authenticates only with CLAUDE_CODE_OAUTH_TOKEN
 
 - AgentsServer no longer lets Claude fall back to `/login` credentials. Without

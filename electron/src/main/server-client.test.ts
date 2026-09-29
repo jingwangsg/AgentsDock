@@ -2194,6 +2194,22 @@ describe('AgentServerClient live stream', () => {
     expect(response).toBe(serverResponse)
   })
 
+  it('requests a conversation export through the authenticated session route of the profile', async () => {
+    const serverResponse = new Response('{}\n', { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } })
+    const fetchMock = vi.fn().mockResolvedValue(serverResponse)
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new AgentServerClient('http://example.test:7850/api/remote/r1', 'secret')
+
+    const response = await client.sessionExportRequest('chat one', 'jsonl')
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('http://example.test:7850/api/remote/r1/api/sessions/chat%20one/export?format=jsonl')
+    expect(init.method).toBe('GET')
+    expect(init.redirect).toBe('error')
+    expect(new Headers(init.headers).get('X-AgentsDock-Token')).toBe('secret')
+    expect(response).toBe(serverResponse)
+  })
+
   it('sends an inferred PNG content type with file uploads', async () => {
     class CapturedFormData {
       readonly parts = new Map<string, { value: unknown; filename?: string }>()

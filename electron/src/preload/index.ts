@@ -213,7 +213,8 @@ const api: AgentsDockAPI = {
     acknowledgeEmergency: (sessionId, alertId) => ipcRenderer.invoke('sessions:emergency:acknowledge', sessionId, alertId),
     importHistory: (sessionId, force) => ipcRenderer.invoke('sessions:import-history', sessionId, force),
     listLocal: () => ipcRenderer.invoke('sessions:list-local'),
-    bulkImport: items => ipcRenderer.invoke('sessions:bulk-import', items)
+    bulkImport: items => ipcRenderer.invoke('sessions:bulk-import', items),
+    export: (sessionId, format) => ipcRenderer.invoke('sessions:export', sessionId, format)
   },
   providerCommands: {
     list: (sessionId, refresh) => ipcRenderer.invoke('provider-commands:list', sessionId, refresh)

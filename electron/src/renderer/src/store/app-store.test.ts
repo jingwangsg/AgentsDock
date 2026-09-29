@@ -726,6 +726,20 @@ describe('server shortcut navigation', () => {
     expect(useAppStore.getState().modals.search).toBe(true)
   })
 
+  it('opens Rename Chat for the selected chat on Cmd+R and does nothing without one', () => {
+    const renameChat = vi.fn()
+    window.addEventListener('agentsdock:rename-chat', renameChat)
+    const session = { id: 'chat-a', title: 'Draft', backend: 'claude' as const }
+    useAppStore.setState({ sessions: [session], selectedSessionId: 'chat-a' })
+    handleMenuCommand('rename-chat', useAppStore.getState, value => useAppStore.setState(value))
+    useAppStore.setState({ selectedSessionId: null })
+    handleMenuCommand('rename-chat', useAppStore.getState, value => useAppStore.setState(value))
+
+    window.removeEventListener('agentsdock:rename-chat', renameChat)
+    expect(renameChat).toHaveBeenCalledOnce()
+    expect((renameChat.mock.calls[0][0] as CustomEvent).detail).toEqual(session)
+  })
+
   it('keeps an open chat search open and asks it to restore focus', () => {
     const focusChatSwitcher = vi.fn()
     window.addEventListener('agentsdock:focus-chat-switcher', focusChatSwitcher)

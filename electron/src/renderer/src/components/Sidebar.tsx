@@ -8,7 +8,7 @@ import {
   type CollisionDetection, type DragEndEvent, type DragOverEvent, type DragStartEvent
 } from '@dnd-kit/core'
 import {
-  Archive, ArchiveRestore, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Folder, FolderPlus, GripVertical, Inbox, LoaderCircle, MoreHorizontal,
+  Archive, ArchiveRestore, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Folder, FolderPlus, GripVertical, Inbox, LoaderCircle, MoreHorizontal,
   Columns2, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, Trash2, Undo2, UsersRound
 } from 'lucide-react'
 import type { Session } from '@shared/types'
@@ -454,6 +454,8 @@ function SessionContextMenu({ session, unread, folders }: { session: Session; un
         <MenuItem icon={Share2} label={t('chatShare.menu')} onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:share-chat', {
           detail: { session, scope: { profileId: shareProfileId, profileGeneration: shareGeneration, serverIdentity: shareIdentity } }
         }))} />
+        <MenuItem icon={Download} label={t('sessionExport.markdown')} onSelect={() => void useAppStore.getState().exportSession(session.id, 'markdown')} />
+        <MenuItem icon={Download} label={t('sessionExport.jsonl')} onSelect={() => void useAppStore.getState().exportSession(session.id, 'jsonl')} />
         <MenuItem icon={session.pinned ? PinOff : Pin} label={session.pinned ? t("ui.Sidebar.SessionContextMenu.unpin_chat_e260efa") : t("ui.Sidebar.SessionContextMenu.pin_chat_633b23e")} onSelect={() => void update({ pinned: !session.pinned })} />
         {!session.archived && <ContextMenu.Sub><ContextMenu.SubTrigger className="menu-item"><Folder size={14} />{t("ui.Sidebar.SessionContextMenu.move_to_folder_91d631e")}<ChevronRight size={13} className="submenu-arrow" /></ContextMenu.SubTrigger><ContextMenu.Portal><ContextMenu.SubContent className="menu-content" sideOffset={3}>{folders.map(folder => <ContextMenu.Item className="menu-item" key={folder} onSelect={() => void update(sidebarFolderAssignmentPatch(folder))}>{folder}</ContextMenu.Item>)}</ContextMenu.SubContent></ContextMenu.Portal></ContextMenu.Sub>}
         <MenuItem icon={session.archived ? ArchiveRestore : Archive} label={session.archived ? t("ui.Sidebar.SessionContextMenu.unarchive_chat_b4d36bb") : t("ui.Sidebar.SessionContextMenu.archive_chat_180f1c3")} onSelect={() => void update({ archived: !session.archived })} />

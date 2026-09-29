@@ -589,6 +589,21 @@ describe('Import Chat IPC registration', () => {
   })
 })
 
+describe('conversation export IPC registration', () => {
+  beforeEach(() => harness.handlers.clear())
+
+  it('passes the chat and format to AppService and returns the saved path', async () => {
+    const exportSession = vi.fn().mockResolvedValue('/tmp/chat.md')
+    const service = new Proxy({ exportSession }, {
+      get: (target, key) => key in target ? target[key as keyof typeof target] : vi.fn()
+    }) as unknown as AppService
+    registerIpc(service, {} as AppUpdateManager)
+
+    await expect(harness.handlers.get('sessions:export')?.(trustedEvent, 'chat', 'markdown')).resolves.toBe('/tmp/chat.md')
+    expect(exportSession).toHaveBeenCalledWith('chat', 'markdown')
+  })
+})
+
 describe('managed server restart IPC registration', () => {
   beforeEach(() => harness.handlers.clear())
 

@@ -4,6 +4,7 @@ export const APP_SHORTCUTS = {
   attachFiles: { label: 'Attach files', accelerator: 'CmdOrCtrl+Shift+O', mac: '⇧⌘O', other: 'Ctrl+Shift+O' },
   settings: { label: 'Settings', accelerator: 'CmdOrCtrl+,', mac: '⌘,', other: 'Ctrl+,' },
   findChat: { label: 'Switch chat', accelerator: 'CmdOrCtrl+P', mac: '⌘P', other: 'Ctrl+P' },
+  renameChat: { label: 'Rename chat', accelerator: 'CmdOrCtrl+R', mac: '⌘R', other: 'Ctrl+R' },
   findInChat: { label: 'Find in chat', accelerator: 'CmdOrCtrl+F', mac: '⌘F', other: 'Ctrl+F' },
   nextWorkspaceTab: { label: 'Next workspace tab', accelerator: 'Control+Tab', mac: '⌃⇥', other: 'Ctrl+Tab' },
   previousWorkspaceTab: { label: 'Previous workspace tab', accelerator: 'Control+Shift+Tab', mac: '⌃⇧⇥', other: 'Ctrl+Shift+Tab' },
@@ -39,7 +40,7 @@ const MAC_ONLY_SHORTCUTS = new Set<AppShortcutId>([
 export const APP_SHORTCUT_GROUPS = [
   {
     id: 'general',
-    shortcuts: ['newChat', 'openWorkspaceFile', 'attachFiles', 'settings', 'findChat', 'findInChat', 'closeSurface']
+    shortcuts: ['newChat', 'openWorkspaceFile', 'attachFiles', 'settings', 'findChat', 'renameChat', 'findInChat', 'closeSurface']
   },
   {
     id: 'navigation',

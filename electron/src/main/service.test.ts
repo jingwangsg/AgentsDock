@@ -3364,6 +3364,7 @@ interface FakeClientOptions {
     callerSignal?: AbortSignal
   ) => Promise<Response>
   workspaceDownloadRequest?: (sessionId: string, path: string) => Promise<Response>
+  sessionExportRequest?: (sessionId: string, format: string) => Promise<Response>
   stream?: AgentServerClient['stream']
   emergencyStream?: (
     expectedServerIdentity: string,
@@ -3548,6 +3549,7 @@ function fakeClient(options: FakeClientOptions = {}) {
     fileRequest: vi.fn(options.fileRequest ?? (async () => new Response('file'))),
     workspacePreviewRequest: vi.fn(options.workspacePreviewRequest ?? (async () => new Response('workspace preview'))),
     workspaceDownloadRequest: vi.fn(options.workspaceDownloadRequest ?? (async () => new Response('workspace download'))),
+    sessionExportRequest: vi.fn(options.sessionExportRequest ?? (async () => new Response('# Chat\n'))),
     upload: vi.fn(options.upload ?? (async (_sessionId, path) => ({
       id: `uploaded-${path}`,
       filename: path.split('/').at(-1) ?? path,
@@ -6795,6 +6797,48 @@ describe('workspace file scope safety', () => {
     expect(b.workspacePreviewRequest).not.toHaveBeenCalled()
   })
 
+  it('saves a conversation export under the server-suggested UTF-8 name in Downloads', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-session-export-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    const destination = join(directory, 'saved.md')
+    electronHarness.showSaveDialog.mockResolvedValue({ canceled: false, filePath: destination })
+    const a = fakeClient({
+      sessionExportRequest: async () => new Response('# 查找附近理疗松解诊所\n', {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/markdown; charset=utf-8',
+          'Content-Disposition': `attachment; filename="conversation.md"; filename*=UTF-8''${encodeURIComponent('查找附近理疗松解诊所.md')}`
+        }
+      })
+    })
+    const { service } = createProfileService({
+      'http://a.test:7850': [a],
+      'http://b.test:7850': [fakeClient()]
+    })
+
+    await expect(service.exportSession('chat', 'markdown')).resolves.toBe(destination)
+    expect(a.sessionExportRequest).toHaveBeenCalledWith('chat', 'markdown')
+    expect(electronHarness.showSaveDialog).toHaveBeenCalledWith({
+      defaultPath: join('/tmp', '查找附近理疗松解诊所.md'),
+      filters: [{ name: 'Markdown', extensions: ['md'] }]
+    })
+    expect(readFileSync(destination, 'utf8')).toBe('# 查找附近理疗松解诊所\n')
+  })
+
+  it('reports a failed conversation export without opening the save dialog', async () => {
+    electronHarness.showSaveDialog.mockClear()
+    const a = fakeClient({
+      sessionExportRequest: async () => new Response(JSON.stringify({ detail: 'session not found' }), { status: 404 })
+    })
+    const { service } = createProfileService({
+      'http://a.test:7850': [a],
+      'http://b.test:7850': [fakeClient()]
+    })
+
+    await expect(service.exportSession('gone', 'jsonl')).rejects.toThrow('Conversation download failed (404)')
+    expect(electronHarness.showSaveDialog).not.toHaveBeenCalled()
+  })
+
   it('downloads a complete binary workspace file through the native save dialog', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'agentsdock-workspace-download-'))
     cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
@@ -9734,6 +9778,44 @@ describe('server profile lifecycle', () => {
 
     service.stop()
     expect(popups.dispose).toHaveBeenCalledOnce()
+  })
+
+  it('keeps banner Open working after an iframe loads and waits again after a page reload', async () => {
+    electronHarness.notificationSupported = true
+    const shown: NotificationPopupRequest[] = []
+    const popups = { show: (request: NotificationPopupRequest) => { shown.push(request) }, dismissAll: vi.fn(), dispose: vi.fn() }
+    const { settings } = profileSettings()
+    settings.setProfileServerIdentity('a', 'server-a')
+    const cache = new LocalCache(':memory:')
+    const service = new AppService({ settings, cache, clientFactory: () => fakeClient() as unknown as AgentServerClient, notificationPopups: popups })
+    cleanup.push(() => { service.stop(); cache.close() })
+    ;(service as unknown as { sessions: Session[] }).sessions = [{ id: 'chat', title: 'Open chat', backend: 'codex' }]
+    const send = vi.fn()
+    const handlers = new Map<string, (...args: unknown[]) => void>()
+    const window = {
+      isDestroyed: () => false, isMinimized: () => false, show: vi.fn(), focus: vi.fn(), on: vi.fn(),
+      webContents: {
+        id: 7, send, isDestroyed: () => false, isLoadingMainFrame: () => false,
+        on: (event: string, listener: (...args: unknown[]) => void) => { handlers.set(event, listener) }
+      }
+    }
+    service.addWindow(window as never)
+    service.rendererReadyForNotificationRoutes(window as never)
+    await service.notify({ title: 'Open chat', body: 'Response finished', profileId: 'a', serverIdentity: 'server-a', sessionId: 'chat' })
+    const route = { profileId: 'a', serverIdentity: 'server-a', sessionId: 'chat' }
+
+    // A canvas or preview iframe loading must not undo the page's readiness handshake.
+    handlers.get('did-start-loading')?.()
+    handlers.get('did-start-navigation')?.({ isMainFrame: false, isSameDocument: false })
+    shown[0].onOpen()
+    expect(send).toHaveBeenCalledExactlyOnceWith('native:notification', route)
+
+    // A new main document has to handshake again before a route is delivered.
+    handlers.get('did-start-navigation')?.({ isMainFrame: true, isSameDocument: false })
+    shown[0].onOpen()
+    expect(send).toHaveBeenCalledOnce()
+    service.rendererReadyForNotificationRoutes(window as never)
+    expect(send).toHaveBeenCalledTimes(2)
   })
 })
 

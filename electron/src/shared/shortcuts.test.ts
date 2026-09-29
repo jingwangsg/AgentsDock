@@ -10,6 +10,8 @@ describe('app shortcut catalog', () => {
     expect(shortcutDisplay('openWorkspaceFile', 'mac')).toBe('⌘O')
     expect(APP_SHORTCUTS.findChat.label).toBe('Switch chat')
     expect(shortcutAccelerator('findChat')).toBe('CmdOrCtrl+P')
+    expect(shortcutAccelerator('renameChat')).toBe('CmdOrCtrl+R')
+    expect(shortcutDisplay('renameChat', 'mac')).toBe('⌘R')
     expect(shortcutAccelerator('attachFiles')).toBe('CmdOrCtrl+Shift+O')
     expect(shortcutDisplay('attachFiles', 'mac')).toBe('⇧⌘O')
     expect(shortcutAccelerator('nextWorkspaceTab')).toBe('Control+Tab')

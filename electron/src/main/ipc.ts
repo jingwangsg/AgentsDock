@@ -271,6 +271,7 @@ export function registerIpc(
   handle('sessions:emergency:acknowledge', (sessionId, alertId) => service.acknowledgeEmergency(sessionId, alertId))
   handle('sessions:import-history', (sessionId, force) => service.importHistory(sessionId, force))
   handle('sessions:list-local', () => service.listLocalSessions())
+  handle('sessions:export', (sessionId, format) => service.exportSession(sessionId, format))
   handle('sessions:bulk-import', items => service.bulkImportSessions(
     parseBulkImportSessionItems(items, LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT)
   ))

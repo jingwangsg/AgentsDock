@@ -1,7 +1,7 @@
 import { createReadStream, openAsBlob } from 'node:fs'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../shared/provider-usage'
 import { parseCodexAuthStatus } from '../shared/codex-auth'
-import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult } from '../shared/types'
+import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, SessionExportFormat } from '../shared/types'
 import { parseCodexProviderConfiguration, parseCodexProviderModels, parseCodexProviderTestResult, validateCodexProviderInput, validateCodexProviderModelTestInput, validateCodexProviderSelection } from '../shared/codex-provider'
 import { randomUUID } from 'node:crypto'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
@@ -139,6 +139,7 @@ import { parseTeamActivityHintPacket, TEAM_ACTIVITY_HINTS_PROTOCOL, emptyBulleti
   type BulletinChangeCursor, type TeamActivityHintPacket } from '../shared/team-bulletin-hints'
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+const SESSION_EXPORT_TIMEOUT_MS = 120_000
 // Snapshot scans have a server-side 30s deadline. Leave response/transport
 // headroom without extending unrelated requests or retrying a creation.
 const CHAT_SHARE_SNAPSHOT_TIMEOUT_MS = 40_000
@@ -1865,6 +1866,22 @@ export class AgentServerClient {
       headers,
       redirect: 'error',
       signal: combineAbortSignals(configuration.abortController.signal, callerSignal)
+    })
+  }
+
+  sessionExportRequest(sessionId: string, format: SessionExportFormat): Promise<Response> {
+    const configuration = this.configuration
+    const headers = new Headers()
+    this.applyAuth(headers, configuration)
+    return fetch(configurationURL(
+      configuration,
+      `/api/sessions/${encodeURIComponent(sessionId)}/export?${new URLSearchParams({ format })}`
+    ), {
+      method: 'GET',
+      headers,
+      redirect: 'error',
+      // A long chat's event log is several MB; the default request timeout also bounds reading it.
+      signal: combineAbortSignals(configuration.abortController.signal, AbortSignal.timeout(SESSION_EXPORT_TIMEOUT_MS))
     })
   }
 
