@@ -7,7 +7,10 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:
 log() { printf '[AgentsDock setup] %s\n' "$1"; }
 mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/state"
 # The server refuses a state directory that group/others can write (a host umask
-# of 002 makes mkdir produce 775), so pin the two directories it checks.
+# of 002 makes mkdir produce 775), so pin the two directories it checks. It also
+# writes its config env (a Claude token saved in the app) only into a directory
+# that group/others cannot write.
+chmod go-w "$INSTALL_DIR"
 chmod 700 "$INSTALL_DIR/state"
 [ -d "$INSTALL_DIR/state/admin" ] && chmod 700 "$INSTALL_DIR/state/admin"
 # Chat import verifies other instances under ~/.config and refuses group/other-writable
@@ -103,8 +106,12 @@ if [ ! -f env ]; then
 fi
 # Keep the requested port even for an existing install that was moved.
 sed -i.bak "s|^export AGENTSDOCK_AGENT_PORT=.*|export AGENTSDOCK_AGENT_PORT=$PORT|" env && rm -f env.bak
-# A Claude token the hub hands over (RemoteServerManager._deploy) replaces the host's
-# own login, which OAuth refresh rotation breaks when several hosts share one home.
+# The server saves settings such as a Claude token pasted in the app into its config env
+# file; point that at this env so start.sh reads them back.
+if ! grep -qxF "export AGENTS_SERVER_CONFIG_DIR=$INSTALL_DIR" env; then
+  (umask 077; { grep -v '^export AGENTS_SERVER_CONFIG_DIR=' env || true; printf 'export AGENTS_SERVER_CONFIG_DIR=%s\n' "$INSTALL_DIR"; } > env.new && mv env.new env)
+fi
+# The hub's Claude token (RemoteServerManager._deploy); the server uses no other Claude auth.
 if [ -n "${AGENTSDOCK_CLAUDE_TOKEN:-}" ] && ! grep -qxF "export CLAUDE_CODE_OAUTH_TOKEN=$AGENTSDOCK_CLAUDE_TOKEN" env; then
   (umask 077; { grep -v '^export CLAUDE_CODE_OAUTH_TOKEN=' env || true; printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$AGENTSDOCK_CLAUDE_TOKEN"; } > env.new && mv env.new env)
   log "Installed the Claude token from the hub"

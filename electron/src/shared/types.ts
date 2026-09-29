@@ -529,6 +529,8 @@ export interface RuntimeDiagnostic {
   checked_at?: string | null
   last_error?: string | null
   last_error_at?: string | null
+  /** Claude only; undefined from servers that predate token-only Claude auth. */
+  oauth_token_configured?: boolean
 }
 export interface RuntimeBackendCatalog {
   /** Safe metadata only; credentials stay on the server. */

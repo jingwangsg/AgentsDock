@@ -274,6 +274,7 @@ const api: AgentsDockAPI = {
   },
   claude: {
     runtime: sessionId => ipcRenderer.invoke('claude:runtime', sessionId),
+    setToken: (scope, token) => ipcRenderer.invoke('claude:token:set', scope, token),
     setGoal: (sessionId, condition) => ipcRenderer.invoke('claude:goal:set', sessionId, condition),
     clearGoal: sessionId => ipcRenderer.invoke('claude:goal:clear', sessionId),
     refreshContextUsage: sessionId => ipcRenderer.invoke('claude:context-usage:refresh', sessionId),

@@ -454,6 +454,8 @@ export interface RuntimeDiagnostic {
   checked_at?: string | null
   last_error?: string | null
   last_error_at?: string | null
+  // Claude only; older servers omit it.
+  oauth_token_configured?: boolean
 }
 export interface RuntimeBackendCatalog {
   models: RuntimeOption[]

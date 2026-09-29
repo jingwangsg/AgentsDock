@@ -1,5 +1,21 @@
 # Public development log
 
+## 2026-09-29 — Claude authenticates only with CLAUDE_CODE_OAUTH_TOKEN
+
+- AgentsServer no longer lets Claude fall back to `/login` credentials. Without
+  `CLAUDE_CODE_OAUTH_TOKEN` it sends no Claude request (chats, model
+  discovery, handoff digests) and reports Claude as not authenticated, with
+  `oauth_token_configured: false` in the runtime diagnostic.
+- The desktop and Android apps show a token field above the message box of a
+  Claude chat when the server has no token or the chat's last run failed
+  authentication. Saving calls `PUT /api/admin/claude/token`, which writes the
+  token to the server's config env file and applies it to the next Claude
+  process without a restart; a chat's next turn replaces an idle Claude
+  process that still holds the old token.
+- Remote installs point `AGENTS_SERVER_CONFIG_DIR` at their own `env`, so a
+  token saved from the app on a remote survives restarts; the bootstrap removes
+  group/other write access from the install directory, which the save requires.
+
 ## 2026-09-29 — One Claude token for the hub and its remotes
 
 - The hub now reads the `claude setup-token` value from `CLAUDE_CODE_OAUTH_TOKEN`

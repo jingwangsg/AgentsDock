@@ -471,6 +471,7 @@ export interface AgentsDockAPI {
   }
   claude: {
     runtime(sessionId: string): Promise<ClaudeRuntimeSnapshot>
+    setToken(scope: Pick<WorkspaceProfileScope, 'profileId' | 'profileGeneration'>, token: string): Promise<void>
     setGoal(sessionId: string, condition: string): Promise<ClaudeRuntimeSnapshot>
     clearGoal(sessionId: string): Promise<ClaudeRuntimeSnapshot>
     refreshContextUsage(sessionId: string): Promise<ClaudeRuntimeSnapshot>

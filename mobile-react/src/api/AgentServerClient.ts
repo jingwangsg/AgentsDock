@@ -270,6 +270,11 @@ export class AgentServerClient {
       method: 'PUT', body: JSON.stringify({ enabled }),
     }, 30_000, false, 'native-control')
   }
+  setClaudeToken(token: string): Promise<{ oauth_token_configured: boolean }> {
+    return this.request('/api/admin/claude/token', {
+      method: 'PUT', body: JSON.stringify({ token }),
+    }, 30_000, false, 'native-control')
+  }
   serverUpdateStatus(): Promise<ServerUpdateStatus> { return this.get('/api/admin/update') }
   // Hub for SSH-only remote servers (see server/remote_servers.py): the
   // active server can deploy and proxy other AgentsServer installs it

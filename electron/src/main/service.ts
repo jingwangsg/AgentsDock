@@ -2324,6 +2324,13 @@ export class AppService {
     return result
   }
 
+  async setClaudeToken(expected: Pick<WorkspaceProfileScope, 'profileId' | 'profileGeneration'>, token: string): Promise<void> {
+    const scope = this.requireProfileScope(expected?.profileId, expected?.profileGeneration)
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    await scope.client.setClaudeToken(token)
+  }
+
   async codexProvider(expected: CodexServerSettingsScope): Promise<CodexProviderConfiguration> {
     const scope = this.requireProfileScope(expected?.profileId, expected?.profileGeneration)
     await this.ensureValidatedScope(scope)

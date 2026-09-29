@@ -21,6 +21,11 @@ def completed(args, stdout="", returncode=0):
     return subprocess.CompletedProcess(args, returncode, stdout, "")
 
 
+def setUpModule():
+    # Claude runs and probes require the token (require_claude_oauth_token).
+    unittest.enterModuleContext(patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "test-token"}))
+
+
 class RuntimeProbeTimeoutTests(unittest.TestCase):
     def setUp(self):
         with agent_server.RUNTIME_DIAGNOSTICS_LOCK:

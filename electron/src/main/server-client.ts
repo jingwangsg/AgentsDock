@@ -811,6 +811,16 @@ export class AgentServerClient {
       throw new Error('CODEX_AUTH_CONNECTION')
     }
   }
+  async setClaudeToken(token: string): Promise<void> {
+    try {
+      await this.privilegedNativeRequest('/api/admin/claude/token', {
+        method: 'PUT', body: JSON.stringify({ token })
+      }, 30_000, 200, 8192)
+    } catch (error) {
+      // load-bearing: never forward the server's error body; it may echo the submitted token.
+      throw new Error(error instanceof ServerError && [400, 413].includes(error.status) ? 'CLAUDE_TOKEN_INVALID' : 'CLAUDE_TOKEN_FAILED')
+    }
+  }
   codexServerSubagents(): Promise<CodexSubagentsConfiguration> {
     return this.privilegedNativeRequest('/api/admin/codex/subagents')
   }
@@ -3242,6 +3252,7 @@ function isPrivilegedNativeControlTarget(
       && (!target.searchParams.has('refresh') || target.searchParams.get('refresh') === 'true')
   }
   if (path === '/api/admin/codex/auth') return !target.search && method === 'GET'
+  if (path === '/api/admin/claude/token') return !target.search && method === 'PUT'
   if (path === '/api/admin/codex/provider') return !target.search && ['GET', 'PUT', 'DELETE'].includes(method)
   if (path === '/api/admin/codex/provider/test') return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider/models') return method === 'GET' && (!target.search

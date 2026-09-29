@@ -36834,6 +36834,7 @@ def parse_claude_digest_output(stdout: str) -> str:
 
 
 async def run_claude_handoff_summarizer(prompt: str, *, model: str | None, effort: str | None) -> str:
+    require_claude_oauth_token()
     cmd = [
         CLAUDE_BIN, "-p",
         "--output-format", "stream-json",
@@ -58698,8 +58699,8 @@ def runtime_action(
     if status == "unauthenticated":
         if backend == BACKEND_CLAUDE:
             return (
-                "Run `claude auth login` as the server user, then retry your "
-                "message. Claude checks sign-in during the actual request."
+                "Run `claude setup-token` and paste the token into the Claude "
+                "notice above the message box, then retry your message."
             )
         elif backend == BACKEND_OPENCODE:
             command = "opencode auth login"
@@ -58841,6 +58842,23 @@ def cursor_api_key_configured() -> bool:
     """Return whether the Cursor subprocess environment contains an API key."""
 
     return bool(str(runner_env().get("CURSOR_API_KEY") or "").strip())
+
+
+CLAUDE_OAUTH_TOKEN_MISSING_MESSAGE = (
+    "Claude is not authenticated on this server: CLAUDE_CODE_OAUTH_TOKEN is not set."
+)
+
+
+def claude_oauth_token_configured() -> bool:
+    return bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip())
+
+
+def require_claude_oauth_token() -> None:
+    # load-bearing: without the token the Claude CLI falls back to its /login
+    # credentials, whose single-use refresh token logs out every other process
+    # and host sharing them. The token is the only Claude auth this server uses.
+    if not claude_oauth_token_configured():
+        raise ClaudeSDKUnavailable(CLAUDE_OAUTH_TOKEN_MISSING_MESSAGE)
 
 
 def cursor_auth_probe_state(
@@ -59075,6 +59093,15 @@ def probe_runtime(backend: str) -> dict[str, Any]:
         # and exit before the replacement credential is saved. Never invoke it
         # for startup, catalog refresh, manual recheck, or turn admission.
         # Actual Claude runs own authentication and update the cached result.
+        if not claude_oauth_token_configured():
+            return runtime_diagnostic_payload(
+                backend,
+                "unauthenticated",
+                installed=True,
+                authenticated=False,
+                version=version,
+                message=CLAUDE_OAUTH_TOKEN_MISSING_MESSAGE,
+            )
         return runtime_diagnostic_payload(
             backend,
             "unknown",
@@ -59200,11 +59227,15 @@ def refresh_runtime_diagnostics(*, force: bool = False) -> dict[str, dict[str, A
 
 
 def public_runtime_diagnostic(diagnostic: dict[str, Any]) -> dict[str, Any]:
-    return {
+    public = {
         key: value
         for key, value in diagnostic.items()
         if key != "checked_at_epoch" and not str(key).startswith("_")
     }
+    if diagnostic.get("backend") == BACKEND_CLAUDE:
+        # Read live: the token can be saved while a cached diagnostic is fresh.
+        public["oauth_token_configured"] = claude_oauth_token_configured()
+    return public
 
 
 def runtime_diagnostics_snapshot() -> dict[str, dict[str, Any]]:
@@ -61038,8 +61069,9 @@ def build_claude_cmd(
 
 
 def claude_sdk_cli_path(env: dict[str, str]) -> str:
-    """Resolve the user's existing Claude CLI so SDK mode keeps its auth."""
+    """Resolve the Claude CLI for SDK mode; every SDK spawn passes through here."""
 
+    require_claude_oauth_token()
     configured = str(CLAUDE_BIN or "claude").strip() or "claude"
     expanded = str(Path(configured).expanduser())
     if os.path.sep in expanded:
@@ -61080,6 +61112,8 @@ def claude_sdk_configuration_key(
         "allowed_tools": [CLAUDE_PROVIDER_MCP_TOOL_NAME],
         "thinking": {"type": "adaptive", "display": "summarized"},
         "agentsdock_provider_tool": 1,
+        # A replaced token must reach the next turn, so it retires the idle process holding the old one.
+        "oauth_token_sha256": hashlib.sha256(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").encode()).hexdigest(),
     }
     subagent_limit = sess.get("subagent_limit")
     if type(subagent_limit) is int and subagent_limit > 0:
@@ -63873,6 +63907,7 @@ async def run_claude_print(
         "cwd": cwd,
     })
     try:
+        require_claude_oauth_token()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -74791,6 +74826,7 @@ SERVER_RESTART_BLOCKER_SNAPSHOT_VERSION = 2
 SERVER_RESTART_COUNT_LIMIT = 1_000_000
 PRIVILEGED_NATIVE_UPDATE_MAX_BODY_BYTES = 4_096
 CODEX_GOALS_ADMIN_MAX_BODY_BYTES = 256
+CLAUDE_TOKEN_ADMIN_MAX_BODY_BYTES = 8_192
 TEAM_HUB_BOOTSTRAP_MAX_BODY_BYTES = 4_096
 TEAM_HUB_HOST_CONTROL_MAX_BODY_BYTES = 2_048
 SECURE_PEER_MAX_BODY_BYTES = 65_536
@@ -79607,6 +79643,7 @@ async def require_agent_token(request: Request, call_next):
         "/api/admin/codex/provider", "/api/admin/codex/provider/test",
         "/api/admin/codex/provider/models",
     }
+    claude_token_admin_route = request.url.path == "/api/admin/claude/token"
     public_chat_shares_admin_route = (
         request.url.path == "/api/admin/chat-shares"
         or request.url.path.startswith("/api/admin/chat-shares/")
@@ -79645,6 +79682,7 @@ async def require_agent_token(request: Request, call_next):
         or server_update_admin_route
         or team_hub_host_admin_route
         or codex_goals_admin_route
+        or claude_token_admin_route
         or public_chat_shares_admin_route
         or interactive_chat_guest_route
         or codex_provider_mcp_route
@@ -79734,6 +79772,7 @@ async def require_agent_token(request: Request, call_next):
         server_update_admin_route
         or team_hub_host_admin_route
         or codex_goals_admin_route
+        or claude_token_admin_route
         or public_chat_shares_admin_route
     ):
         if privileged_native_browser_request_forbidden(request):
@@ -79815,6 +79854,21 @@ async def require_agent_token(request: Request, call_next):
                 return JSONResponse({"detail": detail}, status_code=status_code)
             body_error = await prebuffer_bounded_request_body(
                 request, max_body_bytes=codex_provider.MAX_BODY_BYTES, declared_size=declared_size,
+            )
+            if body_error is not None:
+                status_code, detail = body_error
+                return JSONResponse({"detail": detail}, status_code=status_code)
+        elif claude_token_admin_route and request.method.upper() == "PUT":
+            declared_size, transport_error = privileged_native_json_transport(
+                request, max_body_bytes=CLAUDE_TOKEN_ADMIN_MAX_BODY_BYTES,
+                label="Claude token", require_content_length=True,
+            )
+            if transport_error is not None:
+                status_code, detail = transport_error
+                return JSONResponse({"detail": detail}, status_code=status_code)
+            body_error = await prebuffer_bounded_request_body(
+                request, max_body_bytes=CLAUDE_TOKEN_ADMIN_MAX_BODY_BYTES,
+                declared_size=declared_size,
             )
             if body_error is not None:
                 status_code, detail = body_error
@@ -83523,6 +83577,48 @@ app.include_router(codex_auth.create_router(
     operation=codex_auth_operation,
     available=lambda: CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC,
 ))
+
+
+# load-bearing: the token becomes one line of a shell-sourced env file, so no quoting or spaces.
+CLAUDE_OAUTH_TOKEN_RE = re.compile(r"[A-Za-z0-9._-]+")
+# load-bearing: matches every form parse_config_env_file accepts, so no older token line survives.
+CLAUDE_OAUTH_TOKEN_LINE_RE = re.compile(rb"^[ \t]*(?:export[ \t]+)?CLAUDE_CODE_OAUTH_TOKEN[ \t]*=")
+
+
+class ClaudeTokenAdminRequest(BaseModel):
+    token: str
+
+
+def persist_claude_oauth_token(token: str) -> None:
+    """Replace the token line in the server's config env file (read again at every start)."""
+
+    previous = _private_config_env_snapshot(CONFIG_ENV_FILE)
+    lines = [
+        line for line in previous["content"].splitlines(keepends=True)
+        if not CLAUDE_OAUTH_TOKEN_LINE_RE.match(line)
+    ]
+    if lines and not lines[-1].endswith(b"\n"):
+        lines.append(b"\n")
+    lines.append(f"export CLAUDE_CODE_OAUTH_TOKEN={token}\n".encode())
+    _atomic_replace_config_env(
+        CONFIG_ENV_FILE, b"".join(lines), expected=previous, mode=previous["mode"],
+    )
+
+
+@app.put("/api/admin/claude/token")
+async def put_claude_oauth_token(req: ClaudeTokenAdminRequest, request: Request):
+    require_native_admin_control(request)
+    token = req.token.strip()
+    if not CLAUDE_OAUTH_TOKEN_RE.fullmatch(token):
+        raise HTTPException(400, "Paste the token printed by `claude setup-token`.")
+    try:
+        await asyncio.to_thread(persist_claude_oauth_token, token)
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(500, f"Could not save the token to {CONFIG_ENV_FILE}: {exc}") from None
+    os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    # A cached "unauthenticated" would survive rechecks (probes are not auth evidence).
+    store_runtime_diagnostic(await asyncio.to_thread(probe_runtime, BACKEND_CLAUDE), preserve_last_error=False)
+    return JSONResponse({"oauth_token_configured": True}, headers={"Cache-Control": "no-store"})
 
 
 CODEX_PROVIDER_SETTINGS_LOCK = asyncio.Lock()

@@ -1619,6 +1619,9 @@ button.tool-event-toggle:hover { background: #242424; }
 .runtime-health-row.compact { grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; margin: 0 2px 6px; padding: 7px 8px; border-color: color-mix(in srgb, var(--amber) 42%, var(--border)); background: color-mix(in srgb, var(--amber) 8%, var(--surface)); }
 .runtime-health-row.compact code, .runtime-health-row.compact .runtime-action { display: none; }
 .runtime-recheck-button { align-self: center; white-space: nowrap; }
+.claude-token-form { display: grid; gap: 4px; margin-top: 4px; }
+.claude-token-form > div { display: flex; gap: 6px; }
+.claude-token-form input { min-width: 0; flex: 1 1 auto; }
 .composer-bar { min-width: 0; height: 34px; display: flex; align-items: center; gap: 5px; overflow: hidden; }
 .composer-write-controls { margin: 0; padding: 0; border: 0; }
 .composer-queue-controls, .composer-goal-controls { display: contents; }

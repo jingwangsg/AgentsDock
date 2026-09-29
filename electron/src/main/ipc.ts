@@ -326,6 +326,7 @@ export function registerIpc(
   ))
 
   handle('claude:runtime', sessionId => service.claudeRuntime(sessionId))
+  handle('claude:token:set', (scope, token) => service.setClaudeToken(scope, token))
   handle('claude:goal:set', (sessionId, condition) => service.setClaudeGoal(sessionId, condition))
   handle('claude:goal:clear', sessionId => service.clearClaudeGoal(sessionId))
   handle('claude:context-usage:refresh', sessionId => service.refreshClaudeContextUsage(sessionId))

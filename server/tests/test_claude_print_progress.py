@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import tempfile
 import unittest
 from collections import deque
@@ -7,6 +8,11 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import agent_server
+
+
+def setUpModule():
+    # Claude runs and probes require the token (require_claude_oauth_token).
+    unittest.enterModuleContext(patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "test-token"}))
 
 
 class FakeStdin:

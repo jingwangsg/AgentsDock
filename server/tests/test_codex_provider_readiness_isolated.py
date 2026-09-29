@@ -43,7 +43,7 @@ class CodexProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
             "runtime_display_name": lambda backend: backend, "runtime_action": lambda *args, **kwargs: None,
             "now_iso": lambda: "2026-09-17T00:00:00Z", "runtime_executable": lambda backend: backend,
             "runner_env": lambda: {"PATH": "/synthetic"}, "shutil": SimpleNamespace(which=lambda *args, **kwargs: "/synthetic/codex"),
-            "runtime_command": self.command, "logger": Mock(),
+            "runtime_command": self.command, "logger": Mock(), "claude_oauth_token_configured": lambda: True,
             "runtime_diagnostic": Mock(return_value={"status": "unauthenticated", "installed": True}),
             "public_runtime_diagnostic": lambda value: value,
             "runtime_option": lambda value, label: {"value": value, "label": label},

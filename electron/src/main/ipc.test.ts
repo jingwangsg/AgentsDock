@@ -47,6 +47,15 @@ describe('Team Hub IPC registration', () => {
     expect(harness.handlers.has('codex:auth:api-key')).toBe(false)
   })
 
+  it('routes the Claude token to the scoped service call', async () => {
+    const setClaudeToken = vi.fn().mockResolvedValue(undefined)
+    registerIpc({ setClaudeToken } as unknown as AppService, {} as AppUpdateManager)
+    const scope = { profileId: 'profile-a', profileGeneration: 3 }
+
+    await expect(harness.handlers.get('claude:token:set')?.(trustedEvent, scope, 'synthetic-token')).resolves.toBeUndefined()
+    expect(setClaudeToken).toHaveBeenCalledExactlyOnceWith(scope, 'synthetic-token')
+  })
+
   it('routes chat outputs to the service', async () => {
     const chatOutputs = vi.fn().mockResolvedValue({ outputs: [], sources: [] })
     registerIpc({ chatOutputs } as unknown as AppService, {} as AppUpdateManager)

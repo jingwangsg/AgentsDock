@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
-import type { Event, RuntimeCatalog, SessionSnapshot } from '@shared/types'
+import type { Event, RuntimeCatalog, RuntimeDiagnosticStatus, SessionSnapshot } from '@shared/types'
 import { useAppStore } from '../store/app-store'
 import { RuntimeHealthNotice, RuntimeHealthPanel } from './RuntimeHealth'
 
@@ -127,6 +127,111 @@ describe('passive Claude authentication in the composer', () => {
     } } }, runtimeCatalog: null, snapshots: {} })
     render(<RuntimeHealthNotice backend="claude" sessionId="claude-chat" />)
     expect(screen.getByText('Claude Code is not installed.')).toBeInTheDocument()
+  })
+})
+
+describe('Claude token in the composer', () => {
+  const token = 'sk-ant-oat01-synthetic_token-value'
+  const missingToken = 'failed to start Claude: Claude is not authenticated on this server: CLAUDE_CODE_OAUTH_TOKEN is not set.'
+  const setup = (configured: boolean | undefined, error = '', status: RuntimeDiagnosticStatus = 'unauthenticated') => {
+    useAppStore.setState({
+      activeProfileId: 'profile-a',
+      profileGeneration: 3,
+      health: null,
+      runtimeCatalog: { backends: { claude: {
+        models: [], efforts: [], available: false,
+        diagnostic: {
+          backend: 'claude', status, installed: status !== 'missing', available: false, authenticated: null,
+          message: 'This server has no Claude token.', oauth_token_configured: configured,
+        },
+      } } },
+      snapshots: { 'claude-chat': {
+        session: { id: 'claude-chat', title: 'Chat', backend: 'claude' },
+        events: error ? [{
+          id: 'event-1', seq: 1, session_id: 'claude-chat', backend: 'claude', type: 'error', run_id: 'run-1',
+          ts: '2026-09-29T07:11:00Z', message: error,
+        }] : [],
+        queuedTurns: [], files: [], hasMoreEvents: false, filesTotal: 0, cachedAt: 0,
+      } },
+    })
+  }
+  // What the recheck returns once the server has the token.
+  const savedCatalog: RuntimeCatalog = { backends: { ...readyCatalog.backends, claude: {
+    ...readyCatalog.backends.claude,
+    diagnostic: { ...readyCatalog.backends.claude.diagnostic!, status: 'unknown', oauth_token_configured: true },
+  } } }
+  const withAgentsDock = (extra: Record<string, unknown>) => {
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { runtime: { catalog: vi.fn().mockResolvedValue(savedCatalog) }, ...extra } as unknown as AgentsDockAPI,
+    })
+  }
+
+  it('asks for a token before any send when the server has none, then saves it to this profile and rechecks', async () => {
+    const setToken = vi.fn().mockResolvedValue(undefined)
+    withAgentsDock({ claude: { setToken } })
+    setup(false)
+    const { container } = render(<RuntimeHealthNotice backend="claude" sessionId="claude-chat" />)
+    expect(screen.getByText('Token required')).toBeInTheDocument()
+    expect(screen.getByText('This server has no Claude token.')).toBeInTheDocument()
+    const input = screen.getByLabelText('Claude token')
+    expect(input).toHaveAttribute('type', 'password')
+    await userEvent.type(input, `  ${token}  `)
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    // The recheck reports the token, so the whole notice goes away.
+    await waitFor(() => expect(container).toBeEmptyDOMElement())
+    expect(setToken).toHaveBeenCalledExactlyOnceWith({ profileId: 'profile-a', profileGeneration: 3 }, token)
+    expect(window.agentsDock.runtime.catalog).toHaveBeenCalledWith(true, true)
+  })
+
+  it('confirms the save while this chat still shows the missing-token error', async () => {
+    withAgentsDock({ claude: { setToken: vi.fn().mockResolvedValue(undefined) } })
+    setup(false, missingToken)
+    render(<RuntimeHealthNotice backend="claude" sessionId="claude-chat" />)
+    await userEvent.type(screen.getByLabelText('Claude token'), token)
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Token saved. New Claude messages on this server use it.')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Claude token')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    'Claude assistant error: authentication_failed',
+    'Failed to authenticate: OAuth session expired and could not be refreshed',
+    'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}',
+  ])('offers a replacement token after this chat fails with %s', error => {
+    setup(true, error)
+    render(<RuntimeHealthNotice backend="claude" sessionId="claude-chat" />)
+    expect(screen.getByText('Latest chat error')).toBeInTheDocument()
+    expect(screen.getByLabelText('Claude token')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['the token is configured', true, '', 'unknown'],
+    ['the server predates the token field', undefined, 'Claude assistant error: authentication_failed', 'unauthenticated'],
+    ['the CLI is missing, not the token', false, '', 'missing'],
+    ['an unrelated OAuth or 401 error', true, 'MCP server "linear" requires OAuth authorization; status 401', 'unknown'],
+  ] as const)('shows no token field when %s', (_case, configured, error, status) => {
+    setup(configured, error, status)
+    render(<RuntimeHealthNotice backend="claude" sessionId="claude-chat" />)
+    expect(screen.queryByLabelText('Claude token')).not.toBeInTheDocument()
+  })
+
+  it('never asks a shared-chat guest for the host server token', () => {
+    withAgentsDock({ sharedChat: {} })
+    setup(false)
+    render(<RuntimeHealthNotice backend="claude" sessionId="claude-chat" />)
+    expect(screen.queryByLabelText('Claude token')).not.toBeInTheDocument()
+  })
+
+  it('shows a short error without the token when the server rejects it', async () => {
+    withAgentsDock({ claude: { setToken: vi.fn().mockRejectedValue(new Error("Error invoking remote method 'claude:token:set': Error: CLAUDE_TOKEN_INVALID")) } })
+    setup(false)
+    render(<RuntimeHealthNotice backend="claude" sessionId="claude-chat" />)
+    await userEvent.type(screen.getByLabelText('Claude token'), token)
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The server rejected this value.')
+    expect(screen.getByRole('alert')).not.toHaveTextContent(token)
+    expect(window.agentsDock.runtime.catalog).not.toHaveBeenCalled()
   })
 })
 

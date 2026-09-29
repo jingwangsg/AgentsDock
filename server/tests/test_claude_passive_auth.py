@@ -1,6 +1,7 @@
 """Claude installation checks must never renew or invalidate native credentials."""
 
 import asyncio
+import os
 import subprocess
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -9,6 +10,11 @@ from fastapi import HTTPException
 import httpx
 
 import agent_server as server
+
+
+def setUpModule():
+    # Claude runs and probes require the token (require_claude_oauth_token).
+    unittest.enterModuleContext(patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "test-token"}))
 
 
 class PassiveClaudeAuthTests(unittest.IsolatedAsyncioTestCase):
@@ -62,7 +68,7 @@ class PassiveClaudeAuthTests(unittest.IsolatedAsyncioTestCase):
         server.record_runtime_failure("claude", "Failed to authenticate: OAuth session expired and could not be refreshed")
         failed = dict(server.RUNTIME_DIAGNOSTICS["claude"])
         self.assertEqual(failed["status"], "unauthenticated")
-        self.assertIn("claude auth login", failed["action"])
+        self.assertIn("claude setup-token", failed["action"])
         refreshed = server.runtime_diagnostic("claude", force=True)
         for key in ("status", "authenticated", "checked_at", "last_error", "last_error_at"):
             self.assertEqual(refreshed[key], failed[key])

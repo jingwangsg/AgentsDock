@@ -151,8 +151,16 @@ function RuntimeStatus({
   const providerNeedsAttention = compact
     ? cursorUnavailable || Boolean(diagnostic && diagnostic.status !== 'ready' && (!passiveClaudeAuth || chatError))
     : cursorUnavailable || runtimeDiagnosticNeedsAttention(diagnostic)
-  if (compact && !chatError && !providerNeedsAttention) return null
-  const tone = chatError ? 'warning' : cursorUnavailable ? 'error' : runtimeDiagnosticTone(diagnostic)
+  // Claude authenticates only with the server's CLAUDE_CODE_OAUTH_TOKEN, so a
+  // missing token or an auth failure in this chat both need a new token. Older
+  // servers omit the field and have no token route; a shared-chat guest cannot
+  // set the host's token; a missing or broken CLI needs installing, not a token.
+  const needsClaudeToken = compact && backend === 'claude' && !window.agentsDock.sharedChat
+    && diagnostic?.oauth_token_configured !== undefined
+    && ((passiveClaudeAuth && !diagnostic.oauth_token_configured)
+      || /authentication_(?:failed|error)|failed to authenticate|not authenticated/i.test(chatError))
+  if (compact && !chatError && !providerNeedsAttention && !needsClaudeToken) return null
+  const tone = chatError || needsClaudeToken ? 'warning' : cursorUnavailable ? 'error' : runtimeDiagnosticTone(diagnostic)
   const Icon = tone === 'ready' ? CheckCircle2 : tone === 'error' ? XCircle : tone === 'warning' ? AlertTriangle : CircleHelp
   const provider = backend === 'claude' ? 'Claude Code' : backend === 'cursor' ? 'Cursor' : backend === 'opencode' ? 'OpenCode' : codexProvider === 'custom' ? t('codexProvider.label') : 'Codex'
   const cursorUnavailableDetail = cursorUnavailable
@@ -163,7 +171,7 @@ function RuntimeStatus({
     || (!compact ? runtimeDiagnosticCurrentError(diagnostic) : '')
     || diagnostic?.message
     || `${provider} has not been checked yet.`
-  const label = compact && chatError ? 'Latest chat error' : cursorUnavailable ? 'Unavailable' : runtimeDiagnosticLabel(diagnostic)
+  const label = compact && chatError ? 'Latest chat error' : needsClaudeToken ? t('claudeToken.label') : cursorUnavailable ? 'Unavailable' : runtimeDiagnosticLabel(diagnostic)
   const cursorAction = diagnostic?.action?.trim() || cursorCapability?.action?.trim()
   const action = cursorUnavailable
     ? cursorAction && !cursorUnavailableDetail.includes(cursorAction) ? cursorAction : undefined
@@ -174,6 +182,7 @@ function RuntimeStatus({
       <strong>{provider} <span>{label}</span></strong>
       <small>{detail}</small>
       {action ? <small className="runtime-action">{action}</small> : null}
+      {needsClaudeToken ? <ClaudeTokenForm onSaved={onRecheck} /> : null}
     </div>
     {compact && providerNeedsAttention && onRecheck
       ? <button
@@ -190,6 +199,46 @@ function RuntimeStatus({
       : null}
     {!compact && diagnostic?.version ? <code>{diagnostic.version}</code> : null}
   </div>
+}
+
+function ClaudeTokenForm({ onSaved }: { onSaved?: () => Promise<void> }) {
+  const profileId = useAppStore(state => state.activeProfileId)
+  const profileGeneration = useAppStore(state => state.profileGeneration)
+  const [token, setToken] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [result, setResult] = useState<'saved' | 'invalid' | 'failed' | null>(null)
+  const save = async () => {
+    if (!profileId) return
+    setSaving(true)
+    try {
+      await window.agentsDock.claude.setToken({ profileId, profileGeneration }, token.trim())
+      setToken('')
+      setResult('saved')
+      await onSaved?.()
+    } catch (error) {
+      setResult(String(error).includes('CLAUDE_TOKEN_INVALID') ? 'invalid' : 'failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+  if (result === 'saved') return <small>{t('claudeToken.saved')}</small>
+  return <form className="claude-token-form" onSubmit={event => { event.preventDefault(); void save() }}>
+    <small>{t('claudeToken.hint')}</small>
+    <div>
+      <input
+        type="password"
+        autoComplete="off"
+        spellCheck={false}
+        aria-label={t('claudeToken.input')}
+        placeholder="sk-ant-oat01-…"
+        value={token}
+        disabled={saving}
+        onChange={event => setToken(event.target.value)}
+      />
+      <button type="submit" className="quiet-button" disabled={saving || !token.trim()}>{t('claudeToken.save')}</button>
+    </div>
+    {result ? <small role="alert">{t(result === 'invalid' ? 'claudeToken.invalid' : 'claudeToken.failed')}</small> : null}
+  </form>
 }
 
 function latestChatRunError(events: Event[] | undefined, backend: Backend): string {

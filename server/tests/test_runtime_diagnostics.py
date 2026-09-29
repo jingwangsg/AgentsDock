@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import threading
@@ -15,6 +16,11 @@ import codex_model_catalog
 
 def completed(args: list[str], returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=args, returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def setUpModule():
+    # Claude runs and probes require the token (require_claude_oauth_token).
+    unittest.enterModuleContext(patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "test-token"}))
 
 
 class RuntimeDiagnosticTests(unittest.TestCase):

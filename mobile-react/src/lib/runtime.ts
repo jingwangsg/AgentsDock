@@ -23,7 +23,7 @@ export function runtimeLabel(value: RuntimeDiagnostic | null | undefined): strin
   if (value.status === 'ready' && value.last_error) return 'Latest run failed'
   if (value.status === 'ready') return 'Ready'
   if (value.status === 'missing') return 'Not installed'
-  if (value.status === 'unauthenticated') return 'Sign-in required'
+  if (value.status === 'unauthenticated') return value.backend === 'claude' ? 'Token required' : 'Sign-in required'
   if (value.status === 'error') return 'Check failed'
   return 'Not checked'
 }

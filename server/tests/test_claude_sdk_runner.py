@@ -18,6 +18,11 @@ import agent_server
 from claude_sdk_client import ClaudeSDKQueryError, ClaudeSDKUnavailable
 
 
+def setUpModule():
+    # Claude runs and probes require the token (require_claude_oauth_token).
+    unittest.enterModuleContext(patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "test-token"}))
+
+
 class FakeClaudeRun:
     def __init__(
         self,

@@ -690,7 +690,9 @@ time.sleep(30)
         (install / "server" / ".venv" / "bin" / "python").symlink_to(sys.executable)
         (install / "server" / "agent_server.py").write_text("")
         (install / "server" / "VERSION").write_text("1.2.3\n")
-        (install / "env").write_text(f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTSDOCK_AGENT_PORT=7860\n")
+        # A moved install's stale config dir, and no final newline (a hand edit).
+        (install / "env").write_text(f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTS_SERVER_CONFIG_DIR=/old\nexport AGENTSDOCK_AGENT_PORT=7860")
+        install.chmod(0o775)  # a host umask of 002
 
         proc = subprocess.run(
             ["bash", "-s", "--", str(install), "7860", str(home)], input=rs.BOOTSTRAP_SCRIPT.read_bytes(),
@@ -703,7 +705,13 @@ time.sleep(30)
         assert (result["access_token"], result["remote_port"], result["server_version"]) == (REMOTE_TOKEN, 7860, "1.2.3")
         # The only external call is start.sh's health check, which found the server up.
         assert calls.read_text().splitlines() == [f"curl -fsS -m 3 -H Authorization: Bearer {REMOTE_TOKEN} http://127.0.0.1:7860/api/health"]
-        assert (install / "env").read_text() == f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTSDOCK_AGENT_PORT=7860\n"
+        # The only env change points the server's own settings writes (a token saved in the app) at this env,
+        # whose directory the server writes only when group/others cannot.
+        assert (install / "env").read_text() == (
+            f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTSDOCK_AGENT_PORT=7860\n"
+            f"export AGENTS_SERVER_CONFIG_DIR={install}\n"
+        )
+        assert stat.S_IMODE(install.stat().st_mode) & 0o022 == 0
 
         # A token handed over by the hub lands in env once, without echoing it.
         token = "sk-ant-oat01-" + "t" * 40
@@ -714,6 +722,7 @@ time.sleep(30)
             )
             assert proc.returncode == 0 and token not in proc.stdout.decode() + proc.stderr.decode(), proc.stderr.decode()
         assert (install / "env").read_text().count(f"export CLAUDE_CODE_OAUTH_TOKEN={token}\n") == 1
+        assert (install / "env").read_text().count("export AGENTS_SERVER_CONFIG_DIR=") == 1
         assert stat.S_IMODE((install / "env").stat().st_mode) == 0o600
 
     # --- header rewriting -----------------------------------------------------

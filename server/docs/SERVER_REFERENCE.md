@@ -949,12 +949,20 @@ reports `ready`, `missing`, `unauthenticated`, `unknown`, or probe `error`, plus
 actionable recovery instruction. It never returns account identity, auth
 output, or tokens.
 
+Claude authenticates only with `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`);
+stored `/login` credentials are never used. Without the token the server sends no
+Claude request (chats, model discovery, handoff digests), reports Claude
+`unauthenticated` with `oauth_token_configured: false`, and clients show a token
+field above the message box. `PUT /api/admin/claude/token` with `{"token": "…"}`
+(native admin control) writes it to the server's config env file and applies it to
+the next Claude process without a restart.
+
 Claude startup, automatic refresh, manual **Recheck CLIs**, and turn admission
 never execute `claude auth status`. Short-lived auth-status commands can start
 OAuth renewal and exit before persisting the replacement credential (see
 [upstream report #95822](https://github.com/anthropics/claude-code/issues/95822)).
 Authentication readiness is recorded from real native Claude requests. Before
-the first request, an installed Claude reports `unknown` with `authenticated: null`;
+the first request, an installed Claude with a token reports `unknown` with `authenticated: null`;
 the desktop client can still start a chat. Updated desktop clients keep this
 passive authentication state in Settings rather than warning in the composer
 before a send. A cached backend-wide login failure is not evidence that a
@@ -962,8 +970,8 @@ different chat has failed; the composer shows its own latest run error.
 Installation checks retain
 the last native authentication result and its original timestamp rather than
 claiming to have checked the account again. A successful request clears the
-previous authentication error. After an external `claude auth login`, retry the
-message; rechecking the installation alone does not prove a successful login.
+previous authentication error. After saving a new token, retry the message;
+rechecking the installation alone does not prove the token works.
 The former `AGENTSDOCK_CLAUDE_AUTH_PROBE_TIMEOUT_SECONDS` setting is no longer used.
 
 This removes standalone authentication monitoring, not every native Claude
