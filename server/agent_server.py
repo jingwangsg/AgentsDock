@@ -20048,7 +20048,7 @@ def provider_cross_chat_route_projection(
 
 
 def cross_chat_authority_path(run_id: str, nonce: str | None = None) -> Path:
-    if not re.fullmatch(r"run_[A-Za-z0-9_-]+", run_id):
+    if not re.fullmatch(r"(?:run|codexgoal)_[A-Za-z0-9_-]+", run_id):
         raise ValueError("invalid provider authority run id")
     if nonce is not None and not re.fullmatch(r"[0-9a-f]{32}", nonce):
         raise ValueError("invalid provider authority nonce")
@@ -21177,7 +21177,7 @@ def redact_provider_tool_output(text: str, authority_path: Path) -> str:
     clean = str(text or "").replace(str(authority_path), "<provider-authority>")
     clean = re.sub(
         re.escape(str(CROSS_CHAT_AUTHORITY_ROOT))
-        + r"/run_[A-Za-z0-9_-]+-[0-9a-f]{32}\.json",
+        + r"/(?:run|codexgoal)_[A-Za-z0-9_-]+-[0-9a-f]{32}\.json",
         "<provider-authority>",
         clean,
     )
@@ -21700,7 +21700,7 @@ async def purge_cross_chat_authority_files_after_restart() -> int:
         candidates = []
     for path in candidates:
         if not re.fullmatch(
-            r"run_[A-Za-z0-9_-]+(?:-[0-9a-f]{32})?\.json",
+            r"(?:run|codexgoal)_[A-Za-z0-9_-]+(?:-[0-9a-f]{32})?\.json",
             path.name,
         ):
             continue
@@ -34427,10 +34427,11 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                 active_turn_key = key
                 if run_id:
                     current_turn_by_run[run_id] = key
-                    if event.get("purpose") == "codex_goal_resume":
-                        goal_native_turn_by_run[run_id] = str(event.get("provider_turn_id") or "")
-                    else:
+                    native_turn_id = timeline_native_turn_id(event)
+                    if native_turn_id is None:
                         goal_native_turn_by_run.pop(run_id, None)
+                    else:
+                        goal_native_turn_by_run[run_id] = native_turn_id
                 if hidden_imported_prompt:
                     # Preserve routing for a following provider answer without
                     # exposing the generated input. The placeholder retains
@@ -34467,11 +34468,7 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                     record["prompt"] = prompt
                 continue
 
-            native_turn_id = (
-                str(event.get("provider_turn_id") or "")
-                if event.get("purpose") == "codex_goal_resume"
-                else ""
-            )
+            native_turn_id = timeline_native_turn_id(event)
             if run_id and native_turn_id:
                 if goal_native_turn_by_run.get(run_id) not in {"", native_turn_id}:
                     # One goal operation runs many native turns under one run
@@ -35364,6 +35361,19 @@ def semantic_timeline_event_is_completed_commentary(
         and str(event.get("phase") or "") == "commentary"
         and bool(str(event.get("text") or "").strip())
     )
+
+
+def timeline_native_turn_id(event: dict[str, Any]) -> str | None:
+    """The Codex native turn of an event that may share its run id with other native turns: a live
+    goal operation's turns, or turns imported from Codex history (whose goals ran many turns).
+    None: not such an event (the caller forgets the run's turn). "": a goal turn whose id is not
+    known yet (it matches any turn)."""
+    if event.get("purpose") == "codex_goal_resume":
+        return str(event.get("provider_turn_id") or "")
+    origin = event.get("provider_origin")
+    if event.get("imported") and isinstance(origin, dict) and origin.get("turn_id"):
+        return str(origin["turn_id"])
+    return None
 
 
 def semantic_timeline_event_is_trace_anchor(event: dict[str, Any]) -> bool:
@@ -58073,6 +58083,10 @@ async def consume_codex_native_turn(
         if finalize_operation:
             terminal_claimed = False
             try:
+                if goal_resume:
+                    # Only an explicit resume issued an authority for operation_id; inline
+                    # continuations keep the ordinary run's.
+                    await revoke_cross_chat_capability(operation_id)
                 # The subscription is intentionally low-latency and can observe
                 # terminal delivery before async projection finishes. Drain the
                 # per-thread projection tail before reading usage state or
@@ -82238,7 +82252,7 @@ async def codex_provider_mcp(request: Request) -> Response:
         or len(thread_id) > 256
         or not turn_id
         or len(turn_id) > 256
-        or re.fullmatch(r"run_[A-Za-z0-9_-]{1,128}", run_id) is None
+        or re.fullmatch(r"(?:run|codexgoal)_[A-Za-z0-9_-]{1,128}", run_id) is None
         or re.fullmatch(r"[0-9a-f]{64}", proof) is None
         or not core_call_id
     ):
@@ -90243,6 +90257,16 @@ async def _put_codex_goal_locked(
                 if current_turn is not None:
                     current_turn["run_id"] = operation_id
                     current_turn["purpose"] = "codex_goal_resume"
+            # Codex starts this operation's turns itself; their provider tool calls bind to this
+            # id (codex_provider_mcp). Grant the route-free ceiling an ordinary turn gets
+            # (issuance applies the chat's Jobs access and the agent token's Team read); the
+            # operation's end revokes it.
+            authority_path = await issue_cross_chat_capability(
+                session_id, operation_id, [], actions={"publish", "emergency", "jobs", "team_read"},
+                team_read_enabled=True,
+            )
+            # load-bearing: binds the helper-subprocess env onto the capability, as every issuer does.
+            await provider_authority_runtime_env(operation_id, authority_path, session_id, [])
             await append_event(session_id, "turn_started", {
                 "run_id": operation_id,
                 "backend": BACKEND_CODEX,
@@ -90372,13 +90396,18 @@ async def _put_codex_goal_locked(
                         session_id, manager, thread_id, reservation_id,
                     )
             finally:
-                if subscription is not None:
-                    subscription.close()
-                await release_codex_control_thread(
-                    session_id, manager, thread_id,
-                    reserved_session=bool(reservation_id),
-                    reservation_id=reservation_id,
-                )
+                try:
+                    if subscription is not None:
+                        subscription.close()
+                    await release_codex_control_thread(
+                        session_id, manager, thread_id,
+                        reserved_session=bool(reservation_id),
+                        reservation_id=reservation_id,
+                    )
+                finally:
+                    # Even when the release is cancelled: the authority must not outlive the operation.
+                    if operation_id:
+                        await revoke_cross_chat_capability(operation_id)
                 if resume_started_published:
                     await append_event(session_id, "turn_finished", {
                         "run_id": operation_id,
@@ -98241,7 +98270,12 @@ async def active_artifact_publication_run(
             or not isinstance(active, dict)
             or not run_id
             or str(active.get("run_id") or "").strip() != run_id
-            or active.get("codex_native_operation") is True
+            # A goal's native turns do agent work under the run's authority; other native
+            # operations (compaction, review, shell) have nothing to publish.
+            or (
+                active.get("codex_native_operation") is True
+                and active.get("codex_native_operation_kind") != "goal_resume"
+            )
             or active.get("stop_requested") is True
             or run_id in STOPPED_RUNS
         ):

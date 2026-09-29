@@ -507,6 +507,32 @@ with socket.socket() as listener:
         assert sessions == [["/mnt/lustre/.agentsdock-server"], ["/mnt/lustre/.agentsdock-server", "7860", "/h"]]
         assert "download" not in {entry["phase"] for entry in job.log}
 
+    def test_a_rename_during_a_redeploy_survives_its_write_back(self) -> None:
+        self.fake_host(existing_port=7860)
+        manager, _ = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))
+        [server] = rs.load_registry(manager.path)
+        # The redeploy reports a new token, so it writes the entry back.
+        host = self.tmp_path / "host" / "host.json"
+        host.write_text(json.dumps({"token": "t" * 40, "existing_port": 7860}))
+        parse = rs.parse_setup_result
+
+        def rename_then_parse(lines):
+            manager.update(server.id, rs.RemoteServerUpdate(name="renamed"))
+            return parse(lines)
+
+        async def main() -> rs.DeployJob:
+            await manager.start()
+            with mock.patch.object(rs, "parse_setup_result", side_effect=rename_then_parse):
+                job = manager.start_deploy(None, redeploy_id=server.id)
+                await job.task
+            await manager.stop()
+            return job
+
+        job = asyncio.run(main())
+        assert job.error is None, job.log
+        [saved] = rs.load_registry(manager.path)
+        assert (saved.name, saved.token) == ("renamed", "t" * 40)
+
     def fake_osmo(self) -> None:
         """Put an ``osmo`` first on PATH that answers ``workflow query``."""
         bin_dir = self.tmp_path / "bin"

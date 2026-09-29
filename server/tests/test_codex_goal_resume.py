@@ -1,14 +1,34 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from collections import deque
 from contextlib import ExitStack
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import HTTPException
+from starlette.requests import Request
 
 import agent_server
+
+
+def local_request(path: str, body: bytes = b"", headers: list | None = None) -> Request:
+    sent = False
+
+    async def receive() -> dict:
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request({
+        "type": "http", "method": "POST", "path": path, "headers": headers or [],
+        "query_string": b"", "scheme": "http",
+        "server": ("127.0.0.1", 7850), "client": ("127.0.0.1", 43210),
+    }, receive=receive)
 
 
 class GoalSubscription:
@@ -45,9 +65,14 @@ class GoalResumeManager:
         self.wait_for_notification_handler = AsyncMock()
         self.get_thread_goal = AsyncMock(side_effect=lambda _thread_id: dict(self.goal))
         self.set_thread_goal = AsyncMock(side_effect=self._set_goal)
+        self.ready = True
 
     def is_thread_loaded(self, thread_id: str) -> bool:
         return thread_id == "thread-goal"
+
+    def active_turn(self, _thread_id: str) -> None:
+        # Like the real client: goal/set turns are Codex's, never a client turn/start handle.
+        return None
 
     def subscribe_thread(self, thread_id: str) -> GoalSubscription:
         if thread_id != "thread-goal":
@@ -226,7 +251,9 @@ class CodexGoalResumeTests(unittest.IsolatedAsyncioTestCase):
             "managed_server_update_admission_blocker": Mock(return_value=None),
             "wait_for_queue_recovery_admission": AsyncMock(),
             "turn_start_blocker": AsyncMock(return_value=None),
-            "revoke_cross_chat_capability": AsyncMock(),
+            # A resume issues a real provider authority; asyncTearDown checks every exit revoked it.
+            "CROSS_CHAT_CAPABILITIES": {},
+            "CROSS_CHAT_AUTHORITY_ROOT": Path(self.cwd) / "authority",
             "cancel_codex_interactions": AsyncMock(),
             "cancel_claude_interactions": AsyncMock(),
             "schedule_next_queued_turn": Mock(),
@@ -246,6 +273,11 @@ class CodexGoalResumeTests(unittest.IsolatedAsyncioTestCase):
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        # Completion, pause, Stop, failure, and cancellation (as at shutdown) all end the
+        # explicit resume; none may leave its provider authority or authority file behind.
+        self.assertEqual(agent_server.CROSS_CHAT_CAPABILITIES, {})
+        authority_root = Path(self.cwd) / "authority"
+        self.assertEqual(list(authority_root.iterdir()) if authority_root.exists() else [], [])
 
     async def resume(self, **values: object) -> dict:
         return await agent_server.put_codex_goal(
@@ -372,6 +404,22 @@ class CodexGoalResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent_server.CODEX_NATIVE_ACTION_TASKS, {})
         self.assertTrue(all(item.closed for item in self.manager.subscriptions))
         self.assertEqual(agent_server.CODEX_INTERACTIVE_CONTROL_THREADS, set())
+
+    async def test_cancelled_release_still_revokes_the_resume_authority(self) -> None:
+        self.manager.goal_error = RuntimeError("goal control unavailable")
+        releasing = asyncio.Event()
+
+        async def hang(*_args: object, **_kwargs: object) -> None:
+            releasing.set()
+            await asyncio.Event().wait()
+
+        with patch.object(agent_server, "release_codex_control_thread", hang):
+            request = asyncio.create_task(self.resume())
+            await asyncio.wait_for(releasing.wait(), timeout=2)
+            request.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await request
+        # asyncTearDown checks that the authority and its file are gone.
 
     async def test_resumed_output_and_terminal_release_native_ownership(
         self,
@@ -688,3 +736,134 @@ class CodexGoalResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("chat", agent_server.BUSY_SESSIONS)
         self.assertNotIn("chat", agent_server.CURRENT_TURNS)
         self.assertTrue(self.manager.subscriptions[0].closed)
+
+    async def call_publish_tool(self, call_id: str, path: Path) -> dict:
+        body = json.dumps({
+            "jsonrpc": "2.0", "id": call_id, "method": "tools/call",
+            "params": {
+                "name": "run",
+                "arguments": {"helper": "publish", "arguments": [str(path)]},
+                # Codex starts a resume's turns itself: no AgentsDock run id or proof.
+                "_meta": {"callId": call_id, "x-codex-turn-metadata": {
+                    "thread_id": "thread-goal", "turn_id": "turn-resumed",
+                }},
+            },
+        }).encode("utf-8")
+        request = local_request(
+            agent_server.CODEX_PROVIDER_MCP_PATH, body,
+            [(b"content-type", b"application/json")],
+        )
+        request.state.codex_provider_mcp_authenticated = True
+        return json.loads((await agent_server.codex_provider_mcp(request)).body)
+
+    async def test_explicit_resume_tool_calls_use_its_own_authority_until_it_ends(
+        self,
+    ) -> None:
+        chart = Path(self.cwd) / "chart.png"
+        chart.write_bytes(b"png")
+        copy_artifacts = AsyncMock(return_value=[])
+        tokens: list[str] = []
+
+        def publish_request(token: str) -> Request:
+            return local_request(
+                "/api/agent/sessions/chat/artifacts",
+                headers=[(b"x-agentsdock-provider-capability", token.encode("utf-8"))],
+            )
+
+        async def run_helper(session_id: str, run_id: str, value: dict, **turn: str) -> tuple[str, bool]:
+            # Stands in for the publish helper process: it sends the token from the run's
+            # authority file to the real endpoint. Only the artifact copy is stubbed.
+            authority_path, _env = await agent_server.provider_tool_capability_snapshot(
+                session_id, run_id, **turn,
+            )
+            tokens.append(json.loads(authority_path.read_text())["provider_capability"])
+            try:
+                receipt = await agent_server.publish_agent_artifacts(
+                    publish_request(tokens[-1]), session_id,
+                    agent_server.PublishArtifactsRequest(
+                        publication_id="pub_goal_chart", files=value["arguments"],
+                    ),
+                )
+            except HTTPException as exc:
+                return str(exc.detail), True
+            return json.dumps(receipt), False
+
+        with patch.object(agent_server, "execute_provider_tool", side_effect=run_helper), patch.object(
+            agent_server, "publish_artifact_entries", copy_artifacts,
+        ):
+            await self.resume()
+            await self.wait_for_subscription_reads(2)
+            operation_id = agent_server.ACTIVE["chat"]["run_id"]
+            self.assertTrue(operation_id.startswith("codexgoal_"))
+            [authority] = agent_server.CROSS_CHAT_CAPABILITIES.values()
+            self.assertEqual(authority["source_run_id"], operation_id)
+            authority_file = Path(authority["authority_path"])
+            self.assertEqual(agent_server.redact_provider_tool_output(
+                f"see {authority_file}", Path("/other-run.json"),
+            ), "see <provider-authority>")
+
+            live = await self.call_publish_tool("call-live", chart)
+            self.assertFalse(live["result"]["isError"], live)
+            self.assertEqual(copy_artifacts.await_args.args[:2], ("chat", operation_id))
+
+            for label, owner, key, value in (
+                ("paused goal", self.session["codex_goal"], "status", "paused"),
+                ("stopped operation", agent_server.ACTIVE["chat"], "stop_requested", True),
+            ):
+                with self.subTest(case=label):
+                    previous = owner[key]
+                    owner[key] = value
+                    stale = await self.call_publish_tool(f"call-{key}", chart)
+                    owner[key] = previous
+                    self.assertEqual(stale["result"], {
+                        "content": [{"type": "text", "text": "provider tool turn is stale"}],
+                        "isError": True,
+                    })
+
+            task = agent_server.CODEX_NATIVE_ACTION_TASKS[("chat", operation_id)]
+            await self.complete_goal()
+            await asyncio.wait_for(asyncio.shield(task), timeout=2)
+
+            self.assertEqual(agent_server.CROSS_CHAT_CAPABILITIES, {})
+            self.assertFalse(authority_file.exists())
+            ended = await self.call_publish_tool("call-ended", chart)
+            self.assertEqual(ended["error"]["code"], -32602)
+            with self.assertRaises(HTTPException) as revoked:
+                await agent_server.publish_agent_artifacts(
+                    publish_request(tokens[0]), "chat",
+                    agent_server.PublishArtifactsRequest(
+                        publication_id="pub_goal_late", files=[str(chart)],
+                    ),
+                )
+            self.assertEqual(revoked.exception.status_code, 403)
+        copy_artifacts.assert_awaited_once()
+
+    async def test_explicit_resume_authority_follows_the_chat_jobs_access(self) -> None:
+        with patch.object(agent_server, "AGENT_TOKEN", "agent-token"):
+            for access, actions, status in (
+                ("full", {"publish", "emergency", "jobs", "team_read"}, 200),
+                ("blocked", {"publish", "emergency", "team_read"}, 403),
+            ):
+                with self.subTest(access=access):
+                    self.session["provider_jobs_access"] = access
+                    await self.resume()
+                    [authority] = agent_server.CROSS_CHAT_CAPABILITIES.values()
+                    self.assertEqual(authority["actions"], actions)
+                    self.assertEqual(authority["provider_jobs_access"], access)
+                    token = json.loads(Path(authority["authority_path"]).read_text())["provider_capability"]
+                    request = local_request(
+                        "/api/agent/sessions/chat/jobs",
+                        headers=[(b"x-agentsdock-provider-capability", token.encode("utf-8"))],
+                    )
+                    try:
+                        await agent_server.authorize_provider_jobs_operation(
+                            request, session_id="chat", operation="write",
+                        )
+                        seen = 200
+                    except HTTPException as exc:
+                        seen = exc.status_code
+                    self.assertEqual(seen, status)
+                    task = agent_server.CODEX_NATIVE_ACTION_TASKS[("chat", authority["source_run_id"])]
+                    await self.complete_goal()
+                    await asyncio.wait_for(asyncio.shield(task), timeout=2)
+                    self.assertEqual(agent_server.CROSS_CHAT_CAPABILITIES, {})

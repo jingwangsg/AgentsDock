@@ -686,6 +686,8 @@ class ProviderAuthorityLifecycleTests(unittest.IsolatedAsyncioTestCase):
         authority_root.mkdir(parents=True)
         regular = authority_root / ("run_restart-" + "5" * 32 + ".json")
         regular.write_text("stale", encoding="utf-8")
+        goal_resume = authority_root / ("codexgoal_restart-" + "7" * 32 + ".json")
+        goal_resume.write_text("stale goal resume", encoding="utf-8")
         legacy = authority_root / "run_legacy.json"
         legacy.write_text("stale legacy token", encoding="utf-8")
         outside_target = self.root / "outside.json"
@@ -703,9 +705,10 @@ class ProviderAuthorityLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         removed = await agent_server.purge_cross_chat_authority_files_after_restart()
 
-        self.assertEqual(removed, 3)
+        self.assertEqual(removed, 4)
         self.assertFalse(agent_server.CROSS_CHAT_CAPABILITIES)
         self.assertFalse(regular.exists())
+        self.assertFalse(goal_resume.exists())
         self.assertFalse(legacy.exists())
         self.assertFalse(linked.exists())
         self.assertTrue(outside_target.exists())

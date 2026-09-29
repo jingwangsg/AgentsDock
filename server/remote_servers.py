@@ -1172,9 +1172,12 @@ class RemoteServerManager:
 
             job.progress("service", "Opening the SSH tunnel…")
             if existing is not None:
-                server = existing
-                if existing.remote_port != result["remote_port"] or existing.install_dir != result["install_dir"] or existing.token != result["access_token"]:
-                    server = existing.model_copy(update={"remote_port": result["remote_port"], "install_dir": result["install_dir"], "token": result["access_token"]})
+                # The registry entry as it is now: a rename (or removal) may have happened while this ran.
+                server = self.servers.get(existing.id)
+                if server is None:
+                    raise RuntimeError("The remote server was removed during the deployment.")
+                if server.remote_port != result["remote_port"] or server.install_dir != result["install_dir"] or server.token != result["access_token"]:
+                    server = server.model_copy(update={"remote_port": result["remote_port"], "install_dir": result["install_dir"], "token": result["access_token"]})
                     self.servers[server.id] = server
                     self._save()
                     self._ensure_tunnel(server)

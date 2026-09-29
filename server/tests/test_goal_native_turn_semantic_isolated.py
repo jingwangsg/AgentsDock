@@ -143,6 +143,23 @@ class GoalNativeTurnSemanticTests(unittest.TestCase):
         self.assertEqual(self.page(after=19, limit=500), warm_page)
         self.assertEqual(self.answers(warm_page["events"], GOAL), [21, 32, 41, 43, 51])
 
+    def test_imported_goal_turns_each_keep_their_answer(self):
+        # Codex history import: one prompt, then a goal's native turns under one import run id.
+        def imported(seq, kind, native, **fields):
+            return event(seq, kind, "import_goal", imported=True,
+                         provider_origin={"provider": "codex", "turn_id": native}, **fields)
+        events = [imported(1, "turn_started", "n1", prompt="Monitor training")]
+        for turn in range(1, 7):
+            events += [
+                imported(10 * turn, "reasoning_summary", f"n{turn}", phase="commentary", text=f"Checking {turn}"),
+                imported(10 * turn + 1, "assistant_text", f"n{turn}", phase="final_answer", text=f"Report {turn}"),
+            ]
+        self.write(events)
+        self.ns["TIMELINE_INDEX_CACHE"].clear()
+        keys = [item["key"] for item in self.ns["_build_timeline_index_locked"]("chat")["landmarks"]]
+        self.assertEqual(keys, ["turn:import_goal", *(f"turn:import_goal:start-{10 * turn}" for turn in range(2, 7))])
+        self.assertEqual(self.answers(self.page(limit=500)["events"], "import_goal"), [11, 21, 31, 41, 51, 61])
+
 
 if __name__ == "__main__":
     unittest.main()

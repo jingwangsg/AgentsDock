@@ -1,5 +1,24 @@
 # Public development log
 
+## 2026-09-30 — Resume goal keeps its tools; more reload and Android fixes
+
+- A goal started with Resume goal gets its own provider authority for the whole
+  operation (publish, jobs subject to the chat's jobs access, emergency, Team
+  read) and loses it when the operation ends, however it ends. Publishing from any goal
+  continuation no longer fails with "no active agent turn can receive artifacts".
+- Goal replies imported from Codex history show after a reload too, one item per
+  native turn.
+- Android: the ⋯ menu of each server in Servers works (it did nothing; on iOS it
+  has a Cancel button), and inactive servers get a live status dot from a
+  background check instead of staying "Cached". A server whose identity changed
+  stays "Cached" until it is selected.
+- Chat Markdown shows an image it cannot load as a link that opens it, labelled
+  by its alt text, instead of a broken picture on desktop or an
+  `https://`-prefixed path on mobile. Mobile still shows `https` and `data:`
+  images. Inside a link, the image is that link's text.
+- Renaming a remote while it redeploys keeps the new name, and a remote removed
+  during its own redeploy is not written back.
+
 ## 2026-09-30 — Goal turns can use AgentsDock tools; fixes found while debugging a missing chart
 
 - When a chat turn continues as a Codex goal, the continuation turns Codex

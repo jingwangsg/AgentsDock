@@ -121,6 +121,7 @@ class NativeGoalSteerTests(unittest.IsolatedAsyncioTestCase):
             "finish_reasoning_summary_stream": AsyncMock(),
             "claim_codex_control_terminal_publication": AsyncMock(return_value=False),
             "stop_codex_goal_resume": AsyncMock(), "release_codex_control_thread": AsyncMock(),
+            "revoke_cross_chat_capability": AsyncMock(),
             "finish_codex_control_terminal_publication": AsyncMock(),
             "release_codex_interactive_control_lease": Mock(), "logger": SimpleNamespace(warning=Mock()),
         }

@@ -1267,6 +1267,10 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual((await invoke(goal))["result"]["content"][0]["text"], "published")
         self.assertEqual(executor.await_args.args[:2], (session_id, run_id))
+        # An explicit "Resume goal" runs under its own operation id.
+        explicit_resume = {**goal, "run_id": "codexgoal_0123456789abcdef"}
+        self.assertEqual((await invoke(explicit_resume))["result"]["content"][0]["text"], "published")
+        self.assertEqual(executor.await_args.args[:2], (session_id, "codexgoal_0123456789abcdef"))
 
         executor.reset_mock()
         for label, active in (
