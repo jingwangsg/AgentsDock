@@ -1455,6 +1455,7 @@ export interface CanvasCommentInput {
 
 export interface HealthCapabilities {
   canvas_v1?: { available: boolean; version: number; comments?: boolean; source_edit?: boolean }
+  runtime_cli_update_v1?: { available: boolean }
   local_provider_commands_v1?: LocalProviderCommandsCapability
   scheduled_jobs?: ScheduledJobsCapability
   session_rewind_v1?: SessionRewindCapability

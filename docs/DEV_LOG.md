@@ -1,5 +1,25 @@
 # Public development log
 
+## 2026-09-29 — Update Claude Code and Codex from the app
+
+- Server settings (desktop) and Agent runtimes (Android) have an Update CLI
+  button for Claude Code and Codex. It runs `claude update` / `codex update` on
+  that server, hub remotes included, with the same binary and PATH its chats
+  use, then shows the CLI's result and the new version. New Codex turns move to
+  the updated binary once running ones finish; a running Claude chat keeps its
+  current process. The button appears only on servers that advertise
+  `runtime_cli_update_v1`.
+
+## 2026-09-29 — Files open beside the chat; Canvas header wraps
+
+- Opening a file on the desktop now shows it to the right of the chat instead of
+  full screen. Full screen stays one click away and lasts until the last file
+  closes; a chat left with a file open comes back the way it was left.
+- The Canvas header shortens its title first and wraps onto a second line only
+  when the pane is too narrow for its controls, so Comment on an element,
+  Comments, Reload, Export and Close stay reachable. Before, a chat with several
+  Canvases pushed them off the pane.
+
 ## 2026-09-29 — Download a chat as HTML
 
 - Chats can also be downloaded as a standalone HTML page: the same content as the

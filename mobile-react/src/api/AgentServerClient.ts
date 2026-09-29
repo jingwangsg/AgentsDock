@@ -49,6 +49,7 @@ import type {
   RemoteServer,
   RemoteServerDeployJob,
   RuntimeCatalog,
+  RuntimeDiagnostic,
   ServerUpdateStatus,
   Session,
   SessionRewindResult,
@@ -278,6 +279,10 @@ export class AgentServerClient {
     return this.request('/api/admin/claude/token', {
       method: 'PUT', body: JSON.stringify({ token }),
     }, 30_000, false, 'native-control')
+  }
+  /** The server stops the CLI after 10 minutes; a download can take several. */
+  updateRuntimeCli(backend: 'claude' | 'codex'): Promise<{ output: string; diagnostic: RuntimeDiagnostic }> {
+    return this.request(`/api/admin/runtimes/${backend}/update`, { method: 'POST' }, 11 * 60_000, false, 'native-control')
   }
   serverUpdateStatus(): Promise<ServerUpdateStatus> { return this.get('/api/admin/update') }
   // Hub for SSH-only remote servers (see server/remote_servers.py): the
