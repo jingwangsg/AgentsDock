@@ -26,7 +26,7 @@ def assistant(text="Public progress", *, shape="response_item", phase=None, time
 def projection():
     ns = load_projection()
     names = {
-        "normalized_history_sync_cursor", "load_provider_history_with_cursor",
+        "normalized_history_sync_cursor", "load_provider_history_with_cursor", "codex_segments_through",
         "history_dedup_key", "history_timeline_message_keys", "is_native_goal_steer_event",
         "history_message_match_details", "history_messages_match", "history_message_match_tokens", "clean_assistant_text",
         "reconcile_cursor_history_items", "unsynced_history_items",

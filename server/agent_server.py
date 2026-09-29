@@ -396,6 +396,7 @@ try:
 except OSError:
     SERVER_VERSION = "development"
 SESSIONS_FILE = STATE_DIR / "sessions.json"
+SESSIONS_BACKUP_DIR = STATE_DIR / "sessions-backups"
 JOBS_FILE = STATE_DIR / "jobs.json"
 HANDOFF_DIGEST_JOBS_FILE = STATE_DIR / "handoff_digest_jobs.json"
 CROSS_CHAT_DB_FILE = STATE_DIR / "cross_chat.sqlite3"
@@ -10299,6 +10300,15 @@ class SessionStore:
                 raise RuntimeError(
                     f"refusing to replace unreadable sessions registry: {e}"
                 ) from e
+            # Titles, folders and archive state live only in this file, so keep the last
+            # ten copies from startup; an overwrite then costs at most one restart's changes.
+            try:
+                SESSIONS_BACKUP_DIR.mkdir(exist_ok=True)
+                shutil.copy2(SESSIONS_FILE, SESSIONS_BACKUP_DIR / f"sessions-{time.strftime('%Y%m%dT%H%M%S')}.json")
+                for stale in sorted(SESSIONS_BACKUP_DIR.glob("sessions-*.json"))[:-10]:
+                    stale.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("sessions registry backup failed: %s", exc)
         abandoned_imports = {
             str(session_id): session
             for session_id, session in self.sessions.items()
@@ -46885,6 +46895,23 @@ def find_codex_history(provider_id: str) -> Path | None:
     return selected
 
 
+def codex_segments_through(path: Path, provider_id: str) -> list[Path]:
+    """One Codex thread's rollout files up to and including ``path``, oldest first.
+
+    Codex continues a thread in new ``rollout-<timestamp>-<id>_<segment>.jsonl``
+    files, each holding only what was written after the previous file, so the
+    thread's history is all of them in timestamp (file name) order. Only such a
+    segment has predecessors; the first file is ``rollout-<timestamp>-<id>.jsonl``.
+    """
+    if f"-{provider_id}_" not in path.name or not CODEX_SESSIONS_ROOT.exists():
+        return [path]
+    older = [
+        candidate for candidate in bounded_jsonl_paths(CODEX_SESSIONS_ROOT)
+        if candidate.name < path.name and codex_transcript_meta(candidate)[0] == provider_id
+    ]
+    return [*sorted(older, key=lambda candidate: candidate.name), path]
+
+
 def codex_compaction_count(sess: dict[str, Any]) -> int:
     """Return the persisted per-thread compaction tally, tolerating bad data."""
 
@@ -48660,6 +48687,8 @@ def local_codex_session_candidates(known_provider_ids: set[str]) -> list[dict[st
     thread_names = codex_session_index_thread_names()
     candidates: list[dict[str, Any]] = []
     newest_paths: dict[str, tuple[float, Path, str | None]] = {}
+    # A later Codex segment starts mid-conversation (or empty); label from the first file.
+    first_paths: dict[str, Path] = {}
     # Native archive moves rollouts out of sessions/ into archived_sessions/.
     # Also prune that directory if an operator configured a broader scan root.
     for path in bounded_jsonl_paths(
@@ -48668,6 +48697,8 @@ def local_codex_session_candidates(known_provider_ids: set[str]) -> list[dict[st
         provider_id, cwd = codex_transcript_meta(path, exclude_subagents=True)
         if not provider_id or provider_id in known_provider_ids:
             continue
+        if provider_id not in first_paths or path.name < first_paths[provider_id].name:
+            first_paths[provider_id] = path
         with suppress(OSError):
             mtime = path.stat().st_mtime
             previous = newest_paths.get(provider_id)
@@ -48676,7 +48707,7 @@ def local_codex_session_candidates(known_provider_ids: set[str]) -> list[dict[st
     for provider_id, (mtime, path, cwd) in newest_paths.items():
         label = thread_names.get(provider_id)
         if not label:
-            label = codex_transcript_preview(path)
+            label = codex_transcript_preview(first_paths[provider_id])
         candidates.append({
             "provider_session_id": provider_id,
             "backend": BACKEND_CODEX,
@@ -48956,7 +48987,10 @@ def provider_history(sess: dict[str, Any], limit: int | None) -> tuple[Path | No
     if backend == BACKEND_CLAUDE:
         return path, parse_claude_history(path, limit)
     if backend == BACKEND_CODEX:
-        return path, parse_codex_history(path, limit)
+        segments = codex_segments_through(path, str(provider_session_identifier(session_provider_id(sess)) or ""))
+        return path, parse_codex_history_events(
+            (event for segment in segments for event in bounded_jsonl_events(segment)), limit,
+        )
     return None, []
 
 
@@ -49529,8 +49563,11 @@ def load_provider_history_with_cursor(
         return None, [], None, False
     backend = str(sess.get("backend") or DEFAULT_BACKEND).strip().lower()
     provider_id = str(session_provider_id(sess) or "")
+    older_segments = codex_segments_through(path, provider_id)[:-1] if backend == BACKEND_CODEX else []
     snapshot, continued = provider_history_source_snapshot(path, previous)
-    if previous is not None and not continued and not allow_rebaseline:
+    # A new Codex segment took over from the cursor's file: realign by content over the whole thread.
+    rotated = previous is not None and str(previous.get("source_path") or "") in {str(segment) for segment in older_segments}
+    if previous is not None and not continued and not allow_rebaseline and not rotated:
         raise ValueError(
             "provider transcript no longer extends the durable history cursor"
         )
@@ -49582,6 +49619,12 @@ def load_provider_history_with_cursor(
             expected_stat=snapshot["expected_stat"],
             preserve_invalid=backend == BACKEND_CLAUDE,
         )
+        if older_segments:
+            events = (
+                event
+                for source in (*(bounded_jsonl_events(segment) for segment in older_segments), events)
+                for event in source
+            )
         if backend == BACKEND_CLAUDE:
             items = parse_claude_history_events(events, limit, expected_session_id=str(sess.get("id") or "") or None, interruption_context=interruption_context)
         elif backend == BACKEND_CODEX:
@@ -87493,6 +87536,63 @@ async def delete_session_timeline_pin(
     if changed:
         await notify_timeline_pins_changed(session_id, state)
     return timeline_pin_json_response(state)
+
+
+@app.get("/api/sessions/{session_id}/export")
+async def export_session(session_id: str, format: Literal["markdown", "jsonl"] = "markdown") -> Response:
+    """Download a chat: readable Markdown, or its raw event log."""
+
+    ensure_session_not_initializing(session_id)
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="session not found")
+    title = str(sess.get("title") or "Conversation")
+    extension = "md" if format == "markdown" else "jsonl"
+    stem = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", title).split())[:120] or "conversation"
+    ascii_stem = " ".join(stem.encode("ascii", "ignore").decode().split()) or "conversation"
+    headers = {"Content-Disposition": (
+        f"attachment; filename=\"{ascii_stem}.{extension}\"; filename*=UTF-8''{quote(f'{stem}.{extension}')}"
+    )}
+    if format == "jsonl":
+        path = events_path(session_id)
+        body = await asyncio.to_thread(path.read_bytes) if path.exists() else b""
+        return Response(body, media_type="application/x-ndjson", headers=headers)
+
+    events = await asyncio.to_thread(read_events, session_id, limit=sys.maxsize, visible=True, cap_to_response_limit=False)
+    # Same event semantics as the handoff source pack, untruncated and without reasoning.
+    assistant_runs = {
+        event.get("run_id") for event in events
+        if event.get("type") == "assistant_text" and str(event.get("text") or "").strip()
+    }
+    details = [
+        f"- Backend: {sess.get('backend') or DEFAULT_BACKEND}" + (f" · model {sess['model']}" if sess.get("model") else ""),
+        f"- Working directory: {sess.get('cwd') or DEFAULT_CWD}",
+        f"- Created: {sess.get('created_at') or ''} · exported: {now_iso()}",
+        f"- AgentsDock session: {session_id}",
+    ]
+    if session_provider_id(sess):
+        details.append(f"- Provider session: {session_provider_id(sess)}")
+    lines = [f"# {title}", "", *details]
+    for event in events:
+        event_type = event.get("type")
+        stamp = str(event.get("ts") or "").replace("T", " ").removesuffix("Z")[:16]
+        if event_type == "turn_started" or is_native_goal_steer_event(event):
+            text = str(event.get("prompt") or "").strip()
+            if text:
+                lines.extend(["", f"## You · {stamp}", "", text])
+        elif event_type == "assistant_text" or (event_type == "turn_finished" and event.get("run_id") not in assistant_runs):
+            text = clean_assistant_text(str(event.get("text") or event.get("result_text") or "")).strip()
+            if text:
+                lines.extend(["", f"## Assistant · {stamp}", "", text])
+        elif event_type == "tool_started":
+            tool = event.get("tool") if isinstance(event.get("tool"), dict) else {}
+            summary = summarize_tool_input(tool.get("input"), 300)
+            lines.append(f"- Tool `{tool.get('name') or event.get('tool_id') or 'tool'}`" + (f": {summary}" if summary else ""))
+        elif event_type == "error":
+            text = str(event.get("message") or event.get("error") or "").strip()
+            if text:
+                lines.extend(["", f"**Error · {stamp}:** {text}"])
+    return Response("\n".join(lines) + "\n", media_type="text/markdown; charset=utf-8", headers=headers)
 
 
 @app.get("/api/sessions/{session_id}")
