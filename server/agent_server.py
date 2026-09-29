@@ -79716,6 +79716,7 @@ async def require_agent_token(request: Request, call_next):
         "/api/admin/codex/provider/models",
     }
     claude_token_admin_route = request.url.path == "/api/admin/claude/token"
+    runtime_update_admin_route = request.url.path in {"/api/admin/runtimes/claude/update", "/api/admin/runtimes/codex/update"}
     public_chat_shares_admin_route = (
         request.url.path == "/api/admin/chat-shares"
         or request.url.path.startswith("/api/admin/chat-shares/")
@@ -79755,6 +79756,7 @@ async def require_agent_token(request: Request, call_next):
         or team_hub_host_admin_route
         or codex_goals_admin_route
         or claude_token_admin_route
+        or runtime_update_admin_route
         or public_chat_shares_admin_route
         or interactive_chat_guest_route
         or codex_provider_mcp_route
@@ -79845,6 +79847,7 @@ async def require_agent_token(request: Request, call_next):
         or team_hub_host_admin_route
         or codex_goals_admin_route
         or claude_token_admin_route
+        or runtime_update_admin_route
         or public_chat_shares_admin_route
     ):
         if privileged_native_browser_request_forbidden(request):
@@ -82544,6 +82547,8 @@ async def health() -> dict[str, Any]:
                 "activation_recovery": True,
             },
             "tmux": tmux,
+            # POST /api/admin/runtimes/{claude|codex}/update; it needs the native admin token.
+            "runtime_cli_update_v1": {"available": bool(AGENT_TOKEN)},
             "canvas_v1": agentsdock_canvas.capability(STATE_DIR),
             "remote_servers_v1": {
                 **remote_servers.capability(REMOTE_SERVERS),
@@ -83691,6 +83696,54 @@ async def put_claude_oauth_token(req: ClaudeTokenAdminRequest, request: Request)
     # A cached "unauthenticated" would survive rechecks (probes are not auth evidence).
     store_runtime_diagnostic(await asyncio.to_thread(probe_runtime, BACKEND_CLAUDE), preserve_last_error=False)
     return JSONResponse({"oauth_token_configured": True}, headers={"Cache-Control": "no-store"})
+
+
+RUNTIME_CLI_UPDATE_LOCK = asyncio.Lock()
+RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS = 600
+
+
+@app.post("/api/admin/runtimes/{backend}/update")
+async def update_runtime_cli(backend: Literal["claude", "codex"], request: Request):
+    """Run the CLI's own `update` with the binary and PATH this server's chats spawn."""
+
+    require_native_admin_control(request)
+    if RUNTIME_CLI_UPDATE_LOCK.locked():
+        raise HTTPException(409, "A CLI update is already running on this server.")
+    async with RUNTIME_CLI_UPDATE_LOCK:
+        env = codex_app_server_env() if backend == BACKEND_CODEX else runner_env()
+        executable = shutil.which(runtime_executable(backend), path=env.get("PATH"))
+        if not executable:
+            raise HTTPException(404, f"The {backend} CLI is not installed on this server.")
+
+        def run_update() -> tuple[int, str]:
+            # One stream keeps the CLI's own order, so the tail ends with its result line.
+            proc = subprocess.Popen(
+                [executable, "update"], env=env, cwd=str(Path.home()), stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+                start_new_session=True,
+            )
+            try:
+                output = proc.communicate(timeout=RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS)[0]
+            except subprocess.TimeoutExpired:
+                # The whole group: an npm install left running would race the next update's install.
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+                raise
+            return proc.returncode, output
+
+        try:
+            returncode, output = await asyncio.to_thread(run_update)
+        except subprocess.TimeoutExpired:
+            raise HTTPException(500, f"`{backend} update` did not finish within {RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS / 60:g} minutes.") from None
+        if backend == BACKEND_CODEX:
+            # New Codex turns start on the updated binary; running ones finish on the old process.
+            await refresh_codex_app_server_binary(force=True)
+        diagnostic = public_runtime_diagnostic(await asyncio.to_thread(runtime_diagnostic, backend, force=True))
+    output = "\n".join(output.strip().splitlines()[-5:])[-2000:]
+    # 500, not 502/504: those mean the hub could not reach this server, and clients treat them so.
+    if returncode:
+        raise HTTPException(500, f"`{backend} update` exited with {returncode}" + (f": {output}" if output else "."))
+    return JSONResponse({"output": output, "diagnostic": diagnostic}, headers={"Cache-Control": "no-store"})
 
 
 CODEX_PROVIDER_SETTINGS_LOCK = asyncio.Lock()
