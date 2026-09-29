@@ -82,6 +82,7 @@ import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } fro
 import { createUploadFormData } from '../lib/upload-form'
 import { teamNetworkRequestPath } from '../lib/team-network'
 import { retriesStaleGitAction } from '../lib/workspace-changes'
+import type { ConversationExportFormat } from '../lib/file-transfer'
 
 interface SessionResponse {
   session: Session
@@ -256,7 +257,7 @@ export class AgentServerClient {
   workspaceDownloadURL(sessionId: string, path: string): string {
     return this.url(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/download?path=${encodeURIComponent(path)}`)
   }
-  sessionExportURL(sessionId: string, format: 'markdown' | 'jsonl'): string {
+  sessionExportURL(sessionId: string, format: ConversationExportFormat): string {
     return this.url(`/api/sessions/${encodeURIComponent(sessionId)}/export?format=${format}`)
   }
   authHeaders(): Record<string, string> {

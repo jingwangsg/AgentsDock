@@ -101,12 +101,13 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
   const downloadConversation = () => {
     if (!session || !scopeIsCurrent()) return
     const start = (format: ConversationExportFormat) => void conversationTransfer.start(conversationTransferRequest(session, client, format, () => scopeIsCurrent() && useAppStore.getState().connected))
-    // Android lays three buttons out as neutral, negative, positive and ignores style: 'cancel'.
+    // Android shows at most three buttons (neutral, negative, positive), so three formats leave no
+    // room for Cancel: tapping outside or Back dismisses. (MenuView does not open inside the Chat details Modal.)
     Alert.alert('Download conversation', 'Choose a format, then pick where to keep it in the share sheet.', [
-      { text: 'Cancel', style: 'cancel' },
       { text: 'Event log (.jsonl)', onPress: () => start('jsonl') },
+      { text: 'HTML (.html)', onPress: () => start('html') },
       { text: 'Markdown (.md)', onPress: () => start('markdown') },
-    ])
+    ], { cancelable: true })
   }
   const copySessionId = async () => {
     if (!providerSessionId || !scopeIsCurrent()) return

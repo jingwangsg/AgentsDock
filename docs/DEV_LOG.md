@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-09-29 — Download a chat as HTML
+
+- Chats can also be downloaded as a standalone HTML page: the same content as the
+  Markdown download, with messages rendered (tables, code, links) and light and
+  dark styles. Raw HTML inside messages is shown as text, and the page loads
+  nothing from the network when opened. Desktop has "Download as HTML" in both
+  chat menus; on Android, Download conversation offers the three formats (tap
+  outside to cancel). The server renders the page (`format=html`) off its event
+  loop with the new dependency markdown-it-py; the desktop tells you when a
+  server is too old for HTML.
+
 ## 2026-09-29 — Canvas HTML export, one output row per path, review fixes
 
 - A Canvas can be exported as a standalone HTML page from its toolbar. The page

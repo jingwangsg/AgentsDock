@@ -132,15 +132,15 @@ export function workspaceTransferRequest(entry: WorkspaceEntry, sessionId: strin
   }
 }
 
-export type ConversationExportFormat = 'markdown' | 'jsonl'
+export type ConversationExportFormat = 'markdown' | 'html' | 'jsonl'
 
 export function conversationTransferRequest(session: { id: string; title?: string | null }, client: AgentServerClient, format: ConversationExportFormat, isCurrent: () => boolean): FileTransferRequest {
   const title = session.title?.trim() || 'Conversation'
   // The server's Content-Disposition rule, which the desktop saves under, so both clients name a chat alike.
   const stem = title.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim() || 'conversation'
   return {
-    action: 'share', filename: `${stem}.${format === 'markdown' ? 'md' : 'jsonl'}`, title,
-    contentType: format === 'markdown' ? 'text/markdown' : 'application/x-ndjson',
+    action: 'share', filename: `${stem}.${{ markdown: 'md', html: 'html', jsonl: 'jsonl' }[format]}`, title,
+    contentType: { markdown: 'text/markdown', html: 'text/html', jsonl: 'application/x-ndjson' }[format],
     isCurrent,
     source: () => ({ url: client.sessionExportURL(session.id, format), headers: client.authHeaders() }),
   }
