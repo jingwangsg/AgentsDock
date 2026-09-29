@@ -69,3 +69,35 @@ body.canvas-resizing .canvas-pane iframe { pointer-events: none; }
 }
 .canvas-pane-feedback small { grid-column: 1 / -1; color: var(--muted); font-size: var(--text-size-caption); }
 .canvas-pane-feedback .primary-button { align-self: end; }
+
+/* Comment threads sit between the preview and the new-comment footer. */
+.canvas-pane { grid-template-rows: auto minmax(0, 1fr) auto auto auto; }
+.canvas-pane-comment-count { min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--bg); font-size: var(--text-size-caption); line-height: 16px; text-align: center; }
+.canvas-pane-comments { max-height: 45vh; overflow: auto; display: grid; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.canvas-comment-thread { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--bg); }
+.canvas-comment-thread.active { border-color: var(--accent); }
+.canvas-comment-thread.resolved { opacity: .7; }
+.canvas-comment-thread header { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.canvas-comment-anchor { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 2px 4px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text); font: inherit; font-size: var(--text-size-label); cursor: pointer; text-align: left; }
+.canvas-comment-anchor:hover { background: var(--interaction-hover); }
+.canvas-comment-number { flex: none; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px 10px 10px 2px; background: var(--accent); color: var(--bg); font-size: var(--text-size-caption); font-weight: 700; line-height: 20px; text-align: center; }
+.canvas-comment-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-size-meta); }
+.canvas-comment-detached { flex: none; color: var(--muted); font-size: var(--text-size-caption); }
+.canvas-comment-exchange { display: grid; gap: 4px; }
+.canvas-comment-message { display: flex; align-items: baseline; gap: 6px; }
+.canvas-comment-message p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-size-label); }
+.canvas-comment-mode { flex: none; padding: 0 6px; border-radius: 4px; font-size: var(--text-size-caption); font-weight: 700; background: var(--surface-3); color: var(--muted); }
+.canvas-comment-mode.edit { color: var(--accent); }
+.canvas-comment-reply { padding-left: 10px; border-left: 2px solid var(--border); font-size: var(--text-size-label); min-width: 0; }
+.canvas-comment-status { margin: 0; color: var(--muted); font-size: var(--text-size-caption); }
+.canvas-comment-reply-box { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.canvas-comment-reply-box textarea { min-height: 34px; max-height: 120px; resize: vertical; border-radius: var(--radius-control); padding: 6px 8px; font: inherit; font-size: var(--text-size-label); background: var(--field-surface); color: var(--field-text); border: 1px solid var(--field-border); }
+.canvas-comment-submit { display: flex; align-items: end; gap: 6px; }
+.canvas-comment-resolved-toggle { justify-self: start; padding: 2px 4px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: var(--text-size-caption); cursor: pointer; }
+
+/* Editable source: a bar with Save/Discard over the CodeMirror editor. */
+.canvas-pane-editor { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-height: 0; }
+.canvas-pane-editor-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: var(--text-size-caption); }
+.canvas-pane-editor-bar > span:first-child { flex: 1; }
+.canvas-pane-editor-stale { color: var(--danger-text); }
+.canvas-pane-fix { margin-top: 10px; }

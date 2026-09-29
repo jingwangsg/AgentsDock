@@ -1,5 +1,5 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from './provider-usage'
-import type { CanvasRecord, CanvasSummary, CodexKillWritersResult } from './types'
+import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult } from './types'
 import type { ChatOutputsSummary } from './chat-outputs'
 import type {
   AgentFile,
@@ -559,6 +559,12 @@ export interface AgentsDockAPI {
     list(sessionId: string): Promise<{ canvases: CanvasSummary[] }>
     get(sessionId: string, name: string): Promise<CanvasRecord>
     putState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }>
+    putSource(sessionId: string, name: string, source: string, baseRevision: number): Promise<CanvasRecord>
+    comments(sessionId: string, name: string): Promise<{ threads: CanvasCommentThread[] }>
+    comment(sessionId: string, name: string, anchor: CanvasCommentAnchor, input: CanvasCommentInput): Promise<{ thread: CanvasCommentThread }>
+    reply(sessionId: string, name: string, threadId: string, input: CanvasCommentInput): Promise<{ thread: CanvasCommentThread }>
+    setCommentStatus(sessionId: string, name: string, threadId: string, status: CanvasCommentThread['status']): Promise<{ thread: CanvasCommentThread }>
+    deleteComment(sessionId: string, name: string, threadId: string): Promise<{ deleted: string }>
   }
   chat: {
     /** Outputs and sources aggregated over the whole cached history, not just the renderer's window. */

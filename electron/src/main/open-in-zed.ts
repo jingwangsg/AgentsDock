@@ -26,8 +26,12 @@ export function zedTarget(input: OpenInZedInput): string {
   const sshHost = input.sshHost?.trim() || ''
   if (!sshHost) return path
   if (sshHost.startsWith('-') || !SSH_HOST_PATTERN.test(sshHost)) throw new Error('The SSH host for this server is invalid.')
+  // Only the hub resolves its cluster notations: oci@<cluster> is the Sky alias itself, and an
+  // osmo@ workflow is reached through `osmo workflow exec`, which a URL cannot express.
+  if (sshHost.startsWith('osmo@')) throw new Error('Open in Zed cannot reach an osmo@ workflow: it has no plain SSH host.')
+  const destination = sshHost.startsWith('oci@') ? sshHost.slice('oci@'.length) : sshHost
   // Zed parses this with url::Url and percent-decodes the path, so `#`, `?` and `%` in a directory name must be encoded.
-  return `ssh://${sshHost}${path.split('/').map(encodeURIComponent).join('/')}`
+  return `ssh://${destination}${path.split('/').map(encodeURIComponent).join('/')}`
 }
 
 export function findZedCli(candidates: readonly string[] = ZED_CLI_CANDIDATES): string | null {

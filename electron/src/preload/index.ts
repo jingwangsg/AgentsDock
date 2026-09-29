@@ -356,7 +356,13 @@ const api: AgentsDockAPI = {
   canvas: {
     list: sessionId => ipcRenderer.invoke('canvas:list', sessionId),
     get: (sessionId, name) => ipcRenderer.invoke('canvas:get', sessionId, name),
-    putState: (sessionId, name, state) => ipcRenderer.invoke('canvas:put-state', sessionId, name, state)
+    putState: (sessionId, name, state) => ipcRenderer.invoke('canvas:put-state', sessionId, name, state),
+    putSource: (sessionId, name, source, baseRevision) => ipcRenderer.invoke('canvas:put-source', sessionId, name, source, baseRevision),
+    comments: (sessionId, name) => ipcRenderer.invoke('canvas:comments', sessionId, name),
+    comment: (sessionId, name, anchor, input) => ipcRenderer.invoke('canvas:comment', sessionId, name, anchor, input),
+    reply: (sessionId, name, threadId, input) => ipcRenderer.invoke('canvas:reply', sessionId, name, threadId, input),
+    setCommentStatus: (sessionId, name, threadId, status) => ipcRenderer.invoke('canvas:comment-status', sessionId, name, threadId, status),
+    deleteComment: (sessionId, name, threadId) => ipcRenderer.invoke('canvas:delete-comment', sessionId, name, threadId)
   },
   chat: {
     outputs: sessionId => ipcRenderer.invoke('chat:outputs', sessionId)

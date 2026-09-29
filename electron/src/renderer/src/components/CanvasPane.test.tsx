@@ -1,11 +1,22 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import type { Session } from '@shared/types'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { CanvasCommentThread, Session } from '@shared/types'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CanvasPane, canvasWidthStorageKey } from './CanvasPane'
 
-const fixture = vi.hoisted(() => ({ state: { activeProfileId: 'profile', profileGeneration: 1, drafts: {} } }))
-vi.mock('../store/app-store', () => ({ useAppStore: Object.assign(
-  (selector: (state: typeof fixture.state) => unknown) => selector(fixture.state), { getState: () => fixture.state }) }))
+const fixture = vi.hoisted(() => ({ state: {
+  activeProfileId: 'profile', profileGeneration: 1, drafts: {} as Record<string, string>, health: null as unknown,
+  setDraftForSession: (() => {}) as (sessionId: string, text: string) => void,
+  sendPromptForSession: (() => Promise.resolve(true)) as (...args: unknown[]) => Promise<boolean>
+} }))
+vi.mock('../store/app-store', () => ({
+  useAppStore: Object.assign((selector: (state: typeof fixture.state) => unknown) => selector(fixture.state), { getState: () => fixture.state }),
+  interactiveClientCapabilities: () => ['codex_interactive_v1']
+}))
+// CodeMirror needs a real layout; a textarea keeps the pane's value/onChange contract observable.
+vi.mock('./CodeMirrorEditor', () => ({
+  CodeMirrorEditor: ({ value, onChange, ariaLabel, readOnly }: { value: string; onChange: (value: string, lines: number) => void; ariaLabel: string; readOnly: boolean }) =>
+    <textarea aria-label={ariaLabel} value={value} readOnly={readOnly} onChange={event => onChange(event.target.value, 1)} />
+}))
 
 const session = { id: 'chat-1' } as Session
 const target = { sessionId: 'chat-1', name: 'report' }
@@ -162,5 +173,139 @@ describe('CanvasPane find', () => {
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
     expect(post).toHaveBeenLastCalledWith(
       { source: 'agentsdock-canvas-host', call: 'find', args: ['x', { forward: false, matchCase: false, findNext: true }] }, '*')
+  })
+})
+
+
+describe('CanvasPane comments and source editing', () => {
+  const compiled = { name: 'report', path: '/c/report.canvas.tsx', source: 'old', javascript: 'var a = 1', diagnostics: null, state: {}, revision: 1 }
+  const element = { id: 'summary', tag: 'td', text: 'loss 2.41', html: '<td>loss 2.41</td>' }
+  const thread = (status: CanvasCommentThread['status'] = 'open'): CanvasCommentThread => ({
+    id: 'cmt_1', anchor: { canvas_id: 'summary', tag: 'td', text: 'loss 2.41', html: '<td>loss 2.41</td>' }, status, created_at: 't', updated_at: 't',
+    messages: [{ id: 'msg_1', mode: 'ask', body: 'why so high?', revision: 1, created_at: 't', turn: { run_id: null, queued_id: 'q1' }, reply: { status: 'queued' } }]
+  })
+
+  beforeEach(() => {
+    fixture.state.health = { capabilities: { canvas_v1: { available: true, version: 1, comments: true, source_edit: true } } }
+  })
+  afterEach(() => {
+    fixture.state.health = null
+    fixture.state.drafts = {}
+  })
+
+  async function renderWith(canvas: Record<string, ReturnType<typeof vi.fn>>) {
+    const api: Record<string, ReturnType<typeof vi.fn>> = {
+      list: vi.fn().mockResolvedValue({ canvases: [{ name: 'report', path: compiled.path, revision: 1 }] }),
+      get: vi.fn().mockResolvedValue(compiled),
+      putState: vi.fn(),
+      comments: vi.fn().mockResolvedValue({ threads: [] }),
+      ...canvas
+    }
+    vi.stubGlobal('agentsDock', { canvas: api })
+    renderCanvas()
+    const iframe = (await screen.findByTitle('Canvas report')) as HTMLIFrameElement
+    const post = vi.fn()
+    Object.defineProperty(iframe, 'contentWindow', { configurable: true, value: { postMessage: post } })
+    const reply = (message: unknown) => {
+      const event = new MessageEvent('message', { data: { source: 'agentsdock-canvas', message } })
+      Object.defineProperty(event, 'source', { value: iframe.contentWindow })
+      window.dispatchEvent(event)
+    }
+    return { api, post, reply }
+  }
+
+  it('asks about a picked element as a stored thread, pins it, and drops the pin once resolved', async () => {
+    const created = thread()
+    const { api, post, reply } = await renderWith({
+      comment: vi.fn().mockResolvedValue({ thread: created }),
+      setCommentStatus: vi.fn().mockResolvedValue({ thread: thread('resolved') })
+    })
+
+    reply({ kind: 'selection', elements: [element], complete: true })
+    fireEvent.change(await screen.findByPlaceholderText('Ask about this element, or describe a change…'), { target: { value: ' why so high? ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
+
+    await waitFor(() => expect(api.comment).toHaveBeenCalledWith('chat-1', 'report',
+      { canvas_id: 'summary', tag: 'td', text: 'loss 2.41', html: '<td>loss 2.41</td>' },
+      { mode: 'ask', body: 'why so high?', revision: 1, client_capabilities: ['codex_interactive_v1'] }))
+    expect(await screen.findByText('Waiting for the agent…')).toBeInTheDocument()
+    expect(post).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas-host', call: 'set-comments', args: [
+      [{ id: 'cmt_1', number: 1, canvasId: 'summary', tag: 'td', text: 'loss 2.41', label: 'summary · loss 2.41' }], 'cmt_1'] }, '*')
+    // Nothing went to the composer: the thread is the record now.
+    expect(fixture.state.drafts).toEqual({})
+
+    reply({ kind: 'comment-anchors', located: [] })
+    expect(await screen.findByText('Not in this revision')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    await waitFor(() => expect(post).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas-host', call: 'set-comments', args: [[], 'cmt_1'] }, '*'))
+    expect(api.setCommentStatus).toHaveBeenCalledWith('chat-1', 'report', 'cmt_1', 'resolved')
+  })
+
+  it('opens the thread a pin was clicked for and focuses its element from the list', async () => {
+    const { post, reply } = await renderWith({ comments: vi.fn().mockResolvedValue({ threads: [thread()] }) })
+    reply({ kind: 'comment-open', id: 'cmt_1' })
+    fireEvent.click(await screen.findByTitle('Show the element'))
+    expect(post).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas-host', call: 'focus-comment', args: ['cmt_1'] }, '*')
+  })
+
+  it('refreshes threads after a turn and reloads the canvas only when its revision changed', async () => {
+    const { api } = await renderWith({})
+    const turnEvent = () => window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: 'chat-1' } }))
+    await waitFor(() => expect(api.comments).toHaveBeenCalledTimes(1))
+    turnEvent()
+    await waitFor(() => expect(api.comments).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2))
+    expect(api.get).toHaveBeenCalledTimes(1)
+
+    api.list.mockResolvedValue({ canvases: [{ name: 'report', path: compiled.path, revision: 2 }] })
+    turnEvent()
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
+  })
+
+  it('saves edited source against the revision it started from and overwrites a concurrent edit only when confirmed', async () => {
+    const putSource = vi.fn()
+      .mockRejectedValueOnce(new Error('The canvas changed since it was opened (now revision 5).'))
+      .mockResolvedValueOnce({ ...compiled, source: 'mine', revision: 6 })
+    const { api } = await renderWith({ putSource })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+    fireEvent.change(await screen.findByLabelText('Canvas source'), { target: { value: 'mine' } })
+    expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
+    api.get.mockResolvedValue({ ...compiled, revision: 5 })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(putSource).toHaveBeenCalledTimes(2))
+    expect(putSource.mock.calls[0]).toEqual(['chat-1', 'report', 'mine', 1])
+    expect(confirm).toHaveBeenCalledWith('The Canvas changed after you started editing (usually the agent). Replace it with your version?')
+    expect(putSource.mock.calls[1]).toEqual(['chat-1', 'report', 'mine', 5])
+    expect(await screen.findByText('Saved')).toBeInTheDocument()
+  })
+
+  it('asks the agent to fix a canvas that does not compile', async () => {
+    const send = vi.fn().mockResolvedValue(true)
+    fixture.state.sendPromptForSession = send
+    vi.stubGlobal('agentsDock', { canvas: {
+      list: vi.fn().mockResolvedValue({ canvases: [] }),
+      get: vi.fn().mockResolvedValue({ ...compiled, javascript: '', diagnostics: 'report.tsx(3,1): error TS1005' }),
+      putState: vi.fn(),
+      comments: vi.fn().mockResolvedValue({ threads: [] })
+    } })
+    renderCanvas()
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix with agent' }))
+    expect(send).toHaveBeenCalledWith('chat-1', expect.stringContaining('report.tsx(3,1): error TS1005'), false, { consumeComposer: false })
+  })
+
+  it('falls back to a composer draft that keeps a question a question on servers without threads', async () => {
+    fixture.state.health = null
+    const drafts: Record<string, string> = {}
+    fixture.state.setDraftForSession = (sessionId, text) => { drafts[sessionId] = text }
+    const { reply } = await renderWith({})
+    reply({ kind: 'selection', elements: [element], complete: true })
+    fireEvent.change(await screen.findByPlaceholderText('Ask about this element, or describe a change…'), { target: { value: 'why?' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
+    expect(drafts['chat-1']).toContain('question about the selected elements')
+    expect(drafts['chat-1']).toContain('Question (answer it without modifying the canvas): why?')
+    expect(drafts['chat-1']).not.toContain('Requested change')
   })
 })

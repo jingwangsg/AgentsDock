@@ -963,6 +963,23 @@ function TraceReasoningEvent({ entry, sessionId, expanded = true }: { entry: Tra
   </li>
 }
 
+/** Copies a tool call's input or result, like the code toolbar on Markdown code blocks. */
+function ToolTextCopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await window.agentsDock.native.writeClipboard(text)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    } catch (error) {
+      useAppStore.getState().setError(error instanceof Error ? error.message : String(error))
+    }
+  }
+  return <button type="button" className="tool-event-copy" title={t('timeline.ui.copy')} aria-label={t('timeline.ui.copy')} onClick={() => void copy()}>
+    {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+  </button>
+}
+
 function traceToolHasInput(entry: TraceToolEntry): boolean {
   const input = entry.started?.tool?.input ?? entry.finished?.tool?.input
   if (input == null) return false
@@ -1016,8 +1033,8 @@ function ToolEvent({ entry, nativeCodex = false, active = false, runLive = false
         ? <button type="button" className={`tool-event-toggle${nativeCodex ? ' codex-activity-line' : ''}${active ? ' is-active' : ''}`} aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen(value => !value)}>{headline}</button>
         : <div className={`tool-event-toggle${nativeCodex ? ' codex-activity-line' : ''}${active ? ' is-active' : ''}`}>{headline}</div>}
       {open && hasDetails && <div id={detailsId} className="tool-event-body">
-        {input && <section><small>{t('timeline.ui.input')}</small><pre>{input}</pre></section>}
-        {output && <section><small>{t('timeline.ui.result')}</small><pre>{output}</pre></section>}
+        {input && <section><small>{t('timeline.ui.input')}<ToolTextCopyButton text={input} /></small><pre>{input}</pre></section>}
+        {output && <section><small>{t('timeline.ui.result')}<ToolTextCopyButton text={output} /></small><pre>{output}</pre></section>}
       </div>}
     </div>
   </li>

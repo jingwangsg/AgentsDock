@@ -1,5 +1,6 @@
 // Localized display strings use semantic catalog keys.
 import { t } from '@shared/i18n'
+import { codexFollowupPrompt, rewriteCodexDirectives } from '../lib/codex-directives'
 import { useLocale, type Locale } from '../lib/i18n'
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
@@ -75,7 +76,8 @@ export const MarkdownContent = memo(function MarkdownContent({
     [inlineChatReferences, inlineTeamReferences, sessionId, text]
   )
   const normalized = useMemo(
-    () => normalizeMathDelimiters(stripDecorativeEmojiPrefixes(preparedChatReferences.text)),
+    // After reference preparation, whose markers are matched against the original text.
+    () => normalizeMathDelimiters(stripDecorativeEmojiPrefixes(rewriteCodexDirectives(preparedChatReferences.text))),
     [preparedChatReferences.text]
   )
   const restoredNormalized = useMemo(
@@ -96,6 +98,16 @@ export const MarkdownContent = memo(function MarkdownContent({
   const onLink = useCallback((event: MouseEvent<HTMLElement>, href?: string) => {
     event.preventDefault()
     if (!href) return
+    const followup = codexFollowupPrompt(href)
+    if (followup !== null) {
+      // A suggestion goes into the composer for review, like Canvas feedback; it is never sent here.
+      if (sessionId) {
+        const store = useAppStore.getState()
+        const current = store.drafts[sessionId] ?? ''
+        store.setDraftForSession(sessionId, current.trim() ? `${current.replace(/\s+$/, '')}\n\n${followup}` : followup)
+      }
+      return
+    }
     if (openTeamMessageLink(href)) return
     if (/^(?:https?:\/\/|mailto:)/i.test(href)) { void window.agentsDock.native.openExternal(href); return }
     if (/\.canvas\.tsx(?:[?#].*)?$/i.test(href)) {
@@ -283,7 +295,7 @@ function secureMarkdownURL(value: string, key: string): string {
   // A file:// link renders with the internal workspace URL and opens through onLink as a path;
   // an image must never load a local file.
   if (key === 'href' && value.startsWith('file://')) return value
-  return parseTeamMessageLink(value) || canonicalSecurePeerInvite(value) ? value : defaultUrlTransform(value)
+  return parseTeamMessageLink(value) || canonicalSecurePeerInvite(value) || (key === 'href' && codexFollowupPrompt(value) !== null) ? value : defaultUrlTransform(value)
 }
 
 function markdownContentPropsEqual(previous: MarkdownContentProps, next: MarkdownContentProps): boolean {
@@ -752,7 +764,7 @@ function decodeLinkTarget(href: string): string {
 
 function isWorkspaceLink(href?: string): boolean {
   if (!href) return false
-  if (/^agentsdock:/i.test(href)) return false
+  if (/^agentsdock:/i.test(href) || codexFollowupPrompt(href) !== null) return false
   return !/^(?:https?:\/\/|mailto:)/i.test(href)
     && !href.startsWith('#')
 }

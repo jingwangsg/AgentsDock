@@ -203,6 +203,22 @@ describe('MarkdownContent', () => {
     expect(openLinked).not.toHaveBeenCalled()
   })
 
+  it('renders Codex citations as file links and follow-ups as draft suggestions', () => {
+    useAppStore.setState({ drafts: { 'chat-7': 'first' } })
+    render(<MarkdownContent
+      text={'See :codex-file-citation{path="/w/brief.pdf" purpose="output" page_number="2"}\n\n- :codex-followup[Summarize]{prompt="Summarize brief.pdf"}'}
+      sessionId="chat-7"
+    />)
+    expect(screen.getByRole('link', { name: 'brief.pdf (p. 2)' })).toHaveClass('workspace-reference-link')
+    const followup = screen.getByRole('link', { name: 'Summarize' })
+    expect(followup).not.toHaveClass('workspace-reference-link')
+    expect(followup.getAttribute('href')).toMatch(/^agentsdock-followup:/)
+    fireEvent.click(followup)
+    expect(useAppStore.getState().drafts['chat-7']).toBe('first\n\nSummarize brief.pdf')
+    expect(openLinked).not.toHaveBeenCalled()
+    useAppStore.setState({ drafts: {} })
+  })
+
   it('opens a web link that merely ends in .canvas.tsx externally, not as a Canvas', () => {
     const open = vi.fn()
     window.addEventListener('agentsdock:open-canvas', open)

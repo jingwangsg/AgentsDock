@@ -13,7 +13,7 @@ import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
 import { isImportedHistoryRecord, isImportedProviderControlMetadata, mergeProviderInterruptionEvent } from '../shared/provider-origin'
 import type { ChatShareMode, CreateChatShareInput } from '../shared/chat-shares'
 import type { WorkspaceGitAction, WorkspaceGitStatus, WorkspaceGitView } from '../shared/workspace-git'
-import type { CanvasRecord, CanvasSummary, CodexKillWritersResult } from '../shared/types'
+import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult } from '../shared/types'
 import { buildCanvasPage, canvasErrorPage, type CanvasHostTheme } from './canvas-protocol'
 import { parseMailHintPageAcknowledgment, TEAM_MAIL_HINTS_ENABLED, type MailHintPageAcknowledgment, type MailHintScope } from '../shared/team-mail-hints'
 import { TeamMailHintController } from './team-mail-hint-controller'
@@ -4405,6 +4405,15 @@ export class AppService {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
     const result = await scope.client.putCanvasState(sessionId, name, state)
+    this.assertCurrentScope(scope)
+    return result
+  }
+
+  /** Canvas source edits and comment threads: one scoped call each, like the state PUT above. */
+  async canvasCall<T>(call: (client: AgentServerClient) => Promise<T>): Promise<T> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const result = await call(scope.client)
     this.assertCurrentScope(scope)
     return result
   }

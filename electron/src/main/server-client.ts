@@ -1,7 +1,7 @@
 import { createReadStream, openAsBlob } from 'node:fs'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../shared/provider-usage'
 import { parseCodexAuthStatus } from '../shared/codex-auth'
-import type { CanvasRecord, CanvasSummary, CodexKillWritersResult } from '../shared/types'
+import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult } from '../shared/types'
 import { parseCodexProviderConfiguration, parseCodexProviderModels, parseCodexProviderTestResult, validateCodexProviderInput, validateCodexProviderModelTestInput, validateCodexProviderSelection } from '../shared/codex-provider'
 import { randomUUID } from 'node:crypto'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
@@ -1743,6 +1743,32 @@ export class AgentServerClient {
 
   putCanvasState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }> {
     return this.put(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/state`, { state })
+  }
+
+  /** Saves an edited source; the server answers 409 when the canvas changed after `baseRevision`. */
+  putCanvasSource(sessionId: string, name: string, source: string, baseRevision: number): Promise<CanvasRecord> {
+    return this.put(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/source`, { source, base_revision: baseRevision })
+  }
+
+  listCanvasComments(sessionId: string, name: string): Promise<{ threads: CanvasCommentThread[] }> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/comments`)
+  }
+
+  /** Stores the thread and starts its turn; the server refuses both together. */
+  createCanvasComment(sessionId: string, name: string, anchor: CanvasCommentAnchor, input: CanvasCommentInput): Promise<{ thread: CanvasCommentThread }> {
+    return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/comments`, { anchor, ...input })
+  }
+
+  replyCanvasComment(sessionId: string, name: string, threadId: string, input: CanvasCommentInput): Promise<{ thread: CanvasCommentThread }> {
+    return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/comments/${encodeURIComponent(threadId)}/messages`, input)
+  }
+
+  setCanvasCommentStatus(sessionId: string, name: string, threadId: string, status: CanvasCommentThread['status']): Promise<{ thread: CanvasCommentThread }> {
+    return this.patch(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/comments/${encodeURIComponent(threadId)}`, { status })
+  }
+
+  deleteCanvasComment(sessionId: string, name: string, threadId: string): Promise<{ deleted: string }> {
+    return this.delete(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/comments/${encodeURIComponent(threadId)}`)
   }
 
   /** Static runtime files (shell.html, vendor.js) that frame the compiled Canvas bundle. */

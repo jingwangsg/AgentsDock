@@ -601,7 +601,7 @@ export interface QueuePosition { queued_id: string; position: number }
 export interface ProviderCommandSelection {
   /** Opaque AgentsServer-owned identifier. The client must never send a filesystem path. */
   id: string
-  /** Inventory revision used by AgentsServer to reject stale selections. */
+  /** Inventory revision the selection was chosen from; AgentsServer checks only its format. */
   revision: string
 }
 
@@ -650,7 +650,7 @@ export interface QueuedTurn extends SharedChatAttribution {
   target_session_id?: string | null
   chat_references?: ChatReference[] | null
   team_references?: TeamReference[] | null
-  /** Opaque, revision-bound local provider command selected for this turn. */
+  /** Opaque local provider command selected for this turn. */
   skill_selection?: ProviderCommandSelection | null
   /** Durable identity for a queued same-server delivery. */
   cross_chat_envelope_id?: string | null
@@ -1761,7 +1761,52 @@ export interface CanvasRecord extends Omit<CanvasSummary, 'size'> {
   state: Record<string, unknown>
 }
 
+/** The element a comment thread is about, as the canvas runtime's selection reports it. */
+export interface CanvasCommentAnchor {
+  canvas_id: string | null
+  tag: string
+  text: string
+  html: string
+}
+
+/** 'ask' is answered in the chat without touching the canvas; 'edit' asks the agent to change it. */
+export type CanvasCommentMode = 'ask' | 'edit'
+
+export interface CanvasCommentReply {
+  status: 'queued' | 'running' | 'done' | 'failed' | 'stopped' | 'cancelled'
+  /** The turn's final answer once it is over. */
+  text?: string
+  finished_at?: string | null
+}
+
+export interface CanvasCommentMessage {
+  id: string
+  mode: CanvasCommentMode
+  body: string
+  revision: number
+  created_at: string
+  turn: { run_id: string | null; queued_id: string | null } | null
+  reply: CanvasCommentReply | null
+}
+
+export interface CanvasCommentThread {
+  id: string
+  anchor: CanvasCommentAnchor
+  status: 'open' | 'resolved'
+  created_at: string
+  updated_at: string
+  messages: CanvasCommentMessage[]
+}
+
+export interface CanvasCommentInput {
+  mode: CanvasCommentMode
+  body: string
+  revision: number
+  client_capabilities: string[]
+}
+
 export interface HealthCapabilities {
+  canvas_v1?: { available: boolean; version: number; comments?: boolean; source_edit?: boolean }
   provider_usage?: { available: boolean; version: number; backends?: Backend[] }
   subagent_limit_v1?: { version: number; backends?: Backend[] }
   codex_provider_v1?: { available?: boolean; version?: number; per_chat?: boolean; per_chat_models?: boolean; model_discovery?: boolean; model_compatibility?: boolean }

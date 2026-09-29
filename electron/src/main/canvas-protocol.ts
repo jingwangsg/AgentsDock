@@ -58,6 +58,78 @@ function parseTheme(raw: string | null): CanvasHostTheme {
   }
 }
 
+/**
+ * Comment pins, installed as window.__agentsdockComments by both shims: a numbered
+ * marker on the element each open thread is about, in a layer outside #root so
+ * React never sees it, re-placed whenever the report's layout changes. An anchor
+ * is found by data-canvas-id, then by tag and leading text; threads whose element
+ * is gone from this revision get no pin and are reported as not located.
+ * Mirrored in mobile-react/src/lib/canvas-page.ts.
+ */
+export const COMMENT_PINS_SCRIPT = `
+  window.__agentsdockComments = (() => {
+    const norm = value => String(value || '').replace(/\\s+/g, ' ').trim();
+    let pins = [], active = null, layer = null, frame = 0, reported = '';
+    const locate = pin => {
+      const scope = pin.canvasId ? document.querySelector('[data-canvas-id="' + CSS.escape(pin.canvasId) + '"]') : null;
+      const want = norm(pin.text).slice(0, 120);
+      if (scope && scope.tagName.toLowerCase() === pin.tag && (!want || norm(scope.textContent).startsWith(want))) return scope;
+      const root = scope || document.getElementById('root');
+      if (root && want) for (const element of root.querySelectorAll(pin.tag)) if (norm(element.textContent).startsWith(want)) return element;
+      return scope;
+    };
+    const place = () => {
+      frame = 0;
+      if (!layer) {
+        const style = document.createElement('style');
+        style.textContent = '#agentsdock-comment-pins{position:absolute;left:0;top:0;z-index:2147483646}'
+          + '#agentsdock-comment-pins button{position:absolute;min-width:22px;height:22px;margin:0;padding:0 6px;border:2px solid var(--canvas-background);border-radius:11px 11px 11px 2px;background:var(--canvas-accent);color:var(--canvas-background);font:700 11px/16px -apple-system,sans-serif;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.35)}'
+          + '#agentsdock-comment-pins button.active{transform:scale(1.25)}'
+          + '[data-agentsdock-comment]{outline:2px dashed var(--canvas-accent)!important;outline-offset:3px}';
+        document.head.appendChild(style);
+        layer = document.createElement('div');
+        layer.id = 'agentsdock-comment-pins';
+        document.body.appendChild(layer);
+        const root = document.getElementById('root') || document.body;
+        new ResizeObserver(schedule).observe(document.body);
+        new MutationObserver(schedule).observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'style'] });
+        window.addEventListener('resize', schedule);
+      }
+      for (const element of document.querySelectorAll('[data-agentsdock-comment]')) element.removeAttribute('data-agentsdock-comment');
+      layer.replaceChildren();
+      const located = [];
+      for (const pin of pins) {
+        const element = locate(pin);
+        if (!element) continue;
+        located.push(pin.id);
+        const rect = element.getBoundingClientRect();
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = String(pin.number);
+        button.title = pin.label || '';
+        if (pin.id === active) { button.className = 'active'; element.setAttribute('data-agentsdock-comment', 'active'); }
+        button.style.left = Math.max(0, rect.right + window.scrollX - 12) + 'px';
+        button.style.top = Math.max(0, rect.top + window.scrollY - 12) + 'px';
+        button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); post({ kind: 'comment-open', id: pin.id }); });
+        layer.appendChild(button);
+      }
+      const summary = located.join(',');
+      if (summary !== reported) { reported = summary; post({ kind: 'comment-anchors', located }); }
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(place); };
+    return {
+      set(next, nextActive) { pins = Array.isArray(next) ? next : []; active = nextActive || null; reported = null; schedule(); },
+      focus(id) {
+        active = id;
+        const pin = pins.find(candidate => candidate.id === id);
+        const element = pin && locate(pin);
+        if (element && element.scrollIntoView) element.scrollIntoView({ block: 'center', inline: 'nearest' });
+        schedule();
+      },
+    };
+  })();
+`
+
 /** Runs before vendor.js: bridges the runtime's WKWebView channel to postMessage in both directions. */
 const BRIDGE_SHIM = `
 (() => {
@@ -127,11 +199,14 @@ const BRIDGE_SHIM = `
     reportFind();
   };
 
+${COMMENT_PINS_SCRIPT}
   window.addEventListener('message', event => {
     const data = event.data;
     if (!data || data.source !== HOST || typeof data.call !== 'string') return;
     if (data.call === 'find') { runFind(data.args && data.args[0], data.args && data.args[1]); return; }
     if (data.call === 'clear-find') { clearFind(); reportFind(); return; }
+    if (data.call === 'set-comments') { window.__agentsdockComments.set(data.args && data.args[0], data.args && data.args[1]); return; }
+    if (data.call === 'focus-comment') { window.__agentsdockComments.focus(data.args && data.args[0]); return; }
     const host = globalThis.__zedCanvasHost;
     if (!host || typeof host[data.call] !== 'function') return;
     try { host[data.call](...(Array.isArray(data.args) ? data.args : [])); }

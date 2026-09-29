@@ -156,7 +156,8 @@ describe('Composer', () => {
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
       value: {
-        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) }
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        files: { mediaURL: vi.fn((_profileId: string, _generation: number, _sessionId: string, fileId: string) => `agentsdock-media://test/${fileId}`) }
       } as unknown as AgentsDockAPI
     })
     useAppStore.setState({
@@ -3699,6 +3700,8 @@ describe('Composer', () => {
     render(<Composer />)
 
     expect(screen.getByText('1 attachment')).toBeInTheDocument()
+    // The queue shows the image itself, not only its count; this device never saw the upload.
+    expect(screen.getByRole('img', { name: 'Attachment' })).toHaveAttribute('src', 'agentsdock-media://test/image-1')
   })
 
   it('renders a promoted queue row as immutable provider handoff work', () => {
@@ -4300,7 +4303,7 @@ describe('Composer', () => {
       })
     const send = vi.fn()
       .mockRejectedValueOnce(new Error(
-        "Error invoking remote method 'turns:send': Error: the provider command list changed; choose the command again"
+        "Error invoking remote method 'turns:send': Error: the selected provider command is no longer available"
       ))
       .mockResolvedValueOnce({ session: { id: 'chat-1', title: 'Chat', backend: 'codex' }, queued: false })
     Object.defineProperty(window, 'agentsDock', {

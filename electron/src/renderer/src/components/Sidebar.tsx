@@ -251,7 +251,9 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
           <ShortcutTooltip shortcut="findChat" label={t("ui.Sidebar.Sidebar.search_chats_02a39c4")} side="right"><button type="button" className="sidebar-project-action" aria-label={t("ui.Sidebar.Sidebar.search_chats_02a39c4")} disabled={Boolean(switchingProfileId)} onClick={() => handleMenuCommand('find-chat', useAppStore.getState, value => useAppStore.setState(value))}><Search size={14} /></button></ShortcutTooltip>
         </div>
       </div>
-      <DndContext collisionDetection={sidebarCollisionDetection} sensors={sensors} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={finishDrag}>
+      {/* onDragOver fires only when the hovered row changes; onDragMove keeps before/after current
+          while the pointer moves within a row, so the first and last slot of a folder are reachable. */}
+      <DndContext collisionDetection={sidebarCollisionDetection} sensors={sensors} onDragStart={onDragStart} onDragMove={onDragOver} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={finishDrag}>
         <div className="session-list" ref={sessionListRef} inert={switchingProfileId ? true : undefined} aria-busy={Boolean(switchingProfileId)} onScroll={event => rememberSidebarScroll(event.currentTarget.scrollTop)}>
           {sections.map(section => (
             <SidebarSection

@@ -3531,3 +3531,12 @@ button.tool-event-toggle:hover { background: #242424; }
 .app-crash h1 { margin: 0; font-size: var(--text-size-title); }
 .app-crash p { margin: 0; color: var(--muted); }
 .app-crash pre { margin: 0; max-height: 50vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-size-meta); color: var(--muted); }
+
+/* Copy button beside a tool call's Input / Result label. */
+.tool-event-copy { margin-left: 6px; padding: 1px 3px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--muted); cursor: pointer; vertical-align: middle; display: inline-flex; }
+.tool-event-copy:hover { background: var(--interaction-hover); color: var(--text); }
+
+/* Attachments of a queued message: thumbnails for images, names for other files. */
+.queue-attachments { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.queue-attachment-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 5px; border: 1px solid var(--border); background: var(--surface-2); }
+.queue-attachment-file { display: inline-flex; align-items: center; gap: 4px; max-width: 180px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: var(--text-size-caption); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

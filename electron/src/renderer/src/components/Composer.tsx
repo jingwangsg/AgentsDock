@@ -4127,6 +4127,21 @@ function PendingQueuedRow({ submission }: { submission: PendingTurnSubmission })
   </div>
 }
 
+/**
+ * A queued message's attachment: a thumbnail while the file is (or may be) an
+ * image, else its name. Other devices never saw the upload, so an unknown file
+ * tries the image first and falls back to the name.
+ */
+function QueuedAttachment({ profileId, profileGeneration, sessionId, fileId }: { profileId: string; profileGeneration: number; sessionId: string; fileId: string }) {
+  const known = useAppStore(state => state.snapshots[sessionId]?.files.find(file => file.id === fileId))
+  const [failed, setFailed] = useState(false)
+  const name = known?.filename ?? t('composer.queue.attachment')
+  if (!failed && (!known?.content_type || known.content_type.startsWith('image/'))) {
+    return <img className="queue-attachment-thumb" src={window.agentsDock.files.mediaURL(profileId, profileGeneration, sessionId, fileId)} alt={name} title={name} onError={() => setFailed(true)} />
+  }
+  return <span className="queue-attachment-file" title={name}><File size={12} aria-hidden="true" />{name}</span>
+}
+
 function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sourceSessionTitle, sessionId, running, activeCodexGoal, drop, steeringPending, promotionPending, runtimeError, crossChatFence, blockingDelivery, canSkipExactDelivery, canSkipExactPeerDelivery, asyncControls, reorderable, moving, onMove, onEdit }: { profileId: string | null; profileGeneration: number; steeringScope: SteeringScope; turn: QueuedTurn; sourceSessionTitle?: string; sessionId: string; running: boolean; activeCodexGoal: boolean; drop: { id: string; placement: 'before' | 'after' } | null; steeringPending: boolean; promotionPending: boolean; runtimeError: string | null; crossChatFence: QueuedTurnCrossChatFence; blockingDelivery: QueuedTurn | null; canSkipExactDelivery: boolean; canSkipExactPeerDelivery: boolean; asyncControls: boolean; reorderable: boolean; moving: boolean; onMove: (direction: 'up' | 'down') => void; onEdit: (body?: string) => void }) {
   useLocale()
   const openCodeSteeringBlocked = useAppStore(state => running && state.sessions.find(session => session.id === sessionId)?.backend === 'opencode')
@@ -4349,6 +4364,9 @@ function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sourceSe
       {senderTitle && <small className="queue-agent-sender" title={senderTitle}>{senderTitle}</small>}
       {scheduledJob && <small>{turn.job_title || t('timeline.minimap.scheduledJob')}</small>}
       <span className={`queue-prompt${bodyExpanded ? ' expanded' : ''}`} title={preview}>{preview}</span>
+      {profileId && turn.file_ids.length > 0 && <span className="queue-attachments">
+        {turn.file_ids.map(fileId => <QueuedAttachment key={fileId} profileId={profileId} profileGeneration={profileGeneration} sessionId={sessionId} fileId={fileId} />)}
+      </span>}
       {agentMessage && turn.message_edited_by_user && <small className="queue-agent-edited">{t('composer.agentQueue.editedByYou')}</small>}
       {agentMessage && !promoted && (messageBody == null || label.length > 160 || label.includes('\n')) && <button type="button" className="queue-body-toggle" disabled={bodyLoading}
         onClick={() => void viewMessageBody()}>{bodyLoading ? t('composer.agentQueue.loading') : bodyExpanded ? t('composer.agentQueue.showLess') : t('composer.agentQueue.viewMessage')}</button>}

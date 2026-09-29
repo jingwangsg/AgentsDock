@@ -1,7 +1,7 @@
 import { CANVAS_HOST_MESSAGE_SOURCE, CANVAS_NAME_PATTERN, CANVAS_PAGE_MESSAGE_SOURCE, canvasPageURL, type CanvasHostTheme } from '@shared/canvas'
 import { t } from '@shared/i18n'
-import type { CanvasRecord, CanvasSummary, Session } from '@shared/types'
-import { ChevronDown, ChevronUp, Crosshair, Eye, FileCode2, RefreshCw, Search, X } from 'lucide-react'
+import type { CanvasCommentMode, CanvasCommentThread, CanvasRecord, CanvasSummary, Session } from '@shared/types'
+import { ChevronDown, ChevronUp, Crosshair, Eye, FileCode2, MessageSquare, RefreshCw, Search, X } from 'lucide-react'
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
@@ -14,7 +14,9 @@ import {
 } from 'react'
 import { saveLocalStorage } from '../lib/local-storage'
 import { notifyTimelineViewportLayout } from '../lib/workspace-layout'
-import { useAppStore } from '../store/app-store'
+import { interactiveClientCapabilities, useAppStore } from '../store/app-store'
+import { CanvasCommentSubmit, CanvasCommentThreads, canvasAnchorLabel } from './CanvasCommentThreads'
+import { CodeMirrorEditor } from './CodeMirrorEditor'
 import './CanvasPane.css'
 
 export interface CanvasTarget {
@@ -41,6 +43,9 @@ type PageMessage =
   | { kind: 'error'; error: string }
   | { kind: 'selection'; elements: SelectedElement[]; complete: boolean }
   | { kind: 'link'; url: string }
+  // From the comment pins (canvas-protocol.ts COMMENT_PINS_SCRIPT).
+  | { kind: 'comment-open'; id: string }
+  | { kind: 'comment-anchors'; located: string[] }
 
 /** The in-iframe find reports over the same channel keyed on `type`, so it never collides with a runtime `kind`. */
 interface FindResult { type: 'find-result'; total: number; active: number }
@@ -75,6 +80,10 @@ function hostTheme(): CanvasHostTheme {
   }
 }
 
+const errorText = (caught: unknown) => caught instanceof Error ? caught.message : String(caught)
+// The server's 409 text for a source save that lost to a newer revision (agentsdock_canvas.RevisionConflict).
+const REVISION_CONFLICT = /changed since it was opened/
+
 function appendDraft(sessionId: string, text: string): void {
   const store = useAppStore.getState()
   const current = store.drafts[sessionId] ?? ''
@@ -84,6 +93,10 @@ function appendDraft(sessionId: string, text: string): void {
 export function CanvasPane({ workspaceKey, session, target, onClose }: { workspaceKey: string; session: Session; target: CanvasTarget; onClose: () => void }) {
   const profileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
+  const canvasCapability = useAppStore(state => state.health?.capabilities?.canvas_v1)
+  // Older servers keep the draft-based feedback and the read-only source.
+  const commentsAvailable = canvasCapability?.comments === true
+  const sourceEditable = canvasCapability?.source_edit === true
   const [name, setName] = useState(target.name)
   const [canvases, setCanvases] = useState<CanvasSummary[]>([])
   const [record, setRecord] = useState<CanvasRecord | null>(null)
@@ -94,6 +107,16 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
   const [selecting, setSelecting] = useState(false)
   const [selection, setSelection] = useState<SelectedElement[] | null>(null)
   const [feedback, setFeedback] = useState('')
+  const [threads, setThreads] = useState<CanvasCommentThread[]>([])
+  const [commentsOpen, setCommentsOpen] = useState(false)
+  const [activeThread, setActiveThread] = useState<string | null>(null)
+  const [located, setLocated] = useState<ReadonlySet<string> | null>(null)
+  const [commentBusy, setCommentBusy] = useState(false)
+  const [commentError, setCommentError] = useState<string | null>(null)
+  /** Unsaved source edits and the revision they started from; null while the editor shows the saved source. */
+  const [sourceDraft, setSourceDraft] = useState<{ text: string; baseRevision: number } | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [findOpen, setFindOpen] = useState(false)
   const [findQuery, setFindQuery] = useState('')
   const [findResult, setFindResult] = useState<{ total: number; active: number }>({ total: 0, active: 0 })
@@ -144,19 +167,48 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
 
   useEffect(() => { void load() }, [load, reloadToken])
 
-  // A history rewind deletes the canvases it covers: re-list, and leave when the open one is gone.
+  const loadComments = useCallback(async () => {
+    if (!commentsAvailable) return
+    try {
+      setThreads((await window.agentsDock.canvas.comments(session.id, name)).threads)
+    } catch (caught) {
+      setCommentError(errorText(caught))
+    }
+  }, [commentsAvailable, name, session.id])
+  useEffect(() => {
+    setThreads([])
+    setActiveThread(null)
+    setLocated(null)
+    void loadComments()
+  }, [loadComments])
+
+  // Pins for the open threads, numbered like the list; resent whenever the page (re)loads.
+  const pins = useMemo(() => threads.flatMap((thread, index) => thread.status === 'open' ? [{
+    id: thread.id, number: index + 1, canvasId: thread.anchor.canvas_id, tag: thread.anchor.tag, text: thread.anchor.text, label: canvasAnchorLabel(thread.anchor)
+  }] : []), [threads])
+  const pinsLive = useRef({ pins, active: activeThread })
+  pinsLive.current = { pins, active: activeThread }
+
+  // Turns and rewinds can change the canvases: re-list, reload when the open one has a new
+  // revision (an agent edit, a comment's Edit), leave when it is gone, and refresh the threads.
+  const revisionLive = useRef<number | null>(null)
+  revisionLive.current = record?.revision ?? null
   useEffect(() => {
     const changed = (event: Event) => {
       if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId !== session.id) return
+      void loadComments()
       void window.agentsDock.canvas.list(session.id)
-        .then(list => list.canvases.some(canvas => canvas.name === name))
+        .then(list => list.canvases.find(canvas => canvas.name === name) ?? null)
         // Unknown → keep the pane; load() surfaces the error itself.
-        .catch(() => true)
-        .then(present => { if (present) setReloadToken(token => token + 1); else onClose() })
+        .catch(() => undefined)
+        .then(current => {
+          if (current === null) onClose()
+          else if (current === undefined || current.revision !== revisionLive.current) setReloadToken(token => token + 1)
+        })
     }
     window.addEventListener('agentsdock:canvases-changed', changed)
     return () => window.removeEventListener('agentsdock:canvases-changed', changed)
-  }, [name, onClose, session.id])
+  }, [loadComments, name, onClose, session.id])
 
   // Flush when the pane switches canvases and when it unmounts, so the last reported change is not dropped.
   useEffect(() => () => { void flushSave() }, [flushSave, name])
@@ -204,6 +256,14 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
           setPageError(null)
           // A fresh document lost any highlights: re-run the query the find bar still shows.
           if (findLive.current.open && findLive.current.query) runFind(findLive.current.query)
+          postToPage('set-comments', [pinsLive.current.pins, pinsLive.current.active])
+          break
+        case 'comment-open':
+          setCommentsOpen(true)
+          setActiveThread(message.id)
+          break
+        case 'comment-anchors':
+          setLocated(new Set(message.located))
           break
         case 'state': {
           stateRef.current = { ...stateRef.current, [message.key]: message.value }
@@ -229,7 +289,9 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [flushSave, handleAction, name, runFind])
+  }, [flushSave, handleAction, name, postToPage, runFind])
+
+  useEffect(() => { postToPage('set-comments', [pins, activeThread]) }, [activeThread, pins, postToPage])
 
   // Follow the app's light/dark switch inside the frame.
   useEffect(() => {
@@ -250,17 +312,108 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
     postToPage('setSelecting', [next])
   }
 
-  const addToChat = () => {
-    if (!record || !selection || !feedback.trim()) return
-    const elements = selection.map(element => ({ id: element.id, tag: element.tag, text: element.text.slice(0, 400) }))
-    appendDraft(session.id, [
-      `Canvas ${record.path} (revision ${record.revision}) feedback on selected elements:`,
-      JSON.stringify(elements, null, 2),
-      `Requested change: ${feedback.trim()}`
-    ].join('\n'))
+  const clearComposer = () => {
     setSelection(null)
     setFeedback('')
     postToPage('clearSelection')
+  }
+
+  const commentInput = (mode: CanvasCommentMode, body: string) => ({
+    mode, body, revision: record?.revision ?? 0,
+    // Same capabilities as a composer message, so the comment's turn uses the same transport.
+    client_capabilities: interactiveClientCapabilities(session, useAppStore.getState().health)
+  })
+
+  /** Ask answers in the chat and leaves the canvas alone; Edit asks the agent to change it. */
+  const submitComment = async (mode: CanvasCommentMode) => {
+    if (!record || !selection?.length || !feedback.trim()) return
+    const body = feedback.trim()
+    if (!commentsAvailable) {
+      const elements = selection.map(element => ({ id: element.id, tag: element.tag, text: element.text.slice(0, 400) }))
+      appendDraft(session.id, [
+        `Canvas ${record.path} (revision ${record.revision}) ${mode === 'ask' ? 'question about' : 'requested change to'} the selected elements:`,
+        JSON.stringify(elements, null, 2),
+        mode === 'ask' ? `Question (answer it without modifying the canvas): ${body}` : `Requested change: ${body}`
+      ].join('\n'))
+      clearComposer()
+      return
+    }
+    const element = selection[0]
+    setCommentBusy(true)
+    setCommentError(null)
+    try {
+      const { thread } = await window.agentsDock.canvas.comment(session.id, name, {
+        canvas_id: element.id, tag: element.tag, text: element.text.slice(0, 400), html: element.html.slice(0, 2000)
+      }, commentInput(mode, body))
+      setThreads(current => [...current, thread])
+      setActiveThread(thread.id)
+      setCommentsOpen(true)
+      clearComposer()
+    } catch (caught) {
+      setCommentError(errorText(caught))
+    } finally {
+      setCommentBusy(false)
+    }
+  }
+
+  const replaceThread = (thread: CanvasCommentThread) => setThreads(current => current.map(item => item.id === thread.id ? thread : item))
+  const replyToThread = async (thread: CanvasCommentThread, mode: CanvasCommentMode, body: string): Promise<boolean> => {
+    setCommentError(null)
+    try {
+      replaceThread((await window.agentsDock.canvas.reply(session.id, name, thread.id, commentInput(mode, body))).thread)
+      return true
+    } catch (caught) {
+      setCommentError(errorText(caught))
+      return false
+    }
+  }
+  const setThreadStatus = (thread: CanvasCommentThread, status: CanvasCommentThread['status']) => {
+    void window.agentsDock.canvas.setCommentStatus(session.id, name, thread.id, status)
+      .then(result => replaceThread(result.thread), caught => setCommentError(errorText(caught)))
+  }
+  const deleteThread = (thread: CanvasCommentThread) => {
+    if (!window.confirm(t('canvas.deleteCommentConfirm'))) return
+    void window.agentsDock.canvas.deleteComment(session.id, name, thread.id)
+      .then(() => setThreads(current => current.filter(item => item.id !== thread.id)), caught => setCommentError(errorText(caught)))
+  }
+  const activateThread = (id: string) => {
+    setActiveThread(id)
+    setView('preview')
+    postToPage('focus-comment', [id])
+  }
+
+  const discardUnsavedSource = () => !sourceDraft || window.confirm(t('canvas.discardSourceConfirm'))
+  const saveSource = async (overwrite = false): Promise<void> => {
+    if (!sourceDraft || saving) return
+    setSaving(true)
+    setSaveError(null)
+    try {
+      // Overwriting means saving over whatever revision is current now, after the user confirmed.
+      const base = overwrite ? (await window.agentsDock.canvas.get(session.id, name)).revision : sourceDraft.baseRevision
+      const next = await window.agentsDock.canvas.putSource(session.id, name, sourceDraft.text, base)
+      setRecord(next)
+      stateRef.current = next.state ?? {}
+      setSourceDraft(null)
+    } catch (caught) {
+      const message = errorText(caught)
+      if (!overwrite && REVISION_CONFLICT.test(message) && window.confirm(t('canvas.overwriteConfirm'))) {
+        setSaving(false)
+        return saveSource(true)
+      }
+      setSaveError(message)
+    } finally {
+      setSaving(false)
+    }
+  }
+  const fixWithAgent = () => {
+    if (!record?.diagnostics) return
+    void useAppStore.getState().sendPromptForSession(session.id, [
+      `The canvas ${record.path} fails to compile:`,
+      '',
+      record.diagnostics,
+      '',
+      'Fix the canvas source so it compiles, then run the canvas check.'
+    ].join('\n'), false, { consumeComposer: false })
   }
 
   // The chosen width lives on the conversation pane because the chat column beside the Canvas reads it too;
@@ -332,6 +485,9 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'f' && view === 'preview' && src) {
       event.preventDefault()
       openFind()
+    } else if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 's' && view === 'source' && sourceDraft) {
+      event.preventDefault()
+      void saveSource()
     }
   }
 
@@ -352,7 +508,11 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
     />
     <header className="canvas-pane-header">
       <strong title={record?.path ?? name}>{t('canvas.title')} · {name}</strong>
-      {canvases.length > 1 && <select value={name} aria-label={t('canvas.title')} onChange={event => { setName(event.target.value); setSelection(null); setSelecting(false) }}>
+      {canvases.length > 1 && <select value={name} aria-label={t('canvas.title')} onChange={event => {
+        if (!discardUnsavedSource()) return
+        setSourceDraft(null)
+        setName(event.target.value); setSelection(null); setSelecting(false)
+      }}>
         {canvases.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
       </select>}
       <div className="segmented canvas-pane-view-toggle" role="group" aria-label={t('canvas.view')}>
@@ -361,9 +521,12 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
       </div>
       <button type="button" aria-pressed={findOpen} disabled={!src || view !== 'preview'} title={t('canvas.find')} aria-label={t('canvas.find')} onClick={() => (findOpen ? closeFind() : openFind())}><Search size={14} /></button>
       <span className="canvas-pane-header-spacer" aria-hidden="true" />
-      <button type="button" aria-pressed={selecting} disabled={!src || view !== 'preview'} title={t('canvas.selectElement')} onClick={toggleSelecting}><Crosshair size={14} /></button>
+      <button type="button" aria-pressed={selecting} disabled={!src || view !== 'preview'} title={t(commentsAvailable ? 'canvas.commentOnElement' : 'canvas.selectElement')} onClick={toggleSelecting}><Crosshair size={14} /></button>
+      {commentsAvailable && <button type="button" aria-pressed={commentsOpen} title={t('canvas.comments')} aria-label={t('canvas.comments')} onClick={() => setCommentsOpen(value => !value)}>
+        <MessageSquare size={14} />{pins.length > 0 && <span className="canvas-pane-comment-count">{pins.length}</span>}
+      </button>}
       <button type="button" title={t('canvas.reload')} onClick={() => { setPageError(null); setReloadToken(token => token + 1) }}><RefreshCw size={14} /></button>
-      <button type="button" title={t('canvas.close')} aria-label={t('canvas.close')} onClick={onClose}><X size={14} /></button>
+      <button type="button" title={t('canvas.close')} aria-label={t('canvas.close')} onClick={() => { if (discardUnsavedSource()) onClose() }}><X size={14} /></button>
     </header>
     <div className="canvas-pane-body">
       {findOpen && view === 'preview' && <div className="canvas-pane-find" role="search">
@@ -390,19 +553,50 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
         : !record
           ? <div className="canvas-pane-notice">{t('canvas.loading')}</div>
           : view === 'source'
-            ? <pre className="canvas-pane-source">{record.source}</pre>
+            ? sourceEditable
+              ? <div className="canvas-pane-editor">
+                <div className="canvas-pane-editor-bar">
+                  <span title={record.path}>{sourceDraft ? t('canvas.sourceUnsaved') : t('canvas.sourceSaved')}</span>
+                  {sourceDraft && sourceDraft.baseRevision !== record.revision && <span className="canvas-pane-editor-stale">{t('canvas.sourceChangedMeanwhile')}</span>}
+                  <button type="button" className="quiet-button" disabled={!sourceDraft || saving} onClick={() => { setSourceDraft(null); setSaveError(null) }}>{t('canvas.discard')}</button>
+                  <button type="button" className="primary-button" disabled={!sourceDraft || saving} onClick={() => void saveSource()}>{saving ? t('canvas.saving') : t('canvas.save')}</button>
+                </div>
+                {saveError && <div className="canvas-pane-notice error">{saveError}</div>}
+                <CodeMirrorEditor
+                  path={record.path}
+                  value={sourceDraft?.text ?? record.source}
+                  readOnly={saving}
+                  ariaLabel={t('canvas.sourceEditor')}
+                  onChange={value => setSourceDraft(current => value === record.source ? null : { text: value, baseRevision: current?.baseRevision ?? record.revision })}
+                />
+              </div>
+              : <pre className="canvas-pane-source">{record.source}</pre>
             : record.diagnostics || !record.javascript
-              ? <div className="canvas-pane-notice error"><strong>{t('canvas.compileFailed')}</strong><pre>{record.diagnostics ?? ''}</pre></div>
+              ? <div className="canvas-pane-notice error">
+                <strong>{t('canvas.compileFailed')}</strong><pre>{record.diagnostics ?? ''}</pre>
+                {record.diagnostics && <button type="button" className="quiet-button canvas-pane-fix" onClick={fixWithAgent}>{t('canvas.fixWithAgent')}</button>}
+              </div>
               : <>
                 {selecting && <div className="canvas-pane-selecting">{t('canvas.selecting')}</div>}
                 <iframe ref={iframeRef} key={src ?? 'none'} src={src ?? undefined} sandbox="allow-scripts" title={`${t('canvas.title')} ${name}`} />
               </>}
       {pageError && view === 'preview' && <div className="canvas-pane-notice error"><strong>{t('canvas.pageError')}</strong><pre>{pageError}</pre></div>}
     </div>
+    {commentsAvailable && commentsOpen && <CanvasCommentThreads
+      sessionId={session.id}
+      threads={threads}
+      activeId={activeThread}
+      located={located}
+      onActivate={activateThread}
+      onReply={replyToThread}
+      onStatus={setThreadStatus}
+      onDelete={deleteThread}
+    />}
+    {commentError && <div className="canvas-pane-notice error" role="alert">{commentError}</div>}
     {selection && view === 'preview' && <footer className="canvas-pane-feedback">
-      <textarea value={feedback} placeholder={t('canvas.feedbackPlaceholder')} onChange={event => setFeedback(event.target.value)} />
-      <button type="button" className="primary-button" disabled={!feedback.trim()} onClick={addToChat}>{t('canvas.addToChat')}</button>
-      <small>{selection.map(element => element.id ?? element.tag).join(', ')}</small>
+      <textarea value={feedback} placeholder={t('canvas.commentPlaceholder')} onChange={event => setFeedback(event.target.value)} />
+      <CanvasCommentSubmit disabled={!feedback.trim() || commentBusy} onSubmit={mode => void submitComment(mode)} />
+      <small>{commentsAvailable ? canvasAnchorLabel({ canvas_id: selection[0].id, tag: selection[0].tag, text: selection[0].text }) : selection.map(element => element.id ?? element.tag).join(', ')}</small>
     </footer>}
   </aside>
 }

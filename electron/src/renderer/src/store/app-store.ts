@@ -928,8 +928,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       window.agentsDock.events.on('server:event', payload => {
         if (!profileEventMatches(payload, get())) return
         const { event } = payload
-        // The server deletes the canvases a rewind covers; the open canvas pane re-lists on this signal.
-        if (event.type === 'history_rewound') {
+        // A rewind deletes the canvases it covers and a turn can edit them or answer a canvas
+        // comment; the open canvas pane re-lists, reloads a changed canvas and refreshes its threads.
+        if (event.type === 'history_rewound' || event.type === 'turn_started' || event.type === 'turn_finished' || event.type === 'turn_stopped') {
           window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: event.session_id } }))
         }
         enqueueLiveEvent(event,

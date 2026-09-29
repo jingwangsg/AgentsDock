@@ -12,6 +12,11 @@ describe('zedTarget', () => {
     expect(zedTarget({ path: '/srv', sshHost: 'root@10.0.0.5:2222' })).toBe('ssh://root@10.0.0.5:2222/srv')
   })
 
+  it('opens an oci@ cluster through its Sky alias and refuses an osmo@ workflow', () => {
+    expect(zedTarget({ path: '/mnt/shared/u', sshHost: 'oci@sky-cluster' })).toBe('ssh://sky-cluster/mnt/shared/u')
+    expect(() => zedTarget({ path: '/root', sshHost: 'osmo@wf-1' })).toThrow('osmo@')
+  })
+
   it('percent-encodes path segments so Zed does not read `#` as a URL fragment', () => {
     expect(zedTarget({ path: '/home/u/exp#3', sshHost: 'osmo_9000' })).toBe('ssh://osmo_9000/home/u/exp%233')
   })
