@@ -1,5 +1,14 @@
 # Public development log
 
+## 2026-09-30 — Deploying to an OSMO workflow no longer reports a false timeout
+
+- Adding a remote on an `osmo@<workflow>` host could end with "The remote
+  server did not answer through the tunnel: ReadTimeout" although the server
+  was running and was added. Through the osmo exec relay each request took 3–8
+  seconds and a new ssh session 20–40 seconds, while the hub waited 3 seconds
+  per request and 30 seconds in total. It now waits up to 20 seconds per
+  request and 120 seconds for the deployment.
+
 ## 2026-09-30 — Adding an oci@ cluster no longer needs a manual `sky status`
 
 - Deploying to or reconnecting an `oci@<cluster>` remote failed with "Sky has

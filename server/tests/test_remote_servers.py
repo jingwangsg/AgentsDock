@@ -604,6 +604,19 @@ print(json.dumps(answers[workflow]))
             with self.assertRaisesRegex(OSError, "no ssh entry"):
                 asyncio.run(rs.ssh_route("oci@gone-cluster"))
 
+    def test_deploy_health_wait_outlasts_a_slow_relay(self) -> None:
+        # Through an osmo exec relay each request took 3-8 s (0.09 s on the host itself).
+        manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
+        server = rs.RemoteServer(id="abcdefabcdef", name="osmo", ssh_host="osmo@wf-running", install_dir="/mnt/x",
+                                 remote_port=7850, local_port=7851, token="t" * 32, created_at="2026-09-30T00:00:00Z")
+        answer = httpx.Response(200, json={"version": "1.2.3"})
+        get = mock.AsyncMock(side_effect=[httpx.ReadTimeout("slow"), httpx.ConnectError("not yet"), answer])
+        self.enterContext(mock.patch.object(manager.http, "get", get))
+        self.enterContext(mock.patch.object(rs.asyncio, "sleep", mock.AsyncMock()))
+
+        assert asyncio.run(manager._wait_health(server)) == {"version": "1.2.3"}
+        assert all(call.kwargs["timeout"] >= 15 for call in get.await_args_list)
+
     def test_a_missing_sky_ssh_entry_is_written_by_sky_status_before_giving_up(self) -> None:
         # Sky writes a cluster's ssh entry when `sky status` lists it; a new cluster has none yet.
         bin_dir = self.tmp_path / "sky-bin"

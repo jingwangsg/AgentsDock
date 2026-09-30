@@ -64,6 +64,9 @@ MAX_BACKOFF = 10.0
 REVIVE_INTERVAL = 120.0
 SETTLE_SECONDS = 3.0
 SSH_FORWARD_PROBE_INTERVAL = 10.0
+# Measured through an osmo exec relay: 20-40 s to open an ssh session, then 3-8 s per request
+# (0.09 s on the host itself). Deploy waits up to 120 s for the tunnel and a fresh server.
+HEALTH_REQUEST_TIMEOUT = 20.0
 SSH_FORWARD_PROBE_TIMEOUT = 30.0
 SSH_FORWARD_PROBE_FAILURES = 3
 UPLOAD_CHUNK = 256 * 1024
@@ -1112,7 +1115,7 @@ class RemoteServerManager:
         try:
             response = await self.http.get(
                 f"http://127.0.0.1:{server.local_port}/api/health",
-                headers={"X-AgentsDock-Token": server.token}, timeout=3.0,
+                headers={"X-AgentsDock-Token": server.token}, timeout=HEALTH_REQUEST_TIMEOUT,
             )
         except httpx.HTTPError:
             return None
@@ -1351,12 +1354,12 @@ class RemoteServerManager:
                 raise SSHConnectionLost(f"Uploading the server source failed: {detail}")
             raise RuntimeError(f"Uploading the server source failed: {detail}")
 
-    async def _wait_health(self, server: RemoteServer, timeout: float = 30.0) -> dict[str, Any]:
+    async def _wait_health(self, server: RemoteServer, timeout: float = 120.0) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         last_error = "no response"
         while time.monotonic() < deadline:
             try:
-                response = await self.http.get(f"http://127.0.0.1:{server.local_port}/api/health", headers={"X-AgentsDock-Token": server.token}, timeout=3.0)
+                response = await self.http.get(f"http://127.0.0.1:{server.local_port}/api/health", headers={"X-AgentsDock-Token": server.token}, timeout=HEALTH_REQUEST_TIMEOUT)
                 if response.status_code == 200:
                     data = response.json()
                     return data if isinstance(data, dict) else {}
