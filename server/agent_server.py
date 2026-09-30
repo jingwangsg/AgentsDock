@@ -57071,6 +57071,32 @@ async def release_codex_control_thread(
     lease_already_released: bool = False,
     schedule_queue: bool = True,
 ) -> bool:
+    """Release even when the caller is cancelled: an abandoned release leaves the chat busy."""
+
+    completion = asyncio.create_task(_release_codex_control_thread(
+        session_id, manager, thread_id,
+        reserved_session=reserved_session,
+        reservation_id=reservation_id,
+        lease_already_released=lease_already_released,
+        schedule_queue=schedule_queue,
+    ))
+    try:
+        return await asyncio.shield(completion)
+    except asyncio.CancelledError:
+        await join_task_despite_caller_cancellation(completion)
+        raise
+
+
+async def _release_codex_control_thread(
+    session_id: str,
+    manager: CodexAppServerManager,
+    thread_id: str,
+    *,
+    reserved_session: bool,
+    reservation_id: str,
+    lease_already_released: bool,
+    schedule_queue: bool,
+) -> bool:
     released = False
     session_idle = False
     if not lease_already_released:

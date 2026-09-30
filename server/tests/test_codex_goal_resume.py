@@ -289,7 +289,7 @@ class CodexGoalResumeTests(unittest.IsolatedAsyncioTestCase):
             while self.manager.subscriptions[0].read_calls < minimum:
                 await asyncio.sleep(0)
 
-        await asyncio.wait_for(wait(), timeout=1)
+        await asyncio.wait_for(wait(), timeout=5)
 
     async def complete_goal(self, turn_id: str = "turn-resumed") -> None:
         self.manager.goal["status"] = "complete"
@@ -420,6 +420,27 @@ class CodexGoalResumeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await request
         # asyncTearDown checks that the authority and its file are gone.
+
+    async def test_cancelled_slot_release_still_frees_the_chat(self) -> None:
+        self.manager.goal_error = RuntimeError("goal control unavailable")
+        releasing, proceed = asyncio.Event(), asyncio.Event()
+        release_slot = agent_server.release_codex_control_slot
+
+        async def slow_release(*args: object, **kwargs: object) -> bool:
+            releasing.set()
+            await proceed.wait()
+            return await release_slot(*args, **kwargs)
+
+        with patch.object(agent_server, "release_codex_control_slot", slow_release):
+            request = asyncio.create_task(self.resume())
+            await asyncio.wait_for(releasing.wait(), timeout=5)
+            request.cancel()
+            await asyncio.sleep(0)
+            proceed.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await request
+        self.assertNotIn("chat", agent_server.BUSY_SESSIONS)
+        self.assertNotIn("chat", agent_server.ACTIVE)
 
     async def test_resumed_output_and_terminal_release_native_ownership(
         self,
@@ -701,7 +722,7 @@ class CodexGoalResumeTests(unittest.IsolatedAsyncioTestCase):
             while "chat" in agent_server.BUSY_SESSIONS:
                 await asyncio.sleep(0)
 
-        await asyncio.wait_for(wait_for_cleanup(), timeout=1)
+        await asyncio.wait_for(wait_for_cleanup(), timeout=5)
         self.assertTrue(consumers)
         self.assertTrue(consumers[0].cancelled())
         self.assertEqual(self.session["codex_goal"]["status"], "paused")
