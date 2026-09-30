@@ -277,6 +277,7 @@ export function registerIpc(
   handle('sessions:unread', sessionId => service.markUnread(sessionId))
   handle('sessions:emergency:acknowledge', (sessionId, alertId) => service.acknowledgeEmergency(sessionId, alertId))
   handle('sessions:import-history', (sessionId, force) => service.importHistory(sessionId, force))
+  handle('sessions:reload-history', sessionId => service.reloadHistory(sessionId))
   handle('sessions:list-local', () => service.listLocalSessions())
   handle('sessions:export', (sessionId, format) => service.exportSession(sessionId, format))
   handle('sessions:bulk-import', items => service.bulkImportSessions(

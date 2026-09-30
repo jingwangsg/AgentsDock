@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type {
   AgentCrossChatRoutesSnapshot, AgentFile, Backend, BootstrapPayload, ChatReference, ChatSyncStatus, CreateSessionInput, Event, ForwardedPort, Health, Job, NativeFileRef, QueuedTurn, TeamReference,
   ProfileBootstrapPayload, ProfileConnectionEvent, ProfileNotificationRoute, ProviderCommandSelection, PublicServerProfile, RuntimeCatalog, Session, SessionSnapshot,
-  ServerForceRestartConfirmation, SessionExportFormat, TimelinePage, UpdateServerProfilePatch, WorkspaceProfileScope
+  HistoryReloadResult, ServerForceRestartConfirmation, SessionExportFormat, TimelinePage, UpdateServerProfilePatch, WorkspaceProfileScope
 } from '@shared/types'
 import { updateQueuedTurns as reduceQueuedTurns } from '@shared/queue'
 import type { TeamHubScope } from '@shared/team-hub'
@@ -290,6 +290,8 @@ interface AppState {
   markUnread(sessionId: string): Promise<void>
   acknowledgeEmergency(sessionId: string, alertId: string): Promise<boolean>
   importHistory(sessionId: string): Promise<void>
+  /** Removes what history sync appended after the chat's first turn and syncs again. */
+  reloadHistory(sessionId: string): Promise<boolean>
   loadOlder(limit?: number): Promise<number>
   loadOlderForSession(sessionId: string, limit?: number): Promise<number>
   beginQueuedTurnsRequest(sessionId: string): number
@@ -2550,6 +2552,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await window.agentsDock.sessions.export(sessionId, format)
     } catch (error) { set({ error: errorMessage(error) }) }
+  },
+  async reloadHistory(sessionId) {
+    const current = get()
+    if (current.switchingProfileId) return false
+    if (current.activeSessionIds.has(sessionId) || current.turnAdmissionTokens[sessionId]) {
+      set({ error: t('sessionRewind.busy') })
+      return false
+    }
+    const scope = captureProfileScope(current)
+    try {
+      const result: HistoryReloadResult = await window.agentsDock.sessions.reloadHistory(sessionId)
+      if (!profileScopeMatches(scope, get())) return false
+      const [reconciledSession] = applyPendingSessionPatches([result.session])
+      set(state => {
+        const previous = state.snapshots[sessionId]
+        const rewound = previous ? rewindSnapshot(previous, result.removed.map(range => [range.from_seq, range.through_seq] as const)) : undefined
+        return {
+          sessions: state.sessions.map(session => session.id === reconciledSession.id ? reconciledSession : session),
+          ...(rewound && rewound !== previous ? { snapshots: { ...state.snapshots, [sessionId]: rewound } } : {})
+        }
+      })
+      return true
+    } catch (error) {
+      if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) })
+      return false
+    }
   },
   async importHistory(sessionId) {
     if (get().switchingProfileId) return

@@ -461,6 +461,19 @@ describe('turn editing and history rewind', () => {
     expect(useAppStore.getState().drafts['chat-1']).toBe('Half-typed follow-up')
   })
 
+  it('reload history trims the removed import batches locally', async () => {
+    seeded()
+    const reloadHistory = vi.fn().mockResolvedValue({
+      ok: true, removed: [{ from_seq: 2, through_seq: 2 }, { from_seq: 4, through_seq: 5 }], removed_events: 3, imported: 0, message: '', session: sessionFor('chat-1')
+    })
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { sessions: { reloadHistory } } as unknown as AgentsDockAPI })
+
+    await expect(useAppStore.getState().reloadHistory('chat-1')).resolves.toBe(true)
+
+    expect(reloadHistory).toHaveBeenCalledExactlyOnceWith('chat-1')
+    expect(useAppStore.getState().snapshots['chat-1'].events.map(event => event.seq)).toEqual([1, 3])
+  })
+
   it('sends the freshest known latest seq, trims the rewound range locally, and leaves edit mode', async () => {
     seeded()
     const rewind = vi.fn().mockResolvedValue({

@@ -459,6 +459,7 @@ export function Dialogs() {
     <ChatShareDialog />
     <ConfirmDeleteDialog />
     <ConfirmRestoreCheckpointDialog />
+    <ConfirmReloadHistoryDialog />
   </>
 }
 
@@ -1091,6 +1092,26 @@ function ConfirmRestoreCheckpointDialog() {
     if (restored) setTarget(null)
   }
   return <Shell open={Boolean(target)} onOpenChange={open => { if (!open) setTarget(null) }} title={t('timeline.rewind.restoreCheckpoint')} description={t('sessionRewind.confirmRestore')} className="confirm-dialog" initialFocusRef={restoreButtonRef}><div className="confirm-actions"><button type="button" className="quiet-button" onClick={() => setTarget(null)}>{t('sessionRewind.cancel')}</button><button ref={restoreButtonRef} type="button" className="danger-button" disabled={restoring} onClick={() => void restore()}>{restoring && <LoaderCircle className="spin" size={13} />}{" "}{t('timeline.rewind.restoreCheckpoint')}</button></div></Shell>
+}
+
+function ConfirmReloadHistoryDialog() {
+  useLocale()
+  const [session, setSession] = useState<Session | null>(null)
+  const [reloading, setReloading] = useState(false)
+  // Focus the reload button on open so Enter confirms, like a macOS default button.
+  const reloadButtonRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    const open = (event: Event) => setSession((event as CustomEvent<Session>).detail)
+    window.addEventListener('agentsdock:confirm-reload-history', open)
+    return () => window.removeEventListener('agentsdock:confirm-reload-history', open)
+  }, [])
+  const reload = async () => {
+    if (!session) return; setReloading(true)
+    const reloaded = await useAppStore.getState().reloadHistory(session.id)
+    setReloading(false)
+    if (reloaded) setSession(null)
+  }
+  return <Shell open={Boolean(session)} onOpenChange={open => { if (!open) setSession(null) }} title={t('historyReload.title')} description={t('historyReload.description')} className="confirm-dialog" initialFocusRef={reloadButtonRef}><div className="confirm-actions"><button type="button" className="quiet-button" onClick={() => setSession(null)}>{t('sessionRewind.cancel')}</button><button ref={reloadButtonRef} type="button" className="danger-button" disabled={reloading} onClick={() => void reload()}>{reloading && <LoaderCircle className="spin" size={13} />}{" "}{t('historyReload.confirm')}</button></div></Shell>
 }
 
 export function RenameChatDialog() {

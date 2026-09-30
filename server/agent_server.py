@@ -27217,15 +27217,16 @@ def prune_duplicate_imported_history_sync(
 def truncate_session_events_sync(
     session_id: str,
     *,
-    before_seq: int,
+    before_seq: int | None = None,
+    drop_run_ids: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
-    """Rewind a chat's transcript to the rows below ``before_seq``.
+    """Remove rows at or above ``before_seq`` and every row of ``drop_run_ids``.
 
-    Every raw line without a durable sequence below the cut is copied
-    verbatim (blank and malformed lines included); rows at or above the cut
-    are dropped. The replacement always ends with an internal sequence
-    checkpoint at the removed high-water mark so a crash before sessions.json
-    is saved can never let a later event reuse a sequence a client has seen.
+    Every other raw line is copied verbatim (blank and malformed lines
+    included). When the removed rows include the tail, the replacement ends
+    with an internal sequence checkpoint at the removed high-water mark so a
+    crash before sessions.json is saved can never let a later event reuse a
+    sequence a client has seen.
     The rewrite is atomic and runs under the caller's lifecycle and event
     delivery locks.
     """
@@ -27250,6 +27251,7 @@ def truncate_session_events_sync(
     replacement_path = path.with_name(f".{path.name}.{token}.rewind-tmp")
     kept_run_ids: set[str] = set()
     removed_run_ids: set[str] = set()
+    last_kept_seq = 0
     try:
         descriptor = os.open(
             replacement_path,
@@ -27274,7 +27276,7 @@ def truncate_session_events_sync(
                     summary["events_before"] += 1
                 if seq is not None:
                     summary["max_seq_before"] = max(summary["max_seq_before"], seq)
-                    if seq >= before_seq:
+                    if (before_seq is not None and seq >= before_seq) or str(event.get("run_id") or "") in drop_run_ids:
                         summary["removed_events"] += 1
                         if str(event.get("run_id") or ""):
                             removed_run_ids.add(str(event["run_id"]))
@@ -27285,6 +27287,7 @@ def truncate_session_events_sync(
                     summary["latest_event"] = {"seq": seq, "ts": event.get("ts"), "type": event_type}
                     if is_agent_visible_event(event_type, event):
                         summary["latest_agent_event"] = summary["latest_event"]
+                    last_kept_seq = seq
                 if event is not None and str(event.get("run_id") or ""):
                     kept_run_ids.add(str(event["run_id"]))
                 replacement.write(raw_line)
@@ -27305,11 +27308,14 @@ def truncate_session_events_sync(
                 },
                 separators=(",", ":"),
             ).encode("utf-8") + b"\n"
-            if bytes_written and last_byte != b"\n":
-                replacement.write(b"\n")
-                bytes_written += 1
-            replacement.write(checkpoint_line)
-            bytes_written += len(checkpoint_line)
+            if summary["max_seq_before"] > last_kept_seq:
+                # A checkpoint equal to the last kept row would break the strictly
+                # increasing sequence; only a removed tail needs the floor.
+                if bytes_written and last_byte != b"\n":
+                    replacement.write(b"\n")
+                    bytes_written += 1
+                replacement.write(checkpoint_line)
+                bytes_written += len(checkpoint_line)
             replacement.flush()
             os.fsync(replacement.fileno())
 
@@ -92286,6 +92292,26 @@ REWIND_ADMISSION_RETRY_SECONDS = max(0.0, float(agentsdock_setting("REWIND_ADMIS
 
 
 @app.post("/api/sessions/{session_id}/rewind")
+def note_rewritten_log_tail(sess: dict[str, Any], summary: dict[str, Any], seq_high_water: int) -> None:
+    """Session metadata after rows were removed from its log: the kept tail is the latest."""
+    sess["latest_event_seq"] = seq_high_water
+    latest_event = summary["latest_event"] or {}
+    latest_agent_event = summary["latest_agent_event"] or {}
+    sess["latest_event_at"] = latest_event.get("ts")
+    sess["latest_event_type"] = latest_event.get("type")
+    if latest_agent_event:
+        sess["latest_agent_event_seq"] = latest_agent_event["seq"]
+        sess["latest_agent_event_at"] = latest_agent_event["ts"]
+        sess["latest_agent_event_type"] = latest_agent_event["type"]
+    else:
+        for key in ("latest_agent_event_seq", "latest_agent_event_at", "latest_agent_event_type"):
+            sess.pop(key, None)
+    last_read = sess.get("last_read_agent_event_seq")
+    if isinstance(last_read, int) and not isinstance(last_read, bool):
+        sess["last_read_agent_event_seq"] = min(last_read, int(latest_agent_event.get("seq") or 0))
+    sess.pop("active_run", None)
+
+
 async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str, Any]:
     """Truncate this chat to the rows before one turn and rewind its provider.
 
@@ -92573,22 +92599,7 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                 CLAUDE_METADATA_REPAIR_CACHE.forget(session_id)
                 CODEX_GOAL_HISTORY_REPAIR_CACHE.forget(session_id)
                 CODEX_NATIVE_HISTORY_REPAIR_CACHE.forget(session_id)
-                sess["latest_event_seq"] = seq_high_water
-                latest_event = summary["latest_event"] or {}
-                latest_agent_event = summary["latest_agent_event"] or {}
-                sess["latest_event_at"] = latest_event.get("ts")
-                sess["latest_event_type"] = latest_event.get("type")
-                if latest_agent_event:
-                    sess["latest_agent_event_seq"] = latest_agent_event["seq"]
-                    sess["latest_agent_event_at"] = latest_agent_event["ts"]
-                    sess["latest_agent_event_type"] = latest_agent_event["type"]
-                else:
-                    for key in ("latest_agent_event_seq", "latest_agent_event_at", "latest_agent_event_type"):
-                        sess.pop(key, None)
-                last_read = sess.get("last_read_agent_event_seq")
-                if isinstance(last_read, int) and not isinstance(last_read, bool):
-                    sess["last_read_agent_event_seq"] = min(last_read, int(latest_agent_event.get("seq") or 0))
-                sess.pop("active_run", None)
+                note_rewritten_log_tail(sess, summary, seq_high_water)
                 if provider_rewind == "claude_reset":
                     sess["claude_session_id"] = None
                     sess["session_id"] = None
@@ -92710,6 +92721,104 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
             "provider_rewind": provider_rewind,
             "session": public_session(sess),
         }
+
+
+def synced_import_runs(session_id: str) -> list[dict[str, Any]]:
+    """Import batches appended after this chat's first own turn, oldest first.
+
+    The batch a Resume created before any turn is the chat's beginning and stays.
+    """
+    first_live_seq: int | None = None
+    runs: dict[str, dict[str, Any]] = {}
+    for event in iter_session_events(session_id):
+        seq = durable_event_seq(event)
+        if seq is None:
+            continue
+        run_id = str(event.get("run_id") or "")
+        if run_id.startswith("import_"):
+            run = runs.setdefault(run_id, {"run_id": run_id, "from_seq": seq, "through_seq": seq, "removed_events": 0})
+            run["from_seq"] = min(run["from_seq"], seq)
+            run["through_seq"] = max(run["through_seq"], seq)
+            run["removed_events"] += 1
+        elif first_live_seq is None and event.get("type") == "turn_started" and event.get("imported") is not True:
+            first_live_seq = seq
+    if first_live_seq is None:
+        return []
+    return sorted((run for run in runs.values() if run["from_seq"] > first_live_seq), key=lambda run: run["from_seq"])
+
+
+@app.post("/api/sessions/{session_id}/history/reload")
+async def reload_session_history(session_id: str) -> dict[str, Any]:
+    """Drop what history sync appended after this chat's first own turn, then sync again.
+
+    Those batches are re-imports of content the chat had recorded live, or rows
+    an older sync misjudged; the chat's own turns stay. The sync then realigns on
+    the newest message still on the timeline and adds only what the transcript
+    has after it. Each dropped batch gets a ``history_rewound`` tombstone so
+    every client drops the same rows.
+    """
+    async with session_lifecycle_lock(session_id):
+        ensure_session_not_deleting(session_id)
+        sess = STORE.sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
+        if str(sess.get("backend") or DEFAULT_BACKEND).lower() not in {BACKEND_CLAUDE, BACKEND_CODEX}:
+            raise HTTPException(status_code=409, detail="Only Claude and Codex chats reload history from their transcript.")
+        await ensure_session_idle_for_rewind(session_id)
+        runs = await asyncio.to_thread(synced_import_runs, session_id)
+        if runs:
+            async with event_delivery_lock(session_id):
+                async def perform_reload() -> None:
+                    # Persist the pre-rewrite cursor floor before replacing the log;
+                    # sessions.json is the normal restart seed.
+                    durable_high_water = await asyncio.to_thread(repair_event_log_tail, events_path(session_id))
+                    current_latest = sess.get("latest_event_seq")
+                    if not isinstance(current_latest, int) or isinstance(current_latest, bool):
+                        current_latest = 0
+                    sess["latest_event_seq"] = max(current_latest, durable_high_water)
+                    await STORE.save(durable=True)
+                    summary = await asyncio.to_thread(
+                        truncate_session_events_sync, session_id,
+                        drop_run_ids=frozenset(run["run_id"] for run in runs),
+                    )
+                    seq_high_water = max(int(summary["max_seq_before"]), int(sess["latest_event_seq"]))
+                    await forget_event_seq(session_id, preserve_at_least=seq_high_water, preserve_delivery_lock=True)
+                    HISTORY_SEARCH_DIRTY.add(session_id)
+                    CLAUDE_METADATA_REPAIR_CACHE.forget(session_id)
+                    CODEX_GOAL_HISTORY_REPAIR_CACHE.forget(session_id)
+                    CODEX_NATIVE_HISTORY_REPAIR_CACHE.forget(session_id)
+                    note_rewritten_log_tail(sess, summary, seq_high_water)
+                    sess.pop("_history_sync_cursor", None)
+                    sess.pop("_history_sync_source_stamp", None)
+                    await STORE.save(durable=True)
+
+                reload_task = asyncio.create_task(perform_reload())
+                try:
+                    await asyncio.shield(reload_task)
+                except asyncio.CancelledError as cancellation:
+                    await join_task_despite_caller_cancellation(reload_task)
+                    raise cancellation
+            clear_imported_active_runs()
+            for run in runs:
+                await append_event(session_id, "history_rewound", {
+                    "from_seq": run["from_seq"],
+                    "through_seq": run["through_seq"],
+                    "removed_events": run["removed_events"],
+                    "reason": "history_reload",
+                })
+        else:
+            sess.pop("_history_sync_cursor", None)
+            sess.pop("_history_sync_source_stamp", None)
+            await STORE.save(durable=True)
+        synced = await sync_provider_history(dict(sess))
+    return {
+        "ok": True,
+        "removed": [{"from_seq": run["from_seq"], "through_seq": run["through_seq"]} for run in runs],
+        "removed_events": sum(run["removed_events"] for run in runs),
+        "imported": int(synced.get("imported") or 0),
+        "message": str(synced.get("message") or ""),
+        "session": public_session(sess),
+    }
 
 
 @asynccontextmanager

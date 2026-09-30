@@ -94,6 +94,7 @@ import type {
   ServerUpdateStatus,
   ServerUpdateTrack,
   Session,
+  HistoryReloadResult,
   SessionRewindResult,
   SubagentSnapshot,
   TerminalAction,
@@ -1238,6 +1239,10 @@ export class AgentServerClient {
     const params = new URLSearchParams({ q: query, limit: String(limit) })
     const response = await this.get<{ results?: TimelineSearchResult[] }>(`/api/search?${params}`)
     return response.results ?? []
+  }
+
+  reloadHistory(sessionId: string): Promise<HistoryReloadResult> {
+    return this.post<HistoryReloadResult>(`/api/sessions/${encodeURIComponent(sessionId)}/history/reload`, {})
   }
 
   async importHistory(sessionId: string, force = false): Promise<TimelinePage> {

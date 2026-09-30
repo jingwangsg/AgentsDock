@@ -1207,6 +1207,8 @@ export interface Event extends SharedChatAttribution {
   to_run_id?: string | null
   removed_events?: number | null
   provider_rewind?: string | null
+  /** `history_reload`: the range was an import batch removed by Reload history, not a rewind. */
+  reason?: string | null
   byte_count?: number | null
   repository_root?: string | null
   interaction?: CodexPendingInteraction | null
@@ -1745,6 +1747,16 @@ export interface SessionRewindResult {
   removed_events: number
   /** Opaque server label (e.g. claude_fork, codex_rollback); displayed, never branched on. */
   provider_rewind: string | null
+  session: Session
+}
+
+export interface HistoryReloadResult {
+  ok: boolean
+  /** Import batches removed from the timeline, as closed sequence ranges. */
+  removed: { from_seq: number; through_seq: number }[]
+  removed_events: number
+  imported: number
+  message: string
   session: Session
 }
 

@@ -1065,6 +1065,8 @@ function SystemView({ item, sessionId, profileScope, pinned, codexLifecycleActiv
   if (event.type.startsWith('cross_chat_')) return <CrossChatView item={item} sessionId={sessionId} profileScope={profileScope} />
   if (event.type === 'team_message_sent') return <TeamMessageSentView event={event} profileScope={profileScope} />
   if (event.type === 'emergency_alert_raised') return <EmergencyAlertView event={event} sessionId={sessionId} />
+  // A batch removed by Reload history leaves no mark; only a rewind is a point in the conversation.
+  if (event.type === 'history_rewound' && event.reason === 'history_reload') return null
   if (event.type === 'history_rewound' || event.type === 'workspace_checkpoint_restored') return <article className="system-row" data-event-id={event.id}>
     <span className="system-icon"><History size={15} /></span>
     <div><header><strong>{t(event.type === 'history_rewound' ? 'timeline.rewind.rewoundHere' : 'timeline.rewind.checkpointRestored')}</strong><time>{formatTime(event.ts)}</time></header></div>

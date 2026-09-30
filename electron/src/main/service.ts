@@ -116,6 +116,7 @@ import type {
   ServerUpdateStatus,
   ServerUpdateTrack,
   Session,
+  HistoryReloadResult,
   SessionRewindResult,
   SessionSnapshot,
   SubagentSnapshot,
@@ -2798,6 +2799,17 @@ export class AppService {
     this.assertCurrentScope(scope)
     this.upsertSession(scope, session)
     return session
+  }
+
+  /** Drops what history sync appended after the chat's first turn and syncs again; the cache drops the same rows. */
+  async reloadHistory(sessionId: string): Promise<HistoryReloadResult> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const result = await scope.client.reloadHistory(sessionId)
+    this.assertCurrentScope(scope)
+    for (const range of result.removed) this.applyHistoryRewind(scope, sessionId, range.from_seq, range.through_seq)
+    this.upsertSession(scope, result.session)
+    return result
   }
 
   async importHistory(sessionId: string, force = false): Promise<TimelinePage> {

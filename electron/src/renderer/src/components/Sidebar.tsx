@@ -9,7 +9,7 @@ import {
 } from '@dnd-kit/core'
 import {
   Archive, ArchiveRestore, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Folder, FolderPlus, GripVertical, Inbox, LoaderCircle, MoreHorizontal,
-  Columns2, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, Trash2, Undo2, UsersRound
+  Columns2, History, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, Trash2, Undo2, UsersRound
 } from 'lucide-react'
 import type { Session } from '@shared/types'
 import { completedPrefixForkAvailable } from '@shared/session-fork'
@@ -467,6 +467,13 @@ function SessionContextMenu({ session, unread, folders }: { session: Session; un
           disabled={forkBlocked}
           title={session?.backend === 'opencode' ? t('opencode.forkUnavailable') : forkBlocked ? t('sessionFork.runningUnavailable') : running || admitting ? t('sessionFork.runningDescription') : undefined}
           onSelect={() => void useAppStore.getState().forkSession(session.id)}
+        />
+        <MenuItem
+          icon={History}
+          label={t('historyReload.menu')}
+          disabled={running || admitting || session.backend === 'opencode' || session.backend === 'cursor'}
+          title={session.backend === 'opencode' || session.backend === 'cursor' ? t('historyReload.unavailable') : running || admitting ? t('sessionRewind.busy') : undefined}
+          onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-reload-history', { detail: session }))}
         />
         <MenuItem icon={Trash2} label={t("ui.Sidebar.SessionContextMenu.delete_chat_19f9176")} danger onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-delete', { detail: session }))} />
       </ContextMenu.Content>

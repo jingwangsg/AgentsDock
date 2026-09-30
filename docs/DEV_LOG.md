@@ -1,5 +1,15 @@
 # Public development log
 
+## 2026-10-01 — Reload history rebuilds what history sync added to a chat
+
+- Right-click a chat, or open the chat menu, and choose Reload history…
+  (desktop). The rows history sync appended after the chat's first turn are
+  removed, then the chat syncs again from the Claude or Codex transcript and
+  adds only what follows its newest message. Turns run in the chat itself
+  stay. Use it on a chat that an older sync filled with duplicated or
+  misplaced messages or "Claude interruption" cards. Other open clients drop
+  the same rows live. Mobile gets the action in a later release.
+
 ## 2026-10-01 — History sync no longer re-imports a chat's own messages
 
 - Opening a Claude chat could append a copy of its recent messages at the end
