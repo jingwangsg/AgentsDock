@@ -8,7 +8,7 @@
   adds only what follows its newest message. Turns run in the chat itself
   stay. Use it on a chat that an older sync filled with duplicated or
   misplaced messages or "Claude interruption" cards. Other open clients drop
-  the same rows live. Desktop only.
+  the same rows live. On Android, long-press the chat for the same action.
 
 ## 2026-10-01 — History sync no longer re-imports a chat's own messages
 

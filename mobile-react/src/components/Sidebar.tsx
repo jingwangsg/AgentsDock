@@ -600,7 +600,9 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   const runtime = useAppStore(state => state.runtime)
   const update = useAppStore(state => state.updateSession)
   const fork = useAppStore(state => state.forkSession)
+  const reloadHistory = useAppStore(state => state.reloadHistory)
   const remove = useAppStore(state => state.deleteSession)
+  const reloadable = session.backend === 'claude' || session.backend === 'codex'
   const folderSheetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const menu = useRef<MenuComponentRef>(null)
 
@@ -634,11 +636,23 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
       } },
     ])
   }
+  const confirmReloadHistory = () => {
+    const scope = profileScope
+    if (!sessionScopeIsCurrent(scope, session.id)) return
+    Alert.alert('Reload history from the provider transcript?', 'Messages that history sync added after this chat\'s first turn are removed, then the chat syncs again from the provider transcript. Turns run in this chat are kept.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Reload', style: 'destructive', onPress: () => {
+        if (!sessionScopeIsCurrent(scope, session.id)) return
+        void reloadHistory(session.id, scope.profileGeneration)
+      } },
+    ])
+  }
   const runAction = (id: string) => {
     if (!sessionScopeIsCurrent(profileScope, session.id)) return
     if (id === 'read-state') void (unread ? markRead(session.id, profileScope.profileGeneration) : markUnread(session.id, profileScope.profileGeneration))
     else if (id === 'rename') requestRename()
     else if (id === 'fork') void fork(session.id, profileScope.profileGeneration)
+    else if (id === 'reload-history') confirmReloadHistory()
     else if (id === 'move-up') onMoveUp()
     else if (id === 'move-down') onMoveDown()
     else if (id === 'pin') void update(session.id, { pinned: !session.pinned }, profileScope.profileGeneration)
@@ -656,6 +670,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
     { id: 'rename', title: 'Rename Chat', image: 'pencil' },
     { id: 'primary-actions', title: '', displayInline: true, subactions: [
       { id: 'fork', title: 'Fork Chat', image: 'arrow.triangle.branch' },
+      ...(reloadable ? [{ id: 'reload-history', title: 'Reload History…', image: 'clock.arrow.circlepath' } satisfies MenuAction] : []),
       { id: 'move-up', title: 'Move Up', image: 'arrow.up', attributes: { disabled: !canMoveUp } },
       { id: 'move-down', title: 'Move Down', image: 'arrow.down', attributes: { disabled: !canMoveDown } },
     ] },
@@ -691,6 +706,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
       { id: 'read-state', title: unread ? 'Mark as Read' : 'Mark as Unread' },
       { id: 'rename', title: 'Rename Chat' },
       { id: 'fork', title: 'Fork Chat' },
+      ...(reloadable ? [{ id: 'reload-history', title: 'Reload History…' }] : []),
       ...(canMoveUp ? [{ id: 'move-up', title: 'Move Up' }] : []),
       ...(canMoveDown ? [{ id: 'move-down', title: 'Move Down' }] : []),
       ...(session.archived ? [] : [

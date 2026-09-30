@@ -208,6 +208,7 @@ const sessionMutations = new SessionMutationReconciler()
 const SEND_IN_FLIGHT_SERVER_MUTATION_MESSAGE = 'A message is still sending. Wait for it to finish before switching or changing the active server.'
 const SESSION_REWIND_UNAVAILABLE_MESSAGE = 'Update AgentsServer to edit earlier turns or restore checkpoints in this chat.'
 const SESSION_REWIND_BUSY_MESSAGE = 'Wait for the current turn to finish before editing an earlier turn or restoring a checkpoint.'
+const HISTORY_RELOAD_BUSY_MESSAGE = 'Wait for the current turn to finish before reloading history.'
 const SERVER_MUTATION_IN_FLIGHT_SEND_MESSAGE = 'The active server is being changed. Wait for it to finish before sending.'
 const TIMELINE_INTERNAL_EVENT_TYPES = new Set([
   'turn_queued',
@@ -578,6 +579,8 @@ interface AppState {
   /** Truncates the chat to the rows before `runId` and rewinds the provider. Resolves false when refused. */
   /** `toSeq` names the turn_started row: imported turns all share their import's run id. */
   rewindSession(sessionId: string, runId: string, expectedGeneration?: number, toSeq?: number): Promise<boolean>
+  /** Removes what history sync appended after the chat's first turn and syncs again. */
+  reloadHistory(sessionId: string, expectedGeneration?: number): Promise<boolean>
   /** Reverts the workspace to before `runId`, then rewinds the chat to it. */
   restoreCheckpoint(sessionId: string, runId: string, expectedGeneration?: number): Promise<boolean>
   deleteSession(sessionId: string, expectedGeneration?: number): Promise<void>
@@ -2885,6 +2888,32 @@ export const useAppStore = create<AppState>((set, get) => ({
       })
       void get().refreshSessions(scope.generation)
       void get().refreshFiles(sessionId, false, scope.generation)
+      return true
+    } catch (error) {
+      if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) })
+      return false
+    } finally { rewindSessionInFlight.delete(inFlightKey) }
+  },
+  async reloadHistory(sessionId, expectedGeneration) {
+    const scope = validatedConnectionOrReport(get, set, expectedGeneration)
+    if (!scope) return false
+    const inFlightKey = `${scope.generation}:${sessionId}`
+    if (sessionBusyForRewind(get(), sessionId, inFlightKey)) {
+      set({ error: HISTORY_RELOAD_BUSY_MESSAGE })
+      return false
+    }
+    if (rewindSessionInFlight.has(inFlightKey)) return false
+    rewindSessionInFlight.add(inFlightKey)
+    try {
+      const result = await scope.client.reloadHistory(sessionId)
+      if (!connectionIsCurrent(scope)) return false
+      set(current => {
+        const previous = current.snapshots[sessionId]
+        const rewound = previous ? result.removed.reduce((snapshot, range) => rewindSnapshot(snapshot, range.from_seq, range.through_seq), previous) : undefined
+        if (rewound && rewound !== previous) scheduleLiveSnapshotSave(scope, rewound, true)
+        return rewound && rewound !== previous ? { snapshots: snapshotMapWith(current.snapshots, sessionId, rewound) } : {}
+      })
+      void get().refreshSessions(scope.generation)
       return true
     } catch (error) {
       if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) })

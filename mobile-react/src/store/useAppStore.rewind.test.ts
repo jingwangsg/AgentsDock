@@ -198,6 +198,12 @@ try {
   assert.equal(await useAppStore.getState().restoreCheckpoint(sessionA.id, 'run-1'), true)
   assert.deepEqual(calls, ['status', 'restore:run-1:rev-1', 'rewind:run-1'])
 
+  // Reload history prunes every removed batch locally.
+  useAppStore.setState(state => ({ snapshots: { ...state.snapshots, [sessionA.id]: { ...state.snapshots[sessionA.id]!, events: initialEvents } } }))
+  client.reloadHistory = async () => ({ removed: [{ from_seq: 2, through_seq: 2 }, { from_seq: 4, through_seq: 5 }], session: sessionA })
+  assert.equal(await useAppStore.getState().reloadHistory(sessionA.id), true)
+  assert.deepEqual(useAppStore.getState().snapshots[sessionA.id]!.events.map(value => value.seq), [1, 3], 'each removed range is pruned locally')
+
   console.log('store rewind and notification regressions passed')
 } finally {
   appState.__emitAppState('background')

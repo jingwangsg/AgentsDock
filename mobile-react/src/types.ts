@@ -1304,6 +1304,12 @@ export interface SessionRewindResult {
   session: Session
 }
 
+export interface SessionHistoryReloadResult {
+  /** Import batches removed from the timeline, as closed sequence ranges. */
+  removed: { from_seq: number; through_seq: number }[]
+  session: Session
+}
+
 /** Repository-wide state, not a single chat turn's recorded patch. Mirrors electron/src/shared/workspace-git.ts. */
 export interface WorkspaceGitFile {
   path: string

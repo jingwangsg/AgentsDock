@@ -52,6 +52,7 @@ import type {
   RuntimeDiagnostic,
   ServerUpdateStatus,
   Session,
+  SessionHistoryReloadResult,
   SessionRewindResult,
   TerminalAction,
   TerminalWindowsSnapshot,
@@ -443,6 +444,11 @@ export class AgentServerClient {
    * stale guard is retried once with the server's value; a refreshing Codex
    * sign-in (`rewind_provider_busy`) is retried once after its advertised delay.
    */
+  /** Removes what history sync appended after the chat's first turn and syncs again. */
+  reloadHistory(sessionId: string): Promise<SessionHistoryReloadResult> {
+    return this.post<SessionHistoryReloadResult>(`/api/sessions/${encodeURIComponent(sessionId)}/history/reload`, {})
+  }
+
   async rewindSession(sessionId: string, toRunId: string, expectedLatestSeq: number, toSeq?: number): Promise<SessionRewindResult> {
     const rewind = (latestSeq: number) => this.post<SessionRewindResult>(`/api/sessions/${encodeURIComponent(sessionId)}/rewind`, {
       to_run_id: toRunId, to_seq: toSeq, expected_latest_seq: latestSeq, confirmed: true,
