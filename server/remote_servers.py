@@ -388,14 +388,40 @@ class SSHRoute:
     env: dict[str, str]
 
 
+def cluster_cli(name: str) -> str | None:
+    # launchd starts the hub with a minimal PATH; the osmo and sky CLIs install into one of these.
+    search = os.pathsep.join([os.environ.get("PATH", ""), "/usr/local/bin", "/opt/homebrew/bin", str(Path.home() / ".local" / "bin")])
+    return shutil.which(name, path=search)
+
+
+async def write_sky_ssh_entry(cluster: str, env: dict[str, str]) -> None:
+    """Have Sky write the cluster's ssh entry, which it does for every cluster ``sky status`` lists.
+
+    A cluster launched since the last listing (or from another machine) has none yet. A plain
+    listing, unlike ``sky status -r``, needs no workspace and never drops other entries.
+    """
+
+    sky = cluster_cli("sky")
+    if sky is None:
+        return
+    listing = await asyncio.create_subprocess_exec(
+        sky, "status", "-u", "--", cluster, env=env,
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(listing.wait(), timeout=90)
+    finally:
+        if listing.returncode is None:  # timed out, or the tunnel or deploy was cancelled
+            listing.kill()
+            await listing.wait()
+
+
 async def osmo_lead_task(workflow: str) -> tuple[str, str]:
     """The osmo CLI path and the lead task of a running workflow."""
 
     if not OSMO_NAME_RE.fullmatch(workflow):
         raise OSError(f"Invalid OSMO workflow id: {workflow}")
-    # launchd starts the hub with a minimal PATH; the osmo CLI installs into one of these.
-    search = os.pathsep.join([os.environ.get("PATH", ""), "/usr/local/bin", "/opt/homebrew/bin", str(Path.home() / ".local" / "bin")])
-    osmo = shutil.which("osmo", path=search)
+    osmo = cluster_cli("osmo")
     if osmo is None:
         raise OSError("The osmo CLI is not installed on this server.")
     # load-bearing: Tunnel._supervise retries only OSError; any other exception ends the tunnel task.
@@ -442,11 +468,14 @@ async def ssh_route(ssh_host: str) -> SSHRoute:
     slow_proxy = ["-o", "ConnectTimeout=30"]
     if ssh_host.startswith("oci@"):
         cluster = ssh_host.removeprefix("oci@")
-        options = await isolated_proxy_args(cluster)
-        if not options:
-            raise OSError(f"Sky has no ssh entry for {cluster}; refresh it with `sky status -r` in its workspace.")
         if SKY_CA_BUNDLE.exists():
             env["SSL_CERT_FILE"] = env["REQUESTS_CA_BUNDLE"] = str(SKY_CA_BUNDLE)
+        options = await isolated_proxy_args(cluster)
+        if not options:
+            await write_sky_ssh_entry(cluster, env)
+            options = await isolated_proxy_args(cluster)
+        if not options:
+            raise OSError(f"Sky has no ssh entry for {cluster}; check that `sky status -u` lists it as UP.")
         return SSHRoute([*slow_proxy, *options], cluster, env)
     if ssh_host.startswith("osmo@"):
         workflow = ssh_host.removeprefix("osmo@")

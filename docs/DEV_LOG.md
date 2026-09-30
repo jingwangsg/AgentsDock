@@ -1,5 +1,14 @@
 # Public development log
 
+## 2026-09-30 — Adding an oci@ cluster no longer needs a manual `sky status`
+
+- Deploying to or reconnecting an `oci@<cluster>` remote failed with "Sky has
+  no ssh entry … refresh it with `sky status -r`" when the cluster was
+  launched after Sky last listed clusters on this machine. The hub now runs
+  `sky status -u <cluster>` itself, which writes the entry without needing the
+  cluster's workspace, and continues. The `sky` CLI must be on the hub's PATH
+  or in /usr/local/bin, /opt/homebrew/bin or ~/.local/bin.
+
 ## 2026-09-30 — Color themes from Zed and VS Code
 
 - Settings → General has a Light theme and a Dark theme choice next to Theme,

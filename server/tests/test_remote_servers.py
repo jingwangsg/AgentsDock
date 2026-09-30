@@ -594,6 +594,7 @@ print(json.dumps(answers[workflow]))
         ca = self.tmp_path / "sky-ca.pem"
         ca.write_text("ca")
         with (mock.patch.object(rs, "SKY_CA_BUNDLE", ca),
+              mock.patch.object(rs, "write_sky_ssh_entry", mock.AsyncMock()),
               mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])) as isolated):
             route = asyncio.run(rs.ssh_route("oci@sky-cluster"))
             isolated.assert_awaited_once_with("sky-cluster")
@@ -602,6 +603,33 @@ print(json.dumps(answers[workflow]))
             isolated.return_value = []
             with self.assertRaisesRegex(OSError, "no ssh entry"):
                 asyncio.run(rs.ssh_route("oci@gone-cluster"))
+
+    def test_a_missing_sky_ssh_entry_is_written_by_sky_status_before_giving_up(self) -> None:
+        # Sky writes a cluster's ssh entry when `sky status` lists it; a new cluster has none yet.
+        bin_dir = self.tmp_path / "sky-bin"
+        bin_dir.mkdir()
+        calls = self.tmp_path / "sky-calls.jsonl"
+        sky = bin_dir / "sky"
+        sky.write_text(f"""#!{sys.executable}
+import json, os, sys
+with open({str(calls)!r}, "a") as out:
+    out.write(json.dumps([sys.argv[1:], os.environ.get("SSL_CERT_FILE")]) + "\\n")
+""")
+        sky.chmod(0o700)
+        ca = self.tmp_path / "sky-ca.pem"
+        ca.write_text("ca")
+        self.enterContext(mock.patch.dict(os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}))
+        self.enterContext(mock.patch.object(rs, "SKY_CA_BUNDLE", ca))
+        isolated = self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(side_effect=[[], ["-o", "ProxyCommand=x"]])))
+
+        route = asyncio.run(rs.ssh_route("oci@new-cluster"))
+        assert (route.options, route.destination) == (["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x"], "new-cluster")
+        assert [json.loads(line) for line in calls.read_text().splitlines()] == [[["status", "-u", "--", "new-cluster"], str(ca)]]
+        assert isolated.await_count == 2
+
+        isolated.side_effect = [[], []]
+        with self.assertRaisesRegex(OSError, "no ssh entry for gone-cluster"):
+            asyncio.run(rs.ssh_route("oci@gone-cluster"))
 
     def test_osmo_workflow_deploys_and_revives_through_its_proxy_command(self) -> None:
         calls = self.fake_host(existing_port=None)
