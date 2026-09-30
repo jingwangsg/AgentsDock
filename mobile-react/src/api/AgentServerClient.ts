@@ -443,9 +443,9 @@ export class AgentServerClient {
    * stale guard is retried once with the server's value; a refreshing Codex
    * sign-in (`rewind_provider_busy`) is retried once after its advertised delay.
    */
-  async rewindSession(sessionId: string, toRunId: string, expectedLatestSeq: number): Promise<SessionRewindResult> {
+  async rewindSession(sessionId: string, toRunId: string, expectedLatestSeq: number, toSeq?: number): Promise<SessionRewindResult> {
     const rewind = (latestSeq: number) => this.post<SessionRewindResult>(`/api/sessions/${encodeURIComponent(sessionId)}/rewind`, {
-      to_run_id: toRunId, expected_latest_seq: latestSeq, confirmed: true,
+      to_run_id: toRunId, ...(toSeq === undefined ? {} : { to_seq: toSeq }), expected_latest_seq: latestSeq, confirmed: true,
     })
     let latestSeq = expectedLatestSeq
     let staleRetried = false

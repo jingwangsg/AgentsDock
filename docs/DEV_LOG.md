@@ -1,5 +1,25 @@
 # Public development log
 
+## 2026-10-01 — Editing a message after stopping Claude now really rewinds
+
+- Edit a message in a Claude chat whose previous turn was stopped, and the
+  edited message was appended after the stopped turn instead of replacing it:
+  Claude still answered with the stopped turn in view, and a later history
+  sync copied that turn back into the timeline out of order. The stopped
+  Claude process was still connected and kept the options it had started
+  with, so the rewind's fork point never reached it. A rewind now ends the
+  chat's Claude process; the next turn starts one that resumes at the edited
+  message. A rewind whose fork point was never taken is dropped once a later
+  turn has finished, instead of applying to a much later message.
+
+## 2026-10-01 — Editing an imported message keeps the imported history before it
+
+- After Resume brought a Codex or Claude session into a chat, editing any of
+  its messages removed the whole imported history and reset the provider
+  thread. Imported turns share one run id, so the edit rewound to the first
+  imported message. The apps now name the edited message's own row, and the
+  server rewinds to exactly that message.
+
 ## 2026-09-30 — Codex works on a second machine that shares a home directory
 
 - On a remote whose home directory is shared with another machine (a

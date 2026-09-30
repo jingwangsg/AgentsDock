@@ -733,7 +733,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     if (editingTurnState) {
       // The provider and history must be rewound before this send is admitted;
       // a refused rewind keeps the edit banner so the user can retry or cancel.
-      if (!await useAppStore.getState().rewindSession(sessionId, editingTurnState.runId, profileGeneration)) return
+      if (!await useAppStore.getState().rewindSession(sessionId, editingTurnState.runId, profileGeneration, editingTurnState.seq)) return
       if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
     }
     const admissionToken = useAppStore.getState().beginTurnAdmission(sessionId)

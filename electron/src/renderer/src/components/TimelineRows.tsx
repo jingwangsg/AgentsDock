@@ -99,7 +99,7 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
             : <time>{formatTime(event.ts)}</time>}
           {!item.pending && <button type="button" className={`pin-button ${pinned ? 'active' : ''}`} aria-pressed={pinned} title={pinned ? t('timeline.ui.unpinMessage') : t('timeline.ui.pinMessage')} onClick={() => runTimelineAction(togglePin())}><Pin size={12} fill={pinned ? 'currentColor' : 'none'} /></button>}
           <button type="button" title={t('timeline.ui.copyFullMessage')} onClick={() => runTimelineAction(copy())}>{copied ? <Check size={12} /> : <Copy size={12} />}</button>
-          {canEditTurn && <button type="button" title={t('timeline.rewind.editTurn')} onClick={() => useAppStore.getState().beginEditingTurn(sessionId, item.runId!, primary.prompt ?? text)}><Pencil size={12} /></button>}
+          {canEditTurn && <button type="button" title={t('timeline.rewind.editTurn')} onClick={() => useAppStore.getState().beginEditingTurn(sessionId, item.runId!, primary.prompt ?? text, primary.seq)}><Pencil size={12} /></button>}
           {canRestoreCheckpoint && <button type="button" title={t('timeline.rewind.restoreCheckpoint')} onClick={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-restore-checkpoint', { detail: { sessionId, runId: item.runId } }))}><RotateCcw size={12} /></button>}
         </header>
         <div className="message-parts">

@@ -209,7 +209,7 @@ const api: AgentsDockAPI = {
     reloadProvider: sessionId => ipcRenderer.invoke('sessions:provider:reload', sessionId),
     remove: sessionId => ipcRenderer.invoke('sessions:remove', sessionId),
     fork: sessionId => ipcRenderer.invoke('sessions:fork', sessionId),
-    rewind: (sessionId, toRunId, expectedLatestSeq) => ipcRenderer.invoke('sessions:rewind', sessionId, toRunId, expectedLatestSeq),
+    rewind: (sessionId, toRunId, expectedLatestSeq, toSeq) => ipcRenderer.invoke('sessions:rewind', sessionId, toRunId, expectedLatestSeq, ...(toSeq === undefined ? [] : [toSeq])),
     restoreCheckpoint: (sessionId, runId, expectedRevision) => ipcRenderer.invoke('sessions:restore-checkpoint', sessionId, runId, expectedRevision),
     reorder: (sessionId, relativeTo, placement, targetFolder) => ipcRenderer.invoke('sessions:reorder', sessionId, relativeTo, placement, targetFolder),
     searchHistory: (query, limit) => ipcRenderer.invoke('sessions:search-history', query, limit),

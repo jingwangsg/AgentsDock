@@ -432,6 +432,54 @@ class CheckpointRestoreGuardTests(RewindFixture):
         self.assertEqual(len(self.stored_events()), 10)
 
 
+class RewindEditTests(RewindFixture):
+    async def test_claude_rewind_evicts_the_chats_connected_sdk_process(self) -> None:
+        # A connected process keeps the options it started with; only a new one
+        # can resume at the cutoff.
+        self.chat()
+        manager = Mock(evict=AsyncMock(return_value=True))
+        with self.claude_transcript(), patch.object(server, "CLAUDE_SDK_MANAGER", manager):
+            result = await server.rewind_session("chat", rewind_request())
+        self.assertEqual(result["provider_rewind"], "claude_fork")
+        manager.evict.assert_awaited_once_with("chat")
+
+    def imported_batch(self) -> list[dict]:
+        return [
+            {"seq": 1, "id": "e1", "type": "history_imported", "run_id": "import_a", "ts": "2026-09-08T10:00:00Z", "imported": True},
+            {"seq": 2, "id": "e2", "type": "turn_started", "run_id": "import_a", "ts": "2026-09-08T09:00:00Z", "prompt": "First", "imported": True},
+            {"seq": 3, "id": "e3", "type": "assistant_text", "run_id": "import_a", "ts": "2026-09-08T09:00:30Z", "text": "One", "imported": True},
+            {"seq": 4, "id": "e4", "type": "turn_started", "run_id": "import_a", "ts": "2026-09-08T09:01:00Z", "prompt": "Second", "imported": True},
+            {"seq": 5, "id": "e5", "type": "assistant_text", "run_id": "import_a", "ts": "2026-09-08T09:01:30Z", "text": "Two", "imported": True},
+            {"seq": 6, "id": "e6", "type": "turn_finished", "run_id": "import_a", "ts": "2026-09-08T09:01:30Z", "imported": True},
+        ]
+
+    async def test_editing_a_later_imported_message_keeps_the_imported_turns_before_it(self) -> None:
+        # Every imported turn shares the import's run id, so the target is the message itself.
+        self.chat(backend="codex", latest_event_seq=6, latest_agent_event_seq=6, last_read_agent_event_seq=6)
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in self.imported_batch()), encoding="utf-8")
+
+        result = await server.rewind_session("chat", server.RewindSessionRequest(to_run_id="import_a", to_seq=4, expected_latest_seq=6, confirmed=True))
+
+        self.assertEqual({key: result[key] for key in ("from_seq", "through_seq", "removed_events", "provider_rewind")},
+                         {"from_seq": 4, "through_seq": 6, "removed_events": 3, "provider_rewind": "codex_reset"})
+        self.assertEqual([event["seq"] for event in self.stored_events() if event["type"] != "_event_sequence_checkpoint"], [1, 2, 3, 7])
+        await self.assertRewindRejected(server.RewindSessionRequest(to_run_id="import_a", to_seq=3, expected_latest_seq=7, confirmed=True), 409, "rewind_target_not_found")
+
+    def test_a_fork_binding_is_stale_once_a_turn_finished_in_the_source_session_after_the_rewind(self) -> None:
+        sess = self.chat(fork_from="claude-parent", fork_resume_session_at="second-uuid")
+        events = self.events() + [
+            {"seq": 11, "id": "e11", "type": "history_rewound", "ts": "2026-09-08T10:06:00Z", "to_run_id": "third"},
+            {"seq": 12, "id": "e12", "type": "turn_started", "run_id": "fourth", "ts": "2026-09-08T10:07:00Z", "prompt": "Edited"},
+        ]
+        path = server.events_path("chat")
+        path.write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        self.assertFalse(server.claude_fork_binding_is_stale("chat", sess))
+        finished = {"seq": 13, "id": "e13", "type": "turn_finished", "run_id": "fourth", "ts": "2026-09-08T10:08:00Z", "exit_code": 0,
+                    "provider_session_id": "claude-parent"}
+        path.write_text(path.read_text(encoding="utf-8") + json.dumps({"session_id": "chat", **finished}) + "\n", encoding="utf-8")
+        self.assertTrue(server.claude_fork_binding_is_stale("chat", sess))
+
+
 if __name__ == "__main__":
     unittest.main()
 

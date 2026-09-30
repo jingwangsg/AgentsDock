@@ -600,7 +600,7 @@ describe('timeline pin state', () => {
       render(<TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} rewindIdle checkpointRestoreSupported />)
       fireEvent.click(screen.getByTitle('Edit this turn'))
       expect(useAppStore.getState().editingTurn['chat-1']).toEqual({
-        runId: 'run-a', originalPrompt: 'Rename the helper', previousDraft: 'Half-typed follow-up'
+        runId: 'run-a', seq: 3, originalPrompt: 'Rename the helper', previousDraft: 'Half-typed follow-up'
       })
       expect(useAppStore.getState().drafts['chat-1']).toBe('Rename the helper')
       fireEvent.click(screen.getByTitle('Restore checkpoint'))

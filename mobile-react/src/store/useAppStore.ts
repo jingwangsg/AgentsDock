@@ -490,7 +490,7 @@ interface AppState {
   jobs: Job[]
   drafts: Record<string, string>
   /** An earlier user turn being edited in the composer; sending it rewinds the chat first. */
-  editingTurn: Record<string, { runId: string; previousDraft: string } | null>
+  editingTurn: Record<string, { runId: string; seq?: number; previousDraft: string } | null>
   chatReferencesBySession: Record<string, ChatReference[]>
   agentRoutesBySession: Record<string, AgentCrossChatRoutesSnapshot>
   agentRouteErrorsBySession: Record<string, string | null>
@@ -570,10 +570,11 @@ interface AppState {
   quickCreateSession(expectedGeneration?: number, preset?: { folder: string; backend: Backend }): Promise<boolean>
   setChatDefaults(patch: Partial<ChatDefaults>): void
   forkSession(sessionId: string, expectedGeneration?: number): Promise<void>
-  beginEditingTurn(sessionId: string, runId: string, prompt: string): void
+  beginEditingTurn(sessionId: string, runId: string, prompt: string, seq?: number): void
   cancelEditingTurn(sessionId: string): void
   /** Truncates the chat to the rows before `runId` and rewinds the provider. Resolves false when refused. */
-  rewindSession(sessionId: string, runId: string, expectedGeneration?: number): Promise<boolean>
+  /** `toSeq` names the turn_started row: imported turns all share their import's run id. */
+  rewindSession(sessionId: string, runId: string, expectedGeneration?: number, toSeq?: number): Promise<boolean>
   /** Reverts the workspace to before `runId`, then rewinds the chat to it. */
   restoreCheckpoint(sessionId: string, runId: string, expectedGeneration?: number): Promise<boolean>
   deleteSession(sessionId: string, expectedGeneration?: number): Promise<void>
@@ -2828,9 +2829,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) { if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) }) }
     finally { forkSessionInFlight.delete(inFlightKey) }
   },
-  beginEditingTurn(sessionId, runId, prompt) {
+  beginEditingTurn(sessionId, runId, prompt, seq) {
     set(state => ({
-      editingTurn: { ...state.editingTurn, [sessionId]: { runId, previousDraft: state.drafts[sessionId] ?? '' } },
+      editingTurn: { ...state.editingTurn, [sessionId]: { runId, ...(seq === undefined ? {} : { seq }), previousDraft: state.drafts[sessionId] ?? '' } },
       drafts: { ...state.drafts, [sessionId]: prompt },
     }))
   },
@@ -2844,7 +2845,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     })
   },
-  async rewindSession(sessionId, runId, expectedGeneration) {
+  async rewindSession(sessionId, runId, expectedGeneration, toSeq) {
     const scope = validatedConnectionOrReport(get, set, expectedGeneration)
     if (!scope) return false
     const state = get()
@@ -2868,7 +2869,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         snapshot?.events.at(-1)?.seq ?? 0,
         streamSessionId === sessionId ? streamLatestSeq : 0,
       )
-      const result = await scope.client.rewindSession(sessionId, runId, expectedLatestSeq)
+      const result = await scope.client.rewindSession(sessionId, runId, expectedLatestSeq, toSeq)
       if (!connectionIsCurrent(scope)) return false
       set(current => {
         const previous = current.snapshots[sessionId]

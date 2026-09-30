@@ -68,7 +68,7 @@ test('provider selections ride the turn as skill_selection through the store and
   assert.match(composer, /skillSelection: outgoingSkillSelection,/)
   assert.match(composer, /forgetProviderCommands\(providerCommandsKey\)/)
   assert.match(store, /skillSelection\?: ProviderCommandSelection/)
-  assert.match(store, /teamReferences,\s+options\?\.skillSelection,\s+\)/)
+  assert.match(store, /teamReferences,\s+options\?\.skillSelection,\s+clientRequestId,\s+\)/)
   assert.match(client, /if \(skillSelection\) body\.skill_selection = \{ id: skillSelection\.id, revision: skillSelection\.revision \}/)
   assert.match(client, /provider-commands\?refresh=\$\{refresh \? 'true' : 'false'\}/)
 })

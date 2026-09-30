@@ -65,7 +65,7 @@ test('row actions defer to the sheet dismissal and reuse existing surfaces', () 
 
 test('a rewind carries the reverted-output counts and refreshes the files list', () => {
   assert.match(types, /outputs_reverted\?: \{ canvases: number; artifacts: number \} \| null/)
-  const rewind = store.slice(store.indexOf('  async rewindSession(sessionId, runId, expectedGeneration) {'), store.indexOf('  async restoreCheckpoint('))
+  const rewind = store.slice(store.indexOf('  async rewindSession(sessionId, runId, expectedGeneration, toSeq) {'), store.indexOf('  async restoreCheckpoint('))
   assert.match(rewind, /void get\(\)\.refreshSessions\(scope\.generation\)\s+void get\(\)\.refreshFiles\(sessionId, false, scope\.generation\)/)
   const rewindSnapshot = store.slice(store.indexOf('function rewindSnapshot('), store.indexOf('function sessionBusyForRewind('))
   assert.match(rewindSnapshot, /const files = snapshot\.files\.filter\(file => \{\s+const seq = file\.seq \?\? file\.event_seq\s+return seq == null \|\| seq < fromSeq! \|\| seq > throughSeq!/)

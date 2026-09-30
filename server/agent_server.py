@@ -7216,6 +7216,9 @@ class ForkSessionRequest(BaseModel):
 
 class RewindSessionRequest(BaseModel):
     to_run_id: str = Field(min_length=1, max_length=256)
+    # The edited message's turn_started row. Imported history shares one run id
+    # across its turns, so the run alone would name the import's first message.
+    to_seq: int | None = Field(default=None, ge=1)
     expected_latest_seq: int | None = Field(default=None, ge=0)
     confirmed: bool = False
 
@@ -61233,6 +61236,34 @@ def session_system_prompt(
     )
 
 
+def claude_fork_binding_is_stale(session_id: str, sess: dict[str, Any]) -> bool:
+    """A rewind's fork binding applies to the next turn only.
+
+    If a turn has since finished in the source session (the fork did not
+    happen), honoring the binding now would drop that turn from the model.
+    """
+    fork_from = str(sess.get("fork_from") or "")
+    if not fork_from:
+        return False
+    rewound_at = 0
+    for event in iter_session_events(session_id):
+        seq = int(event.get("seq") or 0)
+        if event.get("type") == "history_rewound":
+            rewound_at = seq
+        elif (event.get("type") == "turn_finished" and seq > rewound_at and not event.get("imported")
+              and str(event.get("provider_session_id") or "") == fork_from):
+            return True
+    return False
+
+
+def drop_stale_claude_fork_binding(session_id: str, sess: dict[str, Any]) -> None:
+    if claude_fork_binding_is_stale(session_id, sess):
+        logger.warning("claude fork binding dropped: a turn already finished in session %s after the rewind chat=%s",
+                       sess.get("fork_from"), session_id)
+        sess["fork_from"] = None
+        sess.pop("fork_resume_session_at", None)
+
+
 def build_claude_cmd(
     session_id: str,
     sess: dict[str, Any],
@@ -61242,6 +61273,7 @@ def build_claude_cmd(
     no_session_persistence: bool = False,
     disable_provider_subagents: bool = False,
 ) -> list[str]:
+    drop_stale_claude_fork_binding(session_id, sess)
     if sess.get("fork_resume_session_at") and not (provider_id and sess.get("fork_from")):
         raise ValueError("The completed Claude fork snapshot is unavailable; refusing an empty resume.")
     system_prompt = session_system_prompt(
@@ -61381,6 +61413,7 @@ def build_claude_sdk_options(
         )
     cli_path = claude_sdk_cli_path(env)
     system_prompt = session_system_prompt(session_id, sess, manifest_path)
+    drop_stale_claude_fork_binding(session_id, sess)
     provider_id = resolve_claude_resume_provider(sess, cwd)[0]
     if sess.get("fork_resume_session_at") and not (provider_id and sess.get("fork_from")):
         raise ValueError("The completed Claude fork snapshot is unavailable; refusing an empty resume.")
@@ -92250,6 +92283,7 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
             if event.get("type") == "turn_started"
             and str(event.get("run_id") or "") == req.to_run_id
             and durable_event_seq(event) is not None
+            and (req.to_seq is None or durable_event_seq(event) == req.to_seq)
         ), None)
         if target_index is None:
             raise HTTPException(status_code=409, detail={
@@ -92534,6 +92568,10 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                 await join_task_despite_caller_cancellation(rewind_task)
                 raise cancellation
 
+        if backend == BACKEND_CLAUDE and CLAUDE_SDK_MANAGER is not None:
+            # A connected Claude process keeps the options it started with, so
+            # only a new one resumes at the cutoff (or starts afresh).
+            await CLAUDE_SDK_MANAGER.evict(session_id)
         if provider_rewind == "codex_fork":
             # The chat now owns the fork. Unload the source thread so its
             # rollout writer lock is free for other Codex clients instead of

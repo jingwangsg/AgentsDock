@@ -2741,10 +2741,10 @@ export class AppService {
     return response.session
   }
 
-  async rewindSession(sessionId: string, toRunId: string, expectedLatestSeq: number): Promise<SessionRewindResult> {
+  async rewindSession(sessionId: string, toRunId: string, expectedLatestSeq: number, toSeq?: number): Promise<SessionRewindResult> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
-    const response = await scope.client.rewindSession(sessionId, toRunId, expectedLatestSeq)
+    const response = await scope.client.rewindSession(sessionId, toRunId, expectedLatestSeq, toSeq)
     this.assertCurrentScope(scope)
     // The tombstone will also arrive on the socket; trim the local cache now so
     // a reload before it lands cannot resurrect the removed turns.

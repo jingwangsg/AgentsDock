@@ -227,14 +227,15 @@ describe('Composer', () => {
     })
     try {
       render(<Composer />)
-      act(() => useAppStore.getState().beginEditingTurn('chat-1', 'run-2', 'Edited prompt'))
+      act(() => useAppStore.getState().beginEditingTurn('chat-1', 'run-2', 'Edited prompt', 7))
       const editor = screen.getByPlaceholderText('Message')
       await waitFor(() => expect(editor).toHaveValue('Edited prompt'))
 
       fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
       await waitFor(() => expect(calls).toEqual(['rewind', 'admission', 'send']))
-      expect(useAppStore.getState().rewindSession).toHaveBeenCalledExactlyOnceWith('chat-1', 'run-2')
+      // The turn's own row, not just its run: imported turns share one run id.
+      expect(useAppStore.getState().rewindSession).toHaveBeenCalledExactlyOnceWith('chat-1', 'run-2', 7)
     } finally {
       useAppStore.setState({
         rewindSession: original.rewindSession,

@@ -402,7 +402,7 @@ export interface AgentsDockAPI {
     remove(sessionId: string): Promise<boolean>
     fork(sessionId: string): Promise<Session>
     /** Truncates history to before `toRunId`'s turn; the server rejects a stale `expectedLatestSeq` with 409. */
-    rewind(sessionId: string, toRunId: string, expectedLatestSeq: number): Promise<SessionRewindResult>
+    rewind(sessionId: string, toRunId: string, expectedLatestSeq: number, toSeq?: number): Promise<SessionRewindResult>
     /** Reverts workspace files to the checkpoint written before `runId`; pair with `rewind` for the chat. */
     restoreCheckpoint(sessionId: string, runId: string, expectedRevision: string): Promise<import('./workspace-git').WorkspaceGitStatus>
     reorder(sessionId: string, relativeTo: string, placement: 'before' | 'after', targetFolder?: string): Promise<Session[]>

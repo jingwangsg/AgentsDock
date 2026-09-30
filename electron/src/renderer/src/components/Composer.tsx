@@ -1332,7 +1332,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     if (editingTurnState) {
       // The provider and history must be rewound before this send is admitted;
       // a refused rewind keeps the edit banner so the user can retry or cancel.
-      if (!await useAppStore.getState().rewindSession(session.id, editingTurnState.runId)) return
+      if (!await useAppStore.getState().rewindSession(session.id, editingTurnState.runId, editingTurnState.seq)) return
       if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) return
     }
     const admissionToken = useAppStore.getState().beginTurnAdmission(session.id)

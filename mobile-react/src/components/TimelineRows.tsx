@@ -201,7 +201,7 @@ function MessageRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRo
   const beginEditingTurn = () => {
     if (!row.runId) return
     // Resend the original prompt, not its display form.
-    useAppStore.getState().beginEditingTurn(sessionId, row.runId, row.events[0]?.prompt ?? full)
+    useAppStore.getState().beginEditingTurn(sessionId, row.runId, row.events[0]?.prompt ?? full, row.events[0]?.seq)
   }
   const confirmRestoreCheckpoint = () => {
     if (!row.runId) return

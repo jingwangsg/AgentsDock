@@ -211,7 +211,7 @@ interface AppState {
   uploadPathsBySession: Record<string, NativeFileRef[]>
   drafts: Record<string, string>
   /** Per-chat "edit this turn" mode; `previousDraft` is restored on cancel. */
-  editingTurn: Record<string, { runId: string; originalPrompt: string; previousDraft: string } | null>
+  editingTurn: Record<string, { runId: string; seq?: number; originalPrompt: string; previousDraft: string } | null>
   chatReferencesBySession: Record<string, ChatReference[]>
   teamReferencesBySession: Record<string, TeamReference[]>
   agentRoutesBySession: Record<string, AgentCrossChatRoutesSnapshot>
@@ -278,10 +278,11 @@ interface AppState {
   renameFolder(source: string, target: string): Promise<boolean>
   forkSession(sessionId: string): Promise<void>
   exportSession(sessionId: string, format: SessionExportFormat): Promise<void>
-  beginEditingTurn(sessionId: string, runId: string, prompt: string): void
+  beginEditingTurn(sessionId: string, runId: string, prompt: string, seq?: number): void
   cancelEditingTurn(sessionId: string): void
   /** Truncates history to before `runId`'s turn; resolves false (with `error` set) when refused. */
-  rewindSession(sessionId: string, runId: string): Promise<boolean>
+  /** `toSeq` names the turn_started row: imported turns all share their import's run id. */
+  rewindSession(sessionId: string, runId: string, toSeq?: number): Promise<boolean>
   /** Restores the pre-turn workspace checkpoint, then rewinds the chat to that turn. */
   restoreCheckpoint(sessionId: string, runId: string): Promise<boolean>
   deleteSession(sessionId: string): Promise<boolean>
@@ -2323,9 +2324,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().selectSession(session.id)
     } catch (error) { if (profileScopeMatches(scope, get())) set({ error: forkErrorMessage(error) }) }
   },
-  beginEditingTurn(sessionId, runId, prompt) {
+  beginEditingTurn(sessionId, runId, prompt, seq) {
     set(state => ({
-      editingTurn: { ...state.editingTurn, [sessionId]: { runId, originalPrompt: prompt, previousDraft: state.drafts[sessionId] ?? '' } },
+      editingTurn: { ...state.editingTurn, [sessionId]: { runId, seq, originalPrompt: prompt, previousDraft: state.drafts[sessionId] ?? '' } },
       drafts: { ...state.drafts, [sessionId]: prompt }
     }))
   },
@@ -2339,7 +2340,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     })
   },
-  async rewindSession(sessionId, runId) {
+  async rewindSession(sessionId, runId, toSeq) {
     const current = get()
     if (current.switchingProfileId) return false
     const session = current.sessions.find(candidate => candidate.id === sessionId)
@@ -2361,7 +2362,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     )
     const scope = captureProfileScope(current)
     try {
-      const result = await window.agentsDock.sessions.rewind(sessionId, runId, expectedLatestSeq)
+      const result = await window.agentsDock.sessions.rewind(sessionId, runId, expectedLatestSeq, ...(toSeq === undefined ? [] : [toSeq]))
       if (!profileScopeMatches(scope, get())) return false
       set(state => {
         const previous = state.snapshots[sessionId]

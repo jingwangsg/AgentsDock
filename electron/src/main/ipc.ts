@@ -268,7 +268,7 @@ export function registerIpc(
   handle('sessions:provider:reload', sessionId => service.reloadProvider(sessionId))
   handle('sessions:remove', sessionId => service.removeSession(sessionId))
   handle('sessions:fork', sessionId => service.forkSession(sessionId))
-  handle('sessions:rewind', (sessionId, toRunId, expectedLatestSeq) => service.rewindSession(sessionId, toRunId, expectedLatestSeq))
+  handle('sessions:rewind', (sessionId, toRunId, expectedLatestSeq, toSeq) => service.rewindSession(sessionId, toRunId, expectedLatestSeq, toSeq))
   handle('sessions:restore-checkpoint', (sessionId, runId, expectedRevision) => service.restoreCheckpoint(sessionId, runId, expectedRevision))
   handle('sessions:reorder', (sessionId, relativeTo, placement, targetFolder) => service.reorderSession(sessionId, relativeTo, placement, targetFolder))
   handle('sessions:search-history', (query, limit) => service.searchSessions(query, limit))
