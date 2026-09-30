@@ -50777,6 +50777,9 @@ async def append_imported_history(
             and (at := iso_timestamp_seconds((item.get("provider_origin") or {}).get("timestamp"))) is not None
             and any(low <= at <= high for low, high in spans)
         )]
+        if not items:
+            # Every stop leaves such a marker; an empty batch per chat open would only grow the log.
+            return {"imported": 0, "source_path": str(source_path), "message": f"Imported 0 rough messages from {backend} history."}
     run_id = f"import_{uuid.uuid4().hex[:12]}"
     message = f"Imported {len(items)} rough messages from {backend} history."
     history_event = {

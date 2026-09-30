@@ -848,6 +848,29 @@ class ImportedHistoryLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kinds, ["history_imported", "turn_started", "provider_interruption", "turn_finished"])
         self.assertEqual(appended[2][1]["provider_origin"]["event_id"], "44444444-4444-4444-8444-444444444444")
 
+    async def test_only_own_turn_interruptions_write_no_batch(self):
+        appended: list[tuple[str, dict]] = []
+
+        async def record(session_id, event_specs):
+            appended.extend(event_specs)
+            return []
+
+        provider = "11111111-1111-4111-8111-111111111111"
+        sess = {"id": "chat", "backend": agent_server.BACKEND_CLAUDE, "claude_session_id": provider}
+        live = [
+            {"type": "turn_started", "run_id": "run_a", "backend": "claude", "ts": "2026-09-30T15:24:34Z"},
+            {"type": "turn_finished", "run_id": "run_a", "backend": "claude", "ts": "2026-09-30T15:38:30Z", "stopped": True},
+        ]
+        stop = {"kind": "interruption", "text": "", "provider_origin": {
+            "provider": "claude", "kind": "interruption", "cause": "unknown",
+            "event_id": "22222222-2222-4222-8222-222222222222", "session_id": provider, "timestamp": "2026-09-30T15:38:29.960Z",
+        }}
+        with patch.object(agent_server, "append_durable_event_batch", new=record), \
+             patch.object(agent_server, "iter_session_events", return_value=iter(live)):
+            result = await agent_server.append_imported_history(sess, Path("/tmp/claude.jsonl"), [stop])
+        self.assertEqual(appended, [])
+        self.assertEqual(result["imported"], 0)
+
     async def test_sync_skips_unchanged_transcripts(self):
         sess = {"id": "chat", "backend": agent_server.BACKEND_CODEX, "codex_thread_id": "t1"}
         live = {"chat": dict(sess)}
