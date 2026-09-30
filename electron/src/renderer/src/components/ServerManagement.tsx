@@ -8,7 +8,6 @@ import type { PublicServerProfile, ServerSetupProgress } from '@shared/types'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { trackEvent } from '../lib/analytics'
 import { useAppStore } from '../store/app-store'
-import { captureWorkspaceScope } from '../lib/workspace-preferences'
 import { cleanIPCError } from '../lib/file-actions'
 
 interface ServerDraft {
@@ -52,8 +51,6 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   const revealEditor = useRef(false)
 
   const hub = profiles.find(profile => profile.serverUrl === DEFAULT_SERVER_URL) ?? null
-  // Remotes are registered on the hub, so adding them only works while the hub is the active server.
-  const hubActive = Boolean(hub && hub.id === activeProfileId)
 
   const openEditor = (next: ServerDraft) => {
     revealEditor.current = true
@@ -113,20 +110,14 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     const host = draft?.sshHost.trim()
     if (!draft || !host || busy) return
     setEditorError(null)
-    if (!hubActive) {
-      setEditorError(t('hub.switchToLocalFirst'))
-      return
-    }
     setBusy('deploy')
     setDeployProgress([])
     let added = false
     try {
-      const scope = captureWorkspaceScope(useAppStore.getState())
-      if (!scope) throw new Error('The active server profile is still loading. Retry in a moment.')
       const input = { sshHost: host, installDir: draft.installDir.trim() || undefined, name: draft.name.trim() || undefined }
       const profile = draft.mode === 'attach'
-        ? await window.agentsDock.remoteServers.attach(scope, input)
-        : await window.agentsDock.remoteServers.deploy(scope, input)
+        ? await window.agentsDock.remoteServers.attach(input)
+        : await window.agentsDock.remoteServers.deploy(input)
       added = true
       trackEvent('server_added', { success: true })
       await refreshProfiles()
@@ -302,7 +293,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   return <section className="server-management" aria-label={t("ui.ServerManagement.ServerManagement.saved_servers_4bf0848")}>
     <div className="server-management-heading">
       <div><strong>{t("ui.ServerManagement.ServerManagement.servers_68d7beb")}</strong><small>{t("ui.ServerManagement.ServerManagement.each_server_keeps_its_own_chats_drafts_fil_35087b7")}</small></div>
-      <button type="button" className="quiet-button" disabled={Boolean(busy) || !hubActive} title={hubActive ? undefined : t('hub.switchToLocalFirst')} onClick={() => openEditor(emptyDraft())}><Plus size={13} />{" "}{t("ui.ServerManagement.ServerManagement.add_server_1099b2a")}</button>
+      <button type="button" className="quiet-button" disabled={Boolean(busy) || !hub} title={hub ? undefined : t('hub.localServerRequired')} onClick={() => openEditor(emptyDraft())}><Plus size={13} />{" "}{t("ui.ServerManagement.ServerManagement.add_server_1099b2a")}</button>
     </div>
     <div className="server-management-list">
       {profiles.map((profile, index) => {

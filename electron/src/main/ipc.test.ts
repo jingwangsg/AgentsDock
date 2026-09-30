@@ -115,19 +115,18 @@ describe('Team Hub IPC registration', () => {
 
   it('routes remote server attach through the hub and forwards its progress to the sender', async () => {
     const progress = { phase: 'connect', message: 'Probing nv_gb300…' }
-    const attachRemoteServerViaHub = vi.fn(async (_scope: unknown, _input: unknown, onProgress: (value: unknown) => void) => {
+    const attachRemoteServerViaHub = vi.fn(async (_input: unknown, onProgress: (value: unknown) => void) => {
       onProgress(progress)
       return { id: 'gb300' }
     })
     registerIpc({ attachRemoteServerViaHub } as unknown as AppService, {} as AppUpdateManager)
     const send = vi.fn()
     const event = { ...trustedEvent, sender: { ...trustedEvent.sender, isDestroyed: () => false, send } }
-    const scope = { profileId: 'hub', profileGeneration: 1, serverIdentity: 'server-hub' }
     const input = { sshHost: 'nv_gb300', installDir: '/mnt/lustre/.agentsdock-server' }
 
-    await expect(harness.handlers.get('remote-servers:attach')?.(event, scope, input)).resolves.toEqual({ id: 'gb300' })
+    await expect(harness.handlers.get('remote-servers:attach')?.(event, input)).resolves.toEqual({ id: 'gb300' })
 
-    expect(attachRemoteServerViaHub).toHaveBeenCalledExactlyOnceWith(scope, input, expect.any(Function))
+    expect(attachRemoteServerViaHub).toHaveBeenCalledExactlyOnceWith(input, expect.any(Function))
     expect(send).toHaveBeenCalledExactlyOnceWith('server:setup-progress', progress)
   })
 

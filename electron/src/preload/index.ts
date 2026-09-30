@@ -189,8 +189,8 @@ const api: AgentsDockAPI = {
   // /api/remote/{id} proxy (server/remote_servers.py). Deploy progress
   // arrives on the same 'server:setup-progress' event as `setup.run`.
   remoteServers: {
-    deploy: (scope, input) => ipcRenderer.invoke('remote-servers:deploy', scope, input),
-    attach: (scope, input) => ipcRenderer.invoke('remote-servers:attach', scope, input),
+    deploy: input => ipcRenderer.invoke('remote-servers:deploy', input),
+    attach: input => ipcRenderer.invoke('remote-servers:attach', input),
     cancel: () => ipcRenderer.invoke('remote-servers:cancel'),
     remove: profileId => ipcRenderer.invoke('remote-servers:remove', profileId),
     redeploy: (profileId, force) => ipcRenderer.invoke('remote-servers:redeploy', profileId, force)

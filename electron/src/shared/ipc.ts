@@ -376,8 +376,8 @@ export interface AgentsDockAPI {
     openLog(): Promise<boolean>
   }
   remoteServers: {
-    deploy(scope: WorkspaceProfileScope, input: RemoteServerDeployInput): Promise<PublicServerProfile>
-    attach(scope: WorkspaceProfileScope, input: RemoteServerAttachInput): Promise<PublicServerProfile>
+    deploy(input: RemoteServerDeployInput): Promise<PublicServerProfile>
+    attach(input: RemoteServerAttachInput): Promise<PublicServerProfile>
     cancel(): Promise<void>
     remove(profileId: string): Promise<void>
     redeploy(profileId: string, force: boolean): Promise<{ redeployed: boolean; running: number | null }>

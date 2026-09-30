@@ -412,7 +412,7 @@ export class AppService {
   private profileRemovals = new Map<string, Promise<boolean>>()
   private profileAuthorityOperations = new Map<string, Promise<void>>()
   /** The hub deploy this client is currently polling, if any; lets Cancel reach both the poll loop and the server-side job. */
-  private remoteDeploy: { scope: ConnectionScope; jobId: string; cancelled: boolean } | null = null
+  private remoteDeploy: { client: AgentServerClient; jobId: string; cancelled: boolean } | null = null
   private pendingProfileAuthorityNamespaces = new Map<string, string[]>()
   private windows = new Set<BrowserWindow>()
   private focusedSessionId: string | null = null
@@ -1587,53 +1587,48 @@ export class AppService {
   }
 
   /**
-   * Deploy a remote server over SSH through the local hub (server/remote_servers.py);
-   * the new `/api/remote/{id}` profile appears through the registry reconcile.
+   * Deploy a remote server over SSH through the local hub (server/remote_servers.py), whichever server is
+   * active; the new `/api/remote/{id}` profile appears through the registry reconcile.
    */
   async deployRemoteServerViaHub(
-    expected: WorkspaceProfileScope,
     input: RemoteServerDeployInput,
     onProgress: (value: ServerSetupProgress) => void
   ): Promise<PublicServerProfile> {
-    return this.runRemoteServerJobViaHub(expected, client => client.startRemoteDeploy(input), onProgress)
+    return this.runRemoteServerJobViaHub(client => client.startRemoteDeploy(input), onProgress)
   }
 
   /** Same job flow as deploy for an install another hub set up: the hub uploads nothing and never restarts it. */
   async attachRemoteServerViaHub(
-    expected: WorkspaceProfileScope,
     input: RemoteServerAttachInput,
     onProgress: (value: ServerSetupProgress) => void
   ): Promise<PublicServerProfile> {
-    return this.runRemoteServerJobViaHub(expected, client => client.startRemoteAttach(input), onProgress)
+    return this.runRemoteServerJobViaHub(client => client.startRemoteAttach(input), onProgress)
   }
 
   private async runRemoteServerJobViaHub(
-    expected: WorkspaceProfileScope,
     start: (client: AgentServerClient) => Promise<{ job_id: string }>,
     onProgress: (value: ServerSetupProgress) => void
   ): Promise<PublicServerProfile> {
-    const scope = this.requireWorkspaceScope(expected)
-    await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    if (!this.health?.capabilities?.remote_servers_v1?.available) {
-      throw new Error('This server does not support deploying remote servers over SSH.')
-    }
+    const hub = this.hubProfile()
+    if (!hub) throw new Error('Remote servers are added through the local server; add it first.')
     if (this.remoteDeploy) throw new Error('A remote server deployment is already running.')
-    const started = await start(scope.client)
-    const state = { scope, jobId: started.job_id, cancelled: false }
-    this.remoteDeploy = state
+    // The hub profile's own token: a rotated hub token is not copied into existing remote profiles.
+    const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
     try {
-      const job = await this.followHubJob(scope.client, state.jobId, onProgress, () => this.assertCurrentScope(scope))
+      const state = { client, jobId: (await start(client)).job_id, cancelled: false }
+      this.remoteDeploy = state
+      const job = await this.followHubJob(client, state.jobId, onProgress, () => undefined)
       if (state.cancelled) throw new Error('The deployment was cancelled.')
       if (job.error) throw new Error(job.error)
       if (!job.server) throw new Error('The deployment finished without reporting the new server.')
-      this.assertCurrentScope(scope)
-      const serverUrl = normalizeServerURL(`${scope.serverUrl}${job.server.proxy_path}`)
-      const profile = (await this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope))).find(candidate => candidate.serverUrl === serverUrl)
+      const serverUrl = normalizeServerURL(`${hub.serverUrl}${job.server.proxy_path}`)
+      const profile = (await this.reconcileHubRemotes({ profileId: hub.id, serverUrl: hub.serverUrl, client }, () => true))
+        .find(candidate => candidate.serverUrl === serverUrl)
       if (!profile) throw new Error('The deployment finished, but the hub did not list the new server.')
       return profile
     } finally {
-      if (this.remoteDeploy === state) this.remoteDeploy = null
+      if (this.remoteDeploy?.client === client) this.remoteDeploy = null
+      client.dispose()
     }
   }
 
@@ -1660,7 +1655,7 @@ export class AppService {
     const state = this.remoteDeploy
     if (!state) return
     state.cancelled = true
-    await state.scope.client.cancelRemoteDeploy(state.jobId).catch(() => {})
+    await state.client.cancelRemoteDeploy(state.jobId).catch(() => {})
   }
 
   /**

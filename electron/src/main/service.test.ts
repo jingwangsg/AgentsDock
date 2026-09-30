@@ -9266,6 +9266,27 @@ describe('server profile lifecycle', () => {
     await expect(service.redeployHubRemote(undefined as unknown as string, true, () => undefined)).rejects.toThrow('Unknown server profile.')
   })
 
+  it('adds a remote through the hub while another server is active', async () => {
+    const hub = Object.assign(fakeClient(), {
+      startRemoteDeploy: vi.fn(async () => ({ job_id: 'job-1' })),
+      remoteDeployStatus: vi.fn(async () => ({
+        job_id: 'job-1', phase: 'complete', done: true, error: null, server: hubRemote('r1'),
+        log: [{ phase: 'complete', message: 'Reachable' }]
+      })),
+      listRemoteServers: vi.fn(async () => ({ servers: [hubRemote('r1')] }))
+    })
+    const { service, settings } = createProfileService({ 'http://a.test:7850': [fakeClient()], [DEFAULT_SERVER_URL]: [hub] })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const progress: string[] = []
+
+    const profile = await service.deployRemoteServerViaHub({ sshHost: 'gpu-box' }, value => progress.push(value.message))
+
+    expect(hub.startRemoteDeploy).toHaveBeenCalledWith({ sshHost: 'gpu-box' })
+    expect(profile.serverUrl).toBe(`${DEFAULT_SERVER_URL}/api/remote/r1`)
+    expect(progress).toEqual(['Reachable'])
+    expect(hub.dispose).toHaveBeenCalledOnce()
+  })
+
   it('removes a hub remote through the hub whichever other profile is active, including one the hub already dropped', async () => {
     const gone = new ServerError(404, 'Unknown remote server.')
     const hub = Object.assign(fakeClient(), {

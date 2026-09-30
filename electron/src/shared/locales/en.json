@@ -24,7 +24,7 @@
   "sshTunnel.modeAttach": "Attach an existing server",
   "sshTunnel.attachHint": "Registers the AgentsServer another computer already deployed in this directory. Nothing is uploaded and the server is not restarted.",
   "sshTunnel.attaching": "Attaching…",
-  "hub.switchToLocalFirst": "Switch to the local server first.",
+  "hub.localServerRequired": "Remote servers are added through the local server; add it first.",
   "hub.start": "Start",
   "hub.starting": "Starting…",
   "hub.startLabel": "Start {server}",

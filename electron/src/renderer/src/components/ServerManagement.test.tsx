@@ -137,10 +137,7 @@ describe('ServerManagement', () => {
     await user.click(screen.getByRole('button', { name: 'Add & switch' }))
 
     await waitFor(() => expect(switchServer).toHaveBeenCalledWith('gb300'))
-    expect(remoteDeploy).toHaveBeenCalledWith(
-      { profileId: 'hub', profileGeneration: 1, serverIdentity: 'server-hub' },
-      { sshHost: 'nv_gb300', installDir: '~/.agentsdock-server', name: undefined }
-    )
+    expect(remoteDeploy).toHaveBeenCalledWith({ sshHost: 'nv_gb300', installDir: '~/.agentsdock-server', name: undefined })
     expect(useAppStore.getState().profiles.map(profile => profile.id)).toEqual(['hub', 'osmo', 'gb300'])
     expect(trackEvent).toHaveBeenCalledWith('server_added', { success: true })
     expect(screen.queryByRole('button', { name: 'Add & switch' })).not.toBeInTheDocument()
@@ -162,10 +159,7 @@ describe('ServerManagement', () => {
     await user.click(screen.getByRole('button', { name: 'Add & switch' }))
 
     await waitFor(() => expect(switchServer).toHaveBeenCalledWith('gb300'))
-    expect(remoteAttach).toHaveBeenCalledWith(
-      { profileId: 'hub', profileGeneration: 1, serverIdentity: 'server-hub' },
-      { sshHost: 'nv_gb300', installDir: '/mnt/lustre/.agentsdock-server', name: undefined }
-    )
+    expect(remoteAttach).toHaveBeenCalledWith({ sshHost: 'nv_gb300', installDir: '/mnt/lustre/.agentsdock-server', name: undefined })
     expect(remoteDeploy).not.toHaveBeenCalled()
     expect(useAppStore.getState().activeProfileId).toBe('gb300')
     expect(screen.queryByRole('button', { name: 'Add & switch' })).not.toBeInTheDocument()
@@ -234,7 +228,7 @@ describe('ServerManagement', () => {
     expect(remoteRedeploy).toHaveBeenCalledOnce()
   })
 
-  it('shows remotes by SSH host, never offers to delete the hub, and adds remotes only while the hub is active', () => {
+  it('shows remotes by SSH host, never offers to delete the hub, and adds remotes from any server', () => {
     useAppStore.setState({ profiles: [hub, osmo, gb300], activeProfileId: hub.id })
     render(<ServerManagement />)
 
@@ -246,12 +240,19 @@ describe('ServerManagement', () => {
 
     act(() => useAppStore.setState({ activeProfileId: osmo.id }))
 
-    expect(screen.getByRole('button', { name: 'Add server' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Add server' })).toHaveAttribute('title', 'Switch to the local server first.')
+    expect(screen.getByRole('button', { name: 'Add server' })).toBeEnabled()
     // Removing goes through the hub from any server; the active remote after switching to the hub.
     expect(screen.getByRole('button', { name: 'Remove GB300' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Remove OSMO' })).toHaveAttribute('title', 'Switch to This Mac and remove this server')
     expect(screen.queryByRole('button', { name: /Remove This Mac|Cannot remove active server This Mac/ })).not.toBeInTheDocument()
+  })
+
+  it('cannot add a remote without the local server that keeps its connection', () => {
+    useAppStore.setState({ profiles: [osmo], activeProfileId: osmo.id })
+    render(<ServerManagement />)
+
+    expect(screen.getByRole('button', { name: 'Add server' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Add server' })).toHaveAttribute('title', 'Remote servers are added through the local server; add it first.')
   })
 
   it('removes the active remote after switching to the hub', async () => {

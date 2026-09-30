@@ -243,10 +243,10 @@ export function registerIpc(
       if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
     })
   })
-  handleWithEvent('remote-servers:deploy', (event, scope, input) => service.deployRemoteServerViaHub(scope, input, progress => {
+  handleWithEvent('remote-servers:deploy', (event, input) => service.deployRemoteServerViaHub(input, progress => {
     if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
   }))
-  handleWithEvent('remote-servers:attach', (event, scope, input) => service.attachRemoteServerViaHub(scope, input, progress => {
+  handleWithEvent('remote-servers:attach', (event, input) => service.attachRemoteServerViaHub(input, progress => {
     if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
   }))
   handle('remote-servers:cancel', () => service.cancelRemoteDeploy())

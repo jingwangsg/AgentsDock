@@ -117,14 +117,13 @@ describe('preload session IPC bridge', () => {
     expect(electronHarness.invoke).toHaveBeenCalledWith('server-setup:run', input)
   })
 
-  it('forwards a remote server attach with the originating scope and input unchanged', async () => {
+  it('forwards a remote server attach with its input unchanged', async () => {
     electronHarness.invoke.mockResolvedValue({ id: 'gb300' })
-    const scope = { profileId: 'hub', profileGeneration: 1, serverIdentity: 'server-hub' }
     const input = { sshHost: 'nv_gb300', installDir: '/mnt/lustre/.agentsdock-server' }
 
-    await electronHarness.exposed?.remoteServers.attach(scope, input)
+    await electronHarness.exposed?.remoteServers.attach(input)
 
-    expect(electronHarness.invoke).toHaveBeenCalledWith('remote-servers:attach', scope, input)
+    expect(electronHarness.invoke).toHaveBeenCalledWith('remote-servers:attach', input)
   })
 
   it('forwards live Team Network role configuration with only the originating scope and named role', async () => {

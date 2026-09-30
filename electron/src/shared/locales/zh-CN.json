@@ -24,7 +24,7 @@
   "sshTunnel.modeAttach": "接入已有服务端",
   "sshTunnel.attachHint": "注册另一台电脑已在该目录部署好的 AgentsServer。不会上传源码，也不会重启服务端。",
   "sshTunnel.attaching": "接入中…",
-  "hub.switchToLocalFirst": "请先切换到本机服务端。",
+  "hub.localServerRequired": "远程服务端通过本机服务端添加，请先添加本机服务端。",
   "hub.start": "启动",
   "hub.starting": "正在启动…",
   "hub.startLabel": "启动 {server}",
