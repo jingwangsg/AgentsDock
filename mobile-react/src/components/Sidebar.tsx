@@ -597,6 +597,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   const activityDate = formatChatDateTime(session.latest_event_at ?? session.updated_at ?? session.created_at)
   const markRead = useAppStore(state => state.markRead)
   const markUnread = useAppStore(state => state.markUnread)
+  const runtime = useAppStore(state => state.runtime)
   const update = useAppStore(state => state.updateSession)
   const fork = useAppStore(state => state.forkSession)
   const remove = useAppStore(state => state.deleteSession)
@@ -747,7 +748,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
         <Text style={[styles.sessionTitle, { color: colors.text }]} numberOfLines={1}>{session.title}</Text>
         <View style={styles.sessionMetaRow}>
           <Text style={[styles.sessionMeta, { color: unread ? colors.blue : colors.muted }]} numberOfLines={1}>
-            {welcome ? 'Local setup guide' : (searchSnippet || (waiting ? `${runtimeSummary(session)} · waiting for you` : running ? `${runtimeSummary(session)} · running` : unread ? `${runtimeSummary(session)} · new` : runtimeSummary(session)))}
+            {welcome ? 'Local setup guide' : (searchSnippet || (waiting ? `${runtimeSummary(session, runtime)} · waiting for you` : running ? `${runtimeSummary(session, runtime)} · running` : unread ? `${runtimeSummary(session, runtime)} · new` : runtimeSummary(session, runtime)))}
           </Text>
           {activityDate ? <Text style={[styles.sessionDate, { color: colors.muted }]} numberOfLines={1}>{activityDate}</Text> : null}
         </View>

@@ -4341,7 +4341,20 @@ function stopForegroundRefreshTimer(): void {
   refreshTimer = null
 }
 
-function startForegroundRefreshTimer(get: () => AppState): void {
+/**
+ * A catalog dropped at connect (the app left the foreground mid-request, or the request failed) would
+ * keep every chat on "Server model" and the model picker disabled until a reconnect. Silent, like the
+ * connect path's catalog load: a background retry must not raise the error banner.
+ */
+function reloadMissingRuntime(get: () => AppState, set: (value: Partial<AppState>) => void): void {
+  if (!get().connected || get().runtime) return
+  const scope = captureConnection()
+  void scope.client.runtimeCatalog().then(runtime => {
+    if (connectionIsCurrent(scope) && scope.client.isValidated && !get().runtime) set({ runtime })
+  }).catch(() => undefined)
+}
+
+function startForegroundRefreshTimer(get: () => AppState, set: (value: Partial<AppState>) => void): void {
   if (refreshTimer || NativeAppState.currentState !== 'active') return
   refreshTimer = setInterval(() => {
     if (NativeAppState.currentState !== 'active' || !shouldAutoConnectServer(get())) return
@@ -4353,6 +4366,7 @@ function startForegroundRefreshTimer(get: () => AppState): void {
     if (periodicRefreshInFlight) return
     periodicRefreshInFlight = true
     const operation = get().connected ? get().refreshSessions() : get().reconnect()
+    reloadMissingRuntime(get, set)
     void operation.finally(() => { periodicRefreshInFlight = false })
   }, FOREGROUND_REFRESH_MS)
 }
@@ -4440,7 +4454,7 @@ function installAppLifecycle(
   set: (value: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
 ): void {
   stopForegroundRefreshTimer()
-  if (NativeAppState.currentState === 'active') startForegroundRefreshTimer(get)
+  if (NativeAppState.currentState === 'active') startForegroundRefreshTimer(get, set)
   else {
     stopSelectedStream()
     set(state => ({
@@ -4465,13 +4479,15 @@ function installAppLifecycle(
       if (get().activeProfileId) void saveCurrentWorkspace(get).catch(() => undefined)
       return
     }
-    startForegroundRefreshTimer(get)
+    startForegroundRefreshTimer(get, set)
     if (!shouldAutoConnectServer(get())) return
     void (async () => {
       await repairSelectedSnapshotFromCache(get, set)
       if (NativeAppState.currentState !== 'active') return
-      if (get().connected) await get().refreshSessions()
-      else await get().reconnect()
+      if (get().connected) {
+        await get().refreshSessions()
+        reloadMissingRuntime(get, set)
+      } else await get().reconnect()
       const selectedSessionId = get().selectedSessionId
       const selectedSyncInFlight = Boolean(
         selectedSessionId

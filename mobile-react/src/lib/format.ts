@@ -1,4 +1,5 @@
-import type { AgentFile, Backend, Event, Session } from '../types'
+import type { AgentFile, Backend, Event, RuntimeCatalog, Session } from '../types'
+import { runtimeChipLabel } from './runtime-chip'
 
 const fullDateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   month: 'short',
@@ -167,10 +168,9 @@ export function backendLabel(backend: Backend): string {
   return backend === 'codex' ? 'Codex' : backend === 'cursor' ? 'Cursor' : 'Claude'
 }
 
-export function runtimeSummary(session: Session): string {
-  const model = session.model?.trim() || 'Server model'
-  const effort = session.effort?.trim()
-  return [backendLabel(session.backend), model, effort].filter(Boolean).join(' · ')
+/** Like the desktop, an unset model or effort shows the server's default, by its catalog label. */
+export function runtimeSummary(session: Session, catalog: RuntimeCatalog | null): string {
+  return `${backendLabel(session.backend)} · ${runtimeChipLabel(catalog, session.backend, session.model, session.effort)}`
 }
 
 export function mergeEvents(current: Event[], incoming: Event[]): Event[] {

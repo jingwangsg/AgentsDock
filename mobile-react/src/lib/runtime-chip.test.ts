@@ -1,4 +1,5 @@
-import type { RuntimeCatalog } from '../types'
+import type { RuntimeCatalog, Session } from '../types'
+import { runtimeSummary } from './format'
 import { runtimeChipLabel } from './runtime-chip'
 
 function assertEqual(actual: string, expected: string, message: string): void {
@@ -38,4 +39,6 @@ assertEqual(runtimeChipLabel(catalog, 'claude', 'claude-next', 'ultra'), 'claude
 assertEqual(runtimeChipLabel(null, 'codex', 'gpt-5', 'high'), 'gpt-5 · high', 'without a catalog the raw session values are shown')
 assertEqual(runtimeChipLabel(null, 'claude', null, null), 'Server model', 'without a catalog or picks the chip reads Server model')
 assertEqual(runtimeChipLabel(undefined, 'claude', '  ', 'low'), 'Server model · low', 'blank model with an effort keeps the fallback model text')
+// The chat list and header show the same resolved label after the backend, not "Server model".
+assertEqual(runtimeSummary({ backend: 'codex', model: null, effort: null } as Session, catalog), 'Codex · GPT-5.4', 'an unset chat model shows the server default by name')
 console.log('runtime-chip tests passed')

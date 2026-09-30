@@ -74,6 +74,13 @@ jobs:
         working-directory: mobile-react
       - run: node scripts/run-history-tests.mjs src/store/useAppStore.hub-identity.test.ts --native-mocks
         working-directory: mobile-react
+      - name: Verify side chat, full-storage recovery, runtime labels, and the Android build contract
+        run: |
+          node scripts/run-history-tests.mjs src/lib/side-chat.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/storage/cache.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/lib/runtime-chip.test.ts
+          node --test tests/android-platform-contract.test.mjs
+        working-directory: mobile-react
       - name: Verify cross-chat rendering and control interactions
         run: >-
           node --test

@@ -112,6 +112,28 @@ export interface CacheNamespaceMigrationResult {
 
 export { CacheNamespaceCollisionError }
 
+function isSnapshotCacheKey(key: string): boolean {
+  return key.startsWith(SNAPSHOT_STORAGE_PREFIX) || key.startsWith(SNAPSHOT_RECENT_PREFIX)
+}
+
+// Android keeps AsyncStorage in one size-capped SQLite database; once it is full every write fails
+// with SQLITE_FULL ("database or disk is full"), including the settings write that switches servers.
+// Chat snapshots hold most of the data and are downloaded again: drop them all and retry once.
+async function writeFreeingSpace(write: () => Promise<void>): Promise<void> {
+  try {
+    await write()
+  } catch (error) {
+    // load-bearing: String(), not .message: multiSet rejects with an Error[] rather than an Error.
+    if (!/database or disk is full/i.test(String(error))) throw error
+    await AsyncStorage.multiRemove((await AsyncStorage.getAllKeys()).filter(isSnapshotCacheKey))
+    await write()
+  }
+}
+
+function setItem(key: string, value: string): Promise<void> {
+  return writeFreeingSpace(() => AsyncStorage.setItem(key, value))
+}
+
 /**
  * Invalidates snapshot storage by key generation before any snapshot value is
  * read. Snapshot payloads can be very large, so an upgrade must delete legacy
@@ -124,14 +146,11 @@ export function prepareSnapshotCacheGeneration(): Promise<void> {
   const operation = (async () => {
     if (await AsyncStorage.getItem(SNAPSHOT_CACHE_GENERATION_KEY) === generation) return
 
-    const allKeys = await AsyncStorage.getAllKeys()
-    const legacyKeys = allKeys.filter(key => (
-      key.startsWith(SNAPSHOT_STORAGE_PREFIX) || key.startsWith(SNAPSHOT_RECENT_PREFIX)
-    ))
+    const legacyKeys = (await AsyncStorage.getAllKeys()).filter(isSnapshotCacheKey)
     if (legacyKeys.length) await AsyncStorage.multiRemove(legacyKeys)
     // Commit the marker last. An interrupted cleanup is therefore retried on
     // the next launch instead of trusting a partially invalidated cache.
-    await AsyncStorage.setItem(SNAPSHOT_CACHE_GENERATION_KEY, generation)
+    await setItem(SNAPSHOT_CACHE_GENERATION_KEY, generation)
   })()
   snapshotCachePreparation = operation.catch(error => {
     snapshotCachePreparation = null
@@ -199,7 +218,7 @@ export async function loadProfileSettings(): Promise<StoredProfileSettings> {
 export async function saveProfileSettings(value: StoredProfileSettings): Promise<void> {
   const normalized = normalizeStoredProfileSettings(value)
   const write = profileSettingsWrite.catch(() => undefined).then(() => (
-    AsyncStorage.setItem(PROFILE_SETTINGS_KEY, JSON.stringify(normalized))
+    setItem(PROFILE_SETTINGS_KEY, JSON.stringify(normalized))
   ))
   profileSettingsWrite = write
   await write
@@ -243,7 +262,7 @@ export async function saveProfileToken(profileId: string, credentialVersion: num
     else await SecureStore.deleteItemAsync(secureKey)
     await AsyncStorage.removeItem(fallbackKey)
   } catch {
-    if (token) await AsyncStorage.setItem(fallbackKey, token)
+    if (token) await setItem(fallbackKey, token)
     else await AsyncStorage.removeItem(fallbackKey)
   }
 }
@@ -315,7 +334,7 @@ async function drainWorkspaceWrites(key: string, state: WorkspaceWriteState): Pr
     const entry = state.pending
     state.pending = null
     try {
-      await AsyncStorage.setItem(key, JSON.stringify(entry.value))
+      await setItem(key, JSON.stringify(entry.value))
       entry.completion.resolve()
     } catch (error) {
       entry.completion.reject(error)
@@ -334,7 +353,7 @@ export async function loadCachedSessions(cacheNamespace: string): Promise<Sessio
 }
 
 export async function saveCachedSessions(cacheNamespace: string, sessions: Session[]): Promise<void> {
-  await AsyncStorage.setItem(sessionsKey(cacheNamespace), JSON.stringify(sessions))
+  await setItem(sessionsKey(cacheNamespace), JSON.stringify(sessions))
 }
 
 export async function loadSnapshot(cacheNamespace: string, sessionId: string): Promise<Snapshot | null> {
@@ -478,7 +497,7 @@ async function writeSnapshot(cacheNamespace: string, snapshot: Snapshot): Promis
     latestSeq,
     cachedAt: Date.now(),
   }
-  await AsyncStorage.setItem(snapshotKey(cacheNamespace, snapshot.session.id), JSON.stringify(compact))
+  await setItem(snapshotKey(cacheNamespace, snapshot.session.id), JSON.stringify(compact))
   let recent: string[] = []
   try {
     const parsed = JSON.parse(await AsyncStorage.getItem(recentKey(cacheNamespace)) ?? '[]') as unknown
@@ -486,7 +505,7 @@ async function writeSnapshot(cacheNamespace: string, snapshot: Snapshot): Promis
   } catch { /* reset */ }
   recent = [snapshot.session.id, ...recent.filter(id => id !== snapshot.session.id)]
   const evicted = recent.slice(CACHE_SNAPSHOT_SESSION_LIMIT)
-  await AsyncStorage.setItem(recentKey(cacheNamespace), JSON.stringify(recent.slice(0, CACHE_SNAPSHOT_SESSION_LIMIT)))
+  await setItem(recentKey(cacheNamespace), JSON.stringify(recent.slice(0, CACHE_SNAPSHOT_SESSION_LIMIT)))
   await Promise.all(evicted.map(id => AsyncStorage.removeItem(snapshotKey(cacheNamespace, id))))
 }
 
@@ -518,7 +537,7 @@ async function deleteSnapshot(cacheNamespace: string, sessionId: string): Promis
     const parsed = JSON.parse(await AsyncStorage.getItem(recentKey(cacheNamespace)) ?? '[]') as unknown
     if (Array.isArray(parsed)) recent = parsed.filter((value): value is string => typeof value === 'string')
   } catch { /* reset */ }
-  await AsyncStorage.setItem(recentKey(cacheNamespace), JSON.stringify(recent.filter(id => id !== sessionId)))
+  await setItem(recentKey(cacheNamespace), JSON.stringify(recent.filter(id => id !== sessionId)))
 }
 
 export async function loadPins(cacheNamespace: string): Promise<PinnedItem[]> {
@@ -529,7 +548,7 @@ export async function loadPins(cacheNamespace: string): Promise<PinnedItem[]> {
 }
 
 export async function savePins(cacheNamespace: string, pins: PinnedItem[]): Promise<void> {
-  await AsyncStorage.setItem(pinsKey(cacheNamespace), JSON.stringify(pins))
+  await setItem(pinsKey(cacheNamespace), JSON.stringify(pins))
 }
 
 export async function cachedServerSummary(cacheNamespace: string): Promise<CachedServerSummary> {
@@ -646,7 +665,7 @@ async function performCacheNamespaceMigration(
 
   const merged = mergeNamespaceCachePayload(source.payload, target.payload, sourceNamespace, targetNamespace)
   const targetPairs = namespacePayloadPairs(targetNamespace, merged)
-  await AsyncStorage.multiSet(targetPairs)
+  await writeFreeingSpace(() => AsyncStorage.multiSet(targetPairs))
   const verification = await AsyncStorage.multiGet(targetPairs.map(([key]) => key))
   const verifiedByKey = new Map(verification)
   for (const [key, expected] of targetPairs) {

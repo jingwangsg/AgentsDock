@@ -8,6 +8,7 @@ import type { Session, StoredProfileSettings } from '../types'
 // One hub serves itself at `/` and its remote r1 at `/api/remote/r1`; a second
 // server stands for a directly addressed profile.
 const identities: Record<string, string> = { hub: 'server-hub', r1: 'remote-old', direct: 'direct-new' }
+let catalogAvailable = true
 
 function mockServer(route: (path: string) => { key: string; path: string } | null): Server {
   return createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -21,7 +22,7 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
       return reply(200, { ok: true, server_identity: identities[target.key], server_version: 'hub-identity-test', api_contract_version: 8, active_sessions: [] })
     }
     if (target.path === '/api/sessions') return reply(200, { sessions: [session(target.key)] })
-    if (target.path === '/api/runtime/catalog') return reply(200, { backends: {} })
+    if (target.path === '/api/runtime/catalog') return catalogAvailable ? reply(200, { backends: {} }) : reply(503, { detail: 'catalog unavailable' })
     if (target.path === '/api/jobs') return reply(200, { jobs: [] })
     reply(404, { detail: `Unhandled test endpoint: ${target.path}` })
   })
@@ -85,7 +86,8 @@ try {
   for (const { id } of settings.profiles) await SecureStore.setItemAsync(cache.profileTokenKey(id, 1), 'token')
   await cache.saveCachedSessions('remote-old', [{ ...session('r1'), id: 'chat-old', title: 'Chat on the old machine' }])
 
-  globalThis.setInterval = (() => 1) as unknown as typeof setInterval
+  let refreshTick: (() => void) | undefined
+  globalThis.setInterval = ((handler: () => void, delay?: number) => { if (delay === 60_000) refreshTick = handler; return 1 }) as unknown as typeof setInterval
   const { useAppStore } = await import('./useAppStore')
   const remoteProfile = () => useAppStore.getState().profiles.find(value => value.id === 'remote')
   const savedIdentity = async (id: string) => (JSON.parse(await AsyncStorage.getItem('agentsdock.react.settings.v2') ?? '{}') as StoredProfileSettings)
@@ -138,6 +140,20 @@ try {
   await new Promise<void>(resolve => direct.close(() => resolve()))
   await useAppStore.getState().probeInactiveProfiles()
   assert.equal(useAppStore.getState().profiles.find(value => value.id === 'direct')?.connectionState, 'offline')
+
+  // A catalog that failed at connect is loaded again by the next refresh tick; without it every
+  // chat reads "Server model" and the model picker stays disabled.
+  catalogAvailable = false
+  assert.equal(await useAppStore.getState().switchServerProfile('remote'), true)
+  await waitFor(() => useAppStore.getState().connected && useAppStore.getState().activeProfileId === 'remote', 'the remote did not reconnect')
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(useAppStore.getState().runtime, null)
+  refreshTick!()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(useAppStore.getState().error, null, 'a failed background catalog retry must not raise the error banner')
+  catalogAvailable = true
+  refreshTick!()
+  await waitFor(() => useAppStore.getState().runtime !== null, 'a missing catalog was not loaded again')
 
   console.log('hub remote identity store regressions passed')
 } finally {

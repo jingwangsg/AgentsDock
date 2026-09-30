@@ -438,4 +438,25 @@ try {
 }
 assertEqual((await loadSnapshot('snapshot-failure', 'chat-retry'))?.latestSeq, 2)
 
+// Android's size-capped storage database: a full database drops the chat snapshots so the
+// write that switches servers (and every other cache write) still succeeds.
+await saveSnapshot('full-database', timelineSnapshot('chat-full', [timelineEvent('chat-full', 1)]))
+const fullDatabaseSetItem = AsyncStorage.setItem
+let fullDatabase = true
+AsyncStorage.setItem = async (key: string, value: string) => {
+  if (fullDatabase) {
+    fullDatabase = false
+    throw new Error('database or disk is full (code 13 SQLITE_FULL)')
+  }
+  await fullDatabaseSetItem(key, value)
+}
+try {
+  await saveProfileSettings(settings)
+} finally {
+  AsyncStorage.setItem = fullDatabaseSetItem
+}
+assertEqual((await loadProfileSettings()).activeProfileId, settings.activeProfileId)
+assertEqual(await loadSnapshot('full-database', 'chat-full'), null)
+assertEqual((await AsyncStorage.getAllKeys()).filter(key => key.startsWith('agentsdock.react.snapshot.') || key.startsWith('agentsdock.react.recent.')), [])
+
 console.log('crash-safe profile storage regressions passed')

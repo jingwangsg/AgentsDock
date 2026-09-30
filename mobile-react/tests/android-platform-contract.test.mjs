@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -50,6 +51,15 @@ test('Android release identity, LAN access, keyboard resize, icon, and notificat
   assert.doesNotMatch(releaseSigningPlugin, unsafeSigningFallback)
   assert.match(sideloadUpdaterPlugin, /flavorDimensions \+= "distribution"/)
   assert.match(sideloadUpdaterPlugin, /REQUEST_INSTALL_PACKAGES/)
+})
+
+test('Android AsyncStorage holds the chat snapshot cache instead of its 6 MB default', async () => {
+  assert.ok(config.plugins.includes('./plugins/withAndroidAsyncStorageSize.cjs'))
+  const plugin = createRequire(import.meta.url)(path.resolve('plugins/withAndroidAsyncStorageSize.cjs'))
+  const mod = plugin({ name: 'AgentsDock', slug: 'agentsdock' }).mods.android.gradleProperties
+  const modRequest = { platform: 'android', modName: 'gradleProperties', projectRoot: '.', platformProjectRoot: 'android', introspect: true }
+  const result = await mod({ modResults: [{ type: 'property', key: 'AsyncStorage_db_size_in_MB', value: '6' }], modRequest })
+  assert.deepEqual(result.modResults, [{ type: 'property', key: 'AsyncStorage_db_size_in_MB', value: '64' }])
 })
 
 test('Android chat body consumes edge-to-edge IME insets instead of sitting under the keyboard', () => {

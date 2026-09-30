@@ -90,7 +90,7 @@ test('selected chat has a persistent visual indicator', () => {
 
 test('provider requests waiting for the user are unmistakable without polling', () => {
   assert.match(source, /const waitingSessionCount = useMemo\(\(\) => sessions\.filter\(sessionNeedsProviderInteraction\)\.length, \[sessions\]\)/)
-  assert.match(source, /waiting \? `\$\{runtimeSummary\(session\)\} · waiting for you`/)
+  assert.match(source, /waiting \? `\$\{runtimeSummary\(session, runtime\)\} · waiting for you`/)
   assert.match(source, /const waitingProviderName = session\.backend === 'claude' \? 'Claude' : 'Codex'/)
   assert.match(source, /accessibilityLabel=\{`\$\{pendingInteractionCount\} \$\{waitingProviderName\} \$\{pendingInteractionCount === 1 \? 'request' : 'requests'\} waiting for you`\}/)
   assert.match(source, /style=\{\[styles\.waitingBadge, \{ backgroundColor: colors\.orange \}\]\}/)

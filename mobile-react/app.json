@@ -52,6 +52,7 @@
       "./plugins/withAndroidReleaseSigning.cjs",
       "./plugins/withAndroidSideloadUpdater.cjs",
       "./plugins/withAndroidPreparedTextLayout.cjs",
+      "./plugins/withAndroidAsyncStorageSize.cjs",
       "expo-secure-store",
       "expo-sharing",
       "expo-video",
