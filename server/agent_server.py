@@ -2124,6 +2124,17 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def iso_timestamp_seconds(value: Any) -> float | None:
+    """Epoch seconds of an ISO-8601 timestamp with a zone (``Z`` or an offset); None otherwise."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.timestamp() if parsed.tzinfo is not None else None
+
+
 def iso_from_timestamp(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -50167,20 +50178,33 @@ def reconcile_cursor_history_items(
     )
 
     fresh: list[dict[str, str]] = []
+    item_details = [
+        history_message_match_details(item.get("kind", ""), item.get("text", ""), item, provider_item=True)
+        for item in items
+    ]
+    credits = [message_details.get(seq, {"key": key}) for seq, key in timeline_messages]
+    # Which provider items in this delta could consume each credit. A credit none of
+    # them consumes while a later credit is consumed has no transcript counterpart at
+    # all (a subagent's progress text, a prompt Claude never received): skip it rather
+    # than let it block every credit after it, which re-imported whole conversations.
+    # A trailing unconsumed credit may still be owned by the next delta and is kept.
+    owners = [[index for index, details in enumerate(item_details) if history_messages_match(details, credit)] for credit in credits]
+    last_owned_credit = max((index for index, owner in enumerate(owners) if owner), default=-1)
     timeline_index = 0
     consumed_seq = after_seq
-    for item in items:
-        item_details = history_message_match_details(item.get("kind", ""), item.get("text", ""), item, provider_item=True)
-        if (
-            timeline_index < len(timeline_messages)
-            and history_messages_match(item_details, message_details.get(
-                timeline_messages[timeline_index][0], {"key": timeline_messages[timeline_index][1]},
-            ))
-        ):
-            consumed_seq = timeline_messages[timeline_index][0]
-            timeline_index += 1
+    for index, details in enumerate(item_details):
+        while timeline_index < len(credits):
+            if history_messages_match(details, credits[timeline_index]):
+                consumed_seq = timeline_messages[timeline_index][0]
+                timeline_index += 1
+                break
+            if timeline_index < last_owned_credit and not any(owner > index for owner in owners[timeline_index]):
+                timeline_index += 1
+                continue
+            fresh.append(items[index])
+            break
         else:
-            fresh.append(item)
+            fresh.append(items[index])
 
     if timeline_index == len(timeline_messages):
         # All non-import ownership credits in the fixed window were consumed.
@@ -50660,6 +50684,35 @@ async def filter_codex_history_for_import(
         raise
 
 
+OWNED_TURN_END_GRACE_SECONDS = 30.0
+
+
+def claude_owned_turn_spans(session_id: str) -> list[tuple[float, float]]:
+    """[start, end] of every Claude turn this server ran, from the chat's own timeline.
+
+    A turn superseded by a steering message has no terminal row; the next turn's
+    start closes it. The grace covers Claude writing its interruption marker
+    slightly after the server recorded the turn's end.
+    """
+    spans: list[list[float]] = []
+    open_spans: dict[str, int] = {}
+    for event in iter_session_events(session_id):
+        run_id = str(event.get("run_id") or "")
+        if not run_id or run_id.startswith("import_") or event.get("imported") is True:
+            continue
+        at = iso_timestamp_seconds(event.get("ts"))
+        if at is None:
+            continue
+        if event.get("type") == "turn_started" and event.get("backend") == BACKEND_CLAUDE:
+            for index in open_spans.values():
+                spans[index][1] = min(spans[index][1], at + OWNED_TURN_END_GRACE_SECONDS)
+            open_spans = {run_id: len(spans)}
+            spans.append([at, math.inf])
+        elif event.get("type") in ("turn_finished", "turn_stopped") and run_id in open_spans:
+            spans[open_spans.pop(run_id)][1] = at + OWNED_TURN_END_GRACE_SECONDS
+    return [(low, high) for low, high in spans]
+
+
 async def append_imported_history(
     sess: dict[str, Any],
     source_path: Path,
@@ -50708,6 +50761,16 @@ async def append_imported_history(
         backend == BACKEND_CLAUDE
         and (normalized_history_provider_origin(item.get("provider_origin")) or {}).get("kind") == "interruption"
     )]
+    if any(item.get("kind") == "interruption" for item in items):
+        # An interruption inside one of this chat's own turns (Stop, a denied tool
+        # use, a steering message) is already on the timeline as that turn's end;
+        # only one that happened elsewhere, in Claude's own CLI, is news.
+        spans = await asyncio.to_thread(claude_owned_turn_spans, session_id)
+        items = [item for item in items if not (
+            item.get("kind") == "interruption"
+            and (at := iso_timestamp_seconds((item.get("provider_origin") or {}).get("timestamp"))) is not None
+            and any(low <= at <= high for low, high in spans)
+        )]
     run_id = f"import_{uuid.uuid4().hex[:12]}"
     message = f"Imported {len(items)} rough messages from {backend} history."
     history_event = {

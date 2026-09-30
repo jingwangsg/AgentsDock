@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-10-01 — History sync no longer re-imports a chat's own messages
+
+- Opening a Claude chat could append a copy of its recent messages at the end
+  of the timeline, together with "Claude interruption" cards for stops, denied
+  tool uses and steering messages the chat had already recorded. The sync
+  matches the transcript against the timeline in order, and one timeline row
+  with no transcript counterpart (a subagent's progress text) blocked every
+  comparison after it. Such rows are now skipped, and an interruption that
+  falls inside one of the chat's own turns is not imported at all. Cards
+  already in a chat stay as they are.
+
 ## 2026-10-01 — Repeating a message after a lost reply sends it again
 
 - A message whose send timed out is resent with the same request id so the

@@ -778,6 +778,26 @@ class UnsyncedHistoryItemsTests(unittest.TestCase):
         self.assertEqual(fresh, [])
         self.assertEqual(consumed_seq, 12)
 
+    def test_a_timeline_message_absent_from_the_transcript_does_not_block_later_credits(self) -> None:
+        # A subagent's progress text is recorded on the parent timeline but lives in
+        # the subagent's own transcript, so no provider item ever matches it.
+        events = [
+            {"seq": 11, "type": "turn_started", "backend": agent_server.BACKEND_CLAUDE, "prompt": "asked from AgentsDock"},
+            {"seq": 12, "type": "reasoning_summary", "backend": agent_server.BACKEND_CLAUDE, "phase": "commentary", "text": "subagent: grepping the slice"},
+            {"seq": 13, "type": "reasoning_summary", "backend": agent_server.BACKEND_CLAUDE, "phase": "commentary", "text": "checking before the tool"},
+            {"seq": 14, "type": "turn_started", "backend": agent_server.BACKEND_CLAUDE, "prompt": "a second question"},
+        ]
+        with patch.object(agent_server, "history_timeline_message_keys", side_effect=fake_history_timeline_scan(events)):
+            fresh, consumed_seq = agent_server.reconcile_cursor_history_items(
+                "chat-x",
+                [user("asked from AgentsDock"), assistant("checking before the tool"), user("a second question"), assistant("typed in the terminal")],
+                timeline_after_seq=10,
+                timeline_through_seq=14,
+            )
+
+        self.assertEqual(fresh, [assistant("typed in the terminal")])
+        self.assertEqual(consumed_seq, 14)
+
     def test_non_claude_commentary_is_not_a_provider_message_credit(self) -> None:
         events = [{
             "seq": 11,
