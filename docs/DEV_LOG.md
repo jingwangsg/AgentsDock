@@ -1,5 +1,15 @@
 # Public development log
 
+## 2026-09-30 — Remote servers keep working after the hub's token changes; ⌘B toggles the chat list
+
+- A remote server listed through the hub uses a copy of the hub's access
+  token. When the hub's token changed (re-read from the local install on the
+  desktop, or edited on either app), the copies kept the old token and every
+  remote connection failed with 401. A new hub token now reaches all of the
+  hub's remote servers, and the active one reconnects with it.
+- On macOS, ⌘B shows or hides the chat list (was ⌘/). Ctrl+B is left to the
+  terminal, where it is tmux's prefix; other platforms keep Ctrl+/.
+
 ## 2026-09-30 — Redeploy and Update CLI from the server list
 
 - Every server in the server list (desktop Settings → Server, mobile Servers)
