@@ -27220,8 +27220,9 @@ def truncate_session_events_sync(
     *,
     before_seq: int | None = None,
     drop_run_ids: frozenset[str] = frozenset(),
+    drop_seqs: frozenset[int] = frozenset(),
 ) -> dict[str, Any]:
-    """Remove rows at or above ``before_seq`` and every row of ``drop_run_ids``.
+    """Remove rows at or above ``before_seq``, every row of ``drop_run_ids`` and the rows in ``drop_seqs``.
 
     Every other raw line is copied verbatim (blank and malformed lines
     included). When the removed rows include the tail, the replacement ends
@@ -27277,7 +27278,7 @@ def truncate_session_events_sync(
                     summary["events_before"] += 1
                 if seq is not None:
                     summary["max_seq_before"] = max(summary["max_seq_before"], seq)
-                    if (before_seq is not None and seq >= before_seq) or str(event.get("run_id") or "") in drop_run_ids:
+                    if (before_seq is not None and seq >= before_seq) or seq in drop_seqs or str(event.get("run_id") or "") in drop_run_ids:
                         summary["removed_events"] += 1
                         if str(event.get("run_id") or ""):
                             removed_run_ids.add(str(event["run_id"]))
@@ -50768,14 +50769,17 @@ async def append_imported_history(
         and (normalized_history_provider_origin(item.get("provider_origin")) or {}).get("kind") == "interruption"
     )]
     if any(item.get("kind") == "interruption" for item in items):
-        # An interruption inside one of this chat's own turns (Stop, a denied tool
-        # use, a steering message) is already on the timeline as that turn's end;
-        # only one that happened elsewhere, in Claude's own CLI, is news.
+        # An interruption before this chat existed belongs to whatever ran the
+        # transcript then (the Stop that preceded a Resume); one inside this chat's
+        # own turns (Stop, a denied tool use, a steering message) is already on the
+        # timeline as that turn's end. Only one that happened elsewhere, in
+        # Claude's own CLI, while this chat was open is news.
+        created = timestamp_from_iso(sess["created_at"])
         spans = await asyncio.to_thread(claude_owned_turn_spans, session_id)
         items = [item for item in items if not (
             item.get("kind") == "interruption"
             and (at := timestamp_from_iso((item.get("provider_origin") or {}).get("timestamp"))) is not None
-            and any(low <= at <= high for low, high in spans)
+            and (at < created or any(low <= at <= high for low, high in spans))
         )]
         if not items:
             # Every stop leaves such a marker; an empty batch per chat open would only grow the log.
@@ -50907,10 +50911,9 @@ async def append_staged_imported_history(
         and item["provider_origin"].get("provider") == "codex"
         and item["provider_origin"].get("kind") == item["provider_runtime_context"]
     ) for item in items)
-    items = [item for item in items if item.get("kind") != "interruption" or (
-        backend == BACKEND_CLAUDE
-        and (normalized_history_provider_origin(item.get("provider_origin")) or {}).get("kind") == "interruption"
-    )]
+    # Every interruption in a transcript being resumed here belongs to whatever ran
+    # it then; this chat starts after them (history sync applies the same cut by timestamp).
+    items = [item for item in items if item.get("kind") != "interruption"]
     run_id = f"import_{uuid.uuid4().hex[:12]}"
     message = f"Imported {len(items)} rough messages from {backend} history."
     imported_events: list[tuple[str, dict[str, Any]]] = [("history_imported", {
@@ -50961,13 +50964,6 @@ async def append_staged_imported_history(
                 "run_id": run_id,
                 "backend": backend,
                 "text": item["text"],
-                "imported": True,
-                **provenance,
-            }))
-        elif item["kind"] == "interruption":
-            imported_events.append(("provider_interruption", {
-                "run_id": run_id,
-                "backend": backend,
                 "imported": True,
                 **provenance,
             }))
@@ -92729,13 +92725,17 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
         }
 
 
-def import_runs_after_first_own_turn(session_id: str) -> list[dict[str, Any]]:
-    """Import batches appended after this chat's first own turn, oldest first.
+def stale_import_rows(session_id: str, created: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Import batches appended after this chat's first own turn, and the interruptions
+    older than the chat in the batches that stay; each oldest first.
 
-    The batch a Resume created before any turn is the chat's beginning and stays.
+    The batch a Resume created before any turn is the chat's beginning and stays,
+    except for interruptions that belong to whatever ran the transcript before this
+    chat existed: a Resume once imported them (see append_imported_history).
     """
     first_own_seq: int | None = None
     runs: dict[str, dict[str, Any]] = {}
+    interruptions: list[dict[str, Any]] = []
     for event in iter_session_events(session_id):
         seq = durable_event_seq(event)
         run_id = str(event.get("run_id") or "")
@@ -92746,22 +92746,27 @@ def import_runs_after_first_own_turn(session_id: str) -> list[dict[str, Any]]:
             run["from_seq"] = min(run["from_seq"], seq)
             run["through_seq"] = max(run["through_seq"], seq)
             run["removed_events"] += 1
+            if (event.get("type") == "provider_interruption"
+                    and (at := timestamp_from_iso((event.get("provider_origin") or {}).get("timestamp"))) is not None
+                    and at < created):
+                interruptions.append({"run_id": run_id, "from_seq": seq, "through_seq": seq, "removed_events": 1})
         elif first_own_seq is None and event.get("type") == "turn_started":
             first_own_seq = seq
-    if first_own_seq is None:
-        return []
-    return sorted((run for run in runs.values() if run["from_seq"] > first_own_seq), key=lambda run: run["from_seq"])
+    dropped = sorted((run for run in runs.values() if first_own_seq is not None and run["from_seq"] > first_own_seq), key=lambda run: run["from_seq"])
+    dropped_ids = {run["run_id"] for run in dropped}
+    return dropped, [row for row in interruptions if row["run_id"] not in dropped_ids]
 
 
 @app.post("/api/sessions/{session_id}/history/reload")
 async def reload_session_history(session_id: str) -> dict[str, Any]:
-    """Drop what history sync appended after this chat's first own turn, then sync again.
+    """Drop what history sync appended after this chat's first own turn and the
+    interruptions a Resume imported from before the chat, then sync again.
 
     Those batches are re-imports of content the chat had recorded live, or rows
     an older sync misjudged; the chat's own turns stay. The sync then realigns on
     the newest message still on the timeline and adds only what the transcript
-    has after it. Each dropped batch gets a ``history_rewound`` tombstone so
-    every client drops the same rows.
+    has after it. Each dropped batch or row gets a ``history_rewound`` tombstone
+    so every client drops the same rows.
     """
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
@@ -92774,14 +92779,16 @@ async def reload_session_history(session_id: str) -> dict[str, Any]:
                 "message": "Only Claude and Codex chats reload history from their transcript.",
             })
         await ensure_session_idle_for_rewind(session_id)
-        runs = await asyncio.to_thread(import_runs_after_first_own_turn, session_id)
-        if runs:
+        runs, interruptions = await asyncio.to_thread(stale_import_rows, session_id, timestamp_from_iso(sess["created_at"]))
+        removed = sorted([*runs, *interruptions], key=lambda row: row["from_seq"])
+        if removed:
             async with event_delivery_lock(session_id):
                 async def perform_reload() -> None:
                     await persist_event_log_floor(session_id, sess)
                     summary = await asyncio.to_thread(
                         truncate_session_events_sync, session_id,
                         drop_run_ids=frozenset(run["run_id"] for run in runs),
+                        drop_seqs=frozenset(row["from_seq"] for row in interruptions),
                     )
                     seq_high_water = max(int(summary["max_seq_before"]), int(sess["latest_event_seq"]))
                     await forget_event_seq(session_id, preserve_at_least=seq_high_water, preserve_delivery_lock=True)
@@ -92789,11 +92796,11 @@ async def reload_session_history(session_id: str) -> dict[str, Any]:
                     set_session_latest_from_log(sess, summary, seq_high_water)
 
                 await finish_despite_caller_cancellation(perform_reload())
-            for run in runs:
+            for row in removed:
                 await append_event(session_id, "history_rewound", {
-                    "from_seq": run["from_seq"],
-                    "through_seq": run["through_seq"],
-                    "removed_events": run["removed_events"],
+                    "from_seq": row["from_seq"],
+                    "through_seq": row["through_seq"],
+                    "removed_events": row["removed_events"],
                     "reason": "history_reload",
                 })
         # Without a cursor the sync realigns on the newest message still on the timeline.
@@ -92802,7 +92809,7 @@ async def reload_session_history(session_id: str) -> dict[str, Any]:
         await STORE.save(durable=True)
         await sync_provider_history(dict(sess))
     return {
-        "removed": [{"from_seq": run["from_seq"], "through_seq": run["through_seq"]} for run in runs],
+        "removed": [{"from_seq": row["from_seq"], "through_seq": row["through_seq"]} for row in removed],
         "session": public_session(sess),
     }
 

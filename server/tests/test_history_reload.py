@@ -1,4 +1,5 @@
-"""Reload drops what history sync appended after the chat's first own turn, then syncs again."""
+"""Reload drops what history sync appended after the chat's first own turn and the
+interruptions a Resume imported from before the chat, then syncs again."""
 
 import json
 from unittest.mock import AsyncMock, patch
@@ -9,6 +10,10 @@ from tests.test_session_rewind import RewindFixture
 
 def row(seq: int, type_: str, run_id: str, **extra) -> dict:
     return {"seq": seq, "id": f"e{seq}", "type": type_, "run_id": run_id, "ts": f"2026-09-08T10:{seq:02d}:00Z", **extra}
+
+
+def interruption_origin(timestamp: str) -> dict:
+    return {"provider": "claude", "kind": "interruption", "cause": "unknown", "event_id": "e", "session_id": "claude-parent", "timestamp": timestamp}
 
 
 class HistoryReloadTests(RewindFixture):
@@ -23,7 +28,9 @@ class HistoryReloadTests(RewindFixture):
             row(7, "history_imported", "import_b", imported=True), row(8, "assistant_text", "import_b", text="answer", imported=True),
             row(9, "turn_finished", "import_b", imported=True),
             row(10, "turn_started", "second", prompt="again"), row(11, "turn_finished", "second", exit_code=0, result_text="ok"),
-            row(12, "history_imported", "import_c", imported=True), row(13, "provider_interruption", "import_c", imported=True),
+            # The card is older than the chat too; its batch goes as a whole, not twice.
+            row(12, "history_imported", "import_c", imported=True),
+            row(13, "provider_interruption", "import_c", imported=True, provider_origin=interruption_origin("2026-09-08T09:58:00Z")),
             row(14, "turn_finished", "import_c", imported=True),
         ]
 
@@ -49,6 +56,30 @@ class HistoryReloadTests(RewindFixture):
         )
         self.assertNotIn("_history_sync_cursor", sess)
         self.assertEqual(sess["latest_event_seq"], 16)
+        sync.assert_awaited_once()
+
+    async def test_reload_drops_the_interruptions_a_resume_imported_from_before_the_chat(self) -> None:
+        events = [
+            row(1, "history_imported", "import_a", imported=True), row(2, "turn_started", "import_a", prompt="resumed", imported=True),
+            # Stopped elsewhere, then resumed here; then interrupted in Claude's CLI while this chat was open.
+            row(3, "provider_interruption", "import_a", imported=True, provider_origin=interruption_origin("2026-09-08T09:59:00Z")),
+            row(4, "provider_interruption", "import_a", imported=True, provider_origin=interruption_origin("2026-09-08T10:05:00Z")),
+            row(5, "turn_finished", "import_a", imported=True),
+        ]
+        sess = self.chat(latest_event_seq=5, latest_agent_event_seq=5, last_read_agent_event_seq=5, _history_sync_cursor={"version": 1})
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        sync = AsyncMock(return_value={"imported": 0})
+        with patch.object(server, "sync_provider_history", sync):
+            result = await server.reload_session_history("chat")
+
+        self.assertEqual(result["removed"], [{"from_seq": 3, "through_seq": 3}])
+        stored = self.stored_events()
+        self.assertEqual([event["seq"] for event in stored], [1, 2, 4, 5, 6])
+        self.assertEqual(
+            [(event["from_seq"], event["through_seq"], event["removed_events"], event["reason"]) for event in stored if event["type"] == "history_rewound"],
+            [(3, 3, 1, "history_reload")],
+        )
+        self.assertEqual(sess["latest_event_seq"], 6)
         sync.assert_awaited_once()
 
     async def test_a_chat_with_no_own_turns_only_syncs_again(self) -> None:

@@ -69,7 +69,7 @@ class RewindFixture(unittest.IsolatedAsyncioTestCase):
     def chat(self, backend: str = "claude", **overrides) -> dict:
         sess = {
             "id": "chat", "backend": backend, "cwd": self._temp.name, "title": "Chat",
-            "claude_session_id": "claude-parent", "codex_thread_id": "thread-1",
+            "claude_session_id": "claude-parent", "codex_thread_id": "thread-1", "created_at": "2026-09-08T10:00:00Z",
             "latest_event_seq": 10, "latest_event_type": "turn_finished",
             "latest_agent_event_seq": 10, "last_read_agent_event_seq": 10,
         }

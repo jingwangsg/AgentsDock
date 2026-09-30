@@ -27,6 +27,17 @@ def utc(offset_seconds: float = 0.0) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+CLAUDE_PROVIDER = "11111111-1111-4111-8111-111111111111"
+
+
+def interruption(event_id: str, timestamp: str) -> dict:
+    """A parsed "[Request interrupted by user]" transcript row."""
+    return {"kind": "interruption", "text": "", "provider_origin": {
+        "provider": "claude", "kind": "interruption", "cause": "unknown",
+        "event_id": event_id, "session_id": CLAUDE_PROVIDER, "timestamp": timestamp,
+    }}
+
+
 class QueueFenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_reconcile_skips_and_names_explicit_stop_fence(self):
         never = asyncio.get_running_loop().create_future()
@@ -815,27 +826,23 @@ class ImportedHistoryLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(appended[-1][1]["imported"])
         self.assertEqual(appended[-1][1]["run_id"], appended[1][1]["run_id"])
 
-    async def test_an_interruption_inside_the_chats_own_turn_is_not_imported(self):
+    async def test_interruptions_before_the_chat_or_inside_its_own_turns_are_not_imported(self):
         appended: list[tuple[str, dict]] = []
 
         async def record(session_id, event_specs):
             appended.extend(event_specs)
             return [{"seq": index, "type": event_type, **payload} for index, (event_type, payload) in enumerate(event_specs, 1)]
 
-        provider = "11111111-1111-4111-8111-111111111111"
-        sess = {"id": "chat", "backend": agent_server.BACKEND_CLAUDE, "claude_session_id": provider}
+        provider = CLAUDE_PROVIDER
+        sess = {"id": "chat", "backend": agent_server.BACKEND_CLAUDE, "claude_session_id": provider, "created_at": "2026-09-30T15:20:00Z"}
         live = [
             {"type": "turn_started", "run_id": "run_a", "backend": "claude", "ts": "2026-09-30T15:24:34Z"},
             # Superseded by a steering message: no terminal row of its own.
             {"type": "turn_started", "run_id": "run_b", "backend": "claude", "ts": "2026-09-30T15:36:34Z"},
             {"type": "turn_finished", "run_id": "run_b", "backend": "claude", "ts": "2026-09-30T15:38:30Z", "stopped": True},
         ]
-        def interruption(event_id: str, timestamp: str) -> dict:
-            return {"kind": "interruption", "text": "", "provider_origin": {
-                "provider": "claude", "kind": "interruption", "cause": "unknown",
-                "event_id": event_id, "session_id": provider, "timestamp": timestamp,
-            }}
         items = [
+            interruption("55555555-5555-4555-8555-555555555555", "2026-09-30T15:10:00Z"),  # the Stop that preceded resuming here
             {"kind": "user", "text": "hello"},
             interruption("22222222-2222-4222-8222-222222222222", "2026-09-30T15:36:28.329Z"),  # denied tool use in run_a
             interruption("33333333-3333-4333-8333-333333333333", "2026-09-30T15:38:29.960Z"),  # Stop in run_b
@@ -848,26 +855,26 @@ class ImportedHistoryLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kinds, ["history_imported", "turn_started", "provider_interruption", "turn_finished"])
         self.assertEqual(appended[2][1]["provider_origin"]["event_id"], "44444444-4444-4444-8444-444444444444")
 
-    async def test_only_own_turn_interruptions_write_no_batch(self):
+    async def test_only_ignored_interruptions_write_no_batch(self):
         appended: list[tuple[str, dict]] = []
 
         async def record(session_id, event_specs):
             appended.extend(event_specs)
             return []
 
-        provider = "11111111-1111-4111-8111-111111111111"
-        sess = {"id": "chat", "backend": agent_server.BACKEND_CLAUDE, "claude_session_id": provider}
+        provider = CLAUDE_PROVIDER
+        sess = {"id": "chat", "backend": agent_server.BACKEND_CLAUDE, "claude_session_id": provider, "created_at": "2026-09-30T15:00:00Z"}
         live = [
             {"type": "turn_started", "run_id": "run_a", "backend": "claude", "ts": "2026-09-30T15:24:34Z"},
             {"type": "turn_finished", "run_id": "run_a", "backend": "claude", "ts": "2026-09-30T15:38:30Z", "stopped": True},
         ]
-        stop = {"kind": "interruption", "text": "", "provider_origin": {
-            "provider": "claude", "kind": "interruption", "cause": "unknown",
-            "event_id": "22222222-2222-4222-8222-222222222222", "session_id": provider, "timestamp": "2026-09-30T15:38:29.960Z",
-        }}
+        items = [
+            interruption("22222222-2222-4222-8222-222222222222", "2026-09-30T14:50:00Z"),  # before this chat existed
+            interruption("33333333-3333-4333-8333-333333333333", "2026-09-30T15:38:29.960Z"),  # Stop in run_a
+        ]
         with patch.object(agent_server, "append_durable_event_batch", new=record), \
              patch.object(agent_server, "iter_session_events", return_value=iter(live)):
-            result = await agent_server.append_imported_history(sess, Path("/tmp/claude.jsonl"), [stop])
+            result = await agent_server.append_imported_history(sess, Path("/tmp/claude.jsonl"), items)
         self.assertEqual(appended, [])
         self.assertEqual(result["imported"], 0)
 

@@ -33,7 +33,7 @@ FUNCTIONS = {
     "parse_claude_history_events", "parse_provider_history_delta", "history_item_cursor_digest",
     "history_dedup_key", "reconcile_cursor_history_items", "unsynced_history_items",
     "history_message_match_details", "history_messages_match", "history_message_match_tokens",
-    "clean_assistant_text",
+    "clean_assistant_text", "timestamp_from_iso",
     "append_imported_history", "append_staged_imported_history", "imported_history_terminal_event",
     "filter_codex_history_for_import",
     "seed_claude_interruption_context", "normalized_history_sync_cursor", "load_provider_history_with_cursor",
@@ -104,6 +104,8 @@ def load_projection() -> dict:
         "logger": Mock(), "is_claude_task_notification_history_event": Mock(return_value=False),
         "strip_agentsdock_generated_user_text": Mock(side_effect=lambda text, **_kwargs: text),
         "session_provider_id": lambda session: session.get("claude_session_id"),
+        # Own-turn span filtering is covered by test_wedge_hardening.
+        "claude_owned_turn_spans": lambda _session_id: [],
     }
     exec(compile(module, str(SOURCE), "exec"), namespace)
     return namespace
@@ -442,7 +444,7 @@ class ImportedHistoryProvenanceTests(unittest.IsolatedAsyncioTestCase):
         # A complete empty ledger is valid ownership evidence. A missing file
         # now correctly defers Codex imports instead of silently bypassing proof.
         self.projection["events_path"]("app-chat").touch()
-        self.session = {"id": "app-chat", "backend": "claude", "claude_session_id": SESSION_ID}
+        self.session = {"id": "app-chat", "backend": "claude", "claude_session_id": SESSION_ID, "created_at": "2026-09-01T00:00:00Z"}
 
         async def durable(_session_id, specifications):
             return [{"seq": index + 1, "ts": "IMPORT-TIME", **payload} for index, (_kind, payload) in enumerate(specifications)]
@@ -534,19 +536,24 @@ class ImportedHistoryProvenanceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_interruption_batch_is_metadata_only_and_never_a_user_prompt(self) -> None:
         item = {"kind": "interruption", "text": "PRIVATE MARKER TEXT", "provider_origin": origin(kind="interruption", cause="stop")}
-        for name in ("append_imported_history", "append_staged_imported_history"):
-            result, specifications = await self.append(name, [item])
-            self.assertEqual(result["imported"], 1)
-            self.assertEqual([kind for kind, _payload in specifications], ["history_imported", "provider_interruption", "turn_finished"])
-            self.assertTrue(specifications[0][1]["metadata_only"])
-            self.assertTrue(specifications[0][1]["imported"])
-            self.assertTrue(specifications[-1][1]["metadata_only"])
-            payload = specifications[1][1]
-            self.assertEqual(payload["ts"], TIMESTAMP)
-            self.assertEqual(payload["provider_origin"], item["provider_origin"])
-            self.assertNotIn("prompt", payload)
-            self.assertNotIn("text", payload)
-            self.assertNotIn("PRIVATE MARKER TEXT", json.dumps(specifications))
+        result, specifications = await self.append("append_imported_history", [item])
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual([kind for kind, _payload in specifications], ["history_imported", "provider_interruption", "turn_finished"])
+        self.assertTrue(specifications[0][1]["metadata_only"])
+        self.assertTrue(specifications[0][1]["imported"])
+        self.assertTrue(specifications[-1][1]["metadata_only"])
+        payload = specifications[1][1]
+        self.assertEqual(payload["ts"], TIMESTAMP)
+        self.assertEqual(payload["provider_origin"], item["provider_origin"])
+        self.assertNotIn("prompt", payload)
+        self.assertNotIn("text", payload)
+        self.assertNotIn("PRIVATE MARKER TEXT", json.dumps(specifications))
+        # A transcript resumed here was interrupted before this chat existed.
+        result, specifications = await self.append("append_staged_imported_history", [item])
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual([kind for kind, _payload in specifications], ["history_imported", "turn_finished"])
+        self.assertTrue(specifications[0][1]["metadata_only"])
+        self.assertNotIn("PRIVATE MARKER TEXT", json.dumps(specifications))
 
     async def test_malformed_interruption_is_skipped_and_mixed_batches_keep_message_semantics(self) -> None:
         invalid = {"kind": "interruption", "text": "marker", "provider_origin": origin(kind="interruption", timestamp="bad")}
@@ -559,7 +566,8 @@ class ImportedHistoryProvenanceTests(unittest.IsolatedAsyncioTestCase):
             _result, mixed = await self.append(name, [valid, {"kind": "user", "text": "Real user"}])
             self.assertNotIn("metadata_only", mixed[0][1])
             self.assertNotIn("metadata_only", mixed[-1][1])
-            self.assertEqual([kind for kind, _payload in mixed], ["history_imported", "provider_interruption", "turn_started", "turn_finished"])
+            replayed = ["provider_interruption"] if name == "append_imported_history" else []
+            self.assertEqual([kind for kind, _payload in mixed], ["history_imported", *replayed, "turn_started", "turn_finished"])
 
 
 if __name__ == "__main__":

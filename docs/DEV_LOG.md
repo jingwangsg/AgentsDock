@@ -1,5 +1,17 @@
 # Public development log
 
+## 2026-10-01 — Resuming a stopped transcript no longer shows a "Claude interruption" card
+
+- Resuming a Claude session in the app right after stopping it elsewhere, for
+  example in another server's chat on the same shared home, showed a "Claude
+  interruption" card whose cause was "not confirmed", and the first history
+  sync added the same card a second time. The interruption belonged to the
+  client that ran the transcript before this chat existed. Resume now imports
+  none of a transcript's interruptions, and history sync ignores interruptions
+  older than the chat, so the only "Claude interruption" card left is one for
+  an interruption that happened elsewhere while the chat was open. Reload
+  history removes the cards an earlier Resume imported.
+
 ## 2026-10-01 — A turn's subagents are listed once
 
 - When a Codex or Claude turn answered in the middle of its work, the desktop
