@@ -137,6 +137,26 @@ fi
 if [ "$HOME_DIR" != "$HOME" ] && ! grep -qxF "export CODEX_SQLITE_HOME=$INSTALL_DIR/codex-state" env; then
   (umask 077; { grep -v '^export CODEX_SQLITE_HOME=' env || true; printf 'export CODEX_SQLITE_HOME=%s/codex-state\n' "$INSTALL_DIR"; } > env.new && mv env.new env)
 fi
+# Start that state as a copy of the shared home's databases. Left empty, Codex rebuilds
+# its thread index from every rollout file on the shared mount; that outlasts the 30 s
+# it allows itself, and the interrupted rebuild leaves a "running" marker that makes
+# every later start wait and fail. Logs are diagnostics only and the largest file.
+if [ "$HOME_DIR" != "$HOME" ] && [ -d "$HOME_DIR/.codex" ] && [ ! -d "$INSTALL_DIR/codex-state" ]; then
+  mkdir -p "$INSTALL_DIR/codex-state"
+  python3 - "$HOME_DIR/.codex" "$INSTALL_DIR/codex-state" <<'PY'
+import glob, os, sqlite3, sys
+legacy, target = sys.argv[1:]
+for path in glob.glob(os.path.join(legacy, "*.sqlite")):
+    name = os.path.basename(path)
+    if name.startswith("logs_"):
+        continue
+    source = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+    copy = sqlite3.connect(os.path.join(target, name))
+    source.backup(copy)
+    copy.close()
+    source.close()
+PY
+fi
 # The hub's Claude token (RemoteServerManager._deploy); the server uses no other Claude auth.
 if [ -n "${AGENTSDOCK_CLAUDE_TOKEN:-}" ] && ! grep -qxF "export CLAUDE_CODE_OAUTH_TOKEN=$AGENTSDOCK_CLAUDE_TOKEN" env; then
   (umask 077; { grep -v '^export CLAUDE_CODE_OAUTH_TOKEN=' env || true; printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$AGENTSDOCK_CLAUDE_TOKEN"; } > env.new && mv env.new env)

@@ -51,8 +51,25 @@ class RemoteBootstrapEnvTests(unittest.TestCase):
         self.assertEqual(self.bootstrap(self.shared).count("CODEX_SQLITE_HOME"), 1)
         self.assertEqual(self.bootstrap(self.shared).count("CODEX_SQLITE_HOME"), 1)
 
+    def test_a_shared_home_seeds_the_install_state_from_its_databases_once(self) -> None:
+        import sqlite3
+        legacy = self.shared / ".codex"
+        with sqlite3.connect(legacy / "state_5.sqlite") as db:
+            db.execute("create table threads (id text)"); db.execute("insert into threads values ('t1')")
+        (legacy / "logs_2.sqlite").write_bytes(b"")
+        self.bootstrap(self.shared)
+        state = self.shared / ".agentsdock-server-test" / "codex-state"
+        with sqlite3.connect(f"file:{state / 'state_5.sqlite'}?mode=ro", uri=True) as db:
+            self.assertEqual(db.execute("select id from threads").fetchall(), [("t1",)])
+        self.assertFalse((state / "logs_2.sqlite").exists())
+        # An install whose state exists (backfilled or seeded) is left alone.
+        (state / "state_5.sqlite").write_bytes(b"kept")
+        self.bootstrap(self.shared)
+        self.assertEqual((state / "state_5.sqlite").read_bytes(), b"kept")
+
     def test_the_machines_own_home_leaves_codex_state_where_codex_puts_it(self) -> None:
         self.assertNotIn("CODEX_SQLITE_HOME", self.bootstrap(self.home))
+        self.assertFalse((self.home / ".agentsdock-server-test" / "codex-state").exists())
 
 
 if __name__ == "__main__":

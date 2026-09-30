@@ -67,11 +67,14 @@ class CodexAppServerTimeout(CodexAppServerError):
         timeout: float,
         *,
         request_sent: bool = True,
+        stderr: str | None = None,
     ) -> None:
         self.method = method
         self.timeout = timeout
+        # app-server explains a slow start on stderr (for example a state-db backfill);
+        # without it a timeout gives nothing to act on.
         super().__init__(
-            f"{method} timed out after {timeout:g}s",
+            f"{method} timed out after {timeout:g}s" + (f"; app-server stderr: {stderr}" if stderr else ""),
             request_sent=request_sent,
             safe_to_retry=not request_sent,
         )
@@ -1103,7 +1106,7 @@ class CodexAppServerClient:
                     timeout=max(0.0, deadline - loop.time()),
                 )
             except asyncio.TimeoutError as exc:
-                raise CodexAppServerTimeout(method, effective_timeout) from exc
+                raise CodexAppServerTimeout(method, effective_timeout, stderr=self._stderr_tail[-1] if self._stderr_tail else None) from exc
         finally:
             self._pending.pop(request_id, None)
             if not future.done():
@@ -1255,6 +1258,7 @@ class CodexAppServerClient:
             method,
             effective_timeout,
             request_sent=request_sent,
+            stderr=self._stderr_tail[-1] if self._stderr_tail else None,
         ) from send_timeout
 
     def _redact_sensitive(self, value):
