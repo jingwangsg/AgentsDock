@@ -248,7 +248,7 @@ export function registerIpc(
     if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
   }))
   handle('remote-servers:cancel', () => service.cancelRemoteDeploy())
-  handle('remote-servers:remove', (scope, remoteId) => service.removeRemoteServer(scope, remoteId))
+  handle('remote-servers:remove', profileId => service.removeHubRemote(profileId))
   // Its own progress channel: an add-server deploy's log must not receive a redeploy's lines.
   handleWithEvent('remote-servers:redeploy', (event, profileId, force) => service.redeployHubRemote(profileId, force === true, progress => {
     if (!event.sender.isDestroyed()) event.sender.send('remote-servers:redeploy-progress', progress)

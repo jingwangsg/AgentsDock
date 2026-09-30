@@ -15,6 +15,11 @@ const healthDown = new Set<string>()
 // Set to the hub's current token once a test rotates it on the server; null accepts any token.
 let requiredToken: string | null = null
 const remoteTokens: string[] = []
+const removeRequests: string[] = []
+// Once set, the hub advertises its remote registry; a held listing answers with what the hub had on arrival.
+let hubRemotes: string[] | null = null
+let holdListing: Promise<void> | null = null
+let listings = 0
 
 function mockServer(route: (path: string) => { key: string; path: string } | null): Server {
   return createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -29,7 +34,19 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
     if (requiredToken && target.key !== 'direct' && presented !== requiredToken) return reply(401, { detail: 'invalid token' })
     if (target.path === '/api/health') {
       if (healthDown.has(target.key)) return reply(502, { detail: 'remote_unreachable' })
-      return reply(200, { ok: true, server_identity: identities[target.key], server_version: 'hub-identity-test', api_contract_version: 8, active_sessions: [], active: running[target.key] ?? [] })
+      const capabilities = target.key === 'hub' && hubRemotes ? { capabilities: { remote_servers_v1: { available: true } } } : {}
+      return reply(200, { ok: true, server_identity: identities[target.key], server_version: 'hub-identity-test', api_contract_version: 8, active_sessions: [], active: running[target.key] ?? [], ...capabilities })
+    }
+    if (request.method === 'GET' && target.path === '/api/admin/remote-servers') {
+      const listed = (hubRemotes ?? []).map(id => ({ id, name: id, ssh_host: id, install_dir: '', remote_port: 0, local_port: 0, created_at: '2026-09-30T10:00:00Z', proxy_path: `/api/remote/${id}`, tunnel: null }))
+      listings += 1
+      return void (holdListing ?? Promise.resolve()).then(() => reply(200, { servers: listed }))
+    }
+    if (request.method === 'DELETE' && target.path === '/api/admin/remote-servers/r1') {
+      removeRequests.push(target.key)
+      hubRemotes = hubRemotes?.filter(id => id !== 'r1') ?? null
+      response.writeHead(204)
+      return response.end()
     }
     if (request.method === 'POST' && target.path === '/api/admin/remote-servers/r1/redeploy') {
       redeployRequests.push('r1')
@@ -98,6 +115,8 @@ try {
       profile('hub', hubURL, 'server-hub'),
       profile('remote', `${hubURL}/api/remote/r1`, 'remote-old'),
       profile('direct', directURL, 'direct-old'),
+      // A remote whose hub is not saved on this device.
+      profile('orphan', 'http://127.0.0.1:9/api/remote/r9', 'orphan-remote'),
     ],
     fontScale: 1,
   }
@@ -211,6 +230,37 @@ try {
   healthDown.add('r1')
   await useAppStore.getState().updateServerProfile('hub', { accessToken: 'hub-new' })
   healthDown.delete('r1')
+
+  // Removing the active hub remote switches to the hub, unregisters it there, then drops its profile.
+  assert.equal(useAppStore.getState().activeProfileId, 'remote')
+  await useAppStore.getState().removeServerProfile('remote')
+  assert.deepEqual(removeRequests, ['hub'])
+  assert.equal(useAppStore.getState().activeProfileId, 'hub')
+  assert.ok(!useAppStore.getState().profiles.some(value => value.id === 'remote'))
+
+  // The hub lists r1 again, so a refresh adds its profile back. A refresh that listed r1 before the
+  // next removal's DELETE must not bring the removed profile back once that listing arrives.
+  hubRemotes = ['r1']
+  // The reconcile reads the stored health, so the first refresh only stores the capability.
+  await useAppStore.getState().refreshSessions()
+  await useAppStore.getState().refreshSessions()
+  const listedRemote = () => useAppStore.getState().profiles.find(value => value.serverURL === `${hubURL}/api/remote/r1`)
+  await waitFor(() => Boolean(listedRemote()), 'the hub reconcile did not add r1')
+  let release!: () => void
+  holdListing = new Promise(resolve => { release = resolve })
+  const listed = listings
+  await useAppStore.getState().refreshSessions()
+  await waitFor(() => listings > listed, 'the refresh did not list the hub remotes')
+  await useAppStore.getState().removeServerProfile(listedRemote()!.id)
+  release()
+  await new Promise(resolve => setTimeout(resolve, 100))
+  assert.equal(listedRemote(), undefined, 'a listing from before the DELETE recreated the removed remote')
+  assert.deepEqual(removeRequests, ['hub', 'hub'])
+
+  // A remote whose hub is not saved here is removed from this device without a hub request.
+  await useAppStore.getState().removeServerProfile('orphan')
+  assert.ok(!useAppStore.getState().profiles.some(value => value.id === 'orphan'))
+  assert.deepEqual(removeRequests, ['hub', 'hub'])
 
   console.log('hub remote identity store regressions passed')
 } finally {

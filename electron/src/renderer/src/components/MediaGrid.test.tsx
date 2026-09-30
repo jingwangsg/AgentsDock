@@ -209,6 +209,28 @@ describe('MediaGrid documents', () => {
     expect(screen.getByText('status-report.md')).toBeInTheDocument()
   })
 
+  it('copies a file\'s absolute path on its server: where the agent wrote it, else the stored copy', async () => {
+    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        files: { mediaURL: vi.fn(), open: vi.fn(), save: vi.fn(), reveal: vi.fn() },
+        pins: { put: vi.fn(), remove: vi.fn() },
+        native: { writeClipboard }
+      } as unknown as AgentsDockAPI
+    })
+    const published: AgentFile = { id: 'published', filename: 'report.md', content_type: 'text/markdown', path: '/srv/state/files/published/report.md', source_path: '/work/project/report.md' }
+    const uploaded: AgentFile = { id: 'uploaded', filename: 'notes.txt', content_type: 'text/plain', path: '/srv/state/files/uploaded/notes.txt' }
+    render(<MediaGrid files={[published, uploaded]} sessionId="chat-1" />)
+
+    const [first, second] = screen.getAllByRole('button', { name: 'Copy path' })
+    fireEvent.click(first)
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('/work/project/report.md'))
+    fireEvent.click(second)
+    await waitFor(() => expect(writeClipboard).toHaveBeenLastCalledWith('/srv/state/files/uploaded/notes.txt'))
+    expect(await screen.findAllByRole('button', { name: 'Path copied' })).not.toHaveLength(0)
+  })
+
   it('keeps file metadata when pinning a document for later editor access', async () => {
     const put = vi.fn().mockResolvedValue([])
     Object.defineProperty(window, 'agentsDock', {

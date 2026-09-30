@@ -1,5 +1,20 @@
 # Public development log
 
+## 2026-09-30 — Remove a remote server from any server; copy a file's path
+
+- A remote server managed by the hub can now be removed while another server
+  is active; before, Remove was disabled unless the hub itself was active. The
+  active remote can be removed too: the app switches to the hub first.
+- A removed remote no longer reappears when a server-list refresh that started
+  before the removal finishes after it. In the mobile app, a remote whose hub
+  is no longer saved on the device can be removed; before, removal failed.
+- The desktop Remove button no longer says cached chats are kept; removing a
+  server deletes its cached chats on the Mac.
+- File and media tiles have a Copy path button that copies the file's absolute
+  path on its server: where the agent wrote it, or the server's stored copy for
+  uploads. In the mobile app, media tiles show it in place of the Preview
+  button; tapping the tile still opens the preview.
+
 ## 2026-09-30 — Remote servers keep working after the hub's token changes; ⌘B toggles the chat list
 
 - A remote server listed through the hub uses a copy of the hub's access

@@ -188,7 +188,7 @@ const api: AgentsDockAPI = {
     deploy: (scope, input) => ipcRenderer.invoke('remote-servers:deploy', scope, input),
     attach: (scope, input) => ipcRenderer.invoke('remote-servers:attach', scope, input),
     cancel: () => ipcRenderer.invoke('remote-servers:cancel'),
-    remove: (scope, remoteId) => ipcRenderer.invoke('remote-servers:remove', scope, remoteId),
+    remove: profileId => ipcRenderer.invoke('remote-servers:remove', profileId),
     redeploy: (profileId, force) => ipcRenderer.invoke('remote-servers:redeploy', profileId, force)
   },
   hub: {

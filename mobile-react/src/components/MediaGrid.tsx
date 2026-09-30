@@ -9,13 +9,14 @@ import { usePalette } from '../theme'
 import { Text } from './AppText'
 import { DeferredLoadBoundary } from './DeferredLoadBoundary'
 import type { AgentFile } from '../types'
-import { filesNewestFirst, formatBytes, isImage, isMedia, isVideo } from '../lib/format'
+import { agentFileAbsolutePath, filesNewestFirst, formatBytes, isImage, isMedia, isVideo } from '../lib/format'
 import { boundedMediaClaimsForOwner, nextBoundedVisibleCount } from '../lib/media-viewer-state'
 import { shouldGenerateAutomaticVideoThumbnail } from '../lib/artifact-video-staging'
 import { importWithDeadline } from '../lib/deferred-import'
 import { SerialWorkQueue } from '../lib/serial-work-queue'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { IconButton } from './ui'
+import { CopyTextButton } from './CopyTextButton'
 import { mobileFileViewerKind } from '../lib/file-viewer'
 import { useFileViewer } from './file-viewer/FileViewerContext'
 import { artifactTransferRequest } from '../lib/file-transfer'
@@ -238,6 +239,7 @@ function ScopedMediaGrid({ files, sessionId, compact, onViewerRequested, thumbna
 
 function CompactMediaTile({ file, connection, generateVideoThumbnail, pinned, downloadBusy, onPreview, onDownload, onPin }: { file: AgentFile; connection: MediaConnectionScope; generateVideoThumbnail: boolean; pinned: boolean; downloadBusy: boolean; onPreview: () => void; onDownload: () => void; onPin: () => void }) {
   const colors = usePalette()
+  const path = agentFileAbsolutePath(file)
   return <View testID={`compact-media-tile-${file.id}`} style={[styles.compactTile, { borderColor: colors.border, backgroundColor: colors.surface }]}>
     <Pressable accessibilityRole="button" accessibilityLabel={`Preview ${file.title || file.filename}`} onPress={onPreview} style={styles.compactPreviewButton}>
       <View style={[styles.compactPreview, { backgroundColor: colors.surface }]}>
@@ -252,8 +254,8 @@ function CompactMediaTile({ file, connection, generateVideoThumbnail, pinned, do
       </Pressable>
       <View style={styles.compactActions}>
         <IconButton icon={Download} size={14} label="Download" disabled={downloadBusy} onPress={onDownload} />
+        {path ? <CopyTextButton text={path} label="Copy path" touchSize={44} /> : null}
         <IconButton icon={Pin} size={14} selected={pinned} label={pinned ? 'Unpin' : 'Pin'} onPress={onPin} />
-        <IconButton icon={Maximize2} size={14} label="Preview" onPress={onPreview} />
       </View>
     </View>
   </View>
@@ -261,6 +263,7 @@ function CompactMediaTile({ file, connection, generateVideoThumbnail, pinned, do
 
 function MediaTile({ file, connection, generateVideoThumbnail, width, pinned, downloadBusy, onPreview, onDownload, onPin }: { file: AgentFile; connection: MediaConnectionScope; generateVideoThumbnail: boolean; width: number; pinned: boolean; downloadBusy: boolean; onPreview: () => void; onDownload: () => void; onPin: () => void }) {
   const colors = usePalette()
+  const path = agentFileAbsolutePath(file)
   return <View style={[styles.tile, { width, borderColor: colors.border, backgroundColor: colors.surface }]}>
     <Pressable accessibilityRole="button" accessibilityLabel={`Preview ${file.title || file.filename}`} onPress={onPreview}>
       <View style={[styles.preview, { backgroundColor: colors.surface }]}>
@@ -274,14 +277,15 @@ function MediaTile({ file, connection, generateVideoThumbnail, width, pinned, do
     </Pressable>
     <View style={styles.tileActions}>
       <IconButton icon={Download} size={14} label="Download" disabled={downloadBusy} onPress={onDownload} />
+      {path ? <CopyTextButton text={path} label="Copy path" touchSize={44} /> : null}
       <IconButton icon={Pin} size={14} selected={pinned} label={pinned ? 'Unpin' : 'Pin'} onPress={onPin} />
-      <IconButton icon={Maximize2} size={14} label="Preview" onPress={onPreview} />
     </View>
   </View>
 }
 
 function FileRow({ file, pinned, downloadBusy, onPreview, onDownload, onPin }: { file: AgentFile; pinned: boolean; downloadBusy: boolean; onPreview?: () => void; onDownload: () => void; onPin: () => void }) {
   const colors = usePalette()
+  const path = agentFileAbsolutePath(file)
   return <View style={[styles.fileRow, { borderColor: colors.border, backgroundColor: colors.surface }]}>
     <View style={[styles.fileIcon, { backgroundColor: colors.raised }]}><File size={18} color={colors.muted} /></View>
     <Pressable accessibilityRole="button" accessibilityLabel={`${onPreview ? 'Preview' : 'Download'} ${file.title || file.filename}`} disabled={!onPreview && downloadBusy} onPress={onPreview ?? onDownload} style={styles.fileIdentity}>
@@ -289,6 +293,7 @@ function FileRow({ file, pinned, downloadBusy, onPreview, onDownload, onPin }: {
       <Text style={[styles.fileMeta, { color: colors.muted }]}>{formatBytes(file.size)}</Text>
     </Pressable>
     <IconButton icon={Download} size={14} label="Download" disabled={downloadBusy} onPress={onDownload} />
+    {path ? <CopyTextButton text={path} label="Copy path" touchSize={44} /> : null}
     <IconButton icon={Pin} size={14} selected={pinned} label={pinned ? 'Unpin' : 'Pin'} onPress={onPin} />
     {onPreview ? <IconButton icon={Maximize2} size={14} label="Preview" onPress={onPreview} /> : null}
   </View>

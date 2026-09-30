@@ -3,7 +3,7 @@ import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { ChevronLeft, ChevronRight, Download, ExternalLink, File, FileCode2, FolderOpen, Maximize2, Pin, Play, Search, X } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, File, FileCode2, FolderOpen, Maximize2, Pin, Play, Search, X } from 'lucide-react'
 import { effectiveFileContentType, isInternalViewerFile, isPreviewableFile } from '@shared/file-content-type'
 import { agentFileBelongsToSession } from '@shared/session-files'
 import type { AgentFile, PinnedItem, WorkspaceProfileScope } from '@shared/types'
@@ -56,6 +56,14 @@ const MediaTile = memo(function MediaTile({ file, sessionId, profileScope, works
   const workspacePath = workspacePathForAgentFile(file, workspaceRoot)
   const canOpenInEditor = !shared && (Boolean(workspacePath) || isInternalViewerFile(file))
   const openInEditor = () => requestOpenAgentFile(sessionId, file)
+  // Its absolute path on the server: where the agent wrote it, else the server's stored copy (uploads).
+  const absolutePath = file.source_path || file.path || null
+  const [pathCopied, setPathCopied] = useState(false)
+  const copyPath = async () => {
+    await window.agentsDock.native.writeClipboard(absolutePath!)
+    setPathCopied(true)
+    window.setTimeout(() => setPathCopied(false), 1500)
+  }
   const pinId = `file:${file.id}`
   const togglePin = async () => {
     if (pinned) {
@@ -84,6 +92,7 @@ const MediaTile = memo(function MediaTile({ file, sessionId, profileScope, works
     {media && <button type="button" title={t("ui.MediaGrid.MediaTile.preview_324b134")} onClick={onPreview}><Maximize2 size={12} /></button>}
     {!shared && onFind && <button type="button" title={t("ui.MediaGrid.MediaTile.find_in_chat_df9554c")} onClick={() => onFind(file)}><Search size={12} /></button>}
     {canOpenInEditor && <button type="button" title={t("ui.MediaGrid.MediaTile.open_in_editor_f395ae5")} onClick={openInEditor}><FileCode2 size={12} /></button>}
+    {!shared && absolutePath && <button type="button" title={t(pathCopied ? 'media.pathCopied' : 'media.copyPath')} onClick={() => runMediaAction(copyPath())}>{pathCopied ? <Check size={12} /> : <Copy size={12} />}</button>}
     <button type="button" title={t("ui.MediaGrid.MediaTile.download_d6eafe8")} onClick={() => void saveAgentFile(sessionId, file)}><Download size={12} /></button>
     {!shared && <><button type="button" title={t("ui.MediaGrid.MediaTile.show_in_folder_3c4d9b8")} onClick={() => runMediaAction(window.agentsDock.files.reveal(sessionId, file))}><FolderOpen size={12} /></button>
     <button type="button" title={t("ui.MediaGrid.MediaTile.open_ed077f3")} onClick={() => runMediaAction(window.agentsDock.files.open(sessionId, file))}><ExternalLink size={12} /></button>

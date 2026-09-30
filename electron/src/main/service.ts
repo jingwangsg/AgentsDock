@@ -1662,12 +1662,26 @@ export class AppService {
     await state.scope.client.cancelRemoteDeploy(state.jobId).catch(() => {})
   }
 
-  async removeRemoteServer(expected: WorkspaceProfileScope, remoteId: string): Promise<void> {
-    const scope = this.requireWorkspaceScope(expected)
-    await this.ensureValidatedScope(scope)
-    await scope.client.removeRemoteServer(remoteId)
-    this.assertCurrentScope(scope)
-    await this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope))
+  /**
+   * Server list "Remove" for one of the hub's remotes, whichever other profile is active: unregisters it on
+   * the hub (so the next reconcile does not recreate it), and the reconcile then drops its profile.
+   */
+  async removeHubRemote(profileId: string): Promise<void> {
+    const hub = this.hubProfile()
+    const serverUrl = this.settings.getProfileMetadata(profileId)?.serverUrl ?? ''
+    if (!hub || !isHubRemoteUrl(hub.serverUrl, serverUrl)) throw new Error('Only servers the hub manages can be removed through it.')
+    if (profileId === this.activeProfileId) throw new Error('Switch to another server before removing this one.')
+    const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+    try {
+      // Already gone from the hub (404) still leaves a stale profile to drop.
+      await client.removeRemoteServer(serverUrl.slice(`${normalizeServerURL(hub.serverUrl)}/api/remote/`.length))
+        .catch(error => { if (!(error instanceof ServerError && error.status === 404)) throw error })
+      // A reconcile already in flight may have listed the hub before the DELETE; joining it would keep the profile.
+      await this.hubReconcile?.catch(() => undefined)
+      await this.reconcileHubRemotes({ profileId: hub.id, serverUrl: hub.serverUrl, client }, () => true)
+    } finally {
+      client.dispose()
+    }
   }
 
   /** A client for any saved profile, active or not; the caller disposes it. */

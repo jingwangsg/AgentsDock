@@ -880,20 +880,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async removeServerProfile(profileId) {
-    // A hub-proxied profile is unregistered on the hub first so the next
-    // reconcile does not recreate it; the hub must be the active server.
+    // A hub-proxied profile is unregistered on the hub first so the next reconcile does not recreate
+    // it. Without a saved hub profile nothing reconciles it, so it is only removed from this device.
     const target = get().profiles.find(profile => profile.id === profileId)
     const remoteId = target ? hubProxyRemoteId(target.serverURL) : null
-    if (target && remoteId) {
-      const scope = captureValidatedConnection(get)
-      if (!normalizeServerURL(target.serverURL).startsWith(normalizeServerURL(get().serverURL) + HUB_PROXY_PREFIX)) {
-        throw new Error('Switch to the hub before removing a server it manages.')
-      }
+    const hubURL = target && remoteId ? normalizeServerURL(target.serverURL).slice(0, -(HUB_PROXY_PREFIX.length + remoteId.length)) : null
+    const hubProfile = hubURL ? get().profiles.find(profile => normalizeServerURL(profile.serverURL) === hubURL) : undefined
+    if (hubURL && remoteId && hubProfile) {
+      if (profileId === get().activeProfileId && !await get().switchServerProfile(hubProfile.id)) return
+      const hub = new AgentServerClient(hubURL, await loadProfileToken(hubProfile.id, hubProfile.credentialVersion))
       try {
-        await scope.client.removeRemoteServer(remoteId)
+        await hub.removeRemoteServer(remoteId)
       } catch (error) {
         if (!(error instanceof ServerError && error.status === 404)) throw error
+      } finally {
+        hub.dispose()
       }
+      hubRemoteRemovals += 1
     }
     await withProfileMutation(async () => {
       if (profileId === get().activeProfileId) throw new Error('Switch to another server before removing this profile.')
@@ -3893,6 +3896,9 @@ async function probeServerHealth(serverURL: string, token: string): Promise<Heal
   }
 }
 
+// Counts remotes the hub has unregistered (removeServerProfile).
+let hubRemoteRemovals = 0
+
 /**
  * Mirrors the hub's remote-server registry into saved profiles: each
  * `/api/remote/{id}` the hub reports gets a profile carrying the hub's token,
@@ -3906,6 +3912,7 @@ async function reconcileHubRemoteServers(
   get: () => AppState,
 ): Promise<void> {
   if (!get().health?.capabilities?.remote_servers_v1?.available || hubProxyRemoteId(get().serverURL) !== null) return
+  const removals = hubRemoteRemovals
   let remotes: RemoteServer[]
   try {
     remotes = (await scope.client.remoteServers()).servers
@@ -3915,7 +3922,8 @@ async function reconcileHubRemoteServers(
   }
   try {
     await withProfileMutation(async () => {
-      if (!connectionIsCurrent(scope) || get().activeProfileId !== scope.profileId) return
+      // A list fetched before a remote was removed would recreate it; the next refresh reconciles.
+      if (!connectionIsCurrent(scope) || get().activeProfileId !== scope.profileId || removals !== hubRemoteRemovals) return
       const stored = storedProfiles(get().profiles)
       const { create, removeIds } = reconcileHubProfiles(stored, get().serverURL, remotes)
       if (!create.length && !removeIds.length) return

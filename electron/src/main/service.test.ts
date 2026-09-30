@@ -9278,6 +9278,47 @@ describe('server profile lifecycle', () => {
     await expect(service.redeployHubRemote(undefined as unknown as string, true, () => undefined)).rejects.toThrow('Unknown server profile.')
   })
 
+  it('removes a hub remote through the hub whichever other profile is active, including one the hub already dropped', async () => {
+    const gone = new ServerError(404, 'Unknown remote server.')
+    const hub = Object.assign(fakeClient(), {
+      removeRemoteServer: vi.fn(async () => { throw gone }),
+      listRemoteServers: vi.fn(async () => ({ servers: [] }))
+    })
+    const { service, settings } = createProfileService({ 'http://a.test:7850': [fakeClient()], [DEFAULT_SERVER_URL]: [hub] })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const remote = settings.addProfile({ name: 'r1', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1` })
+
+    await service.removeHubRemote(remote.id)
+
+    expect(hub.removeRemoteServer).toHaveBeenCalledWith('r1')
+    expect(settings.getProfile(remote.id)).toBeNull()
+    expect(hub.dispose).toHaveBeenCalledOnce()
+    await expect(service.removeHubRemote('a')).rejects.toThrow('Only servers the hub manages')
+  })
+
+  it('removes a hub remote while a reconcile that listed it before the DELETE is still in flight', async () => {
+    let release!: () => void
+    const listedBeforeDelete = new Promise<void>(resolve => { release = resolve })
+    const hub = Object.assign(fakeClient(), {
+      removeRemoteServer: vi.fn(async () => { release() }),
+      listRemoteServers: vi.fn(async () => ({ servers: [] }))
+    })
+    const stale = Object.assign(fakeClient(), {
+      listRemoteServers: vi.fn(async () => { await listedBeforeDelete; return { servers: [hubRemote('r1')] } })
+    })
+    const { service, settings } = createProfileService({ 'http://a.test:7850': [fakeClient()], [DEFAULT_SERVER_URL]: [hub] })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const remote = settings.addProfile({ name: 'r1', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1` })
+    const inFlight = (service as unknown as { reconcileHubRemotes: (hub: { profileId: string; serverUrl: string; client: unknown }, stillValid: () => boolean) => Promise<unknown> })
+      .reconcileHubRemotes({ profileId: 'b', serverUrl: DEFAULT_SERVER_URL, client: stale }, () => true)
+
+    await service.removeHubRemote(remote.id)
+    await inFlight
+
+    expect(hub.listRemoteServers).toHaveBeenCalledOnce()
+    expect(settings.getProfile(remote.id)).toBeNull()
+  })
+
   it('updates a CLI on an inactive server through its own client, only while it is the pinned server', async () => {
     const beta = Object.assign(fakeClient({ health: async () => ({ ok: true, server_identity: 'server-b' }) }), {
       updateRuntimeCli: vi.fn(async () => ({ output: 'codex 0.99.0', diagnostic: { available: true } }))

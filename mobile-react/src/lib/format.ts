@@ -168,6 +168,11 @@ export function backendLabel(backend: Backend): string {
   return backend === 'codex' ? 'Codex' : backend === 'cursor' ? 'Cursor' : 'Claude'
 }
 
+/** A file's absolute path on its server: where the agent wrote it, else the server's stored copy (uploads). */
+export function agentFileAbsolutePath(file: AgentFile): string | null {
+  return file.source_path || file.path || null
+}
+
 /** Like the desktop, an unset model or effort shows the server's default, by its catalog label. */
 export function runtimeSummary(session: Session, catalog: RuntimeCatalog | null): string {
   return `${backendLabel(session.backend)} · ${runtimeChipLabel(catalog, session.backend, session.model, session.effort)}`

@@ -54,7 +54,8 @@ test('connection edits carry only the freshly tested identity', () => {
 test('server removal and identity reset require native confirmation', () => {
   assert.match(source, /Alert\.alert\([\s\S]*?Remove server/)
   assert.match(source, /Alert\.alert\([\s\S]*?Allow identity reset/)
-  assert.match(source, /removable && !active \? \[\{ text: 'Remove'/)
+  // A hub remote can be removed even while active (the app switches to the hub first); other servers cannot.
+  assert.match(source, /removable=\{hubProxyRemoteId\(profile\.serverUrl\) !== null \|\| \(nonProxiedCount > 1 && !active\)\}/)
 })
 
 test('server management controls retain touch-safe minimum dimensions', () => {
@@ -86,7 +87,7 @@ test('remotes are reconciled from the hub registry; deploy only appears while th
   assert.match(source, /onRedeploy=\{hubProxyRemoteId\(profile\.serverUrl\) !== null/)
   // Removing a proxied profile unregisters it on the hub first, or the next
   // reconcile would recreate it.
-  assert.match(store, /await scope\.client\.removeRemoteServer\(remoteId\)/)
+  assert.match(store, /await hub\.removeRemoteServer\(remoteId\)/)
   for (const file of [source, appShell, store]) {
     assert.doesNotMatch(file, /importHubRemoteServers|onImportFromHub|onCreateProfile|createServerProfile\(|Import from hub|label="Add server"|id: 'add'/)
   }

@@ -381,7 +381,7 @@ export function ServerProfilesManager({
   }
 
   const removeProfile = async (profile: ServerProfileListItem) => {
-    if (profile.id === activeProfileId || busy) return
+    if (busy) return
     setBusy(`remove:${profile.id}`)
     setFeedback(null)
     try {
@@ -432,11 +432,11 @@ export function ServerProfilesManager({
   ], { cancelable: true })
 
   const confirmRemove = (profile: ServerProfileListItem) => {
-    if (profile.id === activeProfileId || busy) return
+    if (busy) return
     Alert.alert(
       `Remove “${profile.name}”?`,
       hubProxyRemoteId(profile.serverUrl) !== null
-        ? 'This server will be unregistered from your hub and removed from this device. Its cached chats remain on this device.'
+        ? `This server will be unregistered from your hub and removed from this device.${profile.id === activeProfileId ? ' The app switches to the hub first.' : ''} Its cached chats remain on this device.`
         : 'The saved connection will be removed. Its cached chats remain on this device.',
       [
         { text: 'Cancel', style: 'cancel' },
@@ -491,7 +491,7 @@ export function ServerProfilesManager({
           active={active}
           switching={switching}
           disabled={Boolean(busy) || Boolean(switchingProfileId)}
-          removable={hubProxyRemoteId(profile.serverUrl) !== null || nonProxiedCount > 1}
+          removable={hubProxyRemoteId(profile.serverUrl) !== null || (nonProxiedCount > 1 && !active)}
           onSwitch={() => { void switchProfile(profile.id) }}
           onEdit={() => openEdit(profile)}
           onMove={direction => { void moveProfile(profile.id, direction) }}
@@ -729,7 +729,7 @@ function ServerManagementRow({ profile, index, count, active, switching, disable
   const rowActions = [
     ...(index > 0 ? [{ text: 'Move up', onPress: () => onMove(-1) }] : []),
     ...(index < count - 1 ? [{ text: 'Move down', onPress: () => onMove(1) }] : []),
-    ...(removable && !active ? [{ text: 'Remove', style: 'destructive' as const, onPress: onRemove }] : []),
+    ...(removable ? [{ text: 'Remove', style: 'destructive' as const, onPress: onRemove }] : []),
   ]
   const alertButtons = Platform.OS === 'ios' ? [...rowActions, { text: 'Cancel', style: 'cancel' as const }] : rowActions
   return <View style={[styles.profileRow, { borderColor: colors.border, backgroundColor: active ? `${colors.blue}10` : colors.surface }]}>

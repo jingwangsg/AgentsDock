@@ -199,7 +199,7 @@ describe('ServerManagement', () => {
     expect(remoteRemove).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: 'Remove OSMO' }))
 
-    await waitFor(() => expect(remoteRemove).toHaveBeenCalledWith({ profileId: 'hub', profileGeneration: 1, serverIdentity: 'server-hub' }, 'abc123def456'))
+    await waitFor(() => expect(remoteRemove).toHaveBeenCalledWith('osmo'))
     expect(remove).not.toHaveBeenCalled()
     await waitFor(() => expect(useAppStore.getState().profiles.map(profile => profile.id)).toEqual(['hub']))
   })
@@ -234,7 +234,7 @@ describe('ServerManagement', () => {
     expect(remoteRedeploy).toHaveBeenCalledOnce()
   })
 
-  it('shows remotes by SSH host, never offers to delete the hub, and locks changes while a remote is active', () => {
+  it('shows remotes by SSH host, never offers to delete the hub, and adds remotes only while the hub is active', () => {
     useAppStore.setState({ profiles: [hub, osmo, gb300], activeProfileId: hub.id })
     render(<ServerManagement />)
 
@@ -248,9 +248,24 @@ describe('ServerManagement', () => {
 
     expect(screen.getByRole('button', { name: 'Add server' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Add server' })).toHaveAttribute('title', 'Switch to the local server first.')
-    expect(screen.getByRole('button', { name: 'Remove GB300' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Remove GB300' })).toHaveAttribute('title', 'Switch to the local server first.')
+    // Removing goes through the hub from any server; the active remote after switching to the hub.
+    expect(screen.getByRole('button', { name: 'Remove GB300' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Remove OSMO' })).toHaveAttribute('title', 'Switch to This Mac and remove this server')
     expect(screen.queryByRole('button', { name: /Remove This Mac|Cannot remove active server This Mac/ })).not.toBeInTheDocument()
+  })
+
+  it('removes the active remote after switching to the hub', async () => {
+    list.mockResolvedValue([hub])
+    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: osmo.id })
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+
+    await user.click(screen.getByRole('button', { name: 'Remove OSMO' }))
+    await user.click(screen.getByRole('button', { name: 'Remove OSMO' }))
+
+    await waitFor(() => expect(remoteRemove).toHaveBeenCalledWith('osmo'))
+    expect(switchServer).toHaveBeenCalledWith('hub')
+    expect(switchServer.mock.invocationCallOrder[0]).toBeLessThan(remoteRemove.mock.invocationCallOrder[0])
   })
 
   it('shows the phone pairing address and copies the hub token from the main process', async () => {
@@ -303,7 +318,8 @@ describe('ServerManagement', () => {
   })
 
   it('protects the active profile and requires confirmation before removing another profile', async () => {
-    useAppStore.setState({ profiles: [alpha, beta] })
+    // Another host's /api/remote/ path is a plain saved server, not one of this hub's remotes.
+    useAppStore.setState({ profiles: [alpha, hub, { ...beta, serverUrl: 'https://beta.example:7850/api/remote/b1' }] })
     list.mockResolvedValue([alpha])
     const user = userEvent.setup()
     render(<ServerManagement />)

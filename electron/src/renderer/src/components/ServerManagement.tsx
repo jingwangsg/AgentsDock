@@ -31,8 +31,8 @@ const emptyDraft = (): ServerDraft => ({
 
 interface RowWork { kind: 'redeploy' | 'cli'; text: string; working?: boolean; failed?: boolean; confirm?: boolean }
 
-/** Remote profiles are proxied through the local hub as `${DEFAULT_SERVER_URL}/api/remote/<id>`. */
-const hubRemoteId = (url: string) => /\/api\/remote\/([A-Za-z0-9_-]+)$/.exec(url)?.[1] ?? null
+/** Remote profiles are proxied through the local hub as `${DEFAULT_SERVER_URL}/api/remote/<id>`; that path on another host is a plain saved server. */
+const isHubRemote = (url: string) => url.startsWith(`${DEFAULT_SERVER_URL}/api/remote/`)
 
 export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addRequest?: number; manageRequest?: number }) {
   useLocale()
@@ -52,7 +52,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   const revealEditor = useRef(false)
 
   const hub = profiles.find(profile => profile.serverUrl === DEFAULT_SERVER_URL) ?? null
-  // Remotes are registered on the hub, so adding/removing them only works while the hub is the active server.
+  // Remotes are registered on the hub, so adding them only works while the hub is the active server.
   const hubActive = Boolean(hub && hub.id === activeProfileId)
 
   const openEditor = (next: ServerDraft) => {
@@ -229,22 +229,16 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   }
 
   const remove = async (profile: PublicServerProfile) => {
-    if (profile.id === activeProfileId) return
     if (confirmRemoveId !== profile.id) {
       setConfirmRemoveId(profile.id)
       return
     }
-    const remoteId = hubRemoteId(profile.serverUrl)
-    if (remoteId && !hubActive) {
-      useAppStore.getState().setError(t('hub.switchToLocalFirst'))
-      return
-    }
     setBusy(`remove:${profile.id}`)
     try {
-      if (remoteId) {
-        const scope = captureWorkspaceScope(useAppStore.getState())
-        if (!scope) throw new Error('The active server profile is still loading. Retry in a moment.')
-        await window.agentsDock.remoteServers.remove(scope, remoteId)
+      if (hub && isHubRemote(profile.serverUrl)) {
+        // The active remote is removed after switching to the hub.
+        if (profile.id === useAppStore.getState().activeProfileId && !await switchServer(hub.id)) return
+        await window.agentsDock.remoteServers.remove(profile.id)
       } else {
         // Legacy profile that is neither the hub nor one of its remotes.
         await window.agentsDock.servers.remove(profile.id)
@@ -316,7 +310,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         const working = busy === `switch:${profile.id}` || switchingProfileId === profile.id
         const rowActivationError = activationError?.profileId === profile.id ? activationError.message : null
         const details = [profile.serverIdentity ? t("ui.ServerManagement.identity_96fbbb0", { "id": String(profile.serverIdentity) }) : '', profile.serverVersion ? `AgentsServer ${profile.serverVersion}` : ''].filter(Boolean).join(' · ')
-        const remoteLocked = !hubActive && hubRemoteId(profile.serverUrl) !== null
+        const removableActive = current && hub !== null && isHubRemote(profile.serverUrl)
         const starting = busy === `start:${profile.id}`
         const hubDown = profile.id === hub?.id && (profile.connectionState === 'offline' || profile.connectionState === 'retrying')
         const work = rowWork[profile.id]
@@ -354,7 +348,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
-            {hub && hubRemoteId(profile.serverUrl) !== null && profile.serverUrl.startsWith(`${hub.serverUrl}/api/remote/`) && <button
+            {hub && isHubRemote(profile.serverUrl) && <button
               type="button"
               className="icon-button"
               aria-label={t('hub.redeployLabel', { server: profile.name })}
@@ -365,9 +359,9 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
             {profile.id !== hub?.id && <button
               type="button"
               className={confirmRemoveId === profile.id ? 'danger-button compact' : 'icon-button'}
-              aria-label={current ? t("ui.ServerManagement.cannot_remove_active_server_b699625", { "server": String(profile.name) }) : t("ui.ServerManagement.remove_6f8460e", { "filename": String(profile.name) })}
-              title={current ? t("ui.ServerManagement.switch_to_another_server_before_removing_t_1ed6f7e") : remoteLocked ? t('hub.switchToLocalFirst') : t("ui.ServerManagement.remove_saved_server_cached_chats_are_prese_3fae6c2")}
-              disabled={current || remoteLocked || Boolean(busy)}
+              aria-label={current && !removableActive ? t("ui.ServerManagement.cannot_remove_active_server_b699625", { "server": String(profile.name) }) : t("ui.ServerManagement.remove_6f8460e", { "filename": String(profile.name) })}
+              title={removableActive ? t('hub.removeActiveRemote', { hub: hub.name }) : current ? t("ui.ServerManagement.switch_to_another_server_before_removing_t_1ed6f7e") : t('hub.removeServer')}
+              disabled={(current && !removableActive) || Boolean(busy)}
               onClick={() => void remove(profile)}
             >{working ? <LoaderCircle className="spin" size={12} /> : confirmRemoveId === profile.id ? 'Confirm' : <Trash2 size={13} />}</button>}
           </div>
