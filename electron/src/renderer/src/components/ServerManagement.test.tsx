@@ -5,7 +5,7 @@ import type { AgentsDockAPI } from '@shared/ipc'
 import type { PublicServerProfile } from '@shared/types'
 import { useAppStore } from '../store/app-store'
 import { trackEvent } from '../lib/analytics'
-import { ServerManagement } from './ServerManagement'
+import { ServerManagement, serverOrderAfterDrag } from './ServerManagement'
 
 vi.mock('../lib/analytics', () => ({ trackEvent: vi.fn() }))
 
@@ -421,15 +421,26 @@ describe('ServerManagement', () => {
     expect(screen.getByText('Identity: server-alpha · AgentsServer 1.4.2')).toBeInTheDocument()
   })
 
-  it('persists profile order returned by the main process', async () => {
-    useAppStore.setState({ profiles: [alpha, beta] })
-    const user = userEvent.setup()
+  it('offers a drag grip on every server but the pinned local one, and no arrows', () => {
+    useAppStore.setState({ profiles: [alpha, hub, beta] })
     render(<ServerManagement />)
 
-    await user.click(screen.getByRole('button', { name: 'Move Beta up' }))
+    expect(screen.queryByRole('button', { name: /Move .* (up|down)/ })).toBeNull()
+    const grips = screen.getAllByRole('button', { name: /Drag .* to reorder/ })
+    expect(grips.map(grip => grip.getAttribute('aria-label'))).toEqual(['Drag This Mac to reorder', 'Drag Alpha to reorder', 'Drag Beta to reorder'])
+    expect(grips[0]).toHaveClass('pinned')
+    expect(grips[0]).toBeDisabled()
+    expect(grips[1]).toBeEnabled()
+  })
 
-    await waitFor(() => expect(reorder).toHaveBeenCalledWith(['beta', 'alpha']))
-    expect(useAppStore.getState().profiles.map(profile => profile.id)).toEqual(['beta', 'alpha'])
+  it('computes the saved order after a drag with the local server kept first', () => {
+    const profiles = [hub, alpha, beta, gamma]
+    expect(serverOrderAfterDrag(profiles, hub.id, 'gamma', 'alpha')).toEqual(['hub', 'gamma', 'alpha', 'beta'])
+    expect(serverOrderAfterDrag(profiles, hub.id, 'alpha', 'gamma')).toEqual(['hub', 'beta', 'gamma', 'alpha'])
+    // Dropping onto the local server or onto itself changes nothing.
+    expect(serverOrderAfterDrag(profiles, hub.id, 'beta', 'hub')).toBeNull()
+    expect(serverOrderAfterDrag(profiles, hub.id, 'beta', 'beta')).toBeNull()
+    expect(serverOrderAfterDrag([alpha, beta], null, 'beta', 'alpha')).toEqual(['beta', 'alpha'])
   })
 
   it('does not reconnect the active server for a name-only edit', async () => {

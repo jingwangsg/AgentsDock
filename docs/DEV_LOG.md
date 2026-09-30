@@ -1,5 +1,11 @@
 # Public development log
 
+## 2026-10-01 — Servers are reordered by dragging
+
+- In Settings → Servers on the desktop, the up and down arrows are gone; drag
+  a server by its grip to reorder the list. The local server stays first and
+  has no grip.
+
 ## 2026-10-01 — Codex starts on a shared-home remote without rebuilding its thread index
 
 - On a remote whose Codex state moved into the install directory, Codex chats

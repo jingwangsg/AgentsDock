@@ -1,9 +1,12 @@
 // Localized display strings use semantic catalog keys.
 import { t, getLocale } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { ArrowDown, ArrowUp, Check, Clock3, Download, LoaderCircle, Pencil, Plus, RotateCw, Server, Trash2, Wifi } from 'lucide-react'
+import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
+import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import { Check, Clock3, Download, GripVertical, LoaderCircle, Pencil, Plus, RotateCw, Server, Trash2, Wifi } from 'lucide-react'
 import type { PublicServerProfile, ServerSetupProgress } from '@shared/types'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { trackEvent } from '../lib/analytics'
@@ -33,6 +36,25 @@ interface RowWork { kind: 'redeploy' | 'cli'; text: string; working?: boolean; f
 /** Remote profiles are proxied through the local hub as `${DEFAULT_SERVER_URL}/api/remote/<id>`; that path on another host is a plain saved server. */
 const isHubRemote = (url: string) => url.startsWith(`${DEFAULT_SERVER_URL}/api/remote/`)
 
+/** The saved order after dragging one server onto another's place; the local server stays first. */
+export function serverOrderAfterDrag(profiles: PublicServerProfile[], hubId: string | null, activeId: string, overId: string): string[] | null {
+  const movable = profiles.filter(profile => profile.id !== hubId)
+  const from = movable.findIndex(profile => profile.id === activeId)
+  const to = movable.findIndex(profile => profile.id === overId)
+  if (from < 0 || to < 0 || from === to) return null
+  return [...(hubId ? [hubId] : []), ...arrayMove(movable, from, to).map(profile => profile.id)]
+}
+
+/** A server row that can be dragged among the others; the local server is pinned and shows no grip. */
+function SortableServerRow({ profile, pinned, disabled, className, children }: { profile: PublicServerProfile; pinned: boolean; disabled: boolean; className: string; children: ReactNode }) {
+  useLocale()
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: profile.id, disabled: pinned || disabled })
+  return <div ref={setNodeRef} className={`${className}${isDragging ? ' dragging' : ''}`} style={{ transform: CSS.Transform.toString(transform), transition }}>
+    <button ref={setActivatorNodeRef} type="button" className={`server-management-grip${pinned ? ' pinned' : ''}`} aria-label={t('ui.ServerManagement.drag_to_reorder', { server: profile.name })} disabled={pinned || disabled} {...attributes} {...listeners}><GripVertical size={13} /></button>
+    {children}
+  </div>
+}
+
 export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addRequest?: number; manageRequest?: number }) {
   useLocale()
   const profiles = useAppStore(state => state.profiles)
@@ -51,6 +73,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   const revealEditor = useRef(false)
 
   const hub = profiles.find(profile => profile.serverUrl === DEFAULT_SERVER_URL) ?? null
+  const ordered = hub ? [hub, ...profiles.filter(profile => profile.id !== hub.id)] : profiles
 
   const openEditor = (next: ServerDraft) => {
     revealEditor.current = true
@@ -169,13 +192,11 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     }
   }
 
-  const move = async (profileId: string, direction: -1 | 1) => {
-    const index = profiles.findIndex(profile => profile.id === profileId)
-    const target = index + direction
-    if (index < 0 || target < 0 || target >= profiles.length) return
-    const order = profiles.map(profile => profile.id)
-    ;[order[index], order[target]] = [order[target], order[index]]
-    setBusy(`move:${profileId}`)
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }))
+  const onDragEnd = async ({ active, over }: DragEndEvent) => {
+    const order = over ? serverOrderAfterDrag(profiles, hub?.id ?? null, String(active.id), String(over.id)) : null
+    if (!order) return
+    setBusy(`move:${active.id}`)
     try {
       const next = await window.agentsDock.servers.reorder(order)
       useAppStore.setState({ profiles: next })
@@ -296,7 +317,9 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       <button type="button" className="quiet-button" disabled={Boolean(busy) || !hub} title={hub ? undefined : t('hub.localServerRequired')} onClick={() => openEditor(emptyDraft())}><Plus size={13} />{" "}{t("ui.ServerManagement.ServerManagement.add_server_1099b2a")}</button>
     </div>
     <div className="server-management-list">
-      {profiles.map((profile, index) => {
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={event => void onDragEnd(event)}>
+      <SortableContext items={ordered.filter(profile => profile.id !== hub?.id).map(profile => profile.id)} strategy={verticalListSortingStrategy}>
+      {ordered.map(profile => {
         const current = profile.id === activeProfileId
         const working = busy === `switch:${profile.id}` || switchingProfileId === profile.id
         const rowActivationError = activationError?.profileId === profile.id ? activationError.message : null
@@ -305,7 +328,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         const starting = busy === `start:${profile.id}`
         const hubDown = profile.id === hub?.id && (profile.connectionState === 'offline' || profile.connectionState === 'retrying')
         const work = rowWork[profile.id]
-        return <div className={`server-management-row${current ? ' active' : ''}`} key={profile.id}>
+        return <SortableServerRow key={profile.id} profile={profile} pinned={profile.id === hub?.id} disabled={Boolean(busy)} className={`server-management-row${current ? ' active' : ''}`}>
           <span className={`server-connection-dot ${profile.connectionState}`} title={connectionLabel(profile)} role="img" aria-label={connectionLabel(profile)} />
           <div className="server-management-copy">
             <strong>{profile.name}{current && <span>{t("ui.ServerManagement.active_9234069")}</span>}</strong>
@@ -323,8 +346,6 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
             </div>}
           </div>
           <div className="server-management-actions">
-            <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.move_up_0bca820", { "server": String(profile.name) })} disabled={index === 0 || Boolean(busy)} onClick={() => void move(profile.id, -1)}><ArrowUp size={13} /></button>
-            <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.move_down_c5ebfeb", { "server": String(profile.name) })} disabled={index === profiles.length - 1 || Boolean(busy)} onClick={() => void move(profile.id, 1)}><ArrowDown size={13} /></button>
             {(hubDown || starting) && <button type="button" className="quiet-button" aria-label={t('hub.startLabel', { server: profile.name })} disabled={Boolean(busy)} onClick={() => void startHub(profile.id)}>{starting && <LoaderCircle className="spin" size={12} />} {starting ? t('hub.starting') : t('hub.start')}</button>}
             {!current && <button type="button" className="quiet-button" aria-label={working ? t("ui.ServerManagement.switching_to_e7437c0", { "server": String(profile.name) }) : t("ui.ServerManagement.use_367b9be", { "server": String(profile.name) })} disabled={Boolean(busy) || Boolean(switchingProfileId)} onClick={() => void activate(profile.id)}>{working && <LoaderCircle className="spin" size={12} />} {working ? t("ui.ServerManagement.switching_b7b9fbf") : t("ui.ServerManagement.use_c36d819")}</button>}
             <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.edit_966e044", { "server": String(profile.name) })} disabled={Boolean(busy)} onClick={() => beginEdit(profile)}><Pencil size={13} /></button>
@@ -356,8 +377,10 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
               onClick={() => void remove(profile)}
             >{working ? <LoaderCircle className="spin" size={12} /> : confirmRemoveId === profile.id ? 'Confirm' : <Trash2 size={13} />}</button>}
           </div>
-        </div>
+        </SortableServerRow>
       })}
+      </SortableContext>
+      </DndContext>
     </div>
     {hubHasToken && <div className="server-management-pairing">
       <small>{t('hub.pairing.title')}</small>
