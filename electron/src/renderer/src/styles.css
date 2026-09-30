@@ -1672,6 +1672,10 @@ button.tool-event-toggle:hover { background: #242424; }
 .cwd-popover-target { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--text-size-meta); font-weight: var(--text-weight-label); }
 .cwd-popover-choose { flex: 0 0 auto; padding: 6px 15px; color: #fff; background: var(--accent); border-radius: var(--radius-control); font-size: var(--text-size-meta); font-weight: var(--text-weight-label); }
 .cwd-popover-choose:disabled { opacity: .45; }
+.background-activity-menu { width: min(380px, calc(100vw - 24px)); }
+.background-activity-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); }
+.background-activity-item code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-size-meta); }
+.background-activity-error { margin: var(--space-2) var(--space-3); color: var(--danger); font-size: var(--text-size-meta); }
 .jobs-menu { width: min(300px, calc(100vw - 24px)); min-width: min(240px, calc(100vw - 24px)); max-width: 300px; }
 .jobs-row-menu { min-width: 190px; }
 .jobs-menu .menu-item { width: 100%; text-align: left; font: inherit; line-height: 20px; }

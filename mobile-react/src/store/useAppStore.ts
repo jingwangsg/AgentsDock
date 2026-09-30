@@ -513,8 +513,6 @@ interface AppState {
    * without `force` it only reports them: a count, or null when the remote could not be checked.
    */
   redeployHubRemote(profileId: string, force: boolean, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<{ redeployed: boolean; running: number | null }>
-  /** Server list "Update CLI" on any saved server; resolves with the CLI's last output line. */
-  updateServerCli(profileId: string, backend: 'claude' | 'codex'): Promise<string>
   updateServerProfile(profileId: string, patch: UpdateServerProfileInput): Promise<void>
   removeServerProfile(profileId: string): Promise<void>
   reorderServerProfiles(profileIds: string[]): Promise<void>
@@ -821,25 +819,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     void get().probeInactiveProfiles()
     return { redeployed: true, running: 0 }
-  },
-
-  async updateServerCli(profileId, backend) {
-    const profile = get().profiles.find(value => value.id === profileId)
-    if (!profile) throw new Error('Server profile not found.')
-    const server = new AgentServerClient(normalizeServerURL(profile.serverURL), await loadProfileToken(profile.id, profile.credentialVersion))
-    try {
-      // An admin action goes only to the server the profile pinned, as on the active connection.
-      if (profile.serverIdentity && (await server.health()).server_identity !== profile.serverIdentity) {
-        throw new Error('This server reports a different identity. Select it once to confirm the change, then update again.')
-      }
-      const { output, diagnostic } = await server.updateRuntimeCli(backend)
-      if (get().activeProfileId === profileId) {
-        set(state => ({ health: state.health && { ...state.health, runtimes: { ...state.health.runtimes, [backend]: diagnostic } } }))
-      }
-      return output.split('\n').at(-1) || 'Update finished.'
-    } finally {
-      server.dispose()
-    }
   },
 
   /** Stops the poll loop in `deployHubRemoteServer` and asks the hub to cancel the job. Silently a no-op with nothing running. */

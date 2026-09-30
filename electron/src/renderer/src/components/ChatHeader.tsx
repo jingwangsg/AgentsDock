@@ -15,6 +15,7 @@ import { useClaudeRuntime } from './ClaudeRuntimeContext'
 import { CodexStatusButton } from './CodexControls'
 import { useCodexRuntime } from './CodexRuntimeContext'
 import { ScheduledJobsPopover } from './ScheduledJobsPopover'
+import { BackgroundActivityButton } from './BackgroundActivity'
 
 export function ChatHeader({
   session: sessionProp,
@@ -199,6 +200,7 @@ export function ChatHeader({
           (session.backend === 'claude' && !claudeControlsSupported)
           || (session.backend === 'codex' && !codexControlsSupported)
         ) && <AgentRunningStatus backend={session.backend} starting={!running && admitting} />}
+        <BackgroundActivityButton session={session} />
         <ChatSyncStatus sessionId={session.id} />
         {focused && <ShortcutTooltip shortcut="toggleInspector" label={`${inspector ? t("ui.ChatHeader.ChatHeader.hide_ac20a57") : 'Show'} right panel`}><button className="icon-button inspector-toggle" aria-label={`${inspector ? t("ui.ChatHeader.ChatHeader.hide_ac20a57") : 'Show'} right panel`} onClick={() => useAppStore.getState().setInspectorVisible(!inspector)}>{inspector ? <PanelRightClose size={16} /> : <PanelRight size={16} />}</button></ShortcutTooltip>}
         {onClosePane && <button className="icon-button" title={t("ui.ChatHeader.ChatHeader.close_this_chat_pane_4926598")} aria-label={t("ui.ChatHeader.ChatHeader.close_pane_fe2672f", { "title": String(session.title) })} onClick={onClosePane}><X size={15} /></button>}

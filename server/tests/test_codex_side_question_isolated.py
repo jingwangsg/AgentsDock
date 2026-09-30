@@ -291,6 +291,31 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await chat.ask("Too late")
         self.assertEqual(caught.exception.status_code, 409)
 
+    async def test_reports_tool_steps_and_interim_messages_but_answers_with_the_final_message(self):
+        command = {"id": "cmd1", "type": "commandExecution", "command": "du -sh /data", "status": "inProgress"}
+        self.turn.next_notification.side_effect = [
+            {"method": "item/started", "params": {"item": command}},
+            {"method": "item/completed", "params": {"item": {**command, "status": "completed", "exitCode": 0, "aggregatedOutput": "4.0T\t/data\n"}}},
+            {"method": "item/started", "params": {"item": {"id": "cmd2", "type": "commandExecution", "command": "ls /missing"}}},
+            {"method": "item/completed", "params": {"item": {"id": "cmd2", "type": "commandExecution", "command": "ls /missing", "status": "failed", "exitCode": 2}}},
+            message("Checking the sizes first.", phase="commentary", identifier="note"),
+            {"method": "item/started", "params": {"item": {"id": "answer", "type": "agentMessage", "phase": "final_answer", "text": ""}}},
+            message("The largest is /data."), completed(),
+        ]
+        steps = []
+        async def on_step(step):
+            steps.append(step)
+        chat = adapter.NativeCodexSideChat("parent-thread", executable="synthetic-codex", model=None, env={"HOME": "/synthetic/auth"})
+        self.assertEqual(await chat.ask("Which is largest?", on_step=on_step), "The largest is /data.")
+        self.assertEqual(steps, [
+            {"id": "cmd1", "kind": "command", "title": "du -sh /data", "status": "running"},
+            {"id": "cmd1", "kind": "command", "title": "du -sh /data", "status": "completed", "output": "4.0T\t/data\n"},
+            {"id": "cmd2", "kind": "command", "title": "ls /missing", "status": "running"},
+            {"id": "cmd2", "kind": "command", "title": "ls /missing", "status": "failed"},
+            {"id": "note", "kind": "message", "title": "Checking the sizes first.", "status": "completed"},
+        ])
+        await chat.close()
+
     async def test_fork_must_confirm_ephemeral_before_any_model_turn(self):
         for metadata in ({"ephemeral": False, "path": None}, {"ephemeral": True, "path": "/saved"}, {}):
             with self.subTest(metadata=metadata):

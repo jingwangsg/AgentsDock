@@ -34,6 +34,10 @@ const api: AgentsDockAPI = {
     conflict: (scope, sessionId, path) => ipcRenderer.invoke('workspace-git:conflict', scope, sessionId, path),
     action: (scope, sessionId, input) => ipcRenderer.invoke('workspace-git:action', scope, sessionId, input)
   },
+  backgroundActivity: {
+    list: (scope, sessionId) => ipcRenderer.invoke('background-activity:list', scope, sessionId),
+    stop: (scope, sessionId, id) => ipcRenderer.invoke('background-activity:stop', scope, sessionId, id)
+  },
   sideQuestions: {
     read: (scope, sessionId) => ipcRenderer.invoke('side-chat:read', scope, sessionId),
     submit: (scope, sessionId, input) => ipcRenderer.invoke('side-chat:submit', scope, sessionId, input),
@@ -162,7 +166,6 @@ const api: AgentsDockAPI = {
     reorder: profileIds => ipcRenderer.invoke('servers:reorder', profileIds),
     switch: (profileId, force) => ipcRenderer.invoke('servers:switch', profileId, force),
     refresh: (profileId, profileGeneration) => ipcRenderer.invoke('servers:refresh', profileId, profileGeneration),
-    updateCli: (profileId, backend) => ipcRenderer.invoke('servers:update-cli', profileId, backend),
     restartStatus: scope => ipcRenderer.invoke('servers:restart-status', scope),
     restart: (scope, expectedServerInstanceId, forceConfirmation) => forceConfirmation
       ? ipcRenderer.invoke('servers:restart', scope, expectedServerInstanceId, forceConfirmation)

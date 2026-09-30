@@ -55,9 +55,6 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
     if (target.path === '/api/admin/remote-servers/deploy/job-1') {
       return reply(200, { job_id: 'job-1', phase: 'complete', done: true, error: null, server: null, log: [{ phase: 'upload', message: 'Uploading' }, { phase: 'complete', message: 'Reachable' }] })
     }
-    if (request.method === 'POST' && target.path === '/api/admin/runtimes/codex/update') {
-      return reply(200, { output: 'npm install\ncodex-cli 9.9.9', diagnostic: { available: true, version: '9.9.9' } })
-    }
     if (target.path === '/api/sessions') return reply(200, { sessions: [session(target.key)] })
     if (target.path === '/api/runtime/catalog') return catalogAvailable ? reply(200, { backends: {} }) : reply(503, { detail: 'catalog unavailable' })
     if (target.path === '/api/jobs') return reply(200, { jobs: [] })
@@ -180,8 +177,7 @@ try {
   await useAppStore.getState().probeInactiveProfiles()
   assert.equal(useAppStore.getState().profiles.find(value => value.id === 'direct')?.connectionState, 'offline')
 
-  // Server list actions run on the right server whichever one is active: Redeploy on the hub (asking
-  // first while the remote has running chats), Update CLI on the chosen server itself.
+  // Redeploy runs on the hub whichever server is active, asking first while the remote has running chats.
   running.r1 = ['chat-busy']
   assert.deepEqual(await useAppStore.getState().redeployHubRemote('remote', false, () => undefined), { redeployed: false, running: 1 })
   healthDown.add('r1')
@@ -193,10 +189,6 @@ try {
   assert.deepEqual(redeployRequests, ['r1'])
   assert.deepEqual(progress, ['Uploading', 'Reachable'])
   await assert.rejects(useAppStore.getState().redeployHubRemote('direct', true, () => undefined), /Only servers the hub deployed/)
-  assert.equal(await useAppStore.getState().updateServerCli('hub', 'codex'), 'codex-cli 9.9.9')
-  identities.hub = 'server-replaced'
-  await assert.rejects(useAppStore.getState().updateServerCli('hub', 'codex'), /different identity/)
-  identities.hub = 'server-hub'
 
   // A catalog that failed at connect is loaded again by the next refresh tick; without it every
   // chat reads "Server model" and the model picker stays disabled.

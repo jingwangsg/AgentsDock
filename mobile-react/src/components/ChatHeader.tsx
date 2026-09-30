@@ -10,6 +10,7 @@ import { Text } from './AppText'
 import { CodexContextIndicator, CodexStatusButton } from './CodexControls'
 import { ClaudeContextIndicator } from './ClaudeContextIndicator'
 import { IconButton } from './ui'
+import { BackgroundActivityButton } from './BackgroundActivity'
 
 // A folded phone's two-pane chat header is ~440 pt wide: the tablet set of
 // controls left the title no room and pushed the sync chip off-screen. Below
@@ -68,6 +69,7 @@ export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, sideb
     <CodexContextIndicator />
     <ClaudeContextIndicator />
     <CodexStatusButton compact={phoneHeader} />
+    <BackgroundActivityButton sessionId={session.id} />
     <Pressable testID="chat-details" accessibilityRole="button" accessibilityLabel={`${statusLabel}. ${syncError ? `${syncError}. ` : ''}${status === 'live' ? 'Open chat details' : 'Retry chat sync'}`} onPress={handleStatusPress} style={[styles.online, compact && styles.onlineCompact, { backgroundColor: colors.raised }]}>
       {isSpinning ? <ActivityIndicator size="small" color={statusColor} style={styles.spinner} /> : <View style={[styles.dot, { backgroundColor: statusColor }]} />}
       <Text style={[styles.statusLabel, { color: colors.text }]} numberOfLines={1}>{statusLabel}</Text>

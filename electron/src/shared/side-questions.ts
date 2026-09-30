@@ -131,6 +131,15 @@ export function parseSideQuestionAnswer(value: unknown, sessionId: string, reque
   return answer as SideQuestionAnswer
 }
 
+/** A tool call or interim message of a Codex side answer (Claude side questions have no tools). */
+export interface SideChatStep {
+  id: string
+  kind: 'command' | 'file_change' | 'tool' | 'web_search' | 'message'
+  title: string
+  status: 'running' | 'completed' | 'failed'
+  output?: string
+}
+
 /** Server-owned side chat. Revisions survive clear and process restarts. */
 export interface SyncedSideChat {
   session_id: string
@@ -145,6 +154,7 @@ export interface SyncedSideChat {
     context_note?: string
     backend?: 'codex' | 'claude'
     error?: string
+    steps?: SideChatStep[]
     created_at: string
     updated_at: string
   }>
@@ -170,7 +180,11 @@ export function parseSyncedSideChat(value: unknown, sessionId: string): SyncedSi
       || (exchange.status === 'completed' && (typeof exchange.answer !== 'string' || !exchange.answer.trim()))
       || (exchange.backend !== undefined && !['codex', 'claude'].includes(exchange.backend))
       || [exchange.answer, exchange.context_note, exchange.error].some(value => value !== undefined && typeof value !== 'string')
-      || typeof exchange.created_at !== 'string' || typeof exchange.updated_at !== 'string') {
+      || typeof exchange.created_at !== 'string' || typeof exchange.updated_at !== 'string'
+      // A step kind or status added by a newer server still renders (a generic icon) instead of failing the sync.
+      || (exchange.steps !== undefined && (!Array.isArray(exchange.steps) || !exchange.steps.every(step => step
+        && typeof step.id === 'string' && typeof step.title === 'string' && typeof step.kind === 'string'
+        && typeof step.status === 'string' && (step.output === undefined || typeof step.output === 'string'))))) {
       throw new Error('side_question_invalid_response')
     }
     ids.add(exchange.request_id)

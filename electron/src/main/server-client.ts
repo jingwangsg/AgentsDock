@@ -1,7 +1,7 @@
 import { createReadStream, openAsBlob } from 'node:fs'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../shared/provider-usage'
 import { parseCodexAuthStatus } from '../shared/codex-auth'
-import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, RuntimeCliUpdate, SessionExportFormat } from '../shared/types'
+import type { BackgroundActivityItem, CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, RuntimeCliUpdate, SessionExportFormat } from '../shared/types'
 import { parseCodexProviderConfiguration, parseCodexProviderModels, parseCodexProviderTestResult, validateCodexProviderInput, validateCodexProviderModelTestInput, validateCodexProviderSelection } from '../shared/codex-provider'
 import { randomUUID } from 'node:crypto'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
@@ -1380,6 +1380,14 @@ export class AgentServerClient {
 
   shellCodexThread(sessionId: string, input: CodexShellInput): Promise<CodexOperationAccepted> {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/codex/shell`, input)
+  }
+
+  async backgroundActivity(sessionId: string): Promise<BackgroundActivityItem[]> {
+    return (await this.get<{ items: BackgroundActivityItem[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/background-activity`)).items
+  }
+
+  async stopBackgroundActivity(sessionId: string, id: string): Promise<boolean> {
+    return (await this.post<{ stopped: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/background-activity/stop`, { id })).stopped
   }
 
   codexBackgroundTerminals(sessionId: string): Promise<CodexBackgroundTerminalsSnapshot> {

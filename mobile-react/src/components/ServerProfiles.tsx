@@ -12,7 +12,7 @@ import {
 } from 'react-native'
 import { MenuView, type MenuAction } from '@expo/ui/community/menu'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { Check, ChevronDown, Download, MoreHorizontal, Pencil, RotateCw, Server, UploadCloud, Wifi, X } from 'lucide-react-native'
+import { Check, ChevronDown, MoreHorizontal, Pencil, RotateCw, Server, UploadCloud, Wifi, X } from 'lucide-react-native'
 import {
   buildUpdateServerProfileInput,
   connectionStateLabel,
@@ -80,7 +80,6 @@ export interface ServerProfilesManagerProps extends CommonServerProfileProps {
   ) => Awaitable<CreatedProfile>
   onCancelDeploy?: () => Awaitable<void>
   onRedeployRemote: (profileId: string, force: boolean, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<{ redeployed: boolean; running: number | null }>
-  onUpdateCli: (profileId: string, backend: 'claude' | 'codex') => Promise<string>
 }
 
 export interface ServerProfilesSheetProps extends ServerProfilesManagerProps {
@@ -192,7 +191,6 @@ export function ServerProfilesManager({
   onDeployRemote,
   onCancelDeploy,
   onRedeployRemote,
-  onUpdateCli,
 }: ServerProfilesManagerProps) {
   const colors = usePalette()
   const [draft, setDraft] = useState<ServerProfileDraftValues | null>(() => initialServerProfileDraft(initialMode, profiles, activeProfileId))
@@ -395,13 +393,13 @@ export function ServerProfilesManager({
   }
 
   const noteRow = (profileId: string, work: RowWork | null) => setRowWork(({ [profileId]: _previous, ...rest }) => work ? { ...rest, [profileId]: work } : rest)
-  const redeploying = Object.values(rowWork).some(work => work.kind === 'redeploy' && work.working)
+  const redeploying = Object.values(rowWork).some(work => work.working)
   const redeploy = async (profile: ServerProfileListItem, force: boolean) => {
-    noteRow(profile.id, { kind: 'redeploy', working: true, text: 'Redeploying…' })
+    noteRow(profile.id, { working: true, text: 'Redeploying…' })
     try {
-      const { redeployed, running } = await onRedeployRemote(profile.id, force, entry => noteRow(profile.id, { kind: 'redeploy', working: true, text: entry.message }))
+      const { redeployed, running } = await onRedeployRemote(profile.id, force, entry => noteRow(profile.id, { working: true, text: entry.message }))
       if (redeployed) {
-        noteRow(profile.id, { kind: 'redeploy', text: 'Redeployed.' })
+        noteRow(profile.id, { text: 'Redeployed.' })
         return
       }
       noteRow(profile.id, null)
@@ -412,24 +410,9 @@ export function ServerProfilesManager({
         { text: 'Redeploy', style: 'destructive', onPress: () => { void redeploy(profile, true) } },
       ])
     } catch (error) {
-      noteRow(profile.id, { kind: 'redeploy', failed: true, text: errorMessage(error) })
+      noteRow(profile.id, { failed: true, text: errorMessage(error) })
     }
   }
-
-  const updateCli = async (profile: ServerProfileListItem, backend: 'claude' | 'codex') => {
-    noteRow(profile.id, { kind: 'cli', working: true, text: `Updating ${backend === 'claude' ? 'Claude Code' : 'Codex'}…` })
-    try {
-      noteRow(profile.id, { kind: 'cli', text: await onUpdateCli(profile.id, backend) })
-    } catch (error) {
-      noteRow(profile.id, { kind: 'cli', failed: true, text: errorMessage(error) })
-    }
-  }
-
-  const chooseCli = (profile: ServerProfileListItem) => Alert.alert(`Update a CLI on ${profile.name}`, undefined, [
-    { text: 'Claude Code', onPress: () => { void updateCli(profile, 'claude') } },
-    { text: 'Codex', onPress: () => { void updateCli(profile, 'codex') } },
-    { text: 'Cancel', style: 'cancel' },
-  ], { cancelable: true })
 
   const confirmRemove = (profile: ServerProfileListItem) => {
     if (busy) return
@@ -499,7 +482,6 @@ export function ServerProfilesManager({
           work={rowWork[profile.id] ?? null}
           redeployDisabled={redeploying}
           onRedeploy={hubProxyRemoteId(profile.serverUrl) !== null ? () => { void redeploy(profile, false) } : undefined}
-          onUpdateCli={() => chooseCli(profile)}
         />
       }) : <View style={styles.noProfiles}>
         <Server size={24} color={colors.muted} />
@@ -701,9 +683,9 @@ export function ServerProfilesManager({
   </ScrollView>
 }
 
-interface RowWork { kind: 'redeploy' | 'cli'; text: string; working?: boolean; failed?: boolean }
+interface RowWork { text: string; working?: boolean; failed?: boolean }
 
-function ServerManagementRow({ profile, index, count, active, switching, disabled, removable, work, redeployDisabled, onSwitch, onEdit, onMove, onRemove, onRedeploy, onUpdateCli }: {
+function ServerManagementRow({ profile, index, count, active, switching, disabled, removable, work, redeployDisabled, onSwitch, onEdit, onMove, onRemove, onRedeploy }: {
   profile: ServerProfileListItem
   index: number
   count: number
@@ -718,11 +700,11 @@ function ServerManagementRow({ profile, index, count, active, switching, disable
   onMove: (direction: -1 | 1) => void
   onRemove: () => void
   onRedeploy?: () => void
-  onUpdateCli: () => void
 }) {
   const colors = usePalette()
   const status = profileConnectionLabel(profile)
   const details = [profile.serverIdentity ? `Identity: ${profile.serverIdentity}` : '', profile.serverVersion ? `AgentsServer ${profile.serverVersion}` : ''].filter(Boolean).join(' · ')
+  const redeployBlocked = disabled || redeployDisabled || Boolean(work?.working)
   // An Alert, not MenuView: MenuView does not open inside this sheet's Modal on Android, and the
   // row has at most three actions, Android's Alert limit (tapping outside cancels there; iOS
   // ignores `cancelable`, so it gets a Cancel button).
@@ -743,26 +725,19 @@ function ServerManagementRow({ profile, index, count, active, switching, disable
       <Text style={[styles.profileUrl, { color: colors.muted }]} numberOfLines={1}>{profile.serverUrl}</Text>
       {profile.lastConnectionError ? <Text style={[styles.profileDetail, { color: profile.connectionState === 'degraded' ? colors.orange : colors.red }]} numberOfLines={2}>{profile.lastConnectionError}</Text> : details ? <Text style={[styles.profileDetail, { color: colors.muted }]} numberOfLines={1}>{details}</Text> : null}
       {work ? <Text accessibilityRole={work.failed ? 'alert' : undefined} style={[styles.profileDetail, { color: work.failed ? colors.red : colors.muted }]} numberOfLines={2}>{work.text}</Text> : null}
-      {/* Under the name, not beside Use/Edit/More: a 375 pt row has no room for two more buttons. */}
-      <View style={styles.rowTools}>
-        <RowTool icon={Download} label="Update CLI" accessibilityLabel={`Update a CLI on ${profile.name}`} busy={work?.kind === 'cli' && Boolean(work.working)} disabled={disabled || Boolean(work?.working)} onPress={onUpdateCli} />
-        {onRedeploy ? <RowTool icon={RotateCw} label="Redeploy" accessibilityLabel={`Redeploy ${profile.name}`} busy={work?.kind === 'redeploy' && Boolean(work.working)} disabled={disabled || redeployDisabled || Boolean(work?.working)} onPress={onRedeploy} /> : null}
-      </View>
+      {/* Under the name, not beside Use/Edit/More: a 375 pt row has no room for another button. */}
+      {/* A 30 pt chip with a 44 pt touch target. */}
+      {onRedeploy ? <Pressable accessibilityRole="button" accessibilityLabel={`Redeploy ${profile.name}`} accessibilityState={{ disabled: redeployBlocked, busy: Boolean(work?.working) }}
+        disabled={redeployBlocked} onPress={onRedeploy} hitSlop={7}
+        style={({ pressed }) => [styles.rowTool, { backgroundColor: colors.raised, opacity: redeployBlocked && !work?.working ? 0.45 : pressed ? 0.7 : 1 }]}>
+        {work?.working ? <ActivityIndicator size="small" color={colors.blue} /> : <RotateCw size={13} color={colors.blue} />}
+        <Text style={[styles.rowToolText, { color: colors.blue }]}>Redeploy</Text>
+      </Pressable> : null}
     </View>
     {!active ? <SecondaryButton label={switching ? 'Using…' : 'Use'} disabled={disabled} busy={switching} accessibilityLabel={`Use ${profile.name}`} compact onPress={onSwitch} /> : null}
     <IconButton icon={Pencil} disabled={disabled} onPress={onEdit} label={`Edit ${profile.name}`} />
     <IconButton icon={MoreHorizontal} disabled={disabled || rowActions.length === 0} onPress={() => Alert.alert(profile.name, undefined, alertButtons, { cancelable: true })} label={`More actions for ${profile.name}`} />
   </View>
-}
-
-function RowTool({ icon: Icon, label, accessibilityLabel, busy, disabled, onPress }: { icon: typeof Download; label: string; accessibilityLabel: string; busy: boolean; disabled: boolean; onPress: () => void }) {
-  const colors = usePalette()
-  // A 30 pt chip with a 44 pt touch target.
-  return <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel} accessibilityState={{ disabled, busy }} disabled={disabled} onPress={onPress} hitSlop={7}
-    style={({ pressed }) => [styles.rowTool, { backgroundColor: colors.raised, opacity: disabled && !busy ? 0.45 : pressed ? 0.7 : 1 }]}>
-    {busy ? <ActivityIndicator size="small" color={colors.blue} /> : <Icon size={13} color={colors.blue} />}
-    <Text style={[styles.rowToolText, { color: colors.blue }]}>{label}</Text>
-  </Pressable>
 }
 
 export function ServerConnectionDot({ state, label = connectionStateLabel(state) }: { state: ServerProfileConnectionState; label?: string }) {
@@ -849,8 +824,7 @@ const styles = StyleSheet.create({
   help: { fontSize: 11, lineHeight: 16 },
   profileList: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, overflow: 'hidden' },
   profileRow: { minHeight: 68, paddingVertical: 8, paddingLeft: 11, paddingRight: 5, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  rowTools: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
-  rowTool: { minHeight: 30, borderRadius: 7, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 5 },
+  rowTool: { alignSelf: 'flex-start', minHeight: 30, marginTop: 4, borderRadius: 7, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 5 },
   rowToolText: { fontSize: 12, fontWeight: '700' },
   profileCopy: { flex: 1, minWidth: 74, gap: 2 },
   profileTitleRow: { minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 6 },

@@ -226,6 +226,10 @@ export interface AgentsDockAPI {
     conflict(scope: WorkspaceProfileScope, sessionId: string, path: string): Promise<import('./workspace-git').WorkspaceGitConflict>
     action(scope: WorkspaceProfileScope, sessionId: string, input: import('./workspace-git').WorkspaceGitAction): Promise<import('./workspace-git').WorkspaceGitStatus>
   }
+  backgroundActivity?: {
+    list(scope: WorkspaceProfileScope, sessionId: string): Promise<import('./types').BackgroundActivityItem[]>
+    stop(scope: WorkspaceProfileScope, sessionId: string, id: string): Promise<boolean>
+  }
   /** Restricted browser renderer. It has no native, filesystem, or other-chat authority. */
   readonly sharedChat?: true
   sideQuestions?: {
@@ -350,7 +354,6 @@ export interface AgentsDockAPI {
     reorder(profileIds: string[]): Promise<PublicServerProfile[]>
     switch(profileId: string, force?: boolean): Promise<ProfileBootstrapPayload>
     refresh(profileId: string, profileGeneration: number): Promise<ProfileBootstrapPayload>
-    updateCli(profileId: string, backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate>
     restartStatus(scope: WorkspaceProfileScope): Promise<ServerRestartStatus>
     restart(
       scope: WorkspaceProfileScope,

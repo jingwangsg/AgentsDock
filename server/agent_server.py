@@ -9742,6 +9742,10 @@ class CodexBackgroundTerminalsCleanRequest(BaseModel):
     confirmed: bool = False
 
 
+class BackgroundActivityStopRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=240)
+
+
 class WorkspaceWriteRequest(BaseModel):
     path: str = Field(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS)
     content: str
@@ -56170,6 +56174,16 @@ def project_codex_usage_notification(manager: CodexAppServerManager, notificatio
     return broadcast_codex_usage_changed(manager)
 
 
+def loaded_codex_thread(session: dict[str, Any]) -> tuple[Any, str] | None:
+    """A Codex chat's running app-server and thread, only if the thread is already loaded; callers never start Codex."""
+    thread_id = session_codex_thread_id(session)
+    manager = existing_codex_app_server_manager(session) if thread_id else None
+    # `ready`: a manager that is shutting down still lists its threads, and a request would start it again.
+    if manager is None or not manager.ready or not manager.is_thread_loaded(thread_id):
+        return None
+    return manager, thread_id
+
+
 async def observe_claude_provider_usage(session_id: str, generation: str, message: Any) -> None:
     if (CLAUDE_SDK_MANAGER is not None
             and CLAUDE_SDK_MANAGER.usage_generation(session_id) == generation
@@ -82383,6 +82397,7 @@ async def health() -> dict[str, Any]:
             "subagent_limit_v1": {"version": 1, "backends": ["codex", "claude"]},
             "provider_usage": {"available": bool(AGENT_TOKEN), "version": 1, "backends": ["codex", "claude"]},
             "side_questions": side_questions.capability(),
+            "background_activity_v1": {"available": True},
             "codex_auth_v1": codex_auth.capability(available=bool(AGENT_TOKEN) and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC),
             "codex_provider_v1": {"available": bool(AGENT_TOKEN) and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC, "wire_api": "responses", "per_chat": True, "per_chat_models": True, "model_discovery": True, "model_compatibility": True},
             "team_mail_hints_v1": SECURE_PEER_RUNTIME.team_mail_hint_capability(),
@@ -83987,7 +84002,7 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
                 CODEX_PROVIDER_STORE.require_thread(parent_id, selected)
             return current
 
-        async def ask(self, question, *, history):
+        async def ask(self, question, *, history, on_step=None):
             current = self.current()
             if backend == BACKEND_CLAUDE:
                 from claude_sdk_client import (ClaudeSDKGenerationChanged, ClaudeSDKConfigurationConflict,
@@ -84073,7 +84088,7 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
                         env=side_questions.isolated_environment(runner_env()),
                         provider_selection=provider_selection, durable=durable,
                         resume_state=(persisted_state or {}).get("codex"), persist_state=save_codex_state)
-                result = {"answer": await self.codex.ask(question),
+                result = {"answer": await self.codex.ask(question, on_step=on_step),
                           "context_note": "Native Codex context from when Side chat started, including tool results. Clear Side chat to use the latest main context."}
             self.current()
             return {"backend": backend, **result}
@@ -90853,6 +90868,39 @@ async def _post_codex_shell_command_locked(
             reservation_id=reservation_id,
         )
         raise codex_control_http_error(exc) from exc
+
+
+@app.get("/api/sessions/{session_id}/background-activity")
+async def get_background_activity(session_id: str) -> dict[str, Any]:
+    """What keeps running for a chat outside its turn: its Codex background terminals.
+
+    Claude has none to list: AgentsDock refuses background Bash in SDK mode
+    (_UNTRACKED_BACKGROUND_REASON), and print mode's CLI exits with its shells.
+    """
+    session = STORE.sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    loaded = loaded_codex_thread(session)
+    try:
+        terminals = await loaded[0].list_background_terminals(loaded[1]) if loaded else []
+    except Exception:
+        # A Codex without the method, or a thread unloaded since the check, has none to show.
+        terminals = []
+    return {"items": [{"id": str(terminal["processId"]), "command": str(terminal["command"])} for terminal in terminals]}
+
+
+@app.post("/api/sessions/{session_id}/background-activity/stop")
+async def post_background_activity_stop(session_id: str, body: BackgroundActivityStopRequest) -> dict[str, bool]:
+    session = STORE.sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    loaded = loaded_codex_thread(session)
+    try:
+        # Codex scopes the process id to this thread.
+        return {"stopped": bool(loaded) and await loaded[0].terminate_background_terminal(loaded[1], body.id)}
+    except Exception:
+        # Already exited, or the thread unloaded since the check.
+        return {"stopped": False}
 
 
 @app.get("/api/sessions/{session_id}/codex/background-terminals")

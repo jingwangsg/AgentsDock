@@ -47,6 +47,8 @@ export function registerIpc(
   handle('workspace-git:diff', (scope, sessionId, path, view) => service.workspaceGitDiff(scope, sessionId, path, view))
   handle('workspace-git:conflict', (scope, sessionId, path) => service.workspaceGitConflict(scope, sessionId, path))
   handle('workspace-git:action', (scope, sessionId, input) => service.workspaceGitAction(scope, sessionId, input))
+  handle('background-activity:list', (scope, sessionId) => service.backgroundActivity(scope, sessionId))
+  handle('background-activity:stop', (scope, sessionId, id) => service.stopBackgroundActivity(scope, sessionId, id))
   handle('side-chat:read', (scope, sessionId) => service.readSyncedSideChat(scope, sessionId))
   handle('side-chat:submit', (scope, sessionId, input) => service.submitSyncedSideChat(scope, sessionId, input))
   handle('side-chat:stop', (scope, sessionId, requestId) => service.stopSyncedSideChat(scope, sessionId, requestId))
@@ -253,7 +255,6 @@ export function registerIpc(
   handleWithEvent('remote-servers:redeploy', (event, profileId, force) => service.redeployHubRemote(profileId, force === true, progress => {
     if (!event.sender.isDestroyed()) event.sender.send('remote-servers:redeploy-progress', progress)
   }))
-  handle('servers:update-cli', (profileId, backend) => service.updateServerRuntimeCli(profileId, backend))
   handle('hub:adopt-local-token', () => service.retryLocalHubToken())
   handle('hub:pairing-url', () => localHubPairingUrl())
   handle('hub:start-local-server', () => service.startLocalHub())

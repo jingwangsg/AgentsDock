@@ -81,9 +81,8 @@ test('remotes are reconciled from the hub registry; deploy only appears while th
   // again when a deploy job finishes, instead of a manual import/add flow.
   assert.match(store, /requestNotificationPermissionOnce\(\)\s*void reconcileHubRemoteServers\(scope, set, get\)/)
   assert.match(store, /await followHubJob\(scope\.client[\s\S]*?await reconcileHubRemoteServers\(scope, set, get\)/)
-  // Redeploy and Update CLI work from the list whichever server is active; only hub remotes can be redeployed.
+  // Redeploy works from the list whichever server is active; only hub remotes can be redeployed.
   assert.match(appShell, /onRedeployRemote=\{redeployHubRemote\}/)
-  assert.match(appShell, /onUpdateCli=\{updateServerCli\}/)
   assert.match(source, /onRedeploy=\{hubProxyRemoteId\(profile\.serverUrl\) !== null/)
   // Removing a proxied profile unregisters it on the hub first, or the next
   // reconcile would recreate it.

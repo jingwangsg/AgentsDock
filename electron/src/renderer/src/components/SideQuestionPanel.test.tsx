@@ -163,6 +163,35 @@ describe('Side chat panel', () => {
     expect(ask).toHaveBeenCalledTimes(1)
   })
 
+  it('shows a Codex side answer\'s tool steps while it runs and folds them under the answer', async () => {
+    const command = { id: 'cmd1', kind: 'command' as const, title: 'du -sh checkpoints/*', status: 'running' as const }
+    const exchange = { request_id: 'request1', question: 'Which is largest?', status: 'running' as const,
+      steps: [command], created_at: 'now', updated_at: 'now' }
+    const chat = { session_id: session.id, side_chat_id: 'side1', revision: 1, last_request_id: null, exchanges: [exchange] }
+    const read = vi.fn().mockResolvedValueOnce(chat).mockResolvedValueOnce({ ...chat, revision: 2, last_request_id: 'request1',
+      exchanges: [{ ...exchange, status: 'completed', answer: 'sleng is largest.',
+        steps: [{ ...command, status: 'completed', output: '4.0T\tsleng' }, { id: 'cmd2', kind: 'command', title: 'ls missing', status: 'failed' },
+          { id: 'img1', kind: 'image_view', title: 'chart.png', status: 'completed' }] }] })
+    let changed: ((event: object) => void) | undefined
+    Object.assign(window.agentsDock, { sideQuestions: { ask, cancel, close, read },
+      events: { on: vi.fn((channel: string, listener: (event: object) => void) => { if (channel === 'side-chat:changed') changed = listener; return () => undefined }) } })
+    useAppStore.setState({ health: { ok: true, capabilities: { side_questions: { ...capability, sync: true } } } })
+    render(panel())
+
+    const running = await screen.findByText('du -sh checkpoints/*')
+    expect(running.closest('li')).toHaveClass('running')
+    expect(screen.getByText('Answering…')).toBeVisible()
+
+    await act(async () => { changed!({ profileId: scope.profileId, profileGeneration: scope.profileGeneration, sessionId: session.id, revision: 2 }) })
+    expect(await screen.findByText('sleng is largest.')).toBeVisible()
+    // A kind this client does not know (added by a newer server) renders with a generic icon.
+    expect(screen.getByText('chart.png')).toBeInTheDocument()
+    const steps = screen.getByText('Steps (3)').closest('details')!
+    expect(steps).not.toHaveAttribute('open')
+    expect(screen.getByText('ls missing').closest('li')).toHaveClass('failed')
+    expect(screen.getByText('4.0T\tsleng', { normalizer: text => text })).toBeInTheDocument()
+  })
+
   it('uses Chinese side-chat labels', () => {
     setLocale('zh-CN')
     render(panel())

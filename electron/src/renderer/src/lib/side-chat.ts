@@ -1,4 +1,4 @@
-import { sideChatSyncAvailable, type SyncedSideChat, sideQuestionLimit, sideQuestionsAvailable, sideQuestionOwnerKey,
+import { sideChatSyncAvailable, type SideChatStep, type SyncedSideChat, sideQuestionLimit, sideQuestionsAvailable, sideQuestionOwnerKey,
   SIDE_QUESTION_MAX_HISTORY_CHARS, SIDE_QUESTION_MAX_HISTORY_ITEMS,
   type SideQuestionHistoryItem, type SideQuestionScope } from '@shared/side-questions'
 import type { PublicServerProfile, Session } from '@shared/types'
@@ -10,6 +10,7 @@ export interface SideChatExchange {
   answer?: string
   state: 'pending' | 'answered' | 'cancelled' | 'error'
   error?: string
+  steps?: SideChatStep[]
 }
 export interface SideChatSnapshot {
   sideChatId: string
@@ -160,7 +161,7 @@ export class SideChatController {
     const exchanges: SideChatExchange[] = chat.exchanges.map(item => ({ id: item.request_id, question: item.question,
       answer: item.answer, state: item.status === 'running' ? 'pending' : item.status === 'completed' ? 'answered'
         : item.status === 'cancelled' ? 'cancelled' : 'error',
-      error: item.status === 'interrupted' ? 'side_question_interrupted' : item.error }))
+      error: item.status === 'interrupted' ? 'side_question_interrupted' : item.error, steps: item.steps }))
     // A read dispatched before POST acceptance may not contain our optimistic
     // question. A newer clear is authoritative and must not be resurrected.
     if (optimistic && chat.side_chat_id === optimistic.sideChatId && !exchanges.some(item => item.id === optimistic.requestId)) {

@@ -27,6 +27,16 @@
 .side-chat-exchange:last-child { margin-bottom: var(--space-4); }
 .side-chat-user { width: fit-content; max-width: 94%; margin: 0 0 var(--space-7) auto; padding: var(--space-5) var(--space-6); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); background: var(--green-surface); border: 1px solid var(--green-border); border-radius: var(--radius-dialog); }
 .side-chat-assistant { min-width: 0; overflow-wrap: anywhere; }
+.side-chat-steps { margin: 0 0 var(--space-6); padding: 0; list-style: none; color: var(--muted); font-size: var(--text-size-meta); }
+.side-chat-steps > summary { width: fit-content; cursor: pointer; }
+.side-chat-steps ol { margin: var(--space-3) 0 0; padding: 0; list-style: none; }
+.side-chat-step > div, .side-chat-step summary { display: flex; align-items: baseline; gap: var(--space-3); padding: var(--space-1) 0; }
+.side-chat-step summary { cursor: pointer; list-style: none; }
+.side-chat-step summary::-webkit-details-marker { display: none; }
+.side-chat-step svg { flex-shrink: 0; transform: translateY(1px); }
+.side-chat-step code { min-width: 0; font-family: var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.side-chat-step.failed svg { color: var(--danger); }
+.side-chat-step pre { max-height: 160px; margin: var(--space-2) 0 var(--space-3) calc(12px + var(--space-3)); padding: var(--space-3); overflow: auto; font-family: var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-3); border-radius: var(--radius-compact); }
 .side-chat-assistant .markdown { font-size: var(--text-size-ui); }
 .side-chat-status { display: flex; align-items: center; gap: var(--space-3); margin: 0; color: var(--muted); font-size: var(--text-size-meta); }
 .side-chat-bottom { position: relative; flex-shrink: 0; padding: var(--space-2) var(--space-6) var(--space-6); }

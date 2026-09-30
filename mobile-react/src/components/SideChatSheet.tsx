@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { ArrowUp, MessageCircleQuestion, Square, Trash2 } from 'lucide-react-native'
-import { sideChatAvailable, sideChatErrorMessage, sideChatLimit, subscribeSideChatChanged, type SyncedSideChat } from '../lib/side-chat'
+import { ArrowUp, FilePen, Globe, MessageCircleQuestion, MessageSquare, Square, Terminal, Trash2, Wrench } from 'lucide-react-native'
+import { sideChatAvailable, sideChatErrorMessage, sideChatLimit, subscribeSideChatChanged, type SideChatStep, type SyncedSideChat } from '../lib/side-chat'
+import { fonts } from '../lib/typography'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { Text, TextInput } from './AppText'
@@ -138,6 +139,7 @@ export function SideChatSheet({ sessionId, onClose }: { sessionId: string; onClo
           {chat && !chat.exchanges.length && !sending ? status('Ask about this conversation. Your main task keeps running.') : null}
           {chat?.exchanges.map(exchange => <View key={exchange.request_id} style={styles.exchange}>
             {questionBubble(exchange.question)}
+            {exchange.steps?.length ? <SideChatSteps steps={exchange.steps} live={exchange.status === 'running'} /> : null}
             {exchange.answer ? <MarkdownContent value={exchange.answer} fontScale={fontScale} sourceSessionId={sessionId} /> : null}
             {exchange.status === 'running' ? status('Answering…')
               : exchange.status === 'cancelled' ? status('Response cancelled.')
@@ -168,6 +170,31 @@ export function SideChatSheet({ sessionId, onClose }: { sessionId: string; onClo
   </Modal>
 }
 
+const STEP_ICONS = { command: Terminal, file_change: FilePen, tool: Wrench, web_search: Globe, message: MessageSquare }
+
+/** A Codex side answer's tool calls and interim messages: listed while it runs, folded behind "Steps (N)" after. */
+function SideChatSteps({ steps, live }: { steps: SideChatStep[]; live: boolean }) {
+  const colors = usePalette()
+  const [open, setOpen] = useState(false)
+  return <View style={styles.steps}>
+    {!live ? <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} hitSlop={8}>
+      <Text style={[styles.status, { color: colors.blue }]}>Steps ({steps.length})</Text>
+    </Pressable> : null}
+    {(live || open) && steps.map(step => {
+      // A kind added by a newer server renders with a generic icon.
+      const Icon = STEP_ICONS[step.kind] ?? Wrench
+      const color = step.status === 'failed' ? colors.red : colors.muted
+      return <View key={step.id} style={styles.step} accessibilityLabel={step.status === 'failed' ? `${step.title}, failed` : undefined}>
+        <View style={styles.row}>
+          {live && step.status === 'running' ? <ActivityIndicator size="small" color={colors.muted} /> : <Icon size={13} color={color} />}
+          <Text selectable style={[styles.stepTitle, { color: colors.muted }, step.kind !== 'message' && styles.mono]} numberOfLines={3}>{step.title}</Text>
+        </View>
+        {!live && step.output ? <Text selectable style={[styles.stepOutput, styles.mono, { color: colors.muted, backgroundColor: colors.raised }]} numberOfLines={8}>{step.output}</Text> : null}
+      </View>
+    })}
+  </View>
+}
+
 const styles = StyleSheet.create({
   button: { marginVertical: -7 },
   fill: { flex: 1 },
@@ -182,6 +209,11 @@ const styles = StyleSheet.create({
   body: { fontSize: 15, lineHeight: 21 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   status: { fontSize: 12.5, lineHeight: 18 },
+  steps: { gap: 4 },
+  step: { gap: 4 },
+  stepTitle: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 17 },
+  stepOutput: { marginLeft: 21, padding: 6, borderRadius: 6, fontSize: 11, lineHeight: 15 },
+  mono: { fontFamily: fonts.mono },
   retry: { fontSize: 13, fontWeight: '700' },
   footer: { paddingHorizontal: 12, paddingBottom: 8, gap: 6 },
   composer: { flexDirection: 'row', alignItems: 'flex-end', borderWidth: StyleSheet.hairlineWidth, borderRadius: 12, paddingLeft: 12 },

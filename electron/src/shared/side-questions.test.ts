@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sideQuestionsAvailable, validateSideQuestionInput, type SideQuestionInput } from './side-questions'
+import { parseSyncedSideChat, sideQuestionsAvailable, validateSideQuestionInput, type SideQuestionInput } from './side-questions'
 
 const input = { request_id: 'side-a', question: 'Why?' }
 const history = [{ role: 'user' as const, text: ' First question\n' }, { role: 'assistant' as const, text: 'First answer.' }]
@@ -58,5 +58,15 @@ describe('side chat input validation', () => {
     const unicodeHistory = [{ role: 'user' as const, text: '🙂'.repeat(30000) }, { role: 'assistant' as const, text: '🙂'.repeat(30000) }]
     expect(validateSideQuestionInput({ ...input, question: '🙂'.repeat(8000), history: unicodeHistory }).history).toEqual(unicodeHistory)
     expect(() => validateSideQuestionInput({ ...input, question: '\udfff' })).toThrow('side_question_invalid_question')
+  })
+
+  it('accepts side answer steps, including a kind a newer server adds, and rejects malformed ones', () => {
+    const chat = (steps: unknown) => ({ session_id: 'chat-a', side_chat_id: 'side-a', revision: 1, last_request_id: null,
+      exchanges: [{ request_id: 'request-a', question: 'Q', status: 'running', steps, created_at: 'now', updated_at: 'now' }] })
+    const step = { id: 'cmd1', kind: 'command', title: 'ls', status: 'completed', output: 'a' }
+    expect(parseSyncedSideChat(chat([step, { ...step, id: 'x', kind: 'image_view' }]), 'chat-a').exchanges[0].steps).toHaveLength(2)
+    for (const invalid of [{}, [{ ...step, kind: 3 }], [{ ...step, title: null }], [{ ...step, output: 3 }], [null]]) {
+      expect(() => parseSyncedSideChat(chat(invalid), 'chat-a')).toThrow('side_question_invalid_response')
+    }
   })
 })

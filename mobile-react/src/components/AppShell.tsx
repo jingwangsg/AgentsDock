@@ -87,7 +87,6 @@ function AppShellContent() {
   const deployHubRemoteServer = useAppStore(state => state.deployHubRemoteServer)
   const cancelHubDeploy = useAppStore(state => state.cancelHubDeploy)
   const redeployHubRemote = useAppStore(state => state.redeployHubRemote)
-  const updateServerCli = useAppStore(state => state.updateServerCli)
   const [mobileChatOpen, setMobileChatOpen] = useState(false)
   const [inspectorVisible, setInspectorVisible] = useState(true)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -434,7 +433,6 @@ function AppShellContent() {
       onDeployRemote={(input, onProgress) => deployHubRemoteServer(input, onProgress, profileGeneration)}
       onCancelDeploy={cancelHubDeploy}
       onRedeployRemote={redeployHubRemote}
-      onUpdateCli={updateServerCli}
     />
     <SettingsDialog key={`settings:${connectionKey}`} visible={modalScopeCurrent && settings} onClose={() => setSettings(false)} />
     {TEAM_NETWORK_UI_ENABLED ? <TeamNetwork key={`team-network:${connectionKey}`} visible={modalScopeCurrent && teamNetwork} onClose={() => setTeamNetwork(false)} /> : null}

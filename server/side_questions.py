@@ -34,6 +34,8 @@ MAX_REQUEST_BYTES = 512 * 1024
 MAX_CONTEXT_CHARS = 60000
 MAX_LOG_BYTES = 4 * 1024 * 1024
 MAX_OUTPUT_BYTES = 1024 * 1024
+# Each step rewrites the whole document and every open client re-reads it; bound its size.
+MAX_SIDE_STEPS = 50
 RECEIPT_TTL_SECONDS = 600
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 SYSTEM_PROMPT = (
@@ -766,7 +768,8 @@ class SyncedSideChats:
                 self.handles[key] = handle
             history = [{"question": item["question"], "response": item["answer"]}
                        for item in document["exchanges"] if item["status"] == "completed"][-20:]
-            result = await handle.ask(question, history=history)
+            result = await handle.ask(question, history=history,
+                                      on_step=lambda step: self._step(key, side_chat_id, request_id, step))
             await self._finish(key, side_chat_id, request_id, "completed", **result)
         except asyncio.CancelledError:
             failed = True
@@ -799,6 +802,27 @@ class SyncedSideChats:
                 self.tasks.pop(key, None)
                 if not self.stopping:
                     self.timers[key] = asyncio.get_running_loop().call_later(NATIVE_IDLE_SECONDS, self._expire, key)
+
+    async def _step(self, key, side_chat_id, request_id, step):
+        async with self._lock(key):
+            # A step is progress only: a failed write drops it and never delays the answer or its write.
+            try:
+                document = self._load(key)
+                exchange = next((item for item in document["exchanges"] if item["request_id"] == request_id), None)
+                if document["side_chat_id"] != side_chat_id or exchange is None or exchange["status"] != "running":
+                    return
+                steps = exchange.setdefault("steps", [])
+                index = next((position for position, item in enumerate(steps) if item["id"] == step["id"]), None)
+                if index is None:
+                    steps.append(step)
+                    del steps[:-MAX_SIDE_STEPS]
+                else:
+                    steps[index] = step
+                document["revision"] += 1
+                self.store.save(*key, document)
+            except (OSError, sqlite3.Error):
+                return
+        await self._changed(document)
 
     async def _finish(self, key, side_chat_id, request_id, status, **result):
         async with self._lock(key):

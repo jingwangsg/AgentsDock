@@ -82,6 +82,7 @@ import { normalizeServerURL } from '../lib/format'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../lib/provider-usage'
 import { createUploadFormData } from '../lib/upload-form'
 import { parseSyncedSideChat, type SyncedSideChat } from '../lib/side-chat'
+import type { BackgroundActivityItem } from '../lib/background-activity'
 import { teamNetworkRequestPath } from '../lib/team-network'
 import { retriesStaleGitAction } from '../lib/workspace-changes'
 import type { ConversationExportFormat } from '../lib/file-transfer'
@@ -780,6 +781,14 @@ export class AgentServerClient {
 
   shellCodexThread(sessionId: string, input: CodexShellInput): Promise<CodexOperationAccepted> {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/codex/shell`, input)
+  }
+
+  async backgroundActivity(sessionId: string): Promise<BackgroundActivityItem[]> {
+    return (await this.get<{ items: BackgroundActivityItem[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/background-activity`)).items
+  }
+
+  async stopBackgroundActivity(sessionId: string, id: string): Promise<boolean> {
+    return (await this.post<{ stopped: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/background-activity/stop`, { id })).stopped
   }
 
   codexBackgroundTerminals(sessionId: string): Promise<CodexBackgroundTerminalsSnapshot> {

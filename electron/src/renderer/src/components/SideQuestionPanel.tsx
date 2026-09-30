@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { ArrowDown, ArrowUp, Info, LoaderCircle, Square } from 'lucide-react'
+import { ArrowDown, ArrowUp, FilePen, Globe, Info, LoaderCircle, MessageSquare, Square, Terminal, Wrench } from 'lucide-react'
 import { t } from '@shared/i18n'
-import { sideChatSyncAvailable, sideQuestionLimit, sideQuestionsAvailable, type SideQuestionScope } from '@shared/side-questions'
+import { sideChatSyncAvailable, sideQuestionLimit, sideQuestionsAvailable, type SideChatStep, type SideQuestionScope } from '@shared/side-questions'
 import type { Session } from '@shared/types'
 import { useLocale } from '../lib/i18n'
 import { SideChatController } from '../lib/side-chat'
@@ -100,6 +100,10 @@ export function SideQuestionPanel({ session, scope, controller, active = true, f
       }}>
       {snapshot.exchanges.map(exchange => <div className="side-chat-exchange" key={exchange.id}>
         <div className="side-chat-user">{exchange.question}</div>
+        {exchange.steps?.length ? exchange.state === 'pending'
+          ? <ol className="side-chat-steps">{exchange.steps.map(step => sideChatStep(step, true))}</ol>
+          : <details className="side-chat-steps"><summary>{t('sideChat.steps', { count: exchange.steps.length })}</summary>
+            <ol>{exchange.steps.map(step => sideChatStep(step, false))}</ol></details> : null}
         {exchange.answer && <div className="side-chat-assistant"><MarkdownContent text={exchange.answer} fold={false} /></div>}
         {exchange.state === 'pending' && <p className="side-chat-status" role="status"><LoaderCircle className="spin" size={13} />{t('sideChat.answering')}</p>}
         {exchange.state === 'cancelled' && <p className="side-chat-status">{t('sideChat.cancelled')}</p>}
@@ -136,6 +140,21 @@ export function SideQuestionPanel({ session, scope, controller, active = true, f
       </form>}
     </div>
   </section>
+}
+
+const STEP_ICONS = { command: Terminal, file_change: FilePen, tool: Wrench, web_search: Globe, message: MessageSquare }
+
+/** A Codex side answer's tool call or interim message; a command with output expands to show it. */
+function sideChatStep(step: SideChatStep, live: boolean) {
+  const Icon = STEP_ICONS[step.kind] ?? Wrench
+  const row = <>
+    {live && step.status === 'running' ? <LoaderCircle className="spin" size={12} /> : <Icon size={12} />}
+    {step.kind === 'message' ? <span>{step.title}</span> : <code>{step.title}</code>}
+    {step.status === 'failed' && <span className="visually-hidden">{t('sideChat.stepFailed')}</span>}
+  </>
+  return <li key={step.id} className={`side-chat-step ${step.status}`}>
+    {step.output ? <details><summary>{row}</summary><pre>{step.output}</pre></details> : <div>{row}</div>}
+  </li>
 }
 
 export function sideQuestionError(cause: unknown): string {

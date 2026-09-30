@@ -2,6 +2,15 @@ import type { Backend, Health } from '../types'
 
 const MAX_QUESTION_CHARS = 8000
 
+/** A tool call or interim message of a Codex side answer (Claude side questions have no tools). */
+export interface SideChatStep {
+  id: string
+  kind: 'command' | 'file_change' | 'tool' | 'web_search' | 'message'
+  title: string
+  status: 'running' | 'completed' | 'failed'
+  output?: string
+}
+
 /** Server-owned side chat: the desktop shows the same conversation, and it survives restarts. */
 export interface SyncedSideChat {
   session_id: string
@@ -15,6 +24,7 @@ export interface SyncedSideChat {
     answer?: string
     context_note?: string
     error?: string
+    steps?: SideChatStep[]
   }>
 }
 

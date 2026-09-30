@@ -1,5 +1,31 @@
 # Public development log
 
+## 2026-09-30 — Codex chats show background terminals in the header
+
+- A Codex chat's header shows a "N running" chip while background terminals
+  (processes Codex left running after a command returned) are still alive,
+  including after the turn has ended. Opening it lists each command with a
+  Stop button, on desktop and mobile. The list is read only for a chat whose
+  Codex thread is already loaded, so it never starts Codex. Another open device
+  shows a stop within 15 seconds. Claude chats show no chip: with the apps'
+  Claude connection, AgentsDock refuses background shells, and a Claude run
+  without it ends its shells when the turn ends.
+
+## 2026-09-30 — Side chat shows what a Codex answer is doing
+
+- A Codex side question can run commands and other tools before it answers,
+  which could take minutes with only "Answering…" on screen. Side chat now
+  lists each command, tool call, file change and interim message as it happens,
+  on desktop and mobile. After the answer, they fold into "Steps (N)"; a
+  command's output opens from its row. Claude side questions run without tools,
+  so they have no steps.
+
+## 2026-09-30 — Server list no longer has Update CLI
+
+- The server list's Update CLI menu is removed on desktop and mobile. Claude
+  Code and Codex are still updated from the active server's runtime settings
+  (Runtimes & prerequisites on desktop, Agent runtimes on mobile).
+
 ## 2026-09-30 — Window layout and chat font are the same on every server
 
 - On the desktop, whether the chat list and right panel are shown, the widths

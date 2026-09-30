@@ -9306,21 +9306,6 @@ describe('server profile lifecycle', () => {
     expect(settings.getProfile(remote.id)).toBeNull()
   })
 
-  it('updates a CLI on an inactive server through its own client, only while it is the pinned server', async () => {
-    const beta = Object.assign(fakeClient({ health: async () => ({ ok: true, server_identity: 'server-b' }) }), {
-      updateRuntimeCli: vi.fn(async () => ({ output: 'codex 0.99.0', diagnostic: { available: true } }))
-    })
-    const replaced = Object.assign(fakeClient({ health: async () => ({ ok: true, server_identity: 'someone-else' }) }), { updateRuntimeCli: vi.fn() })
-    const { service, settings } = createProfileService({ 'http://a.test:7850': [fakeClient()], 'http://b.test:7850': [beta, replaced] })
-    settings.setProfileServerIdentity('b', 'server-b')
-
-    await expect(service.updateServerRuntimeCli('b', 'codex')).resolves.toMatchObject({ output: 'codex 0.99.0' })
-    expect(beta.updateRuntimeCli).toHaveBeenCalledWith('codex')
-    expect(beta.dispose).toHaveBeenCalledOnce()
-    await expect(service.updateServerRuntimeCli('b', 'codex')).rejects.toThrow('different identity')
-    expect(replaced.updateRuntimeCli).not.toHaveBeenCalled()
-  })
-
   it('isolates an inactive health failure and recovers it on the next successful probe', async () => {
     const a = fakeClient({ health: async () => ({ ok: true, server_identity: 'server-a' }) })
     const failedProbe = fakeClient({ health: async () => { throw new Error('beta unreachable') } })

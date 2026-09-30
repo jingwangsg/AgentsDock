@@ -27,11 +27,14 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
         self.factories = []
         self.closed = []
         self.notices = []
+        self.steps = []
         test = self
 
         class Handle:
-            async def ask(self, question, *, history):
+            async def ask(self, question, *, history, on_step):
                 test.calls.append((question, deepcopy(history)))
+                for step in test.steps:
+                    await on_step(step)
                 test.started.set()
                 await test.release.wait()
                 return {"answer": "answer: " + question, "backend": "claude", "context_note": "native"}
@@ -99,6 +102,21 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
         for session, notice in self.notices:
             self.assertEqual(set(notice), {"type", "session_id", "revision"})
             self.assertEqual(notice["type"], "side_chat_updated")
+
+    async def test_tool_steps_show_while_running_and_stay_with_the_answer(self):
+        running = {"id": "cmd1", "kind": "command", "title": "du -sh checkpoints", "status": "running"}
+        done = {**running, "status": "completed", "output": "4.0T checkpoints"}
+        self.steps = [running, {"id": "msg1", "kind": "message", "title": "Checking sizes", "status": "completed"}, done]
+        self.assertEqual((await self.send()).status_code, 202)
+        await self.started.wait()
+        live = await self.snapshot()
+        self.assertEqual(live["exchanges"][0]["status"], "running")
+        # A step is updated in place when it finishes; order follows first appearance.
+        self.assertEqual(live["exchanges"][0]["steps"], [done, self.steps[1]])
+        await self.settle()
+        answered = (await self.snapshot())["exchanges"][0]
+        self.assertEqual((answered["status"], answered["steps"]), ("completed", [done, self.steps[1]]))
+        self.assertGreaterEqual(len(self.notices), 5)
 
     async def test_duplicate_send_is_idempotent_busy_and_stale_submissions_preserve_existing(self):
         initial = await self.snapshot()
@@ -244,6 +262,19 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered["exchanges"][0]["answer"], "answer: question")
         self.assertEqual(recovered["exchanges"][0]["status"], "completed")
         self.assertEqual(len(self.calls), 1)
+
+    async def test_a_failed_step_write_drops_the_step_and_keeps_the_answer(self):
+        self.steps = [{"id": "cmd1", "kind": "command", "title": "ls", "status": "running"}]
+        save = self.runtime.synced.store.save
+        def fail_step_writes(owner, session, document, **options):
+            if any(item.get("steps") for item in document["exchanges"]):
+                raise OSError("disk full")
+            return save(owner, session, document, **options)
+        with patch.object(self.runtime.synced.store, "save", side_effect=fail_step_writes):
+            self.assertEqual((await self.send()).status_code, 202)
+            await self.settle()
+        answered = (await self.snapshot())["exchanges"][0]
+        self.assertEqual((answered["status"], answered["answer"], answered.get("steps")), ("completed", "answer: question", None))
 
     async def test_disk_full_does_not_prevent_stopping_native_work(self):
         await self.send()

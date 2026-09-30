@@ -41,6 +41,35 @@ DISABLED_FEATURES = (
 )
 
 
+STEP_TEXT_CHARS = 1000
+STEP_ERROR_STATUSES = {"failed", "declined", "cancelled", "canceled", "errored"}
+
+
+def side_step(item: dict, *, done: bool) -> dict | None:
+    """The visible intermediate work of a side answer: tool calls and interim messages, compacted."""
+    item_type = item.get("type")
+    if item_type == "commandExecution":
+        kind, title = "command", str(item.get("command") or "")
+    elif item_type == "fileChange":
+        kind = "file_change"
+        title = ", ".join(str(change.get("path") or "") for change in item.get("changes") or [] if isinstance(change, dict))
+    elif item_type in ("mcpToolCall", "dynamicToolCall"):
+        kind, title = "tool", f"{item.get('server') or item.get('namespace') or 'tool'}/{item.get('tool') or 'tool'}"
+    elif item_type == "webSearch":
+        kind, title = "web_search", str(item.get("query") or "")
+    elif item_type == "agentMessage" and item.get("phase") == "commentary" and done:
+        kind, title = "message", str(item.get("text") or "")
+    else:
+        return None
+    failed = str(item.get("status") or "").lower() in STEP_ERROR_STATUSES or item.get("exitCode") not in (None, 0)
+    step = {"id": str(item.get("id") or ""), "kind": kind, "title": title[:STEP_TEXT_CHARS],
+            "status": "running" if not done else "failed" if failed else "completed"}
+    output = str(item.get("aggregatedOutput") or "") if done and item_type == "commandExecution" else ""
+    if output:
+        step["output"] = output[-STEP_TEXT_CHARS:]
+    return step
+
+
 def isolated_config() -> dict:
     return {
         **{f"features.{name}": False for name in DISABLED_FEATURES},
@@ -284,7 +313,7 @@ class NativeCodexSideChat:
         elif metadata.get("ephemeral") is not True or metadata.get("path") is not None:
             raise SideQuestionError(503, "Codex did not confirm an ephemeral side chat")
 
-    async def ask(self, question: str) -> str:
+    async def ask(self, question: str, *, on_step=None) -> str:
         if self._closed:
             raise SideQuestionError(409, "Side chat was closed; open a new side chat")
         if self._lock.locked():
@@ -308,6 +337,10 @@ class NativeCodexSideChat:
                 while True:
                     packet = await turn.next_notification()
                     method, data = packet.get("method"), packet.get("params", {})
+                    if on_step is not None and method in ("item/started", "item/completed"):
+                        step = side_step(data.get("item", {}), done=method == "item/completed")
+                        if step is not None:
+                            await on_step(step)
                     if method == "item/completed":
                         item = data.get("item", {})
                         if item.get("type") == "agentMessage" and item.get("phase") in (None, "", "final_answer"):

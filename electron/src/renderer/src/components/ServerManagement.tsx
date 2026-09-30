@@ -2,8 +2,7 @@
 import { t, getLocale } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { ArrowDown, ArrowUp, Check, Clock3, Download, LoaderCircle, Pencil, Plus, RotateCw, Server, Trash2, Wifi } from 'lucide-react'
+import { ArrowDown, ArrowUp, Check, Clock3, LoaderCircle, Pencil, Plus, RotateCw, Server, Trash2, Wifi } from 'lucide-react'
 import type { PublicServerProfile, ServerSetupProgress } from '@shared/types'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { trackEvent } from '../lib/analytics'
@@ -29,7 +28,7 @@ const emptyDraft = (): ServerDraft => ({
   resetServerIdentity: false
 })
 
-interface RowWork { kind: 'redeploy' | 'cli'; text: string; working?: boolean; failed?: boolean; confirm?: boolean }
+interface RowWork { text: string; working?: boolean; failed?: boolean; confirm?: boolean }
 
 /** Remote profiles are proxied through the local hub as `${DEFAULT_SERVER_URL}/api/remote/<id>`; that path on another host is a plain saved server. */
 const isHubRemote = (url: string) => url.startsWith(`${DEFAULT_SERVER_URL}/api/remote/`)
@@ -253,33 +252,21 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     }
   }
 
-  // Works whichever server is active: the main process talks to the hub (redeploy) or to that server (CLI).
+  // Works whichever server is active: the main process talks to the hub.
   const noteRow = (profileId: string, work: RowWork | null) => setRowWork(({ [profileId]: _previous, ...rest }) => work ? { ...rest, [profileId]: work } : rest)
-  const redeploying = Object.values(rowWork).some(work => work.kind === 'redeploy' && work.working)
+  const redeploying = Object.values(rowWork).some(work => work.working)
   const redeploy = async (profile: PublicServerProfile, force: boolean) => {
-    noteRow(profile.id, { kind: 'redeploy', working: true, text: t('hub.redeploying') })
-    const stop = window.agentsDock.events?.on?.('remote-servers:redeploy-progress', value => noteRow(profile.id, { kind: 'redeploy', working: true, text: value.message }))
+    noteRow(profile.id, { working: true, text: t('hub.redeploying') })
+    const stop = window.agentsDock.events?.on?.('remote-servers:redeploy-progress', value => noteRow(profile.id, { working: true, text: value.message }))
     try {
       const { redeployed, running } = await window.agentsDock.remoteServers.redeploy(profile.id, force)
       noteRow(profile.id, redeployed
-        ? { kind: 'redeploy', text: t('hub.redeployed') }
-        : { kind: 'redeploy', confirm: true, text: running === null ? t('hub.redeployUnchecked') : t('hub.redeployRunning', { count: running }) })
+        ? { text: t('hub.redeployed') }
+        : { confirm: true, text: running === null ? t('hub.redeployUnchecked') : t('hub.redeployRunning', { count: running }) })
     } catch (error) {
-      noteRow(profile.id, { kind: 'redeploy', failed: true, text: cleanIPCError(errorMessage(error)) })
+      noteRow(profile.id, { failed: true, text: cleanIPCError(errorMessage(error)) })
     } finally {
       stop?.()
-    }
-  }
-  const updateCli = async (profile: PublicServerProfile, backend: 'claude' | 'codex') => {
-    noteRow(profile.id, { kind: 'cli', working: true, text: t('runtimeUpdate.updating') })
-    try {
-      const { output, diagnostic } = await window.agentsDock.servers.updateCli(profile.id, backend)
-      if (profile.id === useAppStore.getState().activeProfileId) {
-        useAppStore.setState(state => ({ health: state.health && { ...state.health, runtimes: { ...state.health.runtimes, [backend]: diagnostic } } }))
-      }
-      noteRow(profile.id, { kind: 'cli', text: output.split('\n').at(-1) || t('runtimeUpdate.done') })
-    } catch (error) {
-      noteRow(profile.id, { kind: 'cli', failed: true, text: cleanIPCError(errorMessage(error)) })
     }
   }
 
@@ -337,17 +324,6 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
             {(hubDown || starting) && <button type="button" className="quiet-button" aria-label={t('hub.startLabel', { server: profile.name })} disabled={Boolean(busy)} onClick={() => void startHub(profile.id)}>{starting && <LoaderCircle className="spin" size={12} />} {starting ? t('hub.starting') : t('hub.start')}</button>}
             {!current && <button type="button" className="quiet-button" aria-label={working ? t("ui.ServerManagement.switching_to_e7437c0", { "server": String(profile.name) }) : t("ui.ServerManagement.use_367b9be", { "server": String(profile.name) })} disabled={Boolean(busy) || Boolean(switchingProfileId)} onClick={() => void activate(profile.id)}>{working && <LoaderCircle className="spin" size={12} />} {working ? t("ui.ServerManagement.switching_b7b9fbf") : t("ui.ServerManagement.use_c36d819")}</button>}
             <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.edit_966e044", { "server": String(profile.name) })} disabled={Boolean(busy)} onClick={() => beginEdit(profile)}><Pencil size={13} /></button>
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger className="icon-button" aria-label={t('runtimeUpdate.menuLabel', { server: profile.name })} title={t('runtimeUpdate.update')} disabled={Boolean(busy) || work?.working}>
-                {work?.kind === 'cli' && work.working ? <LoaderCircle className="spin" size={12} /> : <Download size={13} />}
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content className="menu-content" align="end" sideOffset={4}>
-                  <DropdownMenu.Item className="menu-item" onSelect={() => void updateCli(profile, 'claude')}>{t('runtimeUpdate.claude')}</DropdownMenu.Item>
-                  <DropdownMenu.Item className="menu-item" onSelect={() => void updateCli(profile, 'codex')}>{t('runtimeUpdate.codex')}</DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
             {hub && isHubRemote(profile.serverUrl) && <button
               type="button"
               className="icon-button"
@@ -355,7 +331,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
               title={t('hub.redeployTitle')}
               disabled={Boolean(busy) || redeploying || work?.working}
               onClick={() => void redeploy(profile, false)}
-            >{work?.kind === 'redeploy' && work.working ? <LoaderCircle className="spin" size={12} /> : <RotateCw size={13} />}</button>}
+            >{work?.working ? <LoaderCircle className="spin" size={12} /> : <RotateCw size={13} />}</button>}
             {profile.id !== hub?.id && <button
               type="button"
               className={confirmRemoveId === profile.id ? 'danger-button compact' : 'icon-button'}

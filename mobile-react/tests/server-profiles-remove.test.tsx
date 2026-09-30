@@ -23,7 +23,6 @@ test('the active hub remote is removed from its row menu; the store switches to 
       onReorderProfiles={() => undefined}
       onRemoveProfile={profileId => { removed.push(profileId) }}
       onRedeployRemote={async () => ({ redeployed: true, running: 0 })}
-      onUpdateCli={async () => ''}
     />)
   })
   Alert.__reset()

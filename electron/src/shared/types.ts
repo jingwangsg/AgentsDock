@@ -208,6 +208,12 @@ export interface ClaudeMcpReconnectAllInput extends ClaudeMcpControlBase {
 
 export type ClaudeMcpControlInput = ClaudeMcpServerControlInput | ClaudeMcpReconnectAllInput
 
+/** A Codex background terminal: a process that keeps running for a chat outside its turn. */
+export interface BackgroundActivityItem {
+  id: string
+  command: string
+}
+
 export interface CodexBackgroundTerminal {
   itemId: string
   processId: string
@@ -1818,6 +1824,7 @@ export interface HealthCapabilities {
   subagent_limit_v1?: { version: number; backends?: Backend[] }
   codex_provider_v1?: { available?: boolean; version?: number; per_chat?: boolean; per_chat_models?: boolean; model_discovery?: boolean; model_compatibility?: boolean }
   side_questions?: SideQuestionsCapability
+  background_activity_v1?: { available: boolean }
   tmux?: ServerCapability
   runtime_cli_update_v1?: { available: boolean }
   workspace_files?: WorkspaceFilesCapability

@@ -38,6 +38,7 @@ import type {
   AgentTeamMailRoutesSnapshot,
   AgentTextFile,
   AppEventMap,
+  BackgroundActivityItem,
   BulkImportSessionItem,
   BulkImportSessionResult,
   ChatReference,
@@ -1684,28 +1685,6 @@ export class AppService {
     }
   }
 
-  /** A client for any saved profile, active or not; the caller disposes it. */
-  private async profileClient(profileId: string): Promise<AgentServerClient> {
-    // An undefined id would fall back to the active profile in SettingsStore.
-    if (typeof profileId !== 'string' || !this.settings.getProfile(profileId)) throw new Error('Unknown server profile.')
-    return this.clientFactory(this.settings.serverUrl(profileId), await this.settings.accessTokenForConnectionAsync(profileId))
-  }
-
-  /** Server list "Update CLI": updates Claude Code or Codex on any saved server, active or not. */
-  async updateServerRuntimeCli(profileId: string, backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate> {
-    const client = await this.profileClient(profileId)
-    try {
-      // An admin action goes only to the server the profile pinned, as on the active connection.
-      const pinned = this.settings.getProfile(profileId)?.serverIdentity?.trim()
-      if (pinned && (await client.health()).server_identity?.trim() !== pinned) {
-        throw new Error('This server reports a different identity. Select it once to confirm the change, then update again.')
-      }
-      return await client.updateRuntimeCli(backend)
-    } finally {
-      client.dispose()
-    }
-  }
-
   /**
    * Server list "Redeploy": the hub uploads its server code to one of its remotes and restarts it there
    * (server/remote_servers.py), whichever profile is active. The restart stops the remote's running chats,
@@ -1717,20 +1696,18 @@ export class AppService {
     onProgress: (value: ServerSetupProgress) => void
   ): Promise<{ redeployed: boolean; running: number | null }> {
     const hub = this.hubProfile()
-    const probe = await this.profileClient(profileId)
+    // An undefined id would fall back to the active profile in SettingsStore.
+    if (typeof profileId !== 'string' || !this.settings.getProfile(profileId)) throw new Error('Unknown server profile.')
     const serverUrl = this.settings.serverUrl(profileId)
-    if (!hub || !isHubRemoteUrl(hub.serverUrl, serverUrl)) {
+    if (!hub || !isHubRemoteUrl(hub.serverUrl, serverUrl)) throw new Error('Only servers the hub deployed can be redeployed.')
+    if (this.remoteDeploy) throw new Error('A remote server deployment is already running.')
+    if (!force) {
+      const probe = this.clientFactory(serverUrl, await this.settings.accessTokenForConnectionAsync(profileId))
+      // Unreachable (for example the hub's tunnel is down) says nothing about the chats running there.
+      const running = await probe.health().then(health => health.active?.length ?? 0, () => null)
       probe.dispose()
-      throw new Error('Only servers the hub deployed can be redeployed.')
+      if (running !== 0) return { redeployed: false, running }
     }
-    if (this.remoteDeploy) {
-      probe.dispose()
-      throw new Error('A remote server deployment is already running.')
-    }
-    // Unreachable (for example the hub's tunnel is down) says nothing about the chats running there.
-    const running = force ? 0 : await probe.health().then(health => health.active?.length ?? 0, () => null)
-    probe.dispose()
-    if (running !== 0) return { redeployed: false, running }
     // The hub profile's own token: a rotated hub token is not copied into existing remote profiles.
     const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
     try {
@@ -4446,6 +4423,22 @@ export class AppService {
     const info = await scope.client.workspaceInfo(sessionId)
     this.assertCurrentScope(scope)
     return info
+  }
+
+  async backgroundActivity(expected: WorkspaceProfileScope, sessionId: string): Promise<BackgroundActivityItem[]> {
+    const scope = this.requireWorkspaceScope(expected)
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    const result = await scope.client.backgroundActivity(sessionId)
+    this.assertCurrentScope(scope)
+    return result
+  }
+
+  async stopBackgroundActivity(expected: WorkspaceProfileScope, sessionId: string, id: string): Promise<boolean> {
+    const scope = this.requireWorkspaceScope(expected)
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    return scope.client.stopBackgroundActivity(sessionId, id)
   }
 
   async workspaceGitStatus(expected: WorkspaceProfileScope, sessionId: string) {
