@@ -1,5 +1,15 @@
 # Public development log
 
+## 2026-10-01 — Codex starts on a shared-home remote without rebuilding its thread index
+
+- On a remote whose Codex state moved into the install directory, Codex chats
+  showed "Loading" for good: Codex was rebuilding its thread index from every
+  rollout file on the shared mount, the server gave up after its 30 s start
+  timeout, and the interrupted rebuild left a "running" marker that made every
+  later start wait and fail. The deploy now starts that state as a copy of the
+  shared home's databases, so nothing is rebuilt. A start timeout now quotes
+  what Codex last wrote on stderr.
+
 ## 2026-10-01 — Reload history removes what history sync added to a chat and syncs again
 
 - Right-click a chat, or open the chat menu, and choose Reload history…
