@@ -162,6 +162,7 @@ const api: AgentsDockAPI = {
     reorder: profileIds => ipcRenderer.invoke('servers:reorder', profileIds),
     switch: (profileId, force) => ipcRenderer.invoke('servers:switch', profileId, force),
     refresh: (profileId, profileGeneration) => ipcRenderer.invoke('servers:refresh', profileId, profileGeneration),
+    updateCli: (profileId, backend) => ipcRenderer.invoke('servers:update-cli', profileId, backend),
     restartStatus: scope => ipcRenderer.invoke('servers:restart-status', scope),
     restart: (scope, expectedServerInstanceId, forceConfirmation) => forceConfirmation
       ? ipcRenderer.invoke('servers:restart', scope, expectedServerInstanceId, forceConfirmation)
@@ -187,7 +188,8 @@ const api: AgentsDockAPI = {
     deploy: (scope, input) => ipcRenderer.invoke('remote-servers:deploy', scope, input),
     attach: (scope, input) => ipcRenderer.invoke('remote-servers:attach', scope, input),
     cancel: () => ipcRenderer.invoke('remote-servers:cancel'),
-    remove: (scope, remoteId) => ipcRenderer.invoke('remote-servers:remove', scope, remoteId)
+    remove: (scope, remoteId) => ipcRenderer.invoke('remote-servers:remove', scope, remoteId),
+    redeploy: (profileId, force) => ipcRenderer.invoke('remote-servers:redeploy', profileId, force)
   },
   hub: {
     adoptLocalToken: () => ipcRenderer.invoke('hub:adopt-local-token'),

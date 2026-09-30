@@ -81,6 +81,7 @@ describe('ServerManagement', () => {
   const remoteAttach = vi.fn()
   const remoteCancel = vi.fn()
   const remoteRemove = vi.fn()
+  const remoteRedeploy = vi.fn()
   const pairingUrl = vi.fn()
   const copyToken = vi.fn()
   const startLocalServer = vi.fn()
@@ -96,6 +97,7 @@ describe('ServerManagement', () => {
     remoteAttach.mockReset().mockResolvedValue(gb300)
     remoteCancel.mockReset().mockResolvedValue(undefined)
     remoteRemove.mockReset().mockResolvedValue(undefined)
+    remoteRedeploy.mockReset()
     pairingUrl.mockReset().mockResolvedValue('http://nvmac.tail46daa8.ts.net:7850')
     copyToken.mockReset().mockResolvedValue(true)
     startLocalServer.mockReset().mockResolvedValue(undefined)
@@ -107,7 +109,7 @@ describe('ServerManagement', () => {
       configurable: true,
       value: {
         servers: { list, update, remove, reorder },
-        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove },
+        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove, redeploy: remoteRedeploy },
         hub: { pairingUrl, copyToken, startLocalServer }
       } as unknown as AgentsDockAPI
     })
@@ -200,6 +202,36 @@ describe('ServerManagement', () => {
     await waitFor(() => expect(remoteRemove).toHaveBeenCalledWith({ profileId: 'hub', profileGeneration: 1, serverIdentity: 'server-hub' }, 'abc123def456'))
     expect(remove).not.toHaveBeenCalled()
     await waitFor(() => expect(useAppStore.getState().profiles.map(profile => profile.id)).toEqual(['hub']))
+  })
+
+  it('redeploys a remote while another server is active, asking first when its chats are running', async () => {
+    remoteRedeploy.mockImplementation(async (_profileId: string, force: boolean) => force ? { redeployed: true, running: 0 } : { redeployed: false, running: 2 })
+    useAppStore.setState({ profiles: [hub, osmo, gb300], activeProfileId: gb300.id })
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+    expect(screen.queryByRole('button', { name: 'Redeploy This Mac' })).toBeNull()
+
+    // A double click on the icon only checks twice; confirming is a separate button.
+    await user.dblClick(screen.getByRole('button', { name: 'Redeploy OSMO' }))
+    expect(await screen.findByText('2 running chats will stop.')).toBeInTheDocument()
+    expect(remoteRedeploy.mock.calls.every(([, force]) => force === false)).toBe(true)
+    await user.click(screen.getByRole('button', { name: 'Redeploy anyway' }))
+
+    await waitFor(() => expect(remoteRedeploy).toHaveBeenLastCalledWith('osmo', true))
+    expect(await screen.findByText('Redeployed.')).toBeInTheDocument()
+  })
+
+  it('asks before redeploying a remote whose running chats could not be checked', async () => {
+    remoteRedeploy.mockResolvedValue({ redeployed: false, running: null })
+    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+
+    await user.click(screen.getByRole('button', { name: 'Redeploy OSMO' }))
+    expect(await screen.findByText("Couldn't check this server for running chats.")).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByText("Couldn't check this server for running chats.")).toBeNull()
+    expect(remoteRedeploy).toHaveBeenCalledOnce()
   })
 
   it('shows remotes by SSH host, never offers to delete the hub, and locks changes while a remote is active', () => {

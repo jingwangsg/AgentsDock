@@ -9210,6 +9210,54 @@ describe('server profile lifecycle', () => {
     expect((service as unknown as { lastHubRemoteCount: number | null }).lastHubRemoteCount).toBeNull()
   })
 
+  it('redeploys a hub remote through the hub whichever profile is active, asking first while chats run', async () => {
+    const busyProbe = fakeClient({ health: async () => ({ ok: true, active: ['chat-1', 'chat-2'] }) })
+    const unreachableProbe = fakeClient({ health: async () => { throw new Error('502 remote_unreachable') } })
+    const hub = Object.assign(fakeClient(), {
+      startRemoteRedeploy: vi.fn(async () => ({ job_id: 'job-1' })),
+      remoteDeployStatus: vi.fn(async () => ({
+        job_id: 'job-1', phase: 'complete', done: true, error: null, server: hubRemote('r1'),
+        log: [{ phase: 'upload', message: 'Uploading the server' }, { phase: 'complete', message: 'Reachable' }]
+      }))
+    })
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [fakeClient(), fakeClient()],
+      [`${DEFAULT_SERVER_URL}/api/remote/r1`]: [busyProbe, unreachableProbe, fakeClient()],
+      [DEFAULT_SERVER_URL]: [hub]
+    })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const remote = settings.addProfile({ name: 'r1', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1` })
+    const progress: string[] = []
+
+    await expect(service.redeployHubRemote(remote.id, false, value => progress.push(value.message))).resolves.toEqual({ redeployed: false, running: 2 })
+    // A remote that cannot be checked is not assumed idle.
+    await expect(service.redeployHubRemote(remote.id, false, () => undefined)).resolves.toEqual({ redeployed: false, running: null })
+    expect(hub.startRemoteRedeploy).not.toHaveBeenCalled()
+    expect(busyProbe.dispose).toHaveBeenCalledOnce()
+
+    await expect(service.redeployHubRemote(remote.id, true, value => progress.push(value.message))).resolves.toEqual({ redeployed: true, running: 0 })
+    expect(hub.startRemoteRedeploy).toHaveBeenCalledWith('r1')
+    expect(progress).toEqual(['Uploading the server', 'Reachable'])
+    expect(hub.dispose).toHaveBeenCalledOnce()
+    await expect(service.redeployHubRemote('a', true, () => undefined)).rejects.toThrow('Only servers the hub deployed can be redeployed.')
+    await expect(service.redeployHubRemote(undefined as unknown as string, true, () => undefined)).rejects.toThrow('Unknown server profile.')
+  })
+
+  it('updates a CLI on an inactive server through its own client, only while it is the pinned server', async () => {
+    const beta = Object.assign(fakeClient({ health: async () => ({ ok: true, server_identity: 'server-b' }) }), {
+      updateRuntimeCli: vi.fn(async () => ({ output: 'codex 0.99.0', diagnostic: { available: true } }))
+    })
+    const replaced = Object.assign(fakeClient({ health: async () => ({ ok: true, server_identity: 'someone-else' }) }), { updateRuntimeCli: vi.fn() })
+    const { service, settings } = createProfileService({ 'http://a.test:7850': [fakeClient()], 'http://b.test:7850': [beta, replaced] })
+    settings.setProfileServerIdentity('b', 'server-b')
+
+    await expect(service.updateServerRuntimeCli('b', 'codex')).resolves.toMatchObject({ output: 'codex 0.99.0' })
+    expect(beta.updateRuntimeCli).toHaveBeenCalledWith('codex')
+    expect(beta.dispose).toHaveBeenCalledOnce()
+    await expect(service.updateServerRuntimeCli('b', 'codex')).rejects.toThrow('different identity')
+    expect(replaced.updateRuntimeCli).not.toHaveBeenCalled()
+  })
+
   it('isolates an inactive health failure and recovers it on the next successful probe', async () => {
     const a = fakeClient({ health: async () => ({ ok: true, server_identity: 'server-a' }) })
     const failedProbe = fakeClient({ health: async () => { throw new Error('beta unreachable') } })

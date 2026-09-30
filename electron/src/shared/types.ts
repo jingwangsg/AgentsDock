@@ -2650,6 +2650,7 @@ export interface AppEventMap {
   'server:runtime': ProfileRuntimeEvent
   'server:pins': ProfilePinsEvent
   'server:setup-progress': ServerSetupProgress
+  'remote-servers:redeploy-progress': ServerSetupProgress
   'server:files': ProfileFilesEvent
   'server:timeline': ProfileTimelineEvent
   'terminal:data': ProfileTerminalDataEvent

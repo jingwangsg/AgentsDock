@@ -2463,6 +2463,21 @@ describe('AgentServerClient live stream', () => {
     expect(calls[0].headers['x-agentsdock-token']).toBe('chat-secret')
   })
 
+  it('starts a remote redeploy through the hub admin route', async () => {
+    const calls: Array<{ method: string; url: string }> = []
+    await withLocalHTTPServer(async (request, response) => {
+      calls.push({ method: request.method ?? '', url: request.url ?? '' })
+      response.statusCode = 202
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify({ job_id: 'job-2' }))
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'chat-secret')
+      await expect(client.startRemoteRedeploy('abc123def456')).resolves.toEqual({ job_id: 'job-2' })
+    })
+
+    expect(calls).toEqual([{ method: 'POST', url: '/api/admin/remote-servers/abc123def456/redeploy' }])
+  })
+
   it('rejects a non-200 response from the Team Hub host-enable control', async () => {
     await withLocalHTTPServer((_request, response) => {
       response.statusCode = 201

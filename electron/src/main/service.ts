@@ -1619,26 +1619,35 @@ export class AppService {
     const state = { scope, jobId: started.job_id, cancelled: false }
     this.remoteDeploy = state
     try {
-      let seen = 0
-      for (;;) {
-        this.assertCurrentScope(scope)
-        const job: RemoteServerDeployJob = await scope.client.remoteDeployStatus(state.jobId)
-        for (const entry of job.log.slice(seen)) onProgress({ phase: entry.phase as ServerSetupProgress['phase'], message: entry.message })
-        seen = job.log.length
-        if (job.done) {
-          if (state.cancelled) throw new Error('The deployment was cancelled.')
-          if (job.error) throw new Error(job.error)
-          if (!job.server) throw new Error('The deployment finished without reporting the new server.')
-          this.assertCurrentScope(scope)
-          const serverUrl = normalizeServerURL(`${scope.serverUrl}${job.server.proxy_path}`)
-          const profile = (await this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope))).find(candidate => candidate.serverUrl === serverUrl)
-          if (!profile) throw new Error('The deployment finished, but the hub did not list the new server.')
-          return profile
-        }
-        await new Promise(resolve => setTimeout(resolve, 1_000))
-      }
+      const job = await this.followHubJob(scope.client, state.jobId, onProgress, () => this.assertCurrentScope(scope))
+      if (state.cancelled) throw new Error('The deployment was cancelled.')
+      if (job.error) throw new Error(job.error)
+      if (!job.server) throw new Error('The deployment finished without reporting the new server.')
+      this.assertCurrentScope(scope)
+      const serverUrl = normalizeServerURL(`${scope.serverUrl}${job.server.proxy_path}`)
+      const profile = (await this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope))).find(candidate => candidate.serverUrl === serverUrl)
+      if (!profile) throw new Error('The deployment finished, but the hub did not list the new server.')
+      return profile
     } finally {
       if (this.remoteDeploy === state) this.remoteDeploy = null
+    }
+  }
+
+  /** Follows a hub deploy job to its end, forwarding its log; `check` runs before every poll. */
+  private async followHubJob(
+    client: AgentServerClient,
+    jobId: string,
+    onProgress: (value: ServerSetupProgress) => void,
+    check: () => void
+  ): Promise<RemoteServerDeployJob> {
+    let seen = 0
+    for (;;) {
+      check()
+      const job: RemoteServerDeployJob = await client.remoteDeployStatus(jobId)
+      for (const entry of job.log.slice(seen)) onProgress({ phase: entry.phase as ServerSetupProgress['phase'], message: entry.message })
+      seen = job.log.length
+      if (job.done) return job
+      await new Promise(resolve => setTimeout(resolve, 1_000))
     }
   }
 
@@ -1656,6 +1665,66 @@ export class AppService {
     await scope.client.removeRemoteServer(remoteId)
     this.assertCurrentScope(scope)
     await this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope))
+  }
+
+  /** A client for any saved profile, active or not; the caller disposes it. */
+  private async profileClient(profileId: string): Promise<AgentServerClient> {
+    // An undefined id would fall back to the active profile in SettingsStore.
+    if (typeof profileId !== 'string' || !this.settings.getProfile(profileId)) throw new Error('Unknown server profile.')
+    return this.clientFactory(this.settings.serverUrl(profileId), await this.settings.accessTokenForConnectionAsync(profileId))
+  }
+
+  /** Server list "Update CLI": updates Claude Code or Codex on any saved server, active or not. */
+  async updateServerRuntimeCli(profileId: string, backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate> {
+    const client = await this.profileClient(profileId)
+    try {
+      // An admin action goes only to the server the profile pinned, as on the active connection.
+      const pinned = this.settings.getProfile(profileId)?.serverIdentity?.trim()
+      if (pinned && (await client.health()).server_identity?.trim() !== pinned) {
+        throw new Error('This server reports a different identity. Select it once to confirm the change, then update again.')
+      }
+      return await client.updateRuntimeCli(backend)
+    } finally {
+      client.dispose()
+    }
+  }
+
+  /**
+   * Server list "Redeploy": the hub uploads its server code to one of its remotes and restarts it there
+   * (server/remote_servers.py), whichever profile is active. The restart stops the remote's running chats,
+   * so without `force` it only reports them: a count, or null when the remote could not be checked.
+   */
+  async redeployHubRemote(
+    profileId: string,
+    force: boolean,
+    onProgress: (value: ServerSetupProgress) => void
+  ): Promise<{ redeployed: boolean; running: number | null }> {
+    const hub = this.hubProfile()
+    const probe = await this.profileClient(profileId)
+    const serverUrl = this.settings.serverUrl(profileId)
+    if (!hub || !isHubRemoteUrl(hub.serverUrl, serverUrl)) {
+      probe.dispose()
+      throw new Error('Only servers the hub deployed can be redeployed.')
+    }
+    if (this.remoteDeploy) {
+      probe.dispose()
+      throw new Error('A remote server deployment is already running.')
+    }
+    // Unreachable (for example the hub's tunnel is down) says nothing about the chats running there.
+    const running = force ? 0 : await probe.health().then(health => health.active?.length ?? 0, () => null)
+    probe.dispose()
+    if (running !== 0) return { redeployed: false, running }
+    // The hub profile's own token: a rotated hub token is not copied into existing remote profiles.
+    const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+    try {
+      const remoteId = serverUrl.slice(`${normalizeServerURL(hub.serverUrl)}/api/remote/`.length)
+      const job = await this.followHubJob(client, (await client.startRemoteRedeploy(remoteId)).job_id, onProgress, () => undefined)
+      if (job.error) throw new Error(job.error)
+    } finally {
+      client.dispose()
+    }
+    this.requestInactiveProfileHealthSweep()
+    return { redeployed: true, running: 0 }
   }
 
   async updateServer(profileId: string, patch: UpdateServerProfilePatch): Promise<PublicServerProfile> {

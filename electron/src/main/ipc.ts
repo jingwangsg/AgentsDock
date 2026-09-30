@@ -249,6 +249,11 @@ export function registerIpc(
   }))
   handle('remote-servers:cancel', () => service.cancelRemoteDeploy())
   handle('remote-servers:remove', (scope, remoteId) => service.removeRemoteServer(scope, remoteId))
+  // Its own progress channel: an add-server deploy's log must not receive a redeploy's lines.
+  handleWithEvent('remote-servers:redeploy', (event, profileId, force) => service.redeployHubRemote(profileId, force === true, progress => {
+    if (!event.sender.isDestroyed()) event.sender.send('remote-servers:redeploy-progress', progress)
+  }))
+  handle('servers:update-cli', (profileId, backend) => service.updateServerRuntimeCli(profileId, backend))
   handle('hub:adopt-local-token', () => service.retryLocalHubToken())
   handle('hub:pairing-url', () => localHubPairingUrl())
   handle('hub:start-local-server', () => service.startLocalHub())

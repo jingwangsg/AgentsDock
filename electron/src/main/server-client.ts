@@ -915,6 +915,9 @@ export class AgentServerClient {
   removeRemoteServer(remoteId: string): Promise<void> {
     return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, { method: 'DELETE' }, undefined, 204)
   }
+  startRemoteRedeploy(remoteId: string): Promise<{ job_id: string }> {
+    return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}/redeploy`, { method: 'POST' })
+  }
   async sessions(): Promise<Session[]> { return (await this.get<{ sessions: Session[] }>('/api/sessions?summary=true')).sessions }
   async jobs(): Promise<Job[]> { return (await this.get<{ jobs: Job[] }>('/api/jobs')).jobs }
 
@@ -3289,8 +3292,8 @@ function isPrivilegedNativeControlTarget(
     )
   }
   // Hub for SSH-only remote servers (server/remote_servers.py). Only the
-  // routes this client actually calls are allowlisted; `add`, `redeploy`,
-  // and `status` are server capabilities this desktop client does not use.
+  // routes this client actually calls are allowlisted; `add` and `status`
+  // are server capabilities this desktop client does not use.
   if (/^\/api\/admin\/remote-servers\/deploy\/[A-Za-z0-9_-]{1,128}\/cancel$/.test(path)) {
     return !target.search && method === 'POST'
   }
@@ -3300,6 +3303,7 @@ function isPrivilegedNativeControlTarget(
   if (path === '/api/admin/remote-servers/deploy') return !target.search && method === 'POST'
   if (path === '/api/admin/remote-servers/attach') return !target.search && method === 'POST'
   if (/^\/api\/admin\/remote-servers\/[A-Za-z0-9_-]{1,128}$/.test(path)) return !target.search && method === 'DELETE'
+  if (/^\/api\/admin\/remote-servers\/[A-Za-z0-9_-]{1,128}\/redeploy$/.test(path)) return !target.search && method === 'POST'
   if (path === '/api/admin/remote-servers') return !target.search && method === 'GET'
   return !target.search && method === 'POST' && (
     path === '/api/admin/update/check'

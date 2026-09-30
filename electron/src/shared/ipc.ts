@@ -350,6 +350,7 @@ export interface AgentsDockAPI {
     reorder(profileIds: string[]): Promise<PublicServerProfile[]>
     switch(profileId: string, force?: boolean): Promise<ProfileBootstrapPayload>
     refresh(profileId: string, profileGeneration: number): Promise<ProfileBootstrapPayload>
+    updateCli(profileId: string, backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate>
     restartStatus(scope: WorkspaceProfileScope): Promise<ServerRestartStatus>
     restart(
       scope: WorkspaceProfileScope,
@@ -375,6 +376,7 @@ export interface AgentsDockAPI {
     attach(scope: WorkspaceProfileScope, input: RemoteServerAttachInput): Promise<PublicServerProfile>
     cancel(): Promise<void>
     remove(scope: WorkspaceProfileScope, remoteId: string): Promise<void>
+    redeploy(profileId: string, force: boolean): Promise<{ redeployed: boolean; running: number | null }>
   }
   /** The local AgentsServer on 127.0.0.1:7850 that every client connects to. */
   hub: {

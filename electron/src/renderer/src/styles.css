@@ -2153,6 +2153,7 @@ button.tool-event-toggle:hover { background: #242424; }
 .server-management-row:last-child { border-bottom: 0; }
 .server-management-row.active { background: color-mix(in srgb, var(--accent), transparent 93%); }
 .server-management-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.server-management-work { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .server-management-copy strong { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--text-size-ui); text-overflow: ellipsis; white-space: nowrap; }
 .server-management-copy strong span { margin-left: 7px; padding: 2px 5px; color: var(--accent); background: color-mix(in srgb, var(--accent), transparent 87%); border-radius: 4px; font-size: var(--text-size-ui); font-weight: var(--text-weight-label); text-transform: uppercase; }
 .server-management-copy small { min-width: 0; overflow: hidden; color: var(--faint); font-size: var(--text-size-meta); text-overflow: ellipsis; white-space: nowrap; }
