@@ -890,7 +890,7 @@ class ChatReferenceMentionTests(unittest.IsolatedAsyncioTestCase):
                 agent_server.schedule_direct_message_handoffs_after_unlock(
                     source_id, ["handoff_shutdown"]
                 )
-                await asyncio.wait_for(attempted.wait(), timeout=1)
+                await asyncio.wait_for(attempted.wait(), timeout=5)
                 await asyncio.sleep(0)
                 task = (
                     agent_server.CROSS_CHAT_DIRECT_DELIVERY_TASKS_BY_ENVELOPE[

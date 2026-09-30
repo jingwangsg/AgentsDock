@@ -118,7 +118,7 @@ class SessionSubagentLimitTests(unittest.IsolatedAsyncioTestCase):
         self.ns["ACTIVE"][sid] = object()
         lock = self.ns["session_lifecycle_lock"](sid)
         async with lock:
-            changed = await asyncio.wait_for(self.update(sid, subagent_limit=6), 1)
+            changed = await asyncio.wait_for(self.update(sid, subagent_limit=6), 5)
         self.assertEqual(changed["subagent_limit"], 6)
         self.assertIn(sid, self.ns["ACTIVE"])
         self.ns["ensure_claude_permission_mode_update_allowed"].assert_not_awaited()

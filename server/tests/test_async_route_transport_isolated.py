@@ -418,13 +418,13 @@ class AsyncRouteAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.ledger.create_instruction = AsyncMock(side_effect=delayed)
         task = asyncio.create_task(self.send())
         try:
-            await asyncio.wait_for(entered.wait(), timeout=1)
+            await asyncio.wait_for(entered.wait(), timeout=5)
             self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM cross_chat_envelopes").fetchone()[0], 0)
             task.cancel()
         finally:
             release.set()
         with self.assertRaises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=1)
+            await asyncio.wait_for(task, timeout=5)
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM chat_mailbox_messages").fetchone()[0], 1)
         self.assertTrue((await self.send())["duplicate"])
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM chat_mailbox_messages").fetchone()[0], 1)

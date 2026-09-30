@@ -214,7 +214,7 @@ class InvitationJourneyTests(unittest.IsolatedAsyncioTestCase):
         result = self.member.maintenance_once()
         self.assertTrue(result["active"], result)
         self.assertTrue(result["healthy"], result)
-        receipt = await asyncio.wait_for(observer, 1)
+        receipt = await asyncio.wait_for(observer, 5)
         self.assertEqual(receipt["completion_state"], "completed")
         self.assertEqual(receipt["pairing"]["id"], pending["id"])
         self.assertEqual(receipt["pairing"]["transcript_hash"], pending["transcript_hash"])

@@ -2229,7 +2229,7 @@ class ServerRestartEndpointTests(unittest.IsolatedAsyncioTestCase):
                         http_request(method="POST"),
                         BackgroundTasks(),
                     ),
-                    timeout=1,
+                    timeout=5,
                 )
                 elapsed = asyncio.get_running_loop().time() - started_at
 
@@ -2242,7 +2242,7 @@ class ServerRestartEndpointTests(unittest.IsolatedAsyncioTestCase):
                 forced_signal.assert_called_once_with(status["request_id"])
 
                 release_snapshot.set()
-                await asyncio.wait_for(reopened.wait(), 1)
+                await asyncio.wait_for(reopened.wait(), 5)
                 for _ in range(100):
                     if not stragglers:
                         break

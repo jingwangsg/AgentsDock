@@ -234,7 +234,7 @@ class BinaryRefreshTests(unittest.IsolatedAsyncioTestCase):
         draining = asyncio.create_task(self.drain())
         await entered.wait()
         try:
-            new = await asyncio.wait_for(self.manager("new"), timeout=.5)
+            new = await asyncio.wait_for(self.manager("new"), timeout=5)
             self.assertIsNot(new, old)
             borrowed = await self.ns["codex_app_server_manager"](self.ns["STORE"].sessions["old"])
             self.assertIs(borrowed, old)

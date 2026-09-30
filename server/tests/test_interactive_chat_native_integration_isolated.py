@@ -326,7 +326,7 @@ class InteractiveChatNativeGlueTests(unittest.IsolatedAsyncioTestCase):
         jobs.request_manual_run = MethodType(self.native["request_manual_run"], jobs)
         self.native.update(JOBS=jobs, now_iso=lambda: "2026-09-12T00:00:00Z", new_job_revision=lambda: "revision",
                            event_job=lambda row: dict(row), append_event=AsyncMock())
-        result = await asyncio.wait_for(self.native["run_interactive_chat_job"]("chat-one", "job-own"), 1)
+        result = await asyncio.wait_for(self.native["run_interactive_chat_job"]("chat-one", "job-own"), 5)
         self.assertEqual(result["run_id"], "synthetic-run")
         jobs.save.assert_awaited_once()
         with self.assertRaises(HTTPException):

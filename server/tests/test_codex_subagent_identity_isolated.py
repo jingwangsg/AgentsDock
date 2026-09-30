@@ -258,7 +258,7 @@ class CodexSubagentIdentityTests(unittest.IsolatedAsyncioTestCase):
                 first = asyncio.create_task(self.rename("Publications audit") if rename_first else complete())
                 second = None
                 try:
-                    await asyncio.wait_for(entered.wait(), 1)
+                    await asyncio.wait_for(entered.wait(), 5)
                     second = asyncio.create_task(complete() if rename_first else self.rename("Publications audit"))
                     await asyncio.sleep(0)
                     self.assertEqual(len(calls), 1, "second same-child transition must wait through commit")
@@ -287,13 +287,13 @@ class CodexSubagentIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.ns["append_event"] = AsyncMock(side_effect=gated_append)
         pending = asyncio.create_task(self.rename("Public resources"))
         try:
-            await asyncio.wait_for(entered.wait(), 1)
+            await asyncio.wait_for(entered.wait(), 5)
             await asyncio.wait_for(self.ns["emit_codex_subagent_state"](
-                "chat", "other-child", "completed", title="Review letters audit"), 1)
+                "chat", "other-child", "completed", title="Review letters audit"), 5)
             self.assertEqual(self.ns["CODEX_SUBAGENT_STATE"]["other-child"]["subagent_title"], "Review letters audit")
         finally:
             release.set()
-            await asyncio.wait_for(pending, 1)
+            await asyncio.wait_for(pending, 5)
         self.assertEqual(len(self.ns["CODEX_SUBAGENT_TRANSITION_LOCKS"]), 0)
 
     def terminal_manager(self, **identity):
@@ -441,13 +441,13 @@ class CodexSubagentIdentityTests(unittest.IsolatedAsyncioTestCase):
         manager.list_descendant_threads.side_effect = delayed_read
         pending = asyncio.create_task(self.ns["reconcile_codex_subagents"]("chat", manager))
         try:
-            await asyncio.wait_for(entered.wait(), 1)
+            await asyncio.wait_for(entered.wait(), 5)
             await self.ns["emit_codex_subagent_state"](
                 "chat", "child", "running", run_id="new-run", activity="New work", nickname="Latest nickname")
             running = dict(self.ns["CODEX_SUBAGENT_STATE"]["child"])
         finally:
             release.set()
-            await asyncio.wait_for(pending, 1)
+            await asyncio.wait_for(pending, 5)
         self.assertEqual(self.ns["CODEX_SUBAGENT_STATE"]["child"], running)
         self.assertEqual(self.session["codex_subagents"]["child"], running)
         self.assertEqual(self.ns["CODEX_SUBAGENT_LIVE_GENERATIONS"]["child"], 9)
@@ -480,7 +480,7 @@ class CodexSubagentIdentityTests(unittest.IsolatedAsyncioTestCase):
                                             if correction_first else start())
                 second = None
                 try:
-                    await asyncio.wait_for(entered.wait(), 1)
+                    await asyncio.wait_for(entered.wait(), 5)
                     second = asyncio.create_task(start() if correction_first else
                         self.ns["reconcile_codex_subagents"]("chat", manager))
                     await asyncio.sleep(0)

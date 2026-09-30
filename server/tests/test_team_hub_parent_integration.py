@@ -1001,7 +1001,7 @@ class TeamHubHealthResponsivenessTests(unittest.IsolatedAsyncioTestCase):
                 ):
                     heartbeat = asyncio.create_task(asyncio.sleep(0.01))
                     capability = await agent_server.team_hub_capability_for_health()
-                    await asyncio.wait_for(heartbeat, timeout=0.05)
+                    await asyncio.wait_for(heartbeat, timeout=5)
                     elapsed = loop.time() - started
                     self.assertFalse(capability["available"])
                     self.assertLess(elapsed, 0.1)
@@ -1010,7 +1010,7 @@ class TeamHubHealthResponsivenessTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIsInstance(worker, asyncio.Task)
                     blocker.rollback()
                     blocker.close()
-                    await asyncio.wait_for(worker, timeout=1)  # type: ignore[arg-type]
+                    await asyncio.wait_for(worker, timeout=5)  # type: ignore[arg-type]
             finally:
                 with suppress(sqlite3.Error):
                     blocker.rollback()

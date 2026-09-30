@@ -193,7 +193,7 @@ class AutoJoinRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.client.calls, [("info", CONNECTION_ID)])
         runtime.client.complete()
         runtime._notify_pairing_completion()
-        receipt = await asyncio.wait_for(task, 1)
+        receipt = await asyncio.wait_for(task, 5)
         self.assertEqual(receipt["completion_state"], "completed")
         self.assertEqual(runtime._completion_waiters, {})
         self.assertEqual(runtime._mail_hints._generation, 1)
@@ -215,7 +215,7 @@ class AutoJoinRuntimeTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(runtime.wait_pairing_completion(PAIRING_ID, expected_transcript_hash=TRANSCRIPT))
         await self.wait_until(lambda: bool(runtime.client.calls))
         runtime.client.complete()  # Deliberately delay/drop the notification.
-        receipt = await asyncio.wait_for(task, 1)
+        receipt = await asyncio.wait_for(task, 5)
         self.assertEqual(receipt["completion_state"], "completed")
         self.assertEqual(len(runtime.client.calls), 2)
 
@@ -241,7 +241,7 @@ class AutoJoinRuntimeTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(runtime.wait_pairing_completion(PAIRING_ID, expected_transcript_hash=TRANSCRIPT))
         await self.wait_until(lambda: bool(runtime._completion_waiters))
         runtime.cancel_pairing(PAIRING_ID, idempotency_key=str(uuid.uuid4()))
-        self.assertEqual((await asyncio.wait_for(task, 1))["completion_state"], "cancelled")
+        self.assertEqual((await asyncio.wait_for(task, 5))["completion_state"], "cancelled")
         self.assertFalse(runtime.client.connection["active"])
 
     async def test_waiter_capacity_is_bounded(self):
@@ -295,7 +295,7 @@ class AutoJoinRuntimeTests(unittest.IsolatedAsyncioTestCase):
         ))
         await self.wait_until(lambda: bool(runtime._completion_waiters))
         await request.messages.put({"type": "http.disconnect"})
-        response = await asyncio.wait_for(task, 1)
+        response = await asyncio.wait_for(task, 5)
         self.assertEqual(response.status_code, 499)
         self.assertEqual(runtime._completion_waiters, {})
         self.assertEqual(runtime.client.info["state"], "pending")

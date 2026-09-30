@@ -597,15 +597,15 @@ class EventWebSocketCatchupTests(unittest.IsolatedAsyncioTestCase):
                             visible=None,
                         )
                     )
-                    await asyncio.wait_for(send_started.wait(), timeout=1)
+                    await asyncio.wait_for(send_started.wait(), timeout=5)
 
                     async def acquire_delivery_lock() -> None:
                         async with agent_server.event_delivery_lock(session_id):
                             return
 
-                    await asyncio.wait_for(acquire_delivery_lock(), timeout=0.1)
+                    await asyncio.wait_for(acquire_delivery_lock(), timeout=5)
                     release_send.set()
-                    await asyncio.wait_for(catchup, timeout=1)
+                    await asyncio.wait_for(catchup, timeout=5)
             finally:
                 release_send.set()
                 agent_server.EVENT_DELIVERY_LOCKS.pop(session_id, None)

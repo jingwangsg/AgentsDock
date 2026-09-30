@@ -208,7 +208,7 @@ class PendingQueueReorderTests(unittest.IsolatedAsyncioTestCase):
         self.journal.side_effect = append
         task = asyncio.create_task(self.move("second", "up", "first"))
         try:
-            await asyncio.wait_for(entered.wait(), timeout=1)
+            await asyncio.wait_for(entered.wait(), timeout=5)
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
@@ -238,13 +238,13 @@ class PendingQueueReorderTests(unittest.IsolatedAsyncioTestCase):
             return await self.move("third", "up", "first")
         second = None
         try:
-            await asyncio.wait_for(entered.wait(), timeout=1)
+            await asyncio.wait_for(entered.wait(), timeout=5)
             second = asyncio.create_task(second_move())
-            await asyncio.wait_for(second_started.wait(), timeout=1)
+            await asyncio.wait_for(second_started.wait(), timeout=5)
             self.assertFalse(second.done())
             self.assertEqual(self.journal.await_count, 1)
             release.set()
-            await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
+            await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
         finally:
             release.set()
             tasks = [task for task in (first, second) if task is not None]

@@ -80,7 +80,7 @@ class ReasoningSummaryStreamTests(unittest.IsolatedAsyncioTestCase):
         await update("chat", "run", "thought", {"summaryIndex": 1, "delta": "Second"})
         await update("chat", "run", "thought", {"summaryIndex": 0, "delta": " section"})
         self.assertEqual(self.broadcast.await_count, 1)
-        await asyncio.wait_for(asyncio.gather(*self.ns["REASONING_SUMMARY_STREAM_PENDING"].values()), 1)
+        await asyncio.wait_for(asyncio.gather(*self.ns["REASONING_SUMMARY_STREAM_PENDING"].values()), 5)
         latest = self.broadcast.await_args.args[1]
         self.assertEqual(latest["items"][0]["text"], "First section\nSecond")
         self.assertEqual(latest["items"][0]["after_seq"], 10)

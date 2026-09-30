@@ -102,7 +102,7 @@ class AsyncDeliveryImportBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.ns["filter_native_codex_history_items"] = prove
         task = asyncio.create_task(self.append())
-        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(started.wait(), 5)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task

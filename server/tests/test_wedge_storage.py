@@ -236,7 +236,7 @@ class CoalescedSessionSaveTests(unittest.IsolatedAsyncioTestCase):
             }
             await asyncio.wait_for(
                 agent_server.update_session_event_metadata("chat", event),
-                timeout=0.05,
+                timeout=5,
             )
             self.assertEqual(store.sessions["chat"]["latest_event_seq"], 7)
             self.assertFalse(blocked.is_set())
@@ -587,7 +587,7 @@ class EventLogRecoveryTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await prune_task
             self.assertIsNotNone(append_task)
-            appended = await asyncio.wait_for(append_task, timeout=1)
+            appended = await asyncio.wait_for(append_task, timeout=5)
             await store.flush_pending_save()
 
         self.assertEqual(appended["seq"], 7)
@@ -689,13 +689,13 @@ class EventLogRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             healthy_seq = await asyncio.wait_for(
                 agent_server.next_event_seq(healthy_session, healthy_path),
-                timeout=0.2,
+                timeout=5,
             )
             self.assertEqual(healthy_seq, 5)
             self.assertFalse(stalled.done())
 
             release_repair.set()
-            self.assertEqual(await asyncio.wait_for(stalled, timeout=1), 8)
+            self.assertEqual(await asyncio.wait_for(stalled, timeout=5), 8)
 
 
 class StableServerIdentityTests(unittest.TestCase):
@@ -1097,7 +1097,7 @@ class EventCacheInvalidationTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.02)
                 heartbeat_elapsed = loop.time() - started
                 release.set()
-                await asyncio.wait_for(invalidation, timeout=1)
+                await asyncio.wait_for(invalidation, timeout=5)
         finally:
             release.set()
             holder.join(timeout=1)

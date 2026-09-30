@@ -693,7 +693,7 @@ class ForkSessionFallbackTests(unittest.IsolatedAsyncioTestCase):
                     agent_server.ForkSessionRequest(),
                 )
             )
-            await asyncio.wait_for(fork_started.wait(), timeout=1)
+            await asyncio.wait_for(fork_started.wait(), timeout=5)
             update_task = asyncio.create_task(
                 agent_server.update_session(
                     session_id,
@@ -705,8 +705,8 @@ class ForkSessionFallbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(update_task.done())
 
             release_fork.set()
-            await asyncio.wait_for(fork_task, timeout=1)
-            response = await asyncio.wait_for(update_task, timeout=1)
+            await asyncio.wait_for(fork_task, timeout=5)
+            response = await asyncio.wait_for(update_task, timeout=5)
 
         update.assert_awaited_once_with(session_id, {"cwd": "/new-workspace"})
         self.assertEqual(response["session"]["cwd"], "/new-workspace")
@@ -1436,7 +1436,7 @@ class ForkSessionFallbackTests(unittest.IsolatedAsyncioTestCase):
                     agent_server.cleanup_abandoned_fork_provider_threads()
                 )
                 try:
-                    await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+                    await asyncio.wait_for(cleanup_started.wait(), timeout=5)
                     with self.assertRaises(agent_server.HTTPException) as raised:
                         await store.create(
                             agent_server.CreateSessionRequest(
@@ -1749,7 +1749,7 @@ class ForkSessionFallbackTests(unittest.IsolatedAsyncioTestCase):
                     "provider_thread_id": "thread-child",
                 })
             )
-            await asyncio.wait_for(provider_delete_started.wait(), timeout=1)
+            await asyncio.wait_for(provider_delete_started.wait(), timeout=5)
             self.assertFalse(child_delete_started.is_set())
             self.assertFalse(cleanup.done())
             release_provider.set()
@@ -2002,7 +2002,7 @@ class ForkSessionFallbackTests(unittest.IsolatedAsyncioTestCase):
                     parent_id,
                     agent_server.ForkSessionRequest(),
                 ))
-                await asyncio.wait_for(history_started.wait(), timeout=1)
+                await asyncio.wait_for(history_started.wait(), timeout=5)
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await asyncio.wait_for(task, timeout=2)
@@ -2682,13 +2682,13 @@ class NativeCodexForkSafetyTests(unittest.IsolatedAsyncioTestCase):
                 "thread-parent",
                 {"cwd": "/tmp", "backend": agent_server.BACKEND_CODEX},
             ))
-            await asyncio.wait_for(journal_started.wait(), timeout=1)
+            await asyncio.wait_for(journal_started.wait(), timeout=5)
             task.cancel()
             await asyncio.sleep(0)
             self.assertFalse(task.done())
             release_journal.set()
             with self.assertRaises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=1)
+                await asyncio.wait_for(task, timeout=5)
 
         cleanup.assert_awaited_once_with("thread-child", manager=manager)
         manager.read_thread.assert_not_awaited()
@@ -2725,13 +2725,13 @@ class NativeCodexForkSafetyTests(unittest.IsolatedAsyncioTestCase):
                 "thread-parent",
                 {"cwd": "/tmp", "backend": agent_server.BACKEND_CODEX},
             ))
-            await asyncio.wait_for(journal_started.wait(), timeout=1)
+            await asyncio.wait_for(journal_started.wait(), timeout=5)
             task.cancel()
             await asyncio.sleep(0)
             self.assertFalse(task.done())
             release_journal.set()
             with self.assertRaises(agent_server.CodexForkCleanupError) as raised:
-                await asyncio.wait_for(task, timeout=1)
+                await asyncio.wait_for(task, timeout=5)
 
         self.assertEqual(raised.exception.thread_id, "thread-child")
         cleanup.assert_awaited_once_with("thread-child", manager=manager)

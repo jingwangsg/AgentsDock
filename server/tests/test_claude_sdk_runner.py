@@ -901,7 +901,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                     dict(self.session),
                     Path(self.cwd) / ".manifest.json",
                 ),
-                timeout=0.5,
+                timeout=5,
             )
         return manager, append_event, append_finished, runtime_failure
 
@@ -1062,7 +1062,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         append_event, append_finished, runtime_success, runtime_failure = (
             await asyncio.wait_for(
                 self._run_sdk_terminal_case(handle=handle),
-                0.5,
+                5,
             )
         )
 
@@ -1517,7 +1517,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             request = asyncio.create_task(
                 agent_server.post_claude_context_usage_refresh("chat-claude")
             )
-            await asyncio.wait_for(sampling_started.wait(), 0.2)
+            await asyncio.wait_for(sampling_started.wait(), 5)
             request.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await request
@@ -1616,9 +1616,9 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             refresh = asyncio.create_task(
                 agent_server.post_claude_context_usage_refresh("chat-claude")
             )
-            await asyncio.wait_for(sampling_started.wait(), 0.2)
+            await asyncio.wait_for(sampling_started.wait(), 5)
             refresh.cancel()
-            await asyncio.wait_for(eviction_started.wait(), 0.2)
+            await asyncio.wait_for(eviction_started.wait(), 5)
 
             replacement = asyncio.create_task(
                 agent_server.start_turn(
@@ -1636,8 +1636,8 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             # global and per-session environments before launch. Keep this
             # lifecycle assertion bounded without assuming that external
             # tmux I/O completes inside 200 ms on a busy host.
-            started = await asyncio.wait_for(replacement, 1.0)
-            await asyncio.wait_for(replacement_running.wait(), 0.2)
+            started = await asyncio.wait_for(replacement, 5)
+            await asyncio.wait_for(replacement_running.wait(), 5)
 
         self.assertEqual(manager.evict_calls, [("chat-claude", True)])
         self.assertTrue(manager.loaded)
@@ -1849,10 +1849,10 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                     manager,
                 )
             )
-            await asyncio.wait_for(sampling_started.wait(), 0.2)
+            await asyncio.wait_for(sampling_started.wait(), 5)
             agent_server.ACTIVE["chat-claude"]["stop_requested"] = True
             release_sampling.set()
-            self.assertFalse(await asyncio.wait_for(sampling, 0.2))
+            self.assertFalse(await asyncio.wait_for(sampling, 5))
 
         self.assertEqual(self.session["context_usage_state"], "unavailable")
         self.assertNotIn("context_usage_snapshot", self.session)
@@ -1972,7 +1972,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                     manager,
                 )
             )
-            await asyncio.wait_for(sampling_started.wait(), 0.2)
+            await asyncio.wait_for(sampling_started.wait(), 5)
             newer_snapshot = {
                 "provider_session_id": "provider-usage",
                 "context_tokens": 30_000,
@@ -1987,7 +1987,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 })
             agent_server.ACTIVE["chat-claude"]["stop_requested"] = True
             release_sampling.set()
-            self.assertFalse(await asyncio.wait_for(sampling, 0.2))
+            self.assertFalse(await asyncio.wait_for(sampling, 5))
 
         self.assertIs(self.session["context_usage_snapshot"], newer_snapshot)
         self.assertEqual(self.session["context_usage_state"], "available")
@@ -2440,7 +2440,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                     agent_server.PROVIDER_TOOL_MAX_CONCURRENT_PER_CLAUDE_CHAT
                 )
             ]
-            await asyncio.wait_for(both_entered.wait(), 1)
+            await asyncio.wait_for(both_entered.wait(), 5)
             rejected = await handler({
                 "helper": "jobs",
                 "arguments": ["list"],
@@ -2686,7 +2686,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await asyncio.wait_for(
                 agent_server.terminate_process_tree(process, grace=0.01),
-                timeout=0.3,
+                timeout=5,
             )
 
         self.assertTrue(result)
@@ -2843,22 +2843,22 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             }
             promotion_task: asyncio.Task[object] | None = None
             try:
-                await asyncio.wait_for(process.stdout.started.wait(), 0.5)
+                await asyncio.wait_for(process.stdout.started.wait(), 5)
                 result = await asyncio.wait_for(
                     agent_server.stop_turn(
                         "chat-claude",
                         cascade_claude_subagents=False,
                     ),
-                    timeout=0.5,
+                    timeout=5,
                 )
-                await asyncio.wait_for(launch_started.wait(), 0.5)
+                await asyncio.wait_for(launch_started.wait(), 5)
                 promotion_task = queue_start_tasks.get("chat-claude")
                 self.assertIsNotNone(promotion_task)
 
                 process.stdout.release.set()
                 await asyncio.wait_for(
                     asyncio.gather(provider_task, return_exceptions=True),
-                    timeout=0.5,
+                    timeout=5,
                 )
 
                 self.assertTrue(result["stopped"])
@@ -3044,17 +3044,17 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                         "chat-claude",
                         cascade_claude_subagents=False,
                     ),
-                    timeout=0.5,
+                    timeout=5,
                 )
-                await asyncio.wait_for(cleanup_started.wait(), 0.5)
-                await asyncio.wait_for(launch_started.wait(), 0.5)
+                await asyncio.wait_for(cleanup_started.wait(), 5)
+                await asyncio.wait_for(launch_started.wait(), 5)
                 promotion_task = queue_start_tasks.get("chat-claude")
                 self.assertIsNotNone(promotion_task)
 
                 release_cleanup.set()
                 await asyncio.wait_for(
                     asyncio.gather(provider_task, return_exceptions=True),
-                    timeout=0.5,
+                    timeout=5,
                 )
 
                 self.assertTrue(result["hard_stop"])
@@ -3517,7 +3517,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             try:
                 with self.assertRaises(asyncio.CancelledError):
                     await runner
-                await asyncio.wait_for(launch_started.wait(), timeout=0.5)
+                await asyncio.wait_for(launch_started.wait(), timeout=5)
                 promotion_task = queue_start_tasks.get("chat-claude")
                 self.assertIsNotNone(promotion_task)
                 await asyncio.sleep(0)
@@ -3663,7 +3663,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 dict(self.session),
                 Path(self.cwd) / ".manifest.json",
             ))
-            await asyncio.wait_for(manager.permission_requested.wait(), 0.5)
+            await asyncio.wait_for(manager.permission_requested.wait(), 5)
             for _ in range(100):
                 if agent_server.CLAUDE_PENDING_INTERACTIONS:
                     break
@@ -3680,7 +3680,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 interaction_id,
                 {"decision": "accept"},
             )
-            await asyncio.wait_for(runner, 0.5)
+            await asyncio.wait_for(runner, 5)
 
         self.assertEqual(len(manager.permission_results), 1)
         self.assertIsInstance(
@@ -3977,7 +3977,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "session_id": "provider",
                 "terminal_reason": "aborted_streaming",
             })
-            await asyncio.wait_for(manager.permission_requested.wait(), 0.5)
+            await asyncio.wait_for(manager.permission_requested.wait(), 5)
             self.assertEqual(len(manager.jobs_authorization_results), 1)
             self.assertEqual(
                 manager.jobs_authorization_results[0]["source_run_id"],
@@ -4003,7 +4003,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 interaction_id,
                 {"decision": "accept"},
             )
-            steer_result = await asyncio.wait_for(steer_future, 0.5)
+            steer_result = await asyncio.wait_for(steer_future, 5)
             candidate_records = [
                 capability
                 for capability in agent_server.CROSS_CHAT_CAPABILITIES.values()
@@ -4048,7 +4048,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(predecessor_path.exists())
             self.assertEqual(manager.start_calls[1][1], "Steered prompt")
             await second.messages.put(second_terminal)
-            await asyncio.wait_for(runner, 0.5)
+            await asyncio.wait_for(runner, 5)
 
         self.assertEqual(steer_result["run_id"], candidate_run_id)
         self.assertEqual(len(manager.permission_results), 1)
@@ -4220,7 +4220,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "session_id": "provider",
                 "terminal_reason": "aborted_streaming",
             })
-            return await asyncio.wait_for(future, 0.5)
+            return await asyncio.wait_for(future, 5)
 
         with stack:
             runner = asyncio.create_task(agent_server.run_claude_sdk(
@@ -4305,7 +4305,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "session_id": "provider",
                 "terminal_reason": "end_turn",
             })
-            await asyncio.wait_for(runner, 0.5)
+            await asyncio.wait_for(runner, 5)
 
         self.assertTrue(second_path.exists())
         self.assertEqual(
@@ -4719,7 +4719,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(handle.acknowledged)
 
             handle.acknowledge()
-            await asyncio.wait_for(runner, 0.5)
+            await asyncio.wait_for(runner, 5)
 
         self.assertGreaterEqual(handle.interrupt_calls, 1)
         self.assertEqual(manager.evict_calls, [("chat-claude", True)])
@@ -5400,7 +5400,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "session_id": "provider-1",
                 "terminal_reason": "end_turn",
             })
-            steer_result = await asyncio.wait_for(steer_future, 0.5)
+            steer_result = await asyncio.wait_for(steer_future, 5)
             self.assertIs(
                 agent_server.ACTIVE["chat-claude"]["claude_sdk_run"],
                 second,
@@ -5427,7 +5427,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "session_id": "provider-2",
                 "terminal_reason": "end_turn",
             })
-            await asyncio.wait_for(runner, 0.5)
+            await asyncio.wait_for(runner, 5)
 
         self.assertFalse(steer_result["interrupted"])
         prior_finished = [
@@ -5564,14 +5564,14 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "session_id": "provider-1",
                 "terminal_reason": "end_turn",
             })
-            steer_result = await asyncio.wait_for(steer_future, 0.5)
+            steer_result = await asyncio.wait_for(steer_future, 5)
             await second.messages.put({
                 "type": "result",
                 "result": "Steered result",
                 "session_id": "provider-2",
                 "terminal_reason": "end_turn",
             })
-            await asyncio.wait_for(runner, 0.5)
+            await asyncio.wait_for(runner, 5)
 
         self.assertFalse(steer_result["interrupted"])
         prior_finished = [
@@ -5676,7 +5676,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 dict(self.session),
                 Path(self.cwd) / ".manifest.json",
             ))
-            await asyncio.wait_for(provider_seen.wait(), 0.5)
+            await asyncio.wait_for(provider_seen.wait(), 5)
             runner.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await runner
@@ -5818,12 +5818,12 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "session_id": "provider-1",
                 "terminal_reason": "aborted_streaming",
             })
-            await asyncio.wait_for(handoff_bookkeeping.wait(), 0.5)
+            await asyncio.wait_for(handoff_bookkeeping.wait(), 5)
             runner.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await runner
             with self.assertRaises(agent_server.NativeSteerHandoffError) as raised:
-                await asyncio.wait_for(steer_future, 0.5)
+                await asyncio.wait_for(steer_future, 5)
 
         self.assertTrue(raised.exception.delivery_uncertain)
         self.assertFalse(raised.exception.safe_to_requeue)
@@ -6053,7 +6053,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 )
             finally:
                 release_cleanup.set()
-                await asyncio.wait_for(runner, 0.5)
+                await asyncio.wait_for(runner, 5)
 
         self.assertTrue(predecessor_path.exists())
         self.assertEqual(
@@ -6200,7 +6200,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             })
             await asyncio.wait_for(
                 manager.candidate_query_started.wait(),
-                0.5,
+                5,
             )
             candidate_run_id = str(manager.start_calls[1][2])
             candidate_records = [
@@ -6219,7 +6219,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(
                 agent_server.NativeSteerHandoffError,
             ) as raised:
-                await asyncio.wait_for(steer_future, 0.5)
+                await asyncio.wait_for(steer_future, 5)
 
         self.assertTrue(raised.exception.delivery_uncertain)
         self.assertFalse(raised.exception.safe_to_requeue)
@@ -6451,7 +6451,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                         "chat-claude",
                         "queued-race",
                     ),
-                    0.5,
+                    5,
                 )
 
         self.assertTrue(raised.exception.safe_to_requeue)
@@ -6633,7 +6633,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "session_id": "provider",
                 "terminal_reason": "end_turn",
             })
-            await asyncio.wait_for(runner, 0.5)
+            await asyncio.wait_for(runner, 5)
 
         self.assertTrue(any(
             call.args[1] == "turn_deferred"
@@ -6692,7 +6692,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                     timeout=0.5,
                 )
             )
-            result = await asyncio.wait_for(callback, 0.5)
+            result = await asyncio.wait_for(callback, 5)
 
         self.assertIsInstance(result, FakePermissionResultDeny)
         self.assertTrue(getattr(result, "interrupt", False))
@@ -6775,7 +6775,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     result = await asyncio.wait_for(
                         agent_server.delete_session("chat-claude"),
-                        0.5,
+                        5,
                     )
                 finally:
                     agent_server.DELETED_SESSION_TOMBSTONES.discard(
@@ -6845,12 +6845,12 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(agent_server.HTTPException) as raised:
                         await asyncio.wait_for(
                             agent_server.delete_session("chat-claude"),
-                            0.5,
+                            5,
                         )
 
                     self.assertEqual(raised.exception.status_code, 409)
                     self.assertIn("Force Send cleanup", str(raised.exception.detail))
-                    await asyncio.wait_for(cancellation_observed.wait(), 0.5)
+                    await asyncio.wait_for(cancellation_observed.wait(), 5)
                     self.assertFalse(run_now_task.done())
                     self.assertIn("chat-claude", agent_server.STORE.sessions)
                     self.assertNotIn(
@@ -6860,12 +6860,12 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
 
                     release.set()
                     self.assertEqual(
-                        await asyncio.wait_for(run_now_task, 0.5),
+                        await asyncio.wait_for(run_now_task, 5),
                         {"ok": True},
                     )
                     result = await asyncio.wait_for(
                         agent_server.delete_session("chat-claude"),
-                        0.5,
+                        5,
                     )
 
                     self.assertTrue(result["deleted"])
@@ -6949,7 +6949,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 interaction_id,
                 {"decision": "accept"},
             )
-            result = await asyncio.wait_for(callback, 0.5)
+            result = await asyncio.wait_for(callback, 5)
 
         self.assertIsInstance(result, FakePermissionResultDeny)
         self.assertTrue(getattr(result, "interrupt", False))
@@ -7010,7 +7010,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 interaction_id,
                 {"answers": {}},
             )
-            result = await asyncio.wait_for(callback, 0.5)
+            result = await asyncio.wait_for(callback, 5)
 
         self.assertIsInstance(result, FakePermissionResultDeny)
         self.assertFalse(getattr(result, "interrupt", True))

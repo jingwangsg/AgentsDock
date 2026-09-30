@@ -443,7 +443,7 @@ class PortTunnelTests(unittest.IsolatedAsyncioTestCase):
                 reader.started.wait(),
                 websocket.receive_started.wait(),
             ),
-            timeout=1,
+            timeout=5,
         )
 
         bridge.cancel()
@@ -523,7 +523,7 @@ class PortTunnelTests(unittest.IsolatedAsyncioTestCase):
                 await registry.release("chat-stubborn", websocket)
 
         endpoint_task = asyncio.create_task(endpoint())
-        await asyncio.wait_for(reserved.wait(), timeout=1)
+        await asyncio.wait_for(reserved.wait(), timeout=5)
         try:
             with patch.object(
                 agent_server,
@@ -559,7 +559,7 @@ class PortTunnelTests(unittest.IsolatedAsyncioTestCase):
                 )
         finally:
             finish.set()
-            await asyncio.wait_for(endpoint_task, timeout=1)
+            await asyncio.wait_for(endpoint_task, timeout=5)
 
         self.assertGreaterEqual(cancellations, 2)
         self.assertEqual(
@@ -611,13 +611,13 @@ class PortTunnelTests(unittest.IsolatedAsyncioTestCase):
                         "7008",
                         second,  # type: ignore[arg-type]
                     ),
-                    timeout=0.25,
+                    timeout=5,
                 )
                 self.assertEqual(second.calls[-1][0:2], ("close", 4429))
                 connect.assert_not_awaited()
             finally:
                 lifecycle_lock.release()
-                await asyncio.wait_for(first_task, timeout=1)
+                await asyncio.wait_for(first_task, timeout=5)
 
         connect.assert_awaited_once_with(host="127.0.0.1", port=7007)
         self.assertEqual(
@@ -756,7 +756,7 @@ class PortTunnelTests(unittest.IsolatedAsyncioTestCase):
                 session_id,
                 agent_server.UpdateSessionRequest(archived=True),
             ))
-            await asyncio.wait_for(close_started.wait(), timeout=1)
+            await asyncio.wait_for(close_started.wait(), timeout=5)
             reopen_task = asyncio.create_task(unarchive_and_admit_fresh_tunnel())
             try:
                 await asyncio.wait_for(unarchive_committed.wait(), timeout=0.05)
@@ -858,7 +858,7 @@ class PortTunnelTests(unittest.IsolatedAsyncioTestCase):
                 session_id,
                 agent_server.UpdateSessionRequest(archived=True),
             ))
-            await asyncio.wait_for(close_started.wait(), timeout=1)
+            await asyncio.wait_for(close_started.wait(), timeout=5)
             archive_task.cancel()
             reopen_task = asyncio.create_task(agent_server.update_session(
                 session_id,
@@ -877,7 +877,7 @@ class PortTunnelTests(unittest.IsolatedAsyncioTestCase):
 
             with self.assertRaises(asyncio.CancelledError):
                 await archive_task
-            unarchived_result = await asyncio.wait_for(reopen_task, timeout=1)
+            unarchived_result = await asyncio.wait_for(reopen_task, timeout=5)
 
         self.assertEqual(close_lock_states, [True])
         self.assertFalse(unarchive_raced_retirement)

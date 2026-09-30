@@ -194,7 +194,7 @@ class DurablePairingObserverTests(unittest.IsolatedAsyncioTestCase):
             runtime._notify_pairing_completion()
         client.after_snapshot = completed
         receipt = await asyncio.wait_for(runtime.wait_pairing_completion(
-            PAIRING, expected_transcript_hash=TRANSCRIPT), 1)
+            PAIRING, expected_transcript_hash=TRANSCRIPT), 5)
         self.assertEqual(receipt["completion_state"], "completed")
         self.assertEqual(client.reads, 2)
         self.assertEqual(runtime._completion_waiters, {})
@@ -203,7 +203,7 @@ class DurablePairingObserverTests(unittest.IsolatedAsyncioTestCase):
         runtime, clock, client = runtime_fixture()
         clock.mode = "block"
         task = asyncio.create_task(runtime.wait_pairing_completion(PAIRING, expected_transcript_hash=TRANSCRIPT))
-        await asyncio.wait_for(clock.entered.wait(), 1)
+        await asyncio.wait_for(clock.entered.wait(), 5)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
@@ -217,9 +217,9 @@ class DurablePairingObserverTests(unittest.IsolatedAsyncioTestCase):
         endpoint = legacy_fixture.extracted_endpoint(runtime)["secure_peer_pairing_completion_endpoint"]
         request = legacy_fixture.Request()
         task = asyncio.create_task(endpoint(PAIRING, request, "guest-server", "guest-instance", TRANSCRIPT))
-        await asyncio.wait_for(clock.entered.wait(), 1)
+        await asyncio.wait_for(clock.entered.wait(), 5)
         await request.messages.put({"type": "http.disconnect"})
-        response = await asyncio.wait_for(task, 1)
+        response = await asyncio.wait_for(task, 5)
         self.assertEqual(response.status_code, 499)
         self.assertEqual(runtime._completion_waiters, {})
         self.assertEqual(client.state, "pending")

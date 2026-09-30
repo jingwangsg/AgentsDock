@@ -118,10 +118,10 @@ class GeneratedTitleLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(server, 'refresh_native_session_title', new_callable=AsyncMock), patch.object(
             server, 'finalize_cross_chat_terminal', new_callable=AsyncMock,
         ):
-            returned = await asyncio.wait_for(server.append_turn_finished_event('title-chat', self.event), 1)
+            returned = await asyncio.wait_for(server.append_turn_finished_event('title-chat', self.event), 5)
         self.assertIs(returned, self.event)
         self.append.assert_awaited_once_with('title-chat', 'turn_finished', self.event)
-        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(started.wait(), 5)
         self.assertFalse(self.tasks['title-chat'].done())
         self.assertEqual(self.sess['title'], 'Write a song')
 

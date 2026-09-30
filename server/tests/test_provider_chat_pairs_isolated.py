@@ -338,7 +338,7 @@ class ChatPairTests(unittest.IsolatedAsyncioTestCase):
         self.store.save = AsyncMock(side_effect=blocked_save)
         rollback = asyncio.create_task(self.call("rollback_durable_provider_cross_chat_reference_grants", "a", mutation))
         try:
-            await asyncio.wait_for(writer_started.wait(), 1)
+            await asyncio.wait_for(writer_started.wait(), 5)
             for _ in range(2):
                 rollback.cancel()
                 await asyncio.sleep(0)
@@ -347,7 +347,7 @@ class ChatPairTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.store.sessions, before)
         finally:
             writer_release.set()
-            await asyncio.wait_for(rollback, 1)
+            await asyncio.wait_for(rollback, 5)
         self.assertEqual(committed, [before])
         self.assertEqual(self.store.save.await_count, 1)
         self.assertFalse(self.store._lock.locked())

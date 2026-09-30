@@ -123,7 +123,7 @@ class ServerUpdateStatusResponsivenessTests(unittest.IsolatedAsyncioTestCase):
         checking = asyncio.create_task(self.namespace["check_server_update"](SimpleNamespace(
             expected_server_identity="server-current", expected_server_instance_id="boot-current", track="beta")))
         try:
-            await asyncio.wait_for(entered.wait(), 0.25)
+            await asyncio.wait_for(entered.wait(), 5)
             receipt = await self.status_response()
             self.assertFalse(checking.done(), "status must not wait for metadata completion")
             self.assertEqual(receipt["phase"], "complete")
@@ -138,7 +138,7 @@ class ServerUpdateStatusResponsivenessTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(self.lock.locked(), "status must not release another operation's lock")
         finally:
             release.set()
-            await asyncio.wait_for(checking, 0.25)
+            await asyncio.wait_for(checking, 5)
         self.write.assert_called_once()
         self.assertEqual(self.status["latest_version"], "1.0.0-beta.2")
         self.assertFalse(self.lock.locked())

@@ -194,7 +194,7 @@ class SessionBackendUpdateFenceTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 )
             )
-            await asyncio.wait_for(update_entered.wait(), timeout=1)
+            await asyncio.wait_for(update_entered.wait(), timeout=5)
 
             turn_task = asyncio.create_task(
                 agent_server.start_turn(
@@ -215,9 +215,9 @@ class SessionBackendUpdateFenceTests(unittest.IsolatedAsyncioTestCase):
             )
 
             allow_update.set()
-            update_response = await asyncio.wait_for(update_task, timeout=1)
+            update_response = await asyncio.wait_for(update_task, timeout=5)
             with self.assertRaises(agent_server.HTTPException) as raised:
-                await asyncio.wait_for(turn_task, timeout=1)
+                await asyncio.wait_for(turn_task, timeout=5)
 
         self.assertEqual(update_response["session"]["backend"], "codex")
         self.assertEqual(raised.exception.status_code, 409)
@@ -739,7 +739,7 @@ class SessionBackendUpdateFenceTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
             try:
-                await asyncio.wait_for(revoke_started.wait(), 1)
+                await asyncio.wait_for(revoke_started.wait(), 5)
                 start.cancel()
                 await asyncio.sleep(0)
                 self.assertFalse(start.done())

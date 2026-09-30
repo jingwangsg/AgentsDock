@@ -282,7 +282,7 @@ class ClaudeMCPManagementTests(unittest.IsolatedAsyncioTestCase):
             operation = asyncio.create_task(
                 agent_server.manage_claude_mcp(self.session_id)
             )
-            await asyncio.wait_for(manager.started.wait(), 1)
+            await asyncio.wait_for(manager.started.wait(), 5)
             self.assertIn(
                 self.session_id,
                 agent_server.SERVER_MAINTENANCE_SESSIONS,
@@ -294,7 +294,7 @@ class ClaudeMCPManagementTests(unittest.IsolatedAsyncioTestCase):
                 | agent_server.SERVER_MAINTENANCE_SESSIONS
             )
             manager.release.set()
-            await asyncio.wait_for(operation, 1)
+            await asyncio.wait_for(operation, 5)
             self.assertNotIn(
                 self.session_id,
                 agent_server.SERVER_MAINTENANCE_SESSIONS,

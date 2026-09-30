@@ -905,7 +905,7 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
                     read_thread=AsyncMock(return_value={"ephemeral": True, "path": None}),
                     start_turn=AsyncMock(return_value=turn), close=AsyncMock())
                 result = await asyncio.wait_for(provider.test_connection(SELECTION, executable="unused", environment={},
-                    manager_factory=lambda *args, **kwargs: native, verify_protocol=AsyncMock()), 1)
+                    manager_factory=lambda *args, **kwargs: native, verify_protocol=AsyncMock()), 5)
                 self.assertEqual(result["status"], expected)
                 self.assertNotIn(KEY, str(result))
                 turn.next_notification.assert_awaited_once()

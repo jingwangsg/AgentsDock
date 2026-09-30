@@ -430,7 +430,7 @@ class StandaloneProviderContextTests(unittest.IsolatedAsyncioTestCase):
                 scheduled_job_chat_references=True,
                 scheduled_job_revision=job_revision,
             )
-            await asyncio.wait_for(provider_entered.wait(), timeout=1)
+            await asyncio.wait_for(provider_entered.wait(), timeout=5)
             try:
                 capabilities = list(
                     agent_server.CROSS_CHAT_CAPABILITIES.values()

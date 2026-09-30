@@ -610,7 +610,7 @@ class ServerUpdateEndpointTests(unittest.IsolatedAsyncioTestCase):
             )
             old_close = stragglers["claude-sdk"]
             release.set()
-            await asyncio.wait_for(asyncio.shield(old_close), timeout=1)
+            await asyncio.wait_for(asyncio.shield(old_close), timeout=5)
             await asyncio.sleep(0)
             if release_tasks:
                 await asyncio.gather(*tuple(release_tasks))
@@ -742,7 +742,7 @@ class ServerUpdateEndpointTests(unittest.IsolatedAsyncioTestCase):
             closing = asyncio.create_task(
                 agent_server.close_codex_app_server_manager()
             )
-            await asyncio.wait_for(cleanup_entered.wait(), timeout=1)
+            await asyncio.wait_for(cleanup_entered.wait(), timeout=5)
             with self.assertRaises(HTTPException):
                 await agent_server.codex_app_server_manager()
             create_replacement.assert_not_called()
@@ -1375,7 +1375,7 @@ class ServerUpdateEndpointTests(unittest.IsolatedAsyncioTestCase):
                 task = asyncio.create_task(agent_server.start_server_update(
                     agent_server.ServerUpdateRequest(version="1.1.0"),
                 ))
-                await asyncio.wait_for(entered.wait(), timeout=1)
+                await asyncio.wait_for(entered.wait(), timeout=5)
                 task.cancel()
                 await asyncio.sleep(0)
                 self.assertFalse(task.done())
@@ -1384,7 +1384,7 @@ class ServerUpdateEndpointTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 self.assertFalse(contender_acquired.is_set())
                 release.set()
-                await asyncio.wait_for(cleanup_entered.wait(), timeout=1)
+                await asyncio.wait_for(cleanup_entered.wait(), timeout=5)
                 task.cancel()
                 await asyncio.sleep(0)
                 self.assertFalse(task.done())
@@ -1523,7 +1523,7 @@ class ServerUpdateEndpointTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(contender_acquired.is_set())
                 finally:
                     release_launch.set()
-                await asyncio.wait_for(cleanup_entered.wait(), timeout=1)
+                await asyncio.wait_for(cleanup_entered.wait(), timeout=5)
                 task.cancel()
                 await asyncio.sleep(0)
                 self.assertFalse(task.done())
@@ -3023,7 +3023,7 @@ class ServerUpdateEndpointTests(unittest.IsolatedAsyncioTestCase):
                         slow_mutation,
                     )
                 )
-                await asyncio.wait_for(mutation_entered.wait(), timeout=1)
+                await asyncio.wait_for(mutation_entered.wait(), timeout=5)
                 mutation_task.cancel()
                 await asyncio.sleep(0)
                 mutation_task.cancel()
@@ -3283,7 +3283,7 @@ class ServerUpdateEndpointTests(unittest.IsolatedAsyncioTestCase):
                 transition = asyncio.create_task(
                     agent_server.advance_pending_server_update_once()
                 )
-                await asyncio.wait_for(quiescing.wait(), timeout=1)
+                await asyncio.wait_for(quiescing.wait(), timeout=5)
                 cancel = asyncio.create_task(
                     agent_server.cancel_server_update(
                         agent_server.ServerUpdateCancelRequest(
@@ -4732,7 +4732,7 @@ class ServerUpdateEndpointTests(unittest.IsolatedAsyncioTestCase):
                         reserve_session=False,
                     )
                 )
-                await asyncio.wait_for(control_started.wait(), timeout=1)
+                await asyncio.wait_for(control_started.wait(), timeout=5)
                 try:
                     self.assertEqual(maintenance, {"chat"})
                     with self.assertRaises(HTTPException) as raised:

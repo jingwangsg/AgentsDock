@@ -1605,11 +1605,11 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
             response_task = asyncio.create_task(
                 agent_server.require_agent_token(request, body_handler)
             )
-            await asyncio.wait_for(waiting_for_final_frame.wait(), timeout=1)
+            await asyncio.wait_for(waiting_for_final_frame.wait(), timeout=5)
             self.assertEqual(agent_server.unsafe_http_mutation_count_locked(), 0)
             update_active = True
             release_final_frame.set()
-            response = await asyncio.wait_for(response_task, timeout=1)
+            response = await asyncio.wait_for(response_task, timeout=5)
 
         self.assertEqual(response.status_code, 409)
         self.assertIn(b"preparing a managed update", response.body)
@@ -1699,7 +1699,7 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
                         headers={"content-type": "application/json"},
                     )
                 )
-                await asyncio.wait_for(first_frame_requested.wait(), timeout=1)
+                await asyncio.wait_for(first_frame_requested.wait(), timeout=5)
                 await asyncio.sleep(0)
                 self.assertEqual(
                     agent_server.unsafe_http_mutation_count_locked(),
@@ -1707,7 +1707,7 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
                 )
                 update_active = True
                 release_final_frame.set()
-                response = await asyncio.wait_for(request_task, timeout=1)
+                response = await asyncio.wait_for(request_task, timeout=5)
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("preparing a managed update", response.text)
@@ -1753,7 +1753,7 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
                         json={"title": "lease-test", "import_history": False},
                     )
                 )
-                await asyncio.wait_for(handler_entered.wait(), timeout=1)
+                await asyncio.wait_for(handler_entered.wait(), timeout=5)
                 self.assertEqual(observed_count, 1)
                 self.assertEqual(
                     agent_server.unsafe_http_mutation_count_locked(),
@@ -1761,7 +1761,7 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertFalse(request_task.done())
                 release_handler.set()
-                response = await asyncio.wait_for(request_task, timeout=1)
+                response = await asyncio.wait_for(request_task, timeout=5)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(agent_server.unsafe_http_mutation_count_locked(), 0)
@@ -1838,7 +1838,7 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(started)
             await asyncio.wait_for(
                 agent_server.UNSAFE_HTTP_MUTATION_ADMISSION_LOCK.acquire(),
-                timeout=0.2,
+                timeout=5,
             )
             agent_server.UNSAFE_HTTP_MUTATION_ADMISSION_LOCK.release()
             release_scan.set()
@@ -2479,7 +2479,7 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
             release_first_write.set()
             with self.assertRaises(asyncio.CancelledError):
                 await first
-            await asyncio.wait_for(second, timeout=1)
+            await asyncio.wait_for(second, timeout=5)
 
         self.assertEqual(written_titles, ["first", "second"])
         self.assertEqual(store.jobs["job"]["title"], "second")

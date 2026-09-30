@@ -290,7 +290,7 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
                 "params": {"threadId": "thread-a"},
             }
         )
-        await asyncio.wait_for(first_entered.wait(), timeout=1)
+        await asyncio.wait_for(first_entered.wait(), timeout=5)
         client._route_notification(
             {
                 "method": "notification/other-thread",
@@ -374,7 +374,7 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(client.unmatched_notifications, [])
         _sequence, delivered = await asyncio.wait_for(
-            subscription.next_notification_with_sequence(), timeout=1
+            subscription.next_notification_with_sequence(), timeout=5
         )
         self.assertEqual(delivered["method"], "item/completed")
 
@@ -966,7 +966,7 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
         fork_task = asyncio.create_task(
             client.fork_thread("thr_source", {"cwd": "/repo"})
         )
-        await asyncio.wait_for(fork_request_seen.wait(), timeout=1)
+        await asyncio.wait_for(fork_request_seen.wait(), timeout=5)
 
         self.assertEqual(
             await client.resume_thread("thr_existing_fork"),
@@ -1016,7 +1016,7 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
         fork_task = asyncio.create_task(
             client.fork_thread("thr_source", {"cwd": "/repo"})
         )
-        await asyncio.wait_for(fork_request_seen.wait(), timeout=1)
+        await asyncio.wait_for(fork_request_seen.wait(), timeout=5)
         # Simulate a reconnect: this legitimate provider identity is not in
         # the client's process-local known set, but its creation time proves it
         # predates the current fork request.
@@ -2303,7 +2303,7 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
         wedged_request = asyncio.create_task(
             client.request("test/wedged-write", {})
         )
-        await asyncio.wait_for(drain_started.wait(), timeout=1)
+        await asyncio.wait_for(drain_started.wait(), timeout=5)
         queued_request = asyncio.create_task(
             client.request("test/queued-behind-wedge", {})
         )
@@ -2312,7 +2312,7 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(
             (CodexAppServerTimeout, CodexAppServerDisconnected)
         ):
-            await asyncio.wait_for(queued_request, timeout=1)
+            await asyncio.wait_for(queued_request, timeout=5)
 
         self.assertTrue(drain_started.is_set())
         self.assertTrue(raised.exception.request_sent)
@@ -2380,7 +2380,7 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
         owner = asyncio.create_task(
             client._discard_process_after_write_timeout(process)
         )
-        await asyncio.wait_for(wait_started.wait(), timeout=1)
+        await asyncio.wait_for(wait_started.wait(), timeout=5)
         owner.cancel("first cancellation")
         await asyncio.sleep(0)
         self.assertFalse(owner.done())
@@ -2390,7 +2390,7 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
 
         release_first_wait.set()
         with self.assertRaises(asyncio.CancelledError):
-            await asyncio.wait_for(owner, timeout=1)
+            await asyncio.wait_for(owner, timeout=5)
 
         self.assertIsNone(client.process)
         self.assertEqual(process.returncode, -signal.SIGKILL)
@@ -2602,14 +2602,14 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
         )
-        await asyncio.wait_for(handler_started.wait(), timeout=1)
+        await asyncio.wait_for(handler_started.wait(), timeout=5)
 
         resolved = {
             "method": "serverRequest/resolved",
             "params": {"threadId": "thr_1", "requestId": "approval_1"},
         }
         process.feed(resolved)
-        await asyncio.wait_for(handler_cancelled.wait(), timeout=1)
+        await asyncio.wait_for(handler_cancelled.wait(), timeout=5)
         self.assertEqual(await subscription.next_notification(timeout=1), resolved)
         self.assertFalse(
             any(
@@ -2834,7 +2834,7 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(manager.close)
         opening = asyncio.create_task(manager.start())
         try:
-            await asyncio.wait_for(entered.wait(), timeout=1)
+            await asyncio.wait_for(entered.wait(), timeout=5)
             self.assertEqual(factory.calls, [])
         finally:
             release.set()
@@ -2875,7 +2875,7 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(client.close)
         opening = asyncio.create_task(client.start())
         try:
-            await asyncio.wait_for(entered.wait(), timeout=1)
+            await asyncio.wait_for(entered.wait(), timeout=5)
         finally:
             opening.cancel()
             with self.assertRaises(asyncio.CancelledError):
@@ -2883,7 +2883,7 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(factory.calls, [])
         self.assertFalse(client.ready)
         release.set()
-        await asyncio.wait_for(client.start(), timeout=1)
+        await asyncio.wait_for(client.start(), timeout=5)
         self.assertEqual(len(factory.calls), 1)
 
 

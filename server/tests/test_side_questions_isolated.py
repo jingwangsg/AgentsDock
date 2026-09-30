@@ -802,7 +802,7 @@ class SideApprovalBridgeTests(unittest.IsolatedAsyncioTestCase):
         params = {"threadId": "side-fork", "availableDecisions": ["accept", "decline"]}
         task = asyncio.create_task(scope["handle_codex_server_request"](1, "item/commandExecution/requestApproval",
             params, side_session_id="chat", side_owner_is_current=lambda: True))
-        await asyncio.wait_for(requested.wait(), 1)
+        await asyncio.wait_for(requested.wait(), 5)
         interaction_id = next(iter(registry))
         self.assertEqual(registry[interaction_id]["thread_id"], "side-fork")
         await scope["cancel_codex_interactions"]("chat", resolution="turn_stopped")

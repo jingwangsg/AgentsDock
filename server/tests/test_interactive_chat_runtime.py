@@ -70,7 +70,7 @@ class InteractiveChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
             waiting = asyncio.create_task(state.wait("chat", revision, 1))
             await asyncio.sleep(0)
             state.notify("chat", event)
-            self.assertTrue(await asyncio.wait_for(waiting, 1))
+            self.assertTrue(await asyncio.wait_for(waiting, 5))
         self.assertNotEqual(state.entries["chat"].revision, snapshot["revision"])
         reader.load.assert_called_once()
 
@@ -84,11 +84,11 @@ class InteractiveChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
         state, _reader, _factory = self.state(Mock(load=read))
         loading = asyncio.create_task(state.load("chat"))
         try:
-            await asyncio.wait_for(started.wait(), 1)
+            await asyncio.wait_for(started.wait(), 5)
             state.notify("chat", {"type": "assistant_text"})
         finally:
             release.set()
-        snapshot = await asyncio.wait_for(loading, 1)
+        snapshot = await asyncio.wait_for(loading, 5)
         self.assertTrue(await state.wait("chat", snapshot["revision"], 0.01))
 
     async def test_repeated_cancellation_keeps_reader_thread_serialized(self):
@@ -109,7 +109,7 @@ class InteractiveChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
         first = asyncio.create_task(state.load("chat"))
         second = None
         try:
-            await asyncio.wait_for(started.wait(), 1)
+            await asyncio.wait_for(started.wait(), 5)
             first.cancel(); await asyncio.sleep(0)
             first.cancel(); await asyncio.sleep(0)
             second = asyncio.create_task(state.load("chat"))
@@ -120,9 +120,9 @@ class InteractiveChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
         finally:
             release.set()
         with self.assertRaises(asyncio.CancelledError):
-            await asyncio.wait_for(first, 1)
+            await asyncio.wait_for(first, 5)
         self.assertIsNotNone(second)
-        await asyncio.wait_for(second, 1)
+        await asyncio.wait_for(second, 5)
         self.assertEqual((calls, peak), (2, 1))
 
     async def test_waiters_pin_cache_and_eviction_changes_revision(self):

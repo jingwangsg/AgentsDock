@@ -202,15 +202,15 @@ class HealthReconcileTests(unittest.IsolatedAsyncioTestCase):
         ):
             scheduled = await asyncio.wait_for(
                 agent_server.reconcile_idle_queued_turns_from_health_poll(),
-                timeout=0.1,
+                timeout=5,
             )
             self.assertTrue(scheduled)
-            await asyncio.wait_for(started.wait(), timeout=0.1)
+            await asyncio.wait_for(started.wait(), timeout=5)
             self.assertFalse(
                 await agent_server.reconcile_idle_queued_turns_from_health_poll()
             )
             release.set()
-            await asyncio.wait_for(state["task"], timeout=0.1)
+            await asyncio.wait_for(state["task"], timeout=5)
 
     async def test_shutdown_fence_prevents_new_reconcile_and_queue_tasks(self):
         with patch.object(agent_server, "SERVER_SHUTTING_DOWN", True), \

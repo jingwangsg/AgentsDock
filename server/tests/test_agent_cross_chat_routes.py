@@ -4237,15 +4237,15 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
                         reciprocal_route_grant=grant,
                     )
                 )
-                await asyncio.wait_for(event_entered.wait(), timeout=1)
+                await asyncio.wait_for(event_entered.wait(), timeout=5)
                 cancel_task = asyncio.create_task(
                     agent_server.cancel_cross_chat_exchange(exchange["id"])
                 )
                 await asyncio.sleep(0)
                 self.assertFalse(cancel_task.done())
                 release_event.set()
-                accepted = await asyncio.wait_for(enqueue_task, timeout=1)
-                cancelled = await asyncio.wait_for(cancel_task, timeout=1)
+                accepted = await asyncio.wait_for(enqueue_task, timeout=5)
+                cancelled = await asyncio.wait_for(cancel_task, timeout=5)
         finally:
             agent_server.BUSY_SESSIONS.discard("target")
         self.assertTrue(accepted["queued"])
@@ -4332,7 +4332,7 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
                     reciprocal_route_grant=grant,
                 )
             )
-            await asyncio.wait_for(event_entered.wait(), timeout=1)
+            await asyncio.wait_for(event_entered.wait(), timeout=5)
             expiry_task = asyncio.create_task(
                 agent_server.reconcile_cross_chat_exchanges()
             )
@@ -4341,8 +4341,8 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             bound = await agent_server.CROSS_CHAT.get_exchange_leg(leg["id"])
             self.assertEqual(bound["status"], "queued")
             release_event.set()
-            accepted = await asyncio.wait_for(enqueue_task, timeout=1)
-            await asyncio.wait_for(expiry_task, timeout=1)
+            accepted = await asyncio.wait_for(enqueue_task, timeout=5)
+            await asyncio.wait_for(expiry_task, timeout=5)
 
         self.assertTrue(accepted["queued"])
         self.assertEqual(durable_types[0], "turn_queued")

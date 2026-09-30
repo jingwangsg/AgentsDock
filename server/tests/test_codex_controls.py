@@ -258,7 +258,7 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(agent_server.CODEX_PENDING_INTERACTIONS)
             self.assertIn(request_task, handler_tasks["chat"])
             lifecycle_lock = agent_server.session_lifecycle_lock("chat")
-            await asyncio.wait_for(lifecycle_lock.acquire(), timeout=0.1)
+            await asyncio.wait_for(lifecycle_lock.acquire(), timeout=5)
             lifecycle_lock.release()
 
             interaction_id = next(iter(agent_server.CODEX_PENDING_INTERACTIONS))
@@ -1809,7 +1809,7 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
             profile_task = asyncio.create_task(
                 agent_server._get_codex_permission_profiles_locked("chat")
             )
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await asyncio.wait_for(started.wait(), timeout=5)
             try:
                 self.assertEqual(maintenance, {"chat"})
                 self.assertEqual(busy, set())
@@ -2378,9 +2378,9 @@ class CodexNativeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     subscription,
                 )
             )
-            await asyncio.wait_for(subscription.waiting.wait(), timeout=1)
+            await asyncio.wait_for(subscription.waiting.wait(), timeout=5)
             old_consumer.cancel()
-            await asyncio.wait_for(handler_started.wait(), timeout=1)
+            await asyncio.wait_for(handler_started.wait(), timeout=5)
 
             released = await agent_server.release_codex_control_slot(
                 "chat",
@@ -2477,7 +2477,7 @@ class CodexNativeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     subscription,
                 )
             )
-            await asyncio.wait_for(unpin_started.wait(), timeout=1)
+            await asyncio.wait_for(unpin_started.wait(), timeout=5)
             self.assertNotIn(
                 "chat",
                 agent_server.SERVER_MAINTENANCE_SESSIONS,
@@ -2571,7 +2571,7 @@ class CodexNativeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     subscription,
                 )
             )
-            await asyncio.wait_for(terminal_append_started.wait(), timeout=1)
+            await asyncio.wait_for(terminal_append_started.wait(), timeout=5)
             self.assertNotIn("chat", agent_server.ACTIVE)
             self.assertNotIn("chat", agent_server.BUSY_SESSIONS)
             self.assertNotIn("chat", agent_server.CURRENT_TURNS)

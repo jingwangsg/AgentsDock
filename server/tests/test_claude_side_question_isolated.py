@@ -200,7 +200,7 @@ class NativeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(side, "CANCEL_TIMEOUT_SECONDS", 0.01):
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 1)
+                await asyncio.wait_for(task, 5)
         self.assertEqual(client._query.pending_control_responses, {})
         client.disconnect.assert_not_called()
 

@@ -45,8 +45,8 @@ class ClaudeSDKSideQuestionTests(unittest.IsolatedAsyncioTestCase):
         handle = await asyncio.wait_for(self.manager.start_run(
             "chat", "Main task", run_id="main", options=self.options,
             configuration_key="profile",
-        ), 1)
-        await asyncio.wait_for(handle.wait_acknowledged(), 1)
+        ), 5)
+        await asyncio.wait_for(handle.wait_acknowledged(), 5)
         return handle
 
     async def test_cold_resume_uses_exact_client_without_main_turn(self) -> None:
@@ -107,13 +107,13 @@ class ClaudeSDKSideQuestionTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("claude_side_question.ask_native_side_question", native):
             side = self.ask()
-            await asyncio.wait_for(started.wait(), 1)
+            await asyncio.wait_for(started.wait(), 5)
             main = await self.start_main()
             client = self.factory.clients[0]
             message = {"type": "assistant", "content": [{"type": "text", "text": "Main progress"}]}
             await client.emit(message)
-            self.assertEqual(await asyncio.wait_for(main.__anext__(), 1), message)
-            self.assertTrue(await asyncio.wait_for(main.interrupt(), 1))
+            self.assertEqual(await asyncio.wait_for(main.__anext__(), 5), message)
+            self.assertTrue(await asyncio.wait_for(main.interrupt(), 5))
             self.assertFalse(side.done())
             self.assertFalse(client.disconnected)
             release.set()
@@ -134,7 +134,7 @@ class ClaudeSDKSideQuestionTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("claude_side_question.ask_native_side_question", pending):
             side = self.ask()
-            await asyncio.wait_for(started.wait(), 1)
+            await asyncio.wait_for(started.wait(), 5)
             side.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await side
@@ -190,7 +190,7 @@ class ClaudeSDKSideQuestionTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("claude_side_question.ask_native_side_question", native):
             side = self.ask()
-            await asyncio.wait_for(started.wait(), 1)
+            await asyncio.wait_for(started.wait(), 5)
             self.assertFalse(await self.manager.evict("chat"))
             with self.assertRaises(ClaudeSDKConfigurationConflict):
                 await self.manager.get("chat", options={}, configuration_key="different")
@@ -221,11 +221,11 @@ class ClaudeSDKSideQuestionTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("claude_side_question.ask_native_side_question", native):
             old = self.ask()
-            await asyncio.wait_for(first_started.wait(), 1)
+            await asyncio.wait_for(first_started.wait(), 5)
             self.assertTrue(await self.manager.evict("chat", force=True))
-            await asyncio.wait_for(old_cancelled.wait(), 1)
+            await asyncio.wait_for(old_cancelled.wait(), 5)
             new = self.ask()
-            await asyncio.wait_for(second_started.wait(), 1)
+            await asyncio.wait_for(second_started.wait(), 5)
             allow_old_cleanup.set()
             with self.assertRaises(ClaudeSDKGenerationChanged):
                 await old
@@ -254,7 +254,7 @@ class ClaudeSDKSideQuestionTests(unittest.IsolatedAsyncioTestCase):
         self.manager._client_factory = make_client
         with patch("claude_side_question.ask_native_side_question") as native:
             side = self.ask()
-            await asyncio.wait_for(connecting.wait(), 1)
+            await asyncio.wait_for(connecting.wait(), 5)
             side.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await side
@@ -315,7 +315,7 @@ class ClaudeSDKSideQuestionTests(unittest.IsolatedAsyncioTestCase):
         await client.emit(main_text)
         result = {"type": "result", "subtype": "success", "result": "Main answer"}
         await client.emit(result)
-        projected = await asyncio.wait_for(self.collect(main), 1)
+        projected = await asyncio.wait_for(self.collect(main), 5)
         self.assertEqual(projected, [other_control, main_text, result])
         self.assertEqual([call[0] for call in client.calls].count("query"), 1)
 

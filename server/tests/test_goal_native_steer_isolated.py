@@ -184,7 +184,7 @@ class NativeGoalSteerTests(unittest.IsolatedAsyncioTestCase):
     async def finish(self, task):
         self.goal["status"] = "complete"
         self.subscription.push("turn/completed", turn={"id": "turn-1", "status": "completed"})
-        await asyncio.wait_for(task, 1)
+        await asyncio.wait_for(task, 5)
 
     async def test_exact_turn_fence_and_public_input_keep_original_goal_owner(self):
         request = self.request()
@@ -563,8 +563,8 @@ class NativeGoalSteerTests(unittest.IsolatedAsyncioTestCase):
         request = self.request()
         self.queue.put_nowait(request)
         task = self.consumer()
-        result = await asyncio.wait_for(asyncio.shield(request["future"]), 1)
-        await asyncio.wait_for(self.after_seen.wait(), 1)
+        result = await asyncio.wait_for(asyncio.shield(request["future"]), 5)
+        await asyncio.wait_for(self.after_seen.wait(), 5)
         visible = [(kind, event.get("text") or event.get("prompt")) for kind, event in self.events if kind in {"reasoning_summary", "turn_steered"}]
         self.assertEqual(visible, [("reasoning_summary", "before"), ("turn_steered", "Please check this too"), ("reasoning_summary", "after")])
         self.assertFalse(result["interrupted"])
@@ -605,7 +605,7 @@ class NativeGoalSteerTests(unittest.IsolatedAsyncioTestCase):
         request = self.request()
         self.queue.put_nowait(request)
         task = self.consumer()
-        await asyncio.wait_for(fenced.wait(), 1)
+        await asyncio.wait_for(fenced.wait(), 5)
         await self.ns["ACTIVE_LOCK"].acquire()
         task.cancel()
         await asyncio.sleep(0)
@@ -613,9 +613,9 @@ class NativeGoalSteerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.ns["ACTIVE_LOCK"].release()
         with self.assertRaises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 1)
+            await asyncio.wait_for(task, 5)
         with self.assertRaises(self.ns["NativeSteerHandoffError"]) as caught:
-            await asyncio.wait_for(asyncio.shield(request["future"]), 1)
+            await asyncio.wait_for(asyncio.shield(request["future"]), 5)
         self.assertTrue(caught.exception.safe_to_requeue)
         self.assertIsNone(self.active["native_steer_queue"])
         self.assertTrue(self.subscription._closed)

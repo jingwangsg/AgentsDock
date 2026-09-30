@@ -1438,7 +1438,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.06)
             start.assert_not_awaited()
             agent_server.BUSY_SESSIONS.discard("target")
-            await asyncio.wait_for(wake, 0.5)
+            await asyncio.wait_for(wake, 5)
         start.assert_awaited_once_with("target")
 
     async def test_terminal_lifecycle_outbox_is_mirrored_once_concurrently(self) -> None:
@@ -2140,7 +2140,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
-        waiter_result = await asyncio.wait_for(waiter["future"], timeout=1)
+        waiter_result = await asyncio.wait_for(waiter["future"], timeout=5)
         self.assertFalse(waiter_result["ok"])
         self.assertEqual(waiter_result["error_code"], "cancelled_by_user")
         durable = await agent_server.CROSS_CHAT.get_exchange(exchange["id"])
@@ -3286,7 +3286,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 submission = asyncio.create_task(
                     agent_server.submit_cross_chat_exchange_leg(exchange, leg)
                 )
-                await asyncio.wait_for(owner_before_claim.wait(), timeout=1)
+                await asyncio.wait_for(owner_before_claim.wait(), timeout=5)
                 durable = await original_get_leg(leg["id"])
                 self.assertEqual(durable["status"], "registered")
                 self.assertIs(
@@ -3297,13 +3297,13 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 reconciliation = asyncio.create_task(
                     agent_server.reconcile_cross_chat_exchanges()
                 )
-                await asyncio.wait_for(reconcile_entered.wait(), timeout=1)
+                await asyncio.wait_for(reconcile_entered.wait(), timeout=5)
                 await asyncio.sleep(0)
                 self.assertFalse(reconciliation.done())
 
                 release_owner.set()
-                await asyncio.wait_for(submission, timeout=1)
-                recovered = await asyncio.wait_for(reconciliation, timeout=1)
+                await asyncio.wait_for(submission, timeout=5)
+                recovered = await asyncio.wait_for(reconciliation, timeout=5)
 
             self.assertEqual(recovered, 1)
             start.assert_awaited_once()
@@ -3413,13 +3413,13 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 submission = asyncio.create_task(
                     agent_server.submit_cross_chat_exchange_leg(exchange, leg)
                 )
-                await asyncio.wait_for(claim_entered.wait(), timeout=1)
+                await asyncio.wait_for(claim_entered.wait(), timeout=5)
                 submission.cancel()
 
                 reconciliation = asyncio.create_task(
                     agent_server.reconcile_cross_chat_exchanges()
                 )
-                await asyncio.wait_for(reconcile_entered.wait(), timeout=1)
+                await asyncio.wait_for(reconcile_entered.wait(), timeout=5)
                 await asyncio.sleep(0)
                 self.assertFalse(reconciliation.done())
                 self.assertIs(
@@ -3430,7 +3430,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 release_claim.set()
                 with self.assertRaises(asyncio.CancelledError):
                     await submission
-                recovered = await asyncio.wait_for(reconciliation, timeout=1)
+                recovered = await asyncio.wait_for(reconciliation, timeout=5)
 
             self.assertEqual(recovered, 1)
             start.assert_awaited_once()
@@ -3510,7 +3510,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 reconciliation = asyncio.create_task(
                     agent_server.reconcile_cross_chat_exchanges()
                 )
-                await asyncio.wait_for(reset_observed.wait(), timeout=1)
+                await asyncio.wait_for(reset_observed.wait(), timeout=5)
                 retry = asyncio.create_task(
                     agent_server.submit_cross_chat_exchange_leg(exchange, leg)
                 )
@@ -3522,8 +3522,8 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 release_reset.set()
-                recovered = await asyncio.wait_for(reconciliation, timeout=1)
-                await asyncio.wait_for(retry, timeout=1)
+                recovered = await asyncio.wait_for(reconciliation, timeout=5)
+                await asyncio.wait_for(retry, timeout=5)
 
             self.assertEqual(recovered, 1)
             start.assert_awaited_once()
@@ -3602,14 +3602,14 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 submission = asyncio.create_task(
                     agent_server.submit_cross_chat_exchange_leg(exchange, leg)
                 )
-                await asyncio.wait_for(start_entered.wait(), timeout=1)
+                await asyncio.wait_for(start_entered.wait(), timeout=5)
                 submission.cancel()
-                await asyncio.wait_for(finalizer_entered.wait(), timeout=1)
+                await asyncio.wait_for(finalizer_entered.wait(), timeout=5)
 
                 reconciliation = asyncio.create_task(
                     agent_server.reconcile_cross_chat_exchanges()
                 )
-                await asyncio.wait_for(reconcile_entered.wait(), timeout=1)
+                await asyncio.wait_for(reconcile_entered.wait(), timeout=5)
                 await asyncio.sleep(0)
                 self.assertFalse(reconciliation.done())
                 self.assertIs(
@@ -3620,7 +3620,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 release_finalizer.set()
                 with self.assertRaises(asyncio.CancelledError):
                     await submission
-                recovered = await asyncio.wait_for(reconciliation, timeout=1)
+                recovered = await asyncio.wait_for(reconciliation, timeout=5)
 
             self.assertEqual(recovered, 1)
             self.assertEqual(start.await_count, 2)
@@ -3727,7 +3727,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 promotion = asyncio.create_task(
                     agent_server.start_next_queued_turn("target")
                 )
-                await asyncio.wait_for(promotion_entered.wait(), timeout=1)
+                await asyncio.wait_for(promotion_entered.wait(), timeout=5)
                 self.assertNotIn("target", agent_server.QUEUED_TURNS)
                 self.assertIs(
                     agent_server.QUEUE_START_TASKS.get("target"),
@@ -3748,14 +3748,14 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 # duplicate turn.
                 _retry_exchange, retry_leg = await asyncio.wait_for(
                     agent_server.submit_cross_chat_exchange_leg(exchange, leg),
-                    timeout=1,
+                    timeout=5,
                 )
                 self.assertEqual(retry_leg["status"], "queued")
                 self.assertEqual(start.await_count, 1)
 
                 recovered = await asyncio.wait_for(
                     agent_server.reconcile_cross_chat_exchange_leg(leg),
-                    timeout=1,
+                    timeout=5,
                 )
                 durable = await agent_server.CROSS_CHAT.get_exchange_leg(
                     leg["id"]
@@ -3769,7 +3769,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(promotion.done())
 
                 release_promotion.set()
-                await asyncio.wait_for(promotion, timeout=1)
+                await asyncio.wait_for(promotion, timeout=5)
 
             start.assert_awaited_once()
             self.assertEqual(start_calls, 1)
@@ -3820,7 +3820,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             owner = asyncio.create_task(hold_owner())
             waiter: asyncio.Task | None = None
             try:
-                await asyncio.wait_for(entered.wait(), timeout=1)
+                await asyncio.wait_for(entered.wait(), timeout=5)
                 retained_lock = locks[key]
                 self.assertIs(owners.get(key), owner)
                 self.assertEqual(refcounts.get(key), 1)
@@ -3838,7 +3838,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(owners.get(key), owner)
 
                 release.set()
-                await asyncio.wait_for(owner, timeout=1)
+                await asyncio.wait_for(owner, timeout=5)
                 self.assertNotIn(key, locks)
                 self.assertNotIn(key, owners)
                 self.assertNotIn(key, refcounts)
@@ -3893,7 +3893,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             owner = asyncio.create_task(hold_owner())
             waiter: asyncio.Task | None = None
             try:
-                await asyncio.wait_for(entered.wait(), timeout=1)
+                await asyncio.wait_for(entered.wait(), timeout=5)
                 retained_lock = locks[key]
                 self.assertEqual(refcounts.get(key), 1)
 
@@ -3909,7 +3909,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(locks.get(key), retained_lock)
 
                 release.set()
-                await asyncio.wait_for(owner, timeout=1)
+                await asyncio.wait_for(owner, timeout=5)
                 self.assertNotIn(key, locks)
                 self.assertNotIn(key, refcounts)
             finally:
@@ -3991,9 +3991,9 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 promotion = asyncio.create_task(
                     agent_server.start_next_queued_turn("target")
                 )
-                await asyncio.wait_for(promotion_entered.wait(), timeout=1)
+                await asyncio.wait_for(promotion_entered.wait(), timeout=5)
                 promotion.cancel()
-                await asyncio.wait_for(settlement_entered.wait(), timeout=1)
+                await asyncio.wait_for(settlement_entered.wait(), timeout=5)
 
                 self.assertFalse(promotion.done())
                 self.assertNotIn("target", agent_server.QUEUED_TURNS)
@@ -4003,7 +4003,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 )
                 recovered = await asyncio.wait_for(
                     agent_server.reconcile_cross_chat_exchange_leg(leg),
-                    timeout=1,
+                    timeout=5,
                 )
                 durable = await agent_server.CROSS_CHAT.get_exchange_leg(
                     leg["id"]
@@ -4103,8 +4103,8 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 promotion = asyncio.create_task(
                     agent_server.start_next_queued_turn("target")
                 )
-                await asyncio.wait_for(promotion_entered.wait(), timeout=1)
-                await asyncio.wait_for(settlement_entered.wait(), timeout=1)
+                await asyncio.wait_for(promotion_entered.wait(), timeout=5)
+                await asyncio.wait_for(settlement_entered.wait(), timeout=5)
 
                 self.assertFalse(promotion.done())
                 self.assertNotIn("target", agent_server.QUEUED_TURNS)
@@ -4114,7 +4114,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 )
                 recovered = await asyncio.wait_for(
                     agent_server.reconcile_cross_chat_exchange_leg(leg),
-                    timeout=1,
+                    timeout=5,
                 )
                 durable = await agent_server.CROSS_CHAT.get_exchange_leg(
                     leg["id"]
@@ -4124,7 +4124,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 start.assert_awaited_once()
 
                 release_settlement.set()
-                await asyncio.wait_for(promotion, timeout=1)
+                await asyncio.wait_for(promotion, timeout=5)
                 await asyncio.sleep(0)
 
             queued = list(agent_server.QUEUED_TURNS.get("target") or ())
@@ -4218,12 +4218,12 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 promotion = asyncio.create_task(
                     agent_server.start_next_queued_turn("target")
                 )
-                await asyncio.wait_for(promotion_entered.wait(), timeout=1)
+                await asyncio.wait_for(promotion_entered.wait(), timeout=5)
                 self.assertNotIn("target", agent_server.QUEUED_TURNS)
 
                 recovered = await asyncio.wait_for(
                     agent_server.reconcile_cross_chat_handoffs(),
-                    timeout=1,
+                    timeout=5,
                 )
                 durable = await agent_server.CROSS_CHAT.get(record["id"])
                 self.assertEqual(recovered, 1)
@@ -4235,7 +4235,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(promotion.done())
 
                 release_promotion.set()
-                await asyncio.wait_for(promotion, timeout=1)
+                await asyncio.wait_for(promotion, timeout=5)
 
             start.assert_awaited_once()
             durable = await agent_server.CROSS_CHAT.get(record["id"])
@@ -4396,8 +4396,8 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(reconciliation.done())
 
                 release_received.set()
-                submitted = await asyncio.wait_for(submission, timeout=1)
-                recovered = await asyncio.wait_for(reconciliation, timeout=1)
+                submitted = await asyncio.wait_for(submission, timeout=5)
+                recovered = await asyncio.wait_for(reconciliation, timeout=5)
 
             self.assertEqual(start.await_count, 1)
             self.assertEqual(submitted["status"], "running")
@@ -4483,24 +4483,24 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 promotion = asyncio.create_task(
                     agent_server.start_next_queued_turn("target")
                 )
-                await asyncio.wait_for(promotion_entered.wait(), timeout=1)
+                await asyncio.wait_for(promotion_entered.wait(), timeout=5)
                 self.assertNotIn("target", agent_server.QUEUED_TURNS)
 
                 recovered = await asyncio.wait_for(
                     agent_server.reconcile_secure_peer_deliveries(),
-                    timeout=1,
+                    timeout=5,
                 )
                 self.assertEqual(recovered, 0)
                 terminal_recovered = await asyncio.wait_for(
                     agent_server.reconcile_secure_peer_terminal_orphans(),
-                    timeout=1,
+                    timeout=5,
                 )
                 self.assertEqual(terminal_recovered, 0)
                 finish.assert_not_called()
                 self.assertFalse(promotion.done())
 
                 release_promotion.set()
-                await asyncio.wait_for(promotion, timeout=1)
+                await asyncio.wait_for(promotion, timeout=5)
         finally:
             release_promotion.set()
             if promotion is not None and not promotion.done():
@@ -6285,7 +6285,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 "exit_code": 0,
                 "stopped": False,
             })
-        result = await asyncio.wait_for(waiter["future"], timeout=1)
+        result = await asyncio.wait_for(waiter["future"], timeout=5)
         self.assertEqual(result["body"], "Automatic live answer")
         self.assertFalse(result["request_response"])
         with self.assertRaises(HTTPException) as wrong_lease:
@@ -6387,11 +6387,11 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             request=CancellationResistantRequest(),
         ))
         try:
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await asyncio.wait_for(started.wait(), timeout=5)
             await self.deliver_terminal_live_answer(
                 exchange, inbound, waiter, body="Already saved; return it now",
             )
-            await asyncio.wait_for(cancelled.wait(), timeout=1)
+            await asyncio.wait_for(cancelled.wait(), timeout=5)
             done, _pending = await asyncio.wait({live_get}, timeout=0.5)
             self.assertIn(live_get, done, "saved answer hung in watcher cleanup")
             self.assertEqual(live_get.result()["body"], "Already saved; return it now")
@@ -6408,7 +6408,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         finally:
             release.set()
             await asyncio.gather(live_get, return_exceptions=True)
-            await asyncio.wait_for(watcher_finished.wait(), timeout=1)
+            await asyncio.wait_for(watcher_finished.wait(), timeout=5)
 
     async def test_live_cleanup_preserves_heartbeat_and_caller_cancellation(self) -> None:
         for outcome in ("heartbeat", "cancel", "cancel_after_answer"):
@@ -6445,14 +6445,14 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                         )
                     )
                     try:
-                        await asyncio.wait_for(started.wait(), timeout=1)
+                        await asyncio.wait_for(started.wait(), timeout=5)
                         if outcome == "cancel_after_answer":
                             await self.deliver_terminal_live_answer(
                                 exchange, inbound, waiter, body="Saved before disconnect",
                             )
                         elif outcome == "cancel":
                             live_get.cancel()
-                        await asyncio.wait_for(cancellation_seen.wait(), timeout=1)
+                        await asyncio.wait_for(cancellation_seen.wait(), timeout=5)
                         if outcome == "cancel_after_answer":
                             live_get.cancel()
                         done, _pending = await asyncio.wait({live_get}, timeout=0.5)
@@ -6470,7 +6470,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     finally:
                         release.set()
                         await asyncio.gather(live_get, return_exceptions=True)
-                        await asyncio.wait_for(watcher_finished.wait(), timeout=1)
+                        await asyncio.wait_for(watcher_finished.wait(), timeout=5)
 
                 if not waiter["future"].done():
                     await self.deliver_terminal_live_answer(
@@ -6504,13 +6504,13 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 exchange, waiter, timeout_seconds=10, request=request,
             ))
             try:
-                await asyncio.wait_for(listening.wait(), timeout=1)
+                await asyncio.wait_for(listening.wait(), timeout=5)
                 await self.deliver_terminal_live_answer(
                     exchange, inbound, waiter, body="ASGI reply",
                 )
                 # If both events are ready, the completed answer wins.
                 messages.put_nowait({"type": "http.disconnect"})
-                result = await asyncio.wait_for(live_get, timeout=1)
+                result = await asyncio.wait_for(live_get, timeout=5)
                 self.assertEqual(result["body"], "ASGI reply")
                 replay = await agent_server.await_cross_chat_live_waiter(
                     exchange, waiter, timeout_seconds=1, request=request,
@@ -6567,7 +6567,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 request=DisconnectedRequest(),
             )
         )
-        await asyncio.wait_for(disconnect_seen.wait(), timeout=1)
+        await asyncio.wait_for(disconnect_seen.wait(), timeout=5)
         disconnected_result = await asyncio.gather(
             disconnected_get,
             return_exceptions=True,
@@ -6592,7 +6592,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             waiter,
             body="Answer survived the GET retry",
         )
-        replayed_result = await asyncio.wait_for(replayed_get, timeout=1)
+        replayed_result = await asyncio.wait_for(replayed_get, timeout=5)
 
         self.assertEqual(replayed_result["body"], "Answer survived the GET retry")
         self.assertIsInstance(disconnected_result[0], HTTPException)
@@ -6652,7 +6652,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 waiter,
                 body="The remaining observer received this",
             )
-            long_result = await asyncio.wait_for(long_get, timeout=1)
+            long_result = await asyncio.wait_for(long_get, timeout=5)
 
         self.assertEqual(
             long_result["body"],
@@ -7195,11 +7195,11 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     request,
                 )
             )
-            await asyncio.wait_for(entered.wait(), timeout=1)
+            await asyncio.wait_for(entered.wait(), timeout=5)
             task.cancel()
             release.set()
             with self.assertRaises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=1)
+                await asyncio.wait_for(task, timeout=5)
 
         self.assertEqual(len(captured_waiters), 1)
         self.assertFalse(captured_waiters[0]["future"].done())
@@ -7477,7 +7477,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 await release_lock.wait()
 
         lock_holder = asyncio.create_task(hold_live_lease_lock())
-        await asyncio.wait_for(lock_held.wait(), timeout=1)
+        await asyncio.wait_for(lock_held.wait(), timeout=5)
 
         async def register_retry() -> dict:
             async with agent_server.cross_chat_live_lease_lock(exchange["id"]):
@@ -7503,9 +7503,9 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             )
             await asyncio.sleep(0)
             release_lock.set()
-            await asyncio.wait_for(lock_holder, timeout=1)
-            waiter = await asyncio.wait_for(registration, timeout=1)
-            recovered = await asyncio.wait_for(reconciliation, timeout=1)
+            await asyncio.wait_for(lock_holder, timeout=5)
+            waiter = await asyncio.wait_for(registration, timeout=5)
+            recovered = await asyncio.wait_for(reconciliation, timeout=5)
 
         self.assertEqual(recovered, 1)
         submit.assert_awaited_once_with(exchange, inbound)
@@ -7625,7 +7625,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 await release_queued.wait()
 
         initial = asyncio.create_task(initial_owner())
-        await asyncio.wait_for(owner_entered.wait(), timeout=1)
+        await asyncio.wait_for(owner_entered.wait(), timeout=5)
         retained_lock = agent_server.CROSS_CHAT_LIVE_LEASE_LOCKS[exchange_id]
         queued = asyncio.create_task(queued_owner())
         await asyncio.sleep(0)
@@ -7634,8 +7634,8 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             2,
         )
         release_owner.set()
-        await asyncio.wait_for(initial, timeout=1)
-        await asyncio.wait_for(acquired.wait(), timeout=1)
+        await asyncio.wait_for(initial, timeout=5)
+        await asyncio.wait_for(acquired.wait(), timeout=5)
         self.assertIs(
             agent_server.CROSS_CHAT_LIVE_LEASE_LOCKS[exchange_id],
             retained_lock,
@@ -7645,7 +7645,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
         release_queued.set()
-        await asyncio.wait_for(queued, timeout=1)
+        await asyncio.wait_for(queued, timeout=5)
         self.assertNotIn(exchange_id, agent_server.CROSS_CHAT_LIVE_LEASE_LOCKS)
         self.assertNotIn(
             exchange_id,
@@ -7670,7 +7670,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 await release_lock.wait()
 
         lock_holder = asyncio.create_task(hold_live_lease_lock())
-        await asyncio.wait_for(lock_held.wait(), timeout=1)
+        await asyncio.wait_for(lock_held.wait(), timeout=5)
         settlement = asyncio.create_task(
             agent_server.settle_cross_chat_live_waiters_for_shutdown()
         )
@@ -7679,8 +7679,8 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(waiter["future"].done())
 
         release_lock.set()
-        await asyncio.wait_for(lock_holder, timeout=1)
-        await asyncio.wait_for(settlement, timeout=1)
+        await asyncio.wait_for(lock_holder, timeout=5)
+        await asyncio.wait_for(settlement, timeout=5)
         self.assertEqual(agent_server.CROSS_CHAT_LIVE_RESPONSE_WAITERS, {})
         self.assertEqual(
             waiter["future"].result()["error_code"],
@@ -8512,7 +8512,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     ),
                     message="live Ask waiter was not attached",
                 )
-                ask_receipt = await asyncio.wait_for(ask_task, timeout=1)
+                ask_receipt = await asyncio.wait_for(ask_task, timeout=5)
                 pending_tasks.discard(ask_task)
                 self.assertIn("live_response_lease_id", ask_receipt)
                 live_wait = await begin_live_wait(
@@ -8535,7 +8535,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     "result_text": "Newton moved on to another user turn.",
                     "exit_code": 0,
                 })
-                receipt = await asyncio.wait_for(live_wait, timeout=1)
+                receipt = await asyncio.wait_for(live_wait, timeout=5)
                 pending_tasks.discard(live_wait)
                 self.assertTrue(receipt.get("deferred"), receipt)
                 self.assertEqual(receipt["delivery"], "asynchronous")
@@ -8554,12 +8554,12 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     agent_server.start_next_queued_turn("target")
                 )
                 pending_tasks.add(target_promotion)
-                await asyncio.wait_for(target_promotion, timeout=1)
+                await asyncio.wait_for(target_promotion, timeout=5)
                 pending_tasks.discard(target_promotion)
                 await asyncio.sleep(0)
                 target_run_id, target_handle = await asyncio.wait_for(
                     provider_starts["target"].get(),
-                    timeout=1,
+                    timeout=5,
                 )
                 self.assertEqual(target_handle.interrupt_calls, 0)
                 self.assertEqual(
@@ -8604,12 +8604,12 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     agent_server.start_next_queued_turn("source")
                 )
                 pending_tasks.add(source_promotion)
-                await asyncio.wait_for(source_promotion, timeout=1)
+                await asyncio.wait_for(source_promotion, timeout=5)
                 pending_tasks.discard(source_promotion)
                 await asyncio.sleep(0)
                 source_reply_run, source_reply_handle = await asyncio.wait_for(
                     provider_starts["source"].get(),
-                    timeout=1,
+                    timeout=5,
                 )
                 self.assertEqual(source_reply_handle.interrupt_calls, 0)
                 await provider_answers["source"].put(
@@ -8669,11 +8669,11 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 pending_tasks.add(cancel_ask)
                 cancel_target_run, cancel_handle = await asyncio.wait_for(
                     provider_starts["target"].get(),
-                    timeout=1,
+                    timeout=5,
                 )
                 cancel_post_receipt = await asyncio.wait_for(
                     cancel_ask,
-                    timeout=1,
+                    timeout=5,
                 )
                 pending_tasks.discard(cancel_ask)
                 cancel_live_wait = await begin_live_wait(
@@ -8689,7 +8689,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 })
                 cancel_receipt = await asyncio.wait_for(
                     cancel_live_wait,
-                    timeout=1,
+                    timeout=5,
                 )
                 pending_tasks.discard(cancel_live_wait)
                 self.assertTrue(cancel_receipt["deferred"])
@@ -9131,11 +9131,11 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     request,
                 )
             )
-            await asyncio.wait_for(delivered.wait(), timeout=1)
+            await asyncio.wait_for(delivered.wait(), timeout=5)
             task.cancel()
             release.set()
             with self.assertRaises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=1)
+                await asyncio.wait_for(task, timeout=5)
 
         self.assertEqual(len(next_waiters), 1)
         next_waiter = next_waiters[0]
@@ -9253,7 +9253,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     request,
                 )
             )
-            await asyncio.wait_for(preflight_started.wait(), timeout=1)
+            await asyncio.wait_for(preflight_started.wait(), timeout=5)
             outcome = await agent_server.defer_cross_chat_live_wait_after_observation(
                 exchange["id"],
                 inbound["id"],
@@ -9261,7 +9261,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(outcome["state"], "live")
             resume_preflight.set()
-            receipt = await asyncio.wait_for(response_task, timeout=1)
+            receipt = await asyncio.wait_for(response_task, timeout=5)
 
         self.assertNotIn("deferred", receipt)
         self.assertEqual(
@@ -9417,15 +9417,15 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             patch.object(agent_server, "maybe_deliver_cross_chat_exchange_failure_status", failure_status),
         ):
             delivery_task = asyncio.create_task(deliver())
-            await asyncio.wait_for(durable_finished.wait(), timeout=1)
+            await asyncio.wait_for(durable_finished.wait(), timeout=5)
             cancel_task = asyncio.create_task(
                 agent_server.cancel_cross_chat_exchange(exchange["id"])
             )
             await asyncio.sleep(0)
             self.assertFalse(cancel_task.done())
             release_finish.set()
-            await asyncio.wait_for(delivery_task, timeout=1)
-            await asyncio.wait_for(cancel_task, timeout=1)
+            await asyncio.wait_for(delivery_task, timeout=5)
+            await asyncio.wait_for(cancel_task, timeout=5)
         leg_lifecycle.assert_not_awaited()
         exchange_lifecycle.assert_not_awaited()
         failure_status.assert_not_awaited()

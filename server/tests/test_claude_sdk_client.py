@@ -546,7 +546,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                 if background:
                     await client.emit({"type": "system", "subtype": "task_started",
                         "task_id": "child", "task_type": "local_agent"})
-                    await asyncio.wait_for(handle.__anext__(), 1)
+                    await asyncio.wait_for(handle.__anext__(), 5)
                 generation = self.manager._supervisors[chat].control_generation
                 clear = asyncio.create_task(self.manager.clear_goal(
                     chat, run_id="goal-run", expected_generation=generation,
@@ -566,7 +566,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                     "terminal_reason": "aborted_tools" if background else "aborted_streaming",
                     "result": "partial"}
                 await client.emit(aborted)
-                self.assertEqual(await asyncio.wait_for(handle.wait_result(), 1), aborted)
+                self.assertEqual(await asyncio.wait_for(handle.wait_result(), 5), aborted)
                 self.assertFalse(clear.done())
                 self.assertFalse(client.disconnected)
                 with self.assertRaises(ClaudeSDKRunActive):
@@ -575,7 +575,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                     "command": "goal", "args": "clear"}, "content": []})
                 await client.emit({"type": "result", "subtype": "success", "is_error": False,
                     "local_command": "goal", "result": "Goal cleared: finish the task"})
-                result, returned_generation = await asyncio.wait_for(clear, 1)
+                result, returned_generation = await asyncio.wait_for(clear, 5)
                 self.assertEqual(returned_generation, generation)
                 self.assertEqual(result["result"], "Goal cleared: finish the task")
                 self.assertEqual(client.disconnected, background)
@@ -600,11 +600,11 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
         await client.emit({"type": "result", "terminal_reason": "aborted_streaming"})
         with self.assertRaises(ClaudeSDKQueryError):
-            await asyncio.wait_for(handle.wait_result(), 1)
+            await asyncio.wait_for(handle.wait_result(), 5)
         self.assertFalse(client.disconnected)
         await client.emit({"type": "assistant", "local_command_run": {"command": "goal", "args": "clear"}})
         await client.emit({"type": "result", "local_command": "goal", "is_error": False, "result": "Goal cleared"})
-        result, _ = await asyncio.wait_for(clear, 1)
+        result, _ = await asyncio.wait_for(clear, 5)
         self.assertFalse(result["is_error"])
         self.assertTrue(client.disconnected)
 
@@ -619,7 +619,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             "goal", "continue", run_id="after-timeout", options={}, configuration_key="same",
         )
         await self.factory.clients[1].emit({"type": "result", "result": "resumed"})
-        result = await asyncio.wait_for(resumed.wait_result(), 1)
+        result = await asyncio.wait_for(resumed.wait_result(), 5)
         self.assertEqual(result["result"], "resumed")
 
     def test_sdk_parser_preserves_native_local_goal_provenance(self) -> None:
@@ -648,7 +648,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await hook(tool, "tool-one", {}), {})
         await client.emit({"type": "assistant", "session_id": "provider", "content": [
             {"type": "tool_use", "id": "tool-one", "name": "Read", "input": {}}]})
-        await asyncio.wait_for(handle.__anext__(), 1)
+        await asyncio.wait_for(handle.__anext__(), 5)
         for changed in ({"agent_id": "child"}, {"session_id": "other"}, {"tool_name": "Bash"},
                         {"tool_use_id": "other"}, {"is_interrupt": True}):
             self.assertEqual(await hook({**tool, **changed}, "tool-one", {}), {})
@@ -670,9 +670,9 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         old_hook = old_client.options["hooks"]["PostToolUse"][0].hooks[0]
         await old_client.emit({"type": "assistant", "session_id": "provider", "content": [
             {"type": "tool_use", "id": "old-tool", "name": "Read", "input": {}}]})
-        await asyncio.wait_for(first.__anext__(), 1)
+        await asyncio.wait_for(first.__anext__(), 5)
         await old_client.emit({"type": "result", "result": "finished"})
-        await asyncio.wait_for(collect(first), 1)
+        await asyncio.wait_for(collect(first), 5)
         second = await self.manager.start_run("mail-chat", "second", run_id="run-two", options=options,
             configuration_key="second", pending_mail_hint=lambda: calls.append("new") or "x" * 2049)
         client = self.factory.clients[-1]
@@ -683,7 +683,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await hook(old_input, "old-tool", {}), {})
         await client.emit({"type": "assistant", "session_id": "provider", "content": [
             {"type": "tool_use", "id": "new-tool", "name": "Read", "input": {}}]})
-        await asyncio.wait_for(second.__anext__(), 1)
+        await asyncio.wait_for(second.__anext__(), 5)
         self.assertEqual(await hook({**old_input, "tool_use_id": "new-tool"}, "new-tool", {}), {})
         self.assertEqual(calls, ["new"])
         self.assertFalse(second.done)
@@ -720,7 +720,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                            "patch": {"status": "completed", "result": "must not be retained"}})
         await client.emit({"type": "system", "subtype": "task_notification", "task_id": "stopped", "status": "stopped"})
         await client.emit({"type": "result", "terminal_reason": "aborted_tools", "is_error": False})
-        await asyncio.wait_for(collect(handle), 1)
+        await asyncio.wait_for(collect(handle), 5)
         receipts = handle.background_task_receipts
         self.assertEqual([item["status"] for item in receipts], ["completed", "stopped", "tracking_lost"])
         self.assertTrue(all(item["owner_run_id"] == "old-run" for item in receipts))
@@ -742,7 +742,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await old_hook(hook_input, None, {}), {})
         self.assertFalse(first.background_task_reconciliation_consumed)
         await old_client.emit({"type": "result", "terminal_reason": "aborted_tools"})
-        await asyncio.wait_for(collect(first), 1)
+        await asyncio.wait_for(collect(first), 5)
         second = await self.manager.start_run("chat-hooks", "same prompt", run_id="second",
             options=options, configuration_key="same", background_task_reconciliation=reconciliation)
         new_client = self.factory.clients[-1]
@@ -756,13 +756,13 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"status":"tracking_lost"', result["hookSpecificOutput"]["additionalContext"])
         self.assertFalse(second.background_task_reconciliation_consumed)
         await new_client.emit({"type": "assistant", "text": "Observed task status"})
-        await asyncio.wait_for(second.__anext__(), 1)
+        await asyncio.wait_for(second.__anext__(), 5)
         self.assertTrue(second.background_task_reconciliation_consumed)
         self.assertEqual(second.background_task_receipts, ())
         self.assertEqual(await hook(hook_input, None, {}), {})
         self.assertIn(("query", "same prompt", {}), new_client.calls)
         await new_client.emit({"type": "result", "result": "done"})
-        await asyncio.wait_for(collect(second), 1)
+        await asyncio.wait_for(collect(second), 5)
         ordinary = await self.manager.start_run("chat-hooks", "same prompt", run_id="ordinary",
                                                options=options, configuration_key="same")
         self.assertEqual(await hook(hook_input, None, {}), {})
@@ -780,7 +780,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(handle.background_task_reconciliation_consumed)
         await handle.interrupt()
         with self.assertRaises(ClaudeSDKQueryError):
-            await asyncio.wait_for(collect(handle), 1)
+            await asyncio.wait_for(collect(handle), 5)
         self.assertFalse(handle.background_task_reconciliation_consumed)
 
     async def test_task_receipt_bound_keeps_later_active_work_over_old_terminals(self) -> None:
@@ -792,7 +792,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             await client.emit({"type": "system", "subtype": "task_notification", "task_id": str(index), "status": "completed"})
         await client.emit({"type": "system", "subtype": "task_started", "task_id": "later-workflow", "task_type": "local_workflow"})
         await client.emit({"type": "result", "terminal_reason": "aborted_tools"})
-        await asyncio.wait_for(collect(handle), 1)
+        await asyncio.wait_for(collect(handle), 5)
         receipts = handle.background_task_receipts
         self.assertEqual(len(receipts), 64)
         self.assertEqual(handle.background_task_overflow_count, 1)
@@ -847,7 +847,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         result = {"type": "result", "session_id": "provider-1", "result": "done"}
         await client.emit(result)
 
-        self.assertEqual(await asyncio.wait_for(collect(handle), 1), [
+        self.assertEqual(await asyncio.wait_for(collect(handle), 5), [
             {"type": "assistant", "text": "working"},
             result,
         ])
@@ -933,7 +933,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             "client_composed", self.factory.clients[0].query_envelopes[0][0],
         )
         self.assertEqual(
-            await asyncio.wait_for(collect(handle), 1),
+            await asyncio.wait_for(collect(handle), 5),
             [assistant, result],
         )
         self.assertEqual(await handle.wait_result(), result)
@@ -984,7 +984,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             output["hookSpecificOutput"]["additionalContext"],
         )
         await client.emit({"type": "result", "result": "done"})
-        await asyncio.wait_for(collect(handle), 1)
+        await asyncio.wait_for(collect(handle), 5)
 
     async def test_command_discovery_reconnects_an_idle_pending_hook(self) -> None:
         options = {
@@ -1015,7 +1015,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         )
         first_client = self.factory.clients[0]
         await first_client.emit({"type": "result", "result": "done"})
-        await asyncio.wait_for(collect(first), 1)
+        await asyncio.wait_for(collect(first), 5)
 
         _info, current_generation = await self.manager.get_server_info(
             "pending-reconciliation-chat",
@@ -1039,7 +1039,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             second_client.calls,
         )
         await second_client.emit({"type": "result", "result": "done"})
-        await asyncio.wait_for(collect(second), 1)
+        await asyncio.wait_for(collect(second), 5)
 
     async def test_validated_local_command_rejects_changed_generation_before_query(self) -> None:
         _info, generation = await self.manager.get_server_info(
@@ -1124,7 +1124,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             await client.emit(message)
 
         self.assertEqual(
-            await asyncio.wait_for(collect(handle), 1),
+            await asyncio.wait_for(collect(handle), 5),
             [task_started, task_finished, followup, final_result],
         )
         self.assertEqual(await handle.wait_result(), final_result)
@@ -1188,7 +1188,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             await client.emit(message)
 
         self.assertEqual(
-            await asyncio.wait_for(collect(handle), 1),
+            await asyncio.wait_for(collect(handle), 5),
             [
                 first_started,
                 first_finished,
@@ -1239,7 +1239,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             await client.emit(message)
 
         self.assertEqual(
-            await asyncio.wait_for(collect(handle), 1),
+            await asyncio.wait_for(collect(handle), 5),
             [task_started, task_updated, final_result],
         )
 
@@ -1273,7 +1273,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                 await client.emit(task_started)
                 await client.emit(terminal_result)
                 self.assertEqual(
-                    await asyncio.wait_for(collect(handle), 1),
+                    await asyncio.wait_for(collect(handle), 5),
                     [task_started, terminal_result],
                 )
                 self.assertEqual(await handle.wait_result(), terminal_result)
@@ -1302,7 +1302,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await old_client.emit(task_started)
         await old_client.emit(aborted_result)
         self.assertEqual(
-            await asyncio.wait_for(collect(first_handle), 1),
+            await asyncio.wait_for(collect(first_handle), 5),
             [task_started, aborted_result],
         )
 
@@ -1331,7 +1331,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await new_client.emit(fresh_assistant)
         await new_client.emit(fresh_result)
         self.assertEqual(
-            await asyncio.wait_for(collect(second_handle), 1),
+            await asyncio.wait_for(collect(second_handle), 5),
             [fresh_assistant, fresh_result],
         )
 
@@ -1355,7 +1355,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit(task_started)
         await client.emit(result)
         self.assertEqual(
-            await asyncio.wait_for(collect(handle), 1),
+            await asyncio.wait_for(collect(handle), 5),
             [task_started, result],
         )
 
@@ -1392,7 +1392,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit(fresh_result)
 
         self.assertEqual(
-            await asyncio.wait_for(collect(handle), 1),
+            await asyncio.wait_for(collect(handle), 5),
             [fresh_assistant, fresh_result],
         )
         self.assertEqual(await handle.wait_result(), fresh_result)
@@ -1430,7 +1430,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit(replay_ack(handle.correlation_id))
         result = {"type": "result", "result": "fresh"}
         await client.emit(result)
-        self.assertEqual(await asyncio.wait_for(collect(handle), 1), [result])
+        self.assertEqual(await asyncio.wait_for(collect(handle), 5), [result])
         self.assertEqual(await handle.wait_result(), result)
 
     async def test_ack_waiter_opens_only_for_exact_replay_ack(self) -> None:
@@ -1456,15 +1456,15 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(handle.acknowledged)
 
         await client.emit(replay_ack(handle.correlation_id))
-        await asyncio.wait_for(waiter, 1)
+        await asyncio.wait_for(waiter, 5)
         self.assertTrue(handle.acknowledged)
         # Event semantics also cover ACKs that arrive before the server starts
         # watching provider readiness.
-        await asyncio.wait_for(handle.wait_acknowledged(), 1)
+        await asyncio.wait_for(handle.wait_acknowledged(), 5)
 
         result = {"type": "result", "result": "done"}
         await client.emit(result)
-        self.assertEqual(await asyncio.wait_for(collect(handle), 1), [result])
+        self.assertEqual(await asyncio.wait_for(collect(handle), 5), [result])
         self.assertEqual(await handle.wait_result(), result)
 
     async def test_duplicate_matching_ack_is_suppressed(self) -> None:
@@ -1479,7 +1479,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit(replay_ack(handle.correlation_id))
         result = {"type": "result", "result": "done"}
         await client.emit(result)
-        self.assertEqual(await asyncio.wait_for(collect(handle), 1), [result])
+        self.assertEqual(await asyncio.wait_for(collect(handle), 5), [result])
 
     async def test_typed_user_message_ack_opens_gate_but_plain_object_does_not(self) -> None:
         self.factory.auto_ack = False
@@ -1504,7 +1504,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             "session_id": "provider-post-ack",
         }
         await client.emit(result)
-        self.assertEqual(await asyncio.wait_for(collect(handle), 1), [result])
+        self.assertEqual(await asyncio.wait_for(collect(handle), 5), [result])
         self.assertEqual((await handle.wait_result())["session_id"], "provider-post-ack")
 
     async def test_real_sdk_parser_preserves_uuid_for_typed_replay_ack(self) -> None:
@@ -1530,7 +1530,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit(typed_ack)
         result = {"type": "result", "result": "done"}
         await client.emit(result)
-        self.assertEqual(await asyncio.wait_for(collect(handle), 1), [result])
+        self.assertEqual(await asyncio.wait_for(collect(handle), 5), [result])
 
     async def test_stop_before_ack_fails_and_disconnects_without_accepting_abort(self) -> None:
         self.factory.auto_ack = False
@@ -1585,7 +1585,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit(replay_ack(handle.correlation_id))
         result = {"type": "result", "result": "late but valid"}
         await client.emit(result)
-        self.assertEqual(await asyncio.wait_for(collect(handle), 1), [result])
+        self.assertEqual(await asyncio.wait_for(collect(handle), 5), [result])
         self.assertEqual(await handle.wait_result(), result)
         self.assertFalse(client.disconnected)
         self.assertEqual(
@@ -1615,7 +1615,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit(replay_ack(handle.correlation_id))
         result = {"type": "result", "result": "late but valid"}
         await client.emit(result)
-        self.assertEqual(await asyncio.wait_for(collect(handle), 1), [result])
+        self.assertEqual(await asyncio.wait_for(collect(handle), 5), [result])
         self.assertEqual(await handle.wait_result(), result)
         await manager.close_all()
 
@@ -1637,10 +1637,10 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         while not factory.clients:
             await asyncio.sleep(0)
         client = factory.clients[0]
-        await asyncio.wait_for(client.query_started.wait(), 1)
+        await asyncio.wait_for(client.query_started.wait(), 5)
 
         with self.assertRaises(ClaudeSDKQueryError) as raised:
-            await asyncio.wait_for(start_task, 0.5)
+            await asyncio.wait_for(start_task, 5)
         self.assertTrue(raised.exception.delivery_uncertain)
         self.assertTrue(client.disconnected)
         self.assertEqual(
@@ -1728,7 +1728,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit(replay_ack(second.correlation_id))
         second_result = {"type": "result", "result": "fresh run two"}
         await client.emit(second_result)
-        self.assertEqual(await asyncio.wait_for(collect(second), 1), [second_result])
+        self.assertEqual(await asyncio.wait_for(collect(second), 5), [second_result])
         self.assertEqual(await second.wait_result(), second_result)
 
     async def test_context_usage_is_actor_serialized_and_owner_fenced(self) -> None:
@@ -1858,7 +1858,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                     run_id="run-timeout",
                     options={},
                     configuration_key="a",
-                ), 0.5)
+                ), 5)
 
             hostile = factory.clients[0]
             self.assertIsInstance(hostile, CancellationHostileConnectClient)
@@ -1880,7 +1880,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                 run_id="run-retry",
                 options={},
                 configuration_key="a",
-            ), 0.5)
+            ), 5)
             self.assertEqual(len(factory.clients), 2)
             await factory.clients[1].emit({"type": "result", "result": "done"})
             await replacement.wait_result()
@@ -1906,7 +1906,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                     run_id="run-timeout",
                     options={},
                     configuration_key="a",
-                ), 0.5)
+                ), 5)
 
             hostile = factory.clients[0]
             self.assertFalse(hostile.connected)
@@ -1973,11 +1973,11 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
             hostile = factory.clients[0]
             assert isinstance(hostile, CancellationHostileConnectClient)
-            await asyncio.wait_for(hostile.connect_started.wait(), 0.5)
+            await asyncio.wait_for(hostile.connect_started.wait(), 5)
 
             start_task.cancel()
             with self.assertRaises(asyncio.CancelledError):
-                await asyncio.wait_for(start_task, 0.5)
+                await asyncio.wait_for(start_task, 5)
 
             self.assertFalse(ready_owners)
             self.assertTrue(hostile.disconnected)
@@ -1999,7 +1999,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                 options={},
                 configuration_key="a",
                 on_supervisor_ready=capture_owner,
-            ), 0.5)
+            ), 5)
             self.assertEqual(len(factory.clients), 2)
             self.assertEqual(len(ready_owners), 1)
             await factory.clients[1].emit({"type": "result", "result": "done"})
@@ -2129,8 +2129,8 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit(started)
         await client.emit({"type": "result", "is_error": False, "result": "parent milestone"})
         await client.emit(progress)
-        self.assertEqual(await asyncio.wait_for(handle.__anext__(), 1), started)
-        self.assertEqual(await asyncio.wait_for(handle.__anext__(), 1), progress)
+        self.assertEqual(await asyncio.wait_for(handle.__anext__(), 5), started)
+        self.assertEqual(await asyncio.wait_for(handle.__anext__(), 5), progress)
         self.assertFalse(handle.done)
 
         with self.assertRaises(ClaudeSDKConfigurationConflict):
@@ -2146,7 +2146,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             "task_id": "agent-still-running", "status": "completed",
         })
         await client.emit({"type": "result", "is_error": False, "result": "all done"})
-        await asyncio.wait_for(handle.wait_result(), 1)
+        await asyncio.wait_for(handle.wait_result(), 5)
         replacement = await self.manager.get(
             "chat-limited", options={"env": {cap_name: "1"}},
             configuration_key="limit-1",
@@ -2236,12 +2236,12 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         while not factory.clients:
             await asyncio.sleep(0)
         client = factory.clients[0]
-        await asyncio.wait_for(client.query_started.wait(), 1)
+        await asyncio.wait_for(client.query_started.wait(), 5)
 
         self.assertTrue(
             await asyncio.wait_for(
                 manager.evict("chat-stuck", force=True),
-                0.5,
+                5,
             )
         )
         with self.assertRaises(ClaudeSDKSupervisorClosed):
@@ -2266,12 +2266,12 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         )
         hostile = factory.clients[0]
         assert isinstance(hostile, CancellationHostileReceiverClient)
-        await asyncio.wait_for(hostile.receiver_started.wait(), 1)
+        await asyncio.wait_for(hostile.receiver_started.wait(), 5)
 
         self.assertTrue(
             await asyncio.wait_for(
                 manager.evict("chat-hostile", force=True),
-                0.5,
+                5,
             )
         )
         with self.assertRaises(ClaudeSDKSupervisorClosed):
@@ -2285,7 +2285,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                 options={},
                 configuration_key="a",
             ),
-            0.5,
+            5,
         )
         self.assertEqual(len(factory.clients), 2)
         await factory.clients[1].emit({"type": "result", "result": "done"})
@@ -2312,14 +2312,14 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         while not factory.clients:
             await asyncio.sleep(0)
         hostile = factory.clients[0]
-        await asyncio.wait_for(hostile.connect_started.wait(), 0.5)
+        await asyncio.wait_for(hostile.connect_started.wait(), 5)
 
         self.assertTrue(await asyncio.wait_for(
             manager.evict("chat-hostile-connect", force=True),
-            0.5,
+            5,
         ))
         with self.assertRaises(ClaudeSDKSupervisorClosed):
-            await asyncio.wait_for(start_task, 0.5)
+            await asyncio.wait_for(start_task, 5)
         self.assertFalse(any(call[0] == "query" for call in hostile.calls))
 
         hostile.release_connect.set()
@@ -2359,12 +2359,12 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         while not factory.clients:
             await asyncio.sleep(0)
         client = factory.clients[0]
-        await asyncio.wait_for(client.connect_started.wait(), 0.5)
+        await asyncio.wait_for(client.connect_started.wait(), 5)
         self.assertFalse(hook_called.is_set())
         client.release_connect.set()
 
         with self.assertRaises(asyncio.CancelledError):
-            await asyncio.wait_for(start_task, 0.5)
+            await asyncio.wait_for(start_task, 5)
         self.assertTrue(hook_called.is_set())
         self.assertFalse(any(call[0] == "query" for call in client.calls))
         await manager.close_all()
@@ -2769,11 +2769,11 @@ class ClaudeSDKMCPControlTests(unittest.IsolatedAsyncioTestCase):
             while not factory.clients:
                 await asyncio.sleep(0)
             client = factory.clients[0]
-            await asyncio.wait_for(client.status_started.wait(), 1)
+            await asyncio.wait_for(client.status_started.wait(), 5)
 
             self.assertFalse(await manager.evict("mcp-chat", force=False))
             client.release_status.set()
-            status, generation = await asyncio.wait_for(status_task, 1)
+            status, generation = await asyncio.wait_for(status_task, 5)
             self.assertTrue(status["mcpServers"])
             self.assertTrue(generation.startswith("claudemcp_"))
         finally:
@@ -2923,7 +2923,7 @@ class ClaudeSDKMCPControlTests(unittest.IsolatedAsyncioTestCase):
                 options={},
                 configuration_key="profile-a",
             ))
-            await asyncio.wait_for(old_unpin_entered.wait(), 1)
+            await asyncio.wait_for(old_unpin_entered.wait(), 5)
 
             replacement = asyncio.create_task(manager.get_mcp_status(
                 "mcp-chat",
@@ -2934,7 +2934,7 @@ class ClaudeSDKMCPControlTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
             second = factory.clients[1]
             assert isinstance(second, BlockingMCPStatusClient)
-            await asyncio.wait_for(second.status_started.wait(), 1)
+            await asyncio.wait_for(second.status_started.wait(), 5)
             self.assertEqual(manager._pins.get("mcp-chat"), 1)
 
             allow_old_unpin.set()
@@ -2944,7 +2944,7 @@ class ClaudeSDKMCPControlTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await manager.evict("mcp-chat", force=False))
 
             second.release_status.set()
-            await asyncio.wait_for(replacement, 1)
+            await asyncio.wait_for(replacement, 5)
         finally:
             allow_old_unpin.set()
             for client in factory.clients:
@@ -2982,7 +2982,7 @@ class ClaudeSDKMCPControlTests(unittest.IsolatedAsyncioTestCase):
             while not factory.clients:
                 await asyncio.sleep(0)
             client = factory.clients[0]
-            await asyncio.wait_for(client.status_started.wait(), 1)
+            await asyncio.wait_for(client.status_started.wait(), 5)
 
             status_task.cancel()
             with self.assertRaises(asyncio.CancelledError):

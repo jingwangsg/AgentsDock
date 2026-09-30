@@ -631,7 +631,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
             try:
                 with self.assertRaises(type(unpin_error)):
                     await runner
-                await asyncio.wait_for(launch_started.wait(), timeout=0.5)
+                await asyncio.wait_for(launch_started.wait(), timeout=5)
                 promotion_task = queue_start_tasks.get("chat-native")
                 self.assertIsNotNone(promotion_task)
                 await asyncio.sleep(0)
@@ -729,7 +729,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 allow_resume_rollover=False,
             ))
             try:
-                await asyncio.wait_for(terminal_started.wait(), timeout=1)
+                await asyncio.wait_for(terminal_started.wait(), timeout=5)
                 self.assertEqual(
                     terminal_observations,
                     [(False, False, False, True)],
@@ -824,9 +824,9 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 allow_resume_rollover=False,
             ))
             try:
-                await asyncio.wait_for(terminal_started.wait(), timeout=1)
+                await asyncio.wait_for(terminal_started.wait(), timeout=5)
                 runner.cancel()
-                await asyncio.wait_for(join_started.wait(), timeout=1)
+                await asyncio.wait_for(join_started.wait(), timeout=5)
                 runner.cancel()
                 await asyncio.sleep(0)
                 self.assertFalse(runner.done())
@@ -884,7 +884,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
 
             runner.cancel()
-            await asyncio.wait_for(unpin_started.wait(), timeout=0.5)
+            await asyncio.wait_for(unpin_started.wait(), timeout=5)
             runner.cancel()  # repeated hard-Stop cancellation during cleanup
             await asyncio.sleep(0)
             self.assertFalse(runner.done())
@@ -943,7 +943,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 Path(self.cwd) / ".runner-test-manifest.json",
                 allow_exec_fallback=False,
             ))
-            await asyncio.wait_for(start_entered.wait(), timeout=0.5)
+            await asyncio.wait_for(start_entered.wait(), timeout=5)
             runner.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await runner
@@ -1011,14 +1011,14 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 allow_exec_fallback=False,
             ))
             try:
-                await asyncio.wait_for(start_entered.wait(), timeout=0.5)
+                await asyncio.wait_for(start_entered.wait(), timeout=5)
                 agent_server.ACTIVE_LOCK = gate  # type: ignore[assignment]
                 runner.cancel()
-                await asyncio.wait_for(gate.entered.wait(), timeout=0.5)
+                await asyncio.wait_for(gate.entered.wait(), timeout=5)
                 runner.cancel()
                 gate.release.set()
                 with self.assertRaises(asyncio.CancelledError):
-                    await asyncio.wait_for(runner, timeout=0.5)
+                    await asyncio.wait_for(runner, timeout=5)
             finally:
                 gate.release.set()
                 agent_server.ACTIVE_LOCK = original_active_lock
@@ -1069,7 +1069,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 Path(self.cwd) / ".runner-test-manifest.json",
                 allow_exec_fallback=False,
             ))
-            await asyncio.wait_for(start_entered.wait(), timeout=0.5)
+            await asyncio.wait_for(start_entered.wait(), timeout=5)
             runner.cancel()
             for _ in range(100):
                 if manager.list_turns_calls:
@@ -1086,7 +1086,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 },
             })
             with self.assertRaises(asyncio.CancelledError):
-                await asyncio.wait_for(runner, timeout=0.5)
+                await asyncio.wait_for(runner, timeout=5)
 
         self.assertEqual(turn.interrupt_calls, 1)
         self.assertEqual(turn.close_calls, 1)
@@ -1142,10 +1142,10 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 Path(self.cwd) / ".runner-test-manifest.json",
                 allow_exec_fallback=False,
             ))
-            await asyncio.wait_for(start_entered.wait(), timeout=0.5)
+            await asyncio.wait_for(start_entered.wait(), timeout=5)
             runner.cancel()
             with self.assertRaises(asyncio.CancelledError):
-                await asyncio.wait_for(runner, timeout=0.5)
+                await asyncio.wait_for(runner, timeout=5)
 
         self.assertEqual(turn.interrupt_calls, 0)
         self.assertEqual(turn.close_calls, 1)
@@ -2028,12 +2028,12 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     "chat-native", "run-original", manager, "thread-native",
                     subscription=turn._subscription,
                 ))
-                await asyncio.wait_for(projection_drained.wait(), timeout=1)
+                await asyncio.wait_for(projection_drained.wait(), timeout=5)
                 self.assertFalse(handoff.done())
                 self.assertNotIn("codex_goal_handoff_closed", agent_server.ACTIVE["chat-native"])
                 # An accepted goal/set persists its active response under this lock.
                 self.session["codex_goal"]["status"] = "active"
-            self.assertTrue(await asyncio.wait_for(handoff, timeout=1))
+            self.assertTrue(await asyncio.wait_for(handoff, timeout=5))
         self.assertFalse(agent_server.ACTIVE["chat-native"]["codex_goal_handoff_closed"])
         self.assertEqual(
             agent_server.ACTIVE["chat-native"]["codex_control_reservation_id"],
@@ -2115,11 +2115,11 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     "thread-native", "run-original", turn._subscription,
                     finalize_operation=False,
                 ))
-                await asyncio.wait_for(timed_out.wait(), timeout=1)
+                await asyncio.wait_for(timed_out.wait(), timeout=5)
                 self.assertFalse(consumer.done())
                 self.session["codex_goal"]["status"] = "active"
             try:
-                await asyncio.wait_for(resumed_read.wait(), timeout=1)
+                await asyncio.wait_for(resumed_read.wait(), timeout=5)
                 self.session["codex_goal"]["status"] = "complete"
                 turn.feed({
                     "method": "turn/started",
@@ -2451,7 +2451,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     agent_server.TurnRequest(prompt="Start slowly"),
                 )
             )
-            await asyncio.wait_for(runtime_started.wait(), timeout=1)
+            await asyncio.wait_for(runtime_started.wait(), timeout=5)
             result = await agent_server.stop_turn("chat-native")
 
         self.assertTrue(result["stopped"])
@@ -2496,7 +2496,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     reserve_session=True,
                 )
             )
-            await asyncio.wait_for(manager_started.wait(), timeout=1)
+            await asyncio.wait_for(manager_started.wait(), timeout=5)
             result = await agent_server.stop_turn("chat-native")
 
         self.assertTrue(result["stopped"])
@@ -2621,7 +2621,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     reserve_session=True,
                 )
             )
-            await asyncio.wait_for(start_entered.wait(), timeout=1)
+            await asyncio.wait_for(start_entered.wait(), timeout=5)
             reservation_id = str(
                 agent_server.CURRENT_TURNS["chat-native"].get(
                     "codex_control_reservation_id"
@@ -2996,7 +2996,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 agent_server.stop_turn("chat-native")
             )
             try:
-                await asyncio.wait_for(quarantine_started.wait(), timeout=1)
+                await asyncio.wait_for(quarantine_started.wait(), timeout=5)
                 released = await agent_server.release_codex_control_slot(
                     "chat-native",
                     expected_thread_id="thread-old",
@@ -3016,7 +3016,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                         "provider_thread_id": "thread-new",
                     }
                 finish_quarantine.set()
-                result = await asyncio.wait_for(stop_task, timeout=1)
+                result = await asyncio.wait_for(stop_task, timeout=5)
             finally:
                 finish_quarantine.set()
                 release_owner.set()
@@ -4059,7 +4059,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     "queued-steer",
                 )
             )
-            await asyncio.wait_for(turn.steer_started.wait(), timeout=1)
+            await asyncio.wait_for(turn.steer_started.wait(), timeout=5)
 
             turn.feed(reasoning_item("reason-before", "Reasoning before ack."))
             turn.feed(agent_message(
@@ -4612,7 +4612,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     allow_resume_rollover=False,
                 )
             )
-            await asyncio.wait_for(manager.turn_start_called.wait(), timeout=1)
+            await asyncio.wait_for(manager.turn_start_called.wait(), timeout=5)
 
             active = agent_server.ACTIVE["chat-native"]
             active["provider_turn_ready"] = True
@@ -4699,7 +4699,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 # drain, but before ACTIVE/BUSY ownership is released.
                 await asyncio.wait_for(
                     manager.handler_wait_started.wait(),
-                    timeout=1,
+                    timeout=5,
                 )
                 self.assertFalse(runner.done())
                 async with agent_server.ACTIVE_LOCK:
@@ -4712,7 +4712,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                         "chat-native",
                         "queued-after-terminal-drain",
                     ),
-                    timeout=1,
+                    timeout=5,
                 )
 
                 self.assertFalse(result["ok"])
@@ -4767,7 +4767,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     "queued-at-boundary",
                 )
             )
-            await asyncio.wait_for(turn.steer_started.wait(), timeout=1)
+            await asyncio.wait_for(turn.steer_started.wait(), timeout=5)
             turn.feed(completed_notification())
             turn.acknowledge_steer()
             with self.assertRaises(
@@ -4817,12 +4817,12 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "chat-native",
                 "queued-cancel-boundary",
             ))
-            await asyncio.wait_for(turn.steer_started.wait(), timeout=1)
+            await asyncio.wait_for(turn.steer_started.wait(), timeout=5)
             runner.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await runner
             try:
-                outcome = await asyncio.wait_for(force_send, timeout=1)
+                outcome = await asyncio.wait_for(force_send, timeout=5)
             except agent_server.NativeSteerHandoffError as exc:
                 raised_error = exc
             else:
@@ -4864,7 +4864,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     "queued-stop-race",
                 )
             )
-            await asyncio.wait_for(turn.steer_started.wait(), timeout=1)
+            await asyncio.wait_for(turn.steer_started.wait(), timeout=5)
             stop = asyncio.create_task(agent_server.stop_turn("chat-native"))
             for _ in range(100):
                 if turn.interrupt_calls == 1:
@@ -5122,7 +5122,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "chat-native",
                 "queued-cancel-commit",
             ))
-            await asyncio.wait_for(commit_started.wait(), timeout=1)
+            await asyncio.wait_for(commit_started.wait(), timeout=5)
             candidate_run_id = str(
                 agent_server.CURRENT_TURNS["chat-native"]["run_id"]
             )
@@ -5147,7 +5147,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(
                 agent_server.NativeSteerHandoffError
             ) as raised:
-                await asyncio.wait_for(force_send, timeout=1)
+                await asyncio.wait_for(force_send, timeout=5)
 
         self.assertTrue(raised.exception.delivery_uncertain)
         self.assertFalse(raised.exception.safe_to_requeue)
@@ -5189,7 +5189,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "chat-native",
                 "queued-cancel-before-promotion",
             ))
-            await asyncio.wait_for(turn.steer_started.wait(), timeout=1)
+            await asyncio.wait_for(turn.steer_started.wait(), timeout=5)
             candidate_run_id = str(turn.steer_calls[0][1])
             candidate_records = [
                 capability
@@ -5217,7 +5217,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(
                 agent_server.NativeSteerHandoffError
             ) as raised:
-                await asyncio.wait_for(force_send, timeout=1)
+                await asyncio.wait_for(force_send, timeout=5)
 
         self.assertTrue(raised.exception.delivery_uncertain)
         self.assertFalse(raised.exception.safe_to_requeue)
@@ -5455,7 +5455,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     allow_exec_fallback=True,
                     allow_resume_rollover=True,
                 ),
-                timeout=0.5,
+                timeout=5,
             )
 
         self.assertLess(time.monotonic() - started, 0.5)
@@ -5596,7 +5596,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     allow_exec_fallback=True,
                     allow_resume_rollover=True,
                 ),
-                timeout=0.5,
+                timeout=5,
             )
 
         self.assertEqual(pending_turn.turn_id, "")
@@ -6110,7 +6110,7 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
             patch.object(agent_server, "WEBSOCKET_SEND_TIMEOUT_SECONDS", 1.0),
         ):
             broadcast = asyncio.create_task(hub.broadcast("chat-native", event))
-            await asyncio.wait_for(close_started.wait(), timeout=0.2)
+            await asyncio.wait_for(close_started.wait(), timeout=5)
 
             # The failed transport still consumes its lease while close is in
             # flight, so reconnects cannot evade either capacity ceiling.

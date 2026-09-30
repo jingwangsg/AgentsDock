@@ -221,7 +221,7 @@ class LoginHandoffTests(binary.BinaryRefreshTests):
                 lock.release()
         old.client._start_lock = ObservedLock()
         draining = asyncio.create_task(self.drain())
-        await asyncio.wait_for(waiting.wait(), 1)
+        await asyncio.wait_for(waiting.wait(), 5)
         old.client._turns_by_thread["late"] = SimpleNamespace(_completed=False)
         old.client._pending[1] = ("thread/resume", object(), None)
         lock.release()

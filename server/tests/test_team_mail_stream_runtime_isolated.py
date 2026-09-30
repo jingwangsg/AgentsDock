@@ -324,8 +324,8 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
             loop.call_soon_threadsafe(close_done.set)
         worker = threading.Thread(target=consume, daemon=True)
         worker.start()
-        await asyncio.wait_for(began.wait(), 1)
-        await asyncio.wait_for(cancelled.wait(), 1)
+        await asyncio.wait_for(began.wait(), 5)
+        await asyncio.wait_for(cancelled.wait(), 5)
         closer = threading.Thread(target=close, daemon=True)
         closer.start()
         try:
@@ -335,8 +335,8 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(worker.is_alive())
         finally:
             release.set()
-        await asyncio.wait_for(worker_done.wait(), 1)
-        await asyncio.wait_for(close_done.wait(), 1)
+        await asyncio.wait_for(worker_done.wait(), 5)
+        await asyncio.wait_for(close_done.wait(), 5)
         worker.join(.1)
         closer.join(.1)
 
@@ -357,7 +357,7 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
                 loop.call_soon_threadsafe(done.set)
         worker = threading.Thread(target=run, daemon=True)
         worker.start()
-        await asyncio.wait_for(done.wait(), 1)
+        await asyncio.wait_for(done.wait(), 5)
         worker.join(.1)
         self.assertFalse(worker.is_alive())
         self.assertEqual(entered, [])

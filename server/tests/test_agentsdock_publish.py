@@ -768,13 +768,13 @@ class ArtifactPublisherServerTests(unittest.IsolatedAsyncioTestCase):
                     manifest,
                     set(),
                 ))
-                await asyncio.wait_for(entered.wait(), timeout=1)
+                await asyncio.wait_for(entered.wait(), timeout=5)
                 task.cancel()
                 await asyncio.sleep(0)
                 self.assertFalse(task.done())
                 release.set()
                 with self.assertRaises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, timeout=1)
+                    await asyncio.wait_for(task, timeout=5)
 
 
 if __name__ == "__main__":

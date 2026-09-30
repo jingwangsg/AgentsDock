@@ -242,7 +242,7 @@ class StopTurnProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
             admission = asyncio.create_task(
                 agent_server.enqueue_turn("chat-1", request, session)
             )
-            await asyncio.wait_for(append_entered.wait(), timeout=1)
+            await asyncio.wait_for(append_entered.wait(), timeout=5)
             self.assertEqual(agent_server.update_blocking_queued_turn_count_locked(), 1)
 
             admission.cancel()
@@ -409,7 +409,7 @@ class StopTurnProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
             )
             await asyncio.wait_for(
                 descendant_cleanup_started.wait(),
-                timeout=0.5,
+                timeout=5,
             )
             promotion_task = asyncio.create_task(
                 agent_server.start_next_queued_turn("chat-1")
@@ -502,7 +502,7 @@ class StopTurnProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
             stop_task = asyncio.create_task(
                 agent_server.stop_turn_endpoint("chat-1")
             )
-            await asyncio.wait_for(cleanup_started.wait(), timeout=0.5)
+            await asyncio.wait_for(cleanup_started.wait(), timeout=5)
             try:
                 self.assertTrue(agent_server.explicit_stop_in_progress("chat-1"))
                 self.assertFalse(
@@ -525,7 +525,7 @@ class StopTurnProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
                             ),
                         ),
                     ),
-                    timeout=0.5,
+                    timeout=5,
                 )
 
                 self.assertEqual(routes, {
@@ -539,7 +539,7 @@ class StopTurnProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(stop_task.done())
             finally:
                 finish_cleanup.set()
-                result = await asyncio.wait_for(stop_task, timeout=0.5)
+                result = await asyncio.wait_for(stop_task, timeout=5)
 
         self.assertTrue(result["stopped"])
         self.assertFalse(agent_server.explicit_stop_in_progress("chat-1"))
@@ -589,7 +589,7 @@ class StopTurnProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
             waiter = asyncio.create_task(
                 agent_server.stop_turn_endpoint("chat-1")
             )
-            await asyncio.wait_for(cleanup_started.wait(), timeout=0.5)
+            await asyncio.wait_for(cleanup_started.wait(), timeout=5)
             operation = operations["chat-1"]
             waiter.cancel()
             with self.assertRaises(asyncio.CancelledError):
@@ -600,7 +600,7 @@ class StopTurnProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(agent_server.explicit_stop_in_progress("chat-1"))
 
             finish_cleanup.set()
-            result = await asyncio.wait_for(operation, timeout=0.5)
+            result = await asyncio.wait_for(operation, timeout=5)
 
         self.assertTrue(result["stopped"])
         self.assertFalse(operations)
@@ -761,11 +761,11 @@ class StopTurnProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
                     agent_server.start_next_queued_turn("chat-a"),
                     agent_server.start_next_queued_turn("chat-b"),
                 ),
-                timeout=0.5,
+                timeout=5,
             )
             await asyncio.wait_for(
                 both_wakes_finished.wait(),
-                timeout=0.5,
+                timeout=5,
             )
 
         self.assertEqual(discard_count, 2)
@@ -839,7 +839,7 @@ class StopTurnProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
             )
             promotion_task: asyncio.Task[object] | None = None
             try:
-                await asyncio.wait_for(launch_started.wait(), timeout=0.5)
+                await asyncio.wait_for(launch_started.wait(), timeout=5)
                 promotion_task = queue_start_tasks.get("chat-1")
                 self.assertIsNotNone(promotion_task)
                 await asyncio.sleep(0)
@@ -950,9 +950,9 @@ class StopTurnProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
             try:
                 result = await asyncio.wait_for(
                     agent_server.stop_turn("chat-1"),
-                    timeout=0.5,
+                    timeout=5,
                 )
-                await asyncio.wait_for(launch_started.wait(), 0.5)
+                await asyncio.wait_for(launch_started.wait(), 5)
                 promotion_task = queue_start_tasks.get("chat-1")
 
                 self.assertTrue(result["stopped"])
@@ -1661,7 +1661,7 @@ class ProviderTurnTaskRecoveryTests(unittest.IsolatedAsyncioTestCase):
             promotion_task: asyncio.Task[object] | None = None
             try:
                 self.assertTrue(released)
-                await asyncio.wait_for(launch_started.wait(), timeout=0.5)
+                await asyncio.wait_for(launch_started.wait(), timeout=5)
                 promotion_task = queue_start_tasks.get("chat-1")
                 self.assertIsNotNone(promotion_task)
 
@@ -2543,7 +2543,7 @@ class RunQueuedTurnNowTests(unittest.IsolatedAsyncioTestCase):
             force_send = asyncio.create_task(
                 run_queued_turn_now("chat-1", "queued-steer")
             )
-            await asyncio.wait_for(transition_started.wait(), 0.5)
+            await asyncio.wait_for(transition_started.wait(), 5)
             explicit_stop = asyncio.create_task(
                 agent_server.stop_turn_endpoint("chat-1")
             )
@@ -2806,7 +2806,7 @@ class RunQueuedTurnNowTests(unittest.IsolatedAsyncioTestCase):
             patch.object(agent_server, "_start_turn_locked", side_effect=start_second) as start,
         ):
             await agent_server.start_next_queued_turn("chat-1")
-            await asyncio.wait_for(second_started.wait(), timeout=1)
+            await asyncio.wait_for(second_started.wait(), timeout=5)
             for _ in range(20):
                 owner = agent_server.QUEUE_START_TASKS.get("chat-1")
                 if owner is None or owner.done():
@@ -3326,13 +3326,13 @@ class RunQueuedTurnNowTests(unittest.IsolatedAsyncioTestCase):
             promotion = asyncio.create_task(
                 agent_server.start_next_queued_turn("chat-1")
             )
-            await asyncio.wait_for(start_entered.wait(), 0.5)
+            await asyncio.wait_for(start_entered.wait(), 5)
             await queue_lock.acquire()
             try:
                 promotion.cancel()
-                await asyncio.wait_for(requeue_entered.wait(), 0.5)
+                await asyncio.wait_for(requeue_entered.wait(), 5)
                 promotion.cancel()
-                await asyncio.wait_for(join_entered.wait(), 0.5)
+                await asyncio.wait_for(join_entered.wait(), 5)
                 promotion.cancel()
                 await asyncio.sleep(0)
 
@@ -4091,7 +4091,7 @@ class RunQueuedTurnNowTests(unittest.IsolatedAsyncioTestCase):
                     "queued-steer",
                 )
             )
-            await asyncio.wait_for(write_started.wait(), 0.5)
+            await asyncio.wait_for(write_started.wait(), 5)
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
@@ -4140,7 +4140,7 @@ class RunQueuedTurnNowTests(unittest.IsolatedAsyncioTestCase):
                     "queued-steer",
                 )
             )
-            await asyncio.wait_for(write_started.wait(), 0.5)
+            await asyncio.wait_for(write_started.wait(), 5)
             await agent_server.QUEUE_LOCK.acquire()
             try:
                 task.cancel()

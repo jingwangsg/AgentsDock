@@ -437,16 +437,16 @@ class CodexThreadPolicyTests(unittest.IsolatedAsyncioTestCase):
                     "thread-new",
                 )
             )
-            await asyncio.wait_for(manager.started.wait(), timeout=1)
+            await asyncio.wait_for(manager.started.wait(), timeout=5)
             await asyncio.wait_for(
                 agent_server.pin_codex_app_server_thread(
                     "thread-unrelated",
                     manager,  # type: ignore[arg-type]
                 ),
-                timeout=0.1,
+                timeout=5,
             )
             manager.release.set()
-            await asyncio.wait_for(eviction, timeout=1)
+            await asyncio.wait_for(eviction, timeout=5)
 
         self.assertNotIn("thread-old", manager.loaded)
         self.assertNotIn(

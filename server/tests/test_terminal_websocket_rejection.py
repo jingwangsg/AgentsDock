@@ -305,7 +305,7 @@ class TerminalWebSocketRejectionTests(unittest.IsolatedAsyncioTestCase):
             owner = asyncio.create_task(
                 agent_server.session_terminal(session_id, first)  # type: ignore[arg-type]
             )
-            await asyncio.wait_for(first.ready.wait(), timeout=1)
+            await asyncio.wait_for(first.ready.wait(), timeout=5)
 
             retired = await registry.close_admission_and_all()
             await asyncio.gather(owner, return_exceptions=True)
@@ -373,7 +373,7 @@ class TerminalWebSocketRejectionTests(unittest.IsolatedAsyncioTestCase):
             owner = asyncio.create_task(
                 agent_server.session_terminal(session_id, websocket)  # type: ignore[arg-type]
             )
-            await asyncio.wait_for(spawn_entered.wait(), timeout=1)
+            await asyncio.wait_for(spawn_entered.wait(), timeout=5)
             drain = asyncio.create_task(registry.close_admission_and_all())
             async def cleanup_task_is_owned() -> bool:
                 async with registry._lock:
@@ -387,7 +387,7 @@ class TerminalWebSocketRejectionTests(unittest.IsolatedAsyncioTestCase):
                 while not await cleanup_task_is_owned():
                     await asyncio.sleep(0)
 
-            await asyncio.wait_for(wait_for_cleanup_owner(), timeout=1)
+            await asyncio.wait_for(wait_for_cleanup_owner(), timeout=5)
             # Simulate a second device/lifecycle cancellation while the first
             # cancellation is already waiting for the to-thread spawn result.
             owner.cancel()

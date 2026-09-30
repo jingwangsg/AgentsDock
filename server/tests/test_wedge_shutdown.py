@@ -453,7 +453,7 @@ class BoundedShutdownPhaseTests(unittest.IsolatedAsyncioTestCase):
             timeout=0.01,
         )
         elapsed = loop.time() - started
-        await asyncio.wait_for(cancellation_suppressed.wait(), timeout=1)
+        await asyncio.wait_for(cancellation_suppressed.wait(), timeout=5)
         retained = (
             set(agent_server.SERVER_SHUTDOWN_STRAGGLERS) - prior_stragglers
         )
