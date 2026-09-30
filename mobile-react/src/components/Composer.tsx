@@ -1070,7 +1070,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
           </View>)}
           {!teamReferencesSupported ? <Text accessibilityRole="alert" style={{ color: colors.red }}>Reconnect this server to Team Network or remove the recipient reference.</Text> : null}
         </View> : null}
-        {queued.length || queuedRunStatus ? <QueueShelf sessionId={sessionId} profileId={activeProfileId} profileGeneration={profileGeneration} networkDisabled={networkDisabled} onSent={onSent} /> : null}
+        {queued.length || queuedRunStatus ? <QueueShelf sessionId={sessionId} profileId={activeProfileId} profileGeneration={profileGeneration} networkDisabled={networkDisabled} onSent={onSent} onPreview={openPreview} /> : null}
         {(uploads.length || pending.length || failed.length) ? <AttachmentShelf
           sessionId={sessionId}
           uploads={uploads}
@@ -1572,19 +1572,21 @@ function AttachmentShelf({ sessionId, uploads, pending, failed, connectionReady,
  * image, else its name. Other devices never saw the upload, so an unknown file
  * tries the image first and falls back to the name.
  */
-function QueuedAttachment({ sessionId, fileId }: { sessionId: string; fileId: string }) {
+function QueuedAttachment({ sessionId, fileId, onPreview }: { sessionId: string; fileId: string; onPreview: (name: string, source: AttachmentImageSource) => void }) {
   const colors = usePalette()
   const known = useAppStore(state => state.snapshots[sessionId]?.files.find(file => file.id === fileId))
   const [failed, setFailed] = useState(false)
   const name = known?.filename ?? 'Attachment'
   if (!failed && (!known?.content_type || known.content_type.startsWith('image/'))) {
-    return <Image
-      accessibilityLabel={name}
-      source={{ uri: client.fileURL(sessionId, fileId), headers: client.authHeaders() }}
-      contentFit="cover"
-      style={[styles.queueThumb, { borderColor: colors.border, backgroundColor: colors.raised }]}
-      onError={() => setFailed(true)}
-    />
+    const source = { uri: client.fileURL(sessionId, fileId), headers: client.authHeaders() }
+    return <Pressable accessibilityRole="button" accessibilityLabel={`Preview ${name}`} onPress={() => onPreview(name, source)}>
+      <Image
+        source={source}
+        contentFit="cover"
+        style={[styles.queueThumb, { borderColor: colors.border, backgroundColor: colors.raised }]}
+        onError={() => setFailed(true)}
+      />
+    </Pressable>
   }
   return <View style={[styles.queueFile, { borderColor: colors.border }]}>
     <FileIcon size={12} color={colors.muted} />
@@ -1592,7 +1594,7 @@ function QueuedAttachment({ sessionId, fileId }: { sessionId: string; fileId: st
   </View>
 }
 
-export function QueueShelf({ sessionId, profileId, profileGeneration, networkDisabled, onSent }: { sessionId: string; profileId: string | null; profileGeneration: number; networkDisabled: boolean; onSent: () => void }) {
+export function QueueShelf({ sessionId, profileId, profileGeneration, networkDisabled, onSent, onPreview }: { sessionId: string; profileId: string | null; profileGeneration: number; networkDisabled: boolean; onSent: () => void; onPreview: (name: string, source: AttachmentImageSource) => void }) {
   const colors = usePalette()
   const { width } = useWindowDimensions()
   const allTurns = useAppStore(state => state.snapshots[sessionId]?.queuedTurns) ?? EMPTY_QUEUE
@@ -1809,7 +1811,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
             }}
             multiline
             style={[styles.queueInput, { color: colors.text }]}
-          /> : <Pressable accessibilityRole={crossChatDelivery ? undefined : 'button'} accessibilityLabel={agentMessage ? `${sender}: ${turnText}` : crossChatDelivery ? 'Incoming cross-chat delivery' : 'Edit queued message'} accessibilityState={{ disabled: crossChatDelivery || networkDisabled || queueBusy }} disabled={crossChatDelivery || networkDisabled || queueBusy} style={styles.queuePrompt} onPress={() => { if (remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) beginEdit(turn) }}>{agentMessage ? <Text style={{ color: colors.muted, fontSize: 11, fontWeight: '700' }}>{sender}</Text> : null}<Text style={[styles.queueText, { color: colors.text }]} numberOfLines={3}>{turnText}</Text>{turn.file_ids.length ? <View style={styles.queueAttachments}>{turn.file_ids.map(fileId => <QueuedAttachment key={fileId} sessionId={sessionId} fileId={fileId} />)}</View> : null}{crossChatDelivery && !agentMessage ? <Text style={{ color: colors.muted, fontSize: 10 }}>Cross-chat delivery · starts automatically</Text> : !agentMessage && pausedLabel ? <Text style={{ color: colors.orange, fontSize: 10 }}>{pausedLabel}</Text> : null}</Pressable>}
+          /> : <Pressable accessibilityRole={crossChatDelivery ? undefined : 'button'} accessibilityLabel={agentMessage ? `${sender}: ${turnText}` : crossChatDelivery ? 'Incoming cross-chat delivery' : 'Edit queued message'} accessibilityState={{ disabled: crossChatDelivery || networkDisabled || queueBusy }} disabled={crossChatDelivery || networkDisabled || queueBusy} style={styles.queuePrompt} onPress={() => { if (remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) beginEdit(turn) }}>{agentMessage ? <Text style={{ color: colors.muted, fontSize: 11, fontWeight: '700' }}>{sender}</Text> : null}<Text style={[styles.queueText, { color: colors.text }]} numberOfLines={3}>{turnText}</Text>{turn.file_ids.length ? <View style={styles.queueAttachments}>{turn.file_ids.map(fileId => <QueuedAttachment key={fileId} sessionId={sessionId} fileId={fileId} onPreview={onPreview} />)}</View> : null}{crossChatDelivery && !agentMessage ? <Text style={{ color: colors.muted, fontSize: 10 }}>Cross-chat delivery · starts automatically</Text> : !agentMessage && pausedLabel ? <Text style={{ color: colors.orange, fontSize: 10 }}>{pausedLabel}</Text> : null}</Pressable>}
           {!crossChatDelivery && rowReferences.length ? <ChatReferenceShelf
             references={rowReferences}
             referenceSupported={referenceSupported}

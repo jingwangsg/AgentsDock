@@ -2122,6 +2122,36 @@ describe('Composer', () => {
     expect(mediaURL).toHaveBeenCalledWith('profile-b', 0, 'chat-1', 'same-file')
   })
 
+  it('opens a composer or queued image thumbnail in the media preview', async () => {
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        files: { mediaURL: (_profileId: string, _generation: number, _sessionId: string, fileId: string) => `agentsdock-media://file/${fileId}` }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      uploadsBySession: { 'chat-1': [{ id: 'draft-image', filename: 'draft.png', content_type: 'image/png' }] },
+      snapshots: { 'chat-1': {
+        session: { id: 'chat-1', title: 'Chat', backend: 'codex' }, events: [],
+        // Queued from another device: this one never saw the upload's metadata.
+        queuedTurns: [{ queued_id: 'queued-user', session_id: 'chat-1', prompt: 'Look at this', file_ids: ['queued-image'], position: 1 }],
+        files: [], hasMoreEvents: false, filesTotal: 0, cachedAt: 0
+      } }
+    })
+    render(<Composer />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Preview of draft.png' }))
+    let dialog = await screen.findByRole('dialog', { name: 'draft.png' })
+    expect(dialog.querySelector('img')).toHaveAttribute('src', 'agentsdock-media://file/draft-image')
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Preview of Attachment' }))
+    dialog = await screen.findByRole('dialog', { name: 'Attachment' })
+    expect(dialog.querySelector('img')).toHaveAttribute('src', 'agentsdock-media://file/queued-image')
+  })
+
   it('shows calm accessible feedback while a dropped file is uploading', () => {
     useAppStore.setState({
       uploadPathsBySession: {

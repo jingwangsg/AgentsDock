@@ -3544,6 +3544,8 @@ button.tool-event-toggle:hover { background: #242424; }
 .tool-event-copy { margin-left: 6px; padding: 1px 3px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--muted); cursor: pointer; vertical-align: middle; display: inline-flex; }
 .tool-event-copy:hover { background: var(--interaction-hover); color: var(--text); }
 
+/* A small thumbnail that opens its image in the media preview. */
+.image-zoom-button { display: inline-flex; flex: 0 0 auto; padding: 0; background: none; cursor: zoom-in; }
 /* Attachments of a queued message: thumbnails for images, names for other files. */
 .queue-attachments { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .queue-attachment-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 5px; border: 1px solid var(--border); background: var(--surface-2); }

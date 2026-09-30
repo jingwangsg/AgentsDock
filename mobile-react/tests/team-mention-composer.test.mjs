@@ -500,6 +500,18 @@ test('queue revalidation clears hung action and rejects old closure/completion w
   }finally{await act(async()=>renderer.unmount())}
 })
 
+test('a queued image thumbnail opens the image preview',async()=>{
+  resetRoutes({snapshots:{chat:{queuedTurns:[{queued_id:'user',session_id:'chat',prompt:'Look at this',file_ids:['image']}],files:[]}}})
+  fixture.client.fileURL=(sessionId,fileId)=>`https://server/${sessionId}/${fileId}`;fixture.client.authHeaders=()=>({Authorization:'Bearer t'})
+  const previews=[]
+  const {renderer}=await renderQueue({onPreview:(...args)=>previews.push(args)})
+  try{
+    const thumb=renderer.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel==='Preview Attachment')
+    await act(async()=>thumb.props.onPress())
+    assert.deepEqual(previews,[['Attachment',{uri:'https://server/chat/image',headers:{Authorization:'Bearer t'}}]])
+  }finally{await act(async()=>renderer.unmount())}
+})
+
 test('same-tick queued Save submits once and reconnect preserves unsaved editor text',async()=>{
   const turn={queued_id:'user',session_id:'chat',prompt:'Old text',file_ids:[]}
   resetRoutes({snapshots:{chat:{queuedTurns:[turn]}}})

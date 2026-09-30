@@ -116,6 +116,7 @@ import { ClaudeGoalControls, useClaudeGoalsAvailable } from './ClaudeGoalControl
 import { openCodeProviderCommandsAvailable } from '@shared/opencode'
 import { opencodeBackendAvailable, opencodeBackendUnavailableReason } from '@shared/runtime-catalog'
 import { RuntimeHealthNotice } from './RuntimeHealth'
+import { MediaPreviewDialog } from './MediaGrid'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { WorkingDirectoryInput } from './WorkingDirectoryInput'
 import { WorkingDirectoryPopover } from './WorkingDirectoryPopover'
@@ -3349,9 +3350,11 @@ function BackendMenu({ session, running, admitting }: { session: Session; runnin
 
 function AttachmentShelf({ sessionId, profileId, profileGeneration, files, pending }: { sessionId: string; profileId: string | null; profileGeneration: number; files: AgentFile[]; pending: NativeFileRef[] }) {
   useLocale()
+  const [preview, setPreview] = useState<AgentFile | null>(null)
   return <div className="attachment-shelf">
-    {files.map(file => <div className="attachment-chip" key={file.id}>{effectiveFileContentType(file).startsWith('image/') ? <img src={profileId ? window.agentsDock.files.mediaURL(profileId, profileGeneration, sessionId, file.id) : undefined} alt="" /> : <span className="attachment-file-icon" aria-hidden="true"><File size={15} /></span>}<span className="attachment-details"><strong>{file.filename}</strong><small>{formatBytes(file.size)}</small></span><button type="button" aria-label={t("ui.Composer.remove_6f8460e", { "filename": String(file.filename) })} onClick={() => useAppStore.getState().removeUploadForSession(sessionId, file.id)}><X size={13} /></button></div>)}
+    {files.map(file => <div className="attachment-chip" key={file.id}>{effectiveFileContentType(file).startsWith('image/') ? <button type="button" className="image-zoom-button" aria-label={t('editor.previewOf', { name: file.filename })} onClick={() => setPreview(file)}><img src={profileId ? window.agentsDock.files.mediaURL(profileId, profileGeneration, sessionId, file.id) : undefined} alt="" /></button> : <span className="attachment-file-icon" aria-hidden="true"><File size={15} /></span>}<span className="attachment-details"><strong>{file.filename}</strong><small>{formatBytes(file.size)}</small></span><button type="button" aria-label={t("ui.Composer.remove_6f8460e", { "filename": String(file.filename) })} onClick={() => useAppStore.getState().removeUploadForSession(sessionId, file.id)}><X size={13} /></button></div>)}
     {pending.map(file => <div className="attachment-chip pending" role="status" aria-label={t("ui.Composer.uploading_222aa45", { "filename": String(file.name) })} key={file.path}><span className="attachment-file-icon" aria-hidden="true"><File size={15} /></span><span className="attachment-details"><strong>{file.name}</strong><small>{t("ui.Composer.uploading_5ce44dd")}</small></span></div>)}
+    <MediaPreviewDialog sessionId={sessionId} file={preview} files={files} onSelect={setPreview} onClose={() => setPreview(null)} />
   </div>
 }
 
@@ -4135,9 +4138,13 @@ function PendingQueuedRow({ submission }: { submission: PendingTurnSubmission })
 function QueuedAttachment({ profileId, profileGeneration, sessionId, fileId }: { profileId: string; profileGeneration: number; sessionId: string; fileId: string }) {
   const known = useAppStore(state => state.snapshots[sessionId]?.files.find(file => file.id === fileId))
   const [failed, setFailed] = useState(false)
+  const [zoomed, setZoomed] = useState(false)
   const name = known?.filename ?? t('composer.queue.attachment')
   if (!failed && (!known?.content_type || known.content_type.startsWith('image/'))) {
-    return <img className="queue-attachment-thumb" src={window.agentsDock.files.mediaURL(profileId, profileGeneration, sessionId, fileId)} alt={name} title={name} onError={() => setFailed(true)} />
+    return <>
+      <button type="button" className="image-zoom-button" aria-label={t('editor.previewOf', { name })} onClick={() => setZoomed(true)}><img className="queue-attachment-thumb" src={window.agentsDock.files.mediaURL(profileId, profileGeneration, sessionId, fileId)} alt={name} title={name} onError={() => setFailed(true)} /></button>
+      <MediaPreviewDialog sessionId={sessionId} file={zoomed ? known ?? { id: fileId, filename: name } : null} onClose={() => setZoomed(false)} />
+    </>
   }
   return <span className="queue-attachment-file" title={name}><File size={12} aria-hidden="true" />{name}</span>
 }

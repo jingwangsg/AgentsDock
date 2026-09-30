@@ -9,10 +9,10 @@ const timelineRows = source('src/components/TimelineRows.tsx')
 const copyButton = source('src/components/CopyTextButton.tsx')
 
 test('a queued message shows its images, not only its text', () => {
-  assert.match(composer, /\{turn\.file_ids\.length \? <View style=\{styles\.queueAttachments\}>\{turn\.file_ids\.map\(fileId => <QueuedAttachment key=\{fileId\} sessionId=\{sessionId\} fileId=\{fileId\} \/>\)\}<\/View> : null\}/)
+  assert.match(composer, /\{turn\.file_ids\.length \? <View style=\{styles\.queueAttachments\}>\{turn\.file_ids\.map\(fileId => <QueuedAttachment key=\{fileId\} sessionId=\{sessionId\} fileId=\{fileId\} onPreview=\{onPreview\} \/>\)\}<\/View> : null\}/)
   // Another device never saw the upload: an unknown file tries the image and falls back to its name.
   assert.match(composer, /if \(!failed && \(!known\?\.content_type \|\| known\.content_type\.startsWith\('image\/'\)\)\) \{/)
-  assert.match(composer, /source=\{\{ uri: client\.fileURL\(sessionId, fileId\), headers: client\.authHeaders\(\) \}\}/)
+  assert.match(composer, /const source = \{ uri: client\.fileURL\(sessionId, fileId\), headers: client\.authHeaders\(\) \}/)
   assert.match(composer, /onError=\{\(\) => setFailed\(true\)\}/)
 })
 

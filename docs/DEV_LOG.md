@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-10-01 — Small image thumbnails open the full image
+
+- Clicking the thumbnail of a queued message's image, or of an image attached
+  in the composer before sending, opens the image in the media preview
+  (desktop). On mobile, tapping a queued message's image thumbnail opens the
+  full-screen image preview the composer attachments already use.
+- Verified on desktop in the built app against the local server: a queued
+  image and a dropped composer attachment each open the 2240x202 source image;
+  Escape closes the preview and a second click reopens it. The mobile change is
+  covered by component and contract tests only.
+
 ## 2026-10-01 — Editing a message after stopping Claude now really rewinds
 
 - Edit a message in a Claude chat whose previous turn was stopped, and the
