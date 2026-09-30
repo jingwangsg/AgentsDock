@@ -81,6 +81,7 @@ import type {
 import { normalizeServerURL } from '../lib/format'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../lib/provider-usage'
 import { createUploadFormData } from '../lib/upload-form'
+import { parseSyncedSideChat, type SyncedSideChat } from '../lib/side-chat'
 import { teamNetworkRequestPath } from '../lib/team-network'
 import { retriesStaleGitAction } from '../lib/workspace-changes'
 import type { ConversationExportFormat } from '../lib/file-transfer'
@@ -316,6 +317,22 @@ export class AgentServerClient {
     const query = new URLSearchParams({ backend, session_id: sessionId })
     if (options.refresh) query.set('refresh', 'true')
     return parseProviderUsage(await this.request(`/api/runtime/usage?${query}`, {}, 30_000, false, 'native-control'), backend)
+  }
+  private async sideChatRequest(sessionId: string, path: string, init: RequestInit = {}): Promise<SyncedSideChat> {
+    const value = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/side-chat${path}`, init, 30_000, false, 'native-control')
+    return parseSyncedSideChat(value, sessionId)
+  }
+  readSideChat(sessionId: string): Promise<SyncedSideChat> {
+    return this.sideChatRequest(sessionId, '')
+  }
+  submitSideChat(sessionId: string, input: { request_id: string; question: string; side_chat_id: string; after_request_id?: string }): Promise<SyncedSideChat> {
+    return this.sideChatRequest(sessionId, '', { method: 'POST', body: JSON.stringify(input) })
+  }
+  stopSideChat(sessionId: string, requestId: string): Promise<SyncedSideChat> {
+    return this.sideChatRequest(sessionId, `/requests/${encodeURIComponent(requestId)}`, { method: 'DELETE' })
+  }
+  clearSideChat(sessionId: string, sideChatId: string): Promise<SyncedSideChat> {
+    return this.sideChatRequest(sessionId, `/${encodeURIComponent(sideChatId)}`, { method: 'DELETE' })
   }
   teamNetworkGet<T>(basePath: string, path: string): Promise<T> {
     return this.request(teamNetworkRequestPath(basePath, path), { redirect: 'error' }, 30_000, false, 'team-network')
@@ -918,6 +935,7 @@ export class AgentServerClient {
     onState: (connected: boolean, detail?: WebSocketStateDetail) => void,
     onProviderRuntime?: (event: ProviderRuntimeChanged) => void,
     onProviderUsage?: (backend: UsageBackend) => void,
+    onSideChatChanged?: (revision: number) => void,
   ): () => void {
     const scope = this.captureScope()
     const endpoint = new URL(buildURL(scope.configuration.baseURL, `/api/sessions/${encodeURIComponent(sessionId)}/events`))
@@ -1000,6 +1018,10 @@ export class AgentServerClient {
           }
           if (isProviderRuntimeChanged(packet)) {
             if (packet.session_id === sessionId) onProviderRuntime?.(packet)
+            return
+          }
+          if (isSideChatUpdated(packet)) {
+            if (packet.session_id === sessionId) onSideChatChanged?.(packet.revision)
             return
           }
           const event = packet as Event
@@ -1337,6 +1359,13 @@ function isProviderRuntimeChanged(value: unknown): value is ProviderRuntimeChang
     && packet.backend === 'claude'
     && typeof packet.session_id === 'string'
     && packet.session_id.length > 0
+}
+
+function isSideChatUpdated(value: unknown): value is { type: 'side_chat_updated'; session_id: string; revision: number } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const packet = value as Record<string, unknown>
+  return packet.type === 'side_chat_updated' && typeof packet.session_id === 'string'
+    && Number.isSafeInteger(packet.revision) && (packet.revision as number) >= 0
 }
 
 function websocketCloseDetail(

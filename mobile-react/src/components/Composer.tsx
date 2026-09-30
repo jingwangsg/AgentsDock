@@ -99,6 +99,7 @@ import { BackendMark } from './BackendMark'
 import { useCodexRuntime } from './CodexRuntimeContext'
 import { CodexGoalBar, CodexGoalEditorSheet } from './CodexGoalBar'
 import { WorkingDirectoryPicker } from './WorkingDirectoryPicker'
+import { SideChatButton, SideChatSheet } from './SideChatSheet'
 import { useClaudeRuntime } from './ClaudeRuntimeContext'
 import { IconButton, SheetCloseButton } from './ui'
 import { FullscreenViewerCloseButton, SwipeDismissImage } from './FullscreenImageViewer'
@@ -302,6 +303,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const denseToolbar = compactToolbar && (composerWidth === 0 ? width < 352 : isDenseComposerToolbar(composerWidth))
   const viewportLimits = composerViewportLimits(width, height, keyboardVisible)
   const [workingDirectoryOpen, setWorkingDirectoryOpen] = useState(false)
+  const [sideChatOpen, setSideChatOpen] = useState(false)
   const displayedInputHeight = Math.min(composerInputHeight(draft, inputHeight), viewportLimits.inputMaxHeight)
   const hasAuxiliaryContent = commandPaletteVisible || references.length > 0 || teamReferences.length > 0 || queued.length > 0 || Boolean(queuedRunStatus) || uploads.length > 0 || pending.length > 0 || failed.length > 0
   const validationRevision = client.validationRevision
@@ -1038,7 +1040,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   return (
     <View testID="chat-composer" style={[styles.shell, { backgroundColor: colors.background }]}>
       {/* The chip hides with the auxiliary rail so a landscape phone keeps Send above the keyboard; /workdir still opens the sheet. */}
-      {!welcome ? <WorkingDirectoryPicker sessionId={sessionId} chipVisible={viewportLimits.auxiliaryMaxHeight > 0} open={workingDirectoryOpen} onOpenChange={setWorkingDirectoryOpen} /> : null}
+      {!welcome ? <WorkingDirectoryPicker sessionId={sessionId} chipVisible={viewportLimits.auxiliaryMaxHeight > 0} open={workingDirectoryOpen} onOpenChange={setWorkingDirectoryOpen} trailing={<SideChatButton sessionId={sessionId} onPress={() => { dismissAppKeyboard(); setSideChatOpen(true) }} />} /> : null}
       {!welcome && backend === 'codex' ? <CodexGoalBar /> : null}
       {hasAuxiliaryContent && viewportLimits.auxiliaryMaxHeight > 0 ? <ScrollView
         testID="composer-auxiliary-scroll"
@@ -1207,6 +1209,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         }}
         onClose={() => setRuntimeSheetSection(null)}
       /> : null}
+      {/* Outside the folder row, which hides while a landscape keyboard is up (the sheet's own included). */}
+      {sideChatOpen ? <SideChatSheet sessionId={sessionId} onClose={() => setSideChatOpen(false)} /> : null}
       {!welcome && backend === 'codex' ? <CodexGoalEditorSheet visible={goalEditorOpen} onClose={() => { setGoalEditorOpen(false); requestAnimationFrame(dismissAppKeyboard) }} /> : null}
       {textPromptDialog}
     </View>

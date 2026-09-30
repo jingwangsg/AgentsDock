@@ -1,7 +1,7 @@
 // Working-directory chip above the composer and its folder picker. Port of the
 // desktop WorkingDirectoryPopover: tapping a folder opens it, the open folder is
 // the selection, and "Choose" saves it as the chat's cwd.
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { ArrowUp, ChevronRight, Folder, FolderOpen, RotateCcw } from 'lucide-react-native'
@@ -23,7 +23,7 @@ function folderLabel(path: string): string {
   return segments[segments.length - 1] || trimmed
 }
 
-export function WorkingDirectoryPicker({ sessionId, chipVisible, open, onOpenChange }: { sessionId: string; chipVisible: boolean; open: boolean; onOpenChange: (open: boolean) => void }) {
+export function WorkingDirectoryPicker({ sessionId, chipVisible, open, onOpenChange, trailing }: { sessionId: string; chipVisible: boolean; open: boolean; onOpenChange: (open: boolean) => void; trailing?: ReactNode }) {
   const colors = usePalette()
   const cwd = useAppStore(state => state.sessions.find(value => value.id === sessionId)?.cwd?.trim() ?? '')
   const completionAvailable = useAppStore(state => state.health?.capabilities?.working_directory_completion?.available === true)
@@ -120,7 +120,7 @@ export function WorkingDirectoryPicker({ sessionId, chipVisible, open, onOpenCha
   const chipLabel = cwd ? `Working directory: ${cwd}` : 'Set the working directory for this chat'
 
   return <>
-    {chipVisible ? <Pressable
+    {chipVisible ? <View style={styles.chipRow}><Pressable
       testID="composer-working-directory"
       accessibilityRole="button"
       accessibilityLabel={chipLabel}
@@ -129,7 +129,7 @@ export function WorkingDirectoryPicker({ sessionId, chipVisible, open, onOpenCha
     >
       <FolderOpen size={13} color={colors.muted} />
       <Text style={[styles.chipText, { color: colors.muted }]} numberOfLines={1}>{folderLabel(cwd)}</Text>
-    </Pressable> : null}
+    </Pressable>{trailing}</View> : null}
     <Modal visible={open} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={close}>
       <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
         <View style={[styles.header, { borderColor: colors.border }]}>
@@ -208,7 +208,8 @@ export function WorkingDirectoryPicker({ sessionId, chipVisible, open, onOpenCha
 }
 
 const styles = StyleSheet.create({
-  chip: { alignSelf: 'flex-start', maxWidth: '100%', minHeight: 30, borderRadius: 7, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 5 },
+  chipRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  chip: { flexShrink: 1, minHeight: 30, borderRadius: 7, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 5 },
   chipText: { flexShrink: 1, fontSize: 12, fontWeight: '600' },
   root: { flex: 1 },
   header: { minHeight: 64, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 14, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },

@@ -37,6 +37,7 @@ const mocks = {
   './BackendMark': `export const BackendMark='BackendMark';`,
   './CodexGoalBar': `export const CodexGoalBar=()=>null, CodexGoalEditorSheet=()=>null;`,
   './WorkingDirectoryPicker': `export const WorkingDirectoryPicker=()=>null;`,
+  './SideChatSheet': `export const SideChatButton=()=>null, SideChatSheet=()=>null;`,
   './TextPromptDialog': `export const useTextPrompt=()=>({promptText:async()=>null,textPromptDialog:null});`,
   './CodexRuntimeContext': `export const useCodexRuntime=()=>({refresh:async()=>{}});`,
   './ClaudeRuntimeContext': `export const useClaudeRuntime=()=>({refresh:async()=>{}});`,

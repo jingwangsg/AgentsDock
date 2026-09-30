@@ -1476,6 +1476,7 @@ export interface HealthCapabilities {
   server_updates?: ServerUpdatesCapability
   working_directory_completion?: WorkingDirectoryCompletionCapability
   remote_servers_v1?: RemoteServersCapability
+  side_questions?: { available: boolean; version: number; backends: string[]; max_question_chars?: number; native_context?: boolean; sync?: boolean }
   [key: string]: JsonValue | InteractiveProviderCapability | CursorBackendCapability | ScheduledJobsCapability | AgentEmergencyAlertsCapability | ProviderJobsAccessControlCapability | AgentTeamMailCapability | CrossChatHandoffsCapability | TeamHubV1Capability | ServerUpdatesCapability | WorkingDirectoryCompletionCapability | RemoteServersCapability | SessionRewindCapability | LocalProviderCommandsCapability | undefined
 }
 
