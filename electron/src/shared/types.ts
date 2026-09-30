@@ -2486,7 +2486,6 @@ export interface BootstrapPayload {
   folderOrder: string[]
   collapsedFolders: string[]
   archivedCollapsed: boolean
-  inspectorVisible: boolean
   /** Present for profile-aware bootstraps; omitted by the legacy single-server path. */
   activeProfileId?: string
   profiles?: PublicServerProfile[]

@@ -1,7 +1,5 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentsDockAPI } from '@shared/ipc'
-import type { WorkspaceProfileScope } from '@shared/types'
 import { TIMELINE_VIEWPORT_LAYOUT_EVENT, type TimelineViewportLayoutDetail } from '../lib/workspace-layout'
 import {
   CHAT_SPLIT_COMPACT_CONTROL_RAIL_PX,
@@ -10,33 +8,13 @@ import {
   shouldStackChatSplit
 } from './ChatSplitView'
 
-const scope: WorkspaceProfileScope = {
-  profileId: 'profile-a',
-  profileGeneration: 7,
-  serverIdentity: 'server-a'
-}
-
-let getScoped: ReturnType<typeof vi.fn>
-let setScoped: ReturnType<typeof vi.fn>
+const RATIO_KEY = 'agentsdock:chat-split-ratio'
 let animationFrames: Map<number, FrameRequestCallback>
 let nextAnimationFrame: number
 let resizeCallback: ResizeObserverCallback
 
 describe('ChatSplitView', () => {
   beforeEach(() => {
-    getScoped = vi.fn().mockResolvedValue(50)
-    setScoped = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: {
-        preferences: {
-          get: vi.fn(),
-          set: vi.fn(),
-          getScoped,
-          setScoped
-        }
-      } as unknown as AgentsDockAPI
-    })
     animationFrames = new Map()
     nextAnimationFrame = 0
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
@@ -58,27 +36,26 @@ describe('ChatSplitView', () => {
   afterEach(() => {
     cleanup()
     document.body.classList.remove('chat-split-resizing')
+    localStorage.clear()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
 
-  it('starts at an even split and restores a workspace-scoped ratio', async () => {
+  it('starts at an even split and restores the saved ratio', () => {
     const first = renderSplit()
     const firstSeparator = screen.getByRole('separator', { name: 'Resize chat panes' })
     expect(firstSeparator).toHaveAttribute('aria-valuenow', '50')
     expect(first.container.querySelector('.chat-split-view')).toHaveStyle({ '--chat-split-ratio': '50%' })
-    expect(getScoped).toHaveBeenCalledWith(scope, 'chatSplitRatio:v1', 50)
     first.unmount()
 
-    getScoped.mockResolvedValueOnce(64)
+    localStorage.setItem(RATIO_KEY, '64')
     const restored = renderSplit()
-    await waitFor(() => expect(screen.getByRole('separator', { name: 'Resize chat panes' })).toHaveAttribute('aria-valuenow', '64'))
+    expect(screen.getByRole('separator', { name: 'Resize chat panes' })).toHaveAttribute('aria-valuenow', '64')
     expect(restored.container.querySelector('.chat-split-view')).toHaveStyle({ '--chat-split-ratio': '64%' })
   })
 
   it('keeps covered chat panes mounted but inert to focus and assistive technology', () => {
     const view = render(<ChatSplitView
-      preferenceScope={scope}
       primary={<div data-testid="primary-chat">Primary chat</div>}
       secondary={<div data-testid="secondary-chat">Secondary chat</div>}
       inactive
@@ -91,26 +68,28 @@ describe('ChatSplitView', () => {
     expect(screen.getByTestId('secondary-chat')).toBeInTheDocument()
   })
 
-  it('supports arrow, Home, and End keyboard resizing with layout lifecycle events', async () => {
+  it('supports arrow, Home, and End keyboard resizing with layout lifecycle events', () => {
     const phases = observeLayoutPhases()
     renderSplit()
     const separator = screen.getByRole('separator', { name: 'Resize chat panes' })
-    await waitFor(() => expect(getScoped).toHaveBeenCalled())
 
     fireEvent.keyDown(separator, { key: 'ArrowLeft' })
     expect(separator).toHaveAttribute('aria-valuenow', '46')
+    expect(localStorage.getItem(RATIO_KEY)).toBe('46')
     flushAnimationFrames()
     fireEvent.keyDown(separator, { key: 'ArrowRight' })
     expect(separator).toHaveAttribute('aria-valuenow', '50')
+    expect(localStorage.getItem(RATIO_KEY)).toBe('50')
     flushAnimationFrames()
     fireEvent.keyDown(separator, { key: 'Home' })
     expect(separator).toHaveAttribute('aria-valuenow', '28')
+    expect(localStorage.getItem(RATIO_KEY)).toBe('28')
     flushAnimationFrames()
     fireEvent.keyDown(separator, { key: 'End' })
     expect(separator).toHaveAttribute('aria-valuenow', '72')
+    expect(localStorage.getItem(RATIO_KEY)).toBe('72')
     flushAnimationFrames()
 
-    expect(setScoped.mock.calls.map(call => call[2])).toEqual([46, 50, 28, 72])
     expect(phases.values).toEqual([
       'begin', 'end',
       'begin', 'end',
@@ -120,20 +99,19 @@ describe('ChatSplitView', () => {
     phases.stop()
   })
 
-  it('resets the divider to an even split on double click', async () => {
+  it('resets the divider to an even split on double click', () => {
     const phases = observeLayoutPhases()
-    getScoped.mockResolvedValueOnce(63)
+    localStorage.setItem(RATIO_KEY, '63')
     renderSplit()
     const separator = screen.getByRole('separator', { name: 'Resize chat panes' })
-    await waitFor(() => expect(separator).toHaveAttribute('aria-valuenow', '63'))
-    flushAnimationFrames()
+    expect(separator).toHaveAttribute('aria-valuenow', '63')
 
     fireEvent.doubleClick(separator)
     flushAnimationFrames()
 
     expect(separator).toHaveAttribute('aria-valuenow', '50')
-    expect(setScoped).toHaveBeenLastCalledWith(scope, 'chatSplitRatio:v1', 50)
-    expect(phases.values).toEqual(['begin', 'end', 'begin', 'end'])
+    expect(localStorage.getItem(RATIO_KEY)).toBe('50')
+    expect(phases.values).toEqual(['begin', 'end'])
     phases.stop()
   })
 
@@ -204,7 +182,7 @@ describe('ChatSplitView', () => {
     expect(shouldStackChatSplit(800, 600)).toBe(true)
   })
 
-  it('drags the divider, publishes begin/update/end, and persists the final ratio', async () => {
+  it('drags the divider, publishes begin/update/end, and persists the final ratio', () => {
     const phases = observeLayoutPhases()
     const { container } = renderSplit()
     const root = container.querySelector('.chat-split-view') as HTMLDivElement
@@ -213,7 +191,6 @@ describe('ChatSplitView', () => {
       width: 1_000, height: 500, toJSON: () => ({})
     } as DOMRect)
     const separator = screen.getByRole('separator', { name: 'Resize chat panes' })
-    await waitFor(() => expect(getScoped).toHaveBeenCalled())
 
     fireEvent.pointerDown(separator, { button: 0, clientX: 500, clientY: 250 })
     expect(root).toHaveClass('resizing')
@@ -228,17 +205,16 @@ describe('ChatSplitView', () => {
     fireEvent.pointerUp(window)
     expect(root).not.toHaveClass('resizing')
     expect(document.body).not.toHaveClass('chat-split-resizing')
-    expect(setScoped).toHaveBeenLastCalledWith(scope, 'chatSplitRatio:v1', 68)
+    expect(localStorage.getItem(RATIO_KEY)).toBe('68')
     flushAnimationFrames()
     expect(phases.values).toEqual(['begin', 'update', 'end'])
     phases.stop()
   })
 
-  it('removes global drag listeners and body state when unmounted mid-resize', async () => {
+  it('removes global drag listeners and body state when unmounted mid-resize', () => {
     const phases = observeLayoutPhases()
     const { unmount } = renderSplit()
     const separator = screen.getByRole('separator', { name: 'Resize chat panes' })
-    await waitFor(() => expect(getScoped).toHaveBeenCalled())
     fireEvent.pointerDown(separator, { button: 0 })
     expect(document.body).toHaveClass('chat-split-resizing')
 
@@ -246,12 +222,12 @@ describe('ChatSplitView', () => {
     expect(document.body).not.toHaveClass('chat-split-resizing')
     flushAnimationFrames()
     expect(phases.values).toEqual(['begin', 'end'])
-    const callsAfterCleanup = setScoped.mock.calls.length
+    localStorage.removeItem(RATIO_KEY)
 
     fireEvent.pointerMove(window, { clientX: 700 })
     fireEvent.pointerUp(window)
     flushAnimationFrames()
-    expect(setScoped).toHaveBeenCalledTimes(callsAfterCleanup)
+    expect(localStorage.getItem(RATIO_KEY)).toBeNull()
     expect(phases.values).toEqual(['begin', 'end'])
     phases.stop()
   })
@@ -259,7 +235,6 @@ describe('ChatSplitView', () => {
 
 function renderSplit() {
   return render(<ChatSplitView
-    preferenceScope={scope}
     primary={<div>Primary chat</div>}
     secondary={<div>Secondary chat</div>}
   />)

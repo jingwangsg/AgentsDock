@@ -83,7 +83,7 @@ class TerminalShellInitializationTests(unittest.TestCase):
             ),
             patch.object(agent_server.pty, "openpty", return_value=(10, 11)),
             patch.object(agent_server, "set_pty_dimensions"),
-            patch.object(agent_server.subprocess, "Popen", side_effect=popen),
+            patch.object(agent_server.subprocess, "Popen", side_effect=popen) as popen_mock,
             patch.object(agent_server.os, "close"),
             patch.object(agent_server.os, "set_blocking") as set_blocking,
             patch.object(agent_server, "tmux_bin", return_value="tmux"),
@@ -93,6 +93,7 @@ class TerminalShellInitializationTests(unittest.TestCase):
         set_blocking.assert_called_once_with(10, False)
         for name in agent_server.PROVIDER_SECRET_ENV_NAMES:
             self.assertNotIn(name, captured)
+        self.assertEqual(popen_mock.call_args.args[0][:2], ["tmux", "-u"])
 
     def test_shell_validation_rejects_disabled_relative_directory_and_null_paths(self) -> None:
         self.assertIsNone(agent_server.valid_terminal_login_shell("/usr/sbin/nologin"))

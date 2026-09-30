@@ -45,6 +45,7 @@ import {
 import { parseStoredTeamReferences, teamMessagesAvailable, validComposerReferences } from '../lib/team-references'
 import { adjacentServerProfileId } from '../lib/server-navigation'
 import { captureWorkspaceScope, getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
+import { saveLocalStorage } from '../lib/local-storage'
 import {
   closeChatPane as closeChatPaneLayout,
   focusedChatSessionId,
@@ -473,6 +474,9 @@ const agentRouteRefreshTokens = new Map<string, number>()
 const agentRouteMutationTokens = new Map<string, number>()
 const pendingCrossChatQueueRefreshes = new Map<string, { scope: RendererProfileScope; retryAfter: number }>()
 
+// localStorage, not setWorkspacePreference: switching servers keeps the layout.
+const INSPECTOR_VISIBLE_KEY = 'agentsdock:inspector-visible'
+
 export const useAppStore = create<AppState>((set, get) => ({
   initialized: false,
   profiles: [],
@@ -514,7 +518,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   collapsedFolders: new Set(),
   // Archived starts collapsed on every launch and server switch; expanding it lasts only this session.
   archivedCollapsed: true,
-  inspectorVisible: false,
+  // The shared-chat page loads this store too; a browser that blocks storage throws on access.
+  inspectorVisible: (() => { try { return window.localStorage.getItem(INSPECTOR_VISIBLE_KEY) === 'true' } catch { return false } })(),
   activeSessionIds: new Set(),
   turnAdmissionTokens: {},
   pendingTurnSubmissions: {},
@@ -2654,7 +2659,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setFolderOrder(order) { const scope = captureWorkspaceScope(get()); set({ folderOrder: order }); void setWorkspacePreference(scope, 'folderOrder', order).catch(() => undefined) },
   setArchivedCollapsed(value) { set({ archivedCollapsed: value }) },
-  setInspectorVisible(value) { const scope = captureWorkspaceScope(get()); set({ inspectorVisible: value }); void setWorkspacePreference(scope, 'inspectorVisible', value).catch(() => undefined) },
+  setInspectorVisible(value) { set({ inspectorVisible: value }); saveLocalStorage(INSPECTOR_VISIBLE_KEY, String(value)) },
   setModal(key, value) {
     set(state => ({
       modals: {
@@ -3123,7 +3128,6 @@ function workspaceStateFromBootstrap(
     archivedCollapsed: payload.sessions.some(session => session.archived && activeEmergencyAlert(session))
       ? false
       : payload.archivedCollapsed,
-    inspectorVisible: payload.inspectorVisible,
     activeSessionIds: healthActiveSessionIDs(payload.health),
     turnAdmissionTokens: {},
     pendingTurnSubmissions: {},
@@ -3290,8 +3294,7 @@ async function runProfileRefresh(
       snapshots: syncSnapshotSessions(current.snapshots, payload.sessions),
       folderOrder: payload.folderOrder,
       collapsedFolders: new Set(payload.collapsedFolders),
-      archivedCollapsed: payload.archivedCollapsed,
-      inspectorVisible: payload.inspectorVisible
+      archivedCollapsed: payload.archivedCollapsed
     })
     updateBadge(payload.sessions)
     if (!chatPaneLayoutsEqual(currentChatPaneLayout(current), layout)) void hydrateVisibleChatPanes(get)

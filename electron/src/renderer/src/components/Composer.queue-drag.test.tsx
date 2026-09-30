@@ -95,8 +95,7 @@ describe('Composer queue drag', () => {
         bootstrap: vi.fn().mockResolvedValue({
           settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
           health: null, sessions: [], jobs: [], runtimeCatalog: null,
-          folderOrder: [], collapsedFolders: [], archivedCollapsed: false,
-          inspectorVisible: true
+          folderOrder: [], collapsedFolders: [], archivedCollapsed: false
         }),
         native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
         preferences: { get: vi.fn().mockResolvedValue(undefined), set: vi.fn().mockResolvedValue(undefined) },

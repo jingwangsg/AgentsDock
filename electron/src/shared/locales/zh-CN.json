@@ -2005,7 +2005,7 @@
   "ui.ServerManagement.ServerManagement.cancel_19766ed": "取消",
   "ui.ServerManagement.ServerManagement.close_server_editor_0b6523b": "关闭服务端编辑器",
   "ui.ServerManagement.ServerManagement.connection_credentials_stay_in_this_mac_s__d4f7858": "连接凭据保存在此 Mac 的安全凭据存储中。",
-  "ui.ServerManagement.ServerManagement.each_server_keeps_its_own_chats_drafts_fil_35087b7": "每个服务端分别保存自己的会话、草稿、文件和布局。",
+  "ui.ServerManagement.ServerManagement.each_server_keeps_its_own_chats_drafts_fil_35087b7": "每个服务端分别保存自己的会话、草稿和文件。",
   "ui.ServerManagement.ServerManagement.edit_966e044": "编辑 {server}",
   "ui.ServerManagement.ServerManagement.i_confirm_this_url_may_establish_a_new_ser_9c3f4d1": "我确认此 URL 可能会建立新的服务端身份。旧服务端的缓存工作区将被移除。",
   "ui.ServerManagement.ServerManagement.name_dcd1d52": "名称",

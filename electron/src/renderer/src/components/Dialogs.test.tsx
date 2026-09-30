@@ -2573,7 +2573,6 @@ describe('SearchDialog keyboard navigation', () => {
       folderOrder: [],
       collapsedFolders: [],
       archivedCollapsed: false,
-      inspectorVisible: true,
       activeProfileId: fallback.id,
       profiles: [local, fallback],
       profileGeneration: 2

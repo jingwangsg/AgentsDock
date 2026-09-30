@@ -2005,7 +2005,7 @@
   "ui.ServerManagement.ServerManagement.cancel_19766ed": "Cancel",
   "ui.ServerManagement.ServerManagement.close_server_editor_0b6523b": "Close server editor",
   "ui.ServerManagement.ServerManagement.connection_credentials_stay_in_this_mac_s__d4f7858": "Connection credentials stay in this Mac's secure credential store.",
-  "ui.ServerManagement.ServerManagement.each_server_keeps_its_own_chats_drafts_fil_35087b7": "Each server keeps its own chats, drafts, files, and layout.",
+  "ui.ServerManagement.ServerManagement.each_server_keeps_its_own_chats_drafts_fil_35087b7": "Each server keeps its own chats, drafts, and files.",
   "ui.ServerManagement.ServerManagement.edit_966e044": "Edit {server}",
   "ui.ServerManagement.ServerManagement.i_confirm_this_url_may_establish_a_new_ser_9c3f4d1": "I confirm this URL may establish a new server identity. The old server's cached workspace will be removed.",
   "ui.ServerManagement.ServerManagement.name_dcd1d52": "Name",

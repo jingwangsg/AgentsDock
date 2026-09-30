@@ -9,22 +9,18 @@ import {
   clampWorkspacePanelWidth,
   persistWorkspaceSidebarVisible,
   savedWorkspaceColumnStyle,
-  savedWorkspaceSidebarVisible,
-  workspacePanelStorageKey,
-  workspaceSidebarVisibilityStorageKey
+  savedWorkspaceSidebarVisible
 } from './WorkspaceResizeHandles'
 
 afterEach(() => localStorage.clear())
 
 describe('clampWorkspacePanelWidth', () => {
-  it('persists sidebar visibility independently for each server workspace', () => {
-    expect(savedWorkspaceSidebarVisible('server:alpha')).toBe(true)
+  it('persists sidebar visibility as one app setting', () => {
+    expect(savedWorkspaceSidebarVisible()).toBe(true)
 
-    persistWorkspaceSidebarVisible('server:alpha', false)
+    persistWorkspaceSidebarVisible(false)
 
-    expect(localStorage.getItem(workspaceSidebarVisibilityStorageKey('server:alpha'))).toBe('false')
-    expect(savedWorkspaceSidebarVisible('server:alpha')).toBe(false)
-    expect(savedWorkspaceSidebarVisible('server:beta')).toBe(true)
+    expect(savedWorkspaceSidebarVisible()).toBe(false)
   })
 
   it('keeps both docked panels from crushing the conversation', () => {
@@ -50,28 +46,12 @@ describe('clampWorkspacePanelWidth', () => {
     expect(clampWorkspacePanelWidth('review', 820, 1728, 282, true)).toBe(820)
   })
 
-  it('keeps sidebar, inspector, and review widths independent across A to B to A', () => {
-    const widths = (workspaceKey: string, sidebar: number, inspector: number, review: number) => {
-      localStorage.setItem(workspacePanelStorageKey(workspaceKey, 'sidebar'), String(sidebar))
-      localStorage.setItem(workspacePanelStorageKey(workspaceKey, 'inspector'), String(inspector))
-      localStorage.setItem(workspacePanelStorageKey(workspaceKey, 'review'), String(review))
-    }
-    const columns = (workspaceKey: string) => savedWorkspaceColumnStyle(workspaceKey, 2000) as Record<string, string>
+  it('restores the saved sidebar, inspector, and review widths', () => {
+    localStorage.setItem('agentsdock:sidebar-width', '320')
+    localStorage.setItem('agentsdock:inspector-width', '420')
+    localStorage.setItem('agentsdock:review-width', '750')
 
-    widths('server:alpha', 320, 420, 750)
-    widths('server:beta', 230, 300, 500)
-
-    expect(columns('server:alpha')).toMatchObject({
-      '--sidebar-width': '320px',
-      '--inspector-width': '420px',
-      '--review-width': '750px'
-    })
-    expect(columns('server:beta')).toMatchObject({
-      '--sidebar-width': '230px',
-      '--inspector-width': '300px',
-      '--review-width': '500px'
-    })
-    expect(columns('server:alpha')).toMatchObject({
+    expect(savedWorkspaceColumnStyle(2000)).toMatchObject({
       '--sidebar-width': '320px',
       '--inspector-width': '420px',
       '--review-width': '750px'

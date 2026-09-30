@@ -1,5 +1,25 @@
 # Public development log
 
+## 2026-09-30 — Window layout and chat font are the same on every server
+
+- On the desktop, whether the chat list and right panel are shown, the widths
+  of the chat list, right panel, review and Canvas panels, the terminal
+  height, the split between two side-by-side chats, and the chat font were
+  saved separately for each server, so switching servers changed them. They
+  are now one setting for the app. Chats, drafts, files, folders and which
+  chats are open side by side stay per server. Values saved per server before
+  this change are not carried over.
+
+## 2026-09-30 — Terminal shows non-ASCII characters on servers without a UTF-8 locale
+
+- On a server whose environment sets `LC_ALL=C` or another non-UTF-8 locale,
+  the in-app terminal showed `_` in place of every non-ASCII character, such as
+  the `❮` prompt symbol, because tmux decides from the locale whether its client
+  can display UTF-8. The same setting broke the server's own tmux queries: the
+  terminal's window list came back empty, and a new window or split could open
+  in the wrong directory when the path had non-ASCII characters. The server now
+  always runs tmux with UTF-8 output.
+
 ## 2026-09-30 — Menus opened inside dialogs are visible
 
 - Menus opened from inside a dialog were drawn behind it, so they seemed not

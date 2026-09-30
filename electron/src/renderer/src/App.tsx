@@ -165,8 +165,7 @@ export function App() {
     window.addEventListener('agentsdock:open-side-chat', open)
     return () => window.removeEventListener('agentsdock:open-side-chat', open)
   }, [])
-  const columnStyle = useMemo(() => savedWorkspaceColumnStyle(activeProfileKey), [activeProfileKey])
-  const shellRef = useRef<HTMLElement | null>(null)
+  const columnStyle = useMemo(() => savedWorkspaceColumnStyle(), [])
   const fileDragTimeout = useRef<number | null>(null)
   const closingWindowRef = useRef(false)
   const pendingWorkspaceOpenEvent = useRef<PendingWorkspaceOpenEvent | null>(null)
@@ -209,7 +208,7 @@ export function App() {
   const securePeerInviteSequence = useRef(0)
   const teamspaceMailboxRequestSequence = useRef(0)
   const queuedSecurePeerInvite = useRef<string | null>(null)
-  const [sidebarVisibilityByWorkspace, setSidebarVisibilityByWorkspace] = useState<Record<string, boolean>>({})
+  const [sidebarVisible, setSidebarVisible] = useState(savedWorkspaceSidebarVisible)
   const [terminalOpenBySession, setTerminalOpenBySession] = useState<Record<string, boolean>>(() => {
     try {
       const saved = localStorage.getItem('agentsdock:terminal-open')
@@ -229,13 +228,11 @@ export function App() {
     if (teamspaceOpen && !previousTeamspaceOpen.current) trackEvent('team_network_opened')
     previousTeamspaceOpen.current = teamspaceOpen
   }, [teamspaceOpen])
-  const sidebarVisible = sidebarVisibilityByWorkspace[activeProfileKey] ?? savedWorkspaceSidebarVisible(activeProfileKey)
   const terminalOpen = selectedSessionId && !selectedSession?.archived ? terminalOpenBySession[selectedWorkspaceKey] ?? false : false
   const toggleSidebar = useCallback(() => {
-    const next = !sidebarVisible
-    persistWorkspaceSidebarVisible(activeProfileKey, next)
-    setSidebarVisibilityByWorkspace(current => ({ ...current, [activeProfileKey]: next }))
-  }, [activeProfileKey, sidebarVisible])
+    persistWorkspaceSidebarVisible(!sidebarVisible)
+    setSidebarVisible(!sidebarVisible)
+  }, [sidebarVisible])
   const setTerminalOpen = useCallback((sessionId: string, open: boolean) => {
     if (open) trackEvent('terminal_opened')
     const scopedKey = profileSessionKey(activeProfileId, sessionId, activeServerIdentity)
@@ -344,14 +341,6 @@ export function App() {
     presentQueuedSecurePeerInvite()
   }, [presentQueuedSecurePeerInvite])
 
-  useLayoutEffect(() => {
-    const shell = shellRef.current
-    if (!shell) return
-    for (const property of ['--sidebar-width', '--inspector-width', '--review-width'] as const) {
-      const value = (columnStyle as Record<string, string>)[property]
-      if (value) shell.style.setProperty(property, value)
-    }
-  }, [activeProfileKey, columnStyle])
   useLayoutEffect(() => {
     if (splitWorkspaceTarget) splitWorkspaceOverlayRef.current?.focus({ preventScroll: true })
   }, [splitWorkspaceTarget])
@@ -878,7 +867,7 @@ export function App() {
   }
 
   return (
-    <main ref={shellRef} className={`app-shell ${sidebarVisible ? '' : 'sidebar-hidden '}${visibleDockOpen ? 'inspector-open' : ''}${reviewVisible && !teamspaceOpen ? ' review-open' : ''}${teamspaceOpen ? ' teamspace-open' : ''}${switchingProfileId ? ' profile-switching' : ''}`} style={columnStyle}>
+    <main className={`app-shell ${sidebarVisible ? '' : 'sidebar-hidden '}${visibleDockOpen ? 'inspector-open' : ''}${reviewVisible && !teamspaceOpen ? ' review-open' : ''}${teamspaceOpen ? ' teamspace-open' : ''}${switchingProfileId ? ' profile-switching' : ''}`} style={columnStyle}>
       <ChatFontApplier />
       <Sidebar key={`sidebar:${activeRenderKey}`} hidden={!sidebarVisible} />
       <section className={`conversation-pane${teamspaceOpen ? ' teamspace-pane' : splitOpen ? ' split-open' : selectedSession ? ' workspace-editor-open' : ''}${canvasOpen ? ' canvas-open' : ''}`} aria-busy={Boolean(switchingProfileId)} inert={switchingProfileId ? true : undefined}>
@@ -900,7 +889,6 @@ export function App() {
           : splitOpen && primarySession && secondarySession
           ? <>
             <ChatSplitView
-              preferenceScope={workspaceProfileScope}
               inactive={Boolean(splitWorkspaceTarget)}
               primary={<ChatPane
                 key={`${activeRenderKey}:${primarySession.id}`}
@@ -962,7 +950,6 @@ export function App() {
             </ClaudeRuntimeProvider>}
         {canvasOpen && selectedSession && canvasTarget && <CanvasPane
           key={`canvas:${selectedRenderKey}`}
-          workspaceKey={activeProfileKey}
           session={selectedSession}
           target={canvasTarget}
           onClose={() => setCanvasTarget(null)}
@@ -979,14 +966,12 @@ export function App() {
       />
       {!switchingProfileId && <WorkspaceResizeHandles
         key={`resize:${activeRenderKey}`}
-        workspaceKey={activeProfileKey}
         sidebarVisible={sidebarVisible}
         inspectorOpen={visibleDockOpen}
         inspectorMode={reviewVisible ? 'review' : 'inspector'}
       />}
       {!switchingProfileId && !teamspaceOpen && selectedSession && <TerminalDock
         key={`terminal:${selectedRenderKey}`}
-        workspaceKey={activeProfileKey}
         open={terminalOpen}
         session={selectedSession}
         onRequestClose={closeTerminal}

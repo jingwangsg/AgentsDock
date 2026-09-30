@@ -676,18 +676,11 @@ describe('server shortcut navigation', () => {
   })
 
   it('applies an exact native-menu chat font size from the expanded size list', () => {
-    const setPreference = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(window, 'agentsDock', {
-      configurable: true,
-      value: { preferences: { set: setPreference } } as unknown as AgentsDockAPI
-    })
-    useAppStore.setState({ activeProfileId: null })
-
     expect(CHAT_FONT_SIZES).toEqual([13, 14, 15, 16, 18, 20, 22, 24])
     handleMenuCommand('chat-font-size:24', useAppStore.getState, value => useAppStore.setState(value))
 
     expect(document.documentElement.style.getPropertyValue('--chat-font-size')).toBe('24px')
-    expect(setPreference).toHaveBeenCalledWith('chatFontSize', 24)
+    expect(localStorage.getItem('agentsdock:chat-font-size')).toBe('24')
   })
 
   it('routes Open Workspace File to the editor without opening chat search', () => {
@@ -1429,8 +1422,7 @@ describe('live queue state', () => {
         bootstrap: vi.fn().mockResolvedValue({
           settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
           health: null, sessions: [], jobs: [], runtimeCatalog: null,
-          folderOrder: [], collapsedFolders: [], archivedCollapsed: false,
-          inspectorVisible: true
+          folderOrder: [], collapsedFolders: [], archivedCollapsed: false
         }),
         native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
         preferences: { get: vi.fn().mockResolvedValue(undefined) },
@@ -1954,7 +1946,7 @@ describe('send rollback', () => {
         bootstrap: vi.fn().mockResolvedValue({
           settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
           health: null, sessions: [], jobs: [], runtimeCatalog: null,
-          folderOrder: [], collapsedFolders: [], archivedCollapsed: false, inspectorVisible: true
+          folderOrder: [], collapsedFolders: [], archivedCollapsed: false
         }),
         native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
         agentRoutes: { remove, list },
@@ -2752,8 +2744,7 @@ describe('selected live timeline', () => {
           runtimeCatalog: null,
           folderOrder: [],
           collapsedFolders: [],
-          archivedCollapsed: false,
-          inspectorVisible: true
+          archivedCollapsed: false
         }),
         native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
         events: {
@@ -3273,8 +3264,7 @@ describe('selected live timeline', () => {
             runtimeCatalog: null,
             folderOrder: [],
             collapsedFolders: [],
-            archivedCollapsed: false,
-            inspectorVisible: true
+            archivedCollapsed: false
           }),
           native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
           events: {
@@ -3354,8 +3344,7 @@ describe('selected live timeline', () => {
           bootstrap: vi.fn().mockResolvedValue({
             settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
             health: null, sessions: [], jobs: [], runtimeCatalog: null,
-            folderOrder: [], collapsedFolders: [], archivedCollapsed: false,
-            inspectorVisible: true
+            folderOrder: [], collapsedFolders: [], archivedCollapsed: false
           }),
           native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
           queue: { list },
@@ -3452,7 +3441,7 @@ describe('selected live timeline', () => {
           bootstrap: vi.fn().mockResolvedValue({
             settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
             health: null, sessions: [], jobs: [], runtimeCatalog: null,
-            folderOrder: [], collapsedFolders: [], archivedCollapsed: false, inspectorVisible: true
+            folderOrder: [], collapsedFolders: [], archivedCollapsed: false
           }),
           native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
           queue: { list },
@@ -3528,7 +3517,7 @@ describe('selected live timeline', () => {
           bootstrap: vi.fn().mockResolvedValue({
             settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
             health: null, sessions: [], jobs: [], runtimeCatalog: null,
-            folderOrder: [], collapsedFolders: [], archivedCollapsed: false, inspectorVisible: true
+            folderOrder: [], collapsedFolders: [], archivedCollapsed: false
           }),
           native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
           queue: { list },
@@ -3605,8 +3594,7 @@ describe('selected live timeline', () => {
           bootstrap: vi.fn().mockResolvedValue({
             settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
             health: null, sessions: [], jobs: [], runtimeCatalog: null,
-            folderOrder: [], collapsedFolders: [], archivedCollapsed: false,
-            inspectorVisible: true
+            folderOrder: [], collapsedFolders: [], archivedCollapsed: false
           }),
           native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
           queue: { list },
@@ -4624,7 +4612,7 @@ describe('event merging', () => {
           settings: { serverUrl: 'http://local.test', hasAccessToken: false, serverSetupComplete: true },
           health: { ok: true }, sessions: [], jobs: [], runtimeCatalog: null,
           selectedSessionId: null, folderOrder: [], collapsedFolders: [], archivedCollapsed: false,
-          inspectorVisible: true, activeProfileId: 'local', profiles: [profileFor('local')], profileGeneration: 1
+          activeProfileId: 'local', profiles: [profileFor('local')], profileGeneration: 1
         }),
         timeline: {
           cached: vi.fn().mockResolvedValue(replacement),
@@ -4925,6 +4913,43 @@ describe('untouched startup chat cleanup', () => {
 })
 
 describe('bootstrap', () => {
+  it('keeps the inspector open or closed as one app setting when a server bootstraps', async () => {
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        bootstrap: vi.fn().mockResolvedValue({
+          settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
+          health: null, sessions: [], jobs: [], runtimeCatalog: null,
+          folderOrder: [], collapsedFolders: [], archivedCollapsed: false
+        }),
+        native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
+        events: { on: vi.fn(() => () => {}) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      initialized: false, activeProfileId: null, profileGeneration: 0,
+      switchingProfileId: null, selectedSessionId: null, sessions: [], snapshots: {}
+    })
+    useAppStore.getState().setInspectorVisible(true)
+
+    await useAppStore.getState().initialize()
+
+    expect(useAppStore.getState().inspectorVisible).toBe(true)
+    expect(localStorage.getItem('agentsdock:inspector-visible')).toBe('true')
+  })
+
+  it('loads when the browser blocks storage, as the shared-chat page may', async () => {
+    const storage = Object.getOwnPropertyDescriptor(window, 'localStorage')!
+    Object.defineProperty(window, 'localStorage', { configurable: true, get: () => { throw new DOMException('blocked', 'SecurityError') } })
+    vi.resetModules()
+    try {
+      const { useAppStore: fresh } = await import('./app-store')
+      expect(fresh.getState().inspectorVisible).toBe(false)
+    } finally {
+      Object.defineProperty(window, 'localStorage', storage)
+    }
+  })
+
   it('preserves a matching live connection published while cached bootstrap is pending', async () => {
     const profile = profileFor('profile-live')
     const pendingBootstrap = deferred<ProfileBootstrapPayload>()
@@ -5008,7 +5033,7 @@ describe('bootstrap', () => {
           settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
           health: { ok: true }, sessions: [chatA, chatB], jobs: [], runtimeCatalog: null,
           selectedSessionId: chatB.id, folderOrder: [], collapsedFolders: [], archivedCollapsed: false,
-          inspectorVisible: true, activeProfileId: 'local', profiles: [profileFor('local')], profileGeneration: 1
+          activeProfileId: 'local', profiles: [profileFor('local')], profileGeneration: 1
         }),
         timeline: { cached, subscribe, open: vi.fn(), unsubscribe: vi.fn().mockResolvedValue(undefined) },
         preferences: {
@@ -5053,7 +5078,7 @@ describe('bootstrap', () => {
           settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
           health: null, sessions: [archived, active], jobs: [], runtimeCatalog: null,
           selectedSessionId: active.id, folderOrder: [], collapsedFolders: [], archivedCollapsed: false,
-          inspectorVisible: true, activeProfileId: 'local', profiles: [profileFor('local')], profileGeneration: 1
+          activeProfileId: 'local', profiles: [profileFor('local')], profileGeneration: 1
         }),
         timeline: {
           cached: vi.fn(async (sessionId: string) => snapshot(sessionId, [eventFor(sessionId, 4)])),
@@ -5108,8 +5133,7 @@ describe('bootstrap', () => {
       runtimeCatalog: null,
       folderOrder: [],
       collapsedFolders: [],
-      archivedCollapsed: false,
-      inspectorVisible: true
+      archivedCollapsed: false
     })
     await Promise.all([first, second])
     expect(useAppStore.getState().initialized).toBe(true)
@@ -5128,8 +5152,7 @@ describe('bootstrap', () => {
           runtimeCatalog: null,
           folderOrder: [],
           collapsedFolders: [],
-          archivedCollapsed: false,
-          inspectorVisible: true
+          archivedCollapsed: false
         }),
         native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
         events: {
@@ -5190,7 +5213,7 @@ describe('bootstrap', () => {
         bootstrap: vi.fn().mockResolvedValue({
           settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
           health: null, sessions: [], jobs: [], runtimeCatalog: null,
-          folderOrder: [], collapsedFolders: [], archivedCollapsed: false, inspectorVisible: true
+          folderOrder: [], collapsedFolders: [], archivedCollapsed: false
         }),
         native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
         agentRoutes: { list },
@@ -5382,8 +5405,7 @@ describe('emergency alert store integration', () => {
           selectedSessionId: operations.id,
           folderOrder: ['Operations', 'Research'],
           collapsedFolders: ['Operations', 'Research'],
-          archivedCollapsed: true,
-          inspectorVisible: true
+          archivedCollapsed: true
         } satisfies BootstrapPayload),
         timeline: {
           cached: vi.fn(async (sessionId: string) => ({
@@ -6483,7 +6505,6 @@ function startupCleanupBootstrap(
     folderOrder: [],
     collapsedFolders: [],
     archivedCollapsed: false,
-    inspectorVisible: false,
     activeProfileId: profile.id,
     profiles: [profile],
     profileGeneration: 7
@@ -6643,7 +6664,6 @@ function profileBootstrap(
     folderOrder: [],
     collapsedFolders: [],
     archivedCollapsed: false,
-    inspectorVisible: true,
     activeProfileId: active.id,
     profiles,
     profileGeneration

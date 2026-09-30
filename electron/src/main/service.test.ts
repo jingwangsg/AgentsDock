@@ -1015,19 +1015,6 @@ describe('session file ownership', () => {
   })
 })
 
-describe('inspector visibility preference', () => {
-  it('defaults to folded while preserving an explicitly saved open state', async () => {
-    const { service, cache } = createProfileService({
-      'http://a.test:7850': [fakeClient()]
-    })
-
-    await expect(service.bootstrap()).resolves.toEqual(expect.objectContaining({ inspectorVisible: false }))
-
-    cache.putPreference('profile:a', 'inspectorVisible', true)
-    await expect(service.bootstrap()).resolves.toEqual(expect.objectContaining({ inspectorVisible: true }))
-  })
-})
-
 describe('server-wide Codex goals compatibility', () => {
   it('reports legacy servers as unavailable instead of breaking Settings', async () => {
     const client = {

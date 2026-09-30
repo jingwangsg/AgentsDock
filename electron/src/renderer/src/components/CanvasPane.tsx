@@ -54,10 +54,6 @@ const CANVAS_SUFFIX = '.canvas.tsx'
 const STATE_SAVE_DELAY_MS = 400
 const CANVAS_WIDTH_KEY = 'agentsdock:canvas-width'
 
-export function canvasWidthStorageKey(workspaceKey: string): string {
-  return `${CANVAS_WIDTH_KEY}:${encodeURIComponent(workspaceKey)}`
-}
-
 /** "…/report.canvas.tsx" (path, URL or file: link) -> "report"; null when it is not a Canvas path. */
 export function canvasNameFromPath(value: string | null | undefined): string | null {
   if (!value) return null
@@ -90,7 +86,7 @@ function appendDraft(sessionId: string, text: string): void {
   store.setDraftForSession(sessionId, current.trim() ? `${current.replace(/\s+$/, '')}\n\n${text}` : text)
 }
 
-export function CanvasPane({ workspaceKey, session, target, onClose }: { workspaceKey: string; session: Session; target: CanvasTarget; onClose: () => void }) {
+export function CanvasPane({ session, target, onClose }: { session: Session; target: CanvasTarget; onClose: () => void }) {
   const profileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const canvasCapability = useAppStore(state => state.health?.capabilities?.canvas_v1)
@@ -423,13 +419,13 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
   useLayoutEffect(() => {
     const host = paneRef.current?.parentElement
     if (!host) return
-    const saved = Number(window.localStorage.getItem(canvasWidthStorageKey(workspaceKey)))
+    const saved = Number(window.localStorage.getItem(CANVAS_WIDTH_KEY))
     if (saved > 0) host.style.setProperty('--canvas-pane-user-width', `${saved}px`)
     return () => {
       host.style.removeProperty('--canvas-pane-user-width')
       document.body.classList.remove('canvas-resizing')
     }
-  }, [workspaceKey])
+  }, [])
 
   const setUserWidth = (width: number | null) => {
     const hostStyle = paneRef.current?.parentElement?.style
@@ -441,7 +437,7 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
     const width = Math.round(paneRef.current?.getBoundingClientRect().width ?? 0)
     if (!width) return
     setUserWidth(width)
-    saveLocalStorage(canvasWidthStorageKey(workspaceKey), String(width))
+    saveLocalStorage(CANVAS_WIDTH_KEY, String(width))
   }
   const beginResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!paneRef.current) return
@@ -477,7 +473,7 @@ export function CanvasPane({ workspaceKey, session, target, onClose }: { workspa
   const resetWidth = () => {
     notifyTimelineViewportLayout('begin')
     setUserWidth(null)
-    window.localStorage.removeItem(canvasWidthStorageKey(workspaceKey))
+    window.localStorage.removeItem(CANVAS_WIDTH_KEY)
     window.requestAnimationFrame(() => notifyTimelineViewportLayout('end'))
   }
 

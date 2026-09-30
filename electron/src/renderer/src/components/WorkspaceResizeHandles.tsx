@@ -23,6 +23,7 @@ export const DEFAULT_SIDEBAR_WIDTH = 282
 export const DEFAULT_INSPECTOR_WIDTH = 350
 export const DEFAULT_REVIEW_WIDTH = 820
 const MIN_CONVERSATION_WIDTH = 520
+// Window layout is one setting for the app, whichever server is active.
 const SIDEBAR_WIDTH_KEY = 'agentsdock:sidebar-width'
 const SIDEBAR_VISIBLE_KEY = 'agentsdock:sidebar-visible'
 const INSPECTOR_WIDTH_KEY = 'agentsdock:inspector-width'
@@ -32,7 +33,6 @@ type Panel = 'sidebar' | 'inspector' | 'review'
 
 interface ResizeDrag {
   panel: Panel
-  workspaceKey: string
   pointerId: number
   startX: number
   startWidth: number
@@ -40,34 +40,23 @@ interface ResizeDrag {
   shell: HTMLElement
 }
 
-export function workspacePanelStorageKey(workspaceKey: string, panel: Panel): string {
-  const baseKey = panel === 'sidebar' ? SIDEBAR_WIDTH_KEY : panel === 'review' ? REVIEW_WIDTH_KEY : INSPECTOR_WIDTH_KEY
-  return `${baseKey}:${encodeURIComponent(workspaceKey)}`
+export function savedWorkspaceSidebarVisible(): boolean {
+  return window.localStorage.getItem(SIDEBAR_VISIBLE_KEY) !== 'false'
 }
 
-export function workspaceSidebarVisibilityStorageKey(workspaceKey: string): string {
-  return `${SIDEBAR_VISIBLE_KEY}:${encodeURIComponent(workspaceKey)}`
+export function persistWorkspaceSidebarVisible(visible: boolean): void {
+  saveLocalStorage(SIDEBAR_VISIBLE_KEY, String(visible))
 }
 
-export function savedWorkspaceSidebarVisible(workspaceKey: string): boolean {
-  const scopedValue = window.localStorage.getItem(workspaceSidebarVisibilityStorageKey(workspaceKey))
-  const value = scopedValue ?? window.localStorage.getItem(SIDEBAR_VISIBLE_KEY)
-  return value !== 'false'
-}
-
-export function persistWorkspaceSidebarVisible(workspaceKey: string, visible: boolean): void {
-  saveLocalStorage(workspaceSidebarVisibilityStorageKey(workspaceKey), String(visible))
-}
-
-export function savedWorkspaceColumnStyle(workspaceKey: string, viewportWidth = window.innerWidth): CSSProperties {
+export function savedWorkspaceColumnStyle(viewportWidth = window.innerWidth): CSSProperties {
   const compact = viewportWidth <= 1040
   const medium = viewportWidth <= 1240
   const sidebarDefault = compact ? 230 : medium ? 245 : DEFAULT_SIDEBAR_WIDTH
   const inspectorDefault = compact ? 330 : medium ? 310 : DEFAULT_INSPECTOR_WIDTH
-  let sidebar = savedWidth(workspacePanelStorageKey(workspaceKey, 'sidebar'), SIDEBAR_WIDTH_KEY, sidebarDefault, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
-  let inspector = savedWidth(workspacePanelStorageKey(workspaceKey, 'inspector'), INSPECTOR_WIDTH_KEY, inspectorDefault, INSPECTOR_MIN_WIDTH, INSPECTOR_MAX_WIDTH)
+  let sidebar = savedWidth(SIDEBAR_WIDTH_KEY, sidebarDefault, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+  let inspector = savedWidth(INSPECTOR_WIDTH_KEY, inspectorDefault, INSPECTOR_MIN_WIDTH, INSPECTOR_MAX_WIDTH)
   const reviewDefault = Math.min(DEFAULT_REVIEW_WIDTH, Math.max(REVIEW_MIN_WIDTH, viewportWidth - sidebar - MIN_CONVERSATION_WIDTH))
-  let review = savedWidth(workspacePanelStorageKey(workspaceKey, 'review'), REVIEW_WIDTH_KEY, reviewDefault, REVIEW_MIN_WIDTH, REVIEW_MAX_WIDTH)
+  let review = savedWidth(REVIEW_WIDTH_KEY, reviewDefault, REVIEW_MIN_WIDTH, REVIEW_MAX_WIDTH)
   if (!compact) {
     inspector = clampWorkspacePanelWidth('inspector', inspector, viewportWidth, sidebar, true)
     review = clampWorkspacePanelWidth('review', review, viewportWidth, sidebar, true)
@@ -101,12 +90,10 @@ export function clampWorkspacePanelWidth(
 }
 
 export function WorkspaceResizeHandles({
-  workspaceKey,
   sidebarVisible = true,
   inspectorOpen,
   inspectorMode = 'inspector'
 }: {
-  workspaceKey: string
   sidebarVisible?: boolean
   inspectorOpen: boolean
   inspectorMode?: 'inspector' | 'review'
@@ -123,7 +110,7 @@ export function WorkspaceResizeHandles({
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
     const startWidth = panelWidth(shell, panel)
-    drag.current = { panel, workspaceKey, pointerId: event.pointerId, startX: event.clientX, startWidth, currentWidth: startWidth, shell }
+    drag.current = { panel, pointerId: event.pointerId, startX: event.clientX, startWidth, currentWidth: startWidth, shell }
     shell.classList.add('column-resizing')
     document.body.classList.add('column-resizing')
     notifyTimelineViewportLayout('begin')
@@ -153,7 +140,7 @@ export function WorkspaceResizeHandles({
     const width = clampWorkspacePanelWidth(panel, preferred, window.innerWidth, other, inspectorOpen)
     notifyTimelineViewportLayout('begin')
     setPanelWidth(shell, panel, width)
-    persistWidth(workspaceKey, panel, width)
+    persistWidth(panel, width)
     window.requestAnimationFrame(() => notifyTimelineViewportLayout('end'))
   }
   const keyResize = (panel: Panel, event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -170,7 +157,7 @@ export function WorkspaceResizeHandles({
     const width = clampWorkspacePanelWidth(panel, panelWidth(shell, panel) + delta, window.innerWidth, other, inspectorOpen)
     notifyTimelineViewportLayout('begin')
     setPanelWidth(shell, panel, width)
-    persistWidth(workspaceKey, panel, width)
+    persistWidth(panel, width)
     window.requestAnimationFrame(() => notifyTimelineViewportLayout('end'))
   }
 
@@ -192,9 +179,8 @@ export function WorkspaceResizeHandles({
   return <>{handle('sidebar')}{handle(dockPanel, 'inspector')}</>
 }
 
-function savedWidth(scopedKey: string, legacyKey: string, fallback: number, minimum: number, maximum: number): number {
-  const scopedValue = window.localStorage.getItem(scopedKey)
-  const value = Number(scopedValue ?? window.localStorage.getItem(legacyKey))
+function savedWidth(key: string, fallback: number, minimum: number, maximum: number): number {
+  const value = Number(window.localStorage.getItem(key))
   return Number.isFinite(value) && value > 0 ? Math.min(maximum, Math.max(minimum, value)) : fallback
 }
 
@@ -208,8 +194,8 @@ function setPanelWidth(shell: HTMLElement, panel: Panel, width: number): void {
   shell.style.setProperty(panel === 'sidebar' ? '--sidebar-width' : panel === 'review' ? '--review-width' : '--inspector-width', `${width}px`)
 }
 
-function persistWidth(workspaceKey: string, panel: Panel, width: number): void {
-  saveLocalStorage(workspacePanelStorageKey(workspaceKey, panel), String(width))
+function persistWidth(panel: Panel, width: number): void {
+  saveLocalStorage(panel === 'sidebar' ? SIDEBAR_WIDTH_KEY : panel === 'review' ? REVIEW_WIDTH_KEY : INSPECTOR_WIDTH_KEY, String(width))
 }
 
 function finishResize(drag: MutableRefObject<ResizeDrag | null>, panel: Panel | null): void {
@@ -217,7 +203,7 @@ function finishResize(drag: MutableRefObject<ResizeDrag | null>, panel: Panel | 
   if (!current) return
   current.shell.classList.remove('column-resizing')
   document.body.classList.remove('column-resizing')
-  persistWidth(current.workspaceKey, panel ?? current.panel, current.currentWidth)
+  persistWidth(panel ?? current.panel, current.currentWidth)
   drag.current = null
   window.requestAnimationFrame(() => notifyTimelineViewportLayout('end'))
 }

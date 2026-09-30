@@ -2,10 +2,10 @@
 import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
-import type { WorkspaceProfileScope } from '@shared/types'
-import { getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
+import { saveLocalStorage } from '../lib/local-storage'
 import { notifyTimelineViewportLayout } from '../lib/workspace-layout'
 
+const CHAT_SPLIT_RATIO_KEY = 'agentsdock:chat-split-ratio'
 const MIN_PANE_PERCENT = 28
 const MAX_PANE_PERCENT = 72
 export const CHAT_SPLIT_STACK_WIDTH_PX = 840
@@ -33,20 +33,18 @@ export function chatSplitTrackPixels(width: number, height: number, ratio: numbe
 }
 
 export function ChatSplitView({
-  preferenceScope,
   primary,
   secondary,
   inactive = false
 }: {
-  preferenceScope: WorkspaceProfileScope | null
   primary: ReactNode
   secondary: ReactNode
   inactive?: boolean
 }) {
   useLocale()
   const root = useRef<HTMLDivElement | null>(null)
-  const ratioRef = useRef(50)
-  const [ratio, setRatio] = useState(50)
+  const [ratio, setRatio] = useState(() => clampRatio(Number(window.localStorage.getItem(CHAT_SPLIT_RATIO_KEY)) || 50))
+  const ratioRef = useRef(ratio)
   const [stacked, setStacked] = useState(false)
   const [short, setShort] = useState(false)
   const [resizing, setResizing] = useState(false)
@@ -63,29 +61,6 @@ export function ChatSplitView({
     change()
     finishLayoutChange()
   }, [finishLayoutChange])
-
-  useEffect(() => {
-    let current = true
-    if (ratioRef.current !== 50) {
-      applyLayoutChange(() => {
-        ratioRef.current = 50
-        setRatio(50)
-      })
-    } else {
-      setRatio(50)
-    }
-    void getWorkspacePreference(preferenceScope, 'chatSplitRatio:v1', 50).then(saved => {
-      if (!current) return
-      const next = clampRatio(saved)
-      if (next !== ratioRef.current) {
-        applyLayoutChange(() => {
-          ratioRef.current = next
-          setRatio(next)
-        })
-      }
-    }).catch(() => undefined)
-    return () => { current = false }
-  }, [applyLayoutChange, preferenceScope?.profileGeneration, preferenceScope?.profileId, preferenceScope?.serverIdentity])
 
   useEffect(() => {
     const node = root.current
@@ -117,8 +92,8 @@ export function ChatSplitView({
     const next = clampRatio(value)
     ratioRef.current = next
     setRatio(next)
-    void setWorkspacePreference(preferenceScope, 'chatSplitRatio:v1', next).catch(() => undefined)
-  }, [preferenceScope])
+    saveLocalStorage(CHAT_SPLIT_RATIO_KEY, String(next))
+  }, [])
 
   const beginResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || !root.current) return
@@ -207,7 +182,7 @@ export function ChatSplitView({
   </div>
 }
 
-function clampRatio(value: unknown): number {
-  const numeric = typeof value === 'number' && Number.isFinite(value) ? value : 50
+function clampRatio(value: number): number {
+  const numeric = Number.isFinite(value) ? value : 50
   return Math.max(MIN_PANE_PERCENT, Math.min(MAX_PANE_PERCENT, numeric))
 }

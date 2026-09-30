@@ -114,12 +114,8 @@ vi.mock('./components/WorkspaceEditor', () => ({
 vi.mock('./components/WorkspaceResizeHandles', () => ({
   WorkspaceResizeHandles: ({ sidebarVisible = true }: { sidebarVisible?: boolean }) => <div data-testid="resize" data-sidebar-visible={String(sidebarVisible)} />,
   savedWorkspaceColumnStyle: () => ({}),
-  savedWorkspaceSidebarVisible: (workspaceKey: string) => (
-    localStorage.getItem(`test:sidebar-visible:${workspaceKey}`) !== 'false'
-  ),
-  persistWorkspaceSidebarVisible: (workspaceKey: string, visible: boolean) => {
-    localStorage.setItem(`test:sidebar-visible:${workspaceKey}`, String(visible))
-  }
+  savedWorkspaceSidebarVisible: () => localStorage.getItem('test:sidebar-visible') !== 'false',
+  persistWorkspaceSidebarVisible: (visible: boolean) => { localStorage.setItem('test:sidebar-visible', String(visible)) }
 }))
 vi.mock('./lib/renderer-stall-monitor', () => ({ installRendererStallMonitor: () => () => undefined }))
 
@@ -738,6 +734,11 @@ describe('App chat workspace identity', () => {
     expect(screen.getByTestId('sidebar')).toHaveAttribute('aria-hidden', 'true')
     expect(screen.getByTestId('resize')).toHaveAttribute('data-sidebar-visible', 'false')
     expect(editor).toHaveTextContent('code')
+    act(() => useAppStore.setState({
+      profiles: [profile, { ...profile, id: 'profile-b', name: 'Beta', serverIdentity: 'server-b' }],
+      activeProfileId: 'profile-b'
+    }))
+    expect(document.querySelector('.app-shell')).toHaveClass('sidebar-hidden')
 
     first.unmount()
     render(<App />)

@@ -27,7 +27,7 @@ function bootstrap(mailHints: MailHintProjection | null = null, active = profile
   return {
     settings: { serverUrl: active.serverUrl, hasAccessToken: false, serverSetupComplete: true },
     health: null, sessions: [], jobs: [], selectedSessionId: null, folderOrder: [], collapsedFolders: [],
-    archivedCollapsed: false, inspectorVisible: true, activeProfileId: active.id, profileGeneration: generation,
+    archivedCollapsed: false, activeProfileId: active.id, profileGeneration: generation,
     profiles: [active], mailHints
   }
 }

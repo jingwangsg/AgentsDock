@@ -22,7 +22,6 @@ const TERMINAL_DOCK_HEIGHT_KEY = 'agentsdock:terminal-dock-height'
 const MIN_CHAT_WORKSPACE_HEIGHT = 280
 
 interface ResizeDrag {
-  workspaceKey: string
   pointerId: number
   startY: number
   startHeight: number
@@ -34,27 +33,20 @@ export function clampTerminalDockHeight(height: number, viewportHeight = window.
   return Math.round(Math.min(maximum, Math.max(MIN_TERMINAL_DOCK_HEIGHT, height)))
 }
 
-export function terminalDockStorageKey(workspaceKey: string): string {
-  return `${TERMINAL_DOCK_HEIGHT_KEY}:${encodeURIComponent(workspaceKey)}`
-}
-
-function savedTerminalDockHeight(workspaceKey: string): number {
-  const scopedValue = window.localStorage.getItem(terminalDockStorageKey(workspaceKey))
-  const saved = Number(scopedValue ?? window.localStorage.getItem(TERMINAL_DOCK_HEIGHT_KEY))
+function savedTerminalDockHeight(): number {
+  const saved = Number(window.localStorage.getItem(TERMINAL_DOCK_HEIGHT_KEY))
   return clampTerminalDockHeight(Number.isFinite(saved) && saved > 0 ? saved : DEFAULT_TERMINAL_DOCK_HEIGHT)
 }
 
-function persistTerminalDockHeight(workspaceKey: string, height: number): void {
-  saveLocalStorage(terminalDockStorageKey(workspaceKey), String(height))
+function persistTerminalDockHeight(height: number): void {
+  saveLocalStorage(TERMINAL_DOCK_HEIGHT_KEY, String(height))
 }
 
 export const TerminalDock = memo(function TerminalDock({
-  workspaceKey,
   session,
   open,
   onRequestClose
 }: {
-  workspaceKey: string
   session: Session
   open: boolean
   onRequestClose: () => void
@@ -62,22 +54,10 @@ export const TerminalDock = memo(function TerminalDock({
   useLocale()
   const [mounted, setMounted] = useState(open)
   const [revealed, setRevealed] = useState(false)
-  const [height, setHeight] = useState(() => savedTerminalDockHeight(workspaceKey))
+  const [height, setHeight] = useState(savedTerminalDockHeight)
   const [resizing, setResizing] = useState(false)
   const resizeDrag = useRef<ResizeDrag | null>(null)
   const hasAnimatedLayout = useRef(false)
-
-  useEffect(() => {
-    const activeDrag = resizeDrag.current
-    if (activeDrag) {
-      persistTerminalDockHeight(activeDrag.workspaceKey, activeDrag.currentHeight)
-      resizeDrag.current = null
-      setResizing(false)
-      document.body.classList.remove('terminal-resizing')
-      notifyTimelineViewportLayout('end')
-    }
-    setHeight(savedTerminalDockHeight(workspaceKey))
-  }, [workspaceKey])
 
   useEffect(() => {
     if (open) {
@@ -136,7 +116,7 @@ export const TerminalDock = memo(function TerminalDock({
   useEffect(() => () => {
     document.body.classList.remove('terminal-resizing')
     if (resizeDrag.current) {
-      persistTerminalDockHeight(resizeDrag.current.workspaceKey, resizeDrag.current.currentHeight)
+      persistTerminalDockHeight(resizeDrag.current.currentHeight)
       notifyTimelineViewportLayout('end')
     }
   }, [])
@@ -145,7 +125,6 @@ export const TerminalDock = memo(function TerminalDock({
     event.preventDefault()
     try { event.currentTarget.setPointerCapture(event.pointerId) } catch { /* window tracking remains active */ }
     resizeDrag.current = {
-      workspaceKey,
       pointerId: event.pointerId,
       startY: event.clientY,
       startHeight: height,
@@ -171,7 +150,7 @@ export const TerminalDock = memo(function TerminalDock({
     resizeDrag.current = null
     setResizing(false)
     document.body.classList.remove('terminal-resizing')
-    persistTerminalDockHeight(drag.workspaceKey, drag.currentHeight)
+    persistTerminalDockHeight(drag.currentHeight)
     window.requestAnimationFrame(() => notifyTimelineViewportLayout('end'))
   }
   const moveResize = (event: ReactPointerEvent<HTMLDivElement>) => updateResize(event.pointerId, event.clientY)
@@ -204,7 +183,7 @@ export const TerminalDock = memo(function TerminalDock({
     event.preventDefault()
     notifyTimelineViewportLayout('begin')
     setHeight(next)
-    persistTerminalDockHeight(workspaceKey, next)
+    persistTerminalDockHeight(next)
     window.requestAnimationFrame(() => {
       notifyTimelineViewportLayout('update')
       window.requestAnimationFrame(() => notifyTimelineViewportLayout('end'))
@@ -214,7 +193,7 @@ export const TerminalDock = memo(function TerminalDock({
     const next = clampTerminalDockHeight(DEFAULT_TERMINAL_DOCK_HEIGHT)
     notifyTimelineViewportLayout('begin')
     setHeight(next)
-    persistTerminalDockHeight(workspaceKey, next)
+    persistTerminalDockHeight(next)
     window.requestAnimationFrame(() => notifyTimelineViewportLayout('end'))
   }
 

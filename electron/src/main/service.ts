@@ -6892,7 +6892,6 @@ export class AppService {
       collapsedFolders: resetPending ? [] : cacheValue(() => this.cache.preference(scope.namespace, 'collapsedFolders', [] as string[]), []),
       // Never restored: the user wants Archived collapsed by default, and expanding it is a per-session choice.
       archivedCollapsed: true,
-      inspectorVisible: resetPending ? false : cacheValue(() => this.cache.preference(scope.namespace, 'inspectorVisible', false), false),
       activeProfileId: scope.profileId,
       profiles: this.publicProfiles(),
       profileGeneration: scope.generation,

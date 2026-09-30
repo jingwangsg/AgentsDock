@@ -27917,7 +27917,8 @@ def terminal_session_name(session_id: str) -> str:
 def run_tmux(args: list[str], *, check: bool = True, timeout: float = TMUX_COMMAND_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
-            [tmux_bin(), *TMUX_INSTANCE_ARGS, *args],
+            # -u: otherwise a non-UTF-8 server locale makes tmux print "_" for tabs and non-ASCII in -F/-p output.
+            [tmux_bin(), "-u", *TMUX_INSTANCE_ARGS, *args],
             text=True,
             capture_output=True,
             timeout=timeout,
@@ -28586,11 +28587,11 @@ def spawn_terminal_client(
     env.pop("TMUX_PANE", None)
     env["TERM"] = "xterm-256color"
     env["COLORTERM"] = "truecolor"
-    env.setdefault("LANG", "C.UTF-8")
     try:
         set_pty_dimensions(slave_fd, columns, rows)
+        # -u: the app terminal is UTF-8; without it tmux prints "_" for non-ASCII when the server's locale is C.
         process = subprocess.Popen(
-            [tmux_bin(), *TMUX_INSTANCE_ARGS, "attach-session", "-t", name],
+            [tmux_bin(), "-u", *TMUX_INSTANCE_ARGS, "attach-session", "-t", name],
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,

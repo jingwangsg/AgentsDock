@@ -1030,7 +1030,7 @@ class RuntimeBindingTests(unittest.TestCase):
             namespace = self.namespace("work")
             namespace["tmux_bootstrap_environment"] = lambda: {}
             namespace["run_tmux"](["list-sessions"])
-        self.assertEqual(run.call_args.args[0], ["/synthetic/tmux", "-L", "agents-server-work", "list-sessions"])
+        self.assertEqual(run.call_args.args[0], ["/synthetic/tmux", "-u", "-L", "agents-server-work", "list-sessions"])
 
     def test_update_runner_receives_exact_binding_on_mac_and_linux(self):
         for platform in ("darwin", "linux"):
