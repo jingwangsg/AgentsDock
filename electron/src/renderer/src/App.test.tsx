@@ -716,7 +716,8 @@ describe('App chat workspace identity', () => {
     expect(window.agentsDock.updates.install).not.toHaveBeenCalled()
   })
 
-  it('toggles and persists the chat sidebar with Cmd/Ctrl+/ even when the code editor has focus', () => {
+  it('toggles and persists the chat sidebar with Ctrl+/ off macOS even when the code editor has focus', () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
     const first = render(<App />)
     const shell = document.querySelector('.app-shell')!
     const editor = screen.getByTestId('code-editor')
@@ -726,7 +727,7 @@ describe('App chat workspace identity', () => {
     editor.focus()
     const hide = new KeyboardEvent('keydown', {
       key: '/',
-      metaKey: true,
+      ctrlKey: true,
       bubbles: true,
       cancelable: true
     })
@@ -751,6 +752,28 @@ describe('App chat workspace identity', () => {
     act(() => { screen.getByTestId('code-editor').dispatchEvent(show) })
     expect(show.defaultPrevented).toBe(true)
     expect(document.querySelector('.app-shell')).not.toHaveClass('sidebar-hidden')
+  })
+
+  it('toggles the chat sidebar with ⌘B on macOS, leaving Ctrl+B to the terminal', () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    render(<App />)
+    const shell = document.querySelector('.app-shell')!
+    const press = (init: KeyboardEventInit) => {
+      const event = new KeyboardEvent('keydown', { key: 'b', bubbles: true, cancelable: true, ...init })
+      act(() => { screen.getByTestId('code-editor').dispatchEvent(event) })
+      return event
+    }
+
+    // Ctrl+B is tmux's prefix in the embedded terminal.
+    expect(press({ ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(shell).not.toHaveClass('sidebar-hidden')
+    expect(press({ metaKey: true }).defaultPrevented).toBe(true)
+    expect(shell).toHaveClass('sidebar-hidden')
+    // Holding ⌘B does not flip it back and forth.
+    press({ metaKey: true, repeat: true })
+    expect(shell).toHaveClass('sidebar-hidden')
+    press({ metaKey: true })
+    expect(shell).not.toHaveClass('sidebar-hidden')
   })
 
   it('passes an unavailable capability without removing the chat workspace', () => {

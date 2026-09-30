@@ -13,7 +13,7 @@ export const APP_SHORTCUTS = {
   nextServer: { label: 'Next server', accelerator: 'Alt+Shift+]', mac: '⇧⌥]', other: 'Alt+Shift+]' },
   previousServer: { label: 'Previous server', accelerator: 'Alt+Shift+[', mac: '⇧⌥[', other: 'Alt+Shift+[' },
   switchServerByNumber: { label: 'Switch to server 1-9', mac: '⇧⌥1…9', other: 'Alt+Shift+1…9' },
-  toggleSidebar: { label: 'Toggle chat list', mac: '⌘/', other: 'Ctrl+/' },
+  toggleSidebar: { label: 'Toggle chat list', mac: '⌘B', other: 'Ctrl+/' },
   toggleInspector: { label: 'Toggle inspector', accelerator: 'CmdOrCtrl+L', mac: '⌘L', other: 'Ctrl+L' },
   jumpLatest: { label: 'Jump to latest', accelerator: 'CmdOrCtrl+Down', mac: '⌘↓', other: 'Ctrl+↓' },
   closeSurface: { label: 'Close', accelerator: 'CmdOrCtrl+W', mac: '⌘W', other: 'Ctrl+W' },
