@@ -145,19 +145,6 @@ export function findProfileByIdentity(
   return profiles.find(profile => profile.id !== excludeProfileId && profile.serverIdentity === serverIdentity) ?? null
 }
 
-export function reorderedServerProfileIds(
-  profiles: readonly Pick<ServerProfileListItem, 'id'>[],
-  profileId: string,
-  direction: -1 | 1,
-): string[] | null {
-  const index = profiles.findIndex(profile => profile.id === profileId)
-  const target = index + direction
-  if (index < 0 || target < 0 || target >= profiles.length) return null
-  const ids = profiles.map(profile => profile.id)
-  ;[ids[index], ids[target]] = [ids[target], ids[index]]
-  return ids
-}
-
 export function draftAccessToken(draft: Pick<ServerProfileDraftValues, 'accessToken' | 'clearAccessToken'>): string | null | undefined {
   if (draft.clearAccessToken) return null
   return draft.accessToken.trim() ? draft.accessToken : undefined

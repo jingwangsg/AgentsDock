@@ -5,14 +5,14 @@ import {
   Modal,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Switch,
   View,
 } from 'react-native'
 import { MenuView, type MenuAction } from '@expo/ui/community/menu'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { Check, ChevronDown, Download, MoreHorizontal, Pencil, RotateCw, Server, UploadCloud, Wifi, X } from 'lucide-react-native'
+import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist'
+import { Check, ChevronDown, Download, GripVertical, MoreHorizontal, Pencil, RotateCw, Server, UploadCloud, Wifi, X } from 'lucide-react-native'
 import {
   buildUpdateServerProfileInput,
   connectionStateLabel,
@@ -23,7 +23,6 @@ import {
   profileConnectionLabel,
   displayServerProfileName,
   profileHostSubtitle,
-  reorderedServerProfileIds,
   requiresIdentityResetConfirmation,
   unreadCountLabel,
   type RemoteDeployProgressEntry,
@@ -35,7 +34,8 @@ import {
   type ServerProfileTestInput,
   type UpdateServerProfileInput,
 } from '../lib/server-profile-ui'
-import { hubProxyRemoteId } from '../lib/server-profiles'
+import { hubProxyBaseURL, hubProxyRemoteId } from '../lib/server-profiles'
+import { normalizeServerURL } from '../lib/format'
 import { usePalette } from '../theme'
 import { Text, TextInput } from './AppText'
 import { IconButton, SheetCloseButton } from './ui'
@@ -365,14 +365,16 @@ export function ServerProfilesManager({
     }
   }
 
-  const moveProfile = async (profileId: string, direction: -1 | 1) => {
+  // The hub (the server the proxied remotes go through) stays first; the others are dragged into order.
+  const hubId = profiles.find(profile => profiles.some(other => hubProxyBaseURL(other.serverUrl) === normalizeServerURL(profile.serverUrl)))?.id ?? null
+  const pinned = profiles.filter(profile => profile.id === hubId)
+  const movable = profiles.filter(profile => profile.id !== hubId)
+  const reorderProfiles = async (order: readonly ServerProfileListItem[]) => {
     if (busy) return
-    const order = reorderedServerProfileIds(profiles, profileId, direction)
-    if (!order) return
-    setBusy(`move:${profileId}`)
+    setBusy('move')
     setFeedback(null)
     try {
-      await onReorderProfiles(order)
+      await onReorderProfiles([...pinned, ...order].map(profile => profile.id))
     } catch (error) {
       setFeedback({ tone: 'error', message: errorMessage(error) })
     } finally {
@@ -464,7 +466,28 @@ export function ServerProfilesManager({
   // another one remains; hub-proxied remotes are always removable.
   const nonProxiedCount = profiles.filter(profile => hubProxyRemoteId(profile.serverUrl) === null).length
 
-  return <ScrollView
+  const row = (profile: ServerProfileListItem, drag?: () => void) => {
+    const active = profile.id === activeProfileId
+    const switching = profile.id === switchingProfileId || busy === `switch:${profile.id}`
+    return <ServerManagementRow
+      key={profile.id}
+      profile={profile}
+      active={active}
+      switching={switching}
+      disabled={Boolean(busy) || Boolean(switchingProfileId)}
+      removable={hubProxyRemoteId(profile.serverUrl) !== null || (nonProxiedCount > 1 && !active)}
+      onSwitch={() => { void switchProfile(profile.id) }}
+      onEdit={() => openEdit(profile)}
+      onDrag={drag}
+      onRemove={() => confirmRemove(profile)}
+      work={rowWork[profile.id] ?? null}
+      redeployDisabled={redeploying}
+      onRedeploy={hubProxyRemoteId(profile.serverUrl) !== null ? () => { void redeploy(profile, false) } : undefined}
+      onUpdateCli={() => chooseCli(profile)}
+    />
+  }
+
+  return <NestableScrollContainer
     style={styles.manager}
     contentContainerStyle={styles.managerContent}
     automaticallyAdjustKeyboardInsets
@@ -480,28 +503,15 @@ export function ServerProfilesManager({
     </View>
 
     <View style={[styles.profileList, { borderColor: colors.border }]}>
-      {profiles.length ? profiles.map((profile, index) => {
-        const active = profile.id === activeProfileId
-        const switching = profile.id === switchingProfileId || busy === `switch:${profile.id}`
-        return <ServerManagementRow
-          key={profile.id}
-          profile={profile}
-          index={index}
-          count={profiles.length}
-          active={active}
-          switching={switching}
-          disabled={Boolean(busy) || Boolean(switchingProfileId)}
-          removable={hubProxyRemoteId(profile.serverUrl) !== null || (nonProxiedCount > 1 && !active)}
-          onSwitch={() => { void switchProfile(profile.id) }}
-          onEdit={() => openEdit(profile)}
-          onMove={direction => { void moveProfile(profile.id, direction) }}
-          onRemove={() => confirmRemove(profile)}
-          work={rowWork[profile.id] ?? null}
-          redeployDisabled={redeploying}
-          onRedeploy={hubProxyRemoteId(profile.serverUrl) !== null ? () => { void redeploy(profile, false) } : undefined}
-          onUpdateCli={() => chooseCli(profile)}
+      {profiles.length ? <>
+        {pinned.map(profile => row(profile))}
+        <NestableDraggableFlatList
+          data={movable}
+          keyExtractor={profile => profile.id}
+          onDragEnd={({ data }) => { void reorderProfiles(data) }}
+          renderItem={({ item, drag }) => <ScaleDecorator activeScale={1.02}>{row(item, drag)}</ScaleDecorator>}
         />
-      }) : <View style={styles.noProfiles}>
+      </> : <View style={styles.noProfiles}>
         <Server size={24} color={colors.muted} />
         <Text style={[styles.noProfilesTitle, { color: colors.text }]}>No saved servers</Text>
         <Text style={[styles.help, { color: colors.muted, textAlign: 'center' }]}>Connect to your hub to begin.</Text>
@@ -698,15 +708,13 @@ export function ServerProfilesManager({
         />
       </View>
     </View> : null}
-  </ScrollView>
+  </NestableScrollContainer>
 }
 
 interface RowWork { kind: 'redeploy' | 'cli'; text: string; working?: boolean; failed?: boolean }
 
-function ServerManagementRow({ profile, index, count, active, switching, disabled, removable, work, redeployDisabled, onSwitch, onEdit, onMove, onRemove, onRedeploy, onUpdateCli }: {
+function ServerManagementRow({ profile, active, switching, disabled, removable, work, redeployDisabled, onSwitch, onEdit, onDrag, onRemove, onRedeploy, onUpdateCli }: {
   profile: ServerProfileListItem
-  index: number
-  count: number
   active: boolean
   switching: boolean
   disabled: boolean
@@ -715,7 +723,8 @@ function ServerManagementRow({ profile, index, count, active, switching, disable
   redeployDisabled: boolean
   onSwitch: () => void
   onEdit: () => void
-  onMove: (direction: -1 | 1) => void
+  /** Starts a drag; absent on the pinned hub row. */
+  onDrag?: () => void
   onRemove: () => void
   onRedeploy?: () => void
   onUpdateCli: () => void
@@ -726,13 +735,12 @@ function ServerManagementRow({ profile, index, count, active, switching, disable
   // An Alert, not MenuView: MenuView does not open inside this sheet's Modal on Android, and the
   // row has at most three actions, Android's Alert limit (tapping outside cancels there; iOS
   // ignores `cancelable`, so it gets a Cancel button).
-  const rowActions = [
-    ...(index > 0 ? [{ text: 'Move up', onPress: () => onMove(-1) }] : []),
-    ...(index < count - 1 ? [{ text: 'Move down', onPress: () => onMove(1) }] : []),
-    ...(removable ? [{ text: 'Remove', style: 'destructive' as const, onPress: onRemove }] : []),
-  ]
+  const rowActions = removable ? [{ text: 'Remove', style: 'destructive' as const, onPress: onRemove }] : []
   const alertButtons = Platform.OS === 'ios' ? [...rowActions, { text: 'Cancel', style: 'cancel' as const }] : rowActions
   return <View style={[styles.profileRow, { borderColor: colors.border, backgroundColor: active ? `${colors.blue}10` : colors.surface }]}>
+    {onDrag
+      ? <Pressable accessibilityRole="button" accessibilityLabel={`Drag ${profile.name} to reorder`} disabled={disabled} onPressIn={onDrag} hitSlop={8} style={styles.grip}><GripVertical size={16} color={colors.muted} /></Pressable>
+      : <View style={styles.grip} />}
     <ServerConnectionDot state={switching ? 'connecting' : profile.connectionState} label={switching ? `Connecting to ${profile.name}` : status} />
     <View style={styles.profileCopy}>
       <View style={styles.profileTitleRow}>
@@ -848,7 +856,8 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 14, fontWeight: '800' },
   help: { fontSize: 11, lineHeight: 16 },
   profileList: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, overflow: 'hidden' },
-  profileRow: { minHeight: 68, paddingVertical: 8, paddingLeft: 11, paddingRight: 5, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  profileRow: { minHeight: 68, paddingVertical: 8, paddingLeft: 5, paddingRight: 5, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  grip: { width: 18, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' },
   rowTools: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
   rowTool: { minHeight: 30, borderRadius: 7, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 5 },
   rowToolText: { fontSize: 12, fontWeight: '700' },

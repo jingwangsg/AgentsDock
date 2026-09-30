@@ -6,7 +6,6 @@ import {
   profileHostSubtitle,
   displayServerProfileName,
   serverProfileHost,
-  reorderedServerProfileIds,
   requiresIdentityResetConfirmation,
   unreadCountLabel,
   type ServerProfileListItem,
@@ -77,8 +76,6 @@ assertEqual(buildUpdateServerProfileInput(alpha, unchanged, 'server-alpha-tested
 
 assert(findProfileByIdentity([alpha, beta], 'server-beta')?.id === 'beta', 'canonical identity must find an existing profile')
 assert(findProfileByIdentity([alpha, beta], 'server-beta', 'beta') === null, 'editing a profile must not duplicate-match itself')
-assertEqual(reorderedServerProfileIds([alpha, beta], 'beta', -1), ['beta', 'alpha'], 'reorder must return the complete profile order')
-assert(reorderedServerProfileIds([alpha, beta], 'alpha', -1) === null, 'reorder must reject an out-of-bounds move')
 
 assert(profileHostSubtitle(alpha) === 'alpha.example:7850', 'selector must show a distinct server host')
 assert(profileHostSubtitle({ ...alpha, name: 'alpha.example:7850' }) === null, 'selector must not repeat a host used as the profile name')

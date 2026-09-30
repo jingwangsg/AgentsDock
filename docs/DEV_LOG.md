@@ -4,7 +4,8 @@
 
 - In Settings → Servers on the desktop, the up and down arrows are gone; drag
   a server by its grip to reorder the list. The local server stays first and
-  has no grip.
+  has no grip. On Android, the row menu's Move Up and Move Down are gone too;
+  long-press a server's grip to drag it. The hub stays first.
 
 ## 2026-10-01 — Codex starts on a shared-home remote without rebuilding its thread index
 

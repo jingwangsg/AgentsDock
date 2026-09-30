@@ -17,6 +17,7 @@ const aliases = new Map(Object.entries({
   'react-native-safe-area-context': 'tests/component-mocks/native-wrappers.ts',
   'react-native-svg': 'tests/component-mocks/native-wrappers.ts',
   'react-native-keyboard-controller': 'tests/component-mocks/native-wrappers.ts',
+  'react-native-draggable-flatlist': 'tests/component-mocks/draggable-flatlist.ts',
   'lucide-react-native': 'tests/component-mocks/icons.ts',
   'expo-file-system': 'tests/mocks/expo-file-system.ts',
 }).map(([name, path]) => [name, resolve(projectRoot, path)]))
