@@ -94,7 +94,7 @@ import type {
   ServerUpdateStatus,
   ServerUpdateTrack,
   Session,
-  HistoryReloadResult,
+  SessionHistoryReloadResult,
   SessionRewindResult,
   SubagentSnapshot,
   TerminalAction,
@@ -1241,8 +1241,8 @@ export class AgentServerClient {
     return response.results ?? []
   }
 
-  reloadHistory(sessionId: string): Promise<HistoryReloadResult> {
-    return this.post<HistoryReloadResult>(`/api/sessions/${encodeURIComponent(sessionId)}/history/reload`, {})
+  reloadHistory(sessionId: string): Promise<SessionHistoryReloadResult> {
+    return this.post<SessionHistoryReloadResult>(`/api/sessions/${encodeURIComponent(sessionId)}/history/reload`, {})
   }
 
   async importHistory(sessionId: string, force = false): Promise<TimelinePage> {

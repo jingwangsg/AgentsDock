@@ -89,7 +89,7 @@ import type {
   ServerUpdateStatus,
   ServerUpdateTrack,
   Session,
-  HistoryReloadResult,
+  SessionHistoryReloadResult,
   SessionRewindResult,
   SessionSnapshot,
   TimelineIndex,
@@ -413,7 +413,7 @@ export interface AgentsDockAPI {
     markUnread(sessionId: string): Promise<Session>
     acknowledgeEmergency(sessionId: string, alertId: string): Promise<Session>
     importHistory(sessionId: string, force?: boolean): Promise<TimelinePage>
-    reloadHistory(sessionId: string): Promise<HistoryReloadResult>
+    reloadHistory(sessionId: string): Promise<SessionHistoryReloadResult>
     listLocal(): Promise<LocalSessionCandidate[]>
     bulkImport(items: BulkImportSessionItem[]): Promise<BulkImportSessionResult[]>
     /** Saves the chat's conversation through a native save dialog; null when cancelled. */

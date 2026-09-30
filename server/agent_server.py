@@ -58,7 +58,7 @@ from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, AsyncIterator, BinaryIO, Callable, Iterable, Iterator, Literal
+from typing import Any, AsyncIterator, BinaryIO, Callable, Iterable, Iterator, Literal, Coroutine
 from urllib.parse import quote, unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -2124,14 +2124,15 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def iso_timestamp_seconds(value: Any) -> float | None:
+def timestamp_from_iso(value: Any) -> float | None:
     """Epoch seconds of an ISO-8601 timestamp with a zone (``Z`` or an offset); None otherwise."""
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str):
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # A naive value would be read in the server's local zone and match the wrong span.
     return parsed.timestamp() if parsed.tzinfo is not None else None
 
 
@@ -50213,7 +50214,7 @@ def reconcile_cursor_history_items(
             fresh.append(items[index])
 
     if timeline_index == len(timeline_messages):
-        # All non-import ownership credits in the fixed window were consumed.
+        # Every credit in the window was consumed or skipped as having no transcript counterpart.
         # Advancing across intervening non-message/import events is safe. If
         # the credit window filled, however, later credits deliberately belong
         # to the next pass; stop at the last selected credit rather than
@@ -50693,7 +50694,7 @@ async def filter_codex_history_for_import(
 OWNED_TURN_END_GRACE_SECONDS = 30.0
 
 
-def claude_owned_turn_spans(session_id: str) -> list[tuple[float, float]]:
+def claude_owned_turn_spans(session_id: str) -> list[list[float]]:
     """[start, end] of every Claude turn this server ran, from the chat's own timeline.
 
     A turn superseded by a steering message has no terminal row; the next turn's
@@ -50701,22 +50702,21 @@ def claude_owned_turn_spans(session_id: str) -> list[tuple[float, float]]:
     slightly after the server recorded the turn's end.
     """
     spans: list[list[float]] = []
-    open_spans: dict[str, int] = {}
+    open_turn: tuple[str, int] | None = None  # run id and its index in spans
     for event in iter_session_events(session_id):
         run_id = str(event.get("run_id") or "")
-        if not run_id or run_id.startswith("import_") or event.get("imported") is True:
-            continue
-        at = iso_timestamp_seconds(event.get("ts"))
-        if at is None:
+        at = timestamp_from_iso(event.get("ts"))
+        if not run_id or at is None or is_imported_history_event(event):
             continue
         if event.get("type") == "turn_started" and event.get("backend") == BACKEND_CLAUDE:
-            for index in open_spans.values():
-                spans[index][1] = min(spans[index][1], at + OWNED_TURN_END_GRACE_SECONDS)
-            open_spans = {run_id: len(spans)}
+            if open_turn is not None:
+                spans[open_turn[1]][1] = at + OWNED_TURN_END_GRACE_SECONDS
+            open_turn = (run_id, len(spans))
             spans.append([at, math.inf])
-        elif event.get("type") in ("turn_finished", "turn_stopped") and run_id in open_spans:
-            spans[open_spans.pop(run_id)][1] = at + OWNED_TURN_END_GRACE_SECONDS
-    return [(low, high) for low, high in spans]
+        elif event.get("type") in ("turn_finished", "turn_stopped") and open_turn is not None and run_id == open_turn[0]:
+            spans[open_turn[1]][1] = at + OWNED_TURN_END_GRACE_SECONDS
+            open_turn = None
+    return spans
 
 
 async def append_imported_history(
@@ -50774,7 +50774,7 @@ async def append_imported_history(
         spans = await asyncio.to_thread(claude_owned_turn_spans, session_id)
         items = [item for item in items if not (
             item.get("kind") == "interruption"
-            and (at := iso_timestamp_seconds((item.get("provider_origin") or {}).get("timestamp"))) is not None
+            and (at := timestamp_from_iso((item.get("provider_origin") or {}).get("timestamp"))) is not None
             and any(low <= at <= high for low, high in spans)
         )]
         if not items:
@@ -92294,8 +92294,32 @@ REWIND_ADMISSION_RETRY_ATTEMPTS = max(1, int(agentsdock_setting("REWIND_ADMISSIO
 REWIND_ADMISSION_RETRY_SECONDS = max(0.0, float(agentsdock_setting("REWIND_ADMISSION_RETRY_SECONDS", "2")))
 
 
-@app.post("/api/sessions/{session_id}/rewind")
-def note_rewritten_log_tail(sess: dict[str, Any], summary: dict[str, Any], seq_high_water: int) -> None:
+async def persist_event_log_floor(session_id: str, sess: dict[str, Any]) -> None:
+    """Save the durable sequence floor before a log rewrite; sessions.json is the normal restart seed."""
+    durable_high_water = await asyncio.to_thread(repair_event_log_tail, events_path(session_id))
+    sess["latest_event_seq"] = max(int(sess.get("latest_event_seq") or 0), durable_high_water)
+    await STORE.save(durable=True)
+
+
+def forget_session_history_caches(session_id: str) -> None:
+    HISTORY_SEARCH_DIRTY.add(session_id)
+    CLAUDE_METADATA_REPAIR_CACHE.forget(session_id)
+    CODEX_GOAL_HISTORY_REPAIR_CACHE.forget(session_id)
+    CODEX_NATIVE_HISTORY_REPAIR_CACHE.forget(session_id)
+
+
+async def finish_despite_caller_cancellation(rewrite: Coroutine[Any, Any, Any]) -> Any:
+    """A log rewrite runs to completion even if its request is cancelled midway: the
+    replacement may already be written, and the sequence floor and caches must follow."""
+    task = asyncio.create_task(rewrite)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError as cancellation:
+        await join_task_despite_caller_cancellation(task)
+        raise cancellation
+
+
+def set_session_latest_from_log(sess: dict[str, Any], summary: dict[str, Any], seq_high_water: int) -> None:
     """Session metadata after rows were removed from its log: the kept tail is the latest."""
     sess["latest_event_seq"] = seq_high_water
     latest_event = summary["latest_event"] or {}
@@ -92315,6 +92339,7 @@ def note_rewritten_log_tail(sess: dict[str, Any], summary: dict[str, Any], seq_h
     sess.pop("active_run", None)
 
 
+@app.post("/api/sessions/{session_id}/rewind")
 async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str, Any]:
     """Truncate this chat to the rows before one turn and rewind its provider.
 
@@ -92344,9 +92369,6 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                 "message": "This backend cannot rewind its provider conversation; the chat was left unchanged.",
             })
         await ensure_session_idle_for_rewind(session_id)
-        current_latest = sess.get("latest_event_seq")
-        if not isinstance(current_latest, int) or isinstance(current_latest, bool):
-            current_latest = 0
         # "The client has seen everything" is judged against the durable
         # transcript tail, the value GET /api/sessions/{id} reports as
         # latest_seq. sessions.json's latest_event_seq can lag rows that do
@@ -92574,15 +92596,7 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
         async with event_delivery_lock(session_id):
             async def perform_rewind() -> dict[str, Any]:
                 nonlocal usage_signal
-                # Persist the pre-rewrite cursor floor before replacing the
-                # log; sessions.json is the normal restart seed and must never
-                # lag destructive maintenance.
-                durable_high_water = await asyncio.to_thread(
-                    repair_event_log_tail,
-                    events_path(session_id),
-                )
-                sess["latest_event_seq"] = max(current_latest, durable_high_water)
-                await STORE.save(durable=True)
+                await persist_event_log_floor(session_id, sess)
                 summary = await asyncio.to_thread(
                     truncate_session_events_sync,
                     session_id,
@@ -92598,11 +92612,8 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                     preserve_at_least=seq_high_water,
                     preserve_delivery_lock=True,
                 )
-                HISTORY_SEARCH_DIRTY.add(session_id)
-                CLAUDE_METADATA_REPAIR_CACHE.forget(session_id)
-                CODEX_GOAL_HISTORY_REPAIR_CACHE.forget(session_id)
-                CODEX_NATIVE_HISTORY_REPAIR_CACHE.forget(session_id)
-                note_rewritten_log_tail(sess, summary, seq_high_water)
+                forget_session_history_caches(session_id)
+                set_session_latest_from_log(sess, summary, seq_high_water)
                 if provider_rewind == "claude_reset":
                     sess["claude_session_id"] = None
                     sess["session_id"] = None
@@ -92632,15 +92643,7 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                     await CLAUDE_SDK_MANAGER.evict(session_id)
                 return summary
 
-            rewind_task = asyncio.create_task(perform_rewind())
-            try:
-                summary = await asyncio.shield(rewind_task)
-            except asyncio.CancelledError as cancellation:
-                # The replacement may already be written. Keep lifecycle and
-                # event-delivery ownership until the atomic replace, durable
-                # sequence floor, and cache repair are all complete.
-                await join_task_despite_caller_cancellation(rewind_task)
-                raise cancellation
+            summary = await finish_despite_caller_cancellation(perform_rewind())
 
         if provider_rewind == "codex_fork":
             # The chat now owns the fork. Unload the source thread so its
@@ -92726,28 +92729,28 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
         }
 
 
-def synced_import_runs(session_id: str) -> list[dict[str, Any]]:
+def import_runs_after_first_own_turn(session_id: str) -> list[dict[str, Any]]:
     """Import batches appended after this chat's first own turn, oldest first.
 
     The batch a Resume created before any turn is the chat's beginning and stays.
     """
-    first_live_seq: int | None = None
+    first_own_seq: int | None = None
     runs: dict[str, dict[str, Any]] = {}
     for event in iter_session_events(session_id):
         seq = durable_event_seq(event)
-        if seq is None:
-            continue
         run_id = str(event.get("run_id") or "")
-        if run_id.startswith("import_"):
+        if seq is None or not run_id:
+            continue
+        if is_imported_history_event(event):
             run = runs.setdefault(run_id, {"run_id": run_id, "from_seq": seq, "through_seq": seq, "removed_events": 0})
             run["from_seq"] = min(run["from_seq"], seq)
             run["through_seq"] = max(run["through_seq"], seq)
             run["removed_events"] += 1
-        elif first_live_seq is None and event.get("type") == "turn_started" and event.get("imported") is not True:
-            first_live_seq = seq
-    if first_live_seq is None:
+        elif first_own_seq is None and event.get("type") == "turn_started":
+            first_own_seq = seq
+    if first_own_seq is None:
         return []
-    return sorted((run for run in runs.values() if run["from_seq"] > first_live_seq), key=lambda run: run["from_seq"])
+    return sorted((run for run in runs.values() if run["from_seq"] > first_own_seq), key=lambda run: run["from_seq"])
 
 
 @app.post("/api/sessions/{session_id}/history/reload")
@@ -92766,42 +92769,26 @@ async def reload_session_history(session_id: str) -> dict[str, Any]:
         if not sess:
             raise HTTPException(status_code=404, detail="session not found")
         if str(sess.get("backend") or DEFAULT_BACKEND).lower() not in {BACKEND_CLAUDE, BACKEND_CODEX}:
-            raise HTTPException(status_code=409, detail="Only Claude and Codex chats reload history from their transcript.")
+            raise HTTPException(status_code=409, detail={
+                "code": "history_reload_unsupported_backend",
+                "message": "Only Claude and Codex chats reload history from their transcript.",
+            })
         await ensure_session_idle_for_rewind(session_id)
-        runs = await asyncio.to_thread(synced_import_runs, session_id)
+        runs = await asyncio.to_thread(import_runs_after_first_own_turn, session_id)
         if runs:
             async with event_delivery_lock(session_id):
                 async def perform_reload() -> None:
-                    # Persist the pre-rewrite cursor floor before replacing the log;
-                    # sessions.json is the normal restart seed.
-                    durable_high_water = await asyncio.to_thread(repair_event_log_tail, events_path(session_id))
-                    current_latest = sess.get("latest_event_seq")
-                    if not isinstance(current_latest, int) or isinstance(current_latest, bool):
-                        current_latest = 0
-                    sess["latest_event_seq"] = max(current_latest, durable_high_water)
-                    await STORE.save(durable=True)
+                    await persist_event_log_floor(session_id, sess)
                     summary = await asyncio.to_thread(
                         truncate_session_events_sync, session_id,
                         drop_run_ids=frozenset(run["run_id"] for run in runs),
                     )
                     seq_high_water = max(int(summary["max_seq_before"]), int(sess["latest_event_seq"]))
                     await forget_event_seq(session_id, preserve_at_least=seq_high_water, preserve_delivery_lock=True)
-                    HISTORY_SEARCH_DIRTY.add(session_id)
-                    CLAUDE_METADATA_REPAIR_CACHE.forget(session_id)
-                    CODEX_GOAL_HISTORY_REPAIR_CACHE.forget(session_id)
-                    CODEX_NATIVE_HISTORY_REPAIR_CACHE.forget(session_id)
-                    note_rewritten_log_tail(sess, summary, seq_high_water)
-                    sess.pop("_history_sync_cursor", None)
-                    sess.pop("_history_sync_source_stamp", None)
-                    await STORE.save(durable=True)
+                    forget_session_history_caches(session_id)
+                    set_session_latest_from_log(sess, summary, seq_high_water)
 
-                reload_task = asyncio.create_task(perform_reload())
-                try:
-                    await asyncio.shield(reload_task)
-                except asyncio.CancelledError as cancellation:
-                    await join_task_despite_caller_cancellation(reload_task)
-                    raise cancellation
-            clear_imported_active_runs()
+                await finish_despite_caller_cancellation(perform_reload())
             for run in runs:
                 await append_event(session_id, "history_rewound", {
                     "from_seq": run["from_seq"],
@@ -92809,17 +92796,13 @@ async def reload_session_history(session_id: str) -> dict[str, Any]:
                     "removed_events": run["removed_events"],
                     "reason": "history_reload",
                 })
-        else:
-            sess.pop("_history_sync_cursor", None)
-            sess.pop("_history_sync_source_stamp", None)
-            await STORE.save(durable=True)
-        synced = await sync_provider_history(dict(sess))
+        # Without a cursor the sync realigns on the newest message still on the timeline.
+        sess.pop("_history_sync_cursor", None)
+        sess.pop("_history_sync_source_stamp", None)
+        await STORE.save(durable=True)
+        await sync_provider_history(dict(sess))
     return {
-        "ok": True,
         "removed": [{"from_seq": run["from_seq"], "through_seq": run["through_seq"]} for run in runs],
-        "removed_events": sum(run["removed_events"] for run in runs),
-        "imported": int(synced.get("imported") or 0),
-        "message": str(synced.get("message") or ""),
         "session": public_session(sess),
     }
 

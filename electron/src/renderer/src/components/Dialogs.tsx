@@ -457,9 +457,16 @@ export function Dialogs() {
     <RenameChatDialog />
     <RenameFolderDialog />
     <ChatShareDialog />
-    <ConfirmDeleteDialog />
-    <ConfirmRestoreCheckpointDialog />
-    <ConfirmReloadHistoryDialog />
+    <ConfirmActionDialog<Session> eventName="agentsdock:confirm-delete" titleKey="ui.Dialogs.ConfirmDeleteDialog.delete_chat_80aaa1b"
+      description={session => t("ui.Dialogs.ConfirmDeleteDialog.and_its_agentsdock_history_will_be_removed_19e5a63", { "chat": String(session.title) })}
+      cancelKey="ui.Dialogs.ConfirmDeleteDialog.cancel_19766ed" confirmKey="ui.Dialogs.ConfirmDeleteDialog.delete_chat_93291d9"
+      run={session => useAppStore.getState().deleteSession(session.id)} />
+    <ConfirmActionDialog<{ sessionId: string; runId: string }> eventName="agentsdock:confirm-restore-checkpoint" titleKey="timeline.rewind.restoreCheckpoint"
+      description={() => t('sessionRewind.confirmRestore')} cancelKey="sessionRewind.cancel" confirmKey="timeline.rewind.restoreCheckpoint"
+      run={target => useAppStore.getState().restoreCheckpoint(target.sessionId, target.runId)} />
+    <ConfirmActionDialog<Session> eventName="agentsdock:confirm-reload-history" titleKey="historyReload.title"
+      description={() => t('historyReload.description')} cancelKey="sessionRewind.cancel" confirmKey="historyReload.confirm"
+      run={session => useAppStore.getState().reloadHistory(session.id)} />
   </>
 }
 
@@ -1054,64 +1061,26 @@ function FolderDialog() {
   </Shell>
 }
 
-function ConfirmDeleteDialog() {
+/** A confirmation opened by a window event carrying its subject; the confirm button has focus so Enter confirms, like a macOS default button. */
+function ConfirmActionDialog<T>({ eventName, titleKey, description, cancelKey, confirmKey, run }: {
+  eventName: string; titleKey: string; description: (detail: T) => string; cancelKey: string; confirmKey: string; run: (detail: T) => Promise<boolean>
+}) {
   useLocale()
-  const [session, setSession] = useState<Session | null>(null)
-  const [deleting, setDeleting] = useState(false)
-  // Focus the delete button on open so Enter confirms, like a macOS default button.
-  const deleteButtonRef = useRef<HTMLButtonElement>(null)
+  const [detail, setDetail] = useState<T | null>(null)
+  const [busy, setBusy] = useState(false)
+  const confirmButtonRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
-    const open = (event: Event) => setSession((event as CustomEvent<Session>).detail)
-    window.addEventListener('agentsdock:confirm-delete', open)
-    return () => window.removeEventListener('agentsdock:confirm-delete', open)
-  }, [])
-  const remove = async () => {
-    if (!session) return; setDeleting(true)
-    const removed = await useAppStore.getState().deleteSession(session.id)
-    setDeleting(false)
-    if (removed) setSession(null)
+    const open = (event: Event) => setDetail((event as CustomEvent<T>).detail)
+    window.addEventListener(eventName, open)
+    return () => window.removeEventListener(eventName, open)
+  }, [eventName])
+  const confirm = async () => {
+    if (detail === null) return; setBusy(true)
+    const done = await run(detail)
+    setBusy(false)
+    if (done) setDetail(null)
   }
-  return <Shell open={Boolean(session)} onOpenChange={open => { if (!open) setSession(null) }} title={t("ui.Dialogs.ConfirmDeleteDialog.delete_chat_80aaa1b")} description={session ? t("ui.Dialogs.ConfirmDeleteDialog.and_its_agentsdock_history_will_be_removed_19e5a63", { "chat": String(session.title) }) : ''} className="confirm-dialog" initialFocusRef={deleteButtonRef}><div className="confirm-actions"><button type="button" className="quiet-button" onClick={() => setSession(null)}>{t("ui.Dialogs.ConfirmDeleteDialog.cancel_19766ed")}</button><button ref={deleteButtonRef} type="button" className="danger-button" disabled={deleting} onClick={() => void remove()}>{deleting && <LoaderCircle className="spin" size={13} />}{" "}{t("ui.Dialogs.ConfirmDeleteDialog.delete_chat_93291d9")}</button></div></Shell>
-}
-
-function ConfirmRestoreCheckpointDialog() {
-  useLocale()
-  const [target, setTarget] = useState<{ sessionId: string; runId: string } | null>(null)
-  const [restoring, setRestoring] = useState(false)
-  // Focus the restore button on open so Enter confirms, like a macOS default button.
-  const restoreButtonRef = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    const open = (event: Event) => setTarget((event as CustomEvent<{ sessionId: string; runId: string }>).detail)
-    window.addEventListener('agentsdock:confirm-restore-checkpoint', open)
-    return () => window.removeEventListener('agentsdock:confirm-restore-checkpoint', open)
-  }, [])
-  const restore = async () => {
-    if (!target) return; setRestoring(true)
-    const restored = await useAppStore.getState().restoreCheckpoint(target.sessionId, target.runId)
-    setRestoring(false)
-    if (restored) setTarget(null)
-  }
-  return <Shell open={Boolean(target)} onOpenChange={open => { if (!open) setTarget(null) }} title={t('timeline.rewind.restoreCheckpoint')} description={t('sessionRewind.confirmRestore')} className="confirm-dialog" initialFocusRef={restoreButtonRef}><div className="confirm-actions"><button type="button" className="quiet-button" onClick={() => setTarget(null)}>{t('sessionRewind.cancel')}</button><button ref={restoreButtonRef} type="button" className="danger-button" disabled={restoring} onClick={() => void restore()}>{restoring && <LoaderCircle className="spin" size={13} />}{" "}{t('timeline.rewind.restoreCheckpoint')}</button></div></Shell>
-}
-
-function ConfirmReloadHistoryDialog() {
-  useLocale()
-  const [session, setSession] = useState<Session | null>(null)
-  const [reloading, setReloading] = useState(false)
-  // Focus the reload button on open so Enter confirms, like a macOS default button.
-  const reloadButtonRef = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    const open = (event: Event) => setSession((event as CustomEvent<Session>).detail)
-    window.addEventListener('agentsdock:confirm-reload-history', open)
-    return () => window.removeEventListener('agentsdock:confirm-reload-history', open)
-  }, [])
-  const reload = async () => {
-    if (!session) return; setReloading(true)
-    const reloaded = await useAppStore.getState().reloadHistory(session.id)
-    setReloading(false)
-    if (reloaded) setSession(null)
-  }
-  return <Shell open={Boolean(session)} onOpenChange={open => { if (!open) setSession(null) }} title={t('historyReload.title')} description={t('historyReload.description')} className="confirm-dialog" initialFocusRef={reloadButtonRef}><div className="confirm-actions"><button type="button" className="quiet-button" onClick={() => setSession(null)}>{t('sessionRewind.cancel')}</button><button ref={reloadButtonRef} type="button" className="danger-button" disabled={reloading} onClick={() => void reload()}>{reloading && <LoaderCircle className="spin" size={13} />}{" "}{t('historyReload.confirm')}</button></div></Shell>
+  return <Shell open={detail !== null} onOpenChange={open => { if (!open) setDetail(null) }} title={t(titleKey)} description={detail === null ? '' : description(detail)} className="confirm-dialog" initialFocusRef={confirmButtonRef}><div className="confirm-actions"><button type="button" className="quiet-button" onClick={() => setDetail(null)}>{t(cancelKey)}</button><button ref={confirmButtonRef} type="button" className="danger-button" disabled={busy} onClick={() => void confirm()}>{busy && <LoaderCircle className="spin" size={13} />}{" "}{t(confirmKey)}</button></div></Shell>
 }
 
 export function RenameChatDialog() {

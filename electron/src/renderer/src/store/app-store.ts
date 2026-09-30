@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type {
   AgentCrossChatRoutesSnapshot, AgentFile, Backend, BootstrapPayload, ChatReference, ChatSyncStatus, CreateSessionInput, Event, ForwardedPort, Health, Job, NativeFileRef, QueuedTurn, TeamReference,
   ProfileBootstrapPayload, ProfileConnectionEvent, ProfileNotificationRoute, ProviderCommandSelection, PublicServerProfile, RuntimeCatalog, Session, SessionSnapshot,
-  HistoryReloadResult, ServerForceRestartConfirmation, SessionExportFormat, TimelinePage, UpdateServerProfilePatch, WorkspaceProfileScope
+  ServerForceRestartConfirmation, SessionExportFormat, TimelinePage, UpdateServerProfilePatch, WorkspaceProfileScope
 } from '@shared/types'
 import { updateQueuedTurns as reduceQueuedTurns } from '@shared/queue'
 import type { TeamHubScope } from '@shared/team-hub'
@@ -2557,12 +2557,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const current = get()
     if (current.switchingProfileId) return false
     if (current.activeSessionIds.has(sessionId) || current.turnAdmissionTokens[sessionId]) {
-      set({ error: t('sessionRewind.busy') })
+      set({ error: t('historyReload.busy') })
       return false
     }
     const scope = captureProfileScope(current)
     try {
-      const result: HistoryReloadResult = await window.agentsDock.sessions.reloadHistory(sessionId)
+      const result = await window.agentsDock.sessions.reloadHistory(sessionId)
       if (!profileScopeMatches(scope, get())) return false
       const [reconciledSession] = applyPendingSessionPatches([result.session])
       set(state => {

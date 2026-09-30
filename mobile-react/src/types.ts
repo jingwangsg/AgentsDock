@@ -984,6 +984,8 @@ export interface Event {
   /** `history_rewound` tombstone: the removed closed sequence range and its provider action. */
   from_seq?: number | null
   through_seq?: number | null
+  /** `history_reload`: the range was an import batch removed by Reload history, not a rewind. */
+  reason?: string | null
   to_run_id?: string | null
   removed_events?: number | null
   provider_rewind?: string | null

@@ -852,6 +852,8 @@ function SystemRowView({ row, fontScale }: { row: Extract<TimelineRow, { kind: '
     ? state.sessions.find(session => session.id === event.target_session_id)?.title
     : undefined)
   const [showDigest, setShowDigest] = useRecyclingState(false, [row.key])
+  // A batch removed by Reload history leaves no mark; only a rewind is a point in the conversation.
+  if (event.type === 'history_rewound' && event.reason === 'history_reload') return null
   if (event.type === 'history_rewound' || event.type === 'workspace_checkpoint_restored') {
     return <View testID={`lifecycle-${event.type}-${event.id}`} style={[styles.system, { backgroundColor: colors.surface, borderColor: colors.border }]}>
       <History size={16} color={colors.muted} />

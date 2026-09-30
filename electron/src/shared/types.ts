@@ -1750,13 +1750,9 @@ export interface SessionRewindResult {
   session: Session
 }
 
-export interface HistoryReloadResult {
-  ok: boolean
+export interface SessionHistoryReloadResult {
   /** Import batches removed from the timeline, as closed sequence ranges. */
   removed: { from_seq: number; through_seq: number }[]
-  removed_events: number
-  imported: number
-  message: string
   session: Session
 }
 

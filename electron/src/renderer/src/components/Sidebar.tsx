@@ -472,7 +472,7 @@ function SessionContextMenu({ session, unread, folders }: { session: Session; un
           icon={History}
           label={t('historyReload.menu')}
           disabled={running || admitting || session.backend === 'opencode' || session.backend === 'cursor'}
-          title={session.backend === 'opencode' || session.backend === 'cursor' ? t('historyReload.unavailable') : running || admitting ? t('sessionRewind.busy') : undefined}
+          title={running || admitting ? t('historyReload.busy') : undefined}
           onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-reload-history', { detail: session }))}
         />
         <MenuItem icon={Trash2} label={t("ui.Sidebar.SessionContextMenu.delete_chat_19f9176")} danger onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-delete', { detail: session }))} />
