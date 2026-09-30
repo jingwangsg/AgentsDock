@@ -1,5 +1,21 @@
 # Public development log
 
+## 2026-09-30 — Side chat on Android; server switching no longer fails on a full cache
+
+- Android has Side chat: the question button at the end of the composer's
+  folder row opens the server-synced side conversation the desktop shows, for
+  Codex and Claude chats on servers that support it.
+- Switching servers on Android no longer fails with "database or disk is full
+  (code 13)". The app's storage database was capped at 6 MB, which the chat
+  snapshot cache outgrew; the cap is now 64 MB, and a full database drops the
+  cached snapshots (they are downloaded again) instead of failing the write.
+- The chat list and header show the server's default model by name (for
+  example "Codex · GPT-6-Sol · Low") instead of "Server model", as on the
+  desktop. A model list that failed to load when connecting is loaded again on
+  the next refresh instead of leaving the model picker disabled.
+- Cancelling a Resume goal request while it releases the Codex thread no
+  longer leaves the chat busy.
+
 ## 2026-09-30 — Resume goal keeps its tools; more reload and Android fixes
 
 - A goal started with Resume goal gets its own provider authority for the whole
