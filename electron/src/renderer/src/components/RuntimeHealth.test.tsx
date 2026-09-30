@@ -235,47 +235,6 @@ describe('Claude token in the composer', () => {
   })
 })
 
-describe('RuntimeHealthPanel CLI update', () => {
-  const updatable = { ok: true, capabilities: { runtime_cli_update_v1: { available: true } } }
-
-  it('offers no update on a server without the update route', () => {
-    useAppStore.setState({ activeProfileId: 'profile-a', profileGeneration: 1, health: { ok: true }, runtimeCatalog: readyCatalog })
-    render(<RuntimeHealthPanel />)
-    expect(screen.queryByRole('button', { name: 'Update CLI' })).not.toBeInTheDocument()
-  })
-
-  it('runs the CLI update on the active server and shows its result and new version', async () => {
-    const updated = { ...readyCatalog.backends.codex.diagnostic!, version: 'codex-cli 0.160.0', checked_at: '2026-07-30T20:05:00Z' }
-    const updateCli = vi.fn().mockResolvedValue({ output: 'Updating Codex…\nCodex updated to 0.160.0', diagnostic: updated })
-    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { runtime: { updateCli } } as unknown as AgentsDockAPI })
-    useAppStore.setState({ activeProfileId: 'profile-a', profileGeneration: 4, health: updatable, runtimeCatalog: readyCatalog })
-    render(<RuntimeHealthPanel />)
-
-    const buttons = screen.getAllByRole('button', { name: 'Update CLI' })
-    expect(buttons).toHaveLength(2)
-    await userEvent.setup().click(buttons[1])
-
-    expect(updateCli).toHaveBeenCalledExactlyOnceWith({ profileId: 'profile-a', profileGeneration: 4 }, 'codex')
-    expect(await screen.findByText('Codex updated to 0.160.0')).toHaveAttribute('role', 'status')
-    expect(screen.getByText('codex-cli 0.160.0')).toBeInTheDocument()
-  })
-
-  it('shows a failed update in the row and offers no update for a missing CLI', async () => {
-    const updateCli = vi.fn().mockRejectedValue(new Error('`claude update` exited with 3: EACCES'))
-    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { runtime: { updateCli } } as unknown as AgentsDockAPI })
-    const missing = { ...readyCatalog.backends.codex.diagnostic!, status: 'missing' as const, installed: false }
-    useAppStore.setState({
-      activeProfileId: 'profile-a', profileGeneration: 1, health: updatable,
-      runtimeCatalog: { ...readyCatalog, backends: { ...readyCatalog.backends, codex: { ...readyCatalog.backends.codex, diagnostic: missing } } },
-    })
-    render(<RuntimeHealthPanel />)
-
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Update CLI' }))
-
-    expect(await screen.findByText('`claude update` exited with 3: EACCES')).toHaveAttribute('role', 'alert')
-  })
-})
-
 describe('RuntimeHealthPanel tmux prerequisite', () => {
   it('shows a missing tmux capability with actionable installation guidance', () => {
     useAppStore.setState({

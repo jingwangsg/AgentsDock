@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
 import { t } from '@shared/i18n'
 import type * as MonacoApi from 'monaco-editor/editor/editor.api'
+import { COLOR_THEMES } from '../lib/color-themes.data'
 import { useLocale } from '../lib/i18n'
 import { languageIdForPath, type MonacoDiffModel } from '../lib/monaco-diff-model'
 
@@ -44,9 +45,12 @@ export function MonacoDiffEditor({ path, model, sideBySide, wordWrap, onUnavaila
       // would show whitespace-only hunks as no change at all.
       ignoreTrimWhitespace: false
     })
-    const applyTheme = () => monaco.editor.setTheme(document.documentElement.dataset.theme === 'light' ? 'agentsdock-light' : 'agentsdock-dark')
+    const applyTheme = () => {
+      const { colorTheme, theme } = document.documentElement.dataset
+      monaco.editor.setTheme(COLOR_THEMES.some(candidate => candidate.id === colorTheme) ? `agentsdock-${colorTheme}` : theme === 'light' ? 'agentsdock-light' : 'agentsdock-dark')
+    }
     const observer = new MutationObserver(applyTheme)
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-color-theme'] })
     applyTheme()
     setEditor(created)
     return () => {

@@ -12,7 +12,7 @@ import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, cursorLocalSessionImportSupported
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { opencodeBackendAvailable, opencodeBackendUnavailableReason, chatBackendSelection, codexCustomProviderAvailable, cursorBackendAvailable, cursorBackendUnavailableReason, runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, selectableChatBackendChoices, selectableChatBackends, type ChatBackendChoice } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
-import { readAppearance, setAppearanceMode, type AppearanceMode } from '../lib/appearance'
+import { colorThemeOptions, readAppearance, readColorThemes, setAppearanceMode, setColorTheme, type AppearanceMode, type ColorThemeChoice, type ResolvedAppearance } from '../lib/appearance'
 import { t, useLanguagePreference, type LanguagePreference } from '../lib/i18n'
 import { canonicalizeLocalRouteHints, chatMentionTrigger, chatReferenceDisplayText, currentRouteHintReference, insertChatReference, parseStoredChatReferences, reconcileChatReferences, routeHintMentionsAvailable, supportedCrossChatTargetBackends, validChatReferences, type ChatMentionTrigger } from '../lib/chat-references'
 import { atomicComposerReferenceCaret, atomicComposerReferenceDeletion, atomicComposerReferenceNavigation, insertTeamReference, orderedComposerReferenceSpans, parseStoredTeamReferences, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceText, validComposerReferences, validTeamReferences, type TeamMentionTrigger } from '../lib/team-references'
@@ -480,6 +480,7 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
   const open = appSettingsOpen || legacyServerSettingsOpen
   const [section, setSection] = useState<AppSettingsSection>('general')
   const [appearance, setAppearance] = useState<AppearanceMode>('system')
+  const [colorThemes, setColorThemes] = useState<ColorThemeChoice>(readColorThemes)
   const [update, setUpdate] = useState<AppUpdateStatus | null>(null)
   const [updateTrackBusy, setUpdateTrackBusy] = useState(false)
   const [updateCancelBusy, setUpdateCancelBusy] = useState(false)
@@ -520,6 +521,7 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
     if (!open) return
     let active = true
     setAppearance(readAppearance())
+    setColorThemes(readColorThemes())
     const unsubscribe = window.agentsDock.events.on('app:update', status => {
       if (active) setUpdate(status)
     })
@@ -538,6 +540,10 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
   const chooseAppearance = (mode: AppearanceMode) => {
     setAppearance(mode)
     setAppearanceMode(mode)
+  }
+  const chooseColorTheme = (mode: ResolvedAppearance, id: string) => {
+    setColorThemes(current => ({ ...current, [mode]: id }))
+    setColorTheme(mode, id)
   }
   const chooseUpdateTrack = async (track: AppUpdateTrack) => {
     if (!update || update.track === track) return
@@ -613,6 +619,12 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
                   <option value="dark">{t('settings.darkTheme')}</option>
                 </select>
               </label>
+              {(['light', 'dark'] as const).map(mode => <label key={mode} className="app-settings-row">
+                <strong className="app-settings-row-title">{t(mode === 'light' ? 'settings.lightColorTheme' : 'settings.darkColorTheme')}</strong>
+                <select className="app-settings-select" aria-label={t(mode === 'light' ? 'settings.lightColorTheme' : 'settings.darkColorTheme')} value={colorThemes[mode]} onChange={event => chooseColorTheme(mode, event.currentTarget.value)}>
+                  {colorThemeOptions(mode).map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+                </select>
+              </label>)}
               <ReasoningDisplaySettings />
               <GlobalHotkeyRow />
               <div className="app-settings-row">

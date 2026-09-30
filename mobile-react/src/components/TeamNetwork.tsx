@@ -12,7 +12,7 @@ import {
 import { ArrowLeft, Bot, BookOpen, Inbox, RadioTower, RefreshCw, Send, Server, Users, X } from 'lucide-react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { AgentServerClient } from '../api/AgentServerClient'
-import { teamNetworkIdempotencyKey, teamNetworkProxyRoute, type TeamNetworkProxyRoute } from '../lib/team-network'
+import { newIdempotencyKey, teamNetworkProxyRoute, type TeamNetworkProxyRoute } from '../lib/team-network'
 import { TeamNetworkRequests, type TeamNetworkRequest } from '../lib/team-network-requests'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
@@ -170,9 +170,9 @@ export function TeamNetwork({ visible, onClose }: { visible: boolean; onClose: (
   const [agentBackend, setAgentBackend] = useState<'codex' | 'claude' | 'other'>('codex')
   const [agentBusy, setAgentBusy] = useState(false)
   const requests = useRef(new TeamNetworkRequests())
-  const postKey = useRef(teamNetworkIdempotencyKey())
+  const postKey = useRef(newIdempotencyKey())
   const postFingerprint = useRef('')
-  const agentKey = useRef(teamNetworkIdempotencyKey())
+  const agentKey = useRef(newIdempotencyKey())
   const agentFingerprint = useRef('')
 
   const selectedTeam = teams.find(team => team.id === teamId) ?? null
@@ -328,7 +328,7 @@ export function TeamNetwork({ visible, onClose }: { visible: boolean; onClose: (
       if (section === 'mail' && mailBox === 'inbox' && summary.delivery?.state !== 'read') {
         const receipt = await scopeClient(scope).teamNetworkPost<{ recipients?: TeamMessageSummary['recipients'] }>(route.basePath, `/v1/teams/${encodeURIComponent(teamId)}/network/messages/${encodeURIComponent(summary.id)}/receipts`, {
           state: 'read',
-          idempotency_key: teamNetworkIdempotencyKey(),
+          idempotency_key: newIdempotencyKey(),
         })
         if (!requests.current.isCurrent(expectedRequest) || !scopeCurrent(scope)) return
         setMail(current => current.map(message => message.id === summary.id ? {
@@ -352,7 +352,7 @@ export function TeamNetwork({ visible, onClose }: { visible: boolean; onClose: (
     const fingerprint = JSON.stringify([teamId, body])
     if (postFingerprint.current !== fingerprint) {
       postFingerprint.current = fingerprint
-      postKey.current = teamNetworkIdempotencyKey()
+      postKey.current = newIdempotencyKey()
     }
     setPosting(true)
     setError('')
@@ -370,7 +370,7 @@ export function TeamNetwork({ visible, onClose }: { visible: boolean; onClose: (
       setFeed(current => [{ ...created, preview: created.body.slice(0, 600) }, ...current.filter(message => message.id !== created.id)])
       draftsByTeam.current.delete(teamId)
       setDraft('')
-      postKey.current = teamNetworkIdempotencyKey()
+      postKey.current = newIdempotencyKey()
       postFingerprint.current = ''
     } catch (cause) {
       if (requests.current.isCurrent(expectedRequest) && scopeCurrent(scope)) setError(cleanError(cause))
@@ -388,7 +388,7 @@ export function TeamNetwork({ visible, onClose }: { visible: boolean; onClose: (
     const fingerprint = JSON.stringify([teamId, externalAgentId, displayName, agentBackend])
     if (agentFingerprint.current !== fingerprint) {
       agentFingerprint.current = fingerprint
-      agentKey.current = teamNetworkIdempotencyKey()
+      agentKey.current = newIdempotencyKey()
     }
     setAgentBusy(true)
     setError('')
@@ -405,7 +405,7 @@ export function TeamNetwork({ visible, onClose }: { visible: boolean; onClose: (
       setAgentName('')
       setAgentForm(false)
       agentFingerprint.current = ''
-      agentKey.current = teamNetworkIdempotencyKey()
+      agentKey.current = newIdempotencyKey()
     } catch (cause) {
       if (requests.current.isCurrent(expectedRequest) && scopeCurrent(scope)) setError(cleanError(cause))
     } finally {

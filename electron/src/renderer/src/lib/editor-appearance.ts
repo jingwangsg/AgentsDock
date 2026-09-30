@@ -1,3 +1,5 @@
+import { COLOR_THEMES } from './color-themes.data'
+
 export const EDITOR_FONT_SIZE_MIN = 11
 export const EDITOR_FONT_SIZE_MAX = 20
 export const EDITOR_APPEARANCE_STORAGE_KEY = 'agentsdock.editorAppearance'
@@ -196,13 +198,19 @@ export function isEditorThemePreference(value: unknown): value is EditorThemePre
   return value === 'app' || isEditorThemeId(value)
 }
 
-export function editorThemeDefinition(theme: EditorThemeId): EditorThemeDefinition {
-  return EDITOR_THEMES.find(candidate => candidate.id === theme) ?? EDITOR_THEMES[0]
+/** An editor theme, or the editor palette of an app color theme (see resolveEditorTheme). Shared ids such as 'dracula' use the editor theme. */
+export function editorThemeDefinition(theme: string): Pick<EditorThemeDefinition, 'mode' | 'palette'> {
+  const editorTheme = EDITOR_THEMES.find(candidate => candidate.id === theme)
+  if (editorTheme) return editorTheme
+  const colorTheme = COLOR_THEMES.find(candidate => candidate.id === theme)
+  return colorTheme ? { mode: colorTheme.mode, palette: colorTheme.editor } : EDITOR_THEMES[0]
 }
 
-export function resolveEditorTheme(theme: EditorThemePreference, appTheme: EditorThemeMode): EditorThemeId {
+/** 'app' follows the app color theme: its own editor palette, or VS Code Dark / GitHub Light under One Dark / One Light. */
+export function resolveEditorTheme(theme: EditorThemePreference, colorTheme: string): string {
   if (theme !== 'app') return theme
-  return appTheme === 'light' ? 'github-light' : 'vscode-dark'
+  if (COLOR_THEMES.some(candidate => candidate.id === colorTheme)) return colorTheme
+  return colorTheme === 'one-light' ? 'github-light' : 'vscode-dark'
 }
 
 export function clampEditorFontSize(value: unknown): number {

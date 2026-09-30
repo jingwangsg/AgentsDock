@@ -5,6 +5,7 @@ import type { ForwardedPort, Session, TerminalWindow } from '@shared/types'
 import { setLocale } from '@shared/i18n'
 import { useAppStore } from '../store/app-store'
 import { TerminalWorkspace } from './TerminalWorkspace'
+import { COLOR_THEMES } from '../lib/color-themes.data'
 
 const xtermHarness = vi.hoisted(() => ({ instances: [] as Array<Record<string, unknown>> }))
 
@@ -149,6 +150,7 @@ describe('TerminalWorkspace ports surface', () => {
     useAppStore.setState({ health: null })
     if (previousTheme === undefined) delete document.documentElement.dataset.theme
     else document.documentElement.dataset.theme = previousTheme
+    delete document.documentElement.dataset.colorTheme
   })
 
   it('uses a white light-theme terminal with original blue selection and unchanged ANSI colors', async () => {
@@ -197,6 +199,19 @@ describe('TerminalWorkspace ports surface', () => {
       selectionBackground: '#a9d2f4aa'
     } }))
     expect(xtermHarness.instances).toHaveLength(1)
+  })
+
+  it('switches the existing terminal to a collected color theme and back to the One palette', async () => {
+    const collected = COLOR_THEMES.find(theme => theme.mode === 'dark')!
+    document.documentElement.dataset.theme = 'dark'
+    render(<TerminalWorkspace session={session} layoutHeight={360} />)
+    await waitFor(() => expect(xtermHarness.instances).toHaveLength(1))
+    const instance = xtermHarness.instances[0]
+
+    act(() => { document.documentElement.dataset.colorTheme = collected.id })
+    await waitFor(() => expect(instance.options).toMatchObject({ theme: collected.terminal }))
+    act(() => { document.documentElement.dataset.colorTheme = 'one-dark' })
+    await waitFor(() => expect(instance.options).toMatchObject({ theme: { background: '#111212' } }))
   })
 
   it('does not commit for unrelated health telemetry replacements', async () => {

@@ -48,7 +48,7 @@ describe('workspace Git native transport', () => {
     expect(calls).toHaveLength(4)
   })
 
-  it('rejects malformed sessions, traversal and unconfirmed abort before sending credentials', async () => {
+  it('rejects malformed sessions, traversal and unconfirmed abort or discard before sending credentials', async () => {
     let calls = 0
     await transport((_req, res) => { calls++; json(res, snapshot) }, async client => {
       await expect(client.workspaceGitStatus('../admin')).rejects.toThrow('Invalid workspace')
@@ -56,6 +56,7 @@ describe('workspace Git native transport', () => {
         await expect(client.workspaceGitDiff('chat-1', path, 'unstaged')).rejects.toThrow('Invalid repository')
       }
       await expect(client.workspaceGitAction('chat-1', { action: 'abort', expected_revision: 'rev-1' })).rejects.toThrow('Confirm')
+      await expect(client.workspaceGitAction('chat-1', { action: 'discard', expected_revision: 'rev-1', paths: ['file.txt'] })).rejects.toThrow('Confirm')
       await expect(client.workspaceGitAction('chat-1', { action: 'commit', expected_revision: 'rev-1', message: ' ' })).rejects.toThrow('commit message')
     })
     expect(calls).toBe(0)

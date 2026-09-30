@@ -67,6 +67,24 @@ class CompletedPrefixForkTests(unittest.IsolatedAsyncioTestCase):
                 server.claude_completed_fork_boundary({"cwd": "/tmp"}, "claude-parent", events)
         self.assertEqual(raised.exception.status_code, 409)
 
+    def test_claude_boundary_accepts_a_reply_written_in_the_same_second_the_turn_finished(self):
+        # turn_finished carries whole seconds; the transcript records milliseconds.
+        events = self.events()[:3]
+        same_second = {
+            "type": "assistant", "uuid": "completed-uuid", "timestamp": "2026-09-08T10:01:00.191Z",
+            "message": {"content": [{"type": "text", "text": "Completed answer"}]},
+        }
+        next_second = {**same_second, "uuid": "running-uuid", "timestamp": "2026-09-08T10:01:01.004Z"}
+        with patch.object(server, "claude_resume_file_for_cwd", return_value=Mock(is_file=Mock(return_value=True))), patch.object(
+            server, "bounded_jsonl_events", return_value=[same_second, next_second],
+        ):
+            self.assertEqual(server.claude_completed_fork_boundary({"cwd": "/tmp"}, "claude-parent", events), "completed-uuid")
+        with patch.object(server, "claude_resume_file_for_cwd", return_value=Mock(is_file=Mock(return_value=True))), patch.object(
+            server, "bounded_jsonl_events", return_value=[next_second],
+        ):
+            with self.assertRaises(server.HTTPException):
+                server.claude_completed_fork_boundary({"cwd": "/tmp"}, "claude-parent", events)
+
     async def test_running_endpoint_passes_frozen_prefix_without_touching_active_run(self):
         parent = {"id": "parent", "backend": "claude", "latest_event_seq": 6}
         active = {"parent": {"run_id": "live", "sentinel": object()}}

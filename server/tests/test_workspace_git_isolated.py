@@ -149,6 +149,34 @@ class WorkspaceGitTests(unittest.TestCase):
         self.assertEqual(result["files"], [])
         self.assertEqual((self.root / "file.txt").read_text(), "current\n")
 
+    def test_discard_restores_the_staged_version_and_deletes_untracked_files(self):
+        self.initial(**{"file.txt": "base\n", "gone.txt": "gone\n"})
+        self.write("file.txt", "staged\n")
+        self.action("stage", paths=["file.txt"])
+        self.write("file.txt", "later\n")
+        (self.root / "gone.txt").unlink()
+        (self.root / "new").mkdir()
+        self.write("new/notes.txt", "draft\n")
+        paths = ["file.txt", "gone.txt", "new/notes.txt"]
+        with self.assertRaises(HTTPException) as error:
+            self.action("discard", paths=paths)
+        self.assertEqual(error.exception.detail["code"], "git_discard_confirmation_required")
+        result = self.action("discard", paths=paths, confirmed=True)
+        self.assertEqual([(item["path"], item["staged"], item["unstaged"]) for item in result["files"]], [("file.txt", True, False)])
+        self.assertEqual((self.root / "file.txt").read_text(), "staged\n")
+        self.assertEqual((self.root / "gone.txt").read_text(), "gone\n")
+        self.assertFalse((self.root / "new" / "notes.txt").exists())
+        with self.assertRaises(HTTPException) as error:
+            self.action("discard", paths=["file.txt"], confirmed=True)
+        self.assertEqual(error.exception.detail["code"], "git_invalid_selection")
+        # Checking out a file would run a smudge filter.
+        self.git("config", "filter.unused.smudge", "cat")
+        self.write(".gitattributes", "gone.txt filter=unused\n")
+        self.write("gone.txt", "changed\n")
+        with self.assertRaises(HTTPException) as error:
+            self.action("discard", paths=["gone.txt"], confirmed=True)
+        self.assertEqual(error.exception.detail["code"], "git_custom_driver")
+
     def test_paths_and_concurrent_index_are_guarded(self):
         self.initial()
         self.write("file.txt", "changed\n")

@@ -1,5 +1,61 @@
 # Public development log
 
+## 2026-09-30 — Color themes from Zed and VS Code
+
+- Settings → General has a Light theme and a Dark theme choice next to Theme,
+  as in Zed: One Light / One Dark plus 29 themes collected from Zed and VS Code
+  (Ayu, Gruvbox, Dracula, Nord, Tokyo Night, Catppuccin, GitHub, Solarized,
+  Rosé Pine, Everforest, Kanagawa, Night Owl, Monokai, VS Code Modern). The app
+  chrome, terminal, code editor (when it follows the app), Changes diff view
+  and Canvas follow the chosen theme. Each palette records its upstream source
+  and license.
+
+## 2026-09-30 — Resending a message after a failed send no longer runs it twice
+
+- A send can reach the server after the app gave up waiting for it, for
+  example when a remote's ssh forward stalls. Resending the same message then
+  ran it a second time. Desktop and mobile now send a request id with each
+  message and reuse it when the same message is resent after a failure; the
+  server answers a repeated id with the first result instead of running it
+  again.
+
+## 2026-09-30 — Codex chats with large tool outputs sync their history again
+
+- A Codex transcript line over 4 MiB (for example a tool output with an
+  inline image) made history sync fail for the whole chat, every time the
+  chat was opened. Such lines are now skipped like unreadable ones, and the
+  sync reads long lines without holding them in memory.
+- A chat's event stream no longer writes a whole page of events to a
+  connection that has already closed.
+
+## 2026-09-30 — Editing a message or forking a Claude chat no longer fails at random
+
+- Editing an earlier message or forking a running Claude chat could fail with
+  "The last completed Claude turn could not be matched to an exact provider
+  snapshot". The turn's end time is stored in whole seconds and Claude's
+  transcript in milliseconds, so when Claude's final reply was written in the
+  same second the turn finished, the one correct reply was rejected as later
+  than the turn. The two times are now compared in whole seconds.
+
+## 2026-09-30 — Remote chats no longer fail with "Server disconnected" on a slow tunnel
+
+- A message sent to a chat on a hub remote could fail with "Server
+  disconnected without sending a response" when the ssh forward was slow. The
+  remote closed idle connections after 5 seconds, counted from when it sent a
+  response; the hub reuses a connection for 2 seconds counted from when the
+  response arrives, which can be seconds later. AgentsServer now keeps idle
+  connections open for 75 seconds. Remotes need a Redeploy to get the fix.
+
+## 2026-09-30 — Discard changes in the Changes tab
+
+- Each unstaged or untracked file in the Changes tab has a Discard button, and
+  Discard all covers every unstaged and untracked file, on desktop and mobile.
+  After a confirmation, tracked files return to their staged version (the last
+  commit when nothing is staged) and untracked files are deleted; staged
+  changes are kept. The server refuses the request if the repository changed
+  after the list was loaded, and for files that use a custom Git filter. Needs
+  the updated AgentsServer.
+
 ## 2026-09-30 — Codex chats show background terminals in the header
 
 - A Codex chat's header shows a "N running" chip while background terminals
@@ -20,11 +76,12 @@
   command's output opens from its row. Claude side questions run without tools,
   so they have no steps.
 
-## 2026-09-30 — Server list no longer has Update CLI
+## 2026-09-30 — Update CLI is only in the server list
 
-- The server list's Update CLI menu is removed on desktop and mobile. Claude
-  Code and Codex are still updated from the active server's runtime settings
-  (Runtimes & prerequisites on desktop, Agent runtimes on mobile).
+- Claude Code and Codex are updated from the server list's Update CLI menu
+  (desktop Settings → Server, mobile Servers), which works on any saved server
+  whichever one is active. The Update CLI buttons in runtime settings
+  (Runtimes & prerequisites on desktop, Agent runtimes on mobile) are removed.
 
 ## 2026-09-30 — Window layout and chat font are the same on every server
 

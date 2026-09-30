@@ -1,9 +1,9 @@
 // Workspace Changes sheet: Git status of the chat's working directory with
-// stage/unstage and per-file diffs. Port of the Electron WorkspaceChanges tab.
+// stage/unstage/discard and per-file diffs. Port of the Electron WorkspaceChanges tab.
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native'
+import { Alert, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { AlertTriangle, ArrowLeft, ChevronRight, Columns2, Folder, Minus, Plus, RefreshCw, Rows3, WrapText, X, type LucideIcon } from 'lucide-react-native'
+import { AlertTriangle, ArrowLeft, ChevronRight, Columns2, Folder, Minus, Plus, RefreshCw, Rows3, Undo2, WrapText, X, type LucideIcon } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
 import { limitReviewSource, parseReviewableDiff } from '../lib/code-review'
 import { buildFileTree, type FileTreeDirectory, type FileTreeNode } from '../lib/file-tree'
@@ -161,13 +161,13 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
     return () => { cancelled = true }
   }, [connection, isCurrent, revision, selection, sessionId, visible])
 
-  const run = async (action: 'stage' | 'unstage', paths: string[]) => {
+  const run = async (action: 'stage' | 'unstage' | 'discard', paths: string[]) => {
     if (busy || !status || !paths.length) return
     // The response is the next status; a status read still in flight must not overwrite it.
     statusEpoch.current += 1
     setBusy(true); setLoading(false); setError(null)
     try {
-      const next = await connection.workspaceGitAction(sessionId, { action, paths, expected_revision: status.revision })
+      const next = await connection.workspaceGitAction(sessionId, { action, paths, expected_revision: status.revision, ...(action === 'discard' ? { confirmed: true } : {}) })
       if (!isCurrent()) return
       applyStatus(next)
     } catch (reason) {
@@ -179,6 +179,11 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
       if (isCurrent()) setBusy(false)
     }
   }
+  const confirmDiscard = (paths: string[]) => Alert.alert(
+    paths.length === 1 ? `Discard changes to ${paths[0]}?` : `Discard changes to ${paths.length} files?`,
+    'Unstaged edits are lost and untracked files are deleted. Staged changes are kept. This cannot be undone.',
+    [{ text: 'Cancel', style: 'cancel' }, { text: 'Discard', style: 'destructive', onPress: () => { void run('discard', paths) } }],
+  )
 
   const allFiles = status?.files ?? []
   const counts = useMemo(() => countChanges(allFiles), [allFiles])
@@ -236,8 +241,9 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
               <View style={styles.bulk}>
                 <BulkButton icon={Plus} label="Stage all" disabled={blocked || !stageable.length} onPress={() => void run('stage', stageable)} testID="changes-stage-all" />
                 <BulkButton icon={Minus} label="Unstage all" disabled={blocked || !unstageable.length} onPress={() => void run('unstage', unstageable)} testID="changes-unstage-all" />
+                <BulkButton icon={Undo2} label="Discard all" disabled={blocked || !stageable.length} onPress={() => confirmDiscard(stageable)} testID="changes-discard-all" />
               </View>
-              {files.length ? <ChangesTree nodes={tree} depth={0} files={files} selectedPath={selection?.path ?? null} blocked={blocked} collapsed={collapsed} onToggle={path => setCollapsed(current => { const next = new Set(current); if (!next.delete(path)) next.add(path); return next })} onSelect={select} onStage={path => void run('stage', [path])} onUnstage={path => void run('unstage', [path])} />
+              {files.length ? <ChangesTree nodes={tree} depth={0} files={files} selectedPath={selection?.path ?? null} blocked={blocked} collapsed={collapsed} onToggle={path => setCollapsed(current => { const next = new Set(current); if (!next.delete(path)) next.add(path); return next })} onSelect={select} onStage={path => void run('stage', [path])} onUnstage={path => void run('unstage', [path])} onDiscard={path => confirmDiscard([path])} />
                 : <Text style={[styles.empty, { color: colors.muted }]}>{counts.all ? 'No changed files match.' : status ? 'The working tree is clean.' : ''}</Text>}
             </ScrollView> : null}
             {split || selection ? <View style={styles.detail}>
@@ -263,7 +269,7 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
   </Modal>
 }
 
-function ChangesTree({ nodes, depth, files, selectedPath, blocked, collapsed, onToggle, onSelect, onStage, onUnstage }: {
+function ChangesTree({ nodes, depth, files, selectedPath, blocked, collapsed, onToggle, onSelect, onStage, onUnstage, onDiscard }: {
   nodes: FileTreeNode[]
   depth: number
   files: WorkspaceGitFile[]
@@ -274,11 +280,12 @@ function ChangesTree({ nodes, depth, files, selectedPath, blocked, collapsed, on
   onSelect: (file: WorkspaceGitFile) => void
   onStage: (path: string) => void
   onUnstage: (path: string) => void
+  onDiscard: (path: string) => void
 }) {
   const colors = usePalette()
   return <>
     {nodes.map(node => {
-      if (node.kind === 'file') return <ChangesFileRow key={node.path} file={files[node.index]} name={node.name} depth={depth} selected={node.path === selectedPath} blocked={blocked} onSelect={onSelect} onStage={onStage} onUnstage={onUnstage} />
+      if (node.kind === 'file') return <ChangesFileRow key={node.path} file={files[node.index]} name={node.name} depth={depth} selected={node.path === selectedPath} blocked={blocked} onSelect={onSelect} onStage={onStage} onUnstage={onUnstage} onDiscard={onDiscard} />
       const expanded = !collapsed.has(node.path)
       const count = fileCount(node)
       return <Fragment key={node.path}>
@@ -288,13 +295,13 @@ function ChangesTree({ nodes, depth, files, selectedPath, blocked, collapsed, on
           <Text style={[styles.directoryName, { color: colors.muted }]} numberOfLines={1}>{node.name}</Text>
           <Text style={{ color: colors.muted, fontSize: 10 }}>{count}</Text>
         </Pressable>
-        {expanded ? <ChangesTree nodes={node.children} depth={depth + 1} files={files} selectedPath={selectedPath} blocked={blocked} collapsed={collapsed} onToggle={onToggle} onSelect={onSelect} onStage={onStage} onUnstage={onUnstage} /> : null}
+        {expanded ? <ChangesTree nodes={node.children} depth={depth + 1} files={files} selectedPath={selectedPath} blocked={blocked} collapsed={collapsed} onToggle={onToggle} onSelect={onSelect} onStage={onStage} onUnstage={onUnstage} onDiscard={onDiscard} /> : null}
       </Fragment>
     })}
   </>
 }
 
-function ChangesFileRow({ file, name, depth, selected, blocked, onSelect, onStage, onUnstage }: {
+function ChangesFileRow({ file, name, depth, selected, blocked, onSelect, onStage, onUnstage, onDiscard }: {
   file: WorkspaceGitFile
   name: string
   depth: number
@@ -303,6 +310,7 @@ function ChangesFileRow({ file, name, depth, selected, blocked, onSelect, onStag
   onSelect: (file: WorkspaceGitFile) => void
   onStage: (path: string) => void
   onUnstage: (path: string) => void
+  onDiscard: (path: string) => void
 }) {
   const colors = usePalette()
   const code = file.conflicted ? '!' : `${file.index_status}${file.worktree_status}`
@@ -314,6 +322,7 @@ function ChangesFileRow({ file, name, depth, selected, blocked, onSelect, onStag
       <Text style={[styles.fileLabel, { color: colors.text }]} numberOfLines={2}>{name}</Text>
       <Text style={[styles.fileCode, { color: file.conflicted ? colors.orange : colors.muted }]}>{code}</Text>
     </Pressable>
+    {fileHasView(file, 'unstaged') ? <IconButton icon={Undo2} size={15} disabled={blocked} onPress={() => onDiscard(file.path)} label={`Discard changes ${identity}`} /> : null}
     {fileHasView(file, 'unstaged') ? <IconButton icon={Plus} size={15} disabled={blocked} onPress={() => onStage(file.path)} label={`Stage ${identity}`} /> : null}
     {fileHasView(file, 'staged') ? <IconButton icon={Minus} size={15} disabled={blocked} onPress={() => onUnstage(file.path)} label={`Unstage ${identity}`} /> : null}
   </View>

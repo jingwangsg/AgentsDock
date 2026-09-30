@@ -7,11 +7,13 @@ import {
   EDITOR_FONT_SIZE_MIN,
   EDITOR_THEMES,
   clampEditorFontSize,
+  editorThemeDefinition,
   normalizeEditorAppearance,
   readEditorAppearance,
   resolveEditorTheme,
   writeEditorAppearance
 } from './editor-appearance'
+import { COLOR_THEMES } from './color-themes.data'
 
 describe('editor appearance', () => {
   beforeEach(() => window.localStorage.clear())
@@ -46,9 +48,12 @@ describe('editor appearance', () => {
 
   it('matches the app palette by default while preserving explicit overrides', () => {
     expect(DEFAULT_EDITOR_APPEARANCE.theme).toBe('app')
-    expect(resolveEditorTheme('app', 'light')).toBe('github-light')
-    expect(resolveEditorTheme('app', 'dark')).toBe('vscode-dark')
-    expect(resolveEditorTheme('dracula', 'light')).toBe('dracula')
+    expect(resolveEditorTheme('app', 'one-light')).toBe('github-light')
+    expect(resolveEditorTheme('app', 'one-dark')).toBe('vscode-dark')
+    expect(resolveEditorTheme('dracula', 'one-light')).toBe('dracula')
+    const collected = COLOR_THEMES.find(theme => !EDITOR_THEMES.some(editorTheme => editorTheme.id === theme.id))!
+    expect(resolveEditorTheme('app', collected.id)).toBe(collected.id)
+    expect(editorThemeDefinition(collected.id)).toEqual({ mode: collected.mode, palette: collected.editor })
   })
 
   it('recovers from malformed persisted settings', () => {

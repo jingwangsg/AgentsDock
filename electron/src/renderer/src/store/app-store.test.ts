@@ -1506,6 +1506,33 @@ describe('live queue state', () => {
     }])
   })
 
+  it('resends a message whose send failed with the same request id, and a new message with a new one', async () => {
+    // The first send can still reach the server after the app gave up on it.
+    const send = vi.fn()
+      .mockRejectedValueOnce(new Error('The operation was aborted due to timeout'))
+      .mockResolvedValue({ session: sessionFor('chat-a') })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { turns: { send } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      activeProfileId: null, profileGeneration: 0, switchingProfileId: null,
+      selectedSessionId: 'chat-a', chatPanes: { primary: 'chat-a', secondary: null },
+      sessions: [sessionFor('chat-a')], health: null, runtimeCatalog: null,
+      snapshots: { 'chat-a': snapshot('chat-a', [eventFor('chat-a', 1)]) },
+      drafts: {}, uploadsBySession: {}, uploadPathsBySession: {}, turnAdmissionTokens: {}
+    })
+
+    await expect(useAppStore.getState().sendPromptForSession('chat-a', 'Run the eval')).resolves.toBe(false)
+    await expect(useAppStore.getState().sendPromptForSession('chat-a', 'Run the eval')).resolves.toBe(true)
+    await expect(useAppStore.getState().sendPromptForSession('chat-a', 'Run the eval')).resolves.toBe(true)
+
+    const ids = send.mock.calls.map(([input]) => input.clientRequestId)
+    expect(ids[0]).toMatch(/^[A-Za-z0-9_-]{8,128}$/)
+    expect(ids[1]).toBe(ids[0])
+    expect(ids[2]).not.toBe(ids[0])
+  })
+
   it('adds, edits, reorders, and removes queued messages from stream events', () => {
     let queue: QueuedTurn[] = []
     queue = updateQueuedTurns(queue, event('turn_queued', { queued_id: 'a', prompt: 'First', position: 1 }))

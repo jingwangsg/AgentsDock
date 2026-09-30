@@ -58,7 +58,7 @@ from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, AsyncIterator, Callable, Iterable, Iterator, Literal
+from typing import Any, AsyncIterator, BinaryIO, Callable, Iterable, Iterator, Literal
 from urllib.parse import quote, unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -6999,6 +6999,8 @@ class TurnRequest(BaseModel):
     # from its JSON body and never accepts arbitrary TurnRequest controls.
     shared_chat_id: str | None = Field(default=None, pattern=r"^interactive_[a-f0-9]{32}$")
     shared_chat_request_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,128}$")
+    # Chosen by the app for one message and reused when it resends that message.
+    client_request_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,128}$")
     file_ids: list[str] = Field(default_factory=list)
     backend: str | None = None
     model: str | None = None
@@ -30970,6 +30972,10 @@ async def send_event_catchup(
             visible=visible,
         )
         for event in events:
+            # A send to a buffered socket never suspends, and asyncio reports a lost
+            # connection through a scheduled callback: without yielding, a whole page
+            # is written to a dead socket, one "socket.send() raised" warning each.
+            await asyncio.sleep(0)
             await asyncio.wait_for(
                 ws.send_json(event),
                 timeout=WEBSOCKET_SEND_TIMEOUT_SECONDS,
@@ -46571,8 +46577,27 @@ def bounded_jsonl_paths(
                     continue
 
 
+def skip_oversized_jsonl_line(stream: BinaryIO, limit: int) -> tuple[int, bool]:
+    """Consume the rest of a line too long to parse, in bounded chunks.
+
+    Such lines are provider records like tool output with inline images; they are
+    skipped like unparsable ones instead of failing the whole transcript. Returns
+    the bytes consumed (at most ``limit``) and whether the line ended.
+    """
+
+    consumed = 0
+    while consumed < limit:
+        chunk = stream.readline(min(1024 * 1024, limit - consumed))
+        if not chunk:
+            break
+        consumed += len(chunk)
+        if chunk.endswith(b"\n"):
+            return consumed, True
+    return consumed, False
+
+
 def bounded_jsonl_events(path: Path, *, preserve_invalid: bool = False) -> Iterator[dict[str, Any] | None]:
-    """Parse a transcript with hard byte, line-size, and line-count bounds."""
+    """Parse a transcript with hard byte and line-count bounds; oversized lines are skipped."""
 
     size = path.stat().st_size
     if size > MAX_LOCAL_TRANSCRIPT_BYTES:
@@ -46581,7 +46606,7 @@ def bounded_jsonl_events(path: Path, *, preserve_invalid: bool = False) -> Itera
         )
     consumed = 0
     with path.open("rb") as stream:
-        for line_number in range(1, MAX_LOCAL_TRANSCRIPT_SCAN_LINES + 1):
+        for _ in range(MAX_LOCAL_TRANSCRIPT_SCAN_LINES):
             raw_line = stream.readline(MAX_LOCAL_TRANSCRIPT_LINE_BYTES + 1)
             if not raw_line:
                 return
@@ -46589,7 +46614,12 @@ def bounded_jsonl_events(path: Path, *, preserve_invalid: bool = False) -> Itera
             if consumed > MAX_LOCAL_TRANSCRIPT_BYTES:
                 raise ValueError("transcript changed while it was being imported")
             if len(raw_line) > MAX_LOCAL_TRANSCRIPT_LINE_BYTES:
-                raise ValueError(f"transcript line {line_number} exceeds the import limit")
+                if not raw_line.endswith(b"\n"):
+                    skipped, _ended = skip_oversized_jsonl_line(stream, MAX_LOCAL_TRANSCRIPT_BYTES - consumed)
+                    consumed += skipped
+                if preserve_invalid:
+                    yield None
+                continue
             if not raw_line.strip():
                 continue
             try:
@@ -46630,7 +46660,7 @@ def bounded_jsonl_records_range(
         ):
             raise ValueError("transcript changed before cursor parsing")
         stream.seek(start)
-        for line_number in range(1, MAX_LOCAL_TRANSCRIPT_SCAN_LINES + 1):
+        for _ in range(MAX_LOCAL_TRANSCRIPT_SCAN_LINES):
             if remaining <= 0:
                 break
             raw_line = stream.readline(
@@ -46640,9 +46670,13 @@ def bounded_jsonl_records_range(
                 raise ValueError("transcript was truncated during cursor parsing")
             remaining -= len(raw_line)
             if len(raw_line) > MAX_LOCAL_TRANSCRIPT_LINE_BYTES:
-                raise ValueError(
-                    f"transcript cursor line {line_number} exceeds the import limit"
-                )
+                if not raw_line.endswith(b"\n"):
+                    skipped, ended = skip_oversized_jsonl_line(stream, remaining)
+                    remaining -= skipped
+                    if not ended:
+                        raise ValueError("transcript cursor does not end on a complete line")
+                yield None, int(stream.tell())
+                continue
             if not raw_line.endswith(b"\n"):
                 raise ValueError("transcript cursor does not end on a complete line")
             event: dict[str, Any] | None = None
@@ -49368,7 +49402,8 @@ def provider_history_source_snapshot(
     prefix_digest = hashlib.sha256() if verify_offset is not None else None
     prefix_hashed = 0
     complete_size = 0
-    pending = b""
+    pending_digest = complete_digest.copy()
+    pending_size = 0
     with path.open("rb") as stream:
         opened = os.fstat(stream.fileno())
         expected_identity = (
@@ -49394,15 +49429,19 @@ def provider_history_source_snapshot(
                 take = min(len(chunk), int(verify_offset) - prefix_hashed)
                 prefix_digest.update(chunk[:take])
                 prefix_hashed += take
-            pending += chunk
-            newline = pending.rfind(b"\n")
+            # pending_digest covers the complete records plus the bytes after the last
+            # newline, so a line of any length is hashed without being buffered.
+            newline = chunk.rfind(b"\n")
             if newline >= 0:
-                complete = pending[:newline + 1]
-                complete_digest.update(complete)
-                complete_size += len(complete)
-                pending = pending[newline + 1:]
-            if len(pending) > MAX_LOCAL_TRANSCRIPT_LINE_BYTES:
-                raise ValueError("incomplete transcript line exceeds the import limit")
+                pending_digest.update(chunk[:newline + 1])
+                complete_digest = pending_digest
+                complete_size += pending_size + newline + 1
+                pending_digest = complete_digest.copy()
+                pending_digest.update(chunk[newline + 1:])
+                pending_size = len(chunk) - newline - 1
+            else:
+                pending_digest.update(chunk)
+                pending_size += len(chunk)
         finished = os.fstat(stream.fileno())
         if (
             int(finished.st_dev),
@@ -50563,9 +50602,10 @@ async def run_provider_history_sync(session_id: str) -> None:
     except Exception as exc:
         # A read-only catch-up must never break opening a chat.
         logger.warning(
-            "provider history sync failed session=%s error=%s",
+            "provider history sync failed session=%s error=%s: %s",
             session_id,
             type(exc).__name__,
+            concise_error_message(exc),
         )
     finally:
         HISTORY_SYNC_SCHEDULED.discard(session_id)
@@ -91665,7 +91705,9 @@ def claude_completed_fork_boundary(
             if not record_uuid or (recorded_uuid and record_uuid != recorded_uuid):
                 continue
             record_time = parse_job_timestamp(str(record.get("timestamp") or ""))
-            if cutoff_time is None or record_time is None or record_time > cutoff_time:
+            # turn_finished carries whole seconds and the transcript milliseconds; the
+            # final reply is usually written in the same second the turn finishes.
+            if cutoff_time is None or record_time is None or int(record_time) > cutoff_time:
                 continue
             if not recorded_uuid and (start_time is None or record_time < start_time):
                 continue
@@ -92596,8 +92638,43 @@ async def session_checkpoint_restore(session_id: str, run_id: str) -> AsyncItera
         })
 
 
+# A send can reach this server after the app gave up on it (a slow ssh forward),
+# and the app then resends the same message. Accepted turns are remembered by
+# (chat, client_request_id) so the resend gets the first receipt instead of a
+# second run; a resend that arrives while the first is still admitting waits for it.
+TURN_REQUEST_RECEIPTS: OrderedDict[tuple[str, str], asyncio.Future[dict[str, Any]]] = OrderedDict()
+MAX_TURN_REQUEST_RECEIPTS = 1024
+
+
 @app.post("/api/sessions/{session_id}/turns")
 async def post_turn(session_id: str, req: TurnRequest) -> dict[str, Any]:
+    if not req.client_request_id:
+        return await admit_turn(session_id, req)
+    key = (session_id, req.client_request_id)
+    receipt = TURN_REQUEST_RECEIPTS.get(key)
+    if receipt is not None:
+        return await asyncio.shield(receipt)
+    receipt = asyncio.get_running_loop().create_future()
+    TURN_REQUEST_RECEIPTS[key] = receipt
+    while len(TURN_REQUEST_RECEIPTS) > MAX_TURN_REQUEST_RECEIPTS:
+        TURN_REQUEST_RECEIPTS.popitem(last=False)
+    try:
+        result = await admit_turn(session_id, req)
+    except Exception as exc:
+        # A rejected send may be retried; only a waiting duplicate sees this error.
+        TURN_REQUEST_RECEIPTS.pop(key, None)
+        receipt.set_exception(exc)
+        receipt.exception()
+        raise
+    except BaseException:
+        TURN_REQUEST_RECEIPTS.pop(key, None)
+        receipt.cancel()
+        raise
+    receipt.set_result(result)
+    return result
+
+
+async def admit_turn(session_id: str, req: TurnRequest) -> dict[str, Any]:
     while True:
         try:
             return await start_turn(session_id, req)
@@ -99251,6 +99328,12 @@ def main() -> int:
         # Without this uvicorn waits forever for open websockets/background
         # work after SIGTERM, and the restart watchdog is the only way out.
         timeout_graceful_shutdown=uvicorn_graceful_shutdown_seconds(),
+        # load-bearing: a hub proxies to this server over an ssh forward and reuses a
+        # connection for 2 s after a response reaches it (remote_servers.py). A slow
+        # forward delivers that response seconds after it left here, so with uvicorn's
+        # default 5 s this side closed the connection under the hub's next request:
+        # "Server disconnected without sending a response".
+        timeout_keep_alive=75,
     )
     return 0
 

@@ -32,31 +32,6 @@ export function RuntimeHealthNotice({ backend, sessionId }: { backend: Backend; 
   </>
 }
 
-function CliUpdate({ backend }: { backend: 'claude' | 'codex' }) {
-  const colors = usePalette()
-  const available = useAppStore(state => Boolean(state.health?.capabilities?.runtime_cli_update_v1?.available))
-  const [updating, setUpdating] = useState(false)
-  const [result, setResult] = useState<{ text: string; failed: boolean } | null>(null)
-  const update = async () => {
-    setUpdating(true)
-    setResult(null)
-    try {
-      const { output, diagnostic } = await client.updateRuntimeCli(backend)
-      useAppStore.setState(state => ({ health: state.health && { ...state.health, runtimes: { ...state.health.runtimes, [backend]: diagnostic } } }))
-      setResult({ text: output.split('\n').at(-1) || 'Update finished.', failed: false })
-    } catch (cause) {
-      setResult({ text: errorMessage(cause), failed: true })
-    } finally {
-      setUpdating(false)
-    }
-  }
-  if (!available) return null
-  return <View style={styles.update}>
-    <Pressable accessibilityRole="button" accessibilityLabel={`Update ${backend === 'claude' ? 'Claude Code' : 'Codex'} CLI`} disabled={updating} onPress={() => void update()} style={[styles.refresh, { backgroundColor: colors.raised, opacity: updating ? 0.45 : 1 }]}><RefreshCw size={12} color={colors.blue} /><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '700' }}>{updating ? 'Updating…' : 'Update CLI'}</Text></Pressable>
-    {result ? <Text style={[styles.detail, { color: result.failed ? colors.red : colors.muted }]}>{result.text}</Text> : null}
-  </View>
-}
-
 function ClaudeTokenForm({ onSaved }: { onSaved: () => void }) {
   const colors = usePalette()
   const [token, setToken] = useState('')
@@ -118,7 +93,7 @@ function RuntimeRow({ backend, diagnostic, compact = false, detailOverride, onRe
   const detail = detailOverride || diagnostic?.last_error || diagnostic?.message || `${provider} has not been checked yet.`
   return <View accessibilityRole={tone === 'error' ? 'alert' : 'text'} style={[styles.row, compact && styles.compact, { borderColor: tone === 'error' || tone === 'warning' ? color : colors.border, backgroundColor: colors.surface }]}>
     <Icon size={compact ? 15 : 17} color={color} />
-    <View style={{ flex: 1, minWidth: 0 }}><Text style={[styles.title, { color: colors.text }]}>{provider} <Text style={{ color }}>{runtimeLabel(diagnostic)}</Text></Text><Text style={[styles.detail, { color: colors.muted }]} numberOfLines={compact ? 2 : undefined}>{detail}</Text>{!compact && diagnostic?.action ? <Text style={[styles.action, { color: colors.text }]}>{diagnostic.action}</Text> : null}{!compact && (backend === 'claude' || backend === 'codex') && diagnostic?.installed ? <CliUpdate backend={backend} /> : null}</View>
+    <View style={{ flex: 1, minWidth: 0 }}><Text style={[styles.title, { color: colors.text }]}>{provider} <Text style={{ color }}>{runtimeLabel(diagnostic)}</Text></Text><Text style={[styles.detail, { color: colors.muted }]} numberOfLines={compact ? 2 : undefined}>{detail}</Text>{!compact && diagnostic?.action ? <Text style={[styles.action, { color: colors.text }]}>{diagnostic.action}</Text> : null}</View>
     {compact && onRecheck ? <Pressable accessibilityRole="button" accessibilityLabel={`Recheck ${provider} CLI status`} onPress={onRecheck} style={[styles.refresh, { backgroundColor: colors.raised }]}><RefreshCw size={12} color={colors.blue} /><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '700' }}>Recheck</Text></Pressable> : null}
     {!compact && diagnostic?.version ? <Text style={[styles.version, { color: colors.muted }]} numberOfLines={1}>{diagnostic.version}</Text> : null}
   </View>
@@ -152,6 +127,5 @@ const styles = StyleSheet.create({
   refresh: { minHeight: 44, borderRadius: 5, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 5 },
   row: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, padding: 8, flexDirection: 'row', alignItems: 'flex-start', gap: 7 },
   compact: { marginHorizontal: 10, marginTop: 6, paddingVertical: 7 }, title: { fontSize: 11, fontWeight: '800' }, detail: { fontSize: 10, lineHeight: 14, marginTop: 2 }, action: { fontSize: 10, lineHeight: 14, marginTop: 3 }, version: { maxWidth: 100, fontSize: 9 },
-  update: { alignItems: 'flex-start', gap: 4, marginTop: 6 },
   tokenForm: { flexDirection: 'column', alignItems: 'stretch', gap: 6 }, tokenRow: { flexDirection: 'row', alignItems: 'center', gap: 7 }, tokenInput: { flex: 1, minWidth: 0, minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 5, paddingHorizontal: 9, fontSize: 12 },
 })

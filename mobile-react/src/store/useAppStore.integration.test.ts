@@ -1133,6 +1133,21 @@ try {
     assert.deepEqual(sentSkillSelection, { id: 'cmd-pdf', revision: 'rev-9' }, 'sendPrompt must forward the palette selection to the client unchanged')
     assert.equal(await useAppStore.getState().sendPrompt(false, generation, 'shared-session', { promptOverride: 'plain text', consumeComposer: false }), true)
     assert.equal(sentSkillSelection, undefined, 'sends without a selection must not invent one')
+    // A send whose outcome is unknown is resent with the same request id; a new message gets a new one.
+    const requestIds: (string | undefined)[] = []
+    let failNextSend = true
+    activeClient.sendTurn = async (_sessionId, _prompt, _fileIds, _model, _effort, _capabilities, _chatReferences, _teamReferences, _skillSelection, clientRequestId) => {
+      requestIds.push(clientRequestId)
+      if (failNextSend) { failNextSend = false; throw new Error('Request timed out') }
+      return { session: liveSession, queued: false }
+    }
+    const resend = { promptOverride: 'resend me', consumeComposer: false }
+    assert.equal(await useAppStore.getState().sendPrompt(false, generation, 'shared-session', resend), false)
+    assert.equal(await useAppStore.getState().sendPrompt(false, generation, 'shared-session', resend), true)
+    assert.equal(await useAppStore.getState().sendPrompt(false, generation, 'shared-session', resend), true)
+    assert.match(String(requestIds[0]), /^[A-Za-z0-9_-]{8,128}$/)
+    assert.equal(requestIds[1], requestIds[0], 'the resend of an unconfirmed message reuses its request id')
+    assert.notEqual(requestIds[2], requestIds[0], 'a message sent after a confirmed one gets a new id')
     useAppStore.setState({ activeSessionIds: new Set(['shared-session']), uploads: { 'shared-session': [] } })
 
     const deferredTurn: QueuedTurn = {

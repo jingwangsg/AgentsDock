@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { rememberedFolderOrder } from '../lib/session-order'
+import { newIdempotencyKey } from '../lib/team-network'
 import { AppState as NativeAppState } from 'react-native'
 import * as Notifications from 'expo-notifications'
 import type {
@@ -173,6 +174,9 @@ let lastBadgeCount: number | null = null
 let pendingWorkspaceSave: { scope: ConnectionScope; value: WorkspacePreferences; timer: ReturnType<typeof setTimeout> } | null = null
 let pendingLiveSnapshotSave: { scope: ConnectionScope; snapshot: Snapshot; timer: ReturnType<typeof setTimeout> } | null = null
 const sendPromptInFlight = new Set<string>()
+// A send whose outcome is unknown (timeout, lost response) may still reach the
+// server. Resending the same message reuses its request id so it runs only once.
+const unconfirmedTurnRequests = new Map<string, { clientRequestId: string; prompt: string; fileIds: string }>()
 let turnAdmissionCounter = 0
 const queuedRunInFlight = new Map<string, { queuedId: string; promise: Promise<boolean> }>()
 const scheduledJobRunInFlight = new Map<string, { scope: ConnectionScope; promise: Promise<JobRunResponse | null> }>()
@@ -513,6 +517,8 @@ interface AppState {
    * without `force` it only reports them: a count, or null when the remote could not be checked.
    */
   redeployHubRemote(profileId: string, force: boolean, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<{ redeployed: boolean; running: number | null }>
+  /** Server list "Update CLI" on any saved server; resolves with the CLI's last output line. */
+  updateServerCli(profileId: string, backend: 'claude' | 'codex'): Promise<string>
   updateServerProfile(profileId: string, patch: UpdateServerProfileInput): Promise<void>
   removeServerProfile(profileId: string): Promise<void>
   reorderServerProfiles(profileIds: string[]): Promise<void>
@@ -819,6 +825,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     void get().probeInactiveProfiles()
     return { redeployed: true, running: 0 }
+  },
+
+  async updateServerCli(profileId, backend) {
+    const profile = get().profiles.find(value => value.id === profileId)
+    if (!profile) throw new Error('Server profile not found.')
+    const server = new AgentServerClient(normalizeServerURL(profile.serverURL), await loadProfileToken(profile.id, profile.credentialVersion))
+    try {
+      // An admin action goes only to the server the profile pinned, as on the active connection.
+      if (profile.serverIdentity && (await server.health()).server_identity !== profile.serverIdentity) {
+        throw new Error('This server reports a different identity. Select it once to confirm the change, then update again.')
+      }
+      const { output, diagnostic } = await server.updateRuntimeCli(backend)
+      if (get().activeProfileId === profileId) {
+        set(state => ({ health: state.health && { ...state.health, runtimes: { ...state.health.runtimes, [backend]: diagnostic } } }))
+      }
+      return output.split('\n').at(-1) || 'Update finished.'
+    } finally {
+      server.dispose()
+    }
   },
 
   /** Stops the poll loop in `deployHubRemoteServer` and asks the hub to cancel the job. Silently a no-op with nothing running. */
@@ -2330,19 +2355,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (consumedDraft) void saveCurrentWorkspace(get)
     const queuedBeforeSend = new Set((get().snapshots[sessionId]?.queuedTurns ?? []).map(turn => turn.queued_id))
     const sessionRead = sessionMutations.captureRead()
+    const fileIds = files.map(file => file.id)
+    const unconfirmedKey = `${scope.profileId}:${sessionId}`
+    const unconfirmed = unconfirmedTurnRequests.get(unconfirmedKey)
+    const clientRequestId = unconfirmed?.prompt === prompt && unconfirmed.fileIds === fileIds.join('\n') ? unconfirmed.clientRequestId : newIdempotencyKey()
     try {
       const response = await scope.client.sendTurn(
         sessionId,
         prompt,
-        files.map(file => file.id),
+        fileIds,
         session?.model,
         session?.effort,
         clientCapabilities,
         chatReferences,
         teamReferences,
         options?.skillSelection,
+        clientRequestId,
       )
       if (!connectionIsCurrent(scope)) return false
+      unconfirmedTurnRequests.delete(unconfirmedKey)
       const stateAfterSend = get()
       if (chatReferences.some(reference => reference.action === 'route' && reference.grant_intent === true)) {
         void get().refreshAgentRoutes(sessionId, expectedGeneration)
@@ -2397,6 +2428,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       void get().syncSelectedSession('recovery')
       return true
     } catch (error) {
+      if (connectionIsCurrent(scope)) unconfirmedTurnRequests.set(unconfirmedKey, { clientRequestId, prompt, fileIds: fileIds.join('\n') })
       if (consumeComposer && consumedDraft && connectionIsCurrent(scope)) {
         set(state => {
           const currentDraft = state.drafts[sessionId] ?? ''

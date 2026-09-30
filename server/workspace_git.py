@@ -42,7 +42,7 @@ def repository_lock(root: Path, deadline: float):
 
 
 class GitAction(BaseModel):
-    action: Literal["stage", "unstage", "commit", "resolve", "continue", "abort"]
+    action: Literal["stage", "unstage", "discard", "commit", "resolve", "continue", "abort"]
     expected_revision: str = Field(min_length=64, max_length=64)
     paths: list[str] | None = Field(default=None, max_length=1000)
     message: str | None = Field(default=None, max_length=65536)
@@ -307,14 +307,14 @@ class Repository:
     def safe_git_configuration(self, action: str, paths: list[str]) -> None:
         # Ordinary hooks and filters may execute arbitrary code or alter reviewed
         # blobs. Refuse these repositories instead of silently skipping policy.
-        if action in {"stage", "resolve", "continue", "abort"} and paths:
+        if action in {"stage", "discard", "resolve", "continue", "abort"} and paths:
             attributes, _, _ = self.git("check-attr", "-z", "filter", "merge", "--", *paths)
             values = attributes.split(b"\0")
             for position in range(0, len(values) - 2, 3):
                 attribute, value = values[position + 1:position + 3]
                 if value in {b"unspecified", b"unset"}:
                     continue
-                if attribute == b"merge" and (action in {"stage", "resolve"} or value in {b"set", b"text", b"binary", b"union"}):
+                if attribute == b"merge" and (action in {"stage", "discard", "resolve"} or value in {b"set", b"text", b"binary", b"union"}):
                     continue
                 fail("git_custom_driver", "A selected file uses a custom Git filter or merge driver. Complete this operation in the terminal.")
         if action in {"commit", "continue", "abort"}:
@@ -466,6 +466,20 @@ class Repository:
                         self.git("update-index", "--force-remove", "--", *paths)
                     self.index_override = None
                     self.checked_status(before["revision"])
+                elif action == "discard":
+                    if request.get("confirmed") is not True:
+                        fail("git_discard_confirmation_required", "Confirm discarding these changes before continuing.", 400)
+                    if not paths or any(path not in available or not available[path]["unstaged"]
+                                        or available[path]["conflicted"] for path in paths):
+                        fail("git_invalid_selection", "Select unstaged or untracked files from the current repository changes.", 400)
+                    # Only the working tree changes: tracked files return to their staged (index)
+                    # version, untracked files are deleted. checkout-index runs no hooks.
+                    tracked = [path for path in paths if not available[path]["untracked"]]
+                    untracked = [path for path in paths if available[path]["untracked"]]
+                    if tracked:
+                        self.git("checkout-index", "--force", "--", *tracked)
+                    if untracked:
+                        self.git("clean", "--force", "--quiet", "--", *untracked)
                 elif action == "commit":
                     message = request.get("message", "") or ""
                     if not message.strip():

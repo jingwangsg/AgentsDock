@@ -33,8 +33,6 @@ import {
   clampEditorFontSize,
   editorThemeDefinition,
   resolveEditorTheme,
-  type EditorThemeId,
-  type EditorThemeMode,
   type EditorThemePreference
 } from '../lib/editor-appearance'
 
@@ -97,8 +95,8 @@ export function CodeMirrorEditor({
   onChange
 }: CodeMirrorEditorProps) {
   const locale = useLocale()
-  const [appTheme, setAppTheme] = useState<EditorThemeMode>(documentEditorTheme)
-  const resolvedTheme = resolveEditorTheme(theme, appTheme)
+  const [colorTheme, setColorTheme] = useState(documentColorTheme)
+  const resolvedTheme = resolveEditorTheme(theme, colorTheme)
   const resolvedFontSize = clampEditorFontSize(fontSize)
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -126,9 +124,9 @@ export function CodeMirrorEditor({
   maxBytesRef.current = maxBytes
 
   useEffect(() => {
-    const synchronize = () => setAppTheme(documentEditorTheme())
+    const synchronize = () => setColorTheme(documentColorTheme())
     const observer = new MutationObserver(synchronize)
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-color-theme'] })
     window.addEventListener('agentsdock:appearance', synchronize)
     synchronize()
     return () => {
@@ -384,8 +382,8 @@ export function CodeMirrorEditor({
   return <div ref={hostRef} className="workspace-editor-codemirror" />
 }
 
-function documentEditorTheme(): EditorThemeMode {
-  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
+function documentColorTheme(): string {
+  return document.documentElement.dataset.colorTheme ?? 'one-dark'
 }
 
 function restoredSelection(viewState: CodeMirrorViewState | undefined, documentLength: number): EditorSelection {
@@ -671,7 +669,7 @@ function codeMirrorPhrases(): Record<string, string> {
   return Object.fromEntries(Object.entries(keys).map(([phrase, key]) => [phrase, t(`editor.codemirror.${key}`)]))
 }
 
-function editorAppearanceExtension(themeId: EditorThemeId, fontSize: number): Extension {
+function editorAppearanceExtension(themeId: string, fontSize: number): Extension {
   const cacheKey = `${themeId}:${fontSize}`
   const cached = editorAppearanceExtensions.get(cacheKey)
   if (cached) return cached

@@ -8,11 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
 
 describe('CodeMirrorEditor', () => {
-  let originalTheme: string | undefined
+  let originalColorTheme: string | undefined
 
   beforeEach(() => {
     setLocale('en')
-    originalTheme = document.documentElement.dataset.theme
+    originalColorTheme = document.documentElement.dataset.colorTheme
     Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [] })
     Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
       configurable: true,
@@ -24,8 +24,8 @@ describe('CodeMirrorEditor', () => {
     cleanup()
     setLocale('en')
     vi.restoreAllMocks()
-    if (originalTheme) document.documentElement.dataset.theme = originalTheme
-    else delete document.documentElement.dataset.theme
+    if (originalColorTheme) document.documentElement.dataset.colorTheme = originalColorTheme
+    else delete document.documentElement.dataset.colorTheme
   })
 
   it('switches search phrases and aria labels without losing the editor, draft, selection, query or history', async () => {
@@ -728,8 +728,8 @@ describe('CodeMirrorEditor', () => {
     })
   })
 
-  it('follows live app theme changes by default', async () => {
-    document.documentElement.dataset.theme = 'light'
+  it('follows live app color theme changes by default', async () => {
+    document.documentElement.dataset.colorTheme = 'one-light'
     render(<CodeMirrorEditor
       path="sample.ts"
       value="const answer = 42"
@@ -741,7 +741,7 @@ describe('CodeMirrorEditor', () => {
     const editorView = EditorView.findFromDOM(screen.getByRole('textbox', { name: 'App-themed sample' }))!
     expect(editorView.state.facet(EditorView.darkTheme)).toBe(false)
 
-    document.documentElement.dataset.theme = 'dark'
+    document.documentElement.dataset.colorTheme = 'one-dark'
     await waitFor(() => expect(editorView.state.facet(EditorView.darkTheme)).toBe(true))
   })
 })

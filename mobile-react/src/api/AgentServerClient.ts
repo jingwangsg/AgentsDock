@@ -670,6 +670,7 @@ export class AgentServerClient {
     chatReferences: readonly ChatReference[] = [],
     teamReferences: readonly TeamReference[] = [],
     skillSelection?: ProviderCommandSelection,
+    clientRequestId?: string,
   ): Promise<{ session: Session; event?: Event; queued?: boolean; queued_id?: string; position?: number }> {
     const body: Record<string, unknown> = {
       prompt,
@@ -684,6 +685,7 @@ export class AgentServerClient {
     if (teamReferences.length) body.team_references = teamReferences.map(reference => ({ ...reference }))
     // Only the opaque id and revision travel; the server rejects anything else.
     if (skillSelection) body.skill_selection = { id: skillSelection.id, revision: skillSelection.revision }
+    if (clientRequestId) body.client_request_id = clientRequestId
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/turns`, body)
   }
   providerCommands(sessionId: string, refresh = false): Promise<ProviderCommandsSnapshot> {

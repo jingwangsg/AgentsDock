@@ -1259,7 +1259,8 @@ export class AgentServerClient {
     clientCapabilities: string[] = ['codex_interactive_v1'],
     chatReferences: ChatReference[] = [],
     teamReferences: TeamReference[] = [],
-    skillSelection?: ProviderCommandSelection
+    skillSelection?: ProviderCommandSelection,
+    clientRequestId?: string
   ): Promise<{ session: Session; event?: Event; queued?: boolean; queued_id?: string; position?: number }> {
     const selection = providerCommandSelectionPayload(skillSelection)
     const response = await this.post<{ session: Session; event?: Event; queued?: boolean; queued_id?: string; position?: number }>(`/api/sessions/${encodeURIComponent(sessionId)}/turns`, {
@@ -1270,7 +1271,8 @@ export class AgentServerClient {
       client_capabilities: clientCapabilities,
       ...(chatReferences.length ? { chat_references: chatReferences } : {}),
       ...(teamReferences.length ? { team_references: teamReferences } : {}),
-      ...(selection ? { skill_selection: selection } : {})
+      ...(selection ? { skill_selection: selection } : {}),
+      ...(clientRequestId ? { client_request_id: clientRequestId } : {})
     })
     return response.event ? { ...response, event: compactTimelineEvent(response.event) } : response
   }

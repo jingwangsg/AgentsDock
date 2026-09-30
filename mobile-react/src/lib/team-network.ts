@@ -37,7 +37,7 @@ export function teamNetworkRequestPath(basePath: string, path: string): string {
   return `${basePath}${path}`
 }
 
-export function teamNetworkIdempotencyKey(): string {
+export function newIdempotencyKey(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID()
   return `mobile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 }

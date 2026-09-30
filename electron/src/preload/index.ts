@@ -165,6 +165,7 @@ const api: AgentsDockAPI = {
     remove: profileId => ipcRenderer.invoke('servers:remove', profileId),
     reorder: profileIds => ipcRenderer.invoke('servers:reorder', profileIds),
     switch: (profileId, force) => ipcRenderer.invoke('servers:switch', profileId, force),
+    updateCli: (profileId, backend) => ipcRenderer.invoke('servers:update-cli', profileId, backend),
     refresh: (profileId, profileGeneration) => ipcRenderer.invoke('servers:refresh', profileId, profileGeneration),
     restartStatus: scope => ipcRenderer.invoke('servers:restart-status', scope),
     restart: (scope, expectedServerInstanceId, forceConfirmation) => forceConfirmation
@@ -401,7 +402,6 @@ const api: AgentsDockAPI = {
   },
   runtime: {
     catalog: (refresh, handoff) => ipcRenderer.invoke('runtime:catalog', refresh, handoff),
-    updateCli: (scope, backend) => ipcRenderer.invoke('runtime:update-cli', scope, backend),
     usage: (scope, backend, sessionId, refresh) => ipcRenderer.invoke('runtime:usage', scope, backend, sessionId, refresh)
   },
   processes: {

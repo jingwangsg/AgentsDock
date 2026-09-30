@@ -28,6 +28,7 @@ import {
 } from 'lucide-react'
 import type { ForwardedPort, Session, TerminalAction, TerminalConnectionState, TerminalWindow } from '../../../shared/types'
 import { ShortcutTooltip } from './ShortcutTooltip'
+import { COLOR_THEMES } from '../lib/color-themes.data'
 import { PortsPanel } from './PortsPanel'
 import { accumulateTerminalWheel, containTerminalWheel, terminalClipboardShortcut } from '../lib/terminal-shortcuts'
 import { detectTerminalPorts, type DetectedTerminalPort } from '../lib/terminal-port-detection'
@@ -460,7 +461,7 @@ export const TerminalWorkspace = memo(function TerminalWorkspace({ session, layo
     const onWindowResize = () => scheduleFit('window-resize')
     window.addEventListener('resize', onWindowResize)
     const themeObserver = new MutationObserver(() => { terminal.options.theme = terminalTheme() })
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-color-theme'] })
     resizeFrame = window.requestAnimationFrame(() => {
       fitTerminal('initial')
       void connect()
@@ -753,6 +754,8 @@ function terminalWindowsEqual(left: TerminalWindow[], right: TerminalWindow[]): 
 }
 
 function terminalTheme(): ITheme {
+  const colorTheme = COLOR_THEMES.find(theme => theme.id === document.documentElement.dataset.colorTheme)
+  if (colorTheme) return colorTheme.terminal
   if (document.documentElement.dataset.theme === 'light') {
     return {
       background: '#ffffff', foreground: '#1a1a1e', cursor: '#1675d1', cursorAccent: '#ffffff',

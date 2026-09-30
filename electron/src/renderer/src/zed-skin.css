@@ -157,3 +157,43 @@
   --shadow-dialog: 0 16px 48px #0000002c;
   --shadow-dialog-large: 0 16px 48px #0000002c;
 }
+
+/* ---------- Other color themes ----------
+   lib/appearance.ts sets the base tokens (--bg … --danger-text) inline from
+   lib/color-themes.data.ts. The tokens below follow them the way One Dark and
+   One Light do; shadows and the scrim keep the One values for the appearance. */
+:root[data-skin="zed"][data-color-theme]:not([data-color-theme^="one-"]) {
+  --control-surface: var(--surface);
+  --control-surface-hover: var(--surface-2);
+  --control-border: var(--border);
+  --control-text: var(--text);
+  --overlay-surface: var(--surface);
+  --overlay-border: var(--border);
+  --overlay-text: var(--text);
+  --overlay-separator: var(--border-soft);
+  --dialog-surface: var(--surface);
+  --dialog-border: var(--border);
+  --dialog-separator: var(--border-soft);
+  --field-surface: var(--bg);
+  --field-border: var(--border);
+  --field-text: var(--text);
+  --field-label: var(--muted);
+  --tooltip-surface: var(--surface-2);
+  --tooltip-border: var(--border);
+  --tooltip-text: var(--text);
+  --tooltip-key-surface: var(--surface);
+  --tooltip-key-border: var(--border);
+  --tooltip-key-text: var(--muted);
+  --segmented-surface: var(--surface);
+  --segmented-border: var(--border);
+  --segmented-active-surface: var(--surface-3);
+  --segmented-active-text: var(--text);
+}
+
+:root[data-skin="zed"][data-color-theme]:not([data-color-theme^="one-"])[data-theme="light"] {
+  --overlay-surface: var(--bg);
+  --dialog-surface: var(--bg);
+  --tooltip-surface: var(--surface);
+  --tooltip-key-surface: var(--bg);
+  --segmented-active-surface: var(--bg);
+}

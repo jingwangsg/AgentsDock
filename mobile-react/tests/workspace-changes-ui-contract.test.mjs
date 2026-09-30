@@ -51,6 +51,17 @@ test('the sheet uses the Review chrome and the same connection scoping', () => {
   assert.match(sheet, /useEffect\(\(\) => \{ if \(visible && connectionReady\) void refresh\(\) \}, \[connectionReady, refresh, visible\]\)/, 'opening the sheet refetches')
 })
 
+test('discard asks first, then sends one confirmed action for unstaged and untracked files', () => {
+  assert.match(types, /action: 'stage' \| 'unstage' \| 'discard' \| 'commit'/)
+  assert.match(sheet, /const confirmDiscard = \(paths: string\[\]\) => Alert\.alert\(/)
+  assert.match(sheet, /\{ text: 'Discard', style: 'destructive', onPress: \(\) => \{ void run\('discard', paths\) \} \}/)
+  assert.match(sheet, /\.\.\.\(action === 'discard' \? \{ confirmed: true \} : \{\}\)/)
+  assert.match(sheet, /<BulkButton icon=\{Undo2\} label="Discard all" disabled=\{blocked \|\| !stageable\.length\} onPress=\{\(\) => confirmDiscard\(stageable\)\}/)
+  assert.match(sheet, /fileHasView\(file, 'unstaged'\) \? <IconButton icon=\{Undo2\} size=\{15\} disabled=\{blocked\} onPress=\{\(\) => onDiscard\(file\.path\)\}/)
+  // A stale discard must surface: it depends on exactly the reviewed files.
+  assert.match(helpers, /return \(action === 'stage' \|\| action === 'unstage'\)/)
+})
+
 test('the list offers filters with counts, search, bulk and per-file staging, and pull-to-refresh', () => {
   assert.match(helpers, /export const CHANGES_FILTERS: readonly ChangesFilter\[\] = \['all', 'staged', 'unstaged', 'untracked', 'conflicts'\]/)
   assert.match(sheet, /CHANGES_FILTERS\.filter\(group => group === 'all' \|\| group === filter \|\| counts\[group\] > 0\)/, 'zero-count groups hide except All and the active one')
@@ -95,12 +106,14 @@ test('the diff pane renders through Monaco with the shared layout preference, an
 
 test('errors are a dismissible banner, a stale stage retries once, and a non-Git workspace is a plain state', () => {
   assert.match(sheet, /\{error \? <View accessibilityRole="alert"[\s\S]*?<IconButton icon=\{X\} size=\{15\} onPress=\{\(\) => setError\(null\)\} label="Dismiss error" testID="changes-dismiss-error" \/>/)
-  assert.doesNotMatch(sheet, /Alert\.alert/)
+  // The only Alert is Discard's confirmation; errors stay in the banner.
+  assert.equal(sheet.match(/Alert\.alert\(/g)?.length, 1)
+  assert.doesNotMatch(sheet, /Alert\.alert\([^)]*(?:error|reason)/)
   assert.match(sheet, /const NOT_GIT_MESSAGE = "This chat's working directory is not inside a Git repository\."/)
   assert.match(sheet, /if \(gitErrorCode\(reason\) === 'workspace_not_git'\) \{ setNotGit\(true\)/)
   assert.match(sheet, /\{notGit \? <Notice text=\{NOT_GIT_MESSAGE\} testID="changes-not-git" \/>/)
   // The action result is the next status; on failure one read reconciles.
-  assert.match(sheet, /const next = await connection\.workspaceGitAction\(sessionId, \{ action, paths, expected_revision: status\.revision \}\)/)
+  assert.match(sheet, /const next = await connection\.workspaceGitAction\(sessionId, \{ action, paths, expected_revision: status\.revision, \.\.\.\(action === 'discard' \? \{ confirmed: true \} : \{\}\) \}\)/)
   assert.match(sheet, /setError\(errorText\(reason\)\)\s+\/\/[^\n]*\n\s+void refresh\(\)/)
   assert.match(client, /if \(!retriesStaleGitAction\(input\.action, error\)\) throw error\s+const current = await this\.workspaceGitStatus\(sessionId\)\s+return post\(\{ \.\.\.input, expected_revision: current\.revision \}\)/)
   assert.match(client, /workspace\/git\/diff\?path=\$\{encodeURIComponent\(path\)\}&view=\$\{view\}`, \{\}, 40_000, false, 'native-control'\)/)

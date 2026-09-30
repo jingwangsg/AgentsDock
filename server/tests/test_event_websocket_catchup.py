@@ -317,6 +317,35 @@ class EventWebSocketCatchupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(socket.events[-1]["seq"], 1605)
         self.assertNotIn("raw_event", {event["type"] for event in socket.events})
 
+    async def test_catchup_stops_writing_soon_after_the_connection_is_lost(self) -> None:
+        # asyncio reports a lost transport through a scheduled callback; until the
+        # loop runs it, writes to the dead socket succeed and each logs a warning.
+        class LosingWebSocket(FakeWebSocket):
+            closed = False
+
+            async def send_json(self, event: dict[str, object]) -> None:
+                if self.closed:
+                    raise ConnectionResetError("lost")
+                if not self.events:
+                    asyncio.get_running_loop().call_soon(setattr, self, "closed", True)
+                self.events.append(event)
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "events.jsonl"
+            path.write_text("".join(json.dumps({
+                "seq": seq, "id": f"event-{seq}", "session_id": "chat", "type": "reasoning_summary",
+                "ts": "2026-07-28T00:00:00Z", "text": f"event {seq}",
+            }) + "\n" for seq in range(1, 201)))
+            socket = LosingWebSocket()
+            with (
+                patch.object(agent_server, "events_path", return_value=path),
+                patch.object(agent_server, "fork_internal_run_ids", return_value=set()),
+                self.assertRaises(ConnectionResetError),
+            ):
+                await agent_server.send_event_catchup("chat", socket, after=0, through=200, visible=True)  # type: ignore[arg-type]
+
+        self.assertEqual(len(socket.events), 1)
+
     async def test_prune_replacement_between_pages_cannot_skip_surviving_tail(
         self,
     ) -> None:

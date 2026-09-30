@@ -80,6 +80,26 @@ describe('Workspace changes', () => {
     expect(git.action).toHaveBeenLastCalledWith(scope, 'chat-a', { action: 'commit', message: 'Fix app', expected_revision: 'rev-2' })
   })
 
+  it('discards a file only after confirmation, and Discard all covers every unstaged and untracked file', async () => {
+    const untracked = { ...modified, path: 'notes.md', untracked: true, unstaged: false, index_status: '?', worktree_status: '?' }
+    const staged = { ...modified, path: 'done.ts', staged: true, unstaged: false, index_status: 'M', worktree_status: ' ' }
+    git.status.mockResolvedValue({ ...initial, files: [modified, untracked, staged], staged_count: 1 })
+    render(<WorkspaceChanges scope={scope} sessionId="chat-a" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes app.ts' }))
+    expect(screen.getByRole('dialog', { name: 'Discard changes?' })).toHaveTextContent('app.ts — Unstaged edits are lost')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(git.action).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Discard changes done.ts' })).not.toBeInTheDocument()
+
+    git.action.mockResolvedValueOnce({ ...initial, revision: 'rev-2', files: [staged], staged_count: 1 })
+    fireEvent.click(screen.getByRole('button', { name: 'Discard all' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('2 changed files — ')
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }))
+    await screen.findByText('Changes discarded.')
+    expect(git.action).toHaveBeenCalledExactlyOnceWith(scope, 'chat-a', { action: 'discard', paths: ['app.ts', 'notes.md'], confirmed: true, expected_revision: 'rev-1' })
+    expect(screen.queryByRole('button', { name: 'Discard changes app.ts' })).not.toBeInTheDocument()
+  })
+
   it('groups changed files into collapsible directories and persists the flat toggle', async () => {
     git.status.mockResolvedValue({ ...initial, files: [
       { ...modified, path: 'src/a/one.ts' },

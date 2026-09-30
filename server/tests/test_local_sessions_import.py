@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import tempfile
@@ -818,13 +819,34 @@ class LocalTranscriptSafetyTests(unittest.TestCase):
             self.assertIsNone(agent_server.path_if_jsonl(str(external), root))
             self.assertIsNone(agent_server.path_if_jsonl(str(link), root))
 
-    def test_parser_rejects_oversized_line(self) -> None:
+    def test_parser_skips_an_oversized_line_and_keeps_the_rest(self) -> None:
+        # A tool output with an inline image can be several MiB on one line.
         with tempfile.TemporaryDirectory() as temporary:
             transcript = Path(temporary) / "too-wide.jsonl"
-            transcript.write_text(json.dumps({"type": "user", "message": "x" * 100}) + "\n")
-            with patch.object(agent_server, "MAX_LOCAL_TRANSCRIPT_LINE_BYTES", 32):
-                with self.assertRaises(ValueError):
-                    agent_server.parse_claude_history(transcript, None)
+            transcript.write_text(
+                json.dumps({"type": "user", "message": "x" * 200}) + "\n"
+                + json.dumps({"type": "user", "message": "kept"}) + "\n"
+            )
+            with patch.object(agent_server, "MAX_LOCAL_TRANSCRIPT_LINE_BYTES", 64):
+                items = agent_server.parse_claude_history(transcript, None)
+        self.assertEqual([item["text"] for item in items], ["kept"])
+
+    def test_cursor_reader_and_snapshot_step_over_an_oversized_line(self) -> None:
+        small, wide, tail = b'{"a": 1}\n', json.dumps({"b": "x" * 200}).encode() + b"\n", b'{"c": 3'
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / "rollout.jsonl"
+            transcript.write_bytes(small + wide + small + tail)
+            stat = transcript.stat()
+            expected = {field: getattr(stat, field) for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns")}
+            with patch.object(agent_server, "MAX_LOCAL_TRANSCRIPT_LINE_BYTES", 64):
+                records = list(agent_server.bounded_jsonl_records_range(
+                    transcript, 0, len(small + wide + small), expected_stat=expected))
+                snapshot, _continued = agent_server.provider_history_source_snapshot(transcript, None)
+        self.assertEqual(records, [
+            ({"a": 1}, len(small)), (None, len(small + wide)), ({"a": 1}, len(small + wide + small)),
+        ])
+        self.assertEqual(snapshot["source_offset"], len(small + wide + small))
+        self.assertEqual(snapshot["source_digest"], hashlib.sha256(small + wide + small).hexdigest())
 
     def test_parser_retains_only_bounded_tail(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

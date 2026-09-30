@@ -1058,6 +1058,18 @@ class ConfigureServerLoggingTests(unittest.TestCase):
         self.assertIn("log_config", captured)
         self.assertIsNone(captured["log_config"])
 
+    def test_main_keeps_idle_connections_open_far_longer_than_the_hub_proxy_reuses_them(self) -> None:
+        captured: dict[str, object] = {}
+        with (
+            patch.object(agent_server, "configure_server_logging"),
+            patch.object(agent_server.uvicorn, "run", lambda app, **kwargs: captured.update(kwargs)),
+            patch.object(agent_server.sys, "argv", ["agent_server.py"]),
+        ):
+            agent_server.main()
+        # The hub reuses a proxied connection for 2 s after it receives a response; a slow
+        # ssh forward delivers that response seconds after the remote sent it.
+        self.assertGreaterEqual(captured["timeout_keep_alive"], 60)
+
 
 class EventCacheInvalidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_forget_preserves_a_currently_owned_delivery_lock(self) -> None:

@@ -938,10 +938,10 @@ class RemoteServerManager:
         self.forward_tunnels: dict[str, Tunnel] = {}
         self.jobs: dict[str, DeployJob] = {}
         # keepalive_expiry must stay well below the remote uvicorn's idle keep-alive
-        # (default 5 s). Both timers used to be 5 s, and over an ssh forward the
-        # remote's close arrives late, so a request sent 4.5-5 s after the previous
-        # one reused a connection the remote had already closed and failed with
-        # "Server disconnected without sending a response".
+        # (75 s, agent_server.main) plus the forward's delay: the remote starts its
+        # idle timer when it sends a response, this one when the response arrives.
+        # Otherwise a request reuses a connection the remote has already closed and
+        # fails with "Server disconnected without sending a response".
         self.http = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=5.0, read=None, write=None, pool=5.0),
             limits=httpx.Limits(keepalive_expiry=2.0),

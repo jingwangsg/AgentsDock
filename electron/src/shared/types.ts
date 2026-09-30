@@ -2578,6 +2578,8 @@ export interface SendTurnInput {
   fileIds: string[]
   /** Browser-local correlation with the shared chat's existing acceptance receipt. */
   sharedChatRequestId?: string
+  /** Reused when a message is resent after a send whose outcome is unknown; the server runs it once. */
+  clientRequestId?: string
   model?: string | null
   effort?: string | null
   clientCapabilities?: string[]

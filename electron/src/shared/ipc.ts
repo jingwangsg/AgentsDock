@@ -353,6 +353,7 @@ export interface AgentsDockAPI {
     remove(profileId: string): Promise<boolean>
     reorder(profileIds: string[]): Promise<PublicServerProfile[]>
     switch(profileId: string, force?: boolean): Promise<ProfileBootstrapPayload>
+    updateCli(profileId: string, backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate>
     refresh(profileId: string, profileGeneration: number): Promise<ProfileBootstrapPayload>
     restartStatus(scope: WorkspaceProfileScope): Promise<ServerRestartStatus>
     restart(
@@ -609,7 +610,6 @@ export interface AgentsDockAPI {
   runtime: {
     usage?(scope: ProviderUsageScope, backend: UsageBackend, sessionId: string, refresh?: boolean): Promise<ProviderUsageSnapshot>
     catalog(refresh?: boolean, handoff?: boolean): Promise<RuntimeCatalog>
-    updateCli(scope: Pick<WorkspaceProfileScope, 'profileId' | 'profileGeneration'>, backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate>
   }
   processes: {
     list(sessionId: string): Promise<ProcessSnapshot>

@@ -100,6 +100,10 @@ interface PendingTurnSubmissionInput {
   teamReferences?: TeamReference[]
 }
 
+// A send whose outcome is unknown (timeout, lost response) may still reach the
+// server. Resending the same message reuses its request id so it runs only once.
+const unconfirmedTurnRequests = new Map<string, { clientRequestId: string; prompt: string; fileIds: string }>()
+
 export interface PendingTurnSubmission {
   token: string
   sharedChatRequestId?: string
@@ -1850,11 +1854,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       pendingTurnSubmissions: { ...state.pendingTurnSubmissions, [sessionId]: pendingSubmission }
     }))
     if (!stagedSubmission) window.dispatchEvent(new CustomEvent('agentsdock:local-send', { detail: { sessionId } }))
+    const fileIds = uploads.map(file => file.id)
+    const unconfirmedKey = `${scope.profileId}:${sessionId}`
+    const unconfirmed = unconfirmedTurnRequests.get(unconfirmedKey)
+    const clientRequestId = unconfirmed?.prompt === prompt && unconfirmed.fileIds === fileIds.join('\n') ? unconfirmed.clientRequestId : secureRandomUUID()
     try {
       const response = await window.agentsDock.turns.send({
         sessionId,
         prompt,
-        fileIds: uploads.map(file => file.id),
+        fileIds,
+        clientRequestId,
         ...(pendingSubmission.sharedChatRequestId ? { sharedChatRequestId: pendingSubmission.sharedChatRequestId } : {}),
         model: session?.model,
         effort: session?.effort,
@@ -1877,6 +1886,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       })
       if (!profileScopeMatches(scope, get())) return false
+      unconfirmedTurnRequests.delete(unconfirmedKey)
       if (response.event && eventAffectsQueuedTurns(response.event)) {
         invalidateQueuedTurnsRequests(sessionId)
       }
@@ -1941,6 +1951,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return true
     } catch (error) {
       if (!profileScopeMatches(scope, get())) return false
+      unconfirmedTurnRequests.set(unconfirmedKey, { clientRequestId, prompt, fileIds: fileIds.join('\n') })
       get().rollbackPendingTurnSubmission(sessionId, admissionToken)
       set({ error: turnSendErrorMessage(error) })
       return false

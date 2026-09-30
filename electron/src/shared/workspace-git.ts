@@ -38,7 +38,7 @@ export interface WorkspaceGitConflict {
   binary: boolean
 }
 export interface WorkspaceGitAction {
-  action: 'stage' | 'unstage' | 'commit' | 'resolve' | 'continue' | 'abort'
+  action: 'stage' | 'unstage' | 'discard' | 'commit' | 'resolve' | 'continue' | 'abort'
   expected_revision: string
   paths?: string[]
   message?: string
@@ -58,12 +58,12 @@ export function workspaceGitPath(value: string): string {
   return value
 }
 export function validateWorkspaceGitAction(input: WorkspaceGitAction): WorkspaceGitAction {
-  if (!input || !['stage', 'unstage', 'commit', 'resolve', 'continue', 'abort'].includes(input.action)
+  if (!input || !['stage', 'unstage', 'discard', 'commit', 'resolve', 'continue', 'abort'].includes(input.action)
     || typeof input.expected_revision !== 'string' || !input.expected_revision || input.expected_revision.length > 256) {
     throw new Error('Refresh Changes before making a Git change.')
   }
   const result: WorkspaceGitAction = { action: input.action, expected_revision: input.expected_revision }
-  if (input.action === 'stage' || input.action === 'unstage') {
+  if (input.action === 'stage' || input.action === 'unstage' || input.action === 'discard') {
     if (!Array.isArray(input.paths) || !input.paths.length || input.paths.length > 1000) throw new Error('Select files first.')
     result.paths = input.paths.map(workspaceGitPath)
   }
@@ -76,8 +76,8 @@ export function validateWorkspaceGitAction(input: WorkspaceGitAction): Workspace
     if (typeof input.content !== 'string' || input.content.includes('\0') || new TextEncoder().encode(input.content).byteLength > 2 * 1024 * 1024) throw new Error('The resolved file exceeds the 2 MiB Git text editor limit.')
     result.content = input.content
   }
-  if (input.action === 'abort') {
-    if (input.confirmed !== true) throw new Error('Confirm before aborting the Git operation.')
+  if (input.action === 'abort' || input.action === 'discard') {
+    if (input.confirmed !== true) throw new Error(input.action === 'abort' ? 'Confirm before aborting the Git operation.' : 'Confirm before discarding changes.')
     result.confirmed = true
   }
   return result

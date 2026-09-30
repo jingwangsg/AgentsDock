@@ -1343,7 +1343,7 @@ export interface WorkspaceGitConflict {
   binary: boolean
 }
 export interface WorkspaceGitAction {
-  action: 'stage' | 'unstage' | 'commit' | 'resolve' | 'continue' | 'abort'
+  action: 'stage' | 'unstage' | 'discard' | 'commit' | 'resolve' | 'continue' | 'abort'
   expected_revision: string
   paths?: string[]
   message?: string

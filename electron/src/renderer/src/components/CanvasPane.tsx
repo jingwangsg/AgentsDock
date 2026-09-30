@@ -289,10 +289,10 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
 
   useEffect(() => { postToPage('set-comments', [pins, activeThread]) }, [activeThread, pins, postToPage])
 
-  // Follow the app's light/dark switch inside the frame.
+  // Follow the app's light/dark and color theme switches inside the frame.
   useEffect(() => {
     const observer = new MutationObserver(() => postToPage('updateTheme', [hostTheme()]))
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-skin'] })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-skin', 'data-color-theme'] })
     return () => observer.disconnect()
   }, [postToPage])
 
