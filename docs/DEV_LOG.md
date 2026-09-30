@@ -1,5 +1,15 @@
 # Public development log
 
+## 2026-09-30 — Redeploy and Update CLI from the server list
+
+- Every server in the server list (desktop Settings → Server, mobile Servers)
+  has an Update CLI menu (Claude Code or Codex), and every remote in the hub's
+  list has a Redeploy button. Both work whichever server is active: Update CLI
+  is sent to that server, Redeploy to the hub. If the remote has running chats,
+  Redeploy asks for confirmation first, because the restart stops them.
+- The hub refuses to redeploy a remote that was attached from another hub's
+  install; that hub owns its updates.
+
 ## 2026-09-30 — Side chat on Android; server switching no longer fails on a full cache
 
 - Android has Side chat: the question button at the end of the composer's
