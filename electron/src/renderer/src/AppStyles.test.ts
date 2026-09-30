@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -43,5 +43,17 @@ describe('app overlay interaction styles', () => {
     expect(styles).toMatch(
       /:root\[data-theme="light"\] \.split-workspace-overlay,[\s\S]*?background:\s*var\(--surface\);/
     )
+  })
+
+  it('draws menus above every dialog, since menus also open inside Settings', () => {
+    const renderer = resolve(process.cwd(), 'src/renderer/src')
+    const css = ['.', 'components'].flatMap(directory => readdirSync(resolve(renderer, directory))
+      .filter(name => name.endsWith('.css'))
+      .map(name => readFileSync(resolve(renderer, directory, name), 'utf8'))).join('\n')
+    const layer = (rule: RegExp) => [...css.matchAll(rule)].map(match => Number(match[1]))
+    const dialogs = layer(/\n\.[a-z0-9-]*dialog(?:-overlay)? \{[^}]*z-index:\s*(\d+)/g)
+    expect(dialogs.length).toBeGreaterThan(3)
+    const [menu] = layer(/\n\.menu-content \{[^}]*z-index:\s*(\d+)/g)
+    expect(menu).toBeGreaterThan(Math.max(...dialogs))
   })
 })

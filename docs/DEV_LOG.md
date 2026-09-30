@@ -1,5 +1,11 @@
 # Public development log
 
+## 2026-09-30 — Menus opened inside dialogs are visible
+
+- Menus opened from inside a dialog were drawn behind it, so they seemed not
+  to open. The server list's Update CLI menu in Settings was one of them. Menus
+  now draw above all dialogs.
+
 ## 2026-09-30 — Remove a remote server from any server; copy a file's path
 
 - A remote server managed by the hub can now be removed while another server

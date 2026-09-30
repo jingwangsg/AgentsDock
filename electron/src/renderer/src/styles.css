@@ -227,7 +227,8 @@ body.column-resizing { cursor: col-resize; user-select: none; }
 .danger-button { min-height: var(--control-height-md); display: inline-flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-6); color: var(--text-on-accent); background: var(--danger-strong); border-radius: var(--radius-control); font-size: var(--text-size-ui); font-weight: var(--text-weight-body); line-height: var(--line-height-ui); transition: opacity var(--motion-control); }
 .danger-button:disabled { opacity: .5; }
 :is(.quiet-button, .primary-button, .danger-button, .stop-button):active:not(:disabled) { opacity: .85; }
-.menu-content { z-index: 1000; min-width: 190px; max-width: 310px; padding: 5px; background: var(--overlay-surface); border: 1px solid var(--overlay-border); border-radius: var(--radius-popover); box-shadow: var(--shadow-popover); font-size: var(--text-size-ui); font-weight: var(--text-weight-body); transform-origin: var(--radix-dropdown-menu-content-transform-origin, center); }
+/* Above every dialog: menus also open inside Settings. */
+.menu-content { z-index: 1300; min-width: 190px; max-width: 310px; padding: 5px; background: var(--overlay-surface); border: 1px solid var(--overlay-border); border-radius: var(--radius-popover); box-shadow: var(--shadow-popover); font-size: var(--text-size-ui); font-weight: var(--text-weight-body); transform-origin: var(--radix-dropdown-menu-content-transform-origin, center); }
 .menu-content[data-state="open"] { animation: menu-enter 120ms ease-out; }
 @keyframes menu-enter { from { opacity: 0; transform: scale(.98); } to { opacity: 1; transform: scale(1); } }
 .menu-item { min-height: var(--control-height-md); display: flex; align-items: center; gap: 9px; padding: 5px var(--space-4); border-radius: var(--radius-compact); color: var(--overlay-text); background: transparent; font-size: var(--text-size-ui); font-weight: var(--text-weight-body); line-height: 20px; outline: none; }
