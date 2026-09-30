@@ -307,6 +307,9 @@ export class AgentServerClient {
   removeRemoteServer(remoteId: string): Promise<void> {
     return this.request(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, { method: 'DELETE' }, 30_000, false, 'native-control')
   }
+  startRemoteRedeploy(remoteId: string): Promise<{ job_id: string }> {
+    return this.request(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}/redeploy`, { method: 'POST' }, 30_000, false, 'native-control')
+  }
   cancelServerUpdate(scheduleId: string): Promise<ServerUpdateStatus> {
     return this.post('/api/admin/update/cancel', { schedule_id: scheduleId })
   }

@@ -9,6 +9,9 @@ import type { Session, StoredProfileSettings } from '../types'
 // server stands for a directly addressed profile.
 const identities: Record<string, string> = { hub: 'server-hub', r1: 'remote-old', direct: 'direct-new' }
 let catalogAvailable = true
+const running: Record<string, string[]> = {}
+const redeployRequests: string[] = []
+const healthDown = new Set<string>()
 
 function mockServer(route: (path: string) => { key: string; path: string } | null): Server {
   return createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -19,7 +22,18 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
     }
     if (!target) return reply(404, { detail: 'Unhandled test endpoint' })
     if (target.path === '/api/health') {
-      return reply(200, { ok: true, server_identity: identities[target.key], server_version: 'hub-identity-test', api_contract_version: 8, active_sessions: [] })
+      if (healthDown.has(target.key)) return reply(502, { detail: 'remote_unreachable' })
+      return reply(200, { ok: true, server_identity: identities[target.key], server_version: 'hub-identity-test', api_contract_version: 8, active_sessions: [], active: running[target.key] ?? [] })
+    }
+    if (request.method === 'POST' && target.path === '/api/admin/remote-servers/r1/redeploy') {
+      redeployRequests.push('r1')
+      return reply(202, { job_id: 'job-1' })
+    }
+    if (target.path === '/api/admin/remote-servers/deploy/job-1') {
+      return reply(200, { job_id: 'job-1', phase: 'complete', done: true, error: null, server: null, log: [{ phase: 'upload', message: 'Uploading' }, { phase: 'complete', message: 'Reachable' }] })
+    }
+    if (request.method === 'POST' && target.path === '/api/admin/runtimes/codex/update') {
+      return reply(200, { output: 'npm install\ncodex-cli 9.9.9', diagnostic: { available: true, version: '9.9.9' } })
     }
     if (target.path === '/api/sessions') return reply(200, { sessions: [session(target.key)] })
     if (target.path === '/api/runtime/catalog') return catalogAvailable ? reply(200, { backends: {} }) : reply(503, { detail: 'catalog unavailable' })
@@ -140,6 +154,24 @@ try {
   await new Promise<void>(resolve => direct.close(() => resolve()))
   await useAppStore.getState().probeInactiveProfiles()
   assert.equal(useAppStore.getState().profiles.find(value => value.id === 'direct')?.connectionState, 'offline')
+
+  // Server list actions run on the right server whichever one is active: Redeploy on the hub (asking
+  // first while the remote has running chats), Update CLI on the chosen server itself.
+  running.r1 = ['chat-busy']
+  assert.deepEqual(await useAppStore.getState().redeployHubRemote('remote', false, () => undefined), { redeployed: false, running: 1 })
+  healthDown.add('r1')
+  assert.deepEqual(await useAppStore.getState().redeployHubRemote('remote', false, () => undefined), { redeployed: false, running: null }, 'an unreachable remote is not assumed idle')
+  healthDown.delete('r1')
+  assert.deepEqual(redeployRequests, [])
+  const progress: string[] = []
+  assert.deepEqual(await useAppStore.getState().redeployHubRemote('remote', true, entry => progress.push(entry.message)), { redeployed: true, running: 0 })
+  assert.deepEqual(redeployRequests, ['r1'])
+  assert.deepEqual(progress, ['Uploading', 'Reachable'])
+  await assert.rejects(useAppStore.getState().redeployHubRemote('direct', true, () => undefined), /Only servers the hub deployed/)
+  assert.equal(await useAppStore.getState().updateServerCli('hub', 'codex'), 'codex-cli 9.9.9')
+  identities.hub = 'server-replaced'
+  await assert.rejects(useAppStore.getState().updateServerCli('hub', 'codex'), /different identity/)
+  identities.hub = 'server-hub'
 
   // A catalog that failed at connect is loaded again by the next refresh tick; without it every
   // chat reads "Server model" and the model picker stays disabled.

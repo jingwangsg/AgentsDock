@@ -26,6 +26,7 @@ import type {
   QueuedRunStatus,
   QueuedTurn,
   RemoteServer,
+  RemoteServerDeployJob,
   RemoteServerDeployLogEntry,
   RuntimeCatalog,
   ServerUpdateStatus,
@@ -507,6 +508,13 @@ interface AppState {
     expectedGeneration?: number,
   ): Promise<string>
   cancelHubDeploy(): Promise<void>
+  /**
+   * Server list "Redeploy", whichever server is active. The restart stops the remote's running chats, so
+   * without `force` it only reports them: a count, or null when the remote could not be checked.
+   */
+  redeployHubRemote(profileId: string, force: boolean, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<{ redeployed: boolean; running: number | null }>
+  /** Server list "Update CLI" on any saved server; resolves with the CLI's last output line. */
+  updateServerCli(profileId: string, backend: 'claude' | 'codex'): Promise<string>
   updateServerProfile(profileId: string, patch: UpdateServerProfileInput): Promise<void>
   removeServerProfile(profileId: string): Promise<void>
   reorderServerProfiles(profileIds: string[]): Promise<void>
@@ -775,27 +783,62 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = { scope, jobId: started.job_id, cancelled: false }
     hubDeployInFlight = state
     try {
-      let seen = 0
-      for (;;) {
+      const job = await followHubJob(scope.client, state.jobId, onProgress, () => {
         if (!connectionIsCurrent(scope)) throw new StaleActionScopeError()
-        const job = await scope.client.remoteDeployStatus(state.jobId)
-        for (const entry of job.log.slice(seen)) onProgress(entry)
-        seen = job.log.length
-        if (job.done) {
-          if (state.cancelled) throw new Error('The deployment was cancelled.')
-          if (job.error) throw new Error(job.error)
-          if (!job.server) throw new Error('The deployment finished without reporting the new server.')
-          if (!connectionIsCurrent(scope)) throw new StaleActionScopeError()
-          await reconcileHubRemoteServers(scope, set, get)
-          const remoteURL = normalizeServerURL(get().serverURL + job.server.proxy_path)
-          const profile = get().profiles.find(candidate => normalizeServerURL(candidate.serverURL) === remoteURL)
-          if (!profile) throw new Error(`The deployment finished, but ${job.server.name} did not appear in the hub's server list.`)
-          return profile.id
-        }
-        await new Promise(resolve => setTimeout(resolve, 1_500))
-      }
+      })
+      if (state.cancelled) throw new Error('The deployment was cancelled.')
+      if (job.error) throw new Error(job.error)
+      if (!job.server) throw new Error('The deployment finished without reporting the new server.')
+      if (!connectionIsCurrent(scope)) throw new StaleActionScopeError()
+      await reconcileHubRemoteServers(scope, set, get)
+      const remoteURL = normalizeServerURL(get().serverURL + job.server.proxy_path)
+      const profile = get().profiles.find(candidate => normalizeServerURL(candidate.serverURL) === remoteURL)
+      if (!profile) throw new Error(`The deployment finished, but ${job.server.name} did not appear in the hub's server list.`)
+      return profile.id
     } finally {
       if (hubDeployInFlight === state) hubDeployInFlight = null
+    }
+  },
+
+  async redeployHubRemote(profileId, force, onProgress) {
+    const profile = get().profiles.find(value => value.id === profileId)
+    const remote = profile ? /^(.*)\/api\/remote\/([A-Za-z0-9_-]{1,128})$/.exec(normalizeServerURL(profile.serverURL)) : null
+    const hubProfile = remote ? get().profiles.find(value => normalizeServerURL(value.serverURL) === remote[1]) : undefined
+    if (!profile || !remote || !hubProfile) throw new Error('Only servers the hub deployed can be redeployed.')
+    if (!force) {
+      const probe = new AgentServerClient(normalizeServerURL(profile.serverURL), await loadProfileToken(profile.id, profile.credentialVersion))
+      // Unreachable (for example the hub's tunnel is down) says nothing about the chats running there.
+      const running = await probe.health().then(health => health.active?.length ?? 0, () => null).finally(() => probe.dispose())
+      if (running !== 0) return { redeployed: false, running }
+    }
+    // The hub profile's own token: a changed hub token is not copied into existing remote profiles.
+    const hub = new AgentServerClient(remote[1], await loadProfileToken(hubProfile.id, hubProfile.credentialVersion))
+    try {
+      const job = await followHubJob(hub, (await hub.startRemoteRedeploy(remote[2])).job_id, onProgress, () => undefined)
+      if (job.error) throw new Error(job.error)
+    } finally {
+      hub.dispose()
+    }
+    void get().probeInactiveProfiles()
+    return { redeployed: true, running: 0 }
+  },
+
+  async updateServerCli(profileId, backend) {
+    const profile = get().profiles.find(value => value.id === profileId)
+    if (!profile) throw new Error('Server profile not found.')
+    const server = new AgentServerClient(normalizeServerURL(profile.serverURL), await loadProfileToken(profile.id, profile.credentialVersion))
+    try {
+      // An admin action goes only to the server the profile pinned, as on the active connection.
+      if (profile.serverIdentity && (await server.health()).server_identity !== profile.serverIdentity) {
+        throw new Error('This server reports a different identity. Select it once to confirm the change, then update again.')
+      }
+      const { output, diagnostic } = await server.updateRuntimeCli(backend)
+      if (get().activeProfileId === profileId) {
+        set(state => ({ health: state.health && { ...state.health, runtimes: { ...state.health.runtimes, [backend]: diagnostic } } }))
+      }
+      return output.split('\n').at(-1) || 'Update finished.'
+    } finally {
+      server.dispose()
     }
   },
 
@@ -3768,6 +3811,24 @@ async function prepareServerProfileActivation(
       }))
     }
     throw error
+  }
+}
+
+/** Follows a hub deploy job to its end, forwarding its log; `check` runs before every poll. */
+async function followHubJob(
+  client: AgentServerClient,
+  jobId: string,
+  onProgress: (entry: RemoteServerDeployLogEntry) => void,
+  check: () => void,
+): Promise<RemoteServerDeployJob> {
+  let seen = 0
+  for (;;) {
+    check()
+    const job = await client.remoteDeployStatus(jobId)
+    for (const entry of job.log.slice(seen)) onProgress(entry)
+    seen = job.log.length
+    if (job.done) return job
+    await new Promise(resolve => setTimeout(resolve, 1_500))
   }
 }
 
