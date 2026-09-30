@@ -53,6 +53,7 @@ describe('subagentsFromEvents', () => {
       subagent_path: '/root/prepare_release_notes'
     })
     expect(subagentDisplayName(subagentsFromEvents([state])[0])).toBe('Release review')
+    expect(subagentsFromEvents([state])[0].seq).toBe(state.seq)
     const after = subagentsFromEvents([state, { ...state, seq: 2, id: 'event-2', subagent_title: null }])
     expect(after).toHaveLength(1)
     expect(subagentDisplayName(after[0])).toBe('Prepare release notes')

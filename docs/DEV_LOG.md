@@ -1,5 +1,12 @@
 # Public development log
 
+## 2026-10-01 — A turn's subagents are listed once
+
+- When a Codex or Claude turn answered in the middle of its work, the desktop
+  showed the turn's subagent list twice: under the activity before the answer
+  and again under the activity after it. Each subagent is now listed only
+  under the stretch of activity it was spawned in.
+
 ## 2026-10-01 — Servers are reordered by dragging
 
 - In Settings → Servers on the desktop, the up and down arrows are gone; drag

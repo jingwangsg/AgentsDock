@@ -4359,6 +4359,20 @@ describe('timeline pin state', () => {
       expect(container.querySelector('.subagent-row-log')).toBeNull()
     })
 
+    it('lists a child only under the stretch of activity it was spawned in', () => {
+      const question: Event = { id: 'question', session_id: 'chat-1', run_id: 'run-1', backend: 'codex', seq: 3, type: 'assistant_text', ts: '2026-07-10T14:29:20Z', text: 'Which one?' }
+      const more: Event = { ...commentary, id: 'more', seq: 4, text: 'Continuing.' }
+      seed([commentary, subagent(2, 'child-1', 'Reviewer', 'running'), question, more, subagent(5, 'child-2', 'Tester', 'running')])
+      const before = render(row({ ...finished, throughSeq: 3 }))
+      expect(before.container.querySelectorAll('.subagent-row')).toHaveLength(1)
+      expect(before.container).toHaveTextContent('Reviewer')
+      before.unmount()
+      const after = render(row({ ...live, key: 'turn:run-1:activity:after:question', afterSeq: 3, events: [more] }))
+      expect(after.container.querySelectorAll('.subagent-row')).toHaveLength(1)
+      expect(after.container).toHaveTextContent('Tester')
+      expect(after.container).not.toHaveTextContent('Reviewer')
+    })
+
     it('renders no subagent block for a run without children', () => {
       seed([commentary])
       const { container } = render(row(live))

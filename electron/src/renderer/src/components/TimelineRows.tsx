@@ -436,7 +436,7 @@ function TraceDisclosure({
   const runSubagents = useAppStore(state => {
     const sessionEvents = state.snapshots[sessionId]?.events
     return runActivityMode && runId && sessionEvents && (backend === 'claude' || backend === 'codex')
-      ? subagentsForRun(sessionEvents, backend, runId)
+      ? subagentsForRun(sessionEvents, backend, runId, { afterSeq: runActivity?.afterSeq, throughSeq: runActivity?.throughSeq })
       : EMPTY_SUBAGENTS
   })
   const diffScope = JSON.stringify([sessionId, runId, resetKey, runActivity?.key])

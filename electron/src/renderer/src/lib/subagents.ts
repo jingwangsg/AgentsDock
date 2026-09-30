@@ -13,6 +13,8 @@ export interface SubagentActivity {
   key: string
   id: string
   runId: string
+  /** Sequence of the first event that showed this child. */
+  seq: number
   backend: 'claude' | 'codex'
   name: string
   title?: string | null
@@ -52,10 +54,10 @@ export function subagentsFromEvents(events: Event[], ownerBackend?: 'claude' | '
   const authoritativeKeys = new Set<string>()
   const agentStartSeqs = new Map<string, number>()
 
-  const ensure = (key: string, seed: Omit<SubagentActivity, 'key' | 'log'>): SubagentActivity => {
+  const ensure = (key: string, seed: Omit<SubagentActivity, 'key' | 'log' | 'seq'>): SubagentActivity => {
     const current = agents.get(key)
     if (current) return current
-    const created = { key, log: [], ...seed }
+    const created = { key, log: [], seq: 0, ...seed }
     agents.set(key, created)
     return created
   }
@@ -308,6 +310,7 @@ export function subagentsFromEvents(events: Event[], ownerBackend?: 'claude' | '
     }
   }
 
+  for (const agent of agents.values()) agent.seq = agentStartSeqs.get(agent.key) ?? agent.seq
   return [...agents.values()].sort((a, b) => {
     const active = Number(ACTIVE_STATUSES.has(b.status)) - Number(ACTIVE_STATUSES.has(a.status))
     return active || Date.parse(b.startedAt || '0') - Date.parse(a.startedAt || '0')
@@ -319,6 +322,7 @@ const runViewCache = new WeakMap<Event[], {
   backend: 'claude' | 'codex'
   locale: string
   byRun: Map<string, SubagentActivity[]>
+  segments: Map<string, SubagentActivity[]>
 }>()
 
 /**
@@ -326,7 +330,10 @@ const runViewCache = new WeakMap<Event[], {
  * this, so parse once per array and hand runs without children one shared
  * empty array; their selector output stays identical and they never re-render.
  */
-export function subagentsForRun(events: Event[], ownerBackend: 'claude' | 'codex', runId: string): SubagentActivity[] {
+export function subagentsForRun(
+  events: Event[], ownerBackend: 'claude' | 'codex', runId: string,
+  segment: { afterSeq?: number; throughSeq?: number } = {},
+): SubagentActivity[] {
   const locale = getLocale()
   let entry = runViewCache.get(events)
   if (!entry || entry.backend !== ownerBackend || entry.locale !== locale) {
@@ -338,10 +345,23 @@ export function subagentsForRun(events: Event[], ownerBackend: 'claude' | 'codex
     }
     // Spawn order, like the CLI's Task rows; the session-wide list is newest-first.
     for (const run of byRun.values()) run.sort((a, b) => Date.parse(a.startedAt || '0') - Date.parse(b.startedAt || '0'))
-    entry = { backend: ownerBackend, locale, byRun }
+    entry = { backend: ownerBackend, locale, byRun, segments: new Map() }
     runViewCache.set(events, entry)
   }
-  return entry.byRun.get(runId) ?? EMPTY_SUBAGENTS
+  const run = entry.byRun.get(runId) ?? EMPTY_SUBAGENTS
+  // A message in the middle of a turn splits its activity into stretches; a child
+  // belongs to the stretch it was spawned in, so the same list is not shown twice.
+  const after = segment.afterSeq ?? -1
+  const through = segment.throughSeq ?? Number.POSITIVE_INFINITY
+  if (run.every(agent => agent.seq > after && agent.seq <= through)) return run
+  const key = `${runId}:${after}:${through}`
+  let own = entry.segments.get(key)
+  if (!own) {
+    own = run.filter(agent => agent.seq > after && agent.seq <= through)
+    if (!own.length) own = EMPTY_SUBAGENTS
+    entry.segments.set(key, own)
+  }
+  return own
 }
 
 export function isSubagentActive(agent: SubagentActivity): boolean {
