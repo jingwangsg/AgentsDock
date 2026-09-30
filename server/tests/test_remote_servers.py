@@ -500,12 +500,29 @@ with socket.socket() as listener:
         assert job.done and job.error is None, job.log
         [server] = rs.load_registry(manager.path)
         assert (server.name, server.ssh_host, server.install_dir, server.remote_port, server.token) == ("osmo_9000", "osmo_9000", "/mnt/lustre/.agentsdock-server", 7860, REMOTE_TOKEN)
-        assert job.server == server and job.phase == "complete"
+        assert job.server == server and job.phase == "complete" and server.attached
         # Exactly two ssh sessions, the probe and the bootstrap: no upload command,
         # and the bootstrap gets no "restart" argument.
         sessions = [json.loads(line)["tail"] for line in calls.read_text().splitlines()]
         assert sessions == [["/mnt/lustre/.agentsdock-server"], ["/mnt/lustre/.agentsdock-server", "7860", "/h"]]
         assert "download" not in {entry["phase"] for entry in job.log}
+
+    def test_a_deploy_over_an_attached_entry_makes_it_this_hubs_install(self) -> None:
+        self.fake_host(existing_port=7860)
+        manager, _ = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))
+        [server] = rs.load_registry(manager.path)
+
+        async def main() -> rs.DeployJob:
+            await manager.start()
+            # The path a move takes (update → start_deploy); the redeploy route refuses attached entries.
+            job = manager.start_deploy(None, redeploy_id=server.id)
+            await job.task
+            await manager.stop()
+            return job
+
+        job = asyncio.run(main())
+        assert job.error is None, job.log
+        assert not rs.load_registry(manager.path)[0].attached
 
     def test_a_rename_during_a_redeploy_survives_its_write_back(self) -> None:
         self.fake_host(existing_port=7860)
@@ -732,6 +749,9 @@ time.sleep(30)
                     view = (await client.get(f"/api/admin/remote-servers/deploy/{job.job_id}")).json()
                     assert view["done"] and view["error"] is None, view["log"]
                     assert (view["server"]["name"], view["server"]["remote_port"]) == ("lustre", 7860) and "token" not in view["server"]
+                    # Another hub owns an attached install: this hub neither uploads to nor restarts it.
+                    refused = await client.post(f"/api/admin/remote-servers/{view['server']['id']}/redeploy")
+                    assert refused.status_code == 409 and "attached" in refused.json()["detail"]
                     assert (await client.post("/api/admin/remote-servers/attach", json={"ssh_host": "bad host"})).status_code == 422
             finally:
                 await close()

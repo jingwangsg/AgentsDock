@@ -138,6 +138,8 @@ class RemoteServer(BaseModel):
     local_port: int
     token: str
     created_at: str
+    # Registered by attach: another hub set this install up and updates it, so this hub never redeploys it.
+    attached: bool = False
 
     @field_validator("id")
     @classmethod
@@ -1176,8 +1178,9 @@ class RemoteServerManager:
                 server = self.servers.get(existing.id)
                 if server is None:
                     raise RuntimeError("The remote server was removed during the deployment.")
-                if server.remote_port != result["remote_port"] or server.install_dir != result["install_dir"] or server.token != result["access_token"]:
-                    server = server.model_copy(update={"remote_port": result["remote_port"], "install_dir": result["install_dir"], "token": result["access_token"]})
+                # A deploy over an attached entry (a move) installs this hub's own server there.
+                if server.attached or server.remote_port != result["remote_port"] or server.install_dir != result["install_dir"] or server.token != result["access_token"]:
+                    server = server.model_copy(update={"remote_port": result["remote_port"], "install_dir": result["install_dir"], "token": result["access_token"], "attached": False})
                     self.servers[server.id] = server
                     self._save()
                     self._ensure_tunnel(server)
@@ -1191,6 +1194,7 @@ class RemoteServerManager:
                     local_port=find_free_local_port(self._reserved_ports()),
                     token=result["access_token"],
                     created_at=now_iso(),
+                    attached=attach,
                 )
                 self.servers[server.id] = server
                 self._save()
@@ -1395,6 +1399,9 @@ def register_remote_server_routes(
     @app.post(f"{ADMIN_PATH}/{{remote_id}}/redeploy", status_code=202)
     async def remote_servers_redeploy(request: Request, remote_id: str) -> dict[str, Any]:
         authorize_admin(request)
+        server = manager.servers.get(remote_id)
+        if server is not None and server.attached:
+            raise HTTPException(status_code=409, detail="This server was attached from another hub's install; redeploy it from that hub.")
         return {"job_id": manager.start_deploy(None, redeploy_id=remote_id).job_id}
 
     @app.patch(f"{ADMIN_PATH}/{{remote_id}}")
