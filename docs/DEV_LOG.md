@@ -1,5 +1,14 @@
 # Public development log
 
+## 2026-09-30 — Codex works on a second machine that shares a home directory
+
+- On a remote whose home directory is shared with another machine (a
+  persistent home on a network filesystem), Codex chats failed with "codex
+  app-server exited with code 1": Codex keeps its SQLite state in that home in
+  WAL mode, which two machines cannot open at once. Each remote install now
+  keeps its own copy of that state under its install directory; chat rollouts
+  stay in the shared home. Existing remotes get this on their next Redeploy.
+
 ## 2026-09-30 — Add a server from any server
 
 - Add server (desktop) and Deploy over SSH (mobile) work whichever server is

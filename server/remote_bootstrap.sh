@@ -130,6 +130,13 @@ sed -i.bak "s|^export AGENTSDOCK_AGENT_PORT=.*|export AGENTSDOCK_AGENT_PORT=$POR
 if ! grep -qxF "export AGENTS_SERVER_CONFIG_DIR=$INSTALL_DIR" env; then
   (umask 077; { grep -v '^export AGENTS_SERVER_CONFIG_DIR=' env || true; printf 'export AGENTS_SERVER_CONFIG_DIR=%s\n' "$INSTALL_DIR"; } > env.new && mv env.new env)
 fi
+# A home shared between machines (the probe picked it because it holds the logins) cannot
+# hold Codex's SQLite state as well: WAL mode needs shared memory, so the second machine's
+# `codex app-server` exits with "failed to initialize sqlite state runtime". Each install
+# keeps its own copy; rollouts stay in the shared ~/.codex/sessions.
+if [ "$HOME_DIR" != "$HOME" ] && ! grep -qxF "export CODEX_SQLITE_HOME=$INSTALL_DIR/codex-state" env; then
+  (umask 077; { grep -v '^export CODEX_SQLITE_HOME=' env || true; printf 'export CODEX_SQLITE_HOME=%s/codex-state\n' "$INSTALL_DIR"; } > env.new && mv env.new env)
+fi
 # The hub's Claude token (RemoteServerManager._deploy); the server uses no other Claude auth.
 if [ -n "${AGENTSDOCK_CLAUDE_TOKEN:-}" ] && ! grep -qxF "export CLAUDE_CODE_OAUTH_TOKEN=$AGENTSDOCK_CLAUDE_TOKEN" env; then
   (umask 077; { grep -v '^export CLAUDE_CODE_OAUTH_TOKEN=' env || true; printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$AGENTSDOCK_CLAUDE_TOKEN"; } > env.new && mv env.new env)
