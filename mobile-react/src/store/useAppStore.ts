@@ -869,6 +869,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       } else await update()
     })
     if (activation) await completeServerProfileActivation(activation, set, get)
+    const hub = get().profiles.find(value => value.id === profileId)
+    const token = patch.accessToken
+    if (hub && token) {
+      const copied = await withProfileMutation(() => copyHubTokenToRemotes(hub.serverURL, token, set, get))
+      // The active remote's client still carries the old token.
+      const active = get().activeProfileId
+      if (active && copied.includes(active)) await activateServerProfile(active, true, set, get)
+    }
   },
 
   async removeServerProfile(profileId) {
@@ -3812,6 +3820,45 @@ async function prepareServerProfileActivation(
     }
     throw error
   }
+}
+
+/**
+ * Hub remote profiles hold a copy of the hub's token (reconcileHubRemoteServers); a new hub token must reach
+ * them, or every remote connection fails with 401. Written the way reconcile writes it, without a health probe
+ * or identity check per remote, so an unreachable remote does not keep the others on the old token.
+ * Resolves with the ids whose token changed.
+ */
+async function copyHubTokenToRemotes(
+  hubURL: string,
+  token: string,
+  set: (value: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
+  get: () => AppState,
+): Promise<string[]> {
+  const prefix = normalizeServerURL(hubURL) + HUB_PROXY_PREFIX
+  const staged = new Map<string, { previous: number; next: number }>()
+  for (const remote of get().profiles.filter(value => normalizeServerURL(value.serverURL).startsWith(prefix))) {
+    if (await loadProfileToken(remote.id, remote.credentialVersion) === token) continue
+    staged.set(remote.id, { previous: remote.credentialVersion, next: await stageProfileToken(remote.id, remote.credentialVersion, token) })
+  }
+  if (!staged.size) return []
+  const profiles = storedProfiles(get().profiles).map(profile => {
+    const version = staged.get(profile.id)
+    return version ? { ...profile, credentialVersion: version.next } : profile
+  })
+  try {
+    await saveProfileSettings({ schemaVersion: 2, activeProfileId: get().activeProfileId ?? profiles[0].id, profiles, fontScale: get().fontScale, appearance: get().appearance })
+  } catch (error) {
+    for (const [id, version] of staged) await deleteProfileToken(id, version.next).catch(() => undefined)
+    throw error
+  }
+  set(state => ({
+    profiles: state.profiles.map(profile => {
+      const version = staged.get(profile.id)
+      return version ? { ...profile, credentialVersion: version.next, lastConnectionError: null } : profile
+    }),
+  }))
+  for (const [id, version] of staged) await deleteProfileToken(id, version.previous).catch(() => undefined)
+  return [...staged.keys()]
 }
 
 /** Follows a hub deploy job to its end, forwarding its log; `check` runs before every poll. */

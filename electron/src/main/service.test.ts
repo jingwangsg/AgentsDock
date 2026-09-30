@@ -8043,6 +8043,41 @@ describe('credential-free profile metadata and asynchronous authentication', () 
     expect(clientFactory).not.toHaveBeenCalled()
   })
 
+  it('gives the hub remotes a new hub token, and the active remote reconnects with it', async () => {
+    const { service, settings, clientFactory } = prepare(3)
+    settings.updateProfile('a', { serverUrl: DEFAULT_SERVER_URL, accessToken: 'hub-old' })
+    settings.updateProfile('b', { serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1`, accessToken: 'hub-old' })
+    await service.switchServer('b')
+    clientFactory.mockClear()
+
+    await service.updateServer('a', { accessToken: 'hub-new' })
+
+    expect(await settings.accessTokenForConnectionAsync('b')).toBe('hub-new')
+    expect(await settings.accessTokenForConnectionAsync('c')).toBe('fake-c')
+    await vi.waitFor(() => expect(clientFactory).toHaveBeenCalledWith(`${DEFAULT_SERVER_URL}/api/remote/r1`, 'hub-new'))
+  })
+
+  it('clears an inactive hub remote\'s stale 401 when it gets the new hub token', async () => {
+    const { service, settings } = prepare(3)
+    settings.updateProfile('a', { serverUrl: DEFAULT_SERVER_URL, accessToken: 'hub-old' })
+    settings.updateProfile('b', { serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1`, accessToken: 'hub-old' })
+    ;(service as unknown as { setProfileRuntime(id: string, patch: object): void }).setProfileRuntime('b', { connectionState: 'offline', lastConnectionError: 'HTTP 401: invalid token' })
+
+    await service.updateServer('a', { accessToken: 'hub-new' })
+
+    expect(service.listServers().find(profile => profile.id === 'b')).toMatchObject({ connectionState: 'cached', lastConnectionError: null })
+  })
+
+  it('switches to the hub with a new token while a hub remote is active, and the remote gets the token', async () => {
+    const { service, settings } = prepare(3)
+    settings.updateProfile('a', { serverUrl: DEFAULT_SERVER_URL, accessToken: 'hub-old' })
+    settings.updateProfile('b', { serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1`, accessToken: 'hub-old' })
+    await service.switchServer('b')
+
+    await expect(service.updateServerAndSwitch('a', { accessToken: 'hub-new' })).resolves.toMatchObject({ activeProfileId: 'a' })
+    expect(await settings.accessTokenForConnectionAsync('b')).toBe('hub-new')
+  })
+
   it('invalidates the inactive credential cache after a connection edit', async () => {
     const { service, readAsync, clientFactory } = prepare(2)
     await probeInactiveProfiles(service)

@@ -1525,7 +1525,10 @@ export class AppService {
     const token = readLocalHubToken()
     if (!token) return hub.hasAccessToken
     const current = hub.hasAccessToken ? await this.settings.accessTokenForConnectionAsync(hub.id).catch(() => '') : ''
-    if (token !== current) this.settings.updateProfile(hub.id, { accessToken: token, serverSetupComplete: true })
+    if (token !== current) {
+      this.settings.updateProfile(hub.id, { accessToken: token, serverSetupComplete: true })
+      this.copyHubTokenToRemotes(token)
+    }
     if (hub.id === this.activeProfileId) {
       const scope = this.activateProfile(hub.id, false, true)
       void this.runBackgroundRefresh(true, scope)
@@ -1743,6 +1746,7 @@ export class AppService {
     // Once this succeeds, cleanup is deliberately irreversible: restoring the
     // old identity after a partial purge would recreate trust with missing data.
     const profile = this.persistServerUpdate(profileId, patch)
+    if (patch.accessToken && patch.accessToken !== '__KEEP__' && profile.serverUrl === DEFAULT_SERVER_URL) this.copyHubTokenToRemotes(patch.accessToken)
     if (before && profileConnectionChanged(before, patch)) {
       this.invalidateProfileHealthProbe(profileId)
       this.setProfileRuntime(profileId, {
@@ -1834,6 +1838,8 @@ export class AppService {
       resettingIdentity || retryingRetiredCleanup ? fallbackNamespace(profileId) : undefined,
       resettingActiveProfile || preActivationCleanupError ? retiredNamespaces : undefined
     )
+    // After the hub is active: copying earlier would reactivate an active remote and supersede this switch.
+    if (patch.accessToken && patch.accessToken !== '__KEEP__' && this.settings.serverUrl(profileId) === DEFAULT_SERVER_URL) this.copyHubTokenToRemotes(patch.accessToken)
     if (resettingIdentity) {
       let authorityReset = !resettingActiveProfile
       try {
@@ -7137,6 +7143,23 @@ export class AppService {
     if (retiredNamespaces?.length) this.pendingProfileAuthorityNamespaces.set(profileId, retiredNamespaces)
     if (patch.accessToken !== undefined) this.profileHealthAccessTokens.delete(profileId)
     return profile
+  }
+
+  /**
+   * Hub remote profiles hold a copy of the hub's token (reconcileHubRemotes); a new hub token must reach
+   * them, or every remote connection fails with 401.
+   */
+  private copyHubTokenToRemotes(token: string): void {
+    for (const remote of this.settings.listProfiles()) {
+      if (!isHubRemoteUrl(DEFAULT_SERVER_URL, remote.serverUrl)) continue
+      this.persistServerUpdate(remote.id, { accessToken: token })
+      if (remote.id === this.activeProfileId) void this.runBackgroundRefresh(true, this.activateProfile(remote.id, false, true))
+      else {
+        // As for an edited profile: its last error (a 401 with the old token) no longer applies.
+        this.invalidateProfileHealthProbe(remote.id)
+        this.setProfileRuntime(remote.id, { connectionState: 'cached', lastConnectionError: null, lastConnectionCheckedAt: null })
+      }
+    }
   }
 
   private publicProfiles(): PublicServerProfile[] {

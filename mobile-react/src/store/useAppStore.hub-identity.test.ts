@@ -12,6 +12,9 @@ let catalogAvailable = true
 const running: Record<string, string[]> = {}
 const redeployRequests: string[] = []
 const healthDown = new Set<string>()
+// Set to the hub's current token once a test rotates it on the server; null accepts any token.
+let requiredToken: string | null = null
+const remoteTokens: string[] = []
 
 function mockServer(route: (path: string) => { key: string; path: string } | null): Server {
   return createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -21,6 +24,9 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
       response.end(JSON.stringify(value))
     }
     if (!target) return reply(404, { detail: 'Unhandled test endpoint' })
+    const presented = String(request.headers['x-zenithdock-token'] ?? request.headers['x-agentsdock-token'] ?? '')
+    if (target.key === 'r1') remoteTokens.push(presented)
+    if (requiredToken && target.key !== 'direct' && presented !== requiredToken) return reply(401, { detail: 'invalid token' })
     if (target.path === '/api/health') {
       if (healthDown.has(target.key)) return reply(502, { detail: 'remote_unreachable' })
       return reply(200, { ok: true, server_identity: identities[target.key], server_version: 'hub-identity-test', api_contract_version: 8, active_sessions: [], active: running[target.key] ?? [] })
@@ -186,6 +192,25 @@ try {
   catalogAvailable = true
   refreshTick!()
   await waitFor(() => useAppStore.getState().runtime !== null, 'a missing catalog was not loaded again')
+
+  // The hub's token was rotated on the server: the old copy the active remote holds now gets 401. A new hub
+  // token entered in the app reaches the hub's remotes and the active remote reconnects with it, while a
+  // directly addressed server keeps its own token.
+  requiredToken = 'hub-new'
+  await useAppStore.getState().updateServerProfile('hub', { accessToken: 'hub-new' })
+  const storedToken = (id: string) => {
+    const profile = useAppStore.getState().profiles.find(value => value.id === id)!
+    return cache.loadProfileToken(profile.id, profile.credentialVersion)
+  }
+  assert.equal(await storedToken('remote'), 'hub-new')
+  assert.equal(await storedToken('direct'), 'token')
+  remoteTokens.length = 0
+  await waitFor(() => useAppStore.getState().connected && useAppStore.getState().activeProfileId === 'remote' && remoteTokens.includes('hub-new'), 'the active remote did not reconnect with the new hub token')
+  assert.ok(!remoteTokens.includes('token'), 'the reconnected remote still sent the old token')
+  // Applying the hub's unchanged token needs no remote, even an unreachable one.
+  healthDown.add('r1')
+  await useAppStore.getState().updateServerProfile('hub', { accessToken: 'hub-new' })
+  healthDown.delete('r1')
 
   console.log('hub remote identity store regressions passed')
 } finally {
