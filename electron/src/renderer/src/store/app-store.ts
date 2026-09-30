@@ -2362,7 +2362,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     )
     const scope = captureProfileScope(current)
     try {
-      const result = await window.agentsDock.sessions.rewind(sessionId, runId, expectedLatestSeq, ...(toSeq === undefined ? [] : [toSeq]))
+      const result = await window.agentsDock.sessions.rewind(sessionId, runId, expectedLatestSeq, toSeq)
       if (!profileScopeMatches(scope, get())) return false
       set(state => {
         const previous = state.snapshots[sessionId]
@@ -4515,6 +4515,8 @@ function refreshCrossChatQueue(sessionId: string, scope: RendererProfileScope): 
 
 function enqueueLiveEvent(event: Event, activeHint?: LiveActivityHint): void {
   const scope = captureProfileScope()
+  // The turn ran, so a send whose response was lost is confirmed; the same text sent again is a new message.
+  if (event.type === 'turn_started') unconfirmedTurnRequests.delete(`${scope.profileId}:${event.session_id}`)
   let pending = pendingLiveEvents.get(event.session_id)
   if (pending && !profileScopesEqual(pending.scope, scope)) {
     pendingLiveEventCount -= pending.events.length

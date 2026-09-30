@@ -150,7 +150,7 @@ try {
   // Editing an earlier turn seeds the composer and restores the previous draft on cancel.
   useAppStore.getState().setSessionDraft(sessionA.id, 'half typed')
   useAppStore.getState().beginEditingTurn(sessionA.id, 'run-1', 'First')
-  assert.deepEqual(useAppStore.getState().editingTurn[sessionA.id], { runId: 'run-1', previousDraft: 'half typed' })
+  assert.deepEqual(useAppStore.getState().editingTurn[sessionA.id], { runId: 'run-1', seq: undefined, previousDraft: 'half typed' })
   assert.equal(useAppStore.getState().drafts[sessionA.id], 'First')
   useAppStore.getState().cancelEditingTurn(sessionA.id)
   assert.equal(useAppStore.getState().editingTurn[sessionA.id], null)

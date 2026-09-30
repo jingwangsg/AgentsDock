@@ -382,8 +382,8 @@ export function CodeMirrorEditor({
   return <div ref={hostRef} className="workspace-editor-codemirror" />
 }
 
-function documentColorTheme(): string {
-  return document.documentElement.dataset.colorTheme ?? 'one-dark'
+function documentColorTheme(): string | undefined {
+  return document.documentElement.dataset.colorTheme
 }
 
 function restoredSelection(viewState: CodeMirrorViewState | undefined, documentLength: number): EditorSelection {

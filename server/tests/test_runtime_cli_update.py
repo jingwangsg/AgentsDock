@@ -94,10 +94,6 @@ class RuntimeCliUpdateTests(unittest.TestCase):
         else:
             self.fail(f"the update's child process {pid} is still running")
 
-    def test_health_advertises_the_route(self):
-        health = self.client.get("/api/health", headers={"Authorization": "Bearer test-secret"}).json()
-        self.assertEqual(health["capabilities"]["runtime_cli_update_v1"], {"available": True})
-
     def test_missing_cli_and_unknown_backend(self):
         self.enterContext(patch.object(server, "CLAUDE_BIN", str(self.bin / "absent")))
         self.assertEqual(self.client.post("/api/admin/runtimes/claude/update", headers=HEADERS).status_code, 404)

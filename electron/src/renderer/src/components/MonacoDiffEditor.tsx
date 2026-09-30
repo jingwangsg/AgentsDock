@@ -47,7 +47,8 @@ export function MonacoDiffEditor({ path, model, sideBySide, wordWrap, onUnavaila
     })
     const applyTheme = () => {
       const { colorTheme, theme } = document.documentElement.dataset
-      monaco.editor.setTheme(COLOR_THEMES.some(candidate => candidate.id === colorTheme) ? `agentsdock-${colorTheme}` : theme === 'light' ? 'agentsdock-light' : 'agentsdock-dark')
+      const id = COLOR_THEMES.some(candidate => candidate.id === colorTheme) ? colorTheme : theme === 'light' ? 'light' : 'dark'
+      monaco.editor.setTheme(`agentsdock-${id}`)
     }
     const observer = new MutationObserver(applyTheme)
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-color-theme'] })

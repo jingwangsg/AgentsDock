@@ -445,7 +445,7 @@ export class AgentServerClient {
    */
   async rewindSession(sessionId: string, toRunId: string, expectedLatestSeq: number, toSeq?: number): Promise<SessionRewindResult> {
     const rewind = (latestSeq: number) => this.post<SessionRewindResult>(`/api/sessions/${encodeURIComponent(sessionId)}/rewind`, {
-      to_run_id: toRunId, ...(toSeq === undefined ? {} : { to_seq: toSeq }), expected_latest_seq: latestSeq, confirmed: true,
+      to_run_id: toRunId, to_seq: toSeq, expected_latest_seq: latestSeq, confirmed: true,
     })
     let latestSeq = expectedLatestSeq
     let staleRetried = false

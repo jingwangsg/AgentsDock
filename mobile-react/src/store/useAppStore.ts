@@ -117,6 +117,7 @@ import {
   DEFAULT_CHAT_DEFAULTS,
   findDuplicateProfileByIdentity,
   HUB_PROXY_PREFIX,
+  hubProxyBaseURL,
   hubProxyRemoteId,
   profileNamespace,
   reconcileHubProfiles,
@@ -162,7 +163,7 @@ let hubDeployInFlight: { client: AgentServerClient; jobId: string; cancelled: bo
  * active server while it is a hub with no remotes yet. Remotes are added through it from any server.
  */
 export function hubProfile(state: Pick<AppState, 'profiles' | 'activeProfileId' | 'serverURL' | 'health'>): PublicServerProfile | undefined {
-  const bases = new Set(state.profiles.map(profile => /^(.*)\/api\/remote\/[^/]+$/.exec(normalizeServerURL(profile.serverURL))?.[1]))
+  const bases = new Set(state.profiles.map(profile => hubProxyBaseURL(profile.serverURL)))
   return state.profiles.find(profile => bases.has(normalizeServerURL(profile.serverURL)))
     ?? (state.health?.capabilities?.remote_servers_v1?.available && hubProxyRemoteId(state.serverURL) === null
       ? state.profiles.find(profile => profile.id === state.activeProfileId)
@@ -304,9 +305,11 @@ function markJobsMutated(scope: ConnectionScope): void {
   if (refreshJobsInFlight?.scope === scope) refreshJobsInFlight.dirty = true
 }
 function isStaleConnectionError(error: unknown, scope: ConnectionScope): boolean {
-  return !connectionIsCurrent(scope)
-    || error instanceof AgentServerClientDisposedError
-    || error instanceof AgentServerClientUnvalidatedError
+  return !connectionIsCurrent(scope) || isClientGoneError(error)
+}
+/** The client was disposed or lost its validation while the request ran; nothing to report. */
+function isClientGoneError(error: unknown): boolean {
+  return error instanceof AgentServerClientDisposedError || error instanceof AgentServerClientUnvalidatedError
 }
 
 function captureValidatedConnection(get: () => AppState, expectedGeneration?: number): ConnectionScope {
@@ -802,7 +805,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const started = await client.startRemoteDeploy({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name })
       const state = { client, jobId: started.job_id, cancelled: false }
       hubDeployInFlight = state
-      const job = await followHubJob(client, state.jobId, onProgress, () => undefined)
+      const job = await followHubJob(client, state.jobId, onProgress)
       if (state.cancelled) throw new Error('The deployment was cancelled.')
       if (job.error) throw new Error(job.error)
       if (!job.server) throw new Error('The deployment finished without reporting the new server.')
@@ -831,7 +834,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // The hub profile's own token: a changed hub token is not copied into existing remote profiles.
     const hub = new AgentServerClient(remote[1], await loadProfileToken(hubProfile.id, hubProfile.credentialVersion))
     try {
-      const job = await followHubJob(hub, (await hub.startRemoteRedeploy(remote[2])).job_id, onProgress, () => undefined)
+      const job = await followHubJob(hub, (await hub.startRemoteRedeploy(remote[2])).job_id, onProgress)
       if (job.error) throw new Error(job.error)
     } finally {
       hub.dispose()
@@ -2831,7 +2834,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   beginEditingTurn(sessionId, runId, prompt, seq) {
     set(state => ({
-      editingTurn: { ...state.editingTurn, [sessionId]: { runId, ...(seq === undefined ? {} : { seq }), previousDraft: state.drafts[sessionId] ?? '' } },
+      editingTurn: { ...state.editingTurn, [sessionId]: { runId, seq, previousDraft: state.drafts[sessionId] ?? '' } },
       drafts: { ...state.drafts, [sessionId]: prompt },
     }))
   },
@@ -3888,16 +3891,14 @@ async function copyHubTokenToRemotes(
   return [...staged.keys()]
 }
 
-/** Follows a hub deploy job to its end, forwarding its log; `check` runs before every poll. */
+/** Follows a hub deploy job to its end, forwarding its log. */
 async function followHubJob(
   client: AgentServerClient,
   jobId: string,
   onProgress: (entry: RemoteServerDeployLogEntry) => void,
-  check: () => void,
 ): Promise<RemoteServerDeployJob> {
   let seen = 0
   for (;;) {
-    check()
     const job = await client.remoteDeployStatus(jobId)
     for (const entry of job.log.slice(seen)) onProgress(entry)
     seen = job.log.length
@@ -3924,20 +3925,16 @@ async function probeServerHealth(serverURL: string, token: string): Promise<Heal
 let hubRemoteRemovals = 0
 
 /**
- * Mirrors the hub's remote-server registry into saved profiles: each
- * `/api/remote/{id}` the hub reports gets a profile carrying the hub's token,
- * and proxied profiles the hub no longer lists are dropped. No-op unless the
- * active profile is the hub itself; a proxied remote also advertises the
- * capability, so the decision is made on URL shape.
+ * Mirrors the hub registry while the hub itself is the active server. A proxied
+ * remote also advertises the capability, so the decision is made on URL shape.
  */
-/** Mirrors the hub registry while the hub itself is the active server. */
-function reconcileHubRemoteServers(
+async function reconcileHubRemoteServers(
   scope: ConnectionScope,
   set: (value: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
   get: () => AppState,
-): Promise<void> | undefined {
+): Promise<void> {
   if (!get().health?.capabilities?.remote_servers_v1?.available || hubProxyRemoteId(get().serverURL) !== null) return
-  return reconcileHubRegistry(
+  await reconcileHubRegistry(
     { profileId: scope.profileId, serverURL: get().serverURL, client: scope.client },
     () => connectionIsCurrent(scope) && get().activeProfileId === scope.profileId,
     set,
@@ -3945,6 +3942,11 @@ function reconcileHubRemoteServers(
   )
 }
 
+/**
+ * Mirrors the hub's remote-server registry into saved profiles: each
+ * `/api/remote/{id}` the hub reports gets a profile carrying the hub's token,
+ * and proxied profiles the hub no longer lists are dropped.
+ */
 async function reconcileHubRegistry(
   hubScope: { profileId: string; serverURL: string; client: AgentServerClient },
   isCurrent: () => boolean,
@@ -3956,7 +3958,7 @@ async function reconcileHubRegistry(
   try {
     remotes = (await hubScope.client.remoteServers()).servers
   } catch (error) {
-    if (isCurrent() && !(error instanceof AgentServerClientDisposedError || error instanceof AgentServerClientUnvalidatedError)) set({ error: errorMessage(error) })
+    if (isCurrent() && !isClientGoneError(error)) set({ error: errorMessage(error) })
     return
   }
   try {
@@ -4666,6 +4668,8 @@ function applyLiveEvent(scope: ConnectionScope, event: Event, set: (value: Parti
   if (!connectionIsCurrent(scope)) return
   event = sanitizeTimelineEvent(event)
   const sessionId = event.session_id
+  // The turn ran, so a send whose response was lost is confirmed; the same text sent again is a new message.
+  if (event.type === 'turn_started') unconfirmedTurnRequests.delete(`${scope.profileId}:${sessionId}`)
   // Subagent state has its own slice; the timeline path below drops it as internal.
   if (event.type === 'subagent_state') set(state => ({ subagentsBySession: withSubagentStates(state.subagentsBySession, sessionId, [event]) }))
   const timelineInternal = TIMELINE_INTERNAL_EVENT_TYPES.has(event.type)

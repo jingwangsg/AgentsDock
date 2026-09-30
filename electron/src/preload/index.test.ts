@@ -249,7 +249,7 @@ describe('preload session IPC bridge', () => {
     await electronHarness.exposed?.sessions.rewind('chat-1', 'run-2', 41)
     await electronHarness.exposed?.sessions.restoreCheckpoint('chat-1', 'run-2', 'a'.repeat(64))
 
-    expect(electronHarness.invoke).toHaveBeenNthCalledWith(1, 'sessions:rewind', 'chat-1', 'run-2', 41)
+    expect(electronHarness.invoke).toHaveBeenNthCalledWith(1, 'sessions:rewind', 'chat-1', 'run-2', 41, undefined)
     expect(electronHarness.invoke).toHaveBeenNthCalledWith(2, 'sessions:restore-checkpoint', 'chat-1', 'run-2', 'a'.repeat(64))
   })
 

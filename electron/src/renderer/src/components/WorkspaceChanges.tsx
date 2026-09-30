@@ -54,7 +54,7 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
   const [notice, setNotice] = useState<string | null>(null)
   const [abortOpen, setAbortOpen] = useState(false)
   const [discard, setDiscard] = useState<{ run: () => void } | null>(null)
-  const [discardPaths, setDiscardPaths] = useState<string[] | null>(null)
+  const [gitDiscardPaths, setGitDiscardPaths] = useState<string[] | null>(null)
   const [detailVersion, setDetailVersion] = useState(0)
   const [treeView, setTreeView] = useState(() => localStorage.getItem(TREE_VIEW_KEY) !== '0')
   // Directories start expanded; the set holds the exceptions.
@@ -228,7 +228,7 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
         <div className="workspace-changes-bulk">
           <button type="button" className="quiet-button" disabled={blocked || conflictDirty || !unstagedPaths.length} onClick={() => void run({ action: 'stage', paths: unstagedPaths })}><Plus size={13} />{labels.stageAll}</button>
           <button type="button" className="quiet-button" disabled={blocked || conflictDirty || !counts.staged} onClick={() => void run({ action: 'unstage', paths: allFiles.filter(file => file.staged && !file.conflicted).map(file => file.path) })}><Minus size={13} />{labels.unstageAll}</button>
-          <button type="button" className="quiet-button workspace-changes-danger" disabled={blocked || conflictDirty || !unstagedPaths.length} onClick={() => setDiscardPaths(unstagedPaths)}><Undo2 size={13} />{labels.discardAll}</button>
+          <button type="button" className="quiet-button workspace-changes-danger" disabled={blocked || conflictDirty || !unstagedPaths.length} onClick={() => setGitDiscardPaths(unstagedPaths)}><Undo2 size={13} />{labels.discardAll}</button>
           <div className="segmented review-view-toggle">
             <button type="button" className={treeView ? 'active' : ''} aria-pressed={treeView} onClick={() => chooseView(true)}>{t('review.viewTree')}</button>
             <button type="button" className={treeView ? '' : 'active'} aria-pressed={!treeView} onClick={() => chooseView(false)}>{t('review.viewFlat')}</button>
@@ -248,7 +248,7 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
               <span className={file.conflicted ? 'workspace-changes-danger' : ''}>{file.conflicted ? <AlertTriangle size={14} /> : <FileDiff size={14} />}</span><span>{row.name}</span><code>{file.conflicted ? '!' : `${file.index_status}${file.worktree_status}`}</code>
             </button>
             {!file.conflicted && <div className="workspace-changes-file-actions">
-              {(file.unstaged || file.untracked) && <button type="button" className="icon-button" disabled={blocked || conflictDirty} title={labels.discardChanges} aria-label={`${labels.discardChanges} ${file.path}`} onClick={() => setDiscardPaths([file.path])}><Undo2 size={14} /></button>}
+              {(file.unstaged || file.untracked) && <button type="button" className="icon-button" disabled={blocked || conflictDirty} title={labels.discardChanges} aria-label={`${labels.discardChanges} ${file.path}`} onClick={() => setGitDiscardPaths([file.path])}><Undo2 size={14} /></button>}
               {(file.unstaged || file.untracked) && <button type="button" className="icon-button" disabled={blocked || conflictDirty} title={labels.stage} aria-label={`${labels.stage} ${file.path}`} onClick={() => void run({ action: 'stage', paths: [file.path] })}><Plus size={14} /></button>}
               {file.staged && <button type="button" className="icon-button" disabled={blocked || conflictDirty} title={labels.unstage} aria-label={`${labels.unstage} ${file.path}`} onClick={() => void run({ action: 'unstage', paths: [file.path] })}><Minus size={14} /></button>}
             </div>}
@@ -300,10 +300,10 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
       </main>
     </div>
     <ConfirmDialog open={active && abortOpen} title={labels.abortTitle} description={labels.abortHint} confirm={labels.abortConfirm} disabled={busy} onCancel={() => setAbortOpen(false)} onConfirm={() => void run({ action: 'abort', confirmed: true })} />
-    <ConfirmDialog open={active && Boolean(discardPaths)} title={labels.discardChangesTitle}
-      description={`${discardPaths?.length === 1 ? discardPaths[0] : `${discardPaths?.length} ${labels.changed}`} — ${labels.discardChangesHint}`}
-      confirm={labels.discardChanges} disabled={busy} onCancel={() => setDiscardPaths(null)}
-      onConfirm={() => { const paths = discardPaths ?? []; setDiscardPaths(null); void run({ action: 'discard', paths, confirmed: true }) }} />
+    <ConfirmDialog open={active && Boolean(gitDiscardPaths)} title={labels.discardChangesTitle}
+      description={`${gitDiscardPaths?.length === 1 ? gitDiscardPaths[0] : `${gitDiscardPaths?.length} ${labels.changed}`} — ${labels.discardChangesHint}`}
+      confirm={labels.discardChanges} disabled={busy} onCancel={() => setGitDiscardPaths(null)}
+      onConfirm={() => { const paths = gitDiscardPaths ?? []; setGitDiscardPaths(null); void run({ action: 'discard', paths, confirmed: true }) }} />
     <ConfirmDialog open={active && Boolean(discard)} title={labels.discardTitle} description={labels.discardHint} confirm={labels.discard} disabled={busy} onCancel={() => setDiscard(null)} onConfirm={() => { const action = discard?.run; setDiscard(null); action?.() }} />
   </section>
 }

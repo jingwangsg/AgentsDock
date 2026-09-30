@@ -10834,7 +10834,7 @@ describe('history rewind cache surgery', () => {
 
     await expect(service.rewindSession('chat', 'run-3', 5)).resolves.toMatchObject({ through_seq: 5 })
 
-    expect(rewindSession).toHaveBeenCalledExactlyOnceWith('chat', 'run-3', 5)
+    expect(rewindSession).toHaveBeenCalledExactlyOnceWith('chat', 'run-3', 5, undefined)
     expect(cache.events(internals.scope.namespace, 'chat').map(event => event.seq)).toEqual([1, 2])
     expect(internals.timelineIndexes.has(key)).toBe(false)
     expect(cache.session(internals.scope.namespace, 'chat')).toMatchObject({ latest_event_seq: 2 })

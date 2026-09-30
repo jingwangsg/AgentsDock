@@ -72,7 +72,7 @@ export interface ServerProfilesManagerProps extends CommonServerProfileProps {
   onUpdateProfile: (profileId: string, patch: UpdateServerProfileInput) => Awaitable<void>
   onReorderProfiles: (orderedProfileIds: string[]) => Awaitable<void>
   onRemoveProfile: (profileId: string) => Awaitable<void>
-  /** True when the active server is itself a hub (advertises remote_servers_v1) that can proxy and deploy other servers. */
+  /** True when a saved server is a hub (advertises remote_servers_v1); remote servers are added through it from any server. */
   hubAvailable?: boolean
   onDeployRemote?: (
     input: { sshHost: string; installDir?: string; name?: string },

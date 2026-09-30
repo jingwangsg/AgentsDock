@@ -93,6 +93,11 @@ export function hubProxyRemoteId(serverURL: string): string | null {
   return /\/api\/remote\/([^/]+)$/.exec(normalizeServerURL(serverURL))?.[1] ?? null
 }
 
+/** The hub's own URL in a hub-proxied profile URL (`{hub}/api/remote/{id}`), or null for a directly addressed server. */
+export function hubProxyBaseURL(serverURL: string): string | null {
+  return /^(.*)\/api\/remote\/[^/]+$/.exec(normalizeServerURL(serverURL))?.[1] ?? null
+}
+
 /**
  * Diffs the saved profiles against the hub's remote-server registry. Only
  * proxied profiles of this hub can be removed; existing names are never

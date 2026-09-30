@@ -1,5 +1,12 @@
 # Public development log
 
+## 2026-10-01 — Repeating a message after a lost reply sends it again
+
+- A message whose send timed out is resent with the same request id so the
+  server runs it once. When the server had in fact run it and its turn is
+  visible in the chat, typing the same text again is a new message; it is no
+  longer swallowed as a duplicate.
+
 ## 2026-10-01 — Small image thumbnails open the full image
 
 - Clicking the thumbnail of a queued message's image, or of an image attached
@@ -141,12 +148,18 @@
   command's output opens from its row. Claude side questions run without tools,
   so they have no steps.
 
-## 2026-09-30 — Update CLI is only in the server list
+## 2026-09-30 — Update CLI moves back to the server list
 
 - Claude Code and Codex are updated from the server list's Update CLI menu
   (desktop Settings → Server, mobile Servers), which works on any saved server
   whichever one is active. The Update CLI buttons in runtime settings
   (Runtimes & prerequisites on desktop, Agent runtimes on mobile) are removed.
+
+## 2026-09-30 — Server list no longer has Update CLI
+
+- The server list's Update CLI menu is removed on desktop and mobile. Claude
+  Code and Codex are still updated from the active server's runtime settings
+  (Runtimes & prerequisites on desktop, Agent runtimes on mobile).
 
 ## 2026-09-30 — Window layout and chat font are the same on every server
 

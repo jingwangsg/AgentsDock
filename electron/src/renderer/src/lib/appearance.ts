@@ -49,6 +49,7 @@ export function applyAppearance(mode: AppearanceMode): void {
   const root = document.documentElement
   const colorTheme = readColorThemes()[resolved]
   const palette = COLOR_THEMES.find(theme => theme.id === colorTheme)?.ui
+  // Every theme defines the same token set, so the first one's keys name them all.
   for (const token of Object.keys(COLOR_THEMES[0].ui)) root.style.removeProperty(`--${token}`)
   for (const [token, value] of Object.entries(palette ?? {})) root.style.setProperty(`--${token}`, value)
   root.dataset.appearance = mode

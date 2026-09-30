@@ -472,7 +472,7 @@ describe('turn editing and history rewind', () => {
     await expect(useAppStore.getState().rewindSession('chat-1', 'run-3')).resolves.toBe(true)
 
     // The rendered tail (seq 5) is newer than the published session field (4).
-    expect(rewind).toHaveBeenCalledExactlyOnceWith('chat-1', 'run-3', 5)
+    expect(rewind).toHaveBeenCalledExactlyOnceWith('chat-1', 'run-3', 5, undefined)
     const next = useAppStore.getState().snapshots['chat-1']
     expect(next.events.map(event => event.seq)).toEqual([1, 2])
     expect(next.generation).toBe(3)
@@ -2850,6 +2850,26 @@ describe('selected live timeline', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('sends the same text again with a new request id once the lost send is seen to have run', async () => {
+    const handlers = await initializeLiveEventHandlers()
+    const send = vi.fn()
+      .mockRejectedValueOnce(new Error('The operation was aborted due to timeout'))
+      .mockResolvedValue({ session: sessionFor('chat-a') })
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { ...window.agentsDock, turns: { send } } })
+    useAppStore.setState({
+      selectedSessionId: 'chat-a', chatPanes: { primary: 'chat-a', secondary: null },
+      sessions: [sessionFor('chat-a')], snapshots: { 'chat-a': snapshot('chat-a', [eventFor('chat-a', 1)]) },
+      drafts: {}, uploadsBySession: {}, uploadPathsBySession: {}, turnAdmissionTokens: {}, pendingTurnSubmissions: {}
+    })
+    await expect(useAppStore.getState().sendPromptForSession('chat-a', 'continue')).resolves.toBe(false)
+    // The server ran it after all: its turn arrives on the stream.
+    handlers.get('server:event')?.({ profileId: null, profileGeneration: 0, event: eventFor('chat-a', 2, { type: 'turn_started', prompt: 'continue', file_ids: [] }) })
+    await expect(useAppStore.getState().sendPromptForSession('chat-a', 'continue')).resolves.toBe(true)
+
+    const ids = send.mock.calls.map(([input]) => input.clientRequestId)
+    expect(ids[1]).not.toBe(ids[0])
   })
 
   it('updates an OpenCode provider binding and reset in the live session without a refresh', async () => {

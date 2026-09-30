@@ -1617,7 +1617,7 @@ export class AppService {
     try {
       const state = { client, jobId: (await start(client)).job_id, cancelled: false }
       this.remoteDeploy = state
-      const job = await this.followHubJob(client, state.jobId, onProgress, () => undefined)
+      const job = await this.followHubJob(client, state.jobId, onProgress)
       if (state.cancelled) throw new Error('The deployment was cancelled.')
       if (job.error) throw new Error(job.error)
       if (!job.server) throw new Error('The deployment finished without reporting the new server.')
@@ -1632,16 +1632,14 @@ export class AppService {
     }
   }
 
-  /** Follows a hub deploy job to its end, forwarding its log; `check` runs before every poll. */
+  /** Follows a hub deploy job to its end, forwarding its log. */
   private async followHubJob(
     client: AgentServerClient,
     jobId: string,
-    onProgress: (value: ServerSetupProgress) => void,
-    check: () => void
+    onProgress: (value: ServerSetupProgress) => void
   ): Promise<RemoteServerDeployJob> {
     let seen = 0
     for (;;) {
-      check()
       const job: RemoteServerDeployJob = await client.remoteDeployStatus(jobId)
       for (const entry of job.log.slice(seen)) onProgress({ phase: entry.phase as ServerSetupProgress['phase'], message: entry.message })
       seen = job.log.length
@@ -1683,11 +1681,12 @@ export class AppService {
   /** Server list "Update CLI": updates Claude Code or Codex on any saved server, active or not. */
   async updateServerRuntimeCli(profileId: string, backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate> {
     // An undefined id would fall back to the active profile in SettingsStore.
-    if (typeof profileId !== 'string' || !this.settings.getProfile(profileId)) throw new Error('Unknown server profile.')
+    const profile = typeof profileId === 'string' ? this.settings.getProfile(profileId) : undefined
+    if (!profile) throw new Error('Unknown server profile.')
     const client = this.clientFactory(this.settings.serverUrl(profileId), await this.settings.accessTokenForConnectionAsync(profileId))
     try {
       // An admin action goes only to the server the profile pinned, as on the active connection.
-      const pinned = this.settings.getProfile(profileId)?.serverIdentity?.trim()
+      const pinned = profile.serverIdentity?.trim()
       if (pinned && (await client.health()).server_identity?.trim() !== pinned) {
         throw new Error('This server reports a different identity. Select it once to confirm the change, then update again.')
       }
@@ -1724,7 +1723,7 @@ export class AppService {
     const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
     try {
       const remoteId = serverUrl.slice(`${normalizeServerURL(hub.serverUrl)}/api/remote/`.length)
-      const job = await this.followHubJob(client, (await client.startRemoteRedeploy(remoteId)).job_id, onProgress, () => undefined)
+      const job = await this.followHubJob(client, (await client.startRemoteRedeploy(remoteId)).job_id, onProgress)
       if (job.error) throw new Error(job.error)
     } finally {
       client.dispose()

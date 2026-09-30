@@ -207,9 +207,10 @@ export function editorThemeDefinition(theme: string): Pick<EditorThemeDefinition
 }
 
 /** 'app' follows the app color theme: its own editor palette, or VS Code Dark / GitHub Light under One Dark / One Light. */
-export function resolveEditorTheme(theme: EditorThemePreference, colorTheme: string): string {
+export function resolveEditorTheme(theme: EditorThemePreference, colorTheme: string | undefined): string {
   if (theme !== 'app') return theme
-  if (COLOR_THEMES.some(candidate => candidate.id === colorTheme)) return colorTheme
+  const own = COLOR_THEMES.find(candidate => candidate.id === colorTheme)
+  if (own) return own.id
   return colorTheme === 'one-light' ? 'github-light' : 'vscode-dark'
 }
 

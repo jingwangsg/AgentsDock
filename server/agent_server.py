@@ -61236,32 +61236,27 @@ def session_system_prompt(
     )
 
 
-def claude_fork_binding_is_stale(session_id: str, sess: dict[str, Any]) -> bool:
+def drop_stale_claude_fork_binding(session_id: str, sess: dict[str, Any]) -> None:
     """A rewind's fork binding applies to the next turn only.
 
-    If a turn has since finished in the source session (the fork did not
+    If a turn has since run in the source session itself (the fork did not
     happen), honoring the binding now would drop that turn from the model.
     """
     fork_from = str(sess.get("fork_from") or "")
     if not fork_from:
-        return False
+        return
     rewound_at = 0
     for event in iter_session_events(session_id):
         seq = int(event.get("seq") or 0)
         if event.get("type") == "history_rewound":
             rewound_at = seq
-        elif (event.get("type") == "turn_finished" and seq > rewound_at and not event.get("imported")
+        elif (event.get("type") == "provider_session" and seq > rewound_at
               and str(event.get("provider_session_id") or "") == fork_from):
-            return True
-    return False
-
-
-def drop_stale_claude_fork_binding(session_id: str, sess: dict[str, Any]) -> None:
-    if claude_fork_binding_is_stale(session_id, sess):
-        logger.warning("claude fork binding dropped: a turn already finished in session %s after the rewind chat=%s",
-                       sess.get("fork_from"), session_id)
-        sess["fork_from"] = None
-        sess.pop("fork_resume_session_at", None)
+            logger.warning("claude fork binding dropped: session %s ran a turn after the rewind chat=%s",
+                           fork_from, session_id)
+            sess["fork_from"] = None
+            sess.pop("fork_resume_session_at", None)
+            return
 
 
 def build_claude_cmd(
@@ -82750,8 +82745,6 @@ async def health() -> dict[str, Any]:
                 "activation_recovery": True,
             },
             "tmux": tmux,
-            # POST /api/admin/runtimes/{claude|codex}/update; it needs the native admin token.
-            "runtime_cli_update_v1": {"available": bool(AGENT_TOKEN)},
             "canvas_v1": agentsdock_canvas.capability(STATE_DIR),
             "remote_servers_v1": {
                 **remote_servers.capability(REMOTE_SERVERS),
@@ -92556,6 +92549,10 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                     async with STORE._lock:
                         usage_signal = reset_codex_thread_scoped_state_locked(sess, forked_thread_id)
                 await STORE.save(durable=True)
+                if backend == BACKEND_CLAUDE and CLAUDE_SDK_MANAGER is not None:
+                    # A connected Claude process keeps the options it started with, so
+                    # only a new one resumes at the cutoff (or starts afresh).
+                    await CLAUDE_SDK_MANAGER.evict(session_id)
                 return summary
 
             rewind_task = asyncio.create_task(perform_rewind())
@@ -92568,10 +92565,6 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                 await join_task_despite_caller_cancellation(rewind_task)
                 raise cancellation
 
-        if backend == BACKEND_CLAUDE and CLAUDE_SDK_MANAGER is not None:
-            # A connected Claude process keeps the options it started with, so
-            # only a new one resumes at the cutoff (or starts afresh).
-            await CLAUDE_SDK_MANAGER.evict(session_id)
         if provider_rewind == "codex_fork":
             # The chat now owns the fork. Unload the source thread so its
             # rollout writer lock is free for other Codex clients instead of
@@ -92700,12 +92693,16 @@ async def post_turn(session_id: str, req: TurnRequest) -> dict[str, Any]:
         result = await admit_turn(session_id, req)
     except Exception as exc:
         # A rejected send may be retried; only a waiting duplicate sees this error.
-        TURN_REQUEST_RECEIPTS.pop(key, None)
+        if TURN_REQUEST_RECEIPTS.get(key) is receipt:
+            del TURN_REQUEST_RECEIPTS[key]
         receipt.set_exception(exc)
+        # load-bearing: marks the exception retrieved; with no duplicate waiting,
+        # asyncio would otherwise log "Future exception was never retrieved".
         receipt.exception()
         raise
     except BaseException:
-        TURN_REQUEST_RECEIPTS.pop(key, None)
+        if TURN_REQUEST_RECEIPTS.get(key) is receipt:
+            del TURN_REQUEST_RECEIPTS[key]
         receipt.cancel()
         raise
     receipt.set_result(result)

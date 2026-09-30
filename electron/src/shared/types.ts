@@ -1826,7 +1826,6 @@ export interface HealthCapabilities {
   side_questions?: SideQuestionsCapability
   background_activity_v1?: { available: boolean }
   tmux?: ServerCapability
-  runtime_cli_update_v1?: { available: boolean }
   workspace_files?: WorkspaceFilesCapability
   working_directory_completion?: WorkingDirectoryCompletionCapability
   scheduled_jobs?: ScheduledJobsCapability

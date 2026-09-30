@@ -465,7 +465,7 @@ class RewindEditTests(RewindFixture):
         self.assertEqual([event["seq"] for event in self.stored_events() if event["type"] != "_event_sequence_checkpoint"], [1, 2, 3, 7])
         await self.assertRewindRejected(server.RewindSessionRequest(to_run_id="import_a", to_seq=3, expected_latest_seq=7, confirmed=True), 409, "rewind_target_not_found")
 
-    def test_a_fork_binding_is_stale_once_a_turn_finished_in_the_source_session_after_the_rewind(self) -> None:
+    def test_a_fork_binding_is_dropped_once_the_source_session_ran_a_turn_after_the_rewind(self) -> None:
         sess = self.chat(fork_from="claude-parent", fork_resume_session_at="second-uuid")
         events = self.events() + [
             {"seq": 11, "id": "e11", "type": "history_rewound", "ts": "2026-09-08T10:06:00Z", "to_run_id": "third"},
@@ -473,11 +473,15 @@ class RewindEditTests(RewindFixture):
         ]
         path = server.events_path("chat")
         path.write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
-        self.assertFalse(server.claude_fork_binding_is_stale("chat", sess))
-        finished = {"seq": 13, "id": "e13", "type": "turn_finished", "run_id": "fourth", "ts": "2026-09-08T10:08:00Z", "exit_code": 0,
-                    "provider_session_id": "claude-parent"}
-        path.write_text(path.read_text(encoding="utf-8") + json.dumps({"session_id": "chat", **finished}) + "\n", encoding="utf-8")
-        self.assertTrue(server.claude_fork_binding_is_stale("chat", sess))
+        server.drop_stale_claude_fork_binding("chat", sess)
+        self.assertEqual((sess["fork_from"], sess["fork_resume_session_at"]), ("claude-parent", "second-uuid"))
+        # The turn ran in the source session itself: the fork never happened.
+        ran = {"seq": 13, "id": "e13", "type": "provider_session", "run_id": "fourth", "ts": "2026-09-08T10:07:05Z",
+               "backend": "claude", "provider_session_id": "claude-parent"}
+        path.write_text(path.read_text(encoding="utf-8") + json.dumps({"session_id": "chat", **ran}) + "\n", encoding="utf-8")
+        server.drop_stale_claude_fork_binding("chat", sess)
+        self.assertIsNone(sess["fork_from"])
+        self.assertNotIn("fork_resume_session_at", sess)
 
 
 if __name__ == "__main__":
