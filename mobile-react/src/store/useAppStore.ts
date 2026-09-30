@@ -155,7 +155,19 @@ let refreshSessionsInFlight: { scope: ConnectionScope; promise: Promise<void> } 
 let refreshJobsInFlight: { scope: ConnectionScope; promise: Promise<void>; dirty: boolean } | null = null
 let quickCreateSessionInFlight: { scope: ConnectionScope; promise: Promise<boolean> } | null = null
 /** The hub deploy `deployHubRemoteServer` is currently polling, if any; lets cancelHubDeploy reach both the poll loop and the server-side job. */
-let hubDeployInFlight: { scope: ConnectionScope; jobId: string; cancelled: boolean } | null = null
+let hubDeployInFlight: { client: AgentServerClient; jobId: string; cancelled: boolean } | null = null
+
+/**
+ * The profile of the hub that proxies `/api/remote/<id>` profiles: the base of any such profile, or the
+ * active server while it is a hub with no remotes yet. Remotes are added through it from any server.
+ */
+export function hubProfile(state: Pick<AppState, 'profiles' | 'activeProfileId' | 'serverURL' | 'health'>): PublicServerProfile | undefined {
+  const bases = new Set(state.profiles.map(profile => /^(.*)\/api\/remote\/[^/]+$/.exec(normalizeServerURL(profile.serverURL))?.[1]))
+  return state.profiles.find(profile => bases.has(normalizeServerURL(profile.serverURL)))
+    ?? (state.health?.capabilities?.remote_servers_v1?.available && hubProxyRemoteId(state.serverURL) === null
+      ? state.profiles.find(profile => profile.id === state.activeProfileId)
+      : undefined)
+}
 /** The automatic identity reset of a hub-proxied remote (see acceptHealthIdentity), so repeated health checks start it once. */
 let hubIdentityResetInFlight: Promise<void> | null = null
 let readReceiptTimer: ReturnType<typeof setTimeout> | null = null
@@ -505,11 +517,10 @@ interface AppState {
   initialize(): Promise<void>
   applySettings(serverURL: string, token: string): Promise<void>
   testServerProfile(input: { profileId?: string; serverURL: string; accessToken?: string | null }): Promise<Health>
-  /** Deploys a new remote over SSH through the active hub, then reconciles the hub's registry into profiles. Resolves to the new profile id. */
+  /** Deploys a new remote over SSH through the hub, whichever server is active, then reconciles the hub's registry into profiles. Resolves to the new profile id. */
   deployHubRemoteServer(
     input: { sshHost: string; installDir?: string; name?: string },
     onProgress: (entry: RemoteServerDeployLogEntry) => void,
-    expectedGeneration?: number,
   ): Promise<string>
   cancelHubDeploy(): Promise<void>
   /**
@@ -779,28 +790,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     return probeServerHealth(input.serverURL, token)
   },
 
-  async deployHubRemoteServer(input, onProgress, expectedGeneration) {
-    const scope = validatedConnectionOrReport(get, set, expectedGeneration)
-    if (!scope) throw new StaleActionScopeError()
+  async deployHubRemoteServer(input, onProgress) {
+    const hub = hubProfile(get())
+    if (!hub) throw new Error('Remote servers are added through the hub; connect to it once first.')
     if (hubDeployInFlight) throw new Error('A remote server deployment is already running.')
-    const started = await scope.client.startRemoteDeploy({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name })
-    const state = { scope, jobId: started.job_id, cancelled: false }
-    hubDeployInFlight = state
+    const hubURL = normalizeServerURL(hub.serverURL)
+    // The hub profile's own token: a changed hub token is not copied into existing remote profiles.
+    const client = new AgentServerClient(hubURL, await loadProfileToken(hub.id, hub.credentialVersion))
     try {
-      const job = await followHubJob(scope.client, state.jobId, onProgress, () => {
-        if (!connectionIsCurrent(scope)) throw new StaleActionScopeError()
-      })
+      const started = await client.startRemoteDeploy({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name })
+      const state = { client, jobId: started.job_id, cancelled: false }
+      hubDeployInFlight = state
+      const job = await followHubJob(client, state.jobId, onProgress, () => undefined)
       if (state.cancelled) throw new Error('The deployment was cancelled.')
       if (job.error) throw new Error(job.error)
       if (!job.server) throw new Error('The deployment finished without reporting the new server.')
-      if (!connectionIsCurrent(scope)) throw new StaleActionScopeError()
-      await reconcileHubRemoteServers(scope, set, get)
-      const remoteURL = normalizeServerURL(get().serverURL + job.server.proxy_path)
+      await reconcileHubRegistry({ profileId: hub.id, serverURL: hubURL, client }, () => true, set, get)
+      const remoteURL = normalizeServerURL(hubURL + job.server.proxy_path)
       const profile = get().profiles.find(candidate => normalizeServerURL(candidate.serverURL) === remoteURL)
       if (!profile) throw new Error(`The deployment finished, but ${job.server.name} did not appear in the hub's server list.`)
       return profile.id
     } finally {
-      if (hubDeployInFlight === state) hubDeployInFlight = null
+      if (hubDeployInFlight?.client === client) hubDeployInFlight = null
+      client.dispose()
     }
   },
 
@@ -851,7 +863,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = hubDeployInFlight
     if (!state) return
     state.cancelled = true
-    await state.scope.client.cancelRemoteDeploy(state.jobId).catch(() => undefined)
+    await state.client.cancelRemoteDeploy(state.jobId).catch(() => undefined)
   },
 
   async updateServerProfile(profileId, patch) {
@@ -3917,28 +3929,43 @@ let hubRemoteRemovals = 0
  * active profile is the hub itself; a proxied remote also advertises the
  * capability, so the decision is made on URL shape.
  */
-async function reconcileHubRemoteServers(
+/** Mirrors the hub registry while the hub itself is the active server. */
+function reconcileHubRemoteServers(
   scope: ConnectionScope,
   set: (value: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
   get: () => AppState,
-): Promise<void> {
+): Promise<void> | undefined {
   if (!get().health?.capabilities?.remote_servers_v1?.available || hubProxyRemoteId(get().serverURL) !== null) return
+  return reconcileHubRegistry(
+    { profileId: scope.profileId, serverURL: get().serverURL, client: scope.client },
+    () => connectionIsCurrent(scope) && get().activeProfileId === scope.profileId,
+    set,
+    get,
+  )
+}
+
+async function reconcileHubRegistry(
+  hubScope: { profileId: string; serverURL: string; client: AgentServerClient },
+  isCurrent: () => boolean,
+  set: (value: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
+  get: () => AppState,
+): Promise<void> {
   const removals = hubRemoteRemovals
   let remotes: RemoteServer[]
   try {
-    remotes = (await scope.client.remoteServers()).servers
+    remotes = (await hubScope.client.remoteServers()).servers
   } catch (error) {
-    if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) })
+    if (isCurrent() && !(error instanceof AgentServerClientDisposedError || error instanceof AgentServerClientUnvalidatedError)) set({ error: errorMessage(error) })
     return
   }
   try {
     await withProfileMutation(async () => {
       // A list fetched before a remote was removed would recreate it; the next refresh reconciles.
-      if (!connectionIsCurrent(scope) || get().activeProfileId !== scope.profileId || removals !== hubRemoteRemovals) return
+      if (!isCurrent() || removals !== hubRemoteRemovals) return
       const stored = storedProfiles(get().profiles)
-      const { create, removeIds } = reconcileHubProfiles(stored, get().serverURL, remotes)
+      const { create, removeIds } = reconcileHubProfiles(stored, hubScope.serverURL, remotes)
       if (!create.length && !removeIds.length) return
-      const hub = stored.find(profile => profile.id === scope.profileId)
+      const hub = stored.find(profile => profile.id === hubScope.profileId)
       const hubToken = hub ? await loadProfileToken(hub.id, hub.credentialVersion) : ''
       // No health probe and no identity: a remote whose tunnel is down must
       // still get its profile; acceptHealthIdentity pins it on the first switch.
@@ -3948,7 +3975,7 @@ async function reconcileHubRemoteServers(
       try {
         await saveProfileSettings({
           schemaVersion: 2,
-          activeProfileId: scope.profileId,
+          activeProfileId: get().activeProfileId ?? hubScope.profileId,
           profiles: [...stored.filter(profile => !removed.has(profile.id)), ...created],
           fontScale: get().fontScale,
           appearance: get().appearance,
@@ -3968,7 +3995,7 @@ async function reconcileHubRemoteServers(
       }
     })
   } catch (error) {
-    if (connectionIsCurrent(scope)) set({ error: errorMessage(error) })
+    if (isCurrent()) set({ error: errorMessage(error) })
   }
 }
 

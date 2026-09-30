@@ -2,9 +2,10 @@
 
 ## 2026-09-30 — Add a server from any server
 
-- Add server in the server list works whichever server is active; it no
-  longer asks to switch to the local server first. The local server still
-  keeps the connection to every remote, so without one Add server stays off.
+- Add server (desktop) and Deploy over SSH (mobile) work whichever server is
+  active; they no longer ask to switch to the local server first. The local
+  server still keeps the connection to every remote, so without one the
+  button stays off.
 
 ## 2026-09-30 — Deploying to an OSMO workflow no longer reports a false timeout
 

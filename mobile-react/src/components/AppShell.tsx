@@ -12,9 +12,9 @@ import { dismissAppKeyboard, useAppKeyboardLifecycle } from '../lib/app-keyboard
 import { chatWorkspaceLayout, sidebarWidth } from '../lib/chat-layout'
 import { isServerSetupRequired, shouldPresentServerSetup } from '../lib/first-launch'
 import { fullscreenModalTopPadding } from '../lib/fullscreen-modal-layout'
-import { hubProxyRemoteId, profileNamespace } from '../lib/server-profiles'
+import { profileNamespace } from '../lib/server-profiles'
 import { readSidebarCollapsed, writeSidebarCollapsed } from '../lib/sidebar-preference'
-import { useAppStore } from '../store/useAppStore'
+import { hubProfile, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { ChatScreen } from './ChatScreen'
 import { ClaudeMcpDialog } from './ClaudeMcpDialog'
@@ -83,8 +83,8 @@ function AppShellContent() {
   const removeServerProfile = useAppStore(state => state.removeServerProfile)
   const reorderServerProfiles = useAppStore(state => state.reorderServerProfiles)
   const switchServerProfile = useAppStore(state => state.switchServerProfile)
-  const health = useAppStore(state => state.health)
   const deployHubRemoteServer = useAppStore(state => state.deployHubRemoteServer)
+  const hubAvailable = useAppStore(state => Boolean(hubProfile(state)))
   const cancelHubDeploy = useAppStore(state => state.cancelHubDeploy)
   const redeployHubRemote = useAppStore(state => state.redeployHubRemote)
   const updateServerCli = useAppStore(state => state.updateServerCli)
@@ -430,8 +430,8 @@ function AppShellContent() {
       })}
       onReorderProfiles={reorderServerProfiles}
       onRemoveProfile={removeServerProfile}
-      hubAvailable={Boolean(health?.capabilities?.remote_servers_v1?.available) && !hubProxyRemoteId(serverURL)}
-      onDeployRemote={(input, onProgress) => deployHubRemoteServer(input, onProgress, profileGeneration)}
+      hubAvailable={hubAvailable}
+      onDeployRemote={deployHubRemoteServer}
       onCancelDeploy={cancelHubDeploy}
       onRedeployRemote={redeployHubRemote}
       onUpdateCli={updateServerCli}

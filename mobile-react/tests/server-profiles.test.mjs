@@ -69,18 +69,18 @@ test('row actions open an Alert (MenuView does not open inside a Modal on Androi
   assert.match(source, /Platform\.OS === 'ios' \? \[\.\.\.rowActions, \{ text: 'Cancel', style: 'cancel' as const \}\] : rowActions/)
 })
 
-test('remotes are reconciled from the hub registry; deploy only appears while the hub itself is active; the remote\'s own token is never exposed', () => {
-  // AppShell gates the surface on the capability AND on the active URL being the
-  // hub itself: a proxied remote also advertises remote_servers_v1.
-  assert.match(appShell, /hubAvailable=\{Boolean\(health\?\.capabilities\?\.remote_servers_v1\?\.available\) && !hubProxyRemoteId\(serverURL\)\}/)
-  assert.match(appShell, /onDeployRemote=\{\(input, onProgress\) => deployHubRemoteServer\(input, onProgress, profileGeneration\)\}/)
+test('remotes are reconciled from the hub registry; deploy works from any server through the hub; the remote\'s own token is never exposed', () => {
+  // The hub is the base of the proxied profiles, or the active server while it is a hub with none yet.
+  assert.match(appShell, /const hubAvailable = useAppStore\(state => Boolean\(hubProfile\(state\)\)\)/)
+  assert.match(appShell, /hubAvailable=\{hubAvailable\}/)
+  assert.match(appShell, /onDeployRemote=\{deployHubRemoteServer\}/)
   assert.match(appShell, /onCancelDeploy=\{cancelHubDeploy\}/)
   // The rendered button is gated on the same prop, not a store read of its own.
   assert.match(source, /\{hubAvailable \? <SecondaryButton icon=\{UploadCloud\} label="Deploy over SSH"/)
   // The store mirrors the hub registry right after a successful connect and
   // again when a deploy job finishes, instead of a manual import/add flow.
   assert.match(store, /requestNotificationPermissionOnce\(\)\s*void reconcileHubRemoteServers\(scope, set, get\)/)
-  assert.match(store, /await followHubJob\(scope\.client[\s\S]*?await reconcileHubRemoteServers\(scope, set, get\)/)
+  assert.match(store, /await followHubJob\(client[\s\S]*?await reconcileHubRegistry\(\{ profileId: hub\.id, serverURL: hubURL, client \}, \(\) => true, set, get\)/)
   // Redeploy and Update CLI work from the list whichever server is active; only hub remotes can be redeployed.
   assert.match(appShell, /onRedeployRemote=\{redeployHubRemote\}/)
   assert.match(appShell, /onUpdateCli=\{updateServerCli\}/)
