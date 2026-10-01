@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-10-02 — Attaching a photo on Android over a slow connection no longer fails
+
+- Attaching a photo on Android over a slow connection showed "Upload failed"
+  although the server had received and stored it: the app gave up after the
+  30 seconds it allows an ordinary request, so the message went out without
+  the attachment and "Tap to retry" stored a second copy. Uploads now get the
+  same allowance as on the desktop, at least five minutes and longer for big
+  files. While a large upload is in flight the chat header may show "Retrying"
+  for its live connection; it returns to "Live" on its own once the upload
+  finishes.
+
 ## 2026-10-02 — Editing a turn after a scheduled job's run no longer fails
 
 - In a chat with a scheduled job, editing a message sent after one of the

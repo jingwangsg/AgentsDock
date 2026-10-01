@@ -83,6 +83,7 @@ import type {
 import { normalizeServerURL } from '../lib/format'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../lib/provider-usage'
 import { createUploadFormData } from '../lib/upload-form'
+import { uploadRequestTimeoutMs } from '../lib/uploads'
 import { parseSyncedSideChat, type SyncedSideChat } from '../lib/side-chat'
 import type { BackgroundActivityItem } from '../lib/background-activity'
 import { teamNetworkRequestPath } from '../lib/team-network'
@@ -923,7 +924,7 @@ export class AgentServerClient {
   async upload(sessionId: string, file: UploadRef): Promise<AgentFile> {
     this.assertValidated()
     const form = createUploadFormData(file)
-    return (await this.request<{ file: AgentFile }>(`/api/sessions/${encodeURIComponent(sessionId)}/files`, { method: 'POST', body: form })).file
+    return (await this.request<{ file: AgentFile }>(`/api/sessions/${encodeURIComponent(sessionId)}/files`, { method: 'POST', body: form }, uploadRequestTimeoutMs(file.size))).file
   }
 
   processes(sessionId: string): Promise<ProcessSnapshot> { return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/processes`) }
