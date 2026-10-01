@@ -73198,6 +73198,8 @@ async def run_codex_app_server(
             "backend": BACKEND_CODEX,
             "transport": CODEX_TRANSPORT_APP_SERVER,
             "provider_thread_id": provider_id or None,
+            # A continuation that fails before its first goal turn has no id; the row still
+            # names the answer turn, which rewind reads.
             "provider_turn_id": (
                 (goal_continuation_result or {}).get("turn_id")
                 or (turn.turn_id if turn is not None else None)
@@ -92460,12 +92462,12 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
             codex_thread_id = str(sess.get("codex_thread_id") or sess.get("session_id") or "")
             lineage = codex_thread_lineage(sess)
             terminal = next((event for event in reversed(prefix) if is_completed_fork_terminal(event)), None)
-            # A Codex turn stamps its native turn id on its terminal row once turn/start succeeded,
-            # whatever the outcome; replayed history is in the thread already; a completed row
-            # without an id came from the exec transport, which wrote the thread too; a turn/start
-            # whose answer was lost may have run.
             removed_terminals = {str(event.get("run_id") or ""): event for event in removed if event.get("type") == "turn_finished"}
             delivery_unknown = {str(event.get("run_id") or "") for event in removed if event.get("type") == "error" and event.get("delivery_unknown")}
+            # Reached the thread unless its terminal row proves otherwise: no row (cut off by a
+            # crash; startup closes it with turn_stopped), a lost turn/start answer, a replayed
+            # turn, a native turn id (stamped once turn/start succeeded, whatever the outcome), or
+            # an exec-transport completion, which wrote the thread without an id.
             def reached_codex(run_id: str) -> bool:
                 row = removed_terminals.get(run_id)
                 return (row is None or run_id in delivery_unknown or row.get("imported") is True
