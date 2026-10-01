@@ -37,7 +37,7 @@ def load_native_glue():
     manual = next(node for node in job_store.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "request_manual_run")
     namespace.update(native_models())
     namespace.update(asyncio=asyncio, time=time, json=json, hashlib=hashlib, Response=Response,
-        shared_events=shared_events, shared_native_value=shared_native_value, shared_session=shared_session,
+        scan_transcript=asyncio.to_thread, shared_events=shared_events, shared_native_value=shared_native_value, shared_session=shared_session,
         ChatControlError=ChatControlError, InteractiveChatControls=InteractiveChatControls)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[*nodes, manual], type_ignores=[])), "<isolated-native-chat-adapters>", "exec"), namespace)
     return namespace

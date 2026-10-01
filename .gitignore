@@ -36,3 +36,6 @@ tmp/
 
 # corepack shims some build step drops in the repo root (creator not identified, 2026-09-27)
 .corepack-bin/
+
+# git worktrees created under the repo root
+.worktrees/

@@ -1,5 +1,32 @@
 # Public development log
 
+## 2026-10-01 — Opening a large chat no longer slows the other chats
+
+- Several server reads walked a chat's whole event log to answer: the subagent
+  list the desktop fetches on every chat open, the newest-events pages older
+  clients open with, trace detail reads, and internal tail reads for terminal
+  targets and handoff digests. On a 36 MB chat with 28,000 events each read
+  took 90 to 170 ms, and ten of them at once held the event loop for up to
+  1.8 s, which delayed every other chat's tool calls and event delivery.
+- The subagent list and the newest-events page totals now resume from where
+  the previous read stopped and re-read only what was appended since, forward
+  reads start at the sparse index checkpoint below `after` and stop at
+  `before`, and tail reads walk the file backwards. On the same chat, over
+  HTTP: subagents 177 ms to 2 ms, newest-events page 174 ms to 2 ms, trace
+  detail 108 ms to 4 ms. Responses are identical to before. The first read of
+  a chat after a server start still walks the whole log once.
+- Whole-transcript scans started by HTTP handlers now run on their own small
+  thread pool instead of the shared one. Under the GIL it has one worker: a
+  second scan running at the same time did not finish sooner and delayed
+  everything else the server was doing. With twenty concurrent opens of the
+  36 MB chat, health answered in 30 to 40 ms instead of 3.5 s. On a
+  free-threaded Python build the pool has up to four workers and the scans
+  run in parallel on separate cores; ten concurrent opens of that chat's
+  semantic page then finish in 80 to 113 ms with health at 5 to 35 ms.
+- Unchanged: the semantic page the desktop and mobile apps open with still
+  reads every event of the turns it shows (96 ms for the newest 48 turns of
+  that chat), because the rows it returns are chosen after seeing them all.
+
 ## 2026-10-01 — "Kill Codex writers" ends whatever holds the thread, on Android too
 
 - When a Codex chat reports that another process holds its thread, the

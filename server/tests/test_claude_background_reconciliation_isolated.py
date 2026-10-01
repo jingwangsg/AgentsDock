@@ -5,9 +5,11 @@ import ast
 import asyncio
 from collections import OrderedDict
 import json
+import os
 from pathlib import Path
 import re
 import tempfile
+import threading
 from types import MappingProxyType, SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock
@@ -24,13 +26,17 @@ def task(task_id="unfinished", status="running", owner="run-old"):
 def load_helpers(path=None):
     source = (Path(__file__).resolve().parents[1] / "agent_server.py")
     names = {"persist_claude_background_task_receipts", "acknowledge_claude_background_reconciliation",
-             "build_claude_subagent_snapshot", "normalize_subagent_status", "compact_subagent_text",
+             "build_claude_subagent_snapshot", "_build_claude_subagent_snapshot_locked",
+             "transcript_fingerprint", "transcript_offset_is_current",
+             "normalize_subagent_status", "compact_subagent_text",
              "claude_subagent_child_activity", "claude_subagent_progress_activity"}
     selected = [node for node in ast.parse(source.read_text()).body
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
     assert {node.name for node in selected} == names
     namespace = {
-        "asyncio": asyncio, "uuid": uuid, "json": json, "re": re, "OrderedDict": OrderedDict,
+        "asyncio": asyncio, "uuid": uuid, "json": json, "os": os, "re": re, "OrderedDict": OrderedDict,
+        "threading": threading, "CLAUDE_SUBAGENT_FOLD_CACHE": OrderedDict(),
+        "CLAUDE_SUBAGENT_FOLD_LOCKS": {}, "CLAUDE_SUBAGENT_FOLD_CACHE_MAX": 128,
         "BACKEND_CLAUDE": "claude", "SUBAGENT_SNAPSHOT_STATE_LIMIT": 256,
         "SUBAGENT_SNAPSHOT_LOG_LIMIT": 80, "SUBAGENT_SNAPSHOT_TEXT_LIMIT": 600,
         "CLAUDE_BACKGROUND_RECONCILED_EVENT": receipts.RECONCILED_EVENT,

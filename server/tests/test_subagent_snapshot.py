@@ -15,9 +15,11 @@ class ClaudeSubagentSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.previous_state_dir = agent_server.STATE_DIR
         agent_server.STATE_DIR = Path(self.temporary.name)
+        agent_server.CLAUDE_SUBAGENT_FOLD_CACHE.clear()
         self.session_id = "claude-chat"
 
     def tearDown(self) -> None:
+        agent_server.CLAUDE_SUBAGENT_FOLD_CACHE.clear()
         agent_server.STATE_DIR = self.previous_state_dir
         self.temporary.cleanup()
 
@@ -447,11 +449,11 @@ class ClaudeSubagentSnapshotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_endpoint_offloads_snapshot_and_rejects_unknown_sessions(self) -> None:
         self.write_events([])
-        original_to_thread = asyncio.to_thread
-        offload = AsyncMock(side_effect=original_to_thread)
+        original_offload = agent_server.scan_transcript
+        offload = AsyncMock(side_effect=original_offload)
         with patch.dict(agent_server.STORE.sessions, {self.session_id: {"id": self.session_id}}, clear=True), patch.object(
-            agent_server.asyncio,
-            "to_thread",
+            agent_server,
+            "scan_transcript",
             new=offload,
         ):
             response = await agent_server.get_session_subagents(self.session_id, limit=12)

@@ -2620,11 +2620,11 @@ class CompactTimelinePagingTests(unittest.IsolatedAsyncioTestCase):
             "created_at": "2026-07-19T00:00:00Z",
             "updated_at": "2026-07-19T00:00:00Z",
         }
-        original_to_thread = asyncio.to_thread
-        offload = AsyncMock(side_effect=original_to_thread)
+        original_offload = agent_server.scan_transcript
+        offload = AsyncMock(side_effect=original_offload)
         with patch.dict(agent_server.STORE.sessions, {self.session_id: session}, clear=True), patch.object(
-            agent_server.asyncio,
-            "to_thread",
+            agent_server,
+            "scan_transcript",
             new=offload,
         ):
             default_response = await agent_server.get_session(

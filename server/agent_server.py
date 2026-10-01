@@ -31,6 +31,8 @@ import logging
 import logging.handlers
 import math
 import mmap
+import contextvars
+import functools
 import os
 import pwd
 import pty
@@ -5634,6 +5636,12 @@ TIMELINE_INDEX_LOCK_STRIPES = tuple(threading.Lock() for _ in range(64))
 FORK_INTERNAL_RUN_CACHE_MAX = int(agentsdock_setting("FORK_INTERNAL_RUN_CACHE_MAX", "128"))
 FORK_INTERNAL_RUN_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 FORK_INTERNAL_RUN_LOCKS: dict[str, threading.Lock] = {}
+CLAUDE_SUBAGENT_FOLD_CACHE_MAX = 128
+CLAUDE_SUBAGENT_FOLD_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
+CLAUDE_SUBAGENT_FOLD_LOCKS: dict[str, threading.Lock] = {}
+VISIBLE_COUNT_CACHE_MAX = 128
+VISIBLE_COUNT_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
+VISIBLE_COUNT_LOCKS: dict[str, threading.Lock] = {}
 HISTORY_SEARCH_DB = STATE_DIR / "history_search.sqlite3"
 HISTORY_SEARCH_LOCK = threading.Lock()
 HISTORY_SEARCH_INDEX_VERSION = "8"
@@ -6065,6 +6073,20 @@ def event_delivery_lock(session_id: str) -> asyncio.Lock:
     return EVENT_DELIVERY_LOCKS.setdefault(session_id, asyncio.Lock())
 
 
+# Transcript scans are CPU-bound Python. Under the GIL a second concurrent scan
+# adds no throughput and only adds event-loop lag, so they get one worker; on a
+# free-threaded build they run in parallel on a few cores. Their own pool also
+# keeps a burst of scans from crowding out the default executor's other work.
+TRANSCRIPT_SCAN_WORKERS = 1 if getattr(sys, "_is_gil_enabled", lambda: True)() else min(4, os.cpu_count() or 1)
+TRANSCRIPT_SCAN_EXECUTOR = ThreadPoolExecutor(TRANSCRIPT_SCAN_WORKERS, thread_name_prefix="transcript-scan")
+
+
+async def scan_transcript(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    # asyncio.to_thread's contract (context propagated), on the scan pool.
+    call = functools.partial(contextvars.copy_context().run, fn, *args, **kwargs)
+    return await asyncio.get_running_loop().run_in_executor(TRANSCRIPT_SCAN_EXECUTOR, call)
+
+
 def artifact_publication_lock(
     session_id: str,
     publication_id: str,
@@ -6129,6 +6151,10 @@ async def forget_event_seq(
         raise cancellation
     FORK_INTERNAL_RUN_CACHE.pop(session_id, None)
     FORK_INTERNAL_RUN_LOCKS.pop(session_id, None)
+    CLAUDE_SUBAGENT_FOLD_CACHE.pop(session_id, None)
+    CLAUDE_SUBAGENT_FOLD_LOCKS.pop(session_id, None)
+    VISIBLE_COUNT_CACHE.pop(session_id, None)
+    VISIBLE_COUNT_LOCKS.pop(session_id, None)
 
 
 def token_matches(candidate: str | None) -> bool:
@@ -30727,6 +30753,90 @@ def is_fork_internal_event(event: dict[str, Any], internal_run_ids: set[str] | N
     return bool(run_id and internal_run_ids and run_id in internal_run_ids)
 
 
+def transcript_fingerprint(source: BinaryIO, offset: int) -> dict[str, Any]:
+    """Identify what was read up to ``offset``: the file's inode and its last 256 bytes."""
+    source.seek(max(0, offset - 256))
+    return {"inode": os.fstat(source.fileno()).st_ino, "fingerprint": source.read(offset - max(0, offset - 256))}
+
+
+def transcript_offset_is_current(source: BinaryIO, cached: dict[str, Any]) -> bool:
+    """True when ``cached`` was read from this file (inode) and the bytes up to its offset are unchanged.
+
+    A rolled-back batch keeps the inode but truncates and rewrites the tail.
+    """
+    stat = os.fstat(source.fileno())
+    if cached["inode"] != stat.st_ino or cached["offset"] > stat.st_size:
+        return False
+    source.seek(cached["offset"] - len(cached["fingerprint"]))
+    return source.read(len(cached["fingerprint"])) == cached["fingerprint"]
+
+
+def visible_event_counts(session_id: str, source: BinaryIO, internal_run_ids: set[str]) -> dict[str, Any]:
+    """Count a transcript's client-visible rows and find its latest seq, re-reading only what was appended.
+
+    ``client`` counts rows every client may see; ``timeline`` and ``compact``
+    the subsets the two timeline views show. A new fork-internal run can hide
+    rows already counted, so the count restarts when that set changes. The
+    provider-history projections applied by ``client_safe_event`` never change
+    a row's type, run or fork fields in a way that alters its visibility, so
+    the count does not depend on them.
+    """
+    with VISIBLE_COUNT_LOCKS.setdefault(session_id, threading.Lock()):
+        hidden_by = frozenset(internal_run_ids)
+        cached = VISIBLE_COUNT_CACHE.get(session_id)
+        if cached is None or cached["hidden_by"] != hidden_by or not transcript_offset_is_current(source, cached):
+            cached = {"offset": 0, "latest_seq": 0, "client": 0, "timeline": 0, "compact": 0}
+        offset, latest_seq = cached["offset"], cached["latest_seq"]
+        client, timeline, compact = cached["client"], cached["timeline"], cached["compact"]
+        source.seek(offset)
+        for raw_line in source:
+            line = raw_line.decode("utf-8", "ignore")
+            try:
+                event = json.loads(line) if line.strip() else None
+            except Exception:
+                if not raw_line.endswith(b"\n"):
+                    # A row still being written; count it once it is complete.
+                    break
+                event = None
+            offset += len(raw_line)
+            if event is None:
+                continue
+            seq = int(event.get("seq", 0))
+            if seq > 0:
+                latest_seq = seq
+            if not event_files_belong_to_session(event, session_id) or not is_client_visible_event(event):
+                continue
+            client += 1
+            event = client_safe_event(event)
+            timeline += is_visible_timeline_event(event, fork_internal_run_ids=internal_run_ids)
+            compact += is_visible_timeline_event(event, compact=True, fork_internal_run_ids=internal_run_ids)
+        counts = {
+            **transcript_fingerprint(source, offset), "offset": offset, "hidden_by": hidden_by,
+            "latest_seq": latest_seq, "client": client, "timeline": timeline, "compact": compact,
+        }
+        VISIBLE_COUNT_CACHE[session_id] = counts
+        VISIBLE_COUNT_CACHE.move_to_end(session_id)
+        while len(VISIBLE_COUNT_CACHE) > VISIBLE_COUNT_CACHE_MAX:
+            stale_session_id, _ = VISIBLE_COUNT_CACHE.popitem(last=False)
+            VISIBLE_COUNT_LOCKS.pop(stale_session_id, None)
+        return counts
+
+
+def iter_event_lines_reversed(source: BinaryIO, end: int | None = None) -> Iterator[bytes]:
+    """Yield an open transcript's lines newest first, from ``end`` (default: end of file) backwards."""
+    position = source.seek(0, os.SEEK_END) if end is None else end
+    pending = b""
+    while position > 0:
+        size = min(position, 256 * 1024)
+        position -= size
+        source.seek(position)
+        lines = (source.read(size) + pending).split(b"\n")
+        # The chunk's first line may continue in the chunk before it.
+        pending = lines.pop(0)
+        yield from reversed(lines)
+    yield pending
+
+
 def read_events(
     session_id: str,
     after: int = 0,
@@ -30748,9 +30858,16 @@ def read_events(
         limit = min(limit, MAX_EVENT_RESPONSE_LIMIT)
     internal_run_ids = fork_internal_run_ids(session_id) if visible else set()
     out: list[dict[str, Any]] = []
-    tail_out: deque[dict[str, Any]] | None = deque(maxlen=limit) if tail else None
-    with path.open("r", encoding="utf-8", errors="ignore") as source:
-        for line in source:
+    with path.open("rb") as source:
+        # A tail window walks the file backwards and stops once it is full; a
+        # forward window starts at the index checkpoint just below ``after``.
+        if tail:
+            lines: Iterable[bytes] = iter_event_lines_reversed(source)
+        else:
+            source.seek(event_index_resume_offset(path, after))
+            lines = source
+        for raw_line in lines:
+            line = raw_line.decode("utf-8", "ignore")
             if not line.strip():
                 continue
             try:
@@ -30765,13 +30882,10 @@ def read_events(
                     event = client_safe_event(event)
                 if visible and not is_visible_timeline_event(event, fork_internal_run_ids=internal_run_ids):
                     continue
-                if tail_out is not None:
-                    tail_out.append(event)
-                else:
-                    out.append(event)
-            if tail_out is None and len(out) >= limit:
+                out.append(event)
+            if len(out) >= limit:
                 break
-    return list(tail_out) if tail_out is not None else out
+    return out[::-1] if tail else out
 
 
 def read_client_events_page(
@@ -30787,12 +30901,36 @@ def read_client_events_page(
     if not path.exists():
         return [], 0, 0, 0, 0
     limit = max(1, min(int(limit or 500), MAX_EVENT_RESPONSE_LIMIT))
+    if tail and after <= 0 and before is None:
+        # The newest page: walk back from the end for the rows, and take the
+        # totals from the incrementally maintained count.
+        selected: deque[dict[str, Any]] = deque()
+        with path.open("rb") as source:
+            counts = visible_event_counts(session_id, source, fork_internal_run_ids(session_id))
+            # Walk back from where the count stopped so the rows and the totals
+            # describe the same bytes even if a row lands in between.
+            for raw_line in iter_event_lines_reversed(source, counts["offset"]):
+                line = raw_line.decode("utf-8", "ignore")
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                except Exception:
+                    continue
+                if not event_files_belong_to_session(event, session_id) or not is_client_visible_event(event):
+                    continue
+                selected.appendleft(client_safe_event(event))
+                if len(selected) >= limit:
+                    break
+        return list(selected), counts["latest_seq"], counts["client"], max(0, counts["client"] - len(selected)), 0
     out: list[dict[str, Any]] = []
     tail_out: deque[dict[str, Any]] | None = deque(maxlen=limit) if tail else None
     latest_seq = 0
     client_count = 0
-    with path.open("r", encoding="utf-8", errors="ignore") as source:
-        for line in source:
+    with path.open("rb") as source:
+        source.seek(event_index_resume_offset(path, after))
+        for raw_line in source:
+            line = raw_line.decode("utf-8", "ignore")
             if not line.strip():
                 continue
             try:
@@ -30802,7 +30940,12 @@ def read_client_events_page(
             seq = int(event.get("seq", 0))
             if seq > 0:
                 latest_seq = seq
-            if seq <= after or (before is not None and seq >= before):
+            if before is not None and seq >= before:
+                # Nothing from here on is returned or counted; only latest_seq
+                # still depends on the rest of the file.
+                latest_seq = last_event_seq_from_file(path)
+                break
+            if seq <= after:
                 continue
             if not event_files_belong_to_session(event, session_id):
                 continue
@@ -31067,13 +31210,37 @@ def read_visible_events_page(
     if not path.exists():
         return [], 0, 0, 0, 0
     limit = max(1, min(int(limit or 500), MAX_EVENT_RESPONSE_LIMIT))
+    internal_run_ids = fork_internal_run_ids(session_id)
+    if tail and after <= 0 and before is None:
+        selected: deque[dict[str, Any]] = deque()
+        with path.open("rb") as source:
+            counts = visible_event_counts(session_id, source, internal_run_ids)
+            for raw_line in iter_event_lines_reversed(source, counts["offset"]):
+                line = raw_line.decode("utf-8", "ignore")
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                except Exception:
+                    continue
+                if not event_files_belong_to_session(event, session_id) or not is_client_visible_event(event):
+                    continue
+                event = client_safe_event(event)
+                if not is_visible_timeline_event(event, compact=compact, fork_internal_run_ids=internal_run_ids):
+                    continue
+                selected.appendleft(event)
+                if len(selected) >= limit:
+                    break
+        total = counts["compact" if compact else "timeline"]
+        return list(selected), counts["latest_seq"], total, max(0, total - len(selected)), 0
     out: list[dict[str, Any]] = []
     tail_out: deque[dict[str, Any]] | None = deque(maxlen=limit) if tail else None
-    internal_run_ids = fork_internal_run_ids(session_id)
     latest_seq = 0
     visible_count = 0
-    with path.open("r", encoding="utf-8", errors="ignore") as source:
-        for line in source:
+    with path.open("rb") as source:
+        source.seek(event_index_resume_offset(path, after))
+        for raw_line in source:
+            line = raw_line.decode("utf-8", "ignore")
             if not line.strip():
                 continue
             try:
@@ -31083,7 +31250,12 @@ def read_visible_events_page(
             seq = int(event.get("seq", 0))
             if seq > 0:
                 latest_seq = seq
-            if seq <= after or (before is not None and seq >= before):
+            if before is not None and seq >= before:
+                # Nothing from here on is returned or counted; only latest_seq
+                # still depends on the rest of the file.
+                latest_seq = last_event_seq_from_file(path)
+                break
+            if seq <= after:
                 continue
             if not event_files_belong_to_session(event, session_id):
                 continue
@@ -32097,11 +32269,25 @@ def build_claude_subagent_snapshot(session_id: str, limit: int = 64) -> dict[str
     tool-result output, commands, output files, and the raw event are never
     copied into the response.
     """
+    with CLAUDE_SUBAGENT_FOLD_LOCKS.setdefault(session_id, threading.Lock()):
+        return _build_claude_subagent_snapshot_locked(session_id, limit)
+
+
+def _build_claude_subagent_snapshot_locked(session_id: str, limit: int) -> dict[str, Any]:
     limit = max(1, min(int(limit or 64), SUBAGENT_SNAPSHOT_STATE_LIMIT))
-    states: OrderedDict[str, dict[str, Any]] = OrderedDict()
-    task_keys: dict[str, str] = {}
-    tool_keys: dict[str, str] = {}
-    latest_seq = 0
+    try:
+        source = events_path(session_id).open("rb")
+    except OSError:
+        source = None
+    # Resume the fold where the last one stopped, re-reading only what was appended.
+    cached = CLAUDE_SUBAGENT_FOLD_CACHE.get(session_id)
+    if cached is None or source is None or not transcript_offset_is_current(source, cached):
+        cached = {"states": OrderedDict(), "task_keys": {}, "tool_keys": {}, "latest_seq": 0, "offset": 0}
+    states: OrderedDict[str, dict[str, Any]] = cached["states"]
+    task_keys: dict[str, str] = cached["task_keys"]
+    tool_keys: dict[str, str] = cached["tool_keys"]
+    latest_seq: int = cached["latest_seq"]
+    offset: int = cached["offset"]
 
     def scoped(run_id: str, provider_id: str) -> str:
         return f"{run_id}\x00{provider_id}"
@@ -32227,15 +32413,20 @@ def build_claude_subagent_snapshot(session_id: str, limit: int = 64) -> dict[str
             state["log"].append({"ts": state["updated_at"], "text": text})
             del state["log"][:-SUBAGENT_SNAPSHOT_LOG_LIMIT]
 
-    path = events_path(session_id)
-    if path.exists():
-        with path.open("r", encoding="utf-8", errors="ignore") as source:
-            for line in source:
-                if not line.strip():
-                    continue
+    if source is not None:
+        with source:
+            source.seek(offset)
+            for raw_line in source:
+                line = raw_line.decode("utf-8", "ignore")
                 try:
-                    event = json.loads(line)
+                    event = json.loads(line) if line.strip() else None
                 except Exception:
+                    if not raw_line.endswith(b"\n"):
+                        # A row still being written; fold it once it is complete.
+                        break
+                    event = None
+                offset += len(raw_line)
+                if event is None:
                     continue
                 seq = int(event.get("seq") or 0)
                 latest_seq = max(latest_seq, seq)
@@ -32468,6 +32659,14 @@ def build_claude_subagent_snapshot(session_id: str, limit: int = 64) -> dict[str
                             continue
                         state["status"] = "stopped"
                         note(state, event, "Stopped with parent chat")
+            CLAUDE_SUBAGENT_FOLD_CACHE[session_id] = {
+                **transcript_fingerprint(source, offset), "offset": offset, "states": states,
+                "task_keys": task_keys, "tool_keys": tool_keys, "latest_seq": latest_seq,
+            }
+        CLAUDE_SUBAGENT_FOLD_CACHE.move_to_end(session_id)
+        while len(CLAUDE_SUBAGENT_FOLD_CACHE) > CLAUDE_SUBAGENT_FOLD_CACHE_MAX:
+            stale_session_id, _ = CLAUDE_SUBAGENT_FOLD_CACHE.popitem(last=False)
+            CLAUDE_SUBAGENT_FOLD_LOCKS.pop(stale_session_id, None)
 
     active_statuses = {"starting", "running"}
     retained = list(states.values())
@@ -84484,7 +84683,7 @@ async def interactive_chat_native_page(session_id: str, **options: Any) -> dict[
         raise HTTPException(404, "Chat is unavailable")
     # Reuse the native semantic index. Unlike get_session(), opening a shared
     # page does not reconcile queues or start provider-history imports.
-    page = await asyncio.to_thread(read_semantic_timeline_page, session_id, **options)
+    page = await scan_transcript(read_semantic_timeline_page, session_id, **options)
     page["events"] = await asyncio.to_thread(shared_chat_attachment_events, page["events"], session_id)
     return {**page, "has_more": bool(page.get("semantic_omitted_before")),
             "next_before": page.get("next_semantic_before"), "semantic_paging": True}
@@ -84673,7 +84872,7 @@ async def control_interactive_chat(session_id: str, action: str, payload: dict[s
                 value = await interactive_chat_native_page(session_id, after=max(0, (payload.get("anchor_seq") or 1) - 1),
                                                           limit=limit, tail=False)
         elif action == "timeline.index":
-            value = await asyncio.to_thread(build_timeline_index, session_id)
+            value = await scan_transcript(build_timeline_index, session_id)
             value = {**value, "landmarks": [row for row in value.get("landmarks", []) if row.get("kind") != "media"]}
         elif action == "timeline.trace":
             value = await asyncio.to_thread(read_indexed_run_trace, session_id, payload.get("run_id") or "",
@@ -87719,7 +87918,7 @@ async def bulk_import_sessions_guarded(
 async def get_timeline_index(session_id: str) -> dict[str, Any]:
     if session_id not in STORE.sessions:
         raise HTTPException(status_code=404, detail="session not found")
-    return await asyncio.to_thread(build_timeline_index, session_id)
+    return await scan_transcript(build_timeline_index, session_id)
 
 
 @app.get("/api/sessions/{session_id}/subagents")
@@ -87740,7 +87939,7 @@ async def get_session_subagents(
                 session_id,
                 concise_error_message(exc),
             )
-    return await asyncio.to_thread(build_subagent_snapshot, session_id, limit)
+    return await scan_transcript(build_subagent_snapshot, session_id, limit)
 
 
 @app.get("/api/sessions/{session_id}/search")
@@ -87941,7 +88140,7 @@ async def export_session(session_id: str, format: Literal["markdown", "html", "j
             return list(events)
         return [event for event in events if is_visible_timeline_event(event, fork_internal_run_ids=internal_run_ids)]
 
-    events = await asyncio.to_thread(client_events)
+    events = await scan_transcript(client_events)
     if format == "jsonl":
         body = "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events)
         return Response(body, media_type="application/x-ndjson", headers=headers)
@@ -88044,11 +88243,11 @@ async def get_session(
     if normalized_page_mode not in {"", "semantic"}:
         raise HTTPException(status_code=400, detail="page_mode must be semantic")
     if normalized_page_mode != "semantic":
-        await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id)
+        await scan_transcript(prepare_provider_history_metadata_repair, session_id)
     page_tail = tail and after <= 0
     semantic_page: dict[str, Any] | None = None
     if normalized_page_mode == "semantic":
-        semantic_page = await asyncio.to_thread(
+        semantic_page = await scan_transcript(
             read_semantic_timeline_page,
             session_id,
             after=after,
@@ -88063,7 +88262,7 @@ async def get_session(
         omitted_after = int(semantic_page["semantic_omitted_after"])
     elif visible or compact:
         if after > 0 and before is None and not page_tail:
-            events, latest_seq, event_count, omitted_before, omitted_after = await asyncio.to_thread(
+            events, latest_seq, event_count, omitted_before, omitted_after = await scan_transcript(
                 read_visible_events_after_page,
                 session_id,
                 after=after,
@@ -88071,7 +88270,7 @@ async def get_session(
                 compact=compact,
             )
         else:
-            events, latest_seq, event_count, omitted_before, omitted_after = await asyncio.to_thread(
+            events, latest_seq, event_count, omitted_before, omitted_after = await scan_transcript(
                 read_visible_events_page,
                 session_id,
                 after=after,
@@ -88081,7 +88280,7 @@ async def get_session(
                 compact=compact,
             )
     else:
-        events, latest_seq, event_count, omitted_before, omitted_after = await asyncio.to_thread(
+        events, latest_seq, event_count, omitted_before, omitted_after = await scan_transcript(
             read_client_events_page,
             session_id,
             after=after,
