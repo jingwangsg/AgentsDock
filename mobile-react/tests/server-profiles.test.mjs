@@ -8,6 +8,7 @@ const appShell = fs.readFileSync(path.resolve('src/components/AppShell.tsx'), 'u
 const dialogs = fs.readFileSync(path.resolve('src/components/Dialogs.tsx'), 'utf8')
 const firstLaunch = fs.readFileSync(path.resolve('src/lib/first-launch.ts'), 'utf8')
 const store = fs.readFileSync(path.resolve('src/store/useAppStore.ts'), 'utf8')
+const client = fs.readFileSync(path.resolve('src/api/AgentServerClient.ts'), 'utf8')
 
 test('first launch adopts a live 127.0.0.1:7850 hub, otherwise presents setup and hands off after dismissal', () => {
   assert.match(store, /if \(isServerSetupRequired\(activeProfile\) && await localHubAlive\(activeProfile\.serverURL\)\) \{/)
@@ -76,7 +77,12 @@ test('remotes are reconciled from the hub registry; deploy works from any server
   assert.match(appShell, /onDeployRemote=\{deployHubRemoteServer\}/)
   assert.match(appShell, /onCancelDeploy=\{cancelHubDeploy\}/)
   // The rendered button is gated on the same prop, not a store read of its own.
-  assert.match(source, /\{hubAvailable \? <SecondaryButton icon=\{UploadCloud\} label="Deploy over SSH"/)
+  assert.match(source, /\{hubAvailable \? <SecondaryButton icon=\{Plus\} label="Add server"/)
+  // Like the desktop, adding either deploys a new server or attaches one another hub deployed; both are hub jobs.
+  assert.match(source, /\[\['deploy', 'Deploy a new server'\], \['attach', 'Attach an existing server'\]\]/)
+  assert.match(source, /setDeployDraft\(\{ mode: 'deploy', sshHost: ''/)
+  assert.match(client, /startRemoteAttach\([\s\S]*?return this\.request\('\/api\/admin\/remote-servers\/attach'/)
+  assert.match(store, /input\.mode === 'attach' \? client\.startRemoteAttach\(request\) : client\.startRemoteDeploy\(request\)/)
   // The store mirrors the hub registry right after a successful connect and
   // again when a deploy job finishes, instead of a manual import/add flow.
   assert.match(store, /requestNotificationPermissionOnce\(\)\s*void reconcileHubRemoteServers\(scope, set, get\)/)
@@ -89,7 +95,7 @@ test('remotes are reconciled from the hub registry; deploy works from any server
   // reconcile would recreate it.
   assert.match(store, /await hub\.removeRemoteServer\(remoteId\)/)
   for (const file of [source, appShell, store]) {
-    assert.doesNotMatch(file, /importHubRemoteServers|onImportFromHub|onCreateProfile|createServerProfile\(|Import from hub|label="Add server"|id: 'add'/)
+    assert.doesNotMatch(file, /importHubRemoteServers|onImportFromHub|onCreateProfile|createServerProfile\(|Import from hub|id: 'add'/)
   }
   // Opening the deploy editor closes the edit draft, so a deploy never reuses
   // it (which would put the hub's address in the deployed field).
@@ -97,6 +103,6 @@ test('remotes are reconciled from the hub registry; deploy works from any server
   // Deploy sends only ssh_host/install_dir/name to the store action; it never
   // constructs a serverUrl or accessToken client-side (the hub's deploy job
   // reports the proxy path, and the reconcile reuses the hub's own token).
-  assert.match(source, /onDeployRemote\(\s*\{ sshHost: deployDraft\.sshHost\.trim\(\), installDir: deployDraft\.installDir\.trim\(\) \|\| undefined, name: deployDraft\.name\.trim\(\) \|\| undefined \}/)
+  assert.match(source, /onDeployRemote\(\s*\{ mode: deployDraft\.mode, sshHost: deployDraft\.sshHost\.trim\(\), installDir: deployDraft\.installDir\.trim\(\) \|\| undefined, name: deployDraft\.name\.trim\(\) \|\| undefined \}/)
   assert.doesNotMatch(source, /deployDraft\.(token|accessToken)/)
 })

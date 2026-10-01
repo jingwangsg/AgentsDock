@@ -12,7 +12,7 @@ import {
 import { MenuView, type MenuAction } from '@expo/ui/community/menu'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist'
-import { Check, ChevronDown, Download, GripVertical, MoreHorizontal, Pencil, RotateCw, Server, UploadCloud, Wifi, X } from 'lucide-react-native'
+import { Check, ChevronDown, Download, GripVertical, MoreHorizontal, Pencil, Plus, RotateCw, Server, UploadCloud, Wifi, X } from 'lucide-react-native'
 import {
   buildUpdateServerProfileInput,
   connectionStateLabel,
@@ -75,7 +75,7 @@ export interface ServerProfilesManagerProps extends CommonServerProfileProps {
   /** True when a saved server is a hub (advertises remote_servers_v1); remote servers are added through it from any server. */
   hubAvailable?: boolean
   onDeployRemote?: (
-    input: { sshHost: string; installDir?: string; name?: string },
+    input: { mode: 'deploy' | 'attach'; sshHost: string; installDir?: string; name?: string },
     onProgress: (entry: RemoteDeployProgressEntry) => void,
   ) => Awaitable<CreatedProfile>
   onCancelDeploy?: () => Awaitable<void>
@@ -202,7 +202,7 @@ export function ServerProfilesManager({
   const [tested, setTested] = useState<ServerConnectionTestResult | null>(null)
   const [feedback, setFeedback] = useState<{ tone: 'error' | 'success' | 'neutral'; message: string } | null>(null)
   const testLease = useRef(0)
-  const [deployDraft, setDeployDraft] = useState<{ sshHost: string; installDir: string; name: string } | null>(null)
+  const [deployDraft, setDeployDraft] = useState<{ mode: 'deploy' | 'attach'; sshHost: string; installDir: string; name: string } | null>(null)
   const [deployBusy, setDeployBusy] = useState(false)
   const [deployProgress, setDeployProgress] = useState<RemoteDeployProgressEntry[]>([])
   const [deployError, setDeployError] = useState<string | null>(null)
@@ -262,7 +262,7 @@ export function ServerProfilesManager({
     setDraft(null)
     setDeployError(null)
     setDeployProgress([])
-    setDeployDraft({ sshHost: '', installDir: '~/.agentsdock-server', name: '' })
+    setDeployDraft({ mode: 'deploy', sshHost: '', installDir: '~/.agentsdock-server', name: '' })
   }
   const closeDeployEditor = () => {
     if (deployBusy) return
@@ -276,12 +276,12 @@ export function ServerProfilesManager({
     setDeployProgress([])
     try {
       const created = await onDeployRemote(
-        { sshHost: deployDraft.sshHost.trim(), installDir: deployDraft.installDir.trim() || undefined, name: deployDraft.name.trim() || undefined },
+        { mode: deployDraft.mode, sshHost: deployDraft.sshHost.trim(), installDir: deployDraft.installDir.trim() || undefined, name: deployDraft.name.trim() || undefined },
         entry => { if (lease === deployLease.current) setDeployProgress(current => [...current.slice(-49), entry]) },
       )
       if (lease !== deployLease.current) return
       const profileId = typeof created === 'string' ? created : created?.id
-      if (!profileId) throw new Error('The remote server was deployed without a profile identifier.')
+      if (!profileId) throw new Error('The remote server was added without a profile identifier.')
       const switched = await onSwitchProfile(profileId)
       if (switched === false) throw new Error('The remote server was saved, but it could not be activated.')
       setDeployDraft(null)
@@ -499,7 +499,7 @@ export function ServerProfilesManager({
         <Text style={[styles.sectionTitle, { color: colors.text }]}>Servers</Text>
         <Text style={[styles.help, { color: colors.muted }]}>Remote servers registered on your hub appear here automatically.</Text>
       </View>
-      {hubAvailable ? <SecondaryButton icon={UploadCloud} label="Deploy over SSH" disabled={Boolean(busy) || deployBusy} onPress={openDeploy} /> : null}
+      {hubAvailable ? <SecondaryButton icon={Plus} label="Add server" disabled={Boolean(busy) || deployBusy} onPress={openDeploy} /> : null}
     </View>
 
     <View style={[styles.profileList, { borderColor: colors.border }]}>
@@ -642,11 +642,25 @@ export function ServerProfilesManager({
     {deployDraft ? <View testID="remote-deploy-editor" style={[styles.editor, { backgroundColor: colors.raised, borderColor: colors.border }]}>
       <View style={styles.editorHeader}>
         <View style={styles.editorHeaderCopy}>
-          <Text style={[styles.editorTitle, { color: colors.text }]}>Deploy over SSH</Text>
-          <Text style={[styles.help, { color: colors.muted }]}>The active server installs and proxies this one; only the hub's own token ever reaches this device.</Text>
+          <Text style={[styles.editorTitle, { color: colors.text }]}>Add server</Text>
+          <Text style={[styles.help, { color: colors.muted }]}>The active server reaches this one over SSH and proxies it; only the hub's own token ever reaches this device.</Text>
         </View>
-        <IconButton icon={X} disabled={deployBusy} onPress={closeDeployEditor} label="Close deploy editor" />
+        <IconButton icon={X} disabled={deployBusy} onPress={closeDeployEditor} label="Close add server editor" />
       </View>
+
+      <View style={[styles.segmented, { borderColor: colors.border }]} accessibilityRole="radiogroup" accessibilityLabel="How to add">
+        {([['deploy', 'Deploy a new server'], ['attach', 'Attach an existing server']] as const).map(([mode, label]) => <Pressable
+          key={mode}
+          testID={`remote-add-mode-${mode}`}
+          accessibilityRole="radio"
+          accessibilityLabel={label}
+          accessibilityState={{ selected: deployDraft.mode === mode, disabled: deployBusy }}
+          disabled={deployBusy}
+          onPress={() => setDeployDraft(current => current ? { ...current, mode } : current)}
+          style={[styles.segment, deployDraft.mode === mode && { backgroundColor: colors.selected }]}
+        ><Text style={[styles.segmentLabel, { color: deployDraft.mode === mode ? colors.text : colors.muted }]}>{label}</Text></Pressable>)}
+      </View>
+      {deployDraft.mode === 'attach' ? <Text style={[styles.help, { color: colors.muted }]}>Registers the AgentsServer another computer already deployed in this directory. Nothing is uploaded and the server is not restarted.</Text> : null}
 
       <FieldLabel text="SSH host" />
       <TextInput
@@ -701,7 +715,7 @@ export function ServerProfilesManager({
       <View style={styles.editorActions}>
         <SecondaryButton label="Cancel" disabled={deployBusy && !onCancelDeploy} onPress={() => { if (deployBusy) void cancelDeploy(); else closeDeployEditor() }} />
         <PrimaryButton
-          label={deployBusy ? 'Deploying…' : 'Deploy & switch'}
+          label={deployDraft.mode === 'attach' ? (deployBusy ? 'Attaching…' : 'Attach & switch') : (deployBusy ? 'Deploying…' : 'Deploy & switch')}
           disabled={deployBusy || !deployDraft.sshHost.trim()}
           busy={deployBusy}
           onPress={() => { void runDeploy() }}
@@ -885,6 +899,9 @@ const styles = StyleSheet.create({
   identityWarning: { borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 2 },
   testResult: { minHeight: 42, borderRadius: 6, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 8 },
   editorActions: { paddingTop: 3, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: 7 },
+  segmented: { flexDirection: 'row', borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, overflow: 'hidden' },
+  segment: { flex: 1, minHeight: 44, paddingHorizontal: 12, justifyContent: 'center', alignItems: 'center' },
+  segmentLabel: { fontSize: 12, fontWeight: '700' },
   actionSpacer: { flex: 1, minWidth: 8 },
   primaryButton: { minHeight: 44, borderRadius: 6, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   primaryButtonText: { fontSize: 12, fontWeight: '800' },

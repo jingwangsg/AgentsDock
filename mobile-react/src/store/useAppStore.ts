@@ -521,9 +521,12 @@ interface AppState {
   initialize(): Promise<void>
   applySettings(serverURL: string, token: string): Promise<void>
   testServerProfile(input: { profileId?: string; serverURL: string; accessToken?: string | null }): Promise<Health>
-  /** Deploys a new remote over SSH through the hub, whichever server is active, then reconciles the hub's registry into profiles. Resolves to the new profile id. */
+  /**
+   * Deploys a new remote over SSH through the hub, or attaches an install another hub already deployed there,
+   * whichever server is active, then reconciles the hub's registry into profiles. Resolves to the new profile id.
+   */
   deployHubRemoteServer(
-    input: { sshHost: string; installDir?: string; name?: string },
+    input: { mode: 'deploy' | 'attach'; sshHost: string; installDir?: string; name?: string },
     onProgress: (entry: RemoteServerDeployLogEntry) => void,
   ): Promise<string>
   cancelHubDeploy(): Promise<void>
@@ -805,7 +808,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     // The hub profile's own token: a changed hub token is not copied into existing remote profiles.
     const client = new AgentServerClient(hubURL, await loadProfileToken(hub.id, hub.credentialVersion))
     try {
-      const started = await client.startRemoteDeploy({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name })
+      const request = { ssh_host: input.sshHost, install_dir: input.installDir, name: input.name }
+      const started = await (input.mode === 'attach' ? client.startRemoteAttach(request) : client.startRemoteDeploy(request))
       const state = { client, jobId: started.job_id, cancelled: false }
       hubDeployInFlight = state
       const job = await followHubJob(client, state.jobId, onProgress)

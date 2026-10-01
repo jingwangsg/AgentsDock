@@ -300,6 +300,11 @@ export class AgentServerClient {
       method: 'POST', body: JSON.stringify(input),
     }, 30_000, false, 'native-control')
   }
+  startRemoteAttach(input: { ssh_host: string; install_dir?: string; name?: string }): Promise<{ job_id: string }> {
+    return this.request('/api/admin/remote-servers/attach', {
+      method: 'POST', body: JSON.stringify(input),
+    }, 30_000, false, 'native-control')
+  }
   remoteDeployStatus(jobId: string): Promise<RemoteServerDeployJob> {
     return this.request(`/api/admin/remote-servers/deploy/${encodeURIComponent(jobId)}`, {}, 30_000, false, 'native-control')
   }
