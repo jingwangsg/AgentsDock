@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-10-02 — Editing a turn after a scheduled job's run no longer fails
+
+- In a chat with a scheduled job, editing a message sent after one of the
+  job's runs was refused with "The last completed Codex turn before that
+  point has no verifiable native snapshot" (Claude: "belongs to a different
+  provider session"). The job's runs complete on their own provider thread,
+  and the edit took the latest of them as the point to rewind the chat's
+  thread to. Those runs are now skipped: the chat rewinds to its own last
+  completed turn before the edit, and removing only a job's runs leaves the
+  thread as it is. Forking a chat while it is running skips them the same way.
+
 ## 2026-10-01 — Opening a large chat no longer slows the other chats
 
 - Several server reads walked a chat's whole event log to answer: the subagent

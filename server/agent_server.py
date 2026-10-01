@@ -91922,6 +91922,9 @@ def is_completed_fork_terminal(event: dict[str, Any]) -> bool:
         # identity and must not replace an already resumable boundary.
         and not (event.get("imported") is True and event.get("metadata_only") is True)
         and event.get("purpose") not in FORK_INTERNAL_PURPOSES
+        # A standalone run (a scheduled job on its own provider thread) never touched the
+        # chat's thread or session, so it cannot be the point to fork or resume at.
+        and event.get("provider_context_mode") != "standalone"
     )
 
 
@@ -92707,9 +92710,10 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                 row = removed_terminals.get(run_id)
                 return (row is None or run_id in delivery_unknown or row.get("imported") is True
                         or bool(row.get("provider_turn_id") or row.get("exit_code") == 0))
-            if not any(reached_codex(str(event.get("run_id") or "")) for event in removed if event.get("type") == "turn_started"):
-                # Nothing removed reached the thread (its send failed first): the thread already
-                # matches what stays, so neither a fork nor a reset is needed.
+            if not any(reached_codex(str(event.get("run_id") or "")) for event in removed
+                       if event.get("type") == "turn_started" and event.get("provider_context_mode") != "standalone"):
+                # Nothing removed reached the thread (its send failed first, or it ran on a standalone
+                # thread): the thread already matches what stays, so neither a fork nor a reset is needed.
                 pass
             elif terminal is None:
                 # Nothing completed survives: the next turn starts a fresh

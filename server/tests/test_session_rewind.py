@@ -251,6 +251,51 @@ class SessionRewindTests(RewindFixture):
         await self.assertRewindRejected(rewind_request(to_run_id="failed", expected_latest_seq=7), 409, "rewind_provider_unavailable")
         self.assertEqual(sess["codex_thread_id"], "thread-1")
 
+    def standalone_job_run(self, run_id: str, seq: int, provider: dict) -> list[dict]:
+        job = {"purpose": "scheduled_job", "job_id": "job-1", "provider_context_mode": "standalone"}
+        return [
+            {"seq": seq, "id": f"e{seq}", "type": "turn_started", "run_id": run_id, "ts": "2026-09-08T10:03:30Z", "prompt": "Check the training run", **job},
+            {"seq": seq + 1, "id": f"e{seq + 1}", "type": "turn_finished", "run_id": run_id, "ts": "2026-09-08T10:03:40Z", "exit_code": 0,
+             "result_text": "Still running", **job, **provider},
+        ]
+
+    async def test_a_standalone_scheduled_run_before_the_edit_is_not_the_codex_cutoff(self) -> None:
+        # The chat's scheduled job ran on its own thread between the second turn and the edited one;
+        # the fork still has to happen at the chat thread's own last completed turn.
+        base = self.events()
+        events = [*base[:7], *self.standalone_job_run("job", 8, {"provider_thread_id": "job-thread", "provider_turn_id": "job-turn"}),
+                  *[{**event, "seq": event["seq"] + 2, "id": f"e{event['seq'] + 2}"} for event in base[7:10]]]
+        sess = self.write_events(events)
+        sess.update(latest_event_seq=12, latest_agent_event_seq=12, last_read_agent_event_seq=12)
+        server.CODEX_THREAD_SESSION_INDEX["thread-1"] = "chat"
+        with patch.object(server, "fork_codex_thread", AsyncMock(return_value="forked-thread")) as fork, patch.object(
+            server, "bind_forked_codex_thread", AsyncMock(side_effect=self.persisting_bind),
+        ):
+            result = await server.rewind_session("chat", rewind_request(expected_latest_seq=12))
+        fork.assert_awaited_once_with("thread-1", sess, last_turn_id="turn-2")
+        self.assertEqual(result["provider_rewind"], "codex_fork")
+
+    async def test_removing_only_a_standalone_scheduled_run_leaves_the_codex_thread_alone(self) -> None:
+        events = [*self.events()[:7], *self.standalone_job_run("job", 8, {"provider_thread_id": "job-thread", "provider_turn_id": "job-turn"})]
+        sess = self.write_events(events)
+        sess.update(latest_event_seq=9, latest_agent_event_seq=9, last_read_agent_event_seq=9)
+        with patch.object(server, "fork_codex_thread", AsyncMock()) as fork:
+            result = await server.rewind_session("chat", rewind_request(to_run_id="job", expected_latest_seq=9))
+        fork.assert_not_awaited()
+        self.assertIsNone(result["provider_rewind"])
+        self.assertEqual(sess["codex_thread_id"], "thread-1")
+
+    async def test_a_standalone_scheduled_run_before_the_edit_is_not_the_claude_cutoff(self) -> None:
+        base = self.events()
+        events = [*base[:7], *self.standalone_job_run("job", 8, {"provider_session_id": "job-session"}),
+                  *[{**event, "seq": event["seq"] + 2, "id": f"e{event['seq'] + 2}"} for event in base[7:10]]]
+        sess = self.chat(latest_event_seq=12, latest_agent_event_seq=12, last_read_agent_event_seq=12)
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        with self.claude_transcript():
+            result = await server.rewind_session("chat", rewind_request(expected_latest_seq=12))
+        self.assertEqual(result["provider_rewind"], "claude_fork")
+        self.assertEqual(sess["fork_resume_session_at"], "second-uuid")
+
     async def test_codex_rewind_to_first_turn_resets_provider_thread(self) -> None:
         sess = self.chat(backend="codex", codex_instruction_hash="policy-hash", codex_instruction_version=3)
         server.CODEX_THREAD_SESSION_INDEX["thread-1"] = "chat"
