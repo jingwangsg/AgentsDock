@@ -25,7 +25,7 @@
   "build": {
     "appId": "com.zhengyiluo.AgentsDock",
     "productName": "AgentsDock",
-    "buildVersion": "89",
+    "buildVersion": "90",
     "asar": true,
     "directories": {
       "output": "dist"

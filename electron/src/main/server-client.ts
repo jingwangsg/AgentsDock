@@ -916,6 +916,9 @@ export class AgentServerClient {
   removeRemoteServer(remoteId: string): Promise<void> {
     return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, { method: 'DELETE' }, undefined, 204)
   }
+  reorderRemoteServers(ids: string[]): Promise<{ servers: RemoteServer[] }> {
+    return this.privilegedNativeRequest('/api/admin/remote-servers/order', { method: 'PUT', body: JSON.stringify({ ids }) })
+  }
   startRemoteRedeploy(remoteId: string): Promise<{ job_id: string }> {
     return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}/redeploy`, { method: 'POST' })
   }
@@ -3317,6 +3320,7 @@ function isPrivilegedNativeControlTarget(
   }
   if (path === '/api/admin/remote-servers/deploy') return !target.search && method === 'POST'
   if (path === '/api/admin/remote-servers/attach') return !target.search && method === 'POST'
+  if (path === '/api/admin/remote-servers/order') return !target.search && method === 'PUT'
   if (/^\/api\/admin\/remote-servers\/[A-Za-z0-9_-]{1,128}$/.test(path)) return !target.search && method === 'DELETE'
   if (/^\/api\/admin\/remote-servers\/[A-Za-z0-9_-]{1,128}\/redeploy$/.test(path)) return !target.search && method === 'POST'
   if (path === '/api/admin/remote-servers') return !target.search && method === 'GET'

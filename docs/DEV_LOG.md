@@ -1,5 +1,13 @@
 # Public development log
 
+## 2026-10-01 — Server order is shared across devices
+
+- Dragging servers into a new order on the Mac did not change their order on
+  Android, and the other way round: each device kept its own list. The hub
+  now stores the order of its remote servers. Reordering on any device writes
+  it there, and every device connected to the hub lists the remotes in that
+  order.
+
 ## 2026-10-01 — Android adds servers the way the desktop does
 
 - The Servers screen on Android offered only "Deploy over SSH". Its button is

@@ -6,6 +6,7 @@ import {
   findDuplicateProfileByIdentity,
   findDuplicateProfileByURL,
   hubProxyRemoteId,
+  hubRemoteProfileOrder,
   legacyURLCacheNamespace,
   migrateLegacyProfileSettings,
   nextCredentialVersion,
@@ -169,5 +170,12 @@ assertEqual(reconcileHubProfiles([hubProfile, savedRemote, staleRemote, otherHub
 // A trailing slash or uppercase host on the hub URL still matches saved profiles.
 assertEqual(reconcileHubProfiles([hubProfile, savedRemote], 'NVMAC.tail46daa8.ts.net:7850/', [registered[0]]), { create: [], removeIds: [] })
 assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [registered[0]]), { create: [], removeIds: [] })
+
+// Remotes take the registry's order in the places they already hold; the hub and other profiles stay put.
+assertEqual(
+  hubRemoteProfileOrder([hubProfile, savedRemote, otherHubRemote, { id: 'remote-bbb', serverURL: `${hubURL}/api/remote/bbb` }], hubURL, [{ id: 'bbb' }, { id: 'aaa' }]),
+  ['hub', 'remote-bbb', 'other-hub-remote', 'remote-aaa'],
+)
+assertEqual(hubRemoteProfileOrder([hubProfile, savedRemote], hubURL, [{ id: 'aaa' }]), null)
 
 console.log('server profile regressions passed')

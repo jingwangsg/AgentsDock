@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { PublicServerProfile, RemoteServer } from '../shared/types'
-import { parseConfigEnv, planHubRemoteProfiles, readLocalHubToken } from './local-hub'
+import { hubRemoteId, hubRemoteProfileOrder, parseConfigEnv, planHubRemoteProfiles, readLocalHubToken } from './local-hub'
 
 const HUB = 'http://127.0.0.1:7850'
 
@@ -77,5 +77,25 @@ describe('planHubRemoteProfiles', () => {
     const remotes = [remote('one'), remote('two')]
     const profiles = [profile('hub', HUB), profile('p1', `${HUB}/api/remote/one`, 'one_host'), profile('p2', `${HUB}/api/remote/two/`, 'two_host')]
     expect(planHubRemoteProfiles(`${HUB}/`, remotes, profiles)).toEqual({ add: [], update: [], remove: [] })
+  })
+})
+
+describe('hubRemoteProfileOrder', () => {
+  const profiles = [
+    profile('hub', HUB),
+    profile('p-one', `${HUB}/api/remote/one`),
+    profile('legacy', 'http://127.0.0.1:7851'),
+    profile('p-two', `${HUB}/api/remote/two/`),
+    profile('other-hub', 'http://10.0.0.5:7850/api/remote/zzz')
+  ]
+
+  it('reads the registry id out of a proxied URL only', () => {
+    expect(hubRemoteId(HUB, `${HUB}/api/remote/two/`)).toBe('two')
+    expect(hubRemoteId(HUB, 'http://10.0.0.5:7850/api/remote/zzz')).toBeNull()
+  })
+
+  it('moves this hub\'s remotes into registry order within the places they hold', () => {
+    expect(hubRemoteProfileOrder(HUB, [remote('two'), remote('one')], profiles)).toEqual(['hub', 'p-two', 'legacy', 'p-one', 'other-hub'])
+    expect(hubRemoteProfileOrder(HUB, [remote('one'), remote('two')], profiles)).toBeNull()
   })
 })

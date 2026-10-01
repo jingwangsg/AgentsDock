@@ -123,6 +123,23 @@ export function reconcileHubProfiles(
   }
 }
 
+/** Profile ids with this hub's remotes in registry order, in the places they already hold; null when nothing moves. */
+export function hubRemoteProfileOrder(
+  profiles: readonly Pick<StoredServerProfile, 'id' | 'serverURL'>[],
+  hubURL: string,
+  remotes: readonly Pick<RemoteServer, 'id'>[],
+): string[] | null {
+  const hub = normalizeServerURL(hubURL)
+  const rank = new Map(remotes.map((remote, index) => [remote.id, index]))
+  const rankOf = (profile: Pick<StoredServerProfile, 'serverURL'>) =>
+    hubProxyBaseURL(profile.serverURL) === hub ? rank.get(hubProxyRemoteId(profile.serverURL) ?? '') : undefined
+  const current = profiles.filter(profile => rankOf(profile) !== undefined)
+  const sorted = [...current].sort((a, b) => rankOf(a)! - rankOf(b)!)
+  if (sorted.every((profile, index) => profile === current[index])) return null
+  const queue = sorted.values()
+  return profiles.map(profile => rankOf(profile) === undefined ? profile.id : queue.next().value!.id)
+}
+
 export function findDuplicateProfileByURL(
   profiles: readonly Pick<StoredServerProfile, 'id' | 'serverURL'>[],
   serverURL: string,

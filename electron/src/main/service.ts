@@ -174,7 +174,7 @@ import { PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL, PortTunnelManager } from './port-tu
 import { FileUploadGrantRegistry } from './file-upload-grants'
 import { SettingsStore, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
-import { isHubRemoteUrl, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
+import { hubRemoteId, hubRemoteProfileOrder, isHubRemoteUrl, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
 import { clearStorageError, localStorageWasFull, observeStorageErrors, reportStorageError } from './storage-health'
 import { SubagentEventProjector } from './subagent-projection'
 import { mergeTimelineSearchResults } from './search'
@@ -1579,6 +1579,9 @@ export class AppService {
         if (!stillValid()) throw staleProfileError()
         for (const add of plan.add) this.addServer({ ...add, accessToken, serverSetupComplete: true })
       }
+      // Every device lists the hub's remotes in the registry's order.
+      const order = hubRemoteProfileOrder(hub.serverUrl, servers, this.settings.listProfiles())
+      if (order) this.settings.reorderProfiles(order)
       this.lastHubRemoteCount = removable.length === plan.remove.length ? servers.length : null
       this.emitProfiles()
       return this.publicProfiles()
@@ -1961,9 +1964,18 @@ export class AppService {
     return true
   }
 
-  reorderServers(profileIds: string[]): PublicServerProfile[] {
-    this.settings.reorderProfiles(profileIds)
+  async reorderServers(profileIds: string[]): Promise<PublicServerProfile[]> {
+    // A reconcile already in flight listed the hub's previous order; joining it would undo this drag.
+    await this.hubReconcile?.catch(() => undefined)
+    const profiles = this.settings.reorderProfiles(profileIds)
     this.emitProfiles()
+    // Every device lists the hub's remotes in the registry's order; the hub keeps the one chosen here.
+    const hub = this.hubProfile()
+    const ids = hub ? profiles.map(profile => hubRemoteId(hub.serverUrl, profile.serverUrl)).filter((id): id is string => id !== null) : []
+    if (hub && ids.length) {
+      const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+      try { await client.reorderRemoteServers(ids) } finally { client.dispose() }
+    }
     return this.publicProfiles()
   }
 

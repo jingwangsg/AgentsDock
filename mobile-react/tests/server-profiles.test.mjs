@@ -83,6 +83,10 @@ test('remotes are reconciled from the hub registry; deploy works from any server
   assert.match(source, /setDeployDraft\(\{ mode: 'deploy', sshHost: ''/)
   assert.match(client, /startRemoteAttach\([\s\S]*?return this\.request\('\/api\/admin\/remote-servers\/attach'/)
   assert.match(store, /input\.mode === 'attach' \? client\.startRemoteAttach\(request\) : client\.startRemoteDeploy\(request\)/)
+  // Dragging on any device reorders the hub's registry, and every device follows that order on reconcile.
+  assert.match(client, /reorderRemoteServers\([\s\S]*?this\.request\('\/api\/admin\/remote-servers\/order'/)
+  assert.match(store, /await client\.reorderRemoteServers\(ids\)/)
+  assert.match(store, /hubRemoteProfileOrder\(merged, hubScope\.serverURL, remotes\)/)
   // The store mirrors the hub registry right after a successful connect and
   // again when a deploy job finishes, instead of a manual import/add flow.
   assert.match(store, /requestNotificationPermissionOnce\(\)\s*void reconcileHubRemoteServers\(scope, set, get\)/)

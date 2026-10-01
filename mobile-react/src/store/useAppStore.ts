@@ -119,6 +119,7 @@ import {
   HUB_PROXY_PREFIX,
   hubProxyBaseURL,
   hubProxyRemoteId,
+  hubRemoteProfileOrder,
   profileNamespace,
   reconcileHubProfiles,
 } from '../lib/server-profiles'
@@ -923,7 +924,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       } finally {
         hub.dispose()
       }
-      hubRemoteRemovals += 1
+      hubRegistryEdits += 1
     }
     await withProfileMutation(async () => {
       if (profileId === get().activeProfileId) throw new Error('Switch to another server before removing this profile.')
@@ -939,16 +940,27 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async reorderServerProfiles(profileIds) {
+    let profiles: PublicServerProfile[] = []
     await withProfileMutation(async () => {
       const current = get().profiles
       if (profileIds.length !== current.length || new Set(profileIds).size !== current.length || profileIds.some(id => !current.some(profile => profile.id === id))) {
         throw new Error('Server profile order is invalid.')
       }
       const byId = new Map(current.map(profile => [profile.id, profile]))
-      const profiles = profileIds.map(id => byId.get(id)!)
+      profiles = profileIds.map(id => byId.get(id)!)
       await saveProfileSettings({ schemaVersion: 2, activeProfileId: get().activeProfileId ?? profiles[0].id, profiles: storedProfiles(profiles), fontScale: get().fontScale, appearance: get().appearance })
       set({ profiles })
+      hubRegistryEdits += 1
     })
+    // Every device lists the hub's remotes in the registry's order; the hub keeps the one chosen here.
+    // After the mutation, as removeServerProfile does: a slow hub must not block switching servers.
+    const hub = hubProfile(get())
+    const hubURL = hub ? normalizeServerURL(hub.serverURL) : null
+    const ids = profiles.filter(profile => hubProxyBaseURL(profile.serverURL) === hubURL).map(profile => hubProxyRemoteId(profile.serverURL)!)
+    if (hub && hubURL && ids.length) {
+      const client = new AgentServerClient(hubURL, await loadProfileToken(hub.id, hub.credentialVersion))
+      try { await client.reorderRemoteServers(ids) } finally { client.dispose() }
+    }
   },
 
   async switchServerProfile(profileId) {
@@ -3955,7 +3967,7 @@ async function probeServerHealth(serverURL: string, token: string): Promise<Heal
 }
 
 // Counts remotes the hub has unregistered (removeServerProfile).
-let hubRemoteRemovals = 0
+let hubRegistryEdits = 0
 
 /**
  * Mirrors the hub registry while the hub itself is the active server. A proxied
@@ -3986,7 +3998,7 @@ async function reconcileHubRegistry(
   set: (value: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
   get: () => AppState,
 ): Promise<void> {
-  const removals = hubRemoteRemovals
+  const edits = hubRegistryEdits
   let remotes: RemoteServer[]
   try {
     remotes = (await hubScope.client.remoteServers()).servers
@@ -3997,10 +4009,10 @@ async function reconcileHubRegistry(
   try {
     await withProfileMutation(async () => {
       // A list fetched before a remote was removed would recreate it; the next refresh reconciles.
-      if (!isCurrent() || removals !== hubRemoteRemovals) return
+      if (!isCurrent() || edits !== hubRegistryEdits) return
       const stored = storedProfiles(get().profiles)
       const { create, removeIds } = reconcileHubProfiles(stored, hubScope.serverURL, remotes)
-      if (!create.length && !removeIds.length) return
+      if (!create.length && !removeIds.length && !hubRemoteProfileOrder(stored, hubScope.serverURL, remotes)) return
       const hub = stored.find(profile => profile.id === hubScope.profileId)
       const hubToken = hub ? await loadProfileToken(hub.id, hub.credentialVersion) : ''
       // No health probe and no identity: a remote whose tunnel is down must
@@ -4008,11 +4020,15 @@ async function reconcileHubRegistry(
       const created = create.map(entry => createStoredServerProfile({ ...entry, serverConfigured: true }, createProfileId()))
       const removed = new Set(removeIds)
       for (const profile of created) await saveProfileToken(profile.id, profile.credentialVersion, hubToken)
+      // Every device lists the hub's remotes in the registry's order.
+      const merged = [...stored.filter(profile => !removed.has(profile.id)), ...created]
+      const order = hubRemoteProfileOrder(merged, hubScope.serverURL, remotes)
+      const profiles = order ? order.map(id => merged.find(profile => profile.id === id)!) : merged
       try {
         await saveProfileSettings({
           schemaVersion: 2,
           activeProfileId: get().activeProfileId ?? hubScope.profileId,
-          profiles: [...stored.filter(profile => !removed.has(profile.id)), ...created],
+          profiles,
           fontScale: get().fontScale,
           appearance: get().appearance,
         })
@@ -4020,12 +4036,10 @@ async function reconcileHubRegistry(
         for (const profile of created) await deleteProfileToken(profile.id, profile.credentialVersion).catch(() => undefined)
         throw error
       }
-      set(state => ({
-        profiles: [
-          ...state.profiles.filter(profile => !removed.has(profile.id)),
-          ...created.map(profile => publicProfile(profile, Boolean(hubToken))),
-        ],
-      }))
+      set(state => {
+        const current = [...state.profiles.filter(profile => !removed.has(profile.id)), ...created.map(profile => publicProfile(profile, Boolean(hubToken)))]
+        return { profiles: profiles.map(({ id }) => current.find(profile => profile.id === id)!) }
+      })
       for (const profile of stored) {
         if (removed.has(profile.id)) void deleteProfileToken(profile.id, profile.credentialVersion).catch(() => undefined)
       }

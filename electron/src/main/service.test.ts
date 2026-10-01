@@ -9305,6 +9305,27 @@ describe('server profile lifecycle', () => {
     await expect(service.removeHubRemote('a')).rejects.toThrow('Only servers the hub manages')
   })
 
+  it('reorders hub remotes through the hub, and a reconcile follows the registry order', async () => {
+    const hub = Object.assign(fakeClient(), {
+      reorderRemoteServers: vi.fn(async (ids: string[]) => ({ servers: ids.map(hubRemote) })),
+      listRemoteServers: vi.fn(async () => ({ servers: [hubRemote('r1'), hubRemote('r2')] }))
+    })
+    const { service, settings } = createProfileService({ 'http://a.test:7850': [fakeClient()], [DEFAULT_SERVER_URL]: [hub] })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const r1 = settings.addProfile({ name: 'r1', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1` })
+    const r2 = settings.addProfile({ name: 'r2', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r2` })
+    const others = settings.listProfiles().map(profile => profile.id).filter(id => id !== r1.id && id !== r2.id)
+
+    const reordered = await service.reorderServers([...others, r2.id, r1.id])
+    expect(hub.reorderRemoteServers).toHaveBeenCalledWith(['r2', 'r1'])
+    expect(reordered.slice(-2).map(profile => profile.id)).toEqual([r2.id, r1.id])
+
+    // Another device put r1 first on the hub: the registry's order wins here too.
+    await (service as unknown as { reconcileHubRemotes: (hub: { profileId: string; serverUrl: string; client: unknown }, stillValid: () => boolean) => Promise<unknown> })
+      .reconcileHubRemotes({ profileId: 'b', serverUrl: DEFAULT_SERVER_URL, client: hub }, () => true)
+    expect(settings.listProfiles().slice(-2).map(profile => profile.id)).toEqual([r1.id, r2.id])
+  })
+
   it('removes a hub remote while a reconcile that listed it before the DELETE is still in flight', async () => {
     let release!: () => void
     const listedBeforeDelete = new Promise<void>(resolve => { release = resolve })

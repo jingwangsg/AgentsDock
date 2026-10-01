@@ -53,6 +53,24 @@ export function isHubRemoteUrl(hubUrl: string, serverUrl: string): boolean {
   return normalizeServerURL(serverUrl).startsWith(`${normalizeServerURL(hubUrl)}/api/remote/`)
 }
 
+/** The registry id in a `<hub>/api/remote/<id>` URL; null for any other server. */
+export function hubRemoteId(hubUrl: string, serverUrl: string): string | null {
+  const prefix = `${normalizeServerURL(hubUrl)}/api/remote/`
+  const url = normalizeServerURL(serverUrl)
+  return url.startsWith(prefix) ? url.slice(prefix.length) : null
+}
+
+/** Profile ids with this hub's remotes in registry order, in the places they already hold; null when nothing moves. */
+export function hubRemoteProfileOrder(hubUrl: string, remotes: readonly RemoteServer[], profiles: readonly PublicServerProfile[]): string[] | null {
+  const rank = new Map(remotes.map((remote, index) => [remote.id, index]))
+  const rankOf = (profile: PublicServerProfile) => rank.get(hubRemoteId(hubUrl, profile.serverUrl) ?? '')
+  const current = profiles.filter(profile => rankOf(profile) !== undefined)
+  const sorted = [...current].sort((a, b) => rankOf(a)! - rankOf(b)!)
+  if (sorted.every((profile, index) => profile === current[index])) return null
+  const queue = sorted.values()
+  return profiles.map(profile => rankOf(profile) === undefined ? profile.id : queue.next().value!.id)
+}
+
 /** Stored profiles under `<hub>/api/remote/` must equal the hub registry; every other profile is left alone. */
 export function planHubRemoteProfiles(
   hubUrl: string,

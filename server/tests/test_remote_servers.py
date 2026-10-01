@@ -275,6 +275,21 @@ class RemoteServerTests(unittest.TestCase):
         assert response.status_code == 200 and response.json()["server"]["name"] == "lab" and response.json()["job_id"] is None
         assert "token" not in response.json()["server"]
 
+    def test_order_route_reorders_the_registry_around_what_the_client_has_synced(self) -> None:
+        manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server()
+        manager.servers["123456abcdef"] = make_server(id="123456abcdef", name="lab", local_port=7852)
+        manager.servers["fedcba654321"] = make_server(id="fedcba654321", name="new", local_port=7853)
+        hub = FastAPI()
+        rs.register_remote_server_routes(hub, manager=manager, authorize_admin=lambda request: None, websocket_authorized=lambda ws: True)
+        client = TestClient(hub)
+        # The client still holds a removed server's id and has not synced the newest one.
+        response = client.put(f"{rs.ADMIN_PATH}/order", json={"ids": ["123456abcdef", "000000000000", "abcdef123456"]})
+        assert response.status_code == 200
+        assert [server["id"] for server in response.json()["servers"]] == ["123456abcdef", "abcdef123456", "fedcba654321"]
+        assert [server.id for server in rs.load_registry(manager.path)] == ["123456abcdef", "abcdef123456", "fedcba654321"]
+        assert client.put(f"{rs.ADMIN_PATH}/order", json={"ids": ["abcdef123456", "abcdef123456"]}).status_code == 409
+
     def test_deploy_request_defaults_and_port_zero(self) -> None:
         request = rs.RemoteDeployRequest(ssh_host="user@host")
         assert request.install_dir == "~/.agentsdock-server" and request.port == 0
