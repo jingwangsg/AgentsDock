@@ -90,8 +90,22 @@ class ResumeAwaitingWriterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(agent_server.TransientAdmissionWait) as caught:
             await agent_server.resume_codex_thread_with_retry(manager, "thread-1", {})
         self.assertEqual(caught.exception.status_code, 409)
+        # A writer that outlasts the retries is another process, such as a `codex resume` left open.
+        self.assertEqual(caught.exception.detail, agent_server.CODEX_FOREIGN_WRITER_DETAIL)
         self.assertEqual(len(manager.resume_calls), 3)  # one attempt per delay, then the final one
         self.evict.assert_not_awaited()
+
+    async def test_a_thread_that_never_finishes_closing_reports_the_unload(self):
+        manager = FakeManager(failures=0)
+
+        async def resume(thread_id, params=None):
+            raise CodexAppServerRequestError("thread/resume", {"code": -32600, "message":
+                f"thread {thread_id} is closing; retry thread/resume after the thread is closed"})
+        manager.resume_thread = resume
+        self.others[:] = [manager]
+        with self.assertRaises(agent_server.TransientAdmissionWait) as caught:
+            await agent_server.resume_codex_thread_with_retry(manager, "thread-1", {})
+        self.assertEqual(caught.exception.detail, agent_server.CODEX_THREAD_CLOSING_DETAIL)
 
     async def test_resume_retries_while_the_same_process_is_still_closing_the_thread(self):
         manager = FakeManager(failures=0)

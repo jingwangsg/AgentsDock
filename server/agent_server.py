@@ -60993,9 +60993,12 @@ async def reconcile_codex_thread_goal(
 
 
 CODEX_WRITER_RELEASE_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0, 2.0, 2.0, 2.0)
-CODEX_WRITER_HANDOFF_DETAIL = (
-    "Codex is still releasing this chat's thread from its previous app-server process. "
-    "Retry in a few seconds."
+CODEX_THREAD_CLOSING_DETAIL = (
+    "Codex is still closing this chat's thread in its app-server. Retry in a few seconds."
+)
+CODEX_FOREIGN_WRITER_DETAIL = (
+    "Another Codex process still holds this chat's thread: a `codex resume` left open on the "
+    "server, or an app-server that has not finished unloading it. Close it or wait, then retry."
 )
 
 
@@ -61026,7 +61029,9 @@ async def resume_codex_thread_with_retry(
             if not codex_thread_resume_retryable(exc):
                 raise
             if delay is None:
-                raise TransientAdmissionWait(409, CODEX_WRITER_HANDOFF_DETAIL) from exc
+                # A writer that outlasts the retries is not this process unloading the thread.
+                detail = CODEX_FOREIGN_WRITER_DETAIL if "already has an active writer" in str(exc) else CODEX_THREAD_CLOSING_DETAIL
+                raise TransientAdmissionWait(409, detail) from exc
         for other in codex_app_server_managers():
             if other is not manager and other.is_thread_loaded(thread_id) and other.active_turn(thread_id) is None:
                 with suppress(Exception):
@@ -73194,9 +73199,8 @@ async def run_codex_app_server(
             "transport": CODEX_TRANSPORT_APP_SERVER,
             "provider_thread_id": provider_id or None,
             "provider_turn_id": (
-                goal_continuation_result.get("turn_id")
-                if goal_continuation_result is not None
-                else turn.turn_id if turn is not None else None
+                (goal_continuation_result or {}).get("turn_id")
+                or (turn.turn_id if turn is not None else None)
             ),
             "exit_code": exit_code,
             "result_text": clean_assistant_text("\n\n".join(text_parts).strip()),
@@ -92456,7 +92460,21 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
             codex_thread_id = str(sess.get("codex_thread_id") or sess.get("session_id") or "")
             lineage = codex_thread_lineage(sess)
             terminal = next((event for event in reversed(prefix) if is_completed_fork_terminal(event)), None)
-            if terminal is None:
+            # A Codex turn stamps its native turn id on its terminal row once turn/start succeeded,
+            # whatever the outcome; replayed history is in the thread already; a completed row
+            # without an id came from the exec transport, which wrote the thread too; a turn/start
+            # whose answer was lost may have run.
+            removed_terminals = {str(event.get("run_id") or ""): event for event in removed if event.get("type") == "turn_finished"}
+            delivery_unknown = {str(event.get("run_id") or "") for event in removed if event.get("type") == "error" and event.get("delivery_unknown")}
+            def reached_codex(run_id: str) -> bool:
+                row = removed_terminals.get(run_id)
+                return (row is None or run_id in delivery_unknown or row.get("imported") is True
+                        or bool(row.get("provider_turn_id") or row.get("exit_code") == 0))
+            if not any(reached_codex(str(event.get("run_id") or "")) for event in removed if event.get("type") == "turn_started"):
+                # Nothing removed reached the thread (its send failed first): the thread already
+                # matches what stays, so neither a fork nor a reset is needed.
+                pass
+            elif terminal is None:
                 # Nothing completed survives: the next turn starts a fresh
                 # Codex thread instead of continuing the removed one.
                 provider_rewind = "codex_reset"

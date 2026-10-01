@@ -214,6 +214,37 @@ class SessionRewindTests(RewindFixture):
         self.assertEqual([event["seq"] for event in self.stored_events()], [1, 2, 3, 4, 5, 6, 7, 10, 11])
         self.assertEqual(self.stored_events()[-1]["provider_rewind"], "codex_fork")
 
+    async def test_codex_rewind_of_a_turn_that_never_reached_the_thread_leaves_it_bound(self) -> None:
+        # A chat resumed from Codex's own history: every completed turn is a replay without a native
+        # turn id, and the newest turn failed before thread/resume. Editing it must not need a fork.
+        sess = self.chat(backend="codex")
+        events = [
+            {"seq": 1, "id": "e1", "type": "history_imported", "run_id": "import_a", "ts": "2026-09-08T10:00:00Z", "imported": True},
+            {"seq": 2, "id": "e2", "type": "turn_started", "run_id": "import_a", "ts": "2026-09-08T10:00:01Z", "prompt": "Earlier question", "imported": True},
+            {"seq": 3, "id": "e3", "type": "assistant_text", "run_id": "import_a", "ts": "2026-09-08T10:00:30Z", "text": "Earlier answer", "imported": True},
+            {"seq": 4, "id": "e4", "type": "turn_finished", "run_id": "import_a", "ts": "2026-09-08T10:01:00Z", "imported": True},
+            {"seq": 5, "id": "e5", "type": "turn_started", "run_id": "failed", "ts": "2026-09-08T10:02:00Z", "prompt": "New question"},
+            {"seq": 6, "id": "e6", "type": "error", "run_id": "failed", "ts": "2026-09-08T10:02:10Z", "message": "409: another writer"},
+            {"seq": 7, "id": "e7", "type": "turn_finished", "run_id": "failed", "ts": "2026-09-08T10:02:10Z", "exit_code": 1, "provider_thread_id": "thread-1"},
+        ]
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        sess.update(latest_event_seq=7, latest_agent_event_seq=7, last_read_agent_event_seq=7)
+        with patch.object(server, "fork_codex_thread", AsyncMock()) as fork:
+            result = await server.rewind_session("chat", rewind_request(to_run_id="failed", expected_latest_seq=7))
+        fork.assert_not_awaited()
+        self.assertIsNone(result["provider_rewind"])
+        self.assertEqual(sess["codex_thread_id"], "thread-1")
+        self.assertEqual([(event["seq"], event["type"]) for event in self.stored_events()],
+                         [(1, "history_imported"), (2, "turn_started"), (3, "assistant_text"), (4, "turn_finished"), (7, "_event_sequence_checkpoint"), (8, "history_rewound")])
+
+        # The same failed turn whose turn/start answer was lost may have run on the thread, so the
+        # thread must be forked at the kept turn, which a replay cannot provide.
+        events[5]["delivery_unknown"] = True
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        sess.update(latest_event_seq=7, latest_agent_event_seq=7, last_read_agent_event_seq=7)
+        await self.assertRewindRejected(rewind_request(to_run_id="failed", expected_latest_seq=7), 409, "rewind_provider_unavailable")
+        self.assertEqual(sess["codex_thread_id"], "thread-1")
+
     async def test_codex_rewind_to_first_turn_resets_provider_thread(self) -> None:
         sess = self.chat(backend="codex", codex_instruction_hash="policy-hash", codex_instruction_version=3)
         server.CODEX_THREAD_SESSION_INDEX["thread-1"] = "chat"

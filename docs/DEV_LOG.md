@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-10-01 — Sending to a Codex thread held by another process names that process; editing a failed turn needs no fork
+
+- Sending to a Codex chat whose thread another Codex process still holds,
+  typically a `codex resume` left open on the server for the same session,
+  failed with "Codex is still releasing this chat's thread from its previous
+  app-server process". The error now names the other process and what to do.
+- Editing a turn that never reached Codex (its send failed) in a chat resumed
+  from Codex's own history was refused with "no verifiable native snapshot".
+  Removing turns that never reached the thread leaves the thread as it is, so
+  the edit goes through.
+
 ## 2026-10-01 — Server order is shared across devices
 
 - Dragging servers into a new order on the Mac did not change their order on
