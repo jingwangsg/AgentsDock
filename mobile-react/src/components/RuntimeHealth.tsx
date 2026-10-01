@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertTriangle, CircleCheck, CircleHelp, CircleX, RefreshCw } from 'lucide-react-native'
+import { AlertTriangle, CircleCheck, CircleHelp, CircleX, RefreshCw, Skull } from 'lucide-react-native'
 import { Pressable, StyleSheet, View } from 'react-native'
 import type { Backend, Event, RuntimeDiagnostic } from '../types'
 import { errorMessage } from '../lib/format'
@@ -29,7 +29,54 @@ export function RuntimeHealthNotice({ backend, sessionId }: { backend: Backend; 
   return <>
     <RuntimeRow backend={backend} diagnostic={diagnostic} compact detailOverride={chatError || (unavailable ? cursorBackendUnavailableReason(health, runtime) : null)} onRecheck={() => void refresh()} />
     {tokenNeeded ? <ClaudeTokenForm onSaved={() => void refresh()} /> : null}
+    {backend === 'codex' && CODEX_WRITER_HELD.test(chatError) ? <CodexWriterRelease sessionId={sessionId} /> : null}
   </>
+}
+
+/** Codex's refusal to share a thread another process writes, and the server's wording of it after its retries. */
+const CODEX_WRITER_HELD = /already has an active writer|another codex process still holds this chat's thread/i
+
+function CodexWriterRelease({ sessionId }: { sessionId: string }) {
+  const colors = usePalette()
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const release = async () => {
+    setBusy(true)
+    setNotice(null)
+    try {
+      const result = await client.killCodexWriters(sessionId)
+      const others = result.other_holders ?? []
+      // The server reports writers it could not end separately from what it ended, so both can be non-empty.
+      const outcome = result.killed.length
+        ? `Released the thread and ended ${result.killed.length} Codex process(es). Send your message again.`
+        : result.restarted_app_server
+          ? "Restarted this server's Codex app-server; the thread is free. Send your message again."
+          : result.busy_sessions?.length
+            ? `${result.busy_sessions.length} other chat(s) are mid-turn, so the Codex app-server was not restarted. Stop them, then try again.`
+            : others.length ? '' : 'No other Codex process was found; the thread was released. Send your message again.'
+      const otherHolders = others.length
+        ? `${[...new Set(others.map(holder => holder.owner))].join(', ')} still holds this thread and could not be ended from here. Close it on the server, then send your message again.`
+        : ''
+      setNotice([outcome, otherHolders].filter(Boolean).join(' '))
+    } catch (error) {
+      setNotice(errorMessage(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <View style={[styles.row, styles.compact, styles.tokenForm, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+    <Text style={[styles.detail, { color: colors.muted }]}>Another Codex process holds this chat's thread. Ending it releases the thread; then send your message again.</Text>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Kill Codex writers"
+      accessibilityState={{ busy }}
+      testID="codex-kill-writers"
+      disabled={busy}
+      onPress={() => void release()}
+      style={[styles.refresh, { alignSelf: 'flex-start', backgroundColor: colors.raised, opacity: busy ? 0.5 : 1 }]}
+    ><Skull size={14} color={colors.red} /><Text style={{ color: colors.red, fontSize: 12, fontWeight: '800' }}>{busy ? 'Releasing…' : 'Kill Codex writers'}</Text></Pressable>
+    {notice ? <Text style={[styles.detail, { color: colors.text }]}>{notice}</Text> : null}
+  </View>
 }
 
 function ClaudeTokenForm({ onSaved }: { onSaved: () => void }) {

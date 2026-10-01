@@ -1,5 +1,15 @@
 # Public development log
 
+## 2026-10-01 — "Kill Codex writers" ends whatever holds the thread, on Android too
+
+- When a Codex chat reports that another process holds its thread, the
+  composer notice offers "Kill Codex writers". It now also ends a `codex
+  resume` left open on the server for that thread, not only stale Codex
+  app-servers, leaves processes that merely read the file alone, and is
+  offered when the server itself reports the conflict, not only when Codex
+  does. Android gets the same button in its chat notice. After it, send the
+  message again.
+
 ## 2026-10-01 — Sending to a Codex thread held by another process names that process; editing a failed turn needs no fork
 
 - Sending to a Codex chat whose thread another Codex process still holds,

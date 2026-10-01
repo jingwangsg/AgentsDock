@@ -1,6 +1,7 @@
 import type {
   AgentFile,
   AgentCrossChatRoutesSnapshot,
+  CodexKillWritersResult,
   DeleteAgentCrossChatRouteResponse,
   QueuedCrossChatDeliveryIdentity,
   CodexBackgroundTerminalTerminateInput,
@@ -277,6 +278,10 @@ export class AgentServerClient {
     return this.request('/api/admin/codex/goals', {
       method: 'PUT', body: JSON.stringify({ enabled }),
     }, 30_000, false, 'native-control')
+  }
+  /** Ends every other Codex process holding this chat's thread (see server kill_codex_writers). */
+  killCodexWriters(sessionId: string): Promise<CodexKillWritersResult> {
+    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/codex/kill-writers`, { method: 'POST' }, 30_000, false, 'native-control')
   }
   setClaudeToken(token: string): Promise<{ oauth_token_configured: boolean }> {
     return this.request('/api/admin/claude/token', {

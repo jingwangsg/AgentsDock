@@ -442,6 +442,16 @@ export interface RuntimeOption {
   efforts?: RuntimeOption[] | null
 }
 export type RuntimeDiagnosticStatus = 'unknown' | 'ready' | 'missing' | 'unauthenticated' | 'error'
+export interface CodexKillWritersResult {
+  killed: number[]
+  /** This server restarted its own Codex app-server because nothing else held the thread. */
+  restarted_app_server?: boolean
+  /** Other chats mid-turn that prevented an app-server restart. */
+  busy_sessions?: string[]
+  /** Rollout writers this server could not end, which only the user can close. */
+  other_holders?: Array<{ pid: number; owner: string }>
+}
+
 export interface RuntimeDiagnostic {
   backend: Backend
   status: RuntimeDiagnosticStatus

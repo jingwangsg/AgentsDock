@@ -3,8 +3,8 @@ import { Skull } from 'lucide-react'
 import { useState } from 'react'
 import './CodexWriterRelease.css'
 
-/** Matches the Codex app-server refusal that a stale process is still writing the thread. */
-export const ACTIVE_WRITER_ERROR = /already has an active writer/i
+/** Codex's refusal to share a thread another process writes, and the server's wording of it after its retries. */
+export const ACTIVE_WRITER_ERROR = /already has an active writer|another codex process still holds this chat's thread/i
 
 export function isActiveWriterError(text: string | null | undefined): boolean {
   return Boolean(text && ACTIVE_WRITER_ERROR.test(text))
@@ -25,9 +25,9 @@ export function CodexWriterRelease({ sessionId, compact = false }: { sessionId: 
     try {
       const result = await window.agentsDock.codex.killWriters(sessionId)
       const others = result.other_holders ?? []
-      // The server kills only orphaned/AgentsServer-owned processes and lists
-      // other apps' holders separately, so both can be non-empty at once; a
-      // resend still fails while another holder remains, so always report it.
+      // The server reports writers it could not end separately from what it
+      // ended, so both can be non-empty at once; a resend still fails while one
+      // remains, so always report it.
       const outcome = result.killed.length
         ? t('codex.killWriters.done', { count: String(result.killed.length) })
         : result.restarted_app_server

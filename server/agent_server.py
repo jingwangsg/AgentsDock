@@ -89153,14 +89153,24 @@ def select_stale_codex_app_servers(processes: list[tuple[int, int, str]], me: in
         under_other_agents_server = "agent_server.py serve" in parent_args
         if orphaned or under_other_agents_server:
             victims.add(pid)
-    changed = True
-    while changed:
-        changed = False
-        for pid, (ppid, _args) in by_pid.items():
-            if ppid in victims and pid not in victims and pid != me:
-                victims.add(pid)
-                changed = True
+    for pid in list(victims):
+        victims |= descendant_pids(processes, pid) - {me}
     return sorted(victims)
+
+
+def descendant_pids(processes: list[tuple[int, int, str]], root: int) -> set[int]:
+    """Every process under ``root``, transitively: an npm `codex` shim runs the native app-server as its child."""
+    children: dict[int, list[int]] = {}
+    for pid, ppid, _args in processes:
+        children.setdefault(ppid, []).append(pid)
+    found: set[int] = set()
+    queue = [root]
+    while queue:
+        for pid in children.get(queue.pop(), ()):
+            if pid not in found:
+                found.add(pid)
+                queue.append(pid)
+    return found
 
 
 def codex_process_table() -> list[tuple[int, int, str]]:
@@ -89180,8 +89190,38 @@ def codex_process_table() -> list[tuple[int, int, str]]:
     return processes
 
 
-def kill_foreign_codex_app_servers_sync() -> list[int]:
-    victims = select_stale_codex_app_servers(codex_process_table(), os.getpid())
+def codex_rollout_writers_sync(path: Path, own: set[int]) -> list[int]:
+    """Processes outside ``own`` with the rollout open for writing: the writer Codex refuses to
+    share. Readers (an editor, `tail -f`, a backup) are left alone."""
+    resolved = str(path.resolve())
+    writers: set[int] = set()
+    if Path("/proc").is_dir():
+        for fd_dir in Path("/proc").glob("[0-9]*/fd"):
+            pid = int(fd_dir.parent.name)
+            if pid in own:
+                continue
+            try:
+                for entry in fd_dir.iterdir():
+                    if os.readlink(entry) != resolved:
+                        continue
+                    flags = (fd_dir.parent / "fdinfo" / entry.name).read_text().split("flags:")[1].split()[0]
+                    if int(flags, 8) & 0o3:  # O_WRONLY or O_RDWR
+                        writers.add(pid)
+            except (OSError, IndexError, ValueError):
+                continue
+        return sorted(writers)
+    lsof = shutil.which("lsof") or "/usr/sbin/lsof"  # macOS keeps it in sbin, off a service's PATH
+    pid = 0
+    for line in subprocess.run([lsof, "-F", "pa", "--", resolved], capture_output=True, text=True, check=False).stdout.splitlines():
+        if line.startswith("p"):
+            pid = int(line[1:])
+        elif line.startswith("a") and line[1:] in ("w", "u") and pid not in own:
+            writers.add(pid)
+    return sorted(writers)
+
+
+def terminate_pids_sync(victims: list[int]) -> list[int]:
+    """SIGTERM, then SIGKILL after 3 s; returns the pids that are gone."""
     for pid in victims:
         with suppress(ProcessLookupError, PermissionError):
             os.kill(pid, signal.SIGTERM)
@@ -89192,7 +89232,10 @@ def kill_foreign_codex_app_servers_sync() -> list[int]:
         if _pid_alive(pid):
             with suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGKILL)
-    return victims
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline and any(_pid_alive(pid) for pid in victims):
+        time.sleep(0.1)
+    return [pid for pid in victims if not _pid_alive(pid)]
 
 
 def _pid_alive(pid: int) -> bool:
@@ -89210,8 +89253,9 @@ async def kill_codex_writers(session_id: str) -> dict[str, Any]:
     """Release a Codex thread stuck behind "already has an active writer".
 
     Explicit user action: unsubscribes the chat's thread from this server's
-    app-server and kills every other codex app-server process on the host. The
-    next turn resumes the same thread; AgentsDock history is untouched.
+    app-server, kills stale codex app-servers on the host and every other
+    process writing the thread's rollout, a `codex resume` left open included.
+    The next turn resumes the same thread; AgentsDock history is untouched.
     """
     session = STORE.sessions.get(session_id)
     if session is None:
@@ -89225,7 +89269,14 @@ async def kill_codex_writers(session_id: str) -> dict[str, Any]:
             with suppress(Exception):
                 await manager.unsubscribe_thread(provider_id)
                 released = True
-    killed = await asyncio.to_thread(kill_foreign_codex_app_servers_sync)
+    processes = await asyncio.to_thread(codex_process_table)
+    me = os.getpid()
+    killed = await asyncio.to_thread(terminate_pids_sync, select_stale_codex_app_servers(processes, me))
+    writers: list[int] = []
+    rollout = await asyncio.to_thread(codex_rollout_path, provider_id) if provider_id else None
+    if rollout is not None:
+        writers = await asyncio.to_thread(codex_rollout_writers_sync, rollout, {me, *descendant_pids(processes, me)})
+        killed = sorted({*killed, *await asyncio.to_thread(terminate_pids_sync, writers)})
     # Nothing outside this server held the thread: the lease is stale inside our
     # own app-server. Restart it (threads reload on the next turn) unless another
     # chat is mid-turn, which a restart would interrupt.
@@ -89235,7 +89286,8 @@ async def kill_codex_writers(session_id: str) -> dict[str, Any]:
         with suppress(Exception):
             await close_codex_app_server_manager()
             restarted = True
-    other_holders = await asyncio.to_thread(list_other_codex_app_servers_sync)
+    commands = {pid: args for pid, _ppid, args in processes}
+    other_holders = [{"pid": pid, "owner": commands.get(pid, "?").split()[0].rsplit("/", 1)[-1]} for pid in writers if pid not in killed]
     logger.info(
         "codex writers released session=%s thread=%s unsubscribed=%s killed=%s restarted=%s others=%s",
         session_id, provider_id or "-", released, killed, restarted, other_holders,
@@ -89248,22 +89300,6 @@ async def kill_codex_writers(session_id: str) -> dict[str, Any]:
         "other_holders": other_holders,
         "thread_id": provider_id or None,
     }
-
-
-def list_other_codex_app_servers_sync() -> list[dict[str, Any]]:
-    """Codex app-servers owned by other applications, for the user to close by hand."""
-    rows = {pid: (ppid, args) for pid, ppid, args in codex_process_table()}
-    me = os.getpid()
-    holders = []
-    for pid, (ppid, args) in rows.items():
-        if ppid == me or not CODEX_APP_SERVER_PROCESS_RE.search(args):
-            continue
-        parent_args = rows.get(ppid, (0, ""))[1]
-        owner = parent_args.split()[0].rsplit("/", 1)[-1] if parent_args else "?"
-        if ".app/" in parent_args:
-            owner = parent_args.split(".app/", 1)[0].rsplit("/", 1)[-1] + ".app"
-        holders.append({"pid": pid, "owner": owner})
-    return holders
 
 
 @app.post("/api/sessions/{session_id}/codex/rotate")

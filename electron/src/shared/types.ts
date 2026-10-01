@@ -1762,7 +1762,7 @@ export interface CodexKillWritersResult {
   restarted_app_server?: boolean
   /** Other chats mid-turn that prevented an app-server restart. */
   busy_sessions?: string[]
-  /** Codex app-servers owned by other applications, which only the user can close. */
+  /** Rollout writers this server could not end, which only the user can close. */
   other_holders?: Array<{ pid: number; owner: string }>
 }
 

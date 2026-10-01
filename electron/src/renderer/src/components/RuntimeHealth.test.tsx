@@ -50,6 +50,25 @@ beforeEach(() => {
   useAppStore.setState({ error: null })
 })
 
+describe('a Codex thread held by another process', () => {
+  it('offers to end the holder from the composer notice', () => {
+    useAppStore.setState({
+      health: null,
+      runtimeCatalog: readyCatalog,
+      snapshots: { 'codex-chat': {
+        session: { id: 'codex-chat', title: 'Chat', backend: 'codex' },
+        events: [{
+          id: 'event-1', seq: 1, session_id: 'codex-chat', backend: 'codex', type: 'error', run_id: 'run-1', ts: '2026-10-01T09:56:16Z',
+          message: "409: Another Codex process still holds this chat's thread: a `codex resume` left open on the server, or an app-server that has not finished unloading it. Close it or wait, then retry.",
+        }],
+        queuedTurns: [], files: [], hasMoreEvents: false, filesTotal: 0, cachedAt: 0,
+      } },
+    })
+    render(<RuntimeHealthNotice backend="codex" sessionId="codex-chat" />)
+    expect(screen.getByRole('button', { name: 'Kill Codex writers' })).toBeInTheDocument()
+  })
+})
+
 describe('passive Claude authentication in the composer', () => {
   const message = 'Claude Code is installed. Authentication will be checked by Claude when you send a message.'
   const failure = 'Not logged in. Please run claude auth login and retry your message.'
