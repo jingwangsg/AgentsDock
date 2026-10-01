@@ -12,10 +12,9 @@
 
 - The Servers screen on Android offered only "Deploy over SSH". Its button is
   now "Add server" and opens the same two choices as the desktop: deploy a new
-  AgentsServer over SSH, or attach an install another computer already
-  deployed in the install directory you enter. Attaching uploads nothing and
-  does not restart the server; the hub registers it and the phone switches
-  to it.
+  AgentsServer over SSH, or attach a server another computer already deployed
+  to the install directory you enter. Attaching uploads nothing and does not
+  restart the server; the hub registers it and the phone switches to it.
 
 ## 2026-10-01 — Resuming a stopped transcript no longer shows a "Claude interruption" card
 

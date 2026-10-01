@@ -173,9 +173,9 @@ assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [registered[
 
 // Remotes take the registry's order in the places they already hold; the hub and other profiles stay put.
 assertEqual(
-  hubRemoteProfileOrder([hubProfile, savedRemote, otherHubRemote, { id: 'remote-bbb', serverURL: `${hubURL}/api/remote/bbb` }], hubURL, [{ id: 'bbb' }, { id: 'aaa' }]),
+  hubRemoteProfileOrder([hubProfile, savedRemote, otherHubRemote, { id: 'remote-bbb', serverURL: `${hubURL}/api/remote/bbb` }], hubURL, [registered[1], registered[0]]),
   ['hub', 'remote-bbb', 'other-hub-remote', 'remote-aaa'],
 )
-assertEqual(hubRemoteProfileOrder([hubProfile, savedRemote], hubURL, [{ id: 'aaa' }]), null)
+assertEqual(hubRemoteProfileOrder([hubProfile, savedRemote], hubURL, registered), null)
 
 console.log('server profile regressions passed')

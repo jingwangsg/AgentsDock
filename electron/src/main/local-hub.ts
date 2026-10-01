@@ -50,7 +50,7 @@ export interface HubRemotePlan {
 
 /** A `<hub>/api/remote/<id>` URL: the hub, not the URL, decides which server answers there. */
 export function isHubRemoteUrl(hubUrl: string, serverUrl: string): boolean {
-  return normalizeServerURL(serverUrl).startsWith(`${normalizeServerURL(hubUrl)}/api/remote/`)
+  return hubRemoteId(hubUrl, serverUrl) !== null
 }
 
 /** The registry id in a `<hub>/api/remote/<id>` URL; null for any other server. */

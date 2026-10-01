@@ -3636,8 +3636,8 @@ async function settleBackgroundWork(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 0))
 }
 
-function hubRemotesCapability(count: number): RemoteServersCapability {
-  return { available: true, required: false, version: 1, proxy_prefix: '/api/remote/', admin_path: '/api/remote', ssh_available: true, count }
+function hubRemotesCapability(...ids: string[]): RemoteServersCapability {
+  return { available: true, required: false, version: 1, proxy_prefix: '/api/remote/', admin_path: '/api/remote', ssh_available: true, ids }
 }
 
 function hubRemote(id: string): RemoteServer {
@@ -9187,7 +9187,7 @@ describe('server profile lifecycle', () => {
 
   it('reconciles the hub registry from the inactive health sweep while a remote profile is active', async () => {
     const hubProbe = Object.assign(
-      fakeClient({ health: async () => ({ ok: true, server_identity: 'server-hub', capabilities: { remote_servers_v1: hubRemotesCapability(1) } }) }),
+      fakeClient({ health: async () => ({ ok: true, server_identity: 'server-hub', capabilities: { remote_servers_v1: hubRemotesCapability('r1') } }) }),
       { listRemoteServers: vi.fn(async () => ({ servers: [hubRemote('r1')] })) }
     )
     const { service, settings } = createProfileService({
@@ -9215,7 +9215,7 @@ describe('server profile lifecycle', () => {
 
   it('never removes the active proxied profile when the hub registry drops it', async () => {
     const hubProbe = Object.assign(
-      fakeClient({ health: async () => ({ ok: true, server_identity: 'server-hub', capabilities: { remote_servers_v1: hubRemotesCapability(0) } }) }),
+      fakeClient({ health: async () => ({ ok: true, server_identity: 'server-hub', capabilities: { remote_servers_v1: hubRemotesCapability() } }) }),
       { listRemoteServers: vi.fn(async () => ({ servers: [] })) }
     )
     const { service, settings } = createProfileService({
@@ -9230,7 +9230,7 @@ describe('server profile lifecycle', () => {
     expect(hubProbe.listRemoteServers).toHaveBeenCalledOnce()
     expect(profiles.map(profile => profile.id)).toEqual(['a', 'b'])
     // Left unset so the next pass retries once the user switches away from the stale remote.
-    expect((service as unknown as { lastHubRemoteCount: number | null }).lastHubRemoteCount).toBeNull()
+    expect((service as unknown as { lastHubRemoteIds: string | null }).lastHubRemoteIds).toBeNull()
   })
 
   it('redeploys a hub remote through the hub whichever profile is active, asking first while chats run', async () => {
@@ -9307,7 +9307,7 @@ describe('server profile lifecycle', () => {
 
   it('reorders hub remotes through the hub, and a reconcile follows the registry order', async () => {
     const hub = Object.assign(fakeClient(), {
-      reorderRemoteServers: vi.fn(async (ids: string[]) => ({ servers: ids.map(hubRemote) })),
+      reorderRemoteServers: vi.fn(async () => undefined),
       listRemoteServers: vi.fn(async () => ({ servers: [hubRemote('r1'), hubRemote('r2')] }))
     })
     const { service, settings } = createProfileService({ 'http://a.test:7850': [fakeClient()], [DEFAULT_SERVER_URL]: [hub] })

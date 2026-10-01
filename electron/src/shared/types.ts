@@ -2111,7 +2111,7 @@ export interface RemoteServersCapability {
   proxy_prefix: string
   admin_path: string
   ssh_available: boolean
-  count: number
+  ids: string[]
 }
 
 export interface ServerSetupDiagnostics {

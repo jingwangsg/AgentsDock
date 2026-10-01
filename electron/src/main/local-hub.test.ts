@@ -80,7 +80,7 @@ describe('planHubRemoteProfiles', () => {
   })
 })
 
-describe('hubRemoteProfileOrder', () => {
+describe('hub remote order', () => {
   const profiles = [
     profile('hub', HUB),
     profile('p-one', `${HUB}/api/remote/one`),

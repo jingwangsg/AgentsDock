@@ -127,12 +127,11 @@ export function reconcileHubProfiles(
 export function hubRemoteProfileOrder(
   profiles: readonly Pick<StoredServerProfile, 'id' | 'serverURL'>[],
   hubURL: string,
-  remotes: readonly Pick<RemoteServer, 'id'>[],
+  remotes: readonly Pick<RemoteServer, 'proxy_path'>[],
 ): string[] | null {
   const hub = normalizeServerURL(hubURL)
-  const rank = new Map(remotes.map((remote, index) => [remote.id, index]))
-  const rankOf = (profile: Pick<StoredServerProfile, 'serverURL'>) =>
-    hubProxyBaseURL(profile.serverURL) === hub ? rank.get(hubProxyRemoteId(profile.serverURL) ?? '') : undefined
+  const rank = new Map(remotes.map((remote, index) => [normalizeServerURL(hub + remote.proxy_path), index]))
+  const rankOf = (profile: Pick<StoredServerProfile, 'serverURL'>) => rank.get(normalizeServerURL(profile.serverURL))
   const current = profiles.filter(profile => rankOf(profile) !== undefined)
   const sorted = [...current].sort((a, b) => rankOf(a)! - rankOf(b)!)
   if (sorted.every((profile, index) => profile === current[index])) return null

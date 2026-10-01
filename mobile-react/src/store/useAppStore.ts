@@ -940,27 +940,30 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async reorderServerProfiles(profileIds) {
-    let profiles: PublicServerProfile[] = []
+    // Every device lists the hub's remotes in the registry's order: the hub takes the one chosen here
+    // first, so a failed write leaves this device showing the order the hub still has. Outside the
+    // mutation, like removeServerProfile's hub call: a slow hub must not block switching servers.
+    const hub = hubProfile(get())
+    if (hub) {
+      const hubURL = normalizeServerURL(hub.serverURL)
+      const urls = new Map(get().profiles.map(profile => [profile.id, profile.serverURL]))
+      const ids = profileIds.map(id => urls.get(id) ?? '').filter(url => hubProxyBaseURL(url) === hubURL).map(url => hubProxyRemoteId(url)!)
+      if (ids.length) {
+        const client = new AgentServerClient(hubURL, await loadProfileToken(hub.id, hub.credentialVersion))
+        try { await client.reorderRemoteServers(ids) } finally { client.dispose() }
+      }
+    }
     await withProfileMutation(async () => {
       const current = get().profiles
       if (profileIds.length !== current.length || new Set(profileIds).size !== current.length || profileIds.some(id => !current.some(profile => profile.id === id))) {
         throw new Error('Server profile order is invalid.')
       }
       const byId = new Map(current.map(profile => [profile.id, profile]))
-      profiles = profileIds.map(id => byId.get(id)!)
+      const profiles = profileIds.map(id => byId.get(id)!)
       await saveProfileSettings({ schemaVersion: 2, activeProfileId: get().activeProfileId ?? profiles[0].id, profiles: storedProfiles(profiles), fontScale: get().fontScale, appearance: get().appearance })
       set({ profiles })
       hubRegistryEdits += 1
     })
-    // Every device lists the hub's remotes in the registry's order; the hub keeps the one chosen here.
-    // After the mutation, as removeServerProfile does: a slow hub must not block switching servers.
-    const hub = hubProfile(get())
-    const hubURL = hub ? normalizeServerURL(hub.serverURL) : null
-    const ids = profiles.filter(profile => hubProxyBaseURL(profile.serverURL) === hubURL).map(profile => hubProxyRemoteId(profile.serverURL)!)
-    if (hub && hubURL && ids.length) {
-      const client = new AgentServerClient(hubURL, await loadProfileToken(hub.id, hub.credentialVersion))
-      try { await client.reorderRemoteServers(ids) } finally { client.dispose() }
-    }
   },
 
   async switchServerProfile(profileId) {
@@ -3966,7 +3969,7 @@ async function probeServerHealth(serverURL: string, token: string): Promise<Heal
   }
 }
 
-// Counts remotes the hub has unregistered (removeServerProfile).
+// Bumped by removeServerProfile and reorderServerProfiles: a registry list fetched before the edit is stale.
 let hubRegistryEdits = 0
 
 /**
@@ -4008,7 +4011,7 @@ async function reconcileHubRegistry(
   }
   try {
     await withProfileMutation(async () => {
-      // A list fetched before a remote was removed would recreate it; the next refresh reconciles.
+      // A list fetched before a removal or reorder here would recreate the remote or undo the drag; the next refresh reconciles.
       if (!isCurrent() || edits !== hubRegistryEdits) return
       const stored = storedProfiles(get().profiles)
       const { create, removeIds } = reconcileHubProfiles(stored, hubScope.serverURL, remotes)
@@ -4020,7 +4023,6 @@ async function reconcileHubRegistry(
       const created = create.map(entry => createStoredServerProfile({ ...entry, serverConfigured: true }, createProfileId()))
       const removed = new Set(removeIds)
       for (const profile of created) await saveProfileToken(profile.id, profile.credentialVersion, hubToken)
-      // Every device lists the hub's remotes in the registry's order.
       const merged = [...stored.filter(profile => !removed.has(profile.id)), ...created]
       const order = hubRemoteProfileOrder(merged, hubScope.serverURL, remotes)
       const profiles = order ? order.map(id => merged.find(profile => profile.id === id)!) : merged

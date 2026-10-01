@@ -234,8 +234,6 @@ class RemoteServerUpdate(BaseModel):
 
 
 class RemoteServerOrder(BaseModel):
-    """Every registered server once, in the order every client lists them."""
-
     ids: list[str]
 
 
@@ -1094,8 +1092,6 @@ class RemoteServerManager:
     def reorder(self, ids: list[str]) -> None:
         """The listed servers take this order. A client lists what it has synced so far: servers it does not
         know yet keep their relative order after those, and ids it still holds for removed ones are skipped."""
-        if len(set(ids)) != len(ids):
-            raise HTTPException(status_code=409, detail="The order lists a server twice.")
         ordered = [remote_id for remote_id in ids if remote_id in self.servers]
         ordered += [remote_id for remote_id in self.servers if remote_id not in ordered]
         self.servers = {remote_id: self.servers[remote_id] for remote_id in ordered}
@@ -1395,7 +1391,8 @@ def capability(manager: RemoteServerManager) -> dict[str, Any]:
         "proxy_prefix": PROXY_PREFIX,
         "admin_path": ADMIN_PATH,
         "ssh_available": shutil.which("ssh") is not None or Path("/usr/bin/ssh").exists(),
-        "count": len(manager.servers),
+        # Registry order: a client reconciles when this changes, which a reorder elsewhere does without changing the count.
+        "ids": list(manager.servers),
     }
 
 
@@ -1420,11 +1417,11 @@ def register_remote_server_routes(
         server = await manager.add(body)
         return public_view(server, manager.tunnel_status(server.id))
 
-    @app.put(f"{ADMIN_PATH}/order")
-    async def remote_servers_reorder(request: Request, body: RemoteServerOrder) -> dict[str, Any]:
+    @app.put(f"{ADMIN_PATH}/order", status_code=204)
+    async def remote_servers_reorder(request: Request, body: RemoteServerOrder) -> Response:
         authorize_admin(request)
         manager.reorder(body.ids)
-        return {"servers": manager.list()}
+        return Response(status_code=204)
 
     @app.post(f"{ADMIN_PATH}/deploy", status_code=202)
     async def remote_servers_deploy(request: Request, body: RemoteDeployRequest) -> dict[str, Any]:

@@ -1554,7 +1554,7 @@ export class AppService {
     return Boolean(token)
   }
 
-  private lastHubRemoteCount: number | null = null
+  private lastHubRemoteIds: string | null = null
   private hubReconcile: Promise<PublicServerProfile[]> | null = null
 
   /**
@@ -1579,10 +1579,9 @@ export class AppService {
         if (!stillValid()) throw staleProfileError()
         for (const add of plan.add) this.addServer({ ...add, accessToken, serverSetupComplete: true })
       }
-      // Every device lists the hub's remotes in the registry's order.
       const order = hubRemoteProfileOrder(hub.serverUrl, servers, this.settings.listProfiles())
       if (order) this.settings.reorderProfiles(order)
-      this.lastHubRemoteCount = removable.length === plan.remove.length ? servers.length : null
+      this.lastHubRemoteIds = removable.length === plan.remove.length ? servers.map(server => server.id).join(' ') : null
       this.emitProfiles()
       return this.publicProfiles()
     })()
@@ -1967,15 +1966,18 @@ export class AppService {
   async reorderServers(profileIds: string[]): Promise<PublicServerProfile[]> {
     // A reconcile already in flight listed the hub's previous order; joining it would undo this drag.
     await this.hubReconcile?.catch(() => undefined)
-    const profiles = this.settings.reorderProfiles(profileIds)
-    this.emitProfiles()
-    // Every device lists the hub's remotes in the registry's order; the hub keeps the one chosen here.
+    // Every device lists the hub's remotes in the registry's order: the hub takes the one chosen here
+    // first, so a failed write leaves this Mac showing the order the hub still has.
     const hub = this.hubProfile()
-    const ids = hub ? profiles.map(profile => hubRemoteId(hub.serverUrl, profile.serverUrl)).filter((id): id is string => id !== null) : []
-    if (hub && ids.length) {
-      const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
-      try { await client.reorderRemoteServers(ids) } finally { client.dispose() }
+    if (hub) {
+      const ids = profileIds.map(id => hubRemoteId(hub.serverUrl, this.settings.getProfileMetadata(id)?.serverUrl ?? '')).filter((id): id is string => id !== null)
+      if (ids.length) {
+        const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+        try { await client.reorderRemoteServers(ids) } finally { client.dispose() }
+      }
     }
+    this.settings.reorderProfiles(profileIds)
+    this.emitProfiles()
     return this.publicProfiles()
   }
 
@@ -5880,7 +5882,7 @@ export class AppService {
     } else this.mailHints.retire()
     if (!portForwardingCapabilityAvailable(health)) this.portTunnels.disposeAll()
     const remotes = health.capabilities?.remote_servers_v1
-    if (scope.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotes.count !== this.lastHubRemoteCount) {
+    if (scope.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotes.ids.join(' ') !== this.lastHubRemoteIds) {
       void this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope)).catch(error => appLog('hub', 'remote reconcile failed', { message: errorText(error) }))
     }
     return scope
@@ -6692,7 +6694,7 @@ export class AppService {
     if (this.searchBackfillTimer) clearTimeout(this.searchBackfillTimer)
     this.searchBackfillTimer = null
     this.healthFailureCount = 0
-    this.lastHubRemoteCount = null
+    this.lastHubRemoteIds = null
     this.validatedGeneration = null
     this.lastSyncState = ''
     this.runtimeRefreshNextAt = 0
@@ -7047,9 +7049,9 @@ export class AppService {
           expectedIdentity,
           token,
         )
-        // A remote deleted on the hub while another profile is active must not linger in the switcher.
+        // A remote deleted or reordered on the hub while another profile is active must show in the switcher.
         const remotes = health.capabilities?.remote_servers_v1
-        if (profile.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotes.count !== this.lastHubRemoteCount) {
+        if (profile.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotes.ids.join(' ') !== this.lastHubRemoteIds) {
           await this.reconcileHubRemotes({ profileId, serverUrl: profile.serverUrl, client }, () => this.profileHealthProbeIsCurrent(profileId, revision, epoch))
             .catch(error => appLog('hub', 'remote reconcile failed', { message: errorText(error) }))
         }

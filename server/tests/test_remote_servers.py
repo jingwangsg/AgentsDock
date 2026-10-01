@@ -280,15 +280,16 @@ class RemoteServerTests(unittest.TestCase):
         manager.servers["abcdef123456"] = make_server()
         manager.servers["123456abcdef"] = make_server(id="123456abcdef", name="lab", local_port=7852)
         manager.servers["fedcba654321"] = make_server(id="fedcba654321", name="new", local_port=7853)
+        manager.servers["aaaaaa111111"] = make_server(id="aaaaaa111111", name="newer", local_port=7854)
         hub = FastAPI()
         rs.register_remote_server_routes(hub, manager=manager, authorize_admin=lambda request: None, websocket_authorized=lambda ws: True)
         client = TestClient(hub)
-        # The client still holds a removed server's id and has not synced the newest one.
-        response = client.put(f"{rs.ADMIN_PATH}/order", json={"ids": ["123456abcdef", "000000000000", "abcdef123456"]})
-        assert response.status_code == 200
-        assert [server["id"] for server in response.json()["servers"]] == ["123456abcdef", "abcdef123456", "fedcba654321"]
-        assert [server.id for server in rs.load_registry(manager.path)] == ["123456abcdef", "abcdef123456", "fedcba654321"]
-        assert client.put(f"{rs.ADMIN_PATH}/order", json={"ids": ["abcdef123456", "abcdef123456"]}).status_code == 409
+        # The client still holds a removed server's id and has not synced the two newest ones.
+        assert client.put(f"{rs.ADMIN_PATH}/order", json={"ids": ["123456abcdef", "000000000000", "abcdef123456"]}).status_code == 204
+        expected = ["123456abcdef", "abcdef123456", "fedcba654321", "aaaaaa111111"]
+        assert [server["id"] for server in manager.list()] == expected
+        assert [server.id for server in rs.load_registry(manager.path)] == expected
+        assert rs.capability(manager)["ids"] == expected
 
     def test_deploy_request_defaults_and_port_zero(self) -> None:
         request = rs.RemoteDeployRequest(ssh_host="user@host")

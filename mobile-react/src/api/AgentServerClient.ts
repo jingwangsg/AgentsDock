@@ -314,7 +314,7 @@ export class AgentServerClient {
   removeRemoteServer(remoteId: string): Promise<void> {
     return this.request(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, { method: 'DELETE' }, 30_000, false, 'native-control')
   }
-  reorderRemoteServers(ids: string[]): Promise<{ servers: RemoteServer[] }> {
+  reorderRemoteServers(ids: string[]): Promise<void> {
     return this.request('/api/admin/remote-servers/order', { method: 'PUT', body: JSON.stringify({ ids }) }, 30_000, false, 'native-control')
   }
   startRemoteRedeploy(remoteId: string): Promise<{ job_id: string }> {
