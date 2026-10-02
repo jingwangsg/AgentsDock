@@ -896,7 +896,18 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       }
       return
     }
-    // Claude compacts through its native `/compact`, sent as a provider command selection.
+    if (claudeRuntime.runtime?.features?.compact === true) {
+      // Same server operation as the Claude context sheet's Compact button; the
+      // server runs the native /compact and records its lifecycle rows.
+      try {
+        await claudeRuntime.run((connection, id) => connection.compactClaudeContext(id))
+        if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Compacting context', 'Context compaction started.')
+      } catch (error) {
+        if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Could not compact context', errorText(error))
+      }
+      return
+    }
+    // Older servers: Claude compacts through its native `/compact`, sent as a provider command selection.
     let snapshot = activeProviderCommandState.snapshot ?? (providerCommandsKey ? cachedProviderCommands(providerCommandsKey) : null)
     if (!snapshot && providerCommandsKey) {
       try {

@@ -286,6 +286,7 @@ const api: AgentsDockAPI = {
     setGoal: (sessionId, condition) => ipcRenderer.invoke('claude:goal:set', sessionId, condition),
     clearGoal: sessionId => ipcRenderer.invoke('claude:goal:clear', sessionId),
     refreshContextUsage: sessionId => ipcRenderer.invoke('claude:context-usage:refresh', sessionId),
+    compact: sessionId => ipcRenderer.invoke('claude:compact', sessionId),
     mcp: sessionId => ipcRenderer.invoke('claude:mcp', sessionId),
     controlMcp: (sessionId, input) => ipcRenderer.invoke('claude:mcp:control', sessionId, input),
     resolveInteraction: (sessionId, interactionId, response) => (

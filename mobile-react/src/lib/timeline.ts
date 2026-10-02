@@ -357,7 +357,7 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
       if (priority > existingPriority || priority === existingPriority && event.seq >= existing.event.seq) existing.event = event
       // A compaction row stays where it started so a live "Compacting" marker
       // becomes "Compacted" without moving; other markers follow their latest packet.
-      existing.seq = key.startsWith('codex:compaction:') ? Math.min(existing.seq, event.seq) : Math.max(existing.seq, event.seq)
+      existing.seq = isCompactionLifecycleKey(key) ? Math.min(existing.seq, event.seq) : Math.max(existing.seq, event.seq)
       return true
     }
     const row: SystemRow = { kind: 'system', key, seq: event.seq, event }
@@ -1483,31 +1483,44 @@ export function isNativeSteerSupersession(event: Pick<Event, 'type' | 'native_st
     && (event.native_steer === true || Boolean(event.superseded_by_run_id))
 }
 
+export function isCompactionStartedEvent(type: string): boolean {
+  return type === 'codex_compaction_started' || type === 'claude_compaction_started'
+}
+
+export function isCompactionCompletedEvent(type: string): boolean {
+  return type === 'codex_compaction_completed' || type === 'claude_compaction_completed'
+}
+
+export function isCompactionLifecycleKey(key: string): boolean {
+  return key.startsWith('codex:compaction:') || key.startsWith('claude:compaction:')
+}
+
 /**
- * Match the server/Mac semantic identity for durable Codex lifecycle markers.
+ * Match the server/Mac semantic identity for durable provider lifecycle markers.
  * Automatic compaction can happen more than once inside one provider turn;
  * the transcript needs one latest marker for that logical turn, not one card
- * for every underlying compaction item.
+ * for every underlying compaction item. Claude and Codex use distinct prefixes.
  */
 export function codexLifecycleSemanticKey(
   event: Pick<Event, 'type' | 'compaction_id' | 'operation_id' | 'turn_id' | 'item_id' | 'id' | 'seq'>,
 ): string | null {
   if (event.type === 'codex_goal_budget_limited') return 'codex:goal-budget'
-  if (event.type !== 'codex_compaction_started' && event.type !== 'codex_compaction_completed') return null
+  if (!isCompactionStartedEvent(event.type) && !isCompactionCompletedEvent(event.type)) return null
+  const provider = event.type.startsWith('claude_') ? 'claude' : 'codex'
   const compactionId = event.compaction_id?.trim()
-  if (compactionId) return `codex:compaction:${compactionId}`
+  if (compactionId) return `${provider}:compaction:${compactionId}`
   const operationId = event.operation_id?.trim()
-  if (operationId) return `codex:compaction:${operationId}`
+  if (operationId) return `${provider}:compaction:${operationId}`
   const nativeId = event.turn_id?.trim()
     || event.item_id?.trim()
     || event.id?.trim()
     || String(event.seq)
-  return `codex:compaction:${nativeId}`
+  return `${provider}:compaction:${nativeId}`
 }
 
 function codexLifecycleEventPriority(event: Event): number {
-  if (event.type === 'codex_compaction_completed') return 20
-  if (event.type === 'codex_compaction_started') return 10
+  if (isCompactionCompletedEvent(event.type)) return 20
+  if (isCompactionStartedEvent(event.type)) return 10
   return 0
 }
 

@@ -2068,6 +2068,62 @@ describe('timeline pin state', () => {
     expect(container.querySelector('.system-icon .spin')).toBeInTheDocument()
   })
 
+  it('renders a live Claude compaction with the same marker as Codex', () => {
+    const event: Event = {
+      id: 'claude-compact-start',
+      session_id: 'chat-1',
+      seq: 12,
+      type: 'claude_compaction_started',
+      ts: '2026-10-02T14:31:00Z',
+      compaction_id: 'run-1',
+      run_id: 'run-1',
+      message: "Claude started compacting this chat's context."
+    }
+    const item: SystemItem = {
+      kind: 'system',
+      id: 'claude:compaction:run-1',
+      key: 'claude:compaction:run-1',
+      seq: 12,
+      anchorTs: event.ts,
+      event
+    }
+    const { container } = render(
+      <TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} codexLifecycleActive />
+    )
+
+    expect(screen.getByText('Compacting context…')).toBeInTheDocument()
+    expect(container.querySelector('.system-icon .spin')).toBeInTheDocument()
+  })
+
+  it('renders a completed Claude compaction with its token summary as collapsed detail', () => {
+    const event: Event = {
+      id: 'claude-compact-complete',
+      session_id: 'chat-1',
+      seq: 13,
+      type: 'claude_compaction_completed',
+      ts: '2026-10-02T14:31:20Z',
+      compaction_id: 'run-1',
+      run_id: 'run-1',
+      status: 'completed',
+      message: "Claude compacted this chat's context from 27,295 to 4,717 tokens."
+    }
+    const item: SystemItem = {
+      kind: 'system',
+      id: 'claude:compaction:run-1',
+      key: 'claude:compaction:run-1',
+      seq: 12,
+      event
+    }
+    render(
+      <TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} codexLifecycleActive={false} />
+    )
+
+    expect(screen.getByText('Context compacted')).toBeInTheDocument()
+    expect(screen.getByText("Claude compacted this chat's context from 27,295 to 4,717 tokens.")).not.toBeVisible()
+    fireEvent.click(screen.getByText('Context compacted'))
+    expect(screen.getByText("Claude compacted this chat's context from 27,295 to 4,717 tokens.")).toBeVisible()
+  })
+
   it('keeps an owned run visibly live through compaction until its actual finish', () => {
     const progress: Event = {
       id: 'working', session_id: 'chat-1', seq: 10, type: 'reasoning_summary',

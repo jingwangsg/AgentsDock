@@ -7,7 +7,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import * as Tooltip from '@radix-ui/react-tooltip'
 import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent, type DragOverEvent } from '@dnd-kit/core'
-import { AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CheckCircle2, ChevronDown, Columns2, CornerDownRight, File, FolderOpen, Gauge, GitFork, Goal, GripVertical, Import, Info, ListOrdered, LoaderCircle, Mail, MessageSquarePlus, MessageSquareShare, MoreHorizontal, Network, Paperclip, Pencil, Plus, RadioTower, RotateCw, Send, Settings, Sparkles, Square, Trash2, X } from 'lucide-react'
+import { AlertTriangle, ArchiveRestore, ArrowDown, ArrowUp, CalendarClock, CheckCircle2, ChevronDown, Columns2, CornerDownRight, File, FolderOpen, Gauge, GitFork, Goal, GripVertical, Import, Info, ListOrdered, LoaderCircle, Mail, MessageSquarePlus, MessageSquareShare, MoreHorizontal, Network, Paperclip, Pencil, Plus, RadioTower, RotateCw, Send, Settings, Sparkles, Square, Trash2, X } from 'lucide-react'
 import { effectiveFileContentType } from '@shared/file-content-type'
 import { localSessionImportSupported } from '@shared/local-session-import'
 import type { AgentCrossChatRoute, AgentTeamMailRoute, AgentTeamMailRoutesSnapshot, AgentFile, ChatReference, ChatReferenceAction, Event as AgentEvent, Health, NativeFileRef, ProviderCommand, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
@@ -283,6 +283,7 @@ interface ComposerCommand extends ComposerCommandMetadata {
 const COMPOSER_COMMANDS: readonly ComposerCommand[] = [
   { id: 'attach', get label() { return t("ui.Composer.copy.attach_files_e697cc1") }, get description() { return t("ui.Composer.copy.choose_files_for_this_message_96040d5") }, keywords: ['upload', 'file'], category: 'agentsdock' },
   { id: 'chat', get label() { return t("ui.Composer.copy.contact_another_chat_45bd9fd") }, get description() { return t("ui.Composer.copy.name_any_chat_this_agent_can_contact_5bca269") }, keywords: ['handoff', 'mention', 'cross-chat', 'route'], category: 'agentsdock' },
+  { id: 'compact', get label() { return t('composer.compact.label') }, get description() { return t('composer.compact.description') }, keywords: ['context', 'summarize', 'memory'], category: 'agentsdock' },
   { id: 'digest', get label() { return t("ui.Composer.copy.create_digest_8b04e01") }, get description() { return t("ui.Composer.copy.summarize_this_chat_for_a_handoff_eb96a08") }, keywords: ['handoff', 'summary'], category: 'agentsdock' },
   { id: 'feedback', get label() { return t("ui.Composer.copy.send_feedback_8235980") }, get description() { return t("ui.Composer.copy.open_the_public_agentsdock_issue_form_7cb3c3a") }, keywords: ['issue', 'bug'], category: 'agentsdock' },
   { id: 'goal', get label() { return t("ui.Composer.copy.goal_cdbf697") }, get description() { return t("ui.Composer.copy.set_or_manage_a_persistent_codex_goal_ea4f0b3") }, keywords: ['objective', 'long-running'], category: 'agentsdock' },
@@ -792,11 +793,15 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         .some(option => Boolean(option.value))
     }
     if (command.id === 'mcp') return session.backend === 'claude' && claudeMcpAvailable
+    if (command.id === 'compact') {
+      if (session.backend === 'codex') return codexRuntime.supported
+      return session.backend === 'claude' && claudeRuntime.supported && claudeRuntime.runtime?.features?.compact === true
+    }
     if (command.id === 'schedule') return health?.capabilities?.scheduled_jobs?.available === true
     if (command.id === 'import') return localSessionImportSupported(health)
     if (command.id === 'split') return !splitOpen
     return true
-  }, [catalog, claudeGoalsAvailable, claudeMcpAvailable, codexGoalsAvailable, crossChatSupported, healthRevision, session, splitOpen, teamMessagesAdvertised])
+  }, [catalog, claudeGoalsAvailable, claudeMcpAvailable, claudeRuntime.runtime?.features?.compact, claudeRuntime.supported, codexGoalsAvailable, codexRuntime.supported, crossChatSupported, healthRevision, session, splitOpen, teamMessagesAdvertised])
   const activeProviderCommandState: ProviderCommandLoadState = providerCommandState.key === providerCommandsKey
     ? providerCommandState
     : { key: providerCommandsKey, status: 'idle', snapshot: null }
@@ -1667,6 +1672,11 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     focusCommandSession()
     if (command.id === 'attach') {
       void chooseFiles()
+    } else if (command.id === 'compact') {
+      // Same server operation as the provider panel's Compact button; the
+      // timeline's lifecycle marker is the progress surface for both providers.
+      const bridge = session.backend === 'codex' ? window.agentsDock.codex : window.agentsDock.claude
+      void bridge.compact(session.id).catch(reportActionError)
     } else if (command.id === 'digest') {
       useAppStore.getState().setModal('digest', true)
     } else if (command.id === 'feedback') {
@@ -2905,6 +2915,7 @@ function composerCommandIcon(command: ComposerCommand) {
   switch (command.id) {
     case 'attach': return <Paperclip size={15} />
     case 'chat': return <MessageSquareShare size={15} />
+    case 'compact': return <ArchiveRestore size={15} />
     case 'digest': return <GitFork size={15} />
     case 'feedback': return <Sparkles size={15} />
     case 'goal': return <Goal size={15} />

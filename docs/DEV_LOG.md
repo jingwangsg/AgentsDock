@@ -1,5 +1,28 @@
 # Public development log
 
+## 2026-10-03 — Context compaction works the same way for Claude and Codex
+
+- Claude chats can now compact their context from the provider panel and from
+  the `/compact` slash command, as Codex chats already could. The server runs
+  Claude's native `/compact` as one validated command turn and records
+  `claude_compaction_started` and `claude_compaction_completed` rows, so the
+  timeline shows "Compacting context…" while Claude works and "Context
+  compacted" with the measured token counts afterwards (for example 29,643 to
+  5,404 tokens). Automatic compactions inside a normal Claude turn produce the
+  same rows. A `/compact` that Claude declines ("Not enough messages to
+  compact.") is recorded as a failed compaction with that reason instead of
+  the earlier "Claude returned no response" error.
+- Both provider panels show the live compaction state on their Compact row and
+  keep the button disabled until the compaction settles; the Claude runtime
+  snapshot advertises the new route so older servers keep their previous
+  behavior. The desktop command palette gains an AgentsDock `/compact`
+  command for both providers; Android already had it and now uses the server
+  route for Claude when the server offers it.
+- Verified on an isolated server with real Claude and Codex: the API flow for
+  both providers, and the built desktop app driven through its real IPC and
+  HTTP transport for the panel button and the slash command. Android changes
+  pass type checks and unit tests; the Android app itself was not exercised.
+
 ## 2026-10-02 — Android build 21: a large upload is given up only when it stalls
 
 - Android gave an upload a deadline derived from its size, assuming at least

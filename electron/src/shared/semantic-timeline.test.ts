@@ -597,6 +597,17 @@ describe('timeline semantic units', () => {
     ])
   })
 
+  it('keeps Claude compaction markers under their own key prefix', () => {
+    const units = timelineSemanticUnits([
+      event(2, 'claude_compaction_started', { compaction_id: 'run-1', run_id: 'run-1' }),
+      event(5, 'claude_compaction_completed', { compaction_id: 'run-1', run_id: 'run-1' })
+    ])
+
+    expect(units.map(unit => [unit.key, unit.anchorSeq, unit.events.length])).toEqual([
+      ['claude:compaction:run-1', 2, 2]
+    ])
+  })
+
   it('keeps separate native compaction items in the same turn distinct', () => {
     const units = timelineSemanticUnits([
       event(1, 'codex_compaction_started', {

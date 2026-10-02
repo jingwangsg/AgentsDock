@@ -674,6 +674,7 @@ function ThreadActions({ onNotice }: { onNotice(value: string): void }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   if (!session) return null
   const threadStatus = runtime?.status?.type
+  const compacting = runtime?.compacting === true
   const hasProviderThread = runtime
     ? runtime.thread_loaded === true
     : Boolean(session.codex_thread_id || session.session_id)
@@ -728,8 +729,8 @@ function ThreadActions({ onNotice }: { onNotice(value: string): void }) {
     <div className="codex-section-heading"><Sparkles size={15} /><div><strong>{t("ui.CodexControls.ThreadActions.thread_actions_3f52614")}</strong><small>{t("ui.CodexControls.ThreadActions.native_codex_app_server_operations_5218e7d")}</small></div></div>
     {unavailableReason && <div className={`codex-action-unavailable${threadStatus === 'active' ? ' running' : ''}`}><AlertTriangle size={13} /> {unavailableReason}</div>}
     <div className="codex-action-row">
-      <div><strong>{t("ui.CodexControls.ThreadActions.compact_context_afbbb87")}</strong><small>{t("ui.CodexControls.ThreadActions.ask_codex_to_condense_the_thread_context_w_1e4c2a9")}</small></div>
-      <button type="button" className="quiet-button" disabled={!actionsEnabled} onClick={compact}><ArchiveRestore size={14} />{" "}{t("ui.CodexControls.ThreadActions.compact_9945264")}</button>
+      <div><strong>{t("ui.CodexControls.ThreadActions.compact_context_afbbb87")}</strong><small>{compacting ? t('timeline.ui.compactingContext') : t("ui.CodexControls.ThreadActions.ask_codex_to_condense_the_thread_context_w_1e4c2a9")}</small></div>
+      <button type="button" className="quiet-button" disabled={!actionsEnabled} onClick={compact}>{compacting ? <LoaderCircle className="spin" size={14} /> : <ArchiveRestore size={14} />}{" "}{t("ui.CodexControls.ThreadActions.compact_9945264")}</button>
     </div>
     <div className="codex-action-block">
       <div><strong>{t("ui.CodexControls.ThreadActions.inline_code_review_769da0c")}</strong><small>{t("ui.CodexControls.ThreadActions.review_results_appear_in_this_chat_d0f03e6")}</small></div>

@@ -3834,6 +3834,10 @@ export class AppService {
     return this.providerRequest(scope => scope.client.refreshClaudeContextUsage(sessionId))
   }
 
+  async compactClaudeContext(sessionId: string): Promise<CodexOperationAccepted> {
+    return this.providerRequest(scope => scope.client.compactClaudeContext(sessionId))
+  }
+
   async claudeMcp(sessionId: string): Promise<ClaudeMcpSnapshot> {
     return this.providerRequest(scope => scope.client.claudeMcp(sessionId))
   }

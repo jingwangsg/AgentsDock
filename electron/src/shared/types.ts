@@ -93,6 +93,8 @@ export interface ClaudeRuntimeFeatures {
   mcp_management?: boolean
   /** Native Claude completion-condition goals, with authoritative provider state. */
   goals?: boolean
+  /** POST /claude/compact runs the native /compact command with lifecycle rows. */
+  compact?: boolean
 }
 
 export interface ClaudeGoal {
@@ -114,6 +116,8 @@ export interface ClaudeRuntimeSnapshot {
   persisted_session?: boolean
   session_loaded: boolean
   status?: CodexThreadStatus | null
+  /** True while the active run is compacting its context; absent on older servers. */
+  compacting?: boolean
   pending_interactions: ClaudePendingInteraction[]
   policy?: ClaudeRuntimePolicy | null
   /** Explicit feature gate; absent on older servers that cannot persist Claude modes. */
@@ -242,6 +246,8 @@ export interface CodexRuntimeSnapshot {
   /** Additive server hint used when compact session summaries omit provider IDs. */
   persisted_thread?: boolean
   status: CodexThreadStatus | null
+  /** True while a context compaction is running on this thread; absent on older servers. */
+  compacting?: boolean
   goal: CodexGoal | null
   time_budget_seconds: number | null
   /** Additive server field; absent on pre-budget-exhaustion servers. */

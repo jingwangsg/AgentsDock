@@ -312,8 +312,8 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
             ) : null}
             <ActionRow
               title="Compact context"
-              description="Condense provider context without deleting this chat timeline."
-              action={<Action label="Compact" disabled={refreshing || !actionsEnabled} onPress={() => perform(() => client.compactCodexThread(session.id), 'Native context compaction started.')} />}
+              description={runtime?.compacting ? 'Compacting context…' : 'Condense provider context without deleting this chat timeline.'}
+              action={<Action label="Compact" disabled={refreshing || !actionsEnabled || runtime?.compacting === true} onPress={() => perform(() => client.compactCodexThread(session.id), 'Native context compaction started.')} />}
             />
             <Field label="Inline review target">
               <Choice

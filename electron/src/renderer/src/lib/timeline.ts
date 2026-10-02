@@ -4,7 +4,7 @@ import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 import { hasTimelineChangeSignal } from '@shared/timeline-change-signal'
 import { agentFileBelongsToSession, eventFileForSession } from '@shared/session-files'
 import { hasProviderUserProvenance, isImportedClaudeControlCompanion, isImportedCodexRuntimeContext, isImportedProviderControlMetadata, isImportedProviderInterruption, isImportedSourceProvenRepair, isImportedSourceProvenAssistantReplay, isImportedSourceProvenNativeReplay } from '@shared/provider-origin'
-import { codexLifecycleSemanticKey, crossChatSemanticKey, isAsyncCrossChatMessage, isNativeGoalSteerEvent, isNativeSteerTransitionStop, providerInteractionAuditKey } from '@shared/semantic-timeline'
+import { codexLifecycleSemanticKey, crossChatSemanticKey, isAsyncCrossChatMessage, isCompactionCompletedEvent, isCompactionLifecycleKey, isCompactionStartedEvent, isNativeGoalSteerEvent, isNativeSteerTransitionStop, providerInteractionAuditKey } from '@shared/semantic-timeline'
 import { isChatMailboxEvent } from '@shared/chat-inbox'
 
 export type TimelineItem = TurnItem | SystemItem | JobItem
@@ -1315,7 +1315,7 @@ export class TimelineProjector {
 
   private appendCodexLifecycleEvent(event: Event, lifecycleKey: string): void {
     const existing = this.codexLifecycleByKey.get(lifecycleKey)
-    const compaction = lifecycleKey.startsWith('codex:compaction:')
+    const compaction = isCompactionLifecycleKey(lifecycleKey)
     const eventPriority = codexLifecycleEventPriority(event)
     const existingPriority = existing ? codexLifecycleEventPriority(existing.event) : -1
     const displayEvent = existing && (
@@ -1514,10 +1514,7 @@ export class TimelineProjector {
  * fallback for old history without provider-session ownership metadata.
  */
 function isLeakedChildCompaction(event: Event, expectedRootThreadId?: string | null): boolean {
-  if (
-    event.type !== 'codex_compaction_started'
-    && event.type !== 'codex_compaction_completed'
-  ) return false
+  if (!isCompactionStartedEvent(event.type) && !isCompactionCompletedEvent(event.type)) return false
   const eventThreadId = event.thread_id?.trim() || ''
   if (!eventThreadId) return false
   const expected = expectedRootThreadId?.trim() || ''
@@ -1851,12 +1848,12 @@ function interleaveAnchoredRows(
 }
 
 function isCompactionRow(item: RenderTimelineItem): item is SystemItem {
-  return item.kind === 'system' && item.key.startsWith('codex:compaction:')
+  return item.kind === 'system' && isCompactionLifecycleKey(item.key)
 }
 
 function isChronologicalSystemRow(item: RenderTimelineItem): item is SystemItem {
   return item.kind === 'system' && (
-    item.key.startsWith('codex:compaction:')
+    isCompactionLifecycleKey(item.key)
     || item.event.type === 'emergency_alert_raised'
     || item.event.type === 'team_message_sent'
     || crossChatSemanticKey(item.event) !== null
@@ -2140,8 +2137,8 @@ function timelineItemEqual(a: TimelineItem, b: TimelineItem): boolean {
 }
 
 function codexLifecycleEventPriority(event: Event): number {
-  if (event.type === 'codex_compaction_completed') return 20
-  if (event.type === 'codex_compaction_started') return 10
+  if (isCompactionCompletedEvent(event.type)) return 20
+  if (isCompactionStartedEvent(event.type)) return 10
   return 0
 }
 

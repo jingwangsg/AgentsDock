@@ -7,7 +7,7 @@ import { AlertTriangle, Bot, Check, ChevronRight, Clock3, Code2, Copy, FileText,
 import { compactToolOutputPreview } from '@shared/event-compaction'
 import { agentFileBelongsToSession } from '@shared/session-files'
 import { isImportedProviderInterruption } from '@shared/provider-origin'
-import { codexLifecycleSemanticKey } from '@shared/semantic-timeline'
+import { codexLifecycleSemanticKey, isCompactionCompletedEvent, isCompactionStartedEvent } from '@shared/semantic-timeline'
 import type { ChatReference, CodeDiffFileSummary, CrossChatExchange, Event, PinnedItem, QueuedTurn, WorkspaceProfileScope } from '@shared/types'
 import type { CodeReviewTarget, JobItem, MediaItem, MessageItem, ProgressItem, RenderTimelineItem, SystemItem } from '../lib/timeline'
 import { progressEventSequence, progressToolStartSequences, extractUnifiedDiff, isHandoffDigestEvent, isPublicCommentary, isTimelineError, jobDisplaySelection, jobResultPresentation, messageItemText, messageText, omitTerminalClaudeFinalCommentary, parseReviewableDiff, summarizeStructuredToolDiff } from '../lib/timeline'
@@ -155,7 +155,7 @@ function LiveCodexLifecycleMarker({ item }: { item: SystemItem }) {
   useLocale()
   const event = item.event
   const failed = codexLifecycleFailed(event)
-  const compacting = event.type === 'codex_compaction_started'
+  const compacting = isCompactionStartedEvent(event.type)
   const icon = failed
     ? <AlertTriangle size={12} />
     : compacting
@@ -689,7 +689,7 @@ function RunActivityHeader({ item, events, open, detailsId, onToggle, subagents 
     return () => window.clearInterval(timer)
   }, [ticking])
   const duration = activityDuration(item, events, now)
-  const compacting = live && item.lifecycle?.some(marker => marker.event.type === 'codex_compaction_started')
+  const compacting = live && item.lifecycle?.some(marker => isCompactionStartedEvent(marker.event.type))
   const title = item.continues ? t('timeline.activity.progress') : stopped
     ? t('timeline.activity.stoppedAfter', { duration })
     : live
@@ -2079,7 +2079,7 @@ function CodexLifecycleView({ item, sessionId, active }: { item: SystemItem; ses
   useLocale()
   const event = item.event
   const error = isTimelineError(event) || codexLifecycleFailed(event)
-  const liveCompaction = active && event.type === 'codex_compaction_started'
+  const liveCompaction = active && isCompactionStartedEvent(event.type)
   const title = codexLifecycleTitle(event, liveCompaction)
   const detail = codexLifecycleDetail(event)
   const icon = error
@@ -2101,14 +2101,14 @@ function CodexLifecycleView({ item, sessionId, active }: { item: SystemItem; ses
 
 function codexLifecycleTitle(event: Event, liveCompaction = false): string {
   if (event.type === 'codex_goal_budget_limited') return t('timeline.ui.goalBudgetReached')
-  if (event.type === 'codex_compaction_started') return liveCompaction ? t('timeline.ui.compactingContext') : t('timeline.ui.contextCompactionStarted')
-  if (event.type === 'codex_compaction_completed') return codexLifecycleFailed(event) ? t('timeline.ui.contextCompactionFailed') : t('timeline.ui.contextCompacted')
+  if (isCompactionStartedEvent(event.type)) return liveCompaction ? t('timeline.ui.compactingContext') : t('timeline.ui.contextCompactionStarted')
+  if (isCompactionCompletedEvent(event.type)) return codexLifecycleFailed(event) ? t('timeline.ui.contextCompactionFailed') : t('timeline.ui.contextCompacted')
   return titleCase(event.type)
 }
 
 function codexLifecycleFailed(event: Event): boolean {
   if (isTimelineError(event)) return true
-  return event.type === 'codex_compaction_completed'
+  return isCompactionCompletedEvent(event.type)
     && typeof event.status === 'string'
     && event.status !== 'completed'
 }

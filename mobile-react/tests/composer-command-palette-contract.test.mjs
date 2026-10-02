@@ -55,8 +55,12 @@ test('/goal and /compact follow the desktop server paths per backend', () => {
   // A typed `/goal <objective>` is intercepted on send instead of reaching the agent as text.
   assert.match(composer, /const goalArgument = consumeComposer \? goalCommandArgument\(currentDraft\) : null/)
   assert.match(composer, /if \(goalArgument\) void setGoalFromCommand\(goalArgument\)\s+else openGoalCommand\(\)/)
-  // Codex compaction is the native app-server operation; Claude sends its native /compact as a provider selection.
+  // Codex compaction is the native app-server operation. Claude uses the server's
+  // /claude/compact route when advertised, and falls back to sending its native
+  // /compact as a provider selection on older servers.
   assert.match(composer, /await codexRuntime\.run\(\(\) => client\.compactCodexThread\(sessionId\)\)/)
+  assert.match(composer, /claudeRuntime\.runtime\?\.features\?\.compact === true/)
+  assert.match(composer, /await claudeRuntime\.run\(\(connection, id\) => connection\.compactClaudeContext\(id\)\)/)
   assert.match(composer, /providerCommandForInvocation\(snapshot, backend, '\/compact'\)/)
   assert.match(composer, /await send\(false, compact\.command\.invocation, false, compact\.selection\)/)
 })

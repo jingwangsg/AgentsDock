@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { AlertTriangle, Bot, CircleGauge, Goal, LoaderCircle, MessageSquareCode, RefreshCw, X } from 'lucide-react'
+import { AlertTriangle, ArchiveRestore, Bot, CircleGauge, Goal, LoaderCircle, MessageSquareCode, RefreshCw, X } from 'lucide-react'
 import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { formatClaudeContextUsageDetail, formatContextPercent, parseClaudeContextUsage } from '../lib/claude-context-usage'
@@ -19,6 +19,7 @@ export function ClaudeStatusButton() {
   const { supported, session, runtime, loading, refreshing, mutating, runtimeError, interactionError, refresh, run } = useClaudeRuntime()
   const goalsAvailable = useClaudeGoalsAvailable()
   const [open, setOpen] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   useTransientClose(open, () => setOpen(false))
   const profileId = useAppStore(state => state.activeProfileId)
   const generation = useAppStore(state => state.profileGeneration)
@@ -26,6 +27,7 @@ export function ClaudeStatusButton() {
   const running = useAppStore(state => session ? state.activeSessionIds.has(session.id) : false)
   const starting = useAppStore(state => session ? Boolean(state.turnAdmissionTokens[session.id]) : false)
   useEffect(() => setOpen(false), [session?.id, profileId, generation])
+  useEffect(() => setNotice(null), [open, session?.id])
   const interactions = runtime?.pending_interactions ?? []
   const flags = runtime?.status?.type === 'active' ? runtime.status.activeFlags : []
   const unavailable = runtime?.available === false
@@ -37,6 +39,19 @@ export function ClaudeStatusButton() {
       : waiting ? codexStatusLabel(runtime?.status) : running ? t('timeline.status.running')
         : starting ? t('timeline.status.starting') : loading ? t('claudeControls.loading') : codexStatusLabel(runtime?.status)
   const usage = parseClaudeContextUsage(runtime?.context_usage_snapshot !== undefined ? runtime.context_usage_snapshot : runtime?.context_usage)
+  const compactAvailable = runtime?.features?.compact === true
+  const compacting = runtime?.compacting === true
+  const compactEnabled = connected && !mutating && !compacting && runtime?.available === true
+    && !running && !starting && runtime.status?.type !== 'active'
+  const compact = () => {
+    setNotice(null)
+    run(async () => {
+      const bridge = claudeBridge()
+      if (!bridge) throw new Error(t('claudeControls.unavailable'))
+      await bridge.compact(session!.id)
+      setNotice(t('claudeControls.compact.started'))
+    }).catch(() => undefined)
+  }
   const openGoal = () => {
     setOpen(false)
     // The composer already owns the goal dialog and its draft. Open that same
@@ -82,6 +97,15 @@ export function ClaudeStatusButton() {
                   </div>
                   {usage && <p className="goal-feedback">{formatClaudeContextUsageDetail(usage)}</p>}
                 </section>
+                {compactAvailable && <section className="codex-control-section">
+                  <div className="codex-action-row">
+                    <div><strong>{t('claudeControls.compact.title')}</strong><small>{compacting ? t('timeline.ui.compactingContext') : t('claudeControls.compact.description')}</small></div>
+                    <button type="button" className="quiet-button" disabled={!compactEnabled} onClick={compact}>
+                      {compacting ? <LoaderCircle size={14} className="spin" /> : <ArchiveRestore size={14} />}{t('claudeControls.compact.action')}
+                    </button>
+                  </div>
+                  {notice && <p className="goal-feedback" role="status">{notice}</p>}
+                </section>}
                 {goalsAvailable && <section className="codex-control-section"><div className="codex-action-row">
                   <div><strong>{t('claudeGoal.title')}</strong><small>{runtime?.goal?.condition || t('claudeGoal.description')}</small></div>
                   <button type="button" className="quiet-button" onClick={openGoal}><Goal size={14} />{t('codexGoal.open')}</button>

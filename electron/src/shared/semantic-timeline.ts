@@ -286,20 +286,34 @@ export function isNativeSteerTransitionStop(event: Event): boolean {
   )
 }
 
+export function isCompactionStartedEvent(type: string): boolean {
+  return type === 'codex_compaction_started' || type === 'claude_compaction_started'
+}
+
+export function isCompactionCompletedEvent(type: string): boolean {
+  return type === 'codex_compaction_completed' || type === 'claude_compaction_completed'
+}
+
+export function isCompactionLifecycleKey(key: string): boolean {
+  return key.startsWith('codex:compaction:') || key.startsWith('claude:compaction:')
+}
+
 /**
- * A Codex compaction and a goal-budget warning are compact semantic timeline
- * markers. Compaction start/completion events share one stable identity so a
- * live "Compacting" row can become "Compacted" without changing position.
+ * A provider compaction and a Codex goal-budget warning are compact semantic
+ * timeline markers. Compaction start/completion events share one stable
+ * identity so a live "Compacting" row can become "Compacted" without changing
+ * position. Claude and Codex compactions use distinct key prefixes.
  */
 export function codexLifecycleSemanticKey(event: Event): string | null {
   if (event.type === 'codex_goal_budget_limited') return 'codex:goal-budget'
-  if (event.type === 'codex_compaction_started' || event.type === 'codex_compaction_completed') {
+  if (isCompactionStartedEvent(event.type) || isCompactionCompletedEvent(event.type)) {
+    const provider = event.type.startsWith('claude_') ? 'claude' : 'codex'
     const compactionId = event.compaction_id?.trim()
-    if (compactionId) return `codex:compaction:${compactionId}`
+    if (compactionId) return `${provider}:compaction:${compactionId}`
     const operationId = event.operation_id?.trim()
-    if (operationId) return `codex:compaction:${operationId}`
+    if (operationId) return `${provider}:compaction:${operationId}`
     const nativeId = event.turn_id?.trim() || event.item_id?.trim() || event.id || String(event.seq)
-    return `codex:compaction:${nativeId}`
+    return `${provider}:compaction:${nativeId}`
   }
   return null
 }

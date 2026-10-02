@@ -506,6 +506,18 @@ assert(
   'real server errors must remain visible after status suppression',
 )
 
+const claudeCompaction = projectTimeline([
+  event(1, 'claude_compaction_started', { run_id: 'run-1', compaction_id: 'run-1', message: "Claude started compacting this chat's context." }),
+  event(2, 'claude_compaction_completed', { run_id: 'run-1', compaction_id: 'run-1', status: 'completed', message: 'Claude compacted this chat\'s context from 27,295 to 4,717 tokens.' }),
+], [])
+const claudeCompactionRows = claudeCompaction.filter(row => row.kind === 'system' && row.key.startsWith('claude:compaction:'))
+assert(claudeCompactionRows.length === 1, `Claude compaction start and completion must share one row, received ${claudeCompactionRows.length}`)
+assert(claudeCompactionRows[0].key === 'claude:compaction:run-1', `unexpected Claude compaction key ${claudeCompactionRows[0].key}`)
+assert(
+  claudeCompactionRows[0].kind === 'system' && claudeCompactionRows[0].event.type === 'claude_compaction_completed' && claudeCompactionRows[0].seq === 1,
+  'the Claude compaction row must show the completion while staying anchored at its start',
+)
+
 const compactedLifecycle = projectTimeline([
   event(1, 'codex_goal_updated', { message: 'Goal is active.' }),
   event(2, 'codex_compaction_started', {

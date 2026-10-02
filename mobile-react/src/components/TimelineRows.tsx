@@ -9,6 +9,8 @@ import type { TimelineRow } from '../lib/timeline'
 import {
   activeTraceProgressPreview,
   codexLifecycleSemanticKey,
+  isCompactionCompletedEvent,
+  isCompactionStartedEvent,
   isHandoffDigestEvent,
   isTimelineError,
   jobDisplaySelection,
@@ -932,7 +934,7 @@ function CodexLifecycleRowView({ row, sessionId, fontScale }: { row: Extract<Tim
   const event = row.event
   // A start marker with no completion is "Compacting" only while the chat is
   // still running; afterwards it is a historical start without a completion.
-  const liveCompaction = useAppStore(state => event.type === 'codex_compaction_started' && state.activeSessionIds.has(sessionId))
+  const liveCompaction = useAppStore(state => isCompactionStartedEvent(event.type) && state.activeSessionIds.has(sessionId))
   const failed = codexLifecycleFailed(event)
   const detail = messageText(event).trim()
   const accent = failed ? colors.red : colors.blue
@@ -957,8 +959,8 @@ function CodexLifecycleRowView({ row, sessionId, fontScale }: { row: Extract<Tim
 
 function codexLifecycleTitle(event: Extract<TimelineRow, { kind: 'system' }>['event'], liveCompaction = false): string {
   if (event.type === 'codex_goal_budget_limited') return 'Goal budget reached'
-  if (event.type === 'codex_compaction_started') return liveCompaction ? 'Compacting context…' : 'Context compaction started'
-  if (event.type === 'codex_compaction_completed') return codexLifecycleFailed(event) ? 'Context compaction failed' : 'Context compacted'
+  if (isCompactionStartedEvent(event.type)) return liveCompaction ? 'Compacting context…' : 'Context compaction started'
+  if (isCompactionCompletedEvent(event.type)) return codexLifecycleFailed(event) ? 'Context compaction failed' : 'Context compacted'
   return timelineEventLabel(event.type)
 }
 
@@ -995,7 +997,7 @@ function CodeChangesCard({ event, onOpen }: { event: Event; onOpen: () => void }
 
 function codexLifecycleFailed(event: Extract<TimelineRow, { kind: 'system' }>['event']): boolean {
   if (isTimelineError(event)) return true
-  return event.type === 'codex_compaction_completed'
+  return isCompactionCompletedEvent(event.type)
     && typeof event.status === 'string'
     && event.status !== 'completed'
 }

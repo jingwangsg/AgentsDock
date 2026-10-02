@@ -22,10 +22,13 @@ export function ClaudeContextIndicator() {
     runtime,
     session,
     refreshing,
+    mutating,
     contextUsageError,
     refreshContextUsage,
+    run,
   } = useClaudeRuntime()
   const [open, setOpen] = useState(false)
+  const [compactNotice, setCompactNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const rawUsage = runtime
     ? runtime.context_usage_snapshot !== undefined
       ? runtime.context_usage_snapshot
@@ -37,6 +40,7 @@ export function ClaudeContextIndicator() {
     setOpen(false)
     requestAnimationFrame(dismissAppKeyboard)
   }, [open, supported])
+  useEffect(() => { setCompactNotice(null) }, [open, session?.id])
   if (!supported || !session) return null
   const percent = usage?.contextPercent ?? null
   const formattedPercent = formatContextPercent(percent)
@@ -57,6 +61,15 @@ export function ClaudeContextIndicator() {
           : supportsOnDemandRefresh
             ? 'Context becomes refreshable after the next Claude response.'
             : 'Updated after completed Claude SDK turns.'
+  const compactAvailable = runtime?.features?.compact === true
+  const compacting = runtime?.compacting === true
+  const compactEnabled = !mutating && !compacting && runtime?.available === true && runtimeStatus !== 'active'
+  const compact = () => {
+    setCompactNotice(null)
+    run((connection, id) => connection.compactClaudeContext(id))
+      .then(() => setCompactNotice({ tone: 'ok', text: 'Context compaction started.' }))
+      .catch(error => setCompactNotice({ tone: 'error', text: error instanceof Error ? error.message : String(error) }))
+  }
   const circumference = Math.PI * 16
   const close = () => { setOpen(false); requestAnimationFrame(dismissAppKeyboard) }
   const openDetails = () => {
@@ -128,6 +141,24 @@ export function ClaudeContextIndicator() {
           <Text style={[styles.state, { color: colors.muted }]}>State: {contextStateLabel(state)}</Text>
           <Text accessibilityLiveRegion="polite" selectable={Boolean(contextUsageError)} style={[styles.note, { color: contextUsageError ? colors.red : colors.muted }]}>{refreshStatus}</Text>
           <Text style={[styles.note, { color: colors.muted }]}>Direct sampling is available only for an idle, already-loaded Agent SDK session. Legacy servers keep the last completed-turn snapshot.</Text>
+          {compactAvailable ? <View style={[styles.compactRow, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.compactTitle, { color: colors.text }]}>Compact context</Text>
+              <Text style={[styles.compactDescription, { color: colors.muted }]}>{compacting ? 'Compacting context…' : "Ask Claude to summarize this chat's context in place."}</Text>
+            </View>
+            <Pressable
+              testID="claude-context-compact"
+              accessibilityRole="button"
+              accessibilityLabel="Compact"
+              accessibilityState={{ disabled: !compactEnabled }}
+              disabled={!compactEnabled}
+              onPress={compact}
+              style={({ pressed }) => [styles.compactButton, { backgroundColor: colors.raised, opacity: !compactEnabled ? 0.4 : pressed ? 0.68 : 1 }]}
+            >
+              {compacting ? <ActivityIndicator size="small" color={colors.text} /> : <Text style={{ color: colors.text, fontSize: 11.5, fontWeight: '800' }}>Compact</Text>}
+            </Pressable>
+          </View> : null}
+          {compactNotice ? <Text accessibilityLiveRegion="polite" style={[styles.note, { color: compactNotice.tone === 'error' ? colors.red : colors.green }]}>{compactNotice.text}</Text> : null}
           <View style={styles.usage}><ProviderUsageSection session={session} /></View>
         </ScrollView>
       </SafeAreaView>
@@ -155,5 +186,9 @@ const styles = StyleSheet.create({
   detail: { textAlign: 'center', fontSize: 14, fontWeight: '700', lineHeight: 20 },
   state: { textAlign: 'center', fontSize: 11.5, lineHeight: 17 },
   note: { maxWidth: 460, textAlign: 'center', fontSize: 10.5, lineHeight: 15 },
+  compactRow: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: StyleSheet.hairlineWidth, borderRadius: 12, padding: 12, marginTop: 4 },
+  compactTitle: { fontSize: 13, fontWeight: '800' },
+  compactDescription: { marginTop: 2, fontSize: 11, lineHeight: 15 },
+  compactButton: { minWidth: 72, minHeight: 34, paddingHorizontal: 12, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   usage: { alignSelf: 'stretch', marginTop: 4 },
 })

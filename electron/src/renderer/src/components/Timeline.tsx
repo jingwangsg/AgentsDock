@@ -1,5 +1,6 @@
 import { getLocale, t } from '@shared/i18n'
 import { isImportedHistoryRecord, isImportedProviderControlMetadata } from '@shared/provider-origin'
+import { isCompactionStartedEvent } from '@shared/semantic-timeline'
 import { checkpointRestoreAvailable, sessionRewindAvailable } from '@shared/session-rewind'
 import { useLocale } from '../lib/i18n'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
@@ -1248,7 +1249,7 @@ export function timelineActiveRunId(events: readonly ServerEvent[]): string | nu
   for (const event of events) {
     if (isImportedProviderControlMetadata(event) || isImportedHistoryRecord(event)) continue
     const runId = event.run_id?.trim() || null
-    if ((event.type === 'turn_started' || event.type === 'codex_compaction_started') && runId) {
+    if ((event.type === 'turn_started' || isCompactionStartedEvent(event.type)) && runId) {
       activeRunId = runId
     } else if (
       runId

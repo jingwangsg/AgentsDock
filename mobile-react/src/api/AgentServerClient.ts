@@ -807,6 +807,11 @@ export class AgentServerClient {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/codex/compact`, {})
   }
 
+  /** Runs Claude's native /compact as one validated command turn with lifecycle rows. */
+  compactClaudeContext(sessionId: string): Promise<CodexOperationAccepted> {
+    return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/claude/compact`, {})
+  }
+
   rollbackCodexThread(sessionId: string, input: CodexRollbackInput): Promise<CodexRollbackResult> {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/codex/rollback`, input)
   }

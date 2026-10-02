@@ -104,6 +104,34 @@ describe('Claude header controls', () => {
     expect(resolveInteraction).toHaveBeenCalledExactlyOnceWith(session.id, interaction.id, { decision: 'accept' })
   })
 
+  it('compacts context from the panel through the Claude bridge', async () => {
+    const compact = vi.fn().mockResolvedValue({ accepted: true, run_id: 'run-1', operation_id: 'run-1' })
+    Object.assign(window.agentsDock.claude, { compact })
+    runtime.mockResolvedValue({ ...idle, features: { goals: true, compact: true } })
+    render(surface())
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Claude controls: Idle' }))
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Compact' }))
+    await waitFor(() => expect(compact).toHaveBeenCalledExactlyOnceWith(session.id))
+    expect(await screen.findByText('Context compaction started.')).toBeInTheDocument()
+  })
+
+  it('shows the live compaction state and blocks a second compaction until it settles', async () => {
+    runtime.mockResolvedValue({ ...idle, status: { type: 'active', activeFlags: [] }, compacting: true, features: { goals: true, compact: true } })
+    useAppStore.setState({ activeSessionIds: new Set([session.id]) })
+    render(surface())
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Claude controls: Running' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('Compacting context…')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Compact' })).toBeDisabled()
+  })
+
+  it('hides the compaction action on servers without the Claude compact route', async () => {
+    runtime.mockResolvedValue({ ...idle, features: { goals: true } })
+    render(surface())
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Claude controls: Idle' }))
+    expect(screen.queryByRole('button', { name: 'Compact' })).not.toBeInTheDocument()
+  })
+
   it('closes the panel when switching servers and keeps unsupported goal actions absent', async () => {
     runtime.mockResolvedValue({ ...idle, features: {} })
     render(surface())

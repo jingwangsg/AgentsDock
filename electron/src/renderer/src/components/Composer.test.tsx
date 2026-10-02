@@ -4536,6 +4536,61 @@ describe('Composer', () => {
     expect(screen.queryByRole('option', { name: /^Goal/ })).not.toBeInTheDocument()
   })
 
+  it('compacts Claude context from the slash palette through the same bridge as the panel', async () => {
+    const compact = vi.fn().mockResolvedValue({ accepted: true, run_id: 'run-1', operation_id: 'run-1' })
+    const runtime = vi.fn().mockResolvedValue({
+      available: true, transport: 'sdk', interactive_capability: 'claude_sdk_interactive_v1',
+      session_loaded: true, status: { type: 'idle' }, pending_interactions: [], features: { compact: true }
+    })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        claude: { runtime, compact },
+        events: { on: vi.fn().mockReturnValue(() => undefined) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude' }],
+      chatPanes: { primary: 'chat-1', secondary: null },
+      focusedChatPane: 'primary',
+      health: { ok: true, capabilities: {} }
+    })
+    const user = userEvent.setup()
+    render(<ClaudeComposerHarness />)
+    await waitFor(() => expect(runtime).toHaveBeenCalled())
+
+    await user.type(screen.getByPlaceholderText('Message'), '/comp')
+
+    fireEvent.click(await screen.findByRole('option', { name: /^Compact context/ }))
+    await waitFor(() => expect(compact).toHaveBeenCalledExactlyOnceWith('chat-1'))
+    expect(screen.getByPlaceholderText('Message')).toHaveValue('')
+  })
+
+  it('does not offer Claude compaction on servers without the compact route', async () => {
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        claude: composerClaudeBridge(),
+        events: { on: vi.fn().mockReturnValue(() => undefined) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude' }],
+      chatPanes: { primary: 'chat-1', secondary: null },
+      focusedChatPane: 'primary',
+      health: { ok: true, capabilities: {} }
+    })
+    const user = userEvent.setup()
+    render(<ClaudeComposerHarness />)
+
+    await user.type(screen.getByPlaceholderText('Message'), '/')
+
+    expect(screen.getByRole('option', { name: /Attach files/ })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /^Compact context/ })).not.toBeInTheDocument()
+  })
+
   it.each(['shortcut', 'add menu'] as const)('opens the selected Codex chat goal from the %s and only starts work on submission', async path => {
     const send = vi.fn()
     const setGoal = vi.fn().mockResolvedValue({

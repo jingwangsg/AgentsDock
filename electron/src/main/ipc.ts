@@ -339,6 +339,7 @@ export function registerIpc(
   handle('claude:goal:set', (sessionId, condition) => service.setClaudeGoal(sessionId, condition))
   handle('claude:goal:clear', sessionId => service.clearClaudeGoal(sessionId))
   handle('claude:context-usage:refresh', sessionId => service.refreshClaudeContextUsage(sessionId))
+  handle('claude:compact', sessionId => service.compactClaudeContext(sessionId))
   handle('claude:mcp', sessionId => service.claudeMcp(sessionId))
   handle('claude:mcp:control', (sessionId, input) => service.controlClaudeMcp(sessionId, input))
   handle('claude:interaction:resolve', (sessionId, interactionId, response) => (

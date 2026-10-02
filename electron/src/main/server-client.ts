@@ -1357,6 +1357,10 @@ export class AgentServerClient {
     )
   }
 
+  compactClaudeContext(sessionId: string): Promise<CodexOperationAccepted> {
+    return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/claude/compact`, {})
+  }
+
   claudeMcp(sessionId: string): Promise<ClaudeMcpSnapshot> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/claude/mcp`)
   }

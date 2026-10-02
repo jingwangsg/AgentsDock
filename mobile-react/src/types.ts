@@ -77,6 +77,8 @@ export interface ClaudeRuntimeFeatures {
   mcp_management?: boolean
   /** Claude Code offers the native `/goal` command through the SDK. */
   goals?: boolean
+  /** POST /claude/compact runs the native /compact command with lifecycle rows. */
+  compact?: boolean
 }
 
 export type ClaudeTokenUsage = Record<string, JsonValue>
@@ -97,6 +99,8 @@ export interface ClaudeRuntimeSnapshot {
   persisted_session?: boolean
   session_loaded: boolean
   status?: CodexThreadStatus | null
+  /** True while the active run is compacting its context; absent on older servers. */
+  compacting?: boolean
   goal?: ClaudeGoal | null
   pending_interactions: ClaudePendingInteraction[]
   policy?: ClaudeRuntimePolicy | null
@@ -206,6 +210,8 @@ export interface CodexRuntimeSnapshot {
   persisted_thread?: boolean
   thread_loaded: boolean
   status: CodexThreadStatus | null
+  /** True while a context compaction is running on this thread; absent on older servers. */
+  compacting?: boolean
   goal: CodexGoal | null
   /** Server-wide goal configuration; absent on older servers. */
   goals_enabled?: boolean

@@ -17603,6 +17603,8 @@ def should_bump_session_updated_at(event_type: str, event: dict[str, Any]) -> bo
         "codex_goal_budget_limited",
         "codex_compaction_started",
         "codex_compaction_completed",
+        "claude_compaction_started",
+        "claude_compaction_completed",
         "codex_thread_hygiene",
         "codex_thread_rotated",
         "codex_rollback",
@@ -17654,7 +17656,7 @@ async def update_session_event_metadata(session_id: str, event: dict[str, Any]) 
         ):
             sess.pop("active_run", None)
             active_run_changed = True
-    if event_type in TIMELINE_INDEX_CODEX_COMPACTION_TYPES:
+    if event_type in TIMELINE_INDEX_COMPACTION_TYPES:
         lifecycle_key = timeline_index_codex_lifecycle_key(event)
         if lifecycle_key:
             active_compactions = sess.get("_active_codex_compactions")
@@ -17672,7 +17674,7 @@ async def update_session_event_metadata(session_id: str, event: dict[str, Any]) 
                 )
                 if str(value or "").strip()
             ]
-            if event_type == "codex_compaction_completed":
+            if event_type in TIMELINE_INDEX_COMPACTION_COMPLETED_TYPES:
                 if str(event.get("compaction_id") or "").startswith("native:"):
                     remember_codex_native_compaction_terminal(
                         session_id,
@@ -17685,7 +17687,7 @@ async def update_session_event_metadata(session_id: str, event: dict[str, Any]) 
                     compaction_state_changed = True
                 if lifecycle_key in terminal_keys:
                     terminal_keys.remove(lifecycle_key)
-                else:
+                elif event_type == "codex_compaction_completed":
                     # Monotonic per-thread tally of compactions that reached a
                     # terminal row; replays of an already-terminal key do not
                     # count. Reset when the provider thread changes.
@@ -27435,15 +27437,20 @@ async def recover_abandoned_codex_compactions_after_start(
                     "AgentsServer restarted."
                 ),
             })
+        lifecycle_key = str(compaction.get("lifecycle_key") or "")
         try:
             await append_event(
                 session_id,
-                "codex_compaction_completed",
+                (
+                    "claude_compaction_completed"
+                    if lifecycle_key.startswith("claude:")
+                    else "codex_compaction_completed"
+                ),
                 payload,
             )
         except Exception as exc:
             logger.warning(
-                "could not close abandoned Codex compaction session=%s key=%s error=%s",
+                "could not close abandoned compaction session=%s key=%s error=%s",
                 session_id,
                 compaction.get("lifecycle_key") or "unknown",
                 concise_error_message(exc),
@@ -27452,7 +27459,7 @@ async def recover_abandoned_codex_compactions_after_start(
             recovered += 1
     if recovered:
         logger.warning(
-            "closed abandoned Codex compactions after restart count=%d",
+            "closed abandoned compactions after restart count=%d",
             recovered,
         )
     return recovered
@@ -32742,9 +32749,20 @@ TIMELINE_INDEX_JOB_TYPES = {"job_created", "job_ran", "job_started", "job_deferr
 TIMELINE_INDEX_CODEX_GOAL_TYPES = {
     "codex_goal_budget_limited",
 }
-TIMELINE_INDEX_CODEX_COMPACTION_TYPES = {
+TIMELINE_INDEX_COMPACTION_STARTED_TYPES = {
+    "codex_compaction_started",
+    "claude_compaction_started",
+}
+TIMELINE_INDEX_COMPACTION_COMPLETED_TYPES = {
+    "codex_compaction_completed",
+    "claude_compaction_completed",
+}
+# Literal on purpose: isolated tests extract these constants with ast.literal_eval.
+TIMELINE_INDEX_COMPACTION_TYPES = {
     "codex_compaction_started",
     "codex_compaction_completed",
+    "claude_compaction_started",
+    "claude_compaction_completed",
 }
 TIMELINE_INDEX_TRACE_TYPES = {
     "reasoning_summary", "reasoning_text", "tool_started", "tool_finished", "process_started", "provider_session",
@@ -32788,25 +32806,30 @@ def timeline_index_is_native_steer_transition_stop(
 def timeline_index_codex_lifecycle_key(
     event: dict[str, Any],
 ) -> str | None:
-    """Return the stable semantic key for durable Codex control markers."""
+    """Return the stable semantic key for durable provider control markers.
+
+    Claude compactions share the Codex lifecycle machinery under their own
+    ``claude:compaction:`` prefix so the two providers can never collide.
+    """
     event_type = str(event.get("type") or "")
     if event_type in TIMELINE_INDEX_CODEX_GOAL_TYPES:
         return "codex:goal-budget"
-    if event_type not in TIMELINE_INDEX_CODEX_COMPACTION_TYPES:
+    if event_type not in TIMELINE_INDEX_COMPACTION_TYPES:
         return None
+    provider = "claude" if event_type.startswith("claude_") else "codex"
     compaction_id = str(event.get("compaction_id") or "").strip()
     if compaction_id:
-        return f"codex:compaction:{compaction_id}"
+        return f"{provider}:compaction:{compaction_id}"
     operation_id = str(event.get("operation_id") or "").strip()
     if operation_id:
-        return f"codex:compaction:{operation_id}"
+        return f"{provider}:compaction:{operation_id}"
     native_id = (
         str(event.get("turn_id") or "").strip()
         or str(event.get("item_id") or "").strip()
         or str(event.get("id") or "").strip()
         or str(event.get("seq") or "")
     )
-    return f"codex:compaction:{native_id}"
+    return f"{provider}:compaction:{native_id}"
 
 
 def timeline_index_async_cross_chat_key(event: dict[str, Any]) -> str | None:
@@ -34297,7 +34320,7 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                 and str(usage.get("thread_id") or "").strip()
             }
             leaked_child_compaction = bool(
-                event_type in TIMELINE_INDEX_CODEX_COMPACTION_TYPES
+                event_type in TIMELINE_INDEX_COMPACTION_TYPES
                 and event_thread_id
                 and (
                     event_thread_id in child_codex_thread_ids
@@ -34463,7 +34486,7 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                     "codex_lifecycle",
                     event,
                 )
-                if event_type in TIMELINE_INDEX_CODEX_COMPACTION_TYPES:
+                if event_type in TIMELINE_INDEX_COMPACTION_TYPES:
                     record["_codex_thread_id"] = event_thread_id or record.get(
                         "_codex_thread_id"
                     )
@@ -34471,9 +34494,11 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                 record["title"] = (
                     "Codex Goal"
                     if event_type in TIMELINE_INDEX_CODEX_GOAL_TYPES
+                    else "Claude Compaction"
+                    if event_type.startswith("claude_")
                     else "Codex Compaction"
                 )
-                if event_type == "codex_compaction_completed":
+                if event_type in TIMELINE_INDEX_COMPACTION_COMPLETED_TYPES:
                     record["_codex_lifecycle_terminal_seq"] = seq
                     record["preview"] = text or record["title"]
                 elif not record.get("_codex_lifecycle_terminal_seq"):
@@ -36084,7 +36109,7 @@ def collect_semantic_timeline_events(
                     event
                     for event in lifecycle_events
                     if str(event.get("type") or "")
-                    == "codex_compaction_started"
+                    in TIMELINE_INDEX_COMPACTION_STARTED_TYPES
                 ),
                 key=lambda event: int(event.get("seq") or 0),
                 default=None,
@@ -36094,7 +36119,7 @@ def collect_semantic_timeline_events(
                     event
                     for event in lifecycle_events
                     if str(event.get("type") or "")
-                    == "codex_compaction_completed"
+                    in TIMELINE_INDEX_COMPACTION_COMPLETED_TYPES
                 ),
                 key=lambda event: int(event.get("seq") or 0),
                 default=None,
@@ -51416,6 +51441,8 @@ FORK_HISTORY_EVENT_TYPES = {
     # state, so retaining them preserves the chronology of the conversation.
     "codex_compaction_started",
     "codex_compaction_completed",
+    "claude_compaction_started",
+    "claude_compaction_completed",
 }
 
 
@@ -64917,6 +64944,9 @@ def claude_sdk_result_details(message: Any) -> dict[str, Any]:
         "subtype": subtype,
         "terminal_reason": terminal_reason,
         "aborted": terminal_reason in {"aborted_streaming", "aborted_tools"},
+        # Set by the CLI when a local slash command such as /compact produced
+        # this result; those turns legitimately end with no assistant text.
+        "local_command": str(claude_sdk_field(message, "local_command") or "") or None,
     }
 
 
@@ -64934,6 +64964,7 @@ def claude_empty_turn_failure_message(
     stopped: bool,
     terminal_result_received: bool,
     existing_error: bool,
+    local_command_result: bool = False,
 ) -> str:
     """Return a visible failure for an otherwise silent Claude turn."""
 
@@ -64944,9 +64975,77 @@ def claude_empty_turn_failure_message(
         and not had_tool_activity
         and not stopped
         and not existing_error
+        and not local_command_result
     ):
         return CLAUDE_EMPTY_TURN_ERROR
     return ""
+
+
+def claude_compaction_identity(run_id: str, state: dict[str, Any]) -> str:
+    """One run can compact several times; the first keeps the plain run id."""
+
+    count = int(state.get("count") or 0)
+    return run_id if count == 0 else f"{run_id}:{count}"
+
+
+async def append_claude_compaction_started(
+    session_id: str,
+    run_id: str,
+    state: dict[str, Any],
+) -> None:
+    if state.get("open_id"):
+        return
+    compaction_id = claude_compaction_identity(run_id, state)
+    state["open_id"] = compaction_id
+    async with ACTIVE_LOCK:
+        active = ACTIVE.get(session_id)
+        if active and str(active.get("run_id") or "") == run_id:
+            active["claude_compaction_in_progress"] = True
+    session = STORE.sessions.get(session_id) or {}
+    before = session.get("context_usage_snapshot")
+    if not isinstance(before, dict):
+        before = session.get("claude_context_usage_snapshot")
+    await append_event(session_id, "claude_compaction_started", {
+        "run_id": run_id,
+        "compaction_id": compaction_id,
+        "status": "in_progress",
+        "token_usage_before": dict(before) if isinstance(before, dict) else None,
+        "message": (
+            "Claude started compacting this chat's context."
+            if state.get("manual")
+            else "Claude started automatic context compaction."
+        ),
+    })
+
+
+async def append_claude_compaction_completed(
+    session_id: str,
+    run_id: str,
+    state: dict[str, Any],
+    *,
+    status: str,
+    message: str,
+    compact_metadata: dict[str, Any] | None = None,
+) -> None:
+    compaction_id = state.pop("open_id", None)
+    if compaction_id is None:
+        if status != "completed":
+            return
+        # A boundary without a preceding "compacting" status still records
+        # the completed compaction under its own identity.
+        compaction_id = claude_compaction_identity(run_id, state)
+    state["count"] = int(state.get("count") or 0) + 1
+    async with ACTIVE_LOCK:
+        active = ACTIVE.get(session_id)
+        if active and str(active.get("run_id") or "") == run_id:
+            active.pop("claude_compaction_in_progress", None)
+    await append_event(session_id, "claude_compaction_completed", {
+        "run_id": run_id,
+        "compaction_id": compaction_id,
+        "status": status,
+        **({"compact_metadata": compact_metadata} if compact_metadata else {}),
+        "message": message,
+    })
 
 
 async def project_claude_sdk_message(
@@ -64959,6 +65058,7 @@ async def project_claude_sdk_message(
     changed_paths: set[str],
     tool_activity_run_ids: set[str] | None = None,
     error_run_ids: set[str] | None = None,
+    compaction_state: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Project one typed SDK message into the existing durable timeline."""
 
@@ -64970,6 +65070,42 @@ async def project_claude_sdk_message(
             provider_id = str(data.get("session_id") or provider_id)
     if provider_id:
         await mark_provider_turn_ready(session_id, run_id, provider_id)
+
+    if message_type == "SystemMessage" and compaction_state is not None:
+        # Claude Code 2.1.287 reports a compaction as ``status: compacting``,
+        # then ``status: null`` with ``compact_result``, then ``compact_boundary``
+        # carrying the token counts. Only the boundary proves success.
+        data = claude_sdk_field(message, "data", {})
+        subtype = str(claude_sdk_field(message, "subtype") or "")
+        if isinstance(data, dict) and subtype == "status":
+            compact_result = str(data.get("compact_result") or "")
+            if str(data.get("status") or "") == "compacting":
+                await append_claude_compaction_started(
+                    session_id, run_id, compaction_state,
+                )
+            elif compact_result and compact_result != "success":
+                # The reason ("Not enough messages to compact.") only arrives
+                # in the terminal result; close the row there with that text.
+                compaction_state["failed"] = compact_result
+        elif isinstance(data, dict) and subtype == "compact_boundary":
+            metadata = data.get("compact_metadata")
+            metadata = dict(metadata) if isinstance(metadata, dict) else None
+            pre_tokens = (metadata or {}).get("pre_tokens")
+            post_tokens = (metadata or {}).get("post_tokens")
+            summary = (
+                f"Claude compacted this chat's context from {pre_tokens:,} "
+                f"to {post_tokens:,} tokens."
+                if isinstance(pre_tokens, int) and isinstance(post_tokens, int)
+                else "Claude completed context compaction."
+            )
+            await append_claude_compaction_completed(
+                session_id,
+                run_id,
+                compaction_state,
+                status="completed",
+                message=summary,
+                compact_metadata=metadata,
+            )
 
     async def project_tool_result(block: Any) -> None:
         if tool_activity_run_ids is not None:
@@ -65083,7 +65219,21 @@ async def project_claude_sdk_message(
         return None
 
     if message_type in {"ResultMessage", "result"}:
-        return claude_sdk_result_details(message)
+        details = claude_sdk_result_details(message)
+        if compaction_state and compaction_state.get("open_id") and compaction_state.pop("failed", None):
+            reason = details.get("result_text") or ""
+            await append_claude_compaction_completed(
+                session_id,
+                run_id,
+                compaction_state,
+                status="failed",
+                message=(
+                    f"Claude context compaction failed: {reason}"
+                    if reason
+                    else "Claude context compaction failed."
+                ),
+            )
+        return details
     await project_subagent_lifecycle()
     return None
 
@@ -65564,6 +65714,14 @@ async def run_claude_sdk(
     text_parts: list[str] = []
     current_tools: dict[str, dict[str, Any]] = {}
     tool_activity_run_ids: set[str] = set()
+    # Per logical run: the open compaction id, how many finished, and whether
+    # the run itself is a validated /compact command (manual compaction).
+    compaction_state: dict[str, Any] = {
+        "manual": bool(
+            provider_command is not None
+            and str(provider_command.native.get("name") or "") == "compact"
+        ),
+    }
     projection_error_run_ids: set[str] = set()
     changed_paths: set[str] = set()
     seen_artifacts: set[str] = set()
@@ -66088,6 +66246,7 @@ async def run_claude_sdk(
                     changed_paths=changed_paths,
                     tool_activity_run_ids=tool_activity_run_ids,
                     error_run_ids=projection_error_run_ids,
+                    compaction_state=compaction_state,
                 )
                 if projected_result is None:
                     continue
@@ -66524,6 +66683,15 @@ async def run_claude_sdk(
             current_prompt = str(steer_state["request_prompt"])
             text_parts = []
             current_tools = {}
+            if compaction_state.get("open_id"):
+                await append_claude_compaction_completed(
+                    session_id,
+                    previous_run_id,
+                    compaction_state,
+                    status="interrupted",
+                    message="Context compaction was interrupted by a steering message.",
+                )
+            compaction_state = {"manual": False}
             changed_paths = candidate_paths
             seen_artifacts = candidate_artifacts
             result_details = None
@@ -66611,6 +66779,9 @@ async def run_claude_sdk(
                         previous_result_details.get("error")
                         or previous_result_details.get("is_error")
                         or previous_projection_error
+                    ),
+                    local_command_result=bool(
+                        previous_result_details.get("local_command")
                     ),
                 )
                 if previous_empty_error:
@@ -66898,6 +67069,16 @@ async def run_claude_sdk(
         )
         result_error = str((result_details or {}).get("error") or "")
         projection_error = current_run_id in projection_error_run_ids
+        if compaction_state.get("open_id"):
+            # The run ended (stop, stream failure, or a result without a
+            # boundary) while Claude was still compacting.
+            await append_claude_compaction_completed(
+                session_id,
+                current_run_id,
+                compaction_state,
+                status="interrupted",
+                message="Context compaction was interrupted before Claude finished.",
+            )
         empty_result_error = claude_empty_turn_failure_message(
             prompt=current_prompt,
             result_text=result_text,
@@ -66909,6 +67090,9 @@ async def run_claude_sdk(
                 or result_error
                 or (result_details or {}).get("is_error")
                 or projection_error
+            ),
+            local_command_result=bool(
+                (result_details or {}).get("local_command")
             ),
         )
         if stream_error and not stopped:
@@ -88797,6 +88981,9 @@ async def codex_runtime_snapshot(session_id: str) -> dict[str, Any]:
     cached_status = session.get("codex_thread_status")
     async with ACTIVE_LOCK:
         active = session_id in BUSY_SESSIONS
+        compacting = bool(
+            (ACTIVE.get(session_id) or {}).get("codex_compaction_in_progress")
+        )
     if active:
         status = (
             cached_status
@@ -88831,6 +89018,7 @@ async def codex_runtime_snapshot(session_id: str) -> dict[str, Any]:
         "persisted_thread": bool(thread_id),
         "thread_loaded": thread_loaded,
         "status": status,
+        "compacting": compacting,
         "goal": session.get("codex_goal"),
         "time_budget_seconds": session.get("codex_goal_time_budget_seconds"),
         "time_budget_exhausted": codex_goal_time_budget_is_exhausted(session),
@@ -90237,6 +90425,35 @@ async def start_claude_goal_command(session_id: str, argument: str) -> dict[str,
     ), queue_if_busy=False)
 
 
+@app.post("/api/sessions/{session_id}/claude/compact")
+async def post_claude_compact(session_id: str) -> dict[str, Any]:
+    """Run Claude's native /compact as one validated provider command turn.
+
+    The SDK message projection turns the resulting ``compacting`` status and
+    ``compact_boundary`` into ``claude_compaction_started``/``_completed``
+    rows, mirroring the Codex compaction lifecycle in the timeline.
+    """
+    session = STORE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CLAUDE:
+        raise HTTPException(status_code=400, detail="Context compaction here requires a Claude chat")
+    if CLAUDE_TRANSPORT == CLAUDE_TRANSPORT_PRINT or not claude_sdk_dependency_available():
+        raise HTTPException(status_code=409, detail="Claude context compaction requires the Claude Agent SDK")
+    snapshot, inventory = await discover_session_provider_commands(session_id, session)
+    command = next((record for record in inventory.records
+                    if record.public.get("invocation") == "/compact"), None)
+    if snapshot["support"].get("available") is not True or command is None:
+        raise HTTPException(status_code=409, detail="This Claude installation does not offer /compact.")
+    accepted = await start_turn(session_id, TurnRequest(
+        prompt="/compact",
+        skill_selection=SkillSelection(id=command.public["id"], revision=inventory.revision),
+        client_capabilities=[CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY],
+    ), queue_if_busy=False)
+    run_id = str(accepted.get("run_id") or "")
+    return {"accepted": True, "run_id": run_id, "operation_id": run_id}
+
+
 class ClaudeGoalRequest(BaseModel):
     condition: str = Field(min_length=1, max_length=4000)
 
@@ -90311,6 +90528,9 @@ async def claude_runtime_snapshot(session_id: str) -> dict[str, Any]:
             and active_record.get("backend") == BACKEND_CLAUDE
             and active_record.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK
         )
+        compacting = bool(
+            active and active_record.get("claude_compaction_in_progress")
+        )
     if active:
         status = {
             "type": "active",
@@ -90333,6 +90553,7 @@ async def claude_runtime_snapshot(session_id: str) -> dict[str, Any]:
                              and not getattr(CLAUDE_GOAL_PROJECTIONS.get(session_id), "caught_up", False)),
         "stop_fence_pending": session_id in CLAUDE_STOP_FENCE_SESSIONS,
         "status": status,
+        "compacting": compacting,
         "pending_interactions": pending,
         "policy": {
             "permission_mode": effective_claude_permission_mode(session),
@@ -90350,6 +90571,7 @@ async def claude_runtime_snapshot(session_id: str) -> dict[str, Any]:
             "context_usage_refresh": True,
             "mcp_management": bool(is_claude and configured and sdk_available),
             "goals": bool(is_claude and configured and sdk_available),
+            "compact": bool(is_claude and configured and sdk_available),
         },
         "fallback_transport": CLAUDE_TRANSPORT_PRINT,
     }
