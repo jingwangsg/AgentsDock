@@ -1,5 +1,13 @@
 # Public development log
 
+## 2026-10-02 — Android build 19 returns to the pinned keyboard library
+
+- Android builds 14 to 18 were packaged from a working copy whose installed
+  copy of the keyboard-handling library had been upgraded for an experiment
+  that was never adopted, so they shipped a newer version than the project
+  pins and reviews. Build 19 is packaged from the pinned version again. No
+  other change.
+
 ## 2026-10-02 — Attaching a photo on Android over a slow connection no longer fails
 
 - Attaching a photo on Android over a slow connection showed "Upload failed"
