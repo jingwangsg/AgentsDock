@@ -22,6 +22,7 @@
   both providers, and the built desktop app driven through its real IPC and
   HTTP transport for the panel button and the slash command. Android changes
   pass type checks and unit tests; the Android app itself was not exercised.
+  Android build 22 carries the Android part.
 
 ## 2026-10-02 — Android build 21: a large upload is given up only when it stalls
 
