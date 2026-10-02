@@ -87,6 +87,7 @@ def make_namespace(root: Path):
         "session_provider_id": lambda session: session.get("session_id"), "import_session_history": AsyncMock(),
         "ensure_session_not_initializing": lambda session: None,
         "SESSION_LIFECYCLE_UPDATE_FIELDS": {"backend", "codex_provider", "model", "effort", "archived"},
+        "SESSION_DISPLAY_UPDATE_FIELDS": {"title", "folder", "pinned"},
         "session_lifecycle_lock": lambda session: locks.setdefault(session, asyncio.Lock()),
         "ensure_claude_permission_mode_update_allowed": AsyncMock(),
         "ACTIVE_LOCK": asyncio.Lock(), "ACTIVE": {}, "BUSY_SESSIONS": set(), "SESSION_TURN_TASKS": {},
@@ -110,7 +111,7 @@ def make_namespace(root: Path):
     store.sessions = {}
     store._lock = asyncio.Lock()
     store.top_order_for_section = lambda *args, **kwargs: 1000
-    async def save():
+    async def save(*, flush=True):
         (root / "sessions.json").write_text(json.dumps(store.sessions))
     store.save = AsyncMock(side_effect=save)
     async def persist_restored_state(**kwargs):

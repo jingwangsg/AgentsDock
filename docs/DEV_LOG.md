@@ -1,5 +1,17 @@
 # Public development log
 
+## 2026-10-02 — Renaming, moving, or pinning a chat no longer waits on the server's disk
+
+- Renaming a chat on a remote server whose state directory sits on a network
+  filesystem could end with "sessions:update: TimeoutError" even though the
+  new name was applied: the server answered a rename only after it had
+  rewritten its sessions file on disk, and one such rewrite took longer than
+  the app waits for a reply. Renames, folder moves, and pins now apply in
+  memory and answer at once; the sessions file is rewritten by the existing
+  coalescing writer within about two seconds, as it already was for every
+  message's metadata. Every other edit (working directory, model,
+  permissions, sub-agent limit, archive) still waits for the write, as before.
+
 ## 2026-10-02 — A rewound Claude chat keeps its title
 
 - After editing or rewinding a Claude chat, its title gained a "Fork: " prefix,

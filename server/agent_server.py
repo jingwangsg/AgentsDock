@@ -6712,6 +6712,12 @@ SESSION_LIFECYCLE_UPDATE_FIELDS = frozenset({
     "opencode_permission_mode",
     "archived",
 })
+# A PATCH limited to these fields returns before sessions.json is rewritten;
+# the coalesced writer lands it, as it already does for per-event metadata.
+# Every other field keeps awaiting the write: subagent_limit and
+# provider_jobs_access roll back in memory if it fails, and the lifecycle
+# branch's follow-up steps treat the write as done.
+SESSION_DISPLAY_UPDATE_FIELDS = frozenset({"title", "folder", "pinned"})
 
 
 class ReorderSessionRequest(BaseModel):
@@ -11014,7 +11020,13 @@ class SessionStore:
             raise
         return sess
 
-    async def update(self, sid: str, patch: dict[str, Any]) -> dict[str, Any]:
+    async def update(
+        self,
+        sid: str,
+        patch: dict[str, Any],
+        *,
+        flush: bool = True,
+    ) -> dict[str, Any]:
         async with self._lock:
             sess = self.sessions.get(sid)
             if not sess:
@@ -11241,7 +11253,7 @@ class SessionStore:
                 sess["sort_order"] = self.top_order_for_section(new_section, excluding_id=sid)
             sess["updated_at"] = now_iso()
             try:
-                await self.save()
+                await self.save(flush=flush)
             except BaseException:
                 if previous_provider_runtime is not None:
                     sess.clear()
@@ -88733,7 +88745,11 @@ async def update_session(session_id: str, req: UpdateSessionRequest) -> dict[str
     else:
         # Title, folder, and pin edits remain lightweight. Archive changes are
         # serialized above because they form a turn/job admission boundary.
-        sess = await STORE.update(session_id, patch)
+        # On a network-filesystem state dir one sessions.json replacement can
+        # outlast the client's request deadline, so a PATCH limited to
+        # SESSION_DISPLAY_UPDATE_FIELDS does not await it.
+        display_only = SESSION_DISPLAY_UPDATE_FIELDS.issuperset(patch)
+        sess = await STORE.update(session_id, patch, flush=not display_only)
     if req.archived is True:
         try:
             await terminalize_archived_cross_chat_session(session_id)
