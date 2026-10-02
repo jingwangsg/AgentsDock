@@ -61583,7 +61583,9 @@ def build_claude_cmd(
         cmd.extend(["--resume", provider_id])
         if sess.get("fork_from"):
             cmd.append("--fork-session")
-            cmd.extend(["--name", f"Fork: {sess.get('title') or sess['id']}"])
+            # The chat's title follows the native session name, so name the fork
+            # after the chat as it is; a "Fork:" prefix would compound on every rewind.
+            cmd.extend(["--name", sess.get("title") or sess["id"]])
             if sess.get("fork_resume_session_at"):
                 cmd.extend(["--resume-session-at", str(sess["fork_resume_session_at"])])
     return cmd
@@ -61783,7 +61785,8 @@ def build_claude_sdk_options(
         "system-prompt-snapshot": "off",
     }
     if provider_id and sess.get("fork_from"):
-        extra_args["name"] = f"Fork: {sess.get('title') or sess['id']}"
+        # Same as build_claude_cmd: the chat's title follows the native session name.
+        extra_args["name"] = sess.get("title") or sess["id"]
         if sess.get("fork_resume_session_at"):
             extra_args["resume-session-at"] = str(sess["fork_resume_session_at"])
     options = create_claude_agent_options(

@@ -527,9 +527,12 @@ class ForkSessionFallbackTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("--fork-session", print_cmd)
         self.assertEqual(print_cmd[print_cmd.index("--resume-session-at") + 1], "completed-message-uuid")
+        # The chat's title follows the native session name: no prefix that would compound per rewind.
+        self.assertEqual(print_cmd[print_cmd.index("--name") + 1], "Claude parent")
         self.assertEqual(captured_options["resume"], provider_id)
         self.assertIs(captured_options["fork_session"], True)
         self.assertEqual(captured_options["extra_args"]["resume-session-at"], "completed-message-uuid")
+        self.assertEqual(captured_options["extra_args"]["name"], "Claude parent")
 
     async def test_claude_fork_missing_transcript_is_rejected_before_child_creation(
         self,

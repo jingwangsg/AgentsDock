@@ -1,5 +1,13 @@
 # Public development log
 
+## 2026-10-02 — A rewound Claude chat keeps its title
+
+- After editing or rewinding a Claude chat, its title gained a "Fork: " prefix,
+  and another "Fork: " on each further edit. The rewind starts a new Claude
+  session named after the chat with that prefix, and a chat's title follows its
+  Claude session's name. The new session is now named after the chat as it is.
+  A chat whose title already carries the prefix can be renamed back.
+
 ## 2026-10-02 — Editing an earlier message in a resumed Codex chat no longer fails
 
 - In a Codex chat that had been resumed (its earlier turns re-imported from
