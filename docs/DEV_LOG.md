@@ -1,5 +1,28 @@
 # Public development log
 
+## 2026-10-02 — Uploading a large file to a remote chat no longer freezes that remote
+
+- A remote reached through the hub shared one ssh connection between every
+  request, the event stream and any file being uploaded. Over a relay measured
+  at 27 KiB/s, an upload kept that connection full for minutes;
+  each ordinary request queued behind megabytes of file data, passed the
+  desktop's 30-second deadline, and the chat sat on "Loading latest messages"
+  until the upload ended or was abandoned. The hub now opens a second ssh
+  connection per remote and sends chat uploads through it; everything else
+  keeps the first one, so the chat stays usable while a file is on its way.
+  Measured on the same relay: with the upload on its own connection, requests
+  on the shared one took 1–8 s instead of timing out. The upload itself is as
+  slow as the relay, about an hour for 84 MB at that speed.
+- The desktop gave an upload a deadline derived from its size, assuming at
+  least 1 MiB/s, so that 84 MB file was cut off after five minutes and
+  reported as failed. An upload is now given up only when the connection
+  stops taking its data for two minutes, when the server has not answered
+  five minutes after the desktop handed over its last byte, or after eight
+  hours in any case.
+  Android still uses the size-based deadline.
+- The hub no longer logs a full traceback each time the desktop abandons an
+  upload part-way through.
+
 ## 2026-10-02 — Editing or rewinding a Claude chat now really forks the Claude session
 
 - Rewinding a Claude chat (or editing an earlier message) removed the later

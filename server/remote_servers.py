@@ -36,6 +36,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 from starlette.background import BackgroundTask
+from starlette.requests import ClientDisconnect
 from websockets.asyncio.client import connect as websocket_connect
 
 logger = logging.getLogger("agents-server")
@@ -564,8 +565,13 @@ def last_line(text: str) -> str:
 class Tunnel:
     """Keeps one ``ssh -N -L`` forward alive with backoff and optional remote revival."""
 
-    def __init__(self, server: RemoteServer | SSHForward, revive: Callable[[RemoteServer], Awaitable[None]] | None):
+    def __init__(
+        self, server: RemoteServer | SSHForward, revive: Callable[[RemoteServer], Awaitable[None]] | None,
+        *, role: Literal["main", "upload"] = "main",
+    ):
         self.server = server
+        self.role = role
+        self.label = server.id if role == "main" else f"{server.id} (upload)"
         # The route of the running ssh; the forward probe logs in with its destination and options.
         self._route: SSHRoute | None = None
         self.status: dict[str, Any] = {"state": "starting", "restarts": 0, "last_error": None}
@@ -582,7 +588,7 @@ class Tunnel:
         self._last_revive = 0.0
 
     def start(self) -> None:
-        self._task = asyncio.create_task(self._supervise(), name=f"ssh-tunnel:{self.server.id}")
+        self._task = asyncio.create_task(self._supervise(), name=f"ssh-tunnel:{self.label}")
 
     async def _supervise(self) -> None:
         while not self._stopped:
@@ -604,9 +610,9 @@ class Tunnel:
                     args = tunnel_args(route.destination, self.server.local_port, self.server.remote_port)
                     # Site forwards the cluster's chats need, e.g. a git server that only this
                     # Mac can reach, ride on this long-lived tunnel; never on the short deploy
-                    # connections, which would contend for the same remote port.
+                    # connections or the upload tunnel, which would contend for the same remote port.
                     self._site_args = (shlex.split(os.environ.get("AGENTSDOCK_OCI_TUNNEL_SSH_ARGS", ""))
-                                       if self.server.ssh_host.startswith("oci@") else [])
+                                       if self.role == "main" and self.server.ssh_host.startswith("oci@") else [])
                     options = [*route.options, *self._site_args]
                 self._route = route
                 proc = await asyncio.create_subprocess_exec(
@@ -646,7 +652,7 @@ class Tunnel:
             if self._stopped:
                 return
             self._mark_reconnecting(last_line(tail) or f"ssh exited ({code})")
-            logger.warning("ssh tunnel %s exited; restarting in %.0fs: %s", self.server.id, self._backoff, self.status["last_error"])
+            logger.warning("ssh tunnel %s exited; restarting in %.0fs: %s", self.label, self._backoff, self.status["last_error"])
             await asyncio.sleep(self._backoff)
             self._backoff = next_backoff(self._backoff)
 
@@ -882,6 +888,13 @@ HOP_BY_HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-a
 PROXY_IDENTITY_HEADERS = {"forwarded", "via", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"}
 TOKEN_HEADERS = ("x-agentsdock-token", "x-zenithdock-token")
 WS_HANDSHAKE_HEADERS = {"sec-websocket-key", "sec-websocket-version", "sec-websocket-protocol", "sec-websocket-extensions"}
+# A chat upload shares the remote's tunnel with every other request and the event
+# stream. Measured 2026-10-02 through a Sky websocket proxy: the tunnel moves ~27 KiB/s,
+# and ssh queues up to its 2 MiB channel window ahead of the next request, so one upload
+# held every other request past the desktop's 30 s deadline. Uploads therefore get a
+# tunnel of their own; the upload stays slow, the rest of the chat no longer waits on it.
+# Downloads were not measured and keep the main tunnel.
+UPLOAD_PATH_RE = re.compile(r"api/sessions/[^/]+/files")
 
 
 def upstream_headers(raw_headers: list[tuple[bytes, bytes]], token: str, *, drop: set[str] = frozenset()) -> list[tuple[str, str]]:
@@ -971,6 +984,7 @@ class RemoteServerManager:
         self._revive = revive
         self.servers: dict[str, RemoteServer] = {}
         self.tunnels: dict[str, Tunnel] = {}
+        self.upload_tunnels: dict[str, Tunnel] = {}
         self.forwards: dict[str, SSHForward] = {}
         self.forward_tunnels: dict[str, Tunnel] = {}
         self.jobs: dict[str, DeployJob] = {}
@@ -1014,14 +1028,16 @@ class RemoteServerManager:
         for job in list(self.jobs.values()):
             if job.task is not None and not job.task.done():
                 job.task.cancel()
-        await asyncio.gather(*(tunnel.stop() for tunnel in [*self.tunnels.values(), *self.forward_tunnels.values()]),
+        await asyncio.gather(*(tunnel.stop() for tunnel in [*self.tunnels.values(), *self.upload_tunnels.values(), *self.forward_tunnels.values()]),
                              return_exceptions=True)
         self.tunnels.clear()
+        self.upload_tunnels.clear()
         self.forward_tunnels.clear()
         await self.http.aclose()
 
     def _reserved_ports(self) -> set[int]:
         return ({server.local_port for server in self.servers.values()}
+                | {tunnel.server.local_port for tunnel in self.upload_tunnels.values()}
                 | {forward.local_port for forward in self.forwards.values()})
 
     def _ensure_tunnel(self, server: RemoteServer) -> None:
@@ -1030,12 +1046,19 @@ class RemoteServerManager:
         current = self.tunnels.get(server.id)
         if current is not None and current.server == server:
             return
-        if current is not None:
-            asyncio.create_task(current.stop())
+        for stale in (current, self.upload_tunnels.pop(server.id, None)):
+            if stale is not None:
+                asyncio.create_task(stale.stop())
         tunnel = Tunnel(server, self._revive)
         self.tunnels[server.id] = tunnel
         logger.info("ssh tunnel starting for %s (%s, local %d -> remote %d)", server.id, server.ssh_host, server.local_port, server.remote_port)
         tunnel.start()
+        # The upload tunnel's port is private to this hub process (only the proxy routes to
+        # it), so it is not in the registry. The main tunnel already revives the remote.
+        upload = Tunnel(server.model_copy(update={"local_port": find_free_local_port(self._reserved_ports())}), None, role="upload")
+        self.upload_tunnels[server.id] = upload
+        logger.info("ssh tunnel starting for %s (%s, local %d -> remote %d)", upload.label, server.ssh_host, upload.server.local_port, server.remote_port)
+        upload.start()
 
     def _ensure_forward(self, forward: SSHForward) -> None:
         if not self.manage_tunnels:
@@ -1051,9 +1074,14 @@ class RemoteServerManager:
                  if forward.id in self.forward_tunnels else None}
                 for forward in self.forwards.values()]
 
-    def tunnel_status(self, remote_id: str) -> dict[str, Any] | None:
-        tunnel = self.tunnels.get(remote_id)
+    def tunnel_status(self, remote_id: str, *, upload: bool = False) -> dict[str, Any] | None:
+        tunnel = (self.upload_tunnels if upload else self.tunnels).get(remote_id)
         return dict(tunnel.status) if tunnel else None
+
+    def upload_port(self, server: RemoteServer) -> int:
+        tunnel = self.upload_tunnels.get(server.id)
+        # Without a managed upload tunnel (manage_tunnels=False, tests) the registered port serves everything.
+        return tunnel.server.local_port if tunnel is not None else server.local_port
 
     def get(self, remote_id: str) -> RemoteServer | None:
         return self.servers.get(remote_id)
@@ -1084,9 +1112,9 @@ class RemoteServerManager:
         server = self.servers.pop(remote_id, None)
         if server is None:
             raise HTTPException(status_code=404, detail="Unknown remote server.")
-        tunnel = self.tunnels.pop(remote_id, None)
-        if tunnel is not None:
-            await tunnel.stop()
+        for tunnel in (self.tunnels.pop(remote_id, None), self.upload_tunnels.pop(remote_id, None)):
+            if tunnel is not None:
+                await tunnel.stop()
         self._save()
 
     def reorder(self, ids: list[str]) -> None:
@@ -1484,16 +1512,23 @@ def register_remote_server_routes(
             return JSONResponse({"detail": {"code": "remote_not_found", "remote_id": remote_id}}, status_code=404)
         headers = upstream_headers(request.scope.get("headers", []), server.token)
         query = swap_token_query(request.url.query, server.token)
-        url = f"http://127.0.0.1:{server.local_port}/{path}" + (f"?{query}" if query else "")
+        upload = request.method == "POST" and UPLOAD_PATH_RE.fullmatch(path) is not None
+        port = manager.upload_port(server) if upload else server.local_port
+        url = f"http://127.0.0.1:{port}/{path}" + (f"?{query}" if query else "")
         content = None
         if request.method not in ("GET", "HEAD") and (request.headers.get("content-length") not in (None, "0") or "transfer-encoding" in request.headers):
             content = request.stream()
         upstream_request = manager.http.build_request(request.method, url, headers=headers, content=content)
         try:
             upstream = await manager.http.send(upstream_request, stream=True)
+        except ClientDisconnect:
+            # The client dropped its own request body mid-way (the desktop abandons an
+            # upload whose chat closed). Nobody is left to receive an answer; 499 is
+            # nginx's code for a client that closed its request.
+            return Response(status_code=499)
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             return JSONResponse(
-                {"detail": {"code": "remote_unreachable", "remote_id": remote_id, "tunnel": manager.tunnel_status(remote_id), "message": str(exc) or "connection failed"}},
+                {"detail": {"code": "remote_unreachable", "remote_id": remote_id, "tunnel": manager.tunnel_status(remote_id, upload=upload), "message": str(exc) or "connection failed"}},
                 status_code=502,
             )
         except httpx.ReadTimeout as exc:
