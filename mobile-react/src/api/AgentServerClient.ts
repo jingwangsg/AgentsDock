@@ -1,3 +1,5 @@
+import { File } from 'expo-file-system'
+
 import type {
   AgentFile,
   AgentCrossChatRoutesSnapshot,
@@ -82,8 +84,6 @@ import type {
 } from '../types'
 import { normalizeServerURL } from '../lib/format'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../lib/provider-usage'
-import { createUploadFormData } from '../lib/upload-form'
-import { uploadRequestTimeoutMs } from '../lib/uploads'
 import { parseSyncedSideChat, type SyncedSideChat } from '../lib/side-chat'
 import type { BackgroundActivityItem } from '../lib/background-activity'
 import { teamNetworkRequestPath } from '../lib/team-network'
@@ -111,6 +111,13 @@ const STREAM_CONNECT_TIMEOUT_MS = 10_000
 const STREAM_RETRY_INITIAL_MS = 500
 const STREAM_RETRY_MAX_MS = 30_000
 const STREAM_STABLE_CONNECTION_MS = 10_000
+// A size-based upload deadline assumed 1 MiB/s; measured through a slow relay, 27 KiB/s, so
+// an 84 MB file needed about an hour and was cut off at five minutes. Like the desktop, an
+// upload is given up only when it stalls: no byte taken for UPLOAD_STALL_TIMEOUT_MS, no
+// answer UPLOAD_RESPONSE_TIMEOUT_MS after the last byte, or UPLOAD_TIMEOUT_CAP_MS in all.
+const UPLOAD_STALL_TIMEOUT_MS = 2 * 60_000
+const UPLOAD_RESPONSE_TIMEOUT_MS = 5 * 60_000
+const UPLOAD_TIMEOUT_CAP_MS = 8 * 60 * 60_000
 const FATAL_WEBSOCKET_CLOSE_CODES = new Set([4401, 4404, 4409])
 
 export interface ServerErrorDetail {
@@ -192,6 +199,10 @@ export interface AgentServerClientOptions {
   onAuthorizationFailure?: (error: ServerError | WebSocketConnectionError) => void
   /** Called synchronously for an HTTP rejection from the active request scope. */
   onServerError?: (error: ServerError) => void
+  /** Test seams; production aborts an upload after these windows (UPLOAD_STALL_TIMEOUT_MS, UPLOAD_RESPONSE_TIMEOUT_MS, UPLOAD_TIMEOUT_CAP_MS). */
+  uploadStallTimeoutMs?: number
+  uploadResponseTimeoutMs?: number
+  uploadTimeoutMs?: number
 }
 
 export class AgentServerClient {
@@ -201,6 +212,9 @@ export class AgentServerClient {
   private readonly validationRequired: boolean
   private readonly onAuthorizationFailure?: (error: ServerError | WebSocketConnectionError) => void
   private readonly onServerError?: (error: ServerError) => void
+  private readonly uploadStallTimeoutMs: number
+  private readonly uploadResponseTimeoutMs: number
+  private readonly uploadTimeoutMs: number
   private validated: boolean
   private validationRevisionValue = 0
   private disposed = false
@@ -210,6 +224,9 @@ export class AgentServerClient {
     this.validationRequired = options.requireValidation === true
     this.onAuthorizationFailure = options.onAuthorizationFailure
     this.onServerError = options.onServerError
+    this.uploadStallTimeoutMs = options.uploadStallTimeoutMs ?? UPLOAD_STALL_TIMEOUT_MS
+    this.uploadResponseTimeoutMs = options.uploadResponseTimeoutMs ?? UPLOAD_RESPONSE_TIMEOUT_MS
+    this.uploadTimeoutMs = options.uploadTimeoutMs ?? UPLOAD_TIMEOUT_CAP_MS
     this.validated = !this.validationRequired
   }
 
@@ -922,9 +939,71 @@ export class AgentServerClient {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/files?${query}`)
   }
   async upload(sessionId: string, file: UploadRef): Promise<AgentFile> {
-    this.assertValidated()
-    const form = createUploadFormData(file)
-    return (await this.request<{ file: AgentFile }>(`/api/sessions/${encodeURIComponent(sessionId)}/files`, { method: 'POST', body: form }, uploadRequestTimeoutMs(file.size))).file
+    const scope = this.captureScope()
+    if (!new File(file.uri).exists) {
+      // The native layer reports an unreadable `uri` part only as a generic network
+      // error after sending starts, so this stat is the one pre-flight signal for an
+      // iOS photo whose bytes never materialized (iCloud, limited library, File provider).
+      throw new Error(`Couldn’t read “${file.name || 'this file'}”. If it’s a photo stored in iCloud, open it once in Photos to download it, then try again.`)
+    }
+    // React Native streams a `uri` part from storage and names it after `name`; its
+    // XMLHttpRequest reports upload progress, which fetch does not.
+    const form = new FormData()
+    form.append('file', { uri: file.uri, name: file.name, type: file.type || 'application/octet-stream' } as unknown as Blob)
+    const request = new XMLHttpRequest()
+    request.open('POST', buildURL(scope.configuration.baseURL, `/api/sessions/${encodeURIComponent(sessionId)}/files`))
+    for (const [key, value] of Object.entries(authHeaders(scope.configuration.token))) request.setRequestHeader(key, value)
+    // iOS otherwise ends a request idle for 60 s; Android applies this to the whole call,
+    // hence `ontimeout` below. Either way it is the ceiling, the only fixed deadline.
+    request.timeout = this.uploadTimeoutMs
+    const timeoutError = (message: string) => Object.assign(new Error(message), { name: 'TimeoutError' })
+    let watchdog: ReturnType<typeof setTimeout> | null = null
+    let ceiling: ReturnType<typeof setTimeout> | null = null
+    const onScopeAbort = () => request.abort()
+    let result: { status: number; body: string }
+    try {
+      result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const fail = (error: Error) => {
+          reject(error)
+          request.abort()
+        }
+        // Progress is the connection taking more of the file. After the last byte is handed
+        // over, a relay's buffer can still be in flight before the server sees the end of the
+        // body, so the response window is the longer one.
+        const expectProgressWithin = (timeoutMs: number, failure: string) => {
+          if (watchdog !== null) clearTimeout(watchdog)
+          watchdog = setTimeout(() => fail(timeoutError(failure)), timeoutMs)
+        }
+        ceiling = setTimeout(() => fail(timeoutError('The upload took too long.')), this.uploadTimeoutMs)
+        expectProgressWithin(this.uploadStallTimeoutMs, 'The upload stalled.')
+        request.upload.onprogress = event => (event.lengthComputable && event.loaded >= event.total
+          ? expectProgressWithin(this.uploadResponseTimeoutMs, 'The server did not answer the upload.')
+          : expectProgressWithin(this.uploadStallTimeoutMs, 'The upload stalled.'))
+        request.onload = () => resolve({ status: request.status, body: request.responseText })
+        request.onerror = () => reject(new Error(request.responseText || 'Network request failed'))
+        request.ontimeout = () => reject(timeoutError('The upload took too long.'))
+        // Settles a scope abort; the catch below rethrows it as the scope's own error.
+        request.onabort = () => reject(new Error('aborted'))
+        if (scope.signal.aborted) onScopeAbort()
+        else scope.signal.addEventListener('abort', onScopeAbort, { once: true })
+        request.send(form)
+      })
+    } catch (error) {
+      if (scope.signal.aborted) this.throwScopeAbort(scope.signal)
+      throw error
+    } finally {
+      if (watchdog !== null) clearTimeout(watchdog)
+      if (ceiling !== null) clearTimeout(ceiling)
+      scope.signal.removeEventListener('abort', onScopeAbort)
+    }
+    this.assertScopeActive(scope)
+    if (result.status < 200 || result.status >= 300) {
+      const error = await this.serverError(new Response(result.body, { status: result.status }))
+      this.reportServerError(error)
+      this.revokeForAuthorizationFailure(error)
+      throw error
+    }
+    return (JSON.parse(result.body) as { file: AgentFile }).file
   }
 
   processes(sessionId: string): Promise<ProcessSnapshot> { return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/processes`) }

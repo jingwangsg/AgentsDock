@@ -1622,7 +1622,7 @@ export interface Snapshot {
   cachedAt: number
 }
 
-export interface UploadRef { uri: string; name: string; type?: string; size?: number }
+export interface UploadRef { uri: string; name: string; type?: string }
 export interface FailedUpload extends UploadRef { error: string }
 export interface PinnedItem {
   id: string

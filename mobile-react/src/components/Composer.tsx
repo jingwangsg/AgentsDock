@@ -783,7 +783,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       const result = await DocumentPicker.getDocumentAsync({ multiple: true, copyToCacheDirectory: true })
       if (!result.canceled && remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) {
         guardSendAfterPicker()
-        void attachFiles(result.assets.map(file => ({ uri: file.uri, name: file.name, type: file.mimeType ?? undefined, size: file.size })), profileGeneration, sessionId)
+        void attachFiles(result.assets.map(file => ({ uri: file.uri, name: file.name, type: file.mimeType ?? undefined })), profileGeneration, sessionId)
       }
     } catch (error) {
       if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Files unavailable', pickerError(error))

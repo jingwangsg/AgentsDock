@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-10-02 — Android build 21: a large upload is given up only when it stalls
+
+- Android gave an upload a deadline derived from its size, assuming at least
+  1 MiB/s, so a large file sent to a remote behind a slow relay was cut off
+  after five minutes and reported as failed, while the server went on to store
+  it. The app now watches the upload's progress and gives it up only when the
+  connection stops taking data for two minutes, when the server has not
+  answered five minutes after the last byte, or after eight hours in any case,
+  as on the desktop. On Android the file is streamed from storage instead of
+  being read into memory first.
+
 ## 2026-10-02 — Uploading a large file to a remote chat no longer freezes that remote
 
 - A remote reached through the hub shared one ssh connection between every
