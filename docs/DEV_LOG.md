@@ -1,5 +1,18 @@
 # Public development log
 
+## 2026-10-02 — A Codex skill's instructions no longer appear as a message of yours
+
+- Typing a `$skill` mention in a Codex chat made the full SKILL.md text show up
+  as a second message from you, on the desktop and on Android. Codex adds that
+  text to the thread itself when it activates the skill, marked as runtime
+  input; Codex's own UI never shows it. History sync now treats it like the
+  other runtime inputs Codex adds (environment context, AGENTS.md
+  instructions), so it stays off the timeline. A chat that already shows one
+  for a skill used while the chat was open loses it on Reload history; one that
+  arrived with a resumed thread's first import stays until that chat is resumed
+  again. Claude chats were not affected: Claude marks its skill text as hidden
+  and it was already skipped.
+
 ## 2026-10-02 — Android shows a Claude chat's goal above the composer
 
 - On Android a Claude goal could only be set from the composer's goal

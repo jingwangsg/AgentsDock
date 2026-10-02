@@ -48274,13 +48274,15 @@ def codex_runtime_user_item_kind(item: dict[str, Any], text: str) -> str | None:
         "compaction.summary", "apply_patch.legacy_exec_command_warning",
         "model_switch.legacy_mismatch_warning", "unified_exec.legacy_process_limit_warning",
         "guardian.node_repl_review_evidence", "plugins.recommendations", "agents_md.instructions",
+        "skills.selected_skill_instructions",
     }
     if isinstance(kinds[0], str) and kinds[0] in pure_notices and all(kind == kinds[0] for kind in kinds):
         candidate = str(text or "").strip()
         if not candidate:
             return None
         wrapper = {"guardian.node_repl_review_evidence": "node_repl_review_evidence",
-                   "plugins.recommendations": "recommended_plugins"}.get(kinds[0])
+                   "plugins.recommendations": "recommended_plugins",
+                   "skills.selected_skill_instructions": "skill"}.get(kinds[0])
         if wrapper and not re.fullmatch(r"<" + wrapper + r">\s*[\s\S]+?\s*</" + wrapper + r">", candidate):
             return None
         if kinds[0] == "agents_md.instructions" and not (

@@ -30,6 +30,7 @@ PURE_NOTICES = {
     "guardian.node_repl_review_evidence": "<node_repl_review_evidence>Provider context.</node_repl_review_evidence>",
     "plugins.recommendations": "<recommended_plugins>Provider plugin context.</recommended_plugins>",
     "agents_md.instructions": "# AGENTS.md instructions for /example\n\n<INSTRUCTIONS>\nProvider project context.\n</INSTRUCTIONS>",
+    "skills.selected_skill_instructions": "<skill>\n<name>gear</name>\n<path>/skills/gear/SKILL.md</path>\n---\nname: gear\n---\nProvider skill instructions.\n</skill>",
 }
 
 
@@ -158,7 +159,7 @@ class CodexSubagentNotificationHistoryTests(unittest.IsolatedAsyncioTestCase):
         for kinds in ([{}], [[]], ["compaction.summary", {}], ["compaction.summary", []]):
             malformed = {**source_user("Malformed metadata remains visible.", kinds=kinds), "timestamp": STAMP}
             self.assertNotIn("provider_runtime_context", parse(malformed))
-        for kind in ("guardian.node_repl_review_evidence", "plugins.recommendations", "agents_md.instructions"):
+        for kind in ("guardian.node_repl_review_evidence", "plugins.recommendations", "agents_md.instructions", "skills.selected_skill_instructions"):
             self.assertIsNone(self.ns["codex_runtime_user_item_kind"](source_user(PURE_NOTICES[kind], kinds=(kind,))["payload"], PURE_NOTICES[kind][:-2]))
         raw = {**source_user("Large provider context. " * 50, kinds=("compaction.summary",)), "timestamp": STAMP}
         self.ns["MAX_IMPORTED_TEXT_CHARS"] = 64
