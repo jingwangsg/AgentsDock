@@ -26,6 +26,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from starlette.requests import ClientDisconnect
 from websockets.asyncio.client import connect as websocket_connect
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -71,15 +72,22 @@ def raw(*pairs: tuple[str, str]) -> list[tuple[bytes, bytes]]:
 # --- proxy integration helpers (fake upstream, no ssh) -------------------------
 
 
-def fake_upstream() -> FastAPI:
+def fake_upstream(identity: str = "fake-remote") -> FastAPI:
+    """identity tells a test that runs two fakes which one answered."""
     app = FastAPI()
 
     def token_headers(request: Request) -> list[tuple[str, str]]:
         return [(name.decode(), value.decode()) for name, value in request.scope["headers"] if name.lower() in (b"authorization", b"x-agentsdock-token", b"x-zenithdock-token", b"cookie")]
 
+    async def read_body(request: Request) -> bytes:
+        try:
+            return await request.body()
+        except ClientDisconnect:  # the hub dropped this connection along with its own client
+            return b""
+
     @app.api_route("/echo/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def echo(request: Request, rest: str) -> dict:
-        body = await request.body()
+        body = await read_body(request)
         return {
             "method": request.method, "path": rest, "query": request.url.query,
             "credentials": token_headers(request),
@@ -122,7 +130,12 @@ def fake_upstream() -> FastAPI:
 
     @app.get("/api/health")
     async def health(request: Request) -> dict:
-        return {"server_identity": "fake-remote", "token_ok": ("x-agentsdock-token", REMOTE_TOKEN) in token_headers(request)}
+        return {"server_identity": identity, "token_ok": ("x-agentsdock-token", REMOTE_TOKEN) in token_headers(request)}
+
+    @app.api_route("/api/sessions/{rest:path}", methods=["GET", "POST"])
+    async def session_route(request: Request, rest: str) -> dict:
+        body = await read_body(request)
+        return {"identity": identity, "method": request.method, "path": rest, "size": len(body), "content_length": request.headers.get("content-length")}
 
     @app.websocket("/ws")
     async def ws_echo(ws: WebSocket) -> None:
@@ -714,17 +727,19 @@ if "-N" in sys.argv:
         self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
         self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_TUNNEL_SSH_ARGS": "-R 12052:git.example:12051 -o ExitOnForwardFailure=no"}))
         self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
+        oci_port = free_port()
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
         rs.save_registry(manager.path, [
-            make_server(id="aaaaaaaaaaaa", ssh_host="oci@sky-cluster", local_port=free_port()),
+            make_server(id="aaaaaaaaaaaa", ssh_host="oci@sky-cluster", local_port=oci_port),
             make_server(id="bbbbbbbbbbbb", ssh_host="plain-host", local_port=free_port()),
         ])
 
         async def main() -> None:
             await manager.start()
             try:
+                # Two servers, each with its main and its upload tunnel, plus one git rewrite.
                 for _ in range(200):
-                    if calls.exists() and len(calls.read_text().splitlines()) == 3:
+                    if calls.exists() and len(calls.read_text().splitlines()) == 5:
                         return
                     await asyncio.sleep(0.05)
                 self.fail("tunnels did not start")
@@ -733,11 +748,14 @@ if "-N" in sys.argv:
 
         asyncio.run(main())
         records = [json.loads(line) for line in calls.read_text().splitlines()]
-        argvs = {argv[-1]: argv for argv in records if "-N" in argv}
-        oci = argvs["sky-cluster"]
+        tunnels = [argv for argv in records if "-N" in argv]
+        [oci] = [argv for argv in tunnels if argv[-2] == f"127.0.0.1:{oci_port}:127.0.0.1:7850"]
         # Before the tunnel's own options, so ExitOnForwardFailure=no wins over its =yes.
         assert oci[:9] == ["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x", "-R", "12052:git.example:12051", "-o", "ExitOnForwardFailure=no", "-N"]
-        assert "-R" not in argvs["plain-host"]
+        # The upload tunnel must not claim the site forward's remote port a second time.
+        [oci_upload] = [argv for argv in tunnels if argv[-1] == "sky-cluster" and argv is not oci]
+        assert oci_upload[:5] == ["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x", "-N"]
+        assert all("-R" not in argv for argv in tunnels if argv[-1] == "plain-host")
         # Once connected, git on the host is pointed at the forward, in the server's HOME.
         [rewrite] = [argv for argv in records if "-N" not in argv]
         assert rewrite[-2] == "sky-cluster" and "-R" not in rewrite
@@ -767,10 +785,12 @@ time.sleep(30)
         async def main() -> dict:
             await manager.start()
             try:
+                # The running workflow starts a main and an upload tunnel; the ended one never reaches ssh.
                 for _ in range(200):
                     running = manager.tunnel_status("aaaaaaaaaaaa")
                     ended = manager.tunnel_status("bbbbbbbbbbbb")
-                    if running["state"] == "connected" and ended["state"] == "reconnecting" and calls.exists():
+                    if (running["state"] == "connected" and ended["state"] == "reconnecting"
+                            and calls.exists() and len(calls.read_text().splitlines()) == 2):
                         return ended
                     await asyncio.sleep(0.05)
                 self.fail(f"tunnels did not settle: {running} {ended}")
@@ -780,9 +800,9 @@ time.sleep(30)
         ended = asyncio.run(main())
         assert "OSMO workflow wf-done is COMPLETED" in ended["last_error"]
         route = asyncio.run(rs.ssh_route("osmo@wf-running"))
-        [argv] = [json.loads(line) for line in calls.read_text().splitlines()]
-        assert argv[:len(route.options)] == route.options
-        assert argv[-3:] == ["-L", f"127.0.0.1:{running_port}:127.0.0.1:7850", "root@wf-running"]
+        argvs = [json.loads(line) for line in calls.read_text().splitlines()]
+        assert all(argv[:len(route.options)] == route.options and argv[-3] == "-L" and argv[-1] == "root@wf-running" for argv in argvs)
+        assert sum(argv[-2] == f"127.0.0.1:{running_port}:127.0.0.1:7850" for argv in argvs) == 1
 
     def test_attach_fails_when_the_host_has_no_install(self) -> None:
         calls = self.fake_host(existing_port=None)
@@ -946,6 +966,98 @@ time.sleep(30)
                     listing = (await client.get(f"http://127.0.0.1:{hub_port}/api/admin/remote-servers")).json()
                     assert {entry["id"] for entry in listing["servers"]} == {remote.id, dead.id}
                     assert all("token" not in entry for entry in listing["servers"])
+            finally:
+                await close()
+
+        asyncio.run(main())
+
+    def test_chat_uploads_take_the_remotes_upload_tunnel(self) -> None:
+        async def main() -> None:
+            manager, remote, _dead, hub_port, close = await hub_with_fake(self.tmp_path)
+            upload_server, upload_task, upload_port = await serve(fake_upstream(identity="upload-tunnel"))
+            base = f"http://127.0.0.1:{hub_port}/api/remote/{remote.id}/api/sessions/sess_1"
+            headers = {"X-AgentsDock-Token": HUB_TOKEN}
+            try:
+                async with httpx.AsyncClient() as client:
+                    payload = bytes(range(256)) * 40
+
+                    async def post_upload() -> dict:
+                        response = await client.post(f"{base}/files", headers=headers, files={"file": ("blob.bin", payload, "application/octet-stream")})
+                        assert response.status_code == 200, response.text
+                        return response.json()
+
+                    # A hub that manages no tunnels keeps uploads on the main tunnel.
+                    assert (await post_upload())["identity"] == "fake-remote"
+
+                    # Never started: only its port matters here, and tunnel_status(upload=True) must read this one.
+                    manager.upload_tunnels[remote.id] = rs.Tunnel(remote.model_copy(update={"local_port": upload_port}), None, role="upload")
+                    posted = await post_upload()
+                    assert posted["identity"] == "upload-tunnel" and posted["size"] == int(posted["content_length"]) > len(payload)
+                    # Listing and downloading files, and everything else, stay on the main tunnel.
+                    for path in ("files?offset=0&limit=60", "files/file_1", "pins"):
+                        assert (await client.get(f"{base}/{path}", headers=headers)).json()["identity"] == "fake-remote", path
+                    assert (await client.post(f"{base}/turns", headers=headers, json={})).json()["identity"] == "fake-remote"
+                    assert manager.tunnel_status(remote.id, upload=True) == {"state": "starting", "restarts": 0, "last_error": None}
+            finally:
+                await close()
+                await stop(upload_server, upload_task)
+
+        asyncio.run(main())
+
+    def test_a_remote_gets_an_upload_tunnel_on_its_own_unpersisted_port(self) -> None:
+        script = self.tmp_path / "ssh"
+        calls = self.tmp_path / "tunnel-calls.jsonl"
+        script.write_text(f"""#!{sys.executable}
+import json, sys, time
+with open({str(calls)!r}, "a") as out:
+    out.write(json.dumps(sys.argv[1:]) + "\\n")
+time.sleep(30)
+""")
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
+        server = make_server(ssh_host="lab", local_port=free_port())
+        rs.save_registry(manager.path, [server])
+
+        async def main() -> None:
+            await manager.start()
+            try:
+                for _ in range(200):
+                    if calls.exists() and len(calls.read_text().splitlines()) == 2:
+                        break
+                    await asyncio.sleep(0.05)
+                upload = manager.upload_tunnels[server.id]
+                assert upload.server.local_port != server.local_port
+                assert manager.upload_port(server) == upload.server.local_port
+                assert upload.server.local_port in manager._reserved_ports()
+                # The registry keeps the one port clients may see; the upload port is this process's business.
+                assert rs.load_registry(manager.path) == [server]
+                forwards = sorted(json.loads(line)[-2] for line in calls.read_text().splitlines())
+                assert forwards == sorted(f"127.0.0.1:{port}:127.0.0.1:7850" for port in (server.local_port, upload.server.local_port))
+                await manager.remove(server.id)
+                assert server.id not in manager.upload_tunnels and upload.status["state"] == "stopped"
+            finally:
+                await manager.stop()
+
+        asyncio.run(main())
+
+    def test_hub_proxy_logs_no_traceback_when_the_client_abandons_its_upload(self) -> None:
+        # The desktop aborts an upload whose chat closed; the hub used to log a full
+        # "Exception in ASGI application" traceback for the ClientDisconnect each time.
+        async def main() -> None:
+            manager, remote, _dead, hub_port, close = await hub_with_fake(self.tmp_path)
+            try:
+                with self.assertNoLogs("uvicorn.error", level="ERROR"):
+                    _reader, writer = await asyncio.open_connection("127.0.0.1", hub_port)
+                    writer.write((
+                        f"POST /api/remote/{remote.id}/echo/upload HTTP/1.1\r\nHost: hub\r\nX-AgentsDock-Token: {HUB_TOKEN}\r\n"
+                        "Content-Type: application/octet-stream\r\nContent-Length: 100000\r\n\r\n"
+                    ).encode() + b"x" * 10)
+                    await writer.drain()
+                    await asyncio.sleep(0.2)  # the proxy has opened the upstream request and waits for more body
+                    writer.close()
+                    await writer.wait_closed()
+                    await asyncio.sleep(0.5)  # the disconnect surfaces inside the proxy
             finally:
                 await close()
 

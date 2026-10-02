@@ -161,6 +161,14 @@ const UPLOAD_REQUEST_TIMEOUT_FLOOR_MS = 5 * 60_000
 const UPLOAD_REQUEST_TIMEOUT_OVERHEAD_MS = 2 * 60_000
 const UPLOAD_REQUEST_TIMEOUT_CAP_MS = 8 * 60 * 60_000
 const UPLOAD_MINIMUM_BYTES_PER_SECOND = 1024 * 1024
+// uploadRequestTimeoutMs assumes 1 MiB/s. Measured 2026-10-02 through a slow ssh
+// relay: 27 KiB/s, so an 84 MB file needed about an hour and was cut off at five
+// minutes. uploadOpened therefore aborts on stall, not on size: no body chunk
+// taken for UPLOAD_STALL_TIMEOUT_MS, or no response UPLOAD_RESPONSE_TIMEOUT_MS
+// after the last chunk was handed over. UPLOAD_REQUEST_TIMEOUT_CAP_MS stays as
+// the only fixed deadline; renderer/profile aborts stay immediate.
+const UPLOAD_STALL_TIMEOUT_MS = 2 * 60_000
+const UPLOAD_RESPONSE_TIMEOUT_MS = 5 * 60_000
 const TEAM_HUB_BOOTSTRAP_PROOF_TIMEOUT_MS = 15_000
 const TEAM_HUB_BOOTSTRAP_PROOF_MAX_RESPONSE_BYTES = 64 * 1024
 const SECURE_PEER_MAX_REQUEST_BYTES = 64 * 1024
@@ -293,8 +301,11 @@ interface ClientConfiguration {
 }
 
 export interface AgentServerClientOptions {
-  /** Test seam; production derives a bounded deadline from the opened file size. */
+  /** Test seam; production derives upload()'s deadline from the file size and gives uploadOpened() only the hard ceiling. */
   uploadTimeoutMs?: number
+  /** Test seams; production aborts an opened upload after these stall windows (UPLOAD_STALL_TIMEOUT_MS, UPLOAD_RESPONSE_TIMEOUT_MS). */
+  uploadStallTimeoutMs?: number
+  uploadResponseTimeoutMs?: number
   /** Test seam which avoids wall-clock waits when exercising upload expiry. */
   timeoutSignal?: (timeoutMs: number) => AbortSignal
 }
@@ -329,11 +340,15 @@ export class TeamHubBootstrapTransportError extends Error {
 export class AgentServerClient {
   private configuration: ClientConfiguration
   private readonly uploadTimeoutMs: number | null
+  private readonly uploadStallTimeoutMs: number
+  private readonly uploadResponseTimeoutMs: number
   private readonly timeoutSignal: (timeoutMs: number) => AbortSignal
 
   constructor(baseURL: string, token: string, options: AgentServerClientOptions = {}) {
     this.configuration = createConfiguration(baseURL, token)
     this.uploadTimeoutMs = options.uploadTimeoutMs === undefined ? null : positiveTimeout(options.uploadTimeoutMs)
+    this.uploadStallTimeoutMs = positiveTimeout(options.uploadStallTimeoutMs ?? UPLOAD_STALL_TIMEOUT_MS)
+    this.uploadResponseTimeoutMs = positiveTimeout(options.uploadResponseTimeoutMs ?? UPLOAD_RESPONSE_TIMEOUT_MS)
     this.timeoutSignal = options.timeoutSignal ?? (timeoutMs => AbortSignal.timeout(timeoutMs))
   }
 
@@ -1686,29 +1701,53 @@ export class AgentServerClient {
       'utf8'
     )
     const suffix = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8')
-    const body = multipartFileBody(source.fd, source.byteSize, prefix, suffix)
+    // Progress is the connection taking another body chunk. After the last chunk is
+    // handed over, up to 2 MiB can still sit in the ssh channel window and drains at
+    // link speed (about 80 s at 27 KiB/s) before the server sees the end of the body,
+    // so the response window is the longer one.
+    const watchdog = new AbortController()
+    let stallTimer: ReturnType<typeof setTimeout> | null = null
+    let settled = false
+    const expectProgressWithin = (timeoutMs: number, failure: string): void => {
+      // Undici may still take one chunk while a rejected request's last write drains.
+      if (settled) return
+      if (stallTimer !== null) clearTimeout(stallTimer)
+      stallTimer = setTimeout(() => watchdog.abort(new DOMException(failure, 'TimeoutError')), timeoutMs)
+    }
+    const onChunk = (): void => expectProgressWithin(this.uploadStallTimeoutMs, 'The upload stalled.')
+    const body = multipartFileBody(source.fd, source.byteSize, prefix, suffix, {
+      onChunk,
+      onEnd: () => expectProgressWithin(this.uploadResponseTimeoutMs, 'The server did not answer the upload.')
+    })
+    onChunk() // connecting and the first pull are the first wait
     const signal = combineAbortSignals(
       configuration.abortController.signal,
       callerSignal,
-      this.timeoutSignal(uploadRequestTimeoutMs(source.byteSize, this.uploadTimeoutMs ?? undefined))
+      watchdog.signal,
+      this.timeoutSignal(this.uploadTimeoutMs ?? UPLOAD_REQUEST_TIMEOUT_CAP_MS)
     )
-    const response = await this.request<{ file: AgentFile }>(
-      `/api/sessions/${encodeURIComponent(sessionId)}/files`,
-      {
-        method: 'POST',
-        body: body as unknown as BodyInit,
-        headers: {
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          'Content-Length': String(prefix.byteLength + source.byteSize + suffix.byteLength)
-        },
-        signal,
-        // Undici requires duplex for a streaming request body. Electron's
-        // RequestInit declaration has not standardized this Node extension.
-        ...({ duplex: 'half' } as Record<string, unknown>)
-      } as RequestInit,
-      configuration
-    )
-    return response.file
+    try {
+      const response = await this.request<{ file: AgentFile }>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/files`,
+        {
+          method: 'POST',
+          body: body as unknown as BodyInit,
+          headers: {
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+            'Content-Length': String(prefix.byteLength + source.byteSize + suffix.byteLength)
+          },
+          signal,
+          // Undici requires duplex for a streaming request body. Electron's
+          // RequestInit declaration has not standardized this Node extension.
+          ...({ duplex: 'half' } as Record<string, unknown>)
+        } as RequestInit,
+        configuration
+      )
+      return response.file
+    } finally {
+      settled = true
+      if (stallTimer !== null) clearTimeout(stallTimer)
+    }
   }
 
   async fileEvent(sessionId: string, fileId: string): Promise<Event | null> {
@@ -3160,19 +3199,26 @@ function multipartFileBody(
   fd: number,
   byteSize: number,
   prefix: Buffer,
-  suffix: Buffer
+  suffix: Buffer,
+  progress: { onChunk: () => void; onEnd: () => void }
 ): Readable {
+  // The generator resumes only when the stream wants the next piece (Readable.from
+  // buffers one), so each resumption means the previous piece was taken.
   return Readable.from((async function * () {
     yield prefix
     if (byteSize > 0) {
       const file = createReadStream('', { fd, autoClose: false, start: 0, end: byteSize - 1 })
       try {
-        for await (const chunk of file) yield chunk
+        for await (const chunk of file) {
+          progress.onChunk()
+          yield chunk
+        }
       } finally {
         file.destroy()
       }
     }
     yield suffix
+    progress.onEnd()
   })())
 }
 

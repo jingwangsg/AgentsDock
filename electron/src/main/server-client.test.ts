@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { closeSync, openSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Readable } from 'node:stream'
+import { setTimeout as delay } from 'node:timers/promises'
 import { TOOL_OUTPUT_PREVIEW_CHARS } from '../shared/event-compaction'
 import type { Event, PinnedItem, ServerUpdateStatus, Session } from '../shared/types'
 import {
@@ -2313,6 +2316,114 @@ describe('AgentServerClient live stream', () => {
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
+  })
+
+  describe('opened uploads', () => {
+    const CHUNK = 64 * 1024 // createReadStream's default highWaterMark
+    const uploaded = { file: { id: 'archive-1', filename: 'archive.bin', content_type: 'application/octet-stream' } }
+
+    async function openedFile(bytes: number) {
+      const directory = await mkdtemp(join(tmpdir(), 'agentsdock-upload-opened-test-'))
+      const path = join(directory, 'archive.bin')
+      await writeFile(path, Buffer.alloc(bytes, 1))
+      const fd = openSync(path, 'r')
+      return {
+        source: { fd, byteSize: bytes, filename: 'archive.bin' },
+        async cleanup() {
+          // Destroying the body's read stream closes the descriptor even with autoClose
+          // off; production's admitted.close() tolerates that the same way.
+          try { closeSync(fd) } catch { /* already closed by the stream */ }
+          await rm(directory, { recursive: true, force: true })
+        }
+      }
+    }
+
+    async function take(body: Readable, count: number, between?: () => Promise<void>): Promise<number> {
+      let total = 0
+      let taken = 0
+      for await (const chunk of body) {
+        total += (chunk as Buffer).byteLength
+        if (++taken >= count) break
+        if (between) await between()
+      }
+      return total
+    }
+
+    function waitForAbort(signal: AbortSignal): Promise<never> {
+      return new Promise<never>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    }
+
+    it('keeps a slow but moving upload alive past its stall and response windows', async () => {
+      const file = await openedFile(20 * CHUNK)
+      const timeoutSignal = vi.fn((_timeoutMs: number) => new AbortController().signal)
+      let sent = 0
+      let contentLength = 0
+      vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init: RequestInit = {}) => {
+        contentLength = Number(new Headers(init.headers).get('Content-Length'))
+        sent = await take(init.body as unknown as Readable, Infinity, () => delay(20))
+        return new Response(JSON.stringify(uploaded), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }))
+
+      try {
+        const client = new AgentServerClient('http://example.test:7850', 'secret', {
+          uploadStallTimeoutMs: 150,
+          uploadResponseTimeoutMs: 150,
+          uploadTimeoutMs: 60_000,
+          timeoutSignal
+        })
+        const started = performance.now()
+        const result = await client.uploadOpened('chat', file.source)
+
+        expect(result.id).toBe('archive-1')
+        expect(sent).toBe(contentLength)
+        // Twenty chunks 20 ms apart outlast both 150 ms windows; only an unbroken stall counts.
+        expect(performance.now() - started).toBeGreaterThan(300)
+        // timeoutSignal receives only the hard ceiling (the 60 s seam), never a size-derived deadline.
+        expect(timeoutSignal).toHaveBeenCalledWith(60_000)
+      } finally {
+        await file.cleanup()
+      }
+    })
+
+    it('abandons an upload once the link stops taking its body', async () => {
+      const file = await openedFile(20 * CHUNK)
+      vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init: RequestInit = {}) => {
+        await take(init.body as unknown as Readable, 2)
+        return waitForAbort(init.signal as AbortSignal)
+      }))
+
+      try {
+        const client = new AgentServerClient('http://example.test:7850', 'secret', {
+          uploadStallTimeoutMs: 100,
+          uploadResponseTimeoutMs: 10_000,
+          timeoutSignal: () => new AbortController().signal
+        })
+        await expect(client.uploadOpened('chat', file.source)).rejects.toMatchObject({ name: 'TimeoutError', message: 'The upload stalled.' })
+      } finally {
+        await file.cleanup()
+      }
+    })
+
+    it('abandons an upload whose server never answers after the body was sent', async () => {
+      const file = await openedFile(2)
+      vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init: RequestInit = {}) => {
+        await take(init.body as unknown as Readable, Infinity)
+        return waitForAbort(init.signal as AbortSignal)
+      }))
+
+      try {
+        const client = new AgentServerClient('http://example.test:7850', 'secret', {
+          uploadStallTimeoutMs: 10_000,
+          uploadResponseTimeoutMs: 100,
+          timeoutSignal: () => new AbortController().signal
+        })
+        await expect(client.uploadOpened('chat', file.source)).rejects.toMatchObject({ name: 'TimeoutError', message: 'The server did not answer the upload.' })
+      } finally {
+        await file.cleanup()
+      }
+    })
   })
 
   it('uses the normal access token and propagates signed server update tracks', async () => {
