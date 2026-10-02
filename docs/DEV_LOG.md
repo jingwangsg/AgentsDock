@@ -1,5 +1,20 @@
 # Public development log
 
+## 2026-10-02 — Editing an earlier message in a resumed Codex chat no longer fails
+
+- In a Codex chat that had been resumed (its earlier turns re-imported from
+  Codex's own history), editing an earlier message reported "The last completed
+  Codex turn before that point has no verifiable native snapshot" and left the
+  chat unchanged. Editing forks the Codex thread at the last completed turn
+  before the edit; the server read the native turn id only from a turn's own
+  completion row, but a re-imported turn keeps that id on its message instead,
+  and the import batch's end marker carries none. When the edited message is
+  the first turn after the re-import, that end marker was the newest completed
+  turn before it, so the fork was refused. The server now takes the native turn
+  id from the last re-imported turn as well, so the edit forks correctly. Chats
+  whose history predates recorded turn ids still report the same message, which
+  is correct: they have no snapshot to fork.
+
 ## 2026-10-02 — Editing or rewinding a Claude chat now really forks the Claude session
 
 - Rewinding a Claude chat (or editing an earlier message) removed the later

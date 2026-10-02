@@ -91932,6 +91932,33 @@ def is_completed_fork_terminal(event: dict[str, Any]) -> bool:
     )
 
 
+def codex_rewind_fork_boundary(prefix: list[dict[str, Any]], valid_threads: set[str]) -> str | None:
+    """The native turn id to fork the Codex thread at for a rewind.
+
+    The cutoff is the newest surviving turn that touched the thread. A real
+    completed turn carries its native id at top level. A chat resumed from
+    Codex history instead keeps its earlier turns as imported rows whose native
+    id lives in ``provider_origin``; the import batch's own synthetic terminal
+    carries none, so reading only ``turn_finished`` rows would miss the cutoff.
+    Return ``None``, and the rewind fails closed, when no surviving turn carries
+    a native id (a legacy import predating recorded origins) or the newest one
+    sits on a thread outside this chat's lineage.
+    """
+    for event in reversed(prefix):
+        if is_completed_fork_terminal(event) and event.get("imported") is not True:
+            turn_id = str(event.get("provider_turn_id") or "")
+            return turn_id if turn_id and str(event.get("provider_thread_id") or "") in valid_threads else None
+        # A metadata-only replay row names an older turn the chat already recorded
+        # live; like is_completed_fork_terminal, never let it replace a newer boundary.
+        if event.get("imported") is not True or event.get("metadata_only") is True:
+            continue
+        origin = event.get("provider_origin")
+        turn_id = str(origin.get("turn_id") or "") if isinstance(origin, dict) and origin.get("provider") == "codex" else ""
+        if turn_id:
+            return turn_id if str(origin.get("session_id") or "") in valid_threads else None
+    return None
+
+
 def claude_imported_fork_boundary(
     parent: dict[str, Any],
     provider_id: str,
@@ -92728,14 +92755,16 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                 # fork the source thread at the surviving completed turn
                 # (excludeTurns semantics, verified like the fork route) and
                 # re-point this same chat to the fork.
-                codex_cutoff = str(terminal.get("provider_turn_id") or "")
-                # Forked threads keep the ancestor's turn ids, so a terminal
-                # recorded on an earlier thread of this chat is still a valid
-                # cutoff on the current one.
-                if not codex_thread_id or not codex_cutoff or str(terminal.get("provider_thread_id") or "") not in {codex_thread_id, *lineage}:
+                # Forked threads keep the ancestor's turn ids, so a turn recorded on an
+                # earlier thread of this chat is still a valid cutoff on the current one.
+                # The cutoff is the newest native-identified surviving turn, not `terminal`:
+                # an import batch's terminal carries no id (see codex_rewind_fork_boundary).
+                codex_cutoff = (codex_rewind_fork_boundary(prefix, {codex_thread_id, *lineage})
+                                if codex_thread_id else None)
+                if codex_cutoff is None:
                     logger.warning(
-                        "session rewind: codex cutoff unverifiable session=%s thread=%s lineage=%s terminal_thread=%s turn=%s",
-                        session_id, codex_thread_id, lineage, terminal.get("provider_thread_id"), codex_cutoff,
+                        "session rewind: codex cutoff unverifiable session=%s thread=%s lineage=%s terminal_thread=%s",
+                        session_id, codex_thread_id, lineage, terminal.get("provider_thread_id"),
                     )
                     raise HTTPException(status_code=409, detail={
                         "code": "rewind_provider_unavailable",

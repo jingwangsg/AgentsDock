@@ -285,6 +285,43 @@ class SessionRewindTests(RewindFixture):
         self.assertIsNone(result["provider_rewind"])
         self.assertEqual(sess["codex_thread_id"], "thread-1")
 
+    async def test_codex_rewind_forks_at_the_imported_native_turn_when_history_was_resumed(self) -> None:
+        # Resumed history: the earlier turns are imported rows with the native id in provider_origin,
+        # and the import's synthetic terminal has none. Editing the first real turn after it must fork
+        # at the imported turn's id. The standalone job rows pin that the scan skips them, as the old
+        # terminal lookup did.
+        origin = {"provider": "codex", "session_id": "thread-1"}
+        events = [
+            {"seq": 1, "id": "e1", "type": "history_imported", "run_id": "import_a", "ts": "2026-09-08T10:00:00Z", "imported": True},
+            {"seq": 2, "id": "e2", "type": "turn_started", "run_id": "import_a", "ts": "2026-09-08T10:00:01Z", "prompt": "Earlier question",
+             "imported": True, "provider_origin": {**origin, "kind": "user", "turn_id": "imp-turn"}},
+            {"seq": 3, "id": "e3", "type": "assistant_text", "run_id": "import_a", "ts": "2026-09-08T10:00:30Z", "text": "Earlier answer",
+             "imported": True, "provider_origin": {**origin, "kind": "assistant", "turn_id": "imp-turn"}},
+            {"seq": 4, "id": "e4", "type": "turn_finished", "run_id": "import_a", "ts": "2026-09-08T10:01:00Z", "imported": True},
+            *self.standalone_job_run("job", 5, {"provider_thread_id": "job-thread", "provider_turn_id": "job-turn"}),
+            {"seq": 7, "id": "e7", "type": "turn_started", "run_id": "edited", "ts": "2026-09-08T10:05:00Z", "prompt": "New question"},
+            {"seq": 8, "id": "e8", "type": "assistant_text", "run_id": "edited", "ts": "2026-09-08T10:05:20Z", "text": "New answer"},
+            {"seq": 9, "id": "e9", "type": "turn_finished", "run_id": "edited", "ts": "2026-09-08T10:05:30Z", "exit_code": 0,
+             "provider_thread_id": "thread-1", "provider_turn_id": "new-turn"},
+        ]
+        sess = self.write_events(events)
+        sess.update(latest_event_seq=9, latest_agent_event_seq=9, last_read_agent_event_seq=9)
+        server.CODEX_THREAD_SESSION_INDEX["thread-1"] = "chat"
+        with patch.object(server, "fork_codex_thread", AsyncMock(return_value="forked-thread")) as fork, patch.object(
+            server, "bind_forked_codex_thread", AsyncMock(side_effect=self.persisting_bind),
+        ):
+            result = await server.rewind_session("chat", rewind_request(to_run_id="edited", expected_latest_seq=9))
+        fork.assert_awaited_once_with("thread-1", sess, last_turn_id="imp-turn")
+        self.assertEqual(result["provider_rewind"], "codex_fork")
+
+    def test_codex_rewind_boundary_ignores_metadata_only_replay_rows(self) -> None:
+        # A native-replay repair batch appended after newer real turns names an older turn; the
+        # newest real completed turn stays the cutoff, as it did when only terminals were read.
+        replay = {"type": "turn_started", "run_id": "import_b", "imported": True, "metadata_only": True, "prompt": "",
+                  "provider_origin": {"provider": "codex", "session_id": "thread-1", "turn_id": "turn-1"}}
+        prefix = [*self.events()[:10], {**replay, "seq": 11, "id": "e11"}]
+        self.assertEqual(server.codex_rewind_fork_boundary(prefix, {"thread-1"}), "turn-3")
+
     async def test_a_standalone_scheduled_run_before_the_edit_is_not_the_claude_cutoff(self) -> None:
         base = self.events()
         events = [*base[:7], *self.standalone_job_run("job", 8, {"provider_session_id": "job-session"}),
