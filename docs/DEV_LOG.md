@@ -1,5 +1,19 @@
 # Public development log
 
+## 2026-10-02 — Editing or rewinding a Claude chat now really forks the Claude session
+
+- Rewinding a Claude chat (or editing an earlier message) removed the later
+  messages from the timeline, but Claude itself kept them: the next turn
+  resumed the same Claude session with the removed messages still in view, and
+  a later history sync copied them back onto the end of the timeline, out of
+  order and with an interruption card. The rewind records which Claude session
+  to fork and where. That record is meant to be dropped only if the old session
+  runs another turn after the rewind, but the check also counted the session's
+  turns from before the rewind, so it dropped the record every time. It now
+  counts only turns after the rewind. The next turn after a rewind forks into a
+  new Claude session at the edited message, as intended since 2026-10-01. A
+  chat that already shows copied-back messages loses them on Reload history.
+
 ## 2026-10-02 — A Codex skill's instructions no longer appear as a message of yours
 
 - Typing a `$skill` mention in a Codex chat made the full SKILL.md text show up

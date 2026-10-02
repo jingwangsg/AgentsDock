@@ -61519,18 +61519,20 @@ def drop_stale_claude_fork_binding(session_id: str, sess: dict[str, Any]) -> Non
     fork_from = str(sess.get("fork_from") or "")
     if not fork_from:
         return
-    rewound_at = 0
+    # Only turns after the latest rewind count: the source session's earlier
+    # turns are what made it resumable in the first place.
+    ran_after_rewind = False
     for event in iter_session_events(session_id):
-        seq = int(event.get("seq") or 0)
         if event.get("type") == "history_rewound":
-            rewound_at = seq
-        elif (event.get("type") == "provider_session" and seq > rewound_at
+            ran_after_rewind = False
+        elif (event.get("type") == "provider_session"
               and str(event.get("provider_session_id") or "") == fork_from):
-            logger.warning("claude fork binding dropped: session %s ran a turn after the rewind chat=%s",
-                           fork_from, session_id)
-            sess["fork_from"] = None
-            sess.pop("fork_resume_session_at", None)
-            return
+            ran_after_rewind = True
+    if ran_after_rewind:
+        logger.warning("claude fork binding dropped: session %s ran a turn after the rewind chat=%s",
+                       fork_from, session_id)
+        sess["fork_from"] = None
+        sess.pop("fork_resume_session_at", None)
 
 
 def build_claude_cmd(
