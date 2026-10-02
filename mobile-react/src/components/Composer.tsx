@@ -97,6 +97,7 @@ import { appendWelcomeExchange, isWelcomeSession } from '../lib/welcome-session'
 import { Text, TextInput } from './AppText'
 import { BackendMark } from './BackendMark'
 import { useCodexRuntime } from './CodexRuntimeContext'
+import { ClaudeGoalBar } from './ClaudeGoalBar'
 import { CodexGoalBar, CodexGoalEditorSheet } from './CodexGoalBar'
 import { WorkingDirectoryPicker } from './WorkingDirectoryPicker'
 import { SideChatButton, SideChatSheet } from './SideChatSheet'
@@ -626,9 +627,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         await codexRuntime.updateGoal({ objective: argument, status: 'active' })
       } else if (backend === 'claude') {
         // Same server path as desktop: AgentsServer turns the condition into a native `/goal` turn.
-        if (argument.toLocaleLowerCase() === 'clear') await client.clearClaudeGoal(sessionId)
-        else await client.setClaudeGoal(sessionId, argument)
-        void refreshClaudeRuntime()
+        // Through run(), so the goal bar's controls are disabled while the request is in flight.
+        await claudeRuntime.run((connection, id) => argument.toLocaleLowerCase() === 'clear' ? connection.clearClaudeGoal(id) : connection.setClaudeGoal(id, argument))
       }
     } catch (error) {
       if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Could not update goal', errorText(error))
@@ -1042,6 +1042,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       {/* The chip hides with the auxiliary rail so a landscape phone keeps Send above the keyboard; /workdir still opens the sheet. */}
       {!welcome ? <WorkingDirectoryPicker sessionId={sessionId} chipVisible={viewportLimits.auxiliaryMaxHeight > 0} open={workingDirectoryOpen} onOpenChange={setWorkingDirectoryOpen} trailing={<SideChatButton sessionId={sessionId} onPress={() => { dismissAppKeyboard(); setSideChatOpen(true) }} />} /> : null}
       {!welcome && backend === 'codex' ? <CodexGoalBar /> : null}
+      {!welcome && backend === 'claude' ? <ClaudeGoalBar onEdit={openGoalCommand} onClear={() => setGoalFromCommand('clear')} /> : null}
       {hasAuxiliaryContent && viewportLimits.auxiliaryMaxHeight > 0 ? <ScrollView
         testID="composer-auxiliary-scroll"
         style={[styles.auxiliaryScroll, { maxHeight: viewportLimits.auxiliaryMaxHeight }]}

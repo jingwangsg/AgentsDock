@@ -1,5 +1,15 @@
 # Public development log
 
+## 2026-10-02 — Android shows a Claude chat's goal above the composer
+
+- On Android a Claude goal could only be set from the composer's goal
+  command; nothing showed it afterwards, so it looked lost as soon as the
+  dialog closed or a turn was stopped. Claude itself keeps the goal across
+  stopped turns, and the server reports it. The composer now shows the active
+  goal above the message box, as the desktop does: its condition, iterations
+  and elapsed time, with Edit and Clear (Clear & stop while Claude is
+  working). It disappears once the goal is achieved or cleared.
+
 ## 2026-10-02 — Android build 19 returns to the pinned keyboard library
 
 - Android builds 14 to 18 were packaged from a working copy whose installed

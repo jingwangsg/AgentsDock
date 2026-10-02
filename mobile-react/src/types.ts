@@ -81,6 +81,15 @@ export interface ClaudeRuntimeFeatures {
 
 export type ClaudeTokenUsage = Record<string, JsonValue>
 
+export interface ClaudeGoal {
+  condition: string
+  status: 'active' | 'achieved' | 'cleared' | 'failed'
+  iterations?: number
+  /** Native goal timestamp in milliseconds since the epoch. */
+  set_at?: number
+  duration_ms?: number
+}
+
 export interface ClaudeRuntimeSnapshot {
   available: boolean
   transport: string
@@ -88,6 +97,7 @@ export interface ClaudeRuntimeSnapshot {
   persisted_session?: boolean
   session_loaded: boolean
   status?: CodexThreadStatus | null
+  goal?: ClaudeGoal | null
   pending_interactions: ClaudePendingInteraction[]
   policy?: ClaudeRuntimePolicy | null
   features?: ClaudeRuntimeFeatures | null
