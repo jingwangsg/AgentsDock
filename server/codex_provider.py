@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 from codex_auth import validate_api_key
 from codex_app_server import CodexAppServerManager, decline_server_request
 from codex_side_question import isolated_config, _verify_isolated_protocol as _verify_protocol
-from side_questions import isolated_environment, run_isolated_command
+from isolated_process import isolated_environment, run_isolated_command
 
 
 PROVIDER_ID = "agentsdock_custom"

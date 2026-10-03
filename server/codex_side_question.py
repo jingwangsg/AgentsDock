@@ -14,9 +14,8 @@ from pathlib import Path
 import tempfile
 
 from codex_app_server import CodexAppServerClient, CodexAppServerError, decline_server_request
-from side_questions import (
-    MAX_OUTPUT_BYTES, SideQuestionError, isolated_environment, run_isolated_command,
-)
+from isolated_process import isolated_environment, run_isolated_command
+from side_questions import MAX_OUTPUT_BYTES, SideQuestionError
 
 
 SIDE_INSTRUCTIONS = """Answer questions and explore in this separate side chat without disrupting the main conversation.
@@ -193,7 +192,10 @@ class NativeCodexSideChat:
         self.sensitive_values = ()
         self.protected_env_keys = ()
         if provider_selection:
-            # Lazy import avoids the provider probe/isolated-config cycle.
+            # load-bearing: codex_provider imports isolated_config and
+            # _verify_isolated_protocol from this module at import time, and
+            # prepare_native_catalog below needs its ProviderStore, so these
+            # provider helpers cannot be imported at module level here.
             from codex_provider import ENV_KEY, native_config, native_environment, turn_overrides as provider_turn_overrides
             self.env = native_environment(self.env, provider_selection)
             self.provider_config = native_config(provider_selection)
@@ -235,10 +237,10 @@ class NativeCodexSideChat:
         # Preserve Codex's auth/runtime location. Overriding sqlite_home while
         # retaining the user's history root can trigger a complete reindex.
         config.update({"log_dir": str(Path(temporary) / "log"), "history.persistence": "none"})
-        from codex_provider import config_args
+        from codex_provider import config_args  # load-bearing: see __init__ on the import cycle.
         client_options = {}
         if self.provider_config:
-            from codex_provider import prepare_native_catalog
+            from codex_provider import prepare_native_catalog  # load-bearing: see __init__.
             catalog_path = Path(temporary) / "models.json"
             config["model_catalog_json"] = str(catalog_path)
 

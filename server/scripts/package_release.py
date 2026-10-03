@@ -89,6 +89,7 @@ FILES = (
     "private_sqlite.py",
     "share_route_helpers.py",
     "native_model_store.py",
+    "isolated_process.py",
     "install.sh",
     "uninstall.sh",
     "instances.sh",

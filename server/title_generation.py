@@ -16,7 +16,7 @@ import unicodedata
 
 from codex_app_server import CodexAppServerClient
 from codex_side_question import isolated_config
-from side_questions import isolated_environment, run_isolated_command
+from isolated_process import isolated_environment, run_isolated_command
 
 
 TIMEOUT_SECONDS = 45
