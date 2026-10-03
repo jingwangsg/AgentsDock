@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 from starlette.requests import Request
 
 import agent_server
+import agentsdock_cli_common
 import agentsdock_publish
 
 
@@ -122,7 +123,7 @@ class ArtifactPublisherCLITests(unittest.TestCase):
             clear=True,
         ):
             with self.assertRaisesRegex(
-                agentsdock_publish.PublishCLIError,
+                agentsdock_publish.CLIError,
                 "non-loopback",
             ):
                 agentsdock_publish.loopback_server_url()
@@ -144,7 +145,7 @@ class ArtifactPublisherCLITests(unittest.TestCase):
         )
         with patch.dict("os.environ", environment, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_publish.PublishCLIError,
+                agentsdock_publish.CLIError,
                 "conflicts with the live provider origin",
             ):
                 agentsdock_publish.validated_server_url(
@@ -160,7 +161,7 @@ class ArtifactPublisherCLITests(unittest.TestCase):
             clear=True,
         ):
             with self.assertRaisesRegex(
-                agentsdock_publish.PublishCLIError,
+                agentsdock_publish.CLIError,
                 "authority-file is required",
             ):
                 agentsdock_publish.provider_authority(None)
@@ -173,7 +174,7 @@ class ArtifactPublisherCLITests(unittest.TestCase):
             "AGENTSDOCK_CHAT_ID": "sess/demo",
         }, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_publish.PublishCLIError,
+                agentsdock_publish.CLIError,
                 "conflicts with the live provider authority",
             ):
                 agentsdock_publish.provider_authority(explicit_authority)
@@ -183,8 +184,8 @@ class ArtifactPublisherCLITests(unittest.TestCase):
         environment["AGENTSDOCK_CHAT_ID"] = "sess/other"
         with patch.dict("os.environ", environment, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_publish.PublishCLIError,
-                "conflicts with AGENTSDOCK_CHAT_ID",
+                agentsdock_publish.CLIError,
+                "AGENTSDOCK_CHAT_ID does not match the authority file",
             ):
                 agentsdock_publish.publish(
                     "sess/demo",
@@ -196,7 +197,7 @@ class ArtifactPublisherCLITests(unittest.TestCase):
             "AGENTSDOCK_PROVIDER_AUTHORITY_FILE": "x" * 4097,
         }, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_publish.PublishCLIError,
+                agentsdock_publish.CLIError,
                 "exceeds the provider runtime limit",
             ):
                 agentsdock_publish.provider_authority(None)
@@ -262,7 +263,7 @@ class ArtifactPublisherCLITests(unittest.TestCase):
         handlers = build_opener.call_args.args
         self.assertIsInstance(handlers[0], urllib.request.ProxyHandler)
         self.assertEqual(handlers[0].proxies, {})
-        self.assertIsInstance(handlers[1], agentsdock_publish.NoRedirectHandler)
+        self.assertIsInstance(handlers[1], agentsdock_cli_common.NoRedirectHandler)
 
     def test_invalid_json_response_retries_same_publication(self) -> None:
         payload = {

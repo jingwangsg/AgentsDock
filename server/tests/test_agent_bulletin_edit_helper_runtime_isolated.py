@@ -48,7 +48,7 @@ Runtime = _runtime_class()
 
 class BulletinEditHelperTests(unittest.TestCase):
     def setUp(self):
-        self.enterContext(mock.patch.object(cli, "_provider_authority", return_value=("synthetic-capability", "synthetic-chat")))
+        self.enterContext(mock.patch.object(cli, "provider_authority", return_value=("synthetic-capability", "synthetic-chat")))
         self.body = self.enterContext(mock.patch.object(cli, "_read_body", return_value="Revised Bulletin body"))
         self.receipt = {"ok": True, "route_id": ROUTE, "message_id": MESSAGE, "kind": "bulletin_edit",
             "accepted": True, "duplicate": False, "attachments": 0, "edited": True, "version": 2}
@@ -83,15 +83,15 @@ class BulletinEditHelperTests(unittest.TestCase):
     def test_old_server_and_conflicts_are_errors_without_creation_fallback(self):
         for message in ("422 unsupported kind bulletin_edit", "409 version_conflict", "404 not_found"):
             self.request.reset_mock()
-            self.request.side_effect = cli.TeamCLIError(message)
-            with self.subTest(message=message), self.assertRaisesRegex(cli.TeamCLIError, message):
+            self.request.side_effect = cli.CLIError(message)
+            with self.subTest(message=message), self.assertRaisesRegex(cli.CLIError, message):
                 self.edit()
             self.request.assert_called_once()
             self.assertEqual(self.request.call_args.args[3]["kind"], "bulletin_edit")
 
     def test_invalid_id_version_or_replacement_options_fail_before_transport(self):
         for message, version in (("not/an/id", 1), (MESSAGE, 0), (MESSAGE, -1)):
-            with self.subTest(message=message, version=version), self.assertRaises(cli.TeamCLIError):
+            with self.subTest(message=message, version=version), self.assertRaises(cli.CLIError):
                 self.edit(message, version)
         for option in ("--title", "--attach", "--skill-slug", "--in-reply-to"):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -103,7 +103,7 @@ class BulletinEditHelperTests(unittest.TestCase):
         for change in ({"message_id": "tmsg_other_001"}, {"kind": "message"}, {"edited": False},
             {"version": 1}, {"version": True}, {"attachments": None}, {"accepted": False}):
             self.request.return_value = {**self.receipt, **change}
-            with self.subTest(change=change), self.assertRaisesRegex(cli.TeamCLIError, "invalid Team Network edit receipt"):
+            with self.subTest(change=change), self.assertRaisesRegex(cli.CLIError, "invalid Team Network edit receipt"):
                 self.edit()
 
     def test_revision_read_is_opt_in_and_help_preserves_body_only_semantics(self):
@@ -254,7 +254,7 @@ class BulletinEditRuntimeTests(unittest.TestCase):
             model = fixture.namespace["AgentTeamSendRequest"](**payload)
             return asyncio.run(fixture.namespace["send_provider_team_message"](endpoint_helpers.ROUTE, model, fixture.request))
 
-        with mock.patch.object(cli, "_provider_authority", return_value=("synthetic-capability", "synthetic-chat")), \
+        with mock.patch.object(cli, "provider_authority", return_value=("synthetic-capability", "synthetic-chat")), \
             mock.patch.object(cli, "_read_body", return_value="Actual helper revision"), \
             mock.patch.object(cli, "_request_json", side_effect=request) as transport:
             args = cli.parser().parse_args(["edit", original["id"], "--route", endpoint_helpers.ROUTE, "--expected-version", "1"])

@@ -4,9 +4,7 @@
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import json
-import os
 import re
 import sys
 import unicodedata
@@ -14,20 +12,17 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from pathlib import Path
 from typing import Any
 
-
-PROVIDER_RUNTIME_VALUE_MAX_BYTES = 4096
-
-
-class EmergencyCLIError(RuntimeError):
-    """A concise, user-facing emergency helper failure."""
-
-
-class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
+from agentsdock_cli_common import (
+    CLIError,
+    authority_server_origin,
+    bounded_identity_value,
+    nonempty_chat_id,
+    provider_authority,
+    provider_opener,
+    validated_server_url,
+)
 
 
 def clean_emergency_message(value: Any) -> str:
@@ -40,173 +35,15 @@ def clean_emergency_message(value: Any) -> str:
     return " ".join("".join(characters).split())
 
 
-def nonempty_chat_id(value: str) -> str:
-    chat_id = value.strip()
-    if not chat_id:
-        raise argparse.ArgumentTypeError("--chat-id must not be empty")
-    return chat_id
-
-
-def host_is_loopback(host: str) -> bool:
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return host.lower() == "localhost"
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        address = address.ipv4_mapped
-    return address.is_loopback
-
-
-def canonical_http_origin(value: str, label: str) -> tuple[str, bool]:
-    raw = value.strip()
-    try:
-        parsed = urllib.parse.urlsplit(raw)
-        port = parsed.port or 80
-    except ValueError as exc:
-        raise EmergencyCLIError(f"{label} must be an HTTP origin") from exc
-    if (
-        parsed.scheme.lower() != "http"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise EmergencyCLIError(f"{label} must be an HTTP origin")
-    host = parsed.hostname.lower()
-    try:
-        address = ipaddress.ip_address(host)
-        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-            address = address.ipv4_mapped
-        host = address.compressed
-        loopback = address.is_loopback
-        url_host = f"[{host}]" if isinstance(address, ipaddress.IPv6Address) else host
-    except ValueError:
-        loopback = host == "localhost"
-        url_host = host
-    return f"http://{url_host}:{port}", loopback
-
-
-def bounded_identity_value(value: str | None, label: str) -> str:
-    clean = str(value or "").strip()
-    try:
-        size = len(clean.encode("utf-8"))
-    except UnicodeEncodeError as exc:
-        raise EmergencyCLIError(f"{label} is not valid UTF-8") from exc
-    if size > PROVIDER_RUNTIME_VALUE_MAX_BYTES:
-        raise EmergencyCLIError(f"{label} exceeds the provider runtime limit")
-    return clean
-
-
-def selected_authority_path(authority_file: str | None) -> Path:
-    explicit = bounded_identity_value(authority_file, "--authority-file")
-    ambient = bounded_identity_value(
-        os.environ.get("AGENTSDOCK_PROVIDER_AUTHORITY_FILE"),
-        "AGENTSDOCK_PROVIDER_AUTHORITY_FILE",
-    )
-    if explicit and ambient:
-        explicit_key = os.path.abspath(os.path.expanduser(explicit))
-        ambient_key = os.path.abspath(os.path.expanduser(ambient))
-        if explicit_key != ambient_key:
-            raise EmergencyCLIError(
-                "--authority-file conflicts with the live provider authority"
-            )
-    selected = explicit or ambient
-    if not selected:
-        raise EmergencyCLIError("--authority-file is required")
-    return Path(selected).expanduser()
-
-
-def provider_authority(authority_file: str | None) -> tuple[str, str]:
-    path = selected_authority_path(authority_file)
-    try:
-        if path.stat().st_mode & 0o077:
-            raise EmergencyCLIError("authority file permissions are unsafe")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise EmergencyCLIError(f"could not read authority file: {exc}") from exc
-    capability = str(
-        payload.get("provider_capability") or payload.get("capability") or ""
-    )
-    chat_id = str(payload.get("source_session_id") or "").strip()
-    if not capability or not chat_id:
-        raise EmergencyCLIError("authority file is invalid")
-    return capability, chat_id
-
-
-def authority_server_origin(authority_file: str | None) -> str:
-    path = selected_authority_path(authority_file)
-    try:
-        if path.stat().st_mode & 0o077:
-            raise EmergencyCLIError("authority file permissions are unsafe")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise EmergencyCLIError(f"could not read authority file: {exc}") from exc
-    return bounded_identity_value(
-        payload.get("provider_server_origin"),
-        "authority provider_server_origin",
-    )
-
-
-def validated_server_url(authority_origin: str) -> str:
-    raw_server_url = os.environ.get("AGENTSDOCK_SERVER_URL", "").strip()
-    if not raw_server_url:
-        raise EmergencyCLIError("missing agent environment: AGENTSDOCK_SERVER_URL")
-    server_origin, loopback = canonical_http_origin(
-        raw_server_url,
-        "AGENTSDOCK_SERVER_URL",
-    )
-    runtime_origin = bounded_identity_value(
-        os.environ.get("AGENTSDOCK_PROVIDER_SERVER_ORIGIN"),
-        "AGENTSDOCK_PROVIDER_SERVER_ORIGIN",
-    )
-    if runtime_origin:
-        canonical_runtime, _runtime_loopback = canonical_http_origin(
-            runtime_origin,
-            "AGENTSDOCK_PROVIDER_SERVER_ORIGIN",
-        )
-        if canonical_runtime != server_origin:
-            raise EmergencyCLIError(
-                "AGENTSDOCK_SERVER_URL conflicts with the live provider origin"
-            )
-    if loopback:
-        return raw_server_url.rstrip("/")
-    if not authority_origin:
-        raise EmergencyCLIError(
-            "non-loopback AGENTSDOCK_SERVER_URL must match the authority origin"
-        )
-    canonical_authority, _authority_loopback = canonical_http_origin(
-        authority_origin,
-        "authority provider_server_origin",
-    )
-    if canonical_authority != server_origin:
-        raise EmergencyCLIError(
-            "non-loopback AGENTSDOCK_SERVER_URL must match the authority origin"
-        )
-    return server_origin
-
-
 def required_environment(
     authority_file: str | None,
     requested_chat_id: str | None,
 ) -> tuple[str, str, str]:
     token, authority_chat_id = provider_authority(authority_file)
     server_url = validated_server_url(authority_server_origin(authority_file))
-    environment_chat_id = bounded_identity_value(
-        os.environ.get("AGENTSDOCK_CHAT_ID"),
-        "AGENTSDOCK_CHAT_ID",
-    )
     explicit_chat_id = bounded_identity_value(requested_chat_id, "--chat-id")
-    if (
-        explicit_chat_id
-        and environment_chat_id
-        and explicit_chat_id != environment_chat_id
-    ):
-        raise EmergencyCLIError("--chat-id conflicts with AGENTSDOCK_CHAT_ID")
-    for candidate in (explicit_chat_id, environment_chat_id):
-        if candidate and candidate != authority_chat_id:
-            raise EmergencyCLIError("--chat-id does not match the authority file")
+    if explicit_chat_id and explicit_chat_id != authority_chat_id:
+        raise CLIError("--chat-id does not match the authority file")
     return server_url, authority_chat_id, token
 
 
@@ -219,26 +56,23 @@ def raise_alert(
 ) -> dict[str, Any]:
     clean_message = clean_emergency_message(message)
     if not clean_message:
-        raise EmergencyCLIError("--message must not be empty")
+        raise CLIError("--message must not be empty")
     if len(clean_message) > 500:
-        raise EmergencyCLIError("--message must be 500 characters or fewer")
+        raise CLIError("--message must be 500 characters or fewer")
     server_url, authority_chat_id, token = required_environment(
         authority_file,
         chat_id,
     )
     request_id = request_id or f"emg_{uuid.uuid4().hex}"
     if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", request_id):
-        raise EmergencyCLIError("--request-id is invalid")
+        raise CLIError("--request-id is invalid")
     body = json.dumps({
         "request_id": request_id,
         "message": clean_message,
     }, separators=(",", ":")).encode("utf-8")
     encoded_chat_id = urllib.parse.quote(authority_chat_id, safe="")
     url = f"{server_url}/api/agent/sessions/{encoded_chat_id}/emergency-alerts"
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        NoRedirectHandler(),
-    )
+    opener = provider_opener()
     decoded: Any = None
     ambiguous_error: BaseException | None = None
     for attempt in range(2):
@@ -264,14 +98,14 @@ def raise_alert(
                 detail = json.loads(raw).get("detail") or raw
             except json.JSONDecodeError:
                 detail = raw
-            raise EmergencyCLIError(
+            raise CLIError(
                 f"server rejected emergency alert ({exc.code}): {detail or exc.reason}"
             ) from exc
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
             ambiguous_error = exc
     if ambiguous_error is not None:
         reason = getattr(ambiguous_error, "reason", ambiguous_error)
-        raise EmergencyCLIError(
+        raise CLIError(
             f"could not confirm whether the emergency alert was raised: {reason}"
         ) from ambiguous_error
     alert = decoded.get("alert") if isinstance(decoded, dict) else None
@@ -295,7 +129,7 @@ def raise_alert(
         or isinstance(decoded.get("unacknowledged_emergency_count"), bool)
         or int(decoded["unacknowledged_emergency_count"]) < 0
     ):
-        raise EmergencyCLIError("AgentsServer returned an invalid emergency receipt")
+        raise CLIError("AgentsServer returned an invalid emergency receipt")
     return decoded
 
 
@@ -327,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             chat_id=args.chat_id,
             request_id=args.request_id,
         )
-    except EmergencyCLIError as exc:
+    except CLIError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2, sort_keys=True))

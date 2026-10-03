@@ -43,7 +43,7 @@ def extracted():
 
 class MailSubjectHelperTests(unittest.TestCase):
     def setUp(self):
-        self.enterContext(mock.patch.object(helper, "_provider_authority", return_value=("fake-capability", "fake-session")))
+        self.enterContext(mock.patch.object(helper, "provider_authority", return_value=("fake-capability", "fake-session")))
 
     def test_cli_titled_message_normalizes_without_changing_body_and_stable_key(self):
         receipt = {"ok": True, "route_id": "route-1", "message_id": "message-1", "kind": "message",
@@ -62,7 +62,7 @@ class MailSubjectHelperTests(unittest.TestCase):
         for title in ("", "  ", "x" * 161, "a\tb", "a\nb", "a\u2028b", "\ud800"):
             with self.subTest(title=repr(title)), mock.patch.object(helper, "_read_body") as body, mock.patch.object(helper, "_request_json") as request:
                 args = helper.parser().parse_args(["send", "--route", "route-1", "--title", title])
-                with self.assertRaises(helper.TeamCLIError):
+                with self.assertRaises(helper.CLIError):
                     helper.send(args)
                 body.assert_not_called()
                 request.assert_not_called()

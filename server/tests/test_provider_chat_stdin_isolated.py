@@ -307,7 +307,7 @@ class ProviderChatStdinTests(unittest.IsolatedAsyncioTestCase):
     def test_explicit_stdin_rejects_empty_invalid_utf8_and_oversize_before_send(self):
         for raw in (b'', b'  ', b'\xff', b'\0', b'x' * 100_001):
             stream = io.TextIOWrapper(io.BytesIO(raw), encoding='utf-8')
-            with self.subTest(size=len(raw)), patch.object(sys, 'stdin', stream), self.assertRaises(agentsdock_chats.ChatsCLIError):
+            with self.subTest(size=len(raw)), patch.object(sys, 'stdin', stream), self.assertRaises(agentsdock_chats.CLIError):
                 agentsdock_chats.read_message_stdin()
 
 

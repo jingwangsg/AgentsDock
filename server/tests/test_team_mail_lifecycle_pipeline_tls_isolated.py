@@ -232,7 +232,7 @@ class MailLifecyclePipelineTLSAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             before = self.dials
             with mock.patch.dict(os.environ, {"AGENTSDOCK_CHAT_ID": "another-session"}), \
                  mock.patch.object(team_cli.sys, "stdin", io.StringIO("Forbidden reply")):
-                with self.assertRaisesRegex(team_cli.TeamCLIError, "does not match"):
+                with self.assertRaisesRegex(team_cli.CLIError, "does not match"):
                     args.handler(args)
             self.assertEqual(local_request.call_count, 1)
             self.assertEqual(self.dials, before)

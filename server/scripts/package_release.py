@@ -53,6 +53,7 @@ FILES = (
     "agentsdock_publish.py",
     "agentsdock_mail.py",
     "agentsdock_team.py",
+    "agentsdock_cli_common.py",
     "provider_commands.py",
     "provider_usage.py",
     "claude_sdk_client.py",

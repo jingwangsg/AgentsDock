@@ -5,6 +5,7 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
+import agentsdock_cli_common
 import agentsdock_emergency
 
 
@@ -133,7 +134,7 @@ class EmergencyCLITests(unittest.TestCase):
         handlers = build_opener.call_args.args
         self.assertIsInstance(handlers[0], agentsdock_emergency.urllib.request.ProxyHandler)
         self.assertEqual(handlers[0].proxies, {})
-        self.assertIsInstance(handlers[1], agentsdock_emergency.NoRedirectHandler)
+        self.assertIsInstance(handlers[1], agentsdock_cli_common.NoRedirectHandler)
 
     def test_unicode_controls_are_normalized_before_send_and_receipt_validation(self) -> None:
         requests = []
@@ -183,7 +184,7 @@ class EmergencyCLITests(unittest.TestCase):
             ) as build_opener,
         ):
             with self.assertRaisesRegex(
-                agentsdock_emergency.EmergencyCLIError,
+                agentsdock_emergency.CLIError,
                 "loopback",
             ):
                 agentsdock_emergency.raise_alert(
@@ -197,7 +198,7 @@ class EmergencyCLITests(unittest.TestCase):
         private = self.authority_file("source")
         with patch.dict("os.environ", self.environment("neighbor"), clear=True):
             with self.assertRaisesRegex(
-                agentsdock_emergency.EmergencyCLIError,
+                agentsdock_emergency.CLIError,
                 "does not match",
             ):
                 agentsdock_emergency.raise_alert(
@@ -209,7 +210,7 @@ class EmergencyCLITests(unittest.TestCase):
         unsafe = self.authority_file("source", mode=0o644)
         with patch.dict("os.environ", self.environment("source"), clear=True):
             with self.assertRaisesRegex(
-                agentsdock_emergency.EmergencyCLIError,
+                agentsdock_emergency.CLIError,
                 "permissions are unsafe",
             ):
                 agentsdock_emergency.raise_alert(
@@ -239,7 +240,7 @@ class EmergencyCLITests(unittest.TestCase):
         environment["AGENTSDOCK_PROVIDER_AUTHORITY_FILE"] = ambient_authority
         with patch.dict("os.environ", environment, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_emergency.EmergencyCLIError,
+                agentsdock_emergency.CLIError,
                 "conflicts with the live provider authority",
             ):
                 agentsdock_emergency.required_environment(
@@ -251,8 +252,8 @@ class EmergencyCLITests(unittest.TestCase):
         environment["AGENTSDOCK_PROVIDER_AUTHORITY_FILE"] = ambient_authority
         with patch.dict("os.environ", environment, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_emergency.EmergencyCLIError,
-                "conflicts with AGENTSDOCK_CHAT_ID",
+                agentsdock_emergency.CLIError,
+                "AGENTSDOCK_CHAT_ID does not match the authority file",
             ):
                 agentsdock_emergency.required_environment(
                     None,
@@ -264,7 +265,7 @@ class EmergencyCLITests(unittest.TestCase):
         environment["AGENTSDOCK_PROVIDER_AUTHORITY_FILE"] = "x" * 4097
         with patch.dict("os.environ", environment, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_emergency.EmergencyCLIError,
+                agentsdock_emergency.CLIError,
                 "exceeds the provider runtime limit",
             ):
                 agentsdock_emergency.required_environment(None, None)
@@ -292,7 +293,7 @@ class EmergencyCLITests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(
-                agentsdock_emergency.EmergencyCLIError,
+                agentsdock_emergency.CLIError,
                 "invalid emergency receipt",
             ):
                 agentsdock_emergency.raise_alert(

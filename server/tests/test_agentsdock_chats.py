@@ -50,7 +50,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                 agentsdock_chats.parser().parse_args(arguments)
         for sender, request_id in (("", "stable-request"), ("x" * 129, "stable-request"), ("synthetic", "short")):
             args = argparse.Namespace(sender=sender, request_id=request_id, cursor=0, limit=25, authority_file=None)
-            with patch.object(agentsdock_chats, "authority") as auth, self.assertRaises(agentsdock_chats.ChatsCLIError):
+            with patch.object(agentsdock_chats, "authority") as auth, self.assertRaises(agentsdock_chats.CLIError):
                 agentsdock_chats.read_inbox(args)
             auth.assert_not_called()
 
@@ -81,7 +81,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                                                     "--reply-to", "handoff_" + "b" * 32])
         with patch.object(agentsdock_chats, "authority", return_value="capability"), \
                 patch.object(agentsdock_chats, "get_json", return_value={"routes": [{"route_id": route, "available": True}]}), \
-                patch.object(agentsdock_chats, "post_json") as post, self.assertRaisesRegex(agentsdock_chats.ChatsCLIError, "legacy"):
+                patch.object(agentsdock_chats, "post_json") as post, self.assertRaisesRegex(agentsdock_chats.CLIError, "legacy"):
             args.handler(args)
         post.assert_not_called()
 
@@ -101,7 +101,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             for receipt in ({**mailbox, "execution_started": True}, {**base, "delivery_mode": "mailbox"},
                             {**mailbox, "state": "running"}, {**mailbox, "wake_policy": "always"},
                             {**base, "wake_policy": "idle_only"}, {**mailbox, "unexpected": "field"}):
-                with patch.object(agentsdock_chats, "post_json", return_value=receipt), self.assertRaises(agentsdock_chats.ChatsCLIError):
+                with patch.object(agentsdock_chats, "post_json", return_value=receipt), self.assertRaises(agentsdock_chats.CLIError):
                     args.handler(args)
 
     def test_helper_uses_only_the_canonical_provider_capability_header(self) -> None:
@@ -153,7 +153,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
         with (
             patch.object(
                 agentsdock_chats,
-                "environment",
+                "validated_server_url",
                 return_value="http://127.0.0.1:7850",
             ),
             patch.object(
@@ -205,7 +205,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             "idempotency_key": "stable-key",
         }
         with (
-            patch.object(agentsdock_chats, "environment", return_value="http://127.0.0.1:7850"),
+            patch.object(agentsdock_chats, "validated_server_url", return_value="http://127.0.0.1:7850"),
             patch.object(agentsdock_chats.urllib.request, "build_opener", return_value=opener),
             patch.object(agentsdock_chats.time, "sleep") as sleep,
         ):
@@ -248,7 +248,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
         opener = FakeOpener()
         payload = {"body": "hello", "idempotency_key": "stable-key"}
         with (
-            patch.object(agentsdock_chats, "environment", return_value="http://127.0.0.1:7850"),
+            patch.object(agentsdock_chats, "validated_server_url", return_value="http://127.0.0.1:7850"),
             patch.object(agentsdock_chats.urllib.request, "build_opener", return_value=opener),
             patch.object(agentsdock_chats.time, "sleep") as sleep,
         ):
@@ -298,7 +298,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
         opener = FakeOpener()
         payload = {"body": "hello", "idempotency_key": "stable-key"}
         with (
-            patch.object(agentsdock_chats, "environment", return_value="http://127.0.0.1:7850"),
+            patch.object(agentsdock_chats, "validated_server_url", return_value="http://127.0.0.1:7850"),
             patch.object(agentsdock_chats.urllib.request, "build_opener", return_value=opener),
             patch.object(agentsdock_chats.time, "sleep") as sleep,
         ):
@@ -319,12 +319,12 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                 raise urllib.error.URLError(TimeoutError("response lost"))
 
         with (
-            patch.object(agentsdock_chats, "environment", return_value="http://127.0.0.1:7850"),
+            patch.object(agentsdock_chats, "validated_server_url", return_value="http://127.0.0.1:7850"),
             patch.object(agentsdock_chats.urllib.request, "build_opener", return_value=FakeOpener()),
             patch.object(agentsdock_chats.time, "sleep"),
         ):
             with self.assertRaisesRegex(
-                agentsdock_chats.ChatsCLIError,
+                agentsdock_chats.CLIError,
                 "do not resend it with different wording",
             ):
                 agentsdock_chats.post_json(
@@ -356,7 +356,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
 
         opener = FakeOpener()
         with (
-            patch.object(agentsdock_chats, "environment", return_value="http://127.0.0.1:7850"),
+            patch.object(agentsdock_chats, "validated_server_url", return_value="http://127.0.0.1:7850"),
             patch.object(agentsdock_chats.urllib.request, "build_opener", return_value=opener),
             patch.object(agentsdock_chats.time, "sleep") as sleep,
         ):
@@ -401,7 +401,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
 
         opener = FakeOpener()
         with (
-            patch.object(agentsdock_chats, "environment", return_value="http://127.0.0.1:7850"),
+            patch.object(agentsdock_chats, "validated_server_url", return_value="http://127.0.0.1:7850"),
             patch.object(agentsdock_chats.urllib.request, "build_opener", return_value=opener),
             patch.object(agentsdock_chats.time, "sleep") as sleep,
         ):
@@ -449,7 +449,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
 
         opener = FakeOpener()
         with (
-            patch.object(agentsdock_chats, "environment", return_value="http://127.0.0.1:7850"),
+            patch.object(agentsdock_chats, "validated_server_url", return_value="http://127.0.0.1:7850"),
             patch.object(agentsdock_chats.urllib.request, "build_opener", return_value=opener),
             patch.object(agentsdock_chats.time, "sleep") as sleep,
         ):
@@ -484,7 +484,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
 
         opener = FakeOpener()
         with (
-            patch.object(agentsdock_chats, "environment", return_value="http://127.0.0.1:7850"),
+            patch.object(agentsdock_chats, "validated_server_url", return_value="http://127.0.0.1:7850"),
             patch.object(agentsdock_chats.urllib.request, "build_opener", return_value=opener),
         ):
             agentsdock_chats.post_json(
@@ -787,7 +787,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             patch.object(agentsdock_chats, "authority", return_value="capability"),
             patch.object(agentsdock_chats, "get_json") as get,
             self.assertRaisesRegex(
-                agentsdock_chats.ChatsCLIError,
+                agentsdock_chats.CLIError,
                 "exchange id is invalid",
             ),
         ):
@@ -893,7 +893,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             "inbound_leg_id": question_leg_id,
             "live_response_lease_id": lease_id,
         })
-        get = Mock(side_effect=agentsdock_chats.ChatsCLIError(
+        get = Mock(side_effect=agentsdock_chats.CLIError(
             "server rejected request (410): cancelled_by_user"
         ))
         stdout = io.StringIO()
@@ -948,7 +948,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
         with (
             patch.object(
                 agentsdock_chats,
-                "environment",
+                "validated_server_url",
                 return_value="http://127.0.0.1:7850",
             ),
             patch.object(
@@ -984,7 +984,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
         with (
             patch.object(
                 agentsdock_chats,
-                "environment",
+                "validated_server_url",
                 return_value="http://127.0.0.1:7850",
             ),
             patch.object(
@@ -1024,7 +1024,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
         with (
             patch.object(
                 agentsdock_chats,
-                "environment",
+                "validated_server_url",
                 return_value="http://127.0.0.1:7850",
             ),
             patch.object(
@@ -1034,7 +1034,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             ),
             patch.object(agentsdock_chats.time, "sleep") as sleep,
             self.assertRaisesRegex(
-                agentsdock_chats.ChatsCLIError,
+                agentsdock_chats.CLIError,
                 "invalid live-response body",
             ),
         ):
@@ -1068,7 +1068,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
         with (
             patch.object(
                 agentsdock_chats,
-                "environment",
+                "validated_server_url",
                 return_value="http://127.0.0.1:7850",
             ),
             patch.object(
@@ -1079,7 +1079,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             patch.object(agentsdock_chats.time, "sleep") as sleep,
         ):
             with self.assertRaisesRegex(
-                agentsdock_chats.ChatsCLIError,
+                agentsdock_chats.CLIError,
                 r"\(410\): cancelled_by_user",
             ):
                 agentsdock_chats.get_json(
@@ -1114,7 +1114,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
         with (
             patch.object(
                 agentsdock_chats,
-                "environment",
+                "validated_server_url",
                 return_value="http://127.0.0.1:7850",
             ),
             patch.object(
@@ -1125,7 +1125,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             patch.object(agentsdock_chats.time, "sleep") as sleep,
         ):
             with self.assertRaisesRegex(
-                agentsdock_chats.ChatsCLIError,
+                agentsdock_chats.CLIError,
                 "invalid live-response body",
             ):
                 agentsdock_chats.get_json(
@@ -1197,7 +1197,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             with self.subTest(response=response), \
                     patch.object(agentsdock_chats, "authority", return_value="capability"), \
                     patch.object(agentsdock_chats, "get_json", return_value=response), \
-                    self.assertRaises(agentsdock_chats.ChatsCLIError):
+                    self.assertRaises(agentsdock_chats.CLIError):
                 agentsdock_chats.list_routes(args)
 
     def test_exact_mode_lookup_accepts_old_whole_list_and_new_exact_response(self) -> None:
@@ -1210,7 +1210,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                 self.assertEqual(agentsdock_chats.negotiated_route_mode("capability", route_id), "async_route_v1")
             get.assert_called_once_with(f"/api/agent/cross-chat/routes?route_id={route_id}", "capability")
         with patch.object(agentsdock_chats, "get_json", return_value={"routes": []}), \
-                self.assertRaisesRegex(agentsdock_chats.ChatsCLIError, "unavailable"):
+                self.assertRaisesRegex(agentsdock_chats.CLIError, "unavailable"):
             agentsdock_chats.negotiated_route_mode("capability", route_id)
 
     def test_ask_uses_request_reply_wire_and_stable_retry_key(self) -> None:
@@ -1270,7 +1270,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                 },
             ),
         ):
-            with self.assertRaises(agentsdock_chats.ChatsCLIError):
+            with self.assertRaises(agentsdock_chats.CLIError):
                 agentsdock_chats.send(args)
 
     def test_respond_has_no_target_and_request_response_changes_stable_key(self) -> None:
@@ -1381,7 +1381,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                 return_value={**receipt, "exchange": {"id": "must-not-leak"}},
             ),
         ):
-            with self.assertRaises(agentsdock_chats.ChatsCLIError):
+            with self.assertRaises(agentsdock_chats.CLIError):
                 agentsdock_chats.respond(args)
 
     def test_followup_accepts_legacy_async_recovery_receipt(self) -> None:
@@ -1567,7 +1567,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             ),
         ):
             with patch.object(agentsdock_chats, "authority", return_value="capability"):
-                with self.assertRaises(agentsdock_chats.ChatsCLIError):
+                with self.assertRaises(agentsdock_chats.CLIError):
                     handler(args)
 
     def test_authority_uses_matching_bounded_provider_environment(self) -> None:
@@ -1603,7 +1603,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                 "AGENTSDOCK_CHAT_ID": "sess/source",
             }, clear=True):
                 with self.assertRaisesRegex(
-                    agentsdock_chats.ChatsCLIError,
+                    agentsdock_chats.CLIError,
                     "conflicts with the live provider authority",
                 ):
                     agentsdock_chats.authority(str(paths[1]))
@@ -1612,7 +1612,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                 "AGENTSDOCK_CHAT_ID": "sess/other",
             }, clear=True):
                 with self.assertRaisesRegex(
-                    agentsdock_chats.ChatsCLIError,
+                    agentsdock_chats.CLIError,
                     "does not match the authority file",
                 ):
                     agentsdock_chats.authority(None)
@@ -1633,7 +1633,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             }
             with patch.dict(os.environ, environment, clear=True):
                 self.assertEqual(
-                    agentsdock_chats.environment(),
+                    agentsdock_chats.validated_server_url(),
                     "http://[fd00::10]:7850",
                 )
             environment["AGENTSDOCK_PROVIDER_SERVER_ORIGIN"] = (
@@ -1641,10 +1641,10 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             )
             with patch.dict(os.environ, environment, clear=True):
                 with self.assertRaisesRegex(
-                    agentsdock_chats.ChatsCLIError,
+                    agentsdock_chats.CLIError,
                     "conflicts with the live provider origin",
                 ):
-                    agentsdock_chats.environment()
+                    agentsdock_chats.validated_server_url()
 
     def test_target_index_resolves_only_matching_live_handle(self) -> None:
         target = "grant_" + "a" * 32
@@ -1662,7 +1662,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             }, clear=True),
             patch.object(
                 agentsdock_chats,
-                "_authority_path",
+                "selected_authority_path",
                 return_value=Path("authority.json"),
             ),
             patch.object(agentsdock_chats, "authority", return_value="capability"),
@@ -1695,7 +1695,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             patch.dict(os.environ, environment, clear=True),
             patch.object(
                 agentsdock_chats,
-                "_authority_path",
+                "selected_authority_path",
                 return_value=Path("authority.json"),
             ),
             patch.object(agentsdock_chats, "authority", return_value="capability"),
@@ -1730,7 +1730,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             with self.subTest(environment=environment), patch.dict(
                 os.environ, environment, clear=True
             ):
-                with self.assertRaises(agentsdock_chats.ChatsCLIError):
+                with self.assertRaises(agentsdock_chats.CLIError):
                     agentsdock_chats.provider_handle(1, "instruction")
 
     def test_respond_current_resolves_reply_and_followup_mode_from_environment(self) -> None:
@@ -1749,7 +1749,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             }, clear=True),
             patch.object(
                 agentsdock_chats,
-                "_authority_path",
+                "selected_authority_path",
                 return_value=Path("authority.json"),
             ),
             patch.object(agentsdock_chats, "authority", return_value="capability"),
@@ -1769,7 +1769,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
     def test_respond_current_fails_closed_without_grant_or_followup(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_chats.ChatsCLIError,
+                agentsdock_chats.CLIError,
                 "reply grant is unavailable",
             ):
                 agentsdock_chats.respond_current(argparse.Namespace(
@@ -1785,7 +1785,7 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             "AGENTSDOCK_CROSS_CHAT_RESPONSE_FOLLOWUP": "none",
         }, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_chats.ChatsCLIError,
+                agentsdock_chats.CLIError,
                 "no follow-up grant",
             ):
                 agentsdock_chats.respond_current(argparse.Namespace(

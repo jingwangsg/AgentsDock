@@ -18,7 +18,7 @@ CAPABILITY = "isolated-provider-capability"
 class TeamReplyCLITests(unittest.TestCase):
     def setUp(self):
         self.authority = self.enterContext(mock.patch.object(
-            cli, "_provider_authority", return_value=(CAPABILITY, "isolated-session")
+            cli, "provider_authority", return_value=(CAPABILITY, "isolated-session")
         ))
         self.body = self.enterContext(mock.patch.object(cli, "_read_body", return_value="Reply body"))
         self.receipt = {
@@ -79,7 +79,7 @@ class TeamReplyCLITests(unittest.TestCase):
 
     def test_invalid_parent_ids_fail_before_body_or_request(self):
         for parent in ("", "short_7", "x" * 241, "tmsg/parent", "tmsg.parent", "tmsg_é001", " tmsg_parent", "tmsg_parent\n"):
-            with self.subTest(parent=repr(parent)), self.assertRaises(cli.TeamCLIError):
+            with self.subTest(parent=repr(parent)), self.assertRaises(cli.CLIError):
                 self.execute("reply", parent, "--route", ROUTE)
         self.body.assert_not_called()
         self.request.assert_not_called()
@@ -90,7 +90,7 @@ class TeamReplyCLITests(unittest.TestCase):
             self.assertEqual(self.payload()["in_reply_to_message_id"], parent)
 
     def test_skill_send_cannot_add_reply_linkage(self):
-        with self.assertRaisesRegex(cli.TeamCLIError, "requires --kind message"):
+        with self.assertRaisesRegex(cli.CLIError, "requires --kind message"):
             self.execute("send", "--route", ROUTE, "--kind", "skill", "--in-reply-to", PARENT)
         self.body.assert_not_called()
         self.request.assert_not_called()
@@ -117,7 +117,7 @@ class TeamReplyCLITests(unittest.TestCase):
 
     def test_reply_uses_existing_subject_validation_before_stdin(self):
         for title in ("", "  ", "x" * 161, "Subject\n", "\tSubject", "Subject\u2028line"):
-            with self.subTest(title=repr(title)), self.assertRaises(cli.TeamCLIError):
+            with self.subTest(title=repr(title)), self.assertRaises(cli.CLIError):
                 self.execute("reply", PARENT, "--route", ROUTE, "--title", title)
         self.body.assert_not_called()
         self.request.assert_not_called()
@@ -125,7 +125,7 @@ class TeamReplyCLITests(unittest.TestCase):
     def test_reply_keeps_existing_send_receipt_validation(self):
         for update in ({"accepted": False}, {"route_id": "different-route"}, {"kind": "skill"}, {"duplicate": 1}):
             self.request.return_value = {**self.receipt, **update}
-            with self.subTest(update=update), self.assertRaisesRegex(cli.TeamCLIError, "invalid Team Network send receipt"):
+            with self.subTest(update=update), self.assertRaisesRegex(cli.CLIError, "invalid Team Network send receipt"):
                 self.execute("reply", PARENT, "--route", ROUTE)
 
 

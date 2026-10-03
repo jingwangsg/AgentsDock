@@ -186,7 +186,7 @@ class AgentsDockJobsCLITests(unittest.TestCase):
             patch.dict(os.environ, self.environment(), clear=True),
             patch.object(agentsdock_jobs, "api_request", request),
             self.assertRaisesRegex(
-                agentsdock_jobs.JobsCLIError,
+                agentsdock_jobs.CLIError,
                 "outside the active chat scope",
             ),
         ):
@@ -214,7 +214,7 @@ class AgentsDockJobsCLITests(unittest.TestCase):
             patch.dict(os.environ, self.environment(), clear=True),
             patch.object(agentsdock_jobs, "api_request", request),
             self.assertRaisesRegex(
-                agentsdock_jobs.JobsCLIError,
+                agentsdock_jobs.CLIError,
                 "private chat target data",
             ),
         ):
@@ -241,7 +241,7 @@ class AgentsDockJobsCLITests(unittest.TestCase):
             patch.dict(os.environ, self.environment(), clear=True),
             patch.object(agentsdock_jobs, "api_request", request),
             self.assertRaisesRegex(
-                agentsdock_jobs.JobsCLIError,
+                agentsdock_jobs.CLIError,
                 "private chat target data",
             ),
         ):
@@ -326,7 +326,7 @@ class AgentsDockJobsCLITests(unittest.TestCase):
             ])
 
         self.assertEqual(result, 1)
-        self.assertIn("conflicts with AGENTSDOCK_CHAT_ID", error.getvalue())
+        self.assertIn("AGENTSDOCK_CHAT_ID does not match the authority file", error.getvalue())
         request.assert_not_called()
 
     def test_oversized_provider_authority_environment_fails_closed(self) -> None:
@@ -365,7 +365,7 @@ class AgentsDockJobsCLITests(unittest.TestCase):
         )
         with patch.dict(os.environ, environment, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_jobs.JobsCLIError,
+                agentsdock_jobs.CLIError,
                 "conflicts with the live provider origin",
             ):
                 agentsdock_jobs.required_environment()
@@ -638,7 +638,7 @@ class AgentsDockJobsCLITests(unittest.TestCase):
             "create", "--title", "Bad", "--prompt", "Bad",
             "--first-run-at", "2026-07-22T09:00:00Z", "--loop",
         ])
-        with patch.dict(os.environ, self.environment(), clear=True), self.assertRaisesRegex(agentsdock_jobs.JobsCLIError, "cannot loop"):
+        with patch.dict(os.environ, self.environment(), clear=True), self.assertRaisesRegex(agentsdock_jobs.CLIError, "cannot loop"):
             args.handler(args)
 
     def test_update_can_clear_a_finite_run_limit(self) -> None:

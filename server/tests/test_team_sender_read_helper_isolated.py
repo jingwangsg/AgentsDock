@@ -30,7 +30,7 @@ def page(messages: list[dict], *, more: bool = False, after: int = 0) -> dict:
 class TeamSenderReadHelperTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(mock.patch.object(
-            helper, "_provider_authority", return_value=("synthetic-capability", "synthetic-chat"),
+            helper, "provider_authority", return_value=("synthetic-capability", "synthetic-chat"),
         ))
         self.enterContext(mock.patch.object(
             helper.urllib.request, "build_opener", side_effect=AssertionError("No live transport"),
@@ -64,7 +64,7 @@ class TeamSenderReadHelperTests(unittest.TestCase):
         for response in ({}, {"mentions": None}, {"mentions": {}}):
             with self.subTest(response=response):
                 self.request.return_value = response
-                with self.assertRaisesRegex(helper.TeamCLIError, "invalid.*mention list"):
+                with self.assertRaisesRegex(helper.CLIError, "invalid.*mention list"):
                     self.execute("mentions")
 
     def test_selected_mention_is_one_server_filtered_page_without_name_matching(self):
@@ -94,7 +94,7 @@ class TeamSenderReadHelperTests(unittest.TestCase):
 
     def test_selected_mention_requires_a_positive_index(self):
         for index in ("0", "-1"):
-            with self.subTest(index=index), self.assertRaisesRegex(helper.TeamCLIError, "positive mention index"):
+            with self.subTest(index=index), self.assertRaisesRegex(helper.CLIError, "positive mention index"):
                 self.execute("inbox", "--mention", index)
         self.request.assert_not_called()
 
@@ -215,7 +215,7 @@ class TeamSenderReadHelperTests(unittest.TestCase):
             with self.subTest(preceding=preceding):
                 self.request.reset_mock()
                 self.request.return_value = page([*preceding, oversized])
-                with self.assertRaisesRegex(helper.TeamCLIError, "matching message exceeds.*output limit"):
+                with self.assertRaisesRegex(helper.CLIError, "matching message exceeds.*output limit"):
                     self.execute("inbox", "--from", "Dave")
                 self.request.assert_called_once()
 
@@ -223,7 +223,7 @@ class TeamSenderReadHelperTests(unittest.TestCase):
         self.request.return_value = {
             **page([message(1)]), "notice": "N" * helper.SENDER_SCAN_OUTPUT_MAX_BYTES,
         }
-        with self.assertRaisesRegex(helper.TeamCLIError, "metadata exceeds.*output limit"):
+        with self.assertRaisesRegex(helper.CLIError, "metadata exceeds.*output limit"):
             self.execute("inbox", "--from", "Dave")
 
     def test_byte_shortened_page_uses_has_more_instead_of_assuming_end(self):
@@ -277,19 +277,19 @@ class TeamSenderReadHelperTests(unittest.TestCase):
         for fields in malformed:
             with self.subTest(fields=fields):
                 self.request.return_value = {**page([message(2)], more=True), **fields}
-                with self.assertRaisesRegex(helper.TeamCLIError, "invalid|nonadvancing"):
+                with self.assertRaisesRegex(helper.CLIError, "invalid|nonadvancing"):
                     self.execute("inbox", "--from", "Dave")
 
     def test_team_cannot_change_between_pages(self):
         self.request.side_effect = [page([message(1)], more=True),
             {**page([message(2, "Dave")]), "team_id": "different-team"}]
-        with self.assertRaisesRegex(helper.TeamCLIError, "changed teams"):
+        with self.assertRaisesRegex(helper.CLIError, "changed teams"):
             self.execute("inbox", "--from", "Dave")
 
     def test_empty_sender_or_invalid_limit_fails_before_request(self):
         for arguments in (("--from", ""), ("--from", "@@"), ("--from", "  "),
             ("--from", "Dave", "--limit", "0")):
-            with self.subTest(arguments=arguments), self.assertRaises(helper.TeamCLIError):
+            with self.subTest(arguments=arguments), self.assertRaises(helper.CLIError):
                 self.execute("inbox", *arguments)
         self.request.assert_not_called()
 
