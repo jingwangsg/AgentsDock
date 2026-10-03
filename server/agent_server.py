@@ -24291,6 +24291,24 @@ def native_steer_requeue_event_payload(
     }
 
 
+def queue_insert_index(
+    items: list[dict[str, Any]],
+    successor_id: str | None,
+    predecessor_id: str | None,
+) -> int | None:
+    """Slot before the recorded successor, else after the predecessor, else None."""
+
+    if successor_id is not None:
+        for idx, item in enumerate(items):
+            if item.get("queued_id") == successor_id:
+                return idx
+    if predecessor_id is not None:
+        for idx, item in enumerate(items):
+            if item.get("queued_id") == predecessor_id:
+                return idx + 1
+    return None
+
+
 async def requeue_native_steer_after_safe_rejection(
     session_id: str,
     selected: dict[str, Any],
@@ -24313,35 +24331,10 @@ async def requeue_native_steer_after_safe_rejection(
     rollback_error: BaseException | None = None
     async with QUEUE_LOCK:
         items = list(QUEUED_TURNS.get(session_id) or [])
-        successor_index = (
-            next(
-                (
-                    idx
-                    for idx, item in enumerate(items)
-                    if item.get("queued_id") == selected_successor_id
-                ),
-                None,
-            )
-            if selected_successor_id is not None
-            else None
+        insert_at = queue_insert_index(
+            items, selected_successor_id, selected_predecessor_id
         )
-        predecessor_index = (
-            next(
-                (
-                    idx
-                    for idx, item in enumerate(items)
-                    if item.get("queued_id") == selected_predecessor_id
-                ),
-                None,
-            )
-            if selected_predecessor_id is not None
-            else None
-        )
-        if successor_index is not None:
-            insert_at = successor_index
-        elif predecessor_index is not None:
-            insert_at = predecessor_index + 1
-        else:
+        if insert_at is None:
             insert_at = min(selected_index, len(items))
         items.insert(insert_at, selected)
 
@@ -25163,35 +25156,10 @@ async def _run_queued_turn_now_once(
                         item.get("queued_id") == queued_id
                         for item in items
                     ):
-                        successor_index = (
-                            next(
-                                (
-                                    idx
-                                    for idx, item in enumerate(items)
-                                    if item.get("queued_id") == selected_successor_id
-                                ),
-                                None,
-                            )
-                            if selected_successor_id is not None
-                            else None
+                        insert_at = queue_insert_index(
+                            items, selected_successor_id, selected_predecessor_id
                         )
-                        predecessor_index = (
-                            next(
-                                (
-                                    idx
-                                    for idx, item in enumerate(items)
-                                    if item.get("queued_id") == selected_predecessor_id
-                                ),
-                                None,
-                            )
-                            if selected_predecessor_id is not None
-                            else None
-                        )
-                        if successor_index is not None:
-                            insert_at = successor_index
-                        elif predecessor_index is not None:
-                            insert_at = predecessor_index + 1
-                        else:
+                        if insert_at is None:
                             insert_at = min(int(selected_index or 0), len(items))
                         items.insert(insert_at, selected)
                         QUEUED_TURNS[session_id] = deque(items)
