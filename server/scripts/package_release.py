@@ -86,6 +86,8 @@ FILES = (
     "shared_chat_videos.py",
     "shared_chat_video_stream.py",
     "interactive_chat_controls.py",
+    "private_sqlite.py",
+    "share_route_helpers.py",
     "install.sh",
     "uninstall.sh",
     "instances.sh",

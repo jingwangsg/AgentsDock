@@ -5,15 +5,12 @@ All disk/HTML work runs in bounded worker admissions off the server event loop.
 """
 from __future__ import annotations
 
-import asyncio
 import hmac
-import ipaddress
-import json
 import os
 from pathlib import Path
 import re
 import threading
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -24,6 +21,7 @@ from public_chat_shares import (
     render_public_chat_unlock_html,
 )
 from public_chat_transcript import PublicTranscriptError
+from share_route_helpers import admission_slot, bounded_body_bytes, bounded_json_body, chat_share_origin
 from shared_chat_video_stream import SharedVideoResponse
 from shared_chat_videos import SharedVideoUnavailable
 
@@ -42,38 +40,6 @@ def redact_public_share_path(value: str) -> str:
     return PUBLIC_SHARE_PATH_RE.sub(r"\1<redacted>", value)
 
 
-def chat_share_origin(base: str) -> str:
-    """Use the browser's canonical origin spelling when binding capabilities."""
-    if not isinstance(base, str) or not base:
-        raise PublicChatShareValidationError("Chat link must use an HTTP or HTTPS origin")
-    try:
-        parsed = urlsplit(base)
-        parsed.port  # Reject malformed/out-of-range ports before persistence.
-    except (TypeError, ValueError):
-        raise PublicChatShareValidationError("Chat link must use an HTTP or HTTPS origin") from None
-    if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None
-            or parsed.password is not None or parsed.query or parsed.fragment
-            or parsed.path not in {"", "/"} or "\\" in base or any(c.isspace() for c in base)):
-        raise PublicChatShareValidationError("Chat link must use an HTTP or HTTPS origin")
-    try:
-        hostname = parsed.hostname.encode("idna").decode("ascii").lower()
-    except UnicodeError:
-        raise PublicChatShareValidationError("Invalid chat link hostname") from None
-    if ":" in hostname:
-        try:
-            if "%" in hostname:
-                raise ValueError("Scoped IPv6 is not a browser origin")
-            hostname = ipaddress.IPv6Address(hostname).compressed
-        except ValueError:
-            raise PublicChatShareValidationError("Invalid chat link hostname") from None
-        host = f"[{hostname}]"
-    else:
-        host = hostname
-    port = parsed.port
-    suffix = f":{port}" if port is not None and port != (443 if parsed.scheme == "https" else 80) else ""
-    return f"{parsed.scheme}://{host}{suffix}"
-
-
 def public_share_url(base: str, token: str) -> str | None:
     return chat_share_origin(base) + "/share/" + token if base else None
 
@@ -83,78 +49,33 @@ def create_public_chat_share_router(
 ) -> APIRouter:
     """Callbacks are explicit: no access to a global server/token on import."""
     router = APIRouter()
-    active_management = 0
-    active_views = 0
+    manage_worker = admission_slot(1, retry_after=2)
+    view_worker = admission_slot(4, retry_after=2)
     cached_store = None
     store_lock = threading.Lock()
-
-    async def worker(operation, *, public=False):
-        nonlocal active_management, active_views
-        if (active_views if public else active_management) >= (4 if public else 1):
-            raise HTTPException(503, "Sharing is busy; retry shortly", headers={"Retry-After": "2"})
-        if public:
-            active_views += 1
-        else:
-            active_management += 1
-        # Shield worker completion on disconnect: a cancelled caller must not
-        # release admission while its filesystem thread is still running.
-        task = asyncio.create_task(asyncio.to_thread(operation))
-        def finished(_):
-            nonlocal active_management, active_views
-            if public:
-                active_views -= 1
-            else:
-                active_management -= 1
-            # Retrieve an exception even when the requesting client disconnected.
-            if not task.cancelled():
-                task.exception()
-        task.add_done_callback(finished)
-        return await asyncio.shield(task)
 
     def guard(request, session_id):
         authorize(request)
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id) or not session_exists(session_id):
             raise HTTPException(404, "Chat not found")
 
-    async def request_bytes(request, *, limit=8192):
-        async def collect():
-            data = bytearray()
-            async for chunk in request.stream():
-                if len(data) + len(chunk) > limit:
-                    raise HTTPException(413, "Share request is too large")
-                data.extend(chunk)
-            return data
-        try:
-            # asyncio.timeout is unavailable on supported Python 3.10 hosts.
-            return await asyncio.wait_for(collect(), timeout=5)
-        except asyncio.TimeoutError:
-            raise HTTPException(408, "Share request body was not received") from None
-
-    async def body(request):
-        if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
-            raise HTTPException(415, "Use application/json")
-        data = await request_bytes(request)
-        try:
-            value = json.loads(data)
-        except (ValueError, UnicodeError, RecursionError):
-            raise HTTPException(400, "Invalid JSON") from None
-        if not isinstance(value, dict):
-            raise HTTPException(400, "Expected a JSON object")
-        return value
-
-    def store(*, create=False):
+    def open_store():
         nonlocal cached_store
         with store_lock:
             if cached_store is None:
                 # Anonymous guesses must never initialize storage on a server
                 # that has not created a share. Initialize an existing store
                 # once, then use its read-only connections for public views.
-                if not create and not (Path(storage_root) / "snapshots.sqlite3").is_file():
+                if not (Path(storage_root) / "snapshots.sqlite3").is_file():
                     raise PublicChatShareUnavailable()
-                cached_store = (
-                    PublicChatShareStore(storage_root) if create
-                    else PublicChatShareStore.open_existing(storage_root)
-                )
+                cached_store = PublicChatShareStore.open_existing(storage_root)
+            return cached_store
+
+    def create_store():
+        nonlocal cached_store
+        with store_lock:
+            if cached_store is None:
+                cached_store = PublicChatShareStore(storage_root)
             return cached_store
 
     def result(value, status=200):
@@ -163,10 +84,10 @@ def create_public_chat_share_router(
     @router.post("/api/admin/chat-shares/{session_id}/preview")
     async def preview(session_id: str, request: Request):
         guard(request, session_id)
-        if await body(request):
+        if await bounded_json_body(request, limit=8192, timeout=5):
             raise HTTPException(400, "Preview takes an empty JSON object")
         try:
-            snapshot = await worker(lambda: load_transcript(session_id, None))
+            snapshot = await manage_worker(lambda: load_transcript(session_id, None))
         except PublicTranscriptError as exc:
             raise HTTPException(409, str(exc)) from None
         return result({**snapshot, "warning": WARNING})
@@ -174,7 +95,7 @@ def create_public_chat_share_router(
     @router.post("/api/admin/chat-shares/{session_id}")
     async def create(session_id: str, request: Request):
         guard(request, session_id)
-        value = await body(request)
+        value = await bounded_json_body(request, limit=8192, timeout=5)
         if set(value) - {"confirmed_public", "through_bytes", "digest", "title", "expires_at", "base_url"}:
             raise HTTPException(400, "Unknown share option")
         if value.get("confirmed_public") is not True:
@@ -191,7 +112,7 @@ def create_public_chat_share_router(
                 snapshot = load_transcript(session_id, value.get("through_bytes"), message_sink=message_sink)
                 if reviewed and not hmac.compare_digest(snapshot["digest"], value["digest"]):
                     raise PublicTranscriptError("Chat changed; preview it again")
-            share = store(create=True).create_streamed_share(session_id, capture,
+            share = create_store().create_streamed_share(session_id, capture,
                 title=value.get("title"), expires_at=value.get("expires_at"))
             token = share.pop("token")
             share.pop("session_id", None)
@@ -199,7 +120,7 @@ def create_public_chat_share_router(
             return {**share, "path": path, "url": base + path, "access_token": token,
                     "token_url": public_share_url(base, token), "warning": WARNING}
         try:
-            return result(await worker(publish), 201)
+            return result(await manage_worker(publish), 201)
         except PublicTranscriptError as exc:
             raise HTTPException(409, str(exc)) from None
         except PublicChatShareValidationError as exc:
@@ -212,7 +133,7 @@ def create_public_chat_share_router(
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
             raise HTTPException(404, "Chat not found")
         try:
-            shares = await worker(lambda: store().list_shares(session_id))
+            shares = await manage_worker(lambda: open_store().list_shares(session_id))
         except PublicChatShareUnavailable:
             shares = []
         return result({"shares": shares})
@@ -223,7 +144,7 @@ def create_public_chat_share_router(
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
             raise HTTPException(404, "Chat not found")
         try:
-            revoked = await worker(lambda: store().revoke_share(share_id, session_id=session_id))
+            revoked = await manage_worker(lambda: open_store().revoke_share(share_id, session_id=session_id))
         except PublicChatShareUnavailable:
             revoked = False
         if not revoked:
@@ -279,7 +200,7 @@ def create_public_chat_share_router(
         value = None
         if len(cookies) == 1 and TOKEN_PATTERN.fullmatch(cookies[0]):
             try:
-                value = await worker(lambda: store().get_snapshot_page(cookies[0], share_id=share_id, page=page), public=True)
+                value = await view_worker(lambda: open_store().get_snapshot_page(cookies[0], share_id=share_id, page=page))
             except PublicChatShareUnavailable:
                 pass
             except Exception:
@@ -292,7 +213,7 @@ def create_public_chat_share_router(
         if page is None:
             return last_page_redirect(request.url.path, value["page"])
         try:
-            content = await worker(lambda: render_page(value, request.url.path), public=True)
+            content = await view_worker(lambda: render_page(value, request.url.path))
         except Exception:
             return Response("Shared conversation temporarily unavailable.", status_code=503, headers=headers)
         return Response(content if request.method == "GET" else b"", headers=headers)
@@ -314,7 +235,7 @@ def create_public_chat_share_router(
         if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/x-www-form-urlencoded":
             return unlock_page(share_id, invalid=True, status=415)
         try:
-            value = parse_qs(bytes(await request_bytes(request, limit=1024)).decode("utf-8"),
+            value = parse_qs((await bounded_body_bytes(request, limit=1024, timeout=5)).decode("utf-8"),
                              keep_blank_values=True, strict_parsing=True, max_num_fields=2)
             if (set(value) - {"access_token", "remember"} or len(value.get("access_token", [])) != 1
                     or "remember" in value and value["remember"] != ["1"]):
@@ -322,7 +243,7 @@ def create_public_chat_share_router(
             token = value["access_token"][0]
             if TOKEN_PATTERN.fullmatch(token) is None:
                 raise ValueError("Invalid token")
-            page = await worker(lambda: store().get_snapshot_page(token, share_id=share_id), public=True)
+            page = await view_worker(lambda: open_store().get_snapshot_page(token, share_id=share_id))
         except (ValueError, UnicodeError, PublicChatShareUnavailable):
             return unlock_page(share_id, invalid=True, status=403)
         except HTTPException as exc:
@@ -345,10 +266,10 @@ def create_public_chat_share_router(
         if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
             return Response("Shared conversation unavailable.", status_code=404, headers=headers)
         try:
-            value = await worker(lambda: store().get_snapshot_page(token, page=page), public=True)
+            value = await view_worker(lambda: open_store().get_snapshot_page(token, page=page))
             if page is None:
                 return last_page_redirect(request.url.path, value["page"])
-            content = await worker(lambda: render_page(value, request.url.path), public=True)
+            content = await view_worker(lambda: render_page(value, request.url.path))
         except PublicChatShareUnavailable:
             return Response("Shared conversation unavailable.", status_code=404, headers=headers)
         except HTTPException as exc:
@@ -377,8 +298,8 @@ def create_public_chat_share_router(
             indices = (page, message_index, video_index)
             if any(re.fullmatch(r"[0-9]{1,10}", index) is None for index in indices):
                 raise PublicChatShareUnavailable()
-            value = await worker(lambda: store().get_snapshot_video(token, share_id=share_id,
-                page=int(page), message_index=int(message_index), video_index=int(video_index)), public=True)
+            value = await view_worker(lambda: open_store().get_snapshot_video(token, share_id=share_id,
+                page=int(page), message_index=int(message_index), video_index=int(video_index)))
             descriptor = value["video"]
             opened = await open_video(value["session_id"], descriptor["id"])
             file_fd = opened.get("file_fd")
@@ -388,7 +309,7 @@ def create_public_chat_share_router(
 
             async def reauthorize():
                 try:
-                    await worker(lambda: store().authorize_access(token, share_id=share_id), public=True)
+                    await view_worker(lambda: open_store().authorize_access(token, share_id=share_id))
                 except PublicChatShareUnavailable:
                     raise HTTPException(404, "Shared video unavailable") from None
 

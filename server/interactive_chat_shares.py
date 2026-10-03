@@ -5,17 +5,18 @@ tokens are returned once and never persisted. Upload references stay private.
 """
 from __future__ import annotations
 
+from contextlib import closing, contextmanager
 import hashlib
 import hmac
 import json
-import os
 from pathlib import Path
 import re
 import secrets
 import time
 
+from private_sqlite import create_private_sqlite, open_private_sqlite
 from public_chat_shares import (
-    PublicChatShareStore, PublicChatShareUnavailable, PublicChatShareValidationError,
+    PublicChatShareUnavailable, PublicChatShareValidationError,
     TOKEN_PATTERN, _timestamp, _utf8_size,
 )
 
@@ -41,8 +42,8 @@ def csrf_token(browser_token):
     return hmac.new(browser_token.encode("ascii"), b"interactive-chat-csrf-v1", hashlib.sha256).hexdigest()
 
 
-class InteractiveChatShareStore(PublicChatShareStore):
-    """Reuse the existing owner-only SQLite connection checks, not snapshot data."""
+class InteractiveChatShareStore:
+    """Owner-only SQLite ledger of grants, uploads and submissions for one chat each."""
 
     def __init__(self, storage_root, *, now=time.time):
         self.storage_root = Path(storage_root)
@@ -51,13 +52,7 @@ class InteractiveChatShareStore(PublicChatShareStore):
         self.storage_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.database_path = self.storage_root / "interactive.sqlite3"
         self._now = now
-        self._check_directory()
-        try:
-            fd = os.open(self.database_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        except FileExistsError:
-            self._check_database_stat(self.database_path.lstat())
-        else:
-            os.close(fd)
+        create_private_sqlite(self.database_path)
         with self._connection(write=True) as db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("PRAGMA user_version").fetchone()[0] not in (0, 1):
@@ -92,6 +87,11 @@ class InteractiveChatShareStore(PublicChatShareStore):
             if db.execute("PRAGMA user_version").fetchone()[0] != 1:
                 raise OSError("Unsupported interactive share database version")
         return instance
+
+    @contextmanager
+    def _connection(self, *, write=False):
+        with closing(open_private_sqlite(self.database_path, write=write)) as db, db:
+            yield db
 
     @staticmethod
     def metadata(row):

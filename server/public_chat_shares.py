@@ -9,7 +9,7 @@ bearer token; reopening or listing the store cannot recover a share URL.
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -21,10 +21,10 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
-import stat
 import time
 from typing import Any, Callable, Iterator
 
+from private_sqlite import create_private_sqlite, open_private_sqlite
 from shared_chat_videos import normalize_shared_chat_videos
 
 
@@ -134,19 +134,7 @@ class PublicChatShareStore:
         self.storage_root = root
         self.database_path = root / "snapshots.sqlite3"
         self._now = now
-        self._check_directory()
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            descriptor = os.open(self.database_path, flags, 0o600)
-        except FileExistsError:
-            # Inspect existing paths before opening them: a FIFO or device must
-            # not be opened, and an existing unsafe file must not be chmodded.
-            self._check_database_stat(self.database_path.lstat())
-        else:
-            try:
-                self._check_database_stat(os.fstat(descriptor))
-            finally:
-                os.close(descriptor)
+        create_private_sqlite(self.database_path)
         with self._connection(write=True) as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._ensure_schema(connection)
@@ -243,39 +231,10 @@ class PublicChatShareStore:
                 raise OSError("Unsupported public chat share database version.")
         return instance
 
-    def _check_directory(self) -> None:
-        info = self.storage_root.lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
-            raise OSError("Public chat share storage must be a private, owned, non-symlink directory.")
-
-    @staticmethod
-    def _check_database_stat(info: os.stat_result) -> None:
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_mode & 0o077
-            or info.st_uid != os.getuid()
-            or info.st_nlink != 1
-        ):
-            raise OSError("Public chat share database must be a private, owned, single-link regular file.")
-
     @contextmanager
     def _connection(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
-        self._check_directory()
-        self._check_database_stat(self.database_path.lstat())
-        # The checked database must already exist; SQLite must not create an
-        # alternate path. The private directory also protects rollback journals.
-        mode = "rw" if write else "ro"
-        connection = sqlite3.connect(f"{self.database_path.as_uri()}?mode={mode}", uri=True, timeout=5)
-        connection.row_factory = sqlite3.Row
-        try:
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute("PRAGMA trusted_schema = OFF")
-            if write:
-                connection.execute("PRAGMA synchronous = FULL")
-            with connection:
-                yield connection
-        finally:
-            connection.close()
+        with closing(open_private_sqlite(self.database_path, write=write)) as connection, connection:
+            yield connection
 
     @staticmethod
     def _metadata(row: sqlite3.Row) -> dict[str, Any]:

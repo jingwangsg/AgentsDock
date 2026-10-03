@@ -13,15 +13,14 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import json
-import os
 from pathlib import Path
 import sqlite3
-import stat
 import threading
 import time
 from typing import Any, Iterator, Mapping
 
 from agentsdock_team_hub.security import canonical_json, ensure_private_directory
+from private_sqlite import create_private_sqlite, open_private_sqlite
 
 
 DELIVERY_STATES = frozenset({
@@ -42,27 +41,13 @@ class SecurePeerDeliveryLedger:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         ensure_private_directory(self.path.parent)
+        create_private_sqlite(self.path)
         self._lock = threading.RLock()
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        if self.path.is_symlink():
-            raise PermissionError("secure peer delivery ledger must not be a symlink")
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
+        connection = open_private_sqlite(self.path, write=True, timeout=30)
         connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=FULL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        os.chmod(self.path, 0o600)
-        info = os.stat(self.path, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_nlink != 1
-            or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) != 0o600
-        ):
-            connection.close()
-            raise PermissionError("secure peer delivery ledger is unsafe")
         return connection
 
     @contextmanager
