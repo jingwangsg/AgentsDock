@@ -7302,6 +7302,11 @@ class SurfacePatchRequest(BaseModel):
     page_title: str | None = None
 
 
+class SurfaceOrderRequest(BaseModel):
+    """Tab ids in their new relative order; tabs not listed keep their places."""
+    ids: list[str] = Field(min_length=1, max_length=512)
+
+
 class TerminalOpenRequest(BaseModel):
     cwd: str | None = None
 
@@ -88065,6 +88070,30 @@ async def update_surface(surface_id: str, req: SurfacePatchRequest) -> dict[str,
     surface["updated_at"] = now_iso()
     save_surfaces()
     return {"surface": surface}
+
+
+@app.put("/api/surfaces/order")
+async def reorder_surfaces(req: SurfaceOrderRequest) -> dict[str, Any]:
+    if len(set(req.ids)) != len(req.ids):
+        raise HTTPException(status_code=400, detail="duplicate surface id")
+    unknown = [surface_id for surface_id in req.ids if surface_id not in SURFACES]
+    if unknown:
+        raise HTTPException(status_code=404, detail="surface not found")
+    # The listed tabs take, in the requested order, the slots they occupy today; a client
+    # that lists only one folder's tabs therefore cannot disturb another folder's order.
+    listed = iter(req.ids)
+    chosen = set(req.ids)
+    reordered = {}
+    for surface_id, surface in SURFACES.items():
+        if surface_id in chosen:
+            surface_id = next(listed)
+            surface = SURFACES[surface_id]
+        reordered[surface_id] = surface
+    if list(reordered) != list(SURFACES):
+        SURFACES.clear()
+        SURFACES.update(reordered)
+        save_surfaces()
+    return {"surfaces": list(SURFACES.values()), "revision": SURFACES_REVISION}
 
 
 @app.delete("/api/surfaces/{surface_id}")
