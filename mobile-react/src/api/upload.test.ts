@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 
 import { photoAssetsToUploads } from '../lib/uploads'
-import { AgentServerClient, AgentServerClientDisposedError, ServerError } from './AgentServerClient'
 
 type Progress = { lengthComputable: boolean; loaded: number; total: number }
 
@@ -41,6 +40,9 @@ const originalXHR = globalThis.XMLHttpRequest
 const originalFormData = globalThis.FormData
 globalThis.XMLHttpRequest = FakeXMLHttpRequest as unknown as typeof XMLHttpRequest
 globalThis.FormData = RawFormData as unknown as typeof FormData
+// Utf8FilenameFormData extends FormData when its module is evaluated, so the client
+// is imported only after the stand-in is installed.
+const { AgentServerClient, AgentServerClientDisposedError, ServerError } = await import('./AgentServerClient')
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const nextRequest = () => {

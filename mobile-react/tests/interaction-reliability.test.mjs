@@ -339,7 +339,7 @@ test('timeline sync uses bounded semantic pages with validated legacy fallback',
   assert.match(cache, /event\.type !== 'raw_event'/)
   assert.match(timelineMemory, /HISTORY_WINDOW_EVENT_LIMIT = 2_400/)
   assert.match(timelineMemory, /HISTORY_TIMELINE_CHARACTER_BUDGET = 16_000_000/)
-  assert.match(timelineMemory, /events,[\s\S]*?'newest',[\s\S]*?HISTORY_WINDOW_EVENT_LIMIT/)
+  assert.match(timelineMemory, /export function boundHistoricalTimelineEvents\([\s\S]*?'newest',\s*HISTORY_WINDOW_EVENT_LIMIT/)
   assert.match(store, /scheduleCurrentWorkspaceSave\(get\)/)
   assert.match(store, /const WORKSPACE_SAVE_DEBOUNCE_MS = 350/)
   assert.match(store, /const sourceNamespace = scope\.namespace[\s\S]*?await saveCurrentWorkspace\(get\)[\s\S]*?scope\.namespaceAdopting = true/)

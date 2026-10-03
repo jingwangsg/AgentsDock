@@ -27,7 +27,8 @@ test('Android chat and folder actions open from a long press on a collapsed sibl
   assert.match(source, /menuAnchor: \{ width: 0, justifyContent: 'flex-end', pointerEvents: 'none' \}/)
   // Compose only tracks a drawn (non-zero) anchor, so the trigger keeps a 1pt child.
   assert.match(source, /menuAnchorContent: \{ width: 1, height: 1 \}/)
-  assert.equal(source.match(/style=\{styles\.menuAnchor\}><View style=\{styles\.menuAnchorContent\} \/><\/MenuView>/g)?.length, 2)
+  // Every sidebar menu (chat, folder, tab) opens from the collapsed anchor rather than wrapping its row.
+  assert.equal(source.match(/style=\{styles\.menuAnchor\}><View style=\{styles\.menuAnchorContent\} \/><\/MenuView>/g)?.length, source.match(/<MenuView ref=\{menu\}/g)?.length)
   assert.doesNotMatch(source, /MoreHorizontal|AndroidMoreMenu/)
 })
 
