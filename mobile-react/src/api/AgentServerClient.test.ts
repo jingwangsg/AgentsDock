@@ -1385,6 +1385,7 @@ class FakeWebSocket {
   static instances: FakeWebSocket[] = []
 
   readonly url: string
+  readonly protocols: string[] | undefined
   readyState = FakeWebSocket.CONNECTING
   binaryType = 'blob'
   closeCalls = 0
@@ -1394,8 +1395,9 @@ class FakeWebSocket {
   onclose: ((event: FakeCloseEvent) => void) | null = null
   onerror: (() => void) | null = null
 
-  constructor(url: string | URL) {
+  constructor(url: string | URL, protocols?: string | string[]) {
     this.url = String(url)
+    this.protocols = typeof protocols === 'string' ? [protocols] : protocols
     FakeWebSocket.instances.push(this)
   }
 
@@ -1554,6 +1556,41 @@ try {
     `A hub-proxied WS URL must swap only the protocol and keep the proxy prefix, got ${hubSocket.url}`,
   )
   hubProxied.dispose()
+
+  // Token subprotocol negotiation follows the desktop client: query token until
+  // /api/health advertises websocket_auth_v1, then `agentsdock-token.<base64url>`.
+  // The HTTP mock above is already restored here, so health gets a local stub.
+  const fetchBeforeNegotiation = globalThis.fetch
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const url = String(input)
+    const capabilities = url.startsWith('https://subprotocol.example') ? { websocket_auth_v1: { available: true, required: false, version: 1 } } : {}
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, server_identity: new URL(url).hostname, api_contract_version: 7, capabilities }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }) as typeof fetch
+  FakeWebSocket.instances = []
+  const negotiatedToken = 'tok\u00ff\u00ff+/'
+  const negotiated = new AgentServerClient('https://subprotocol.example', negotiatedToken)
+  negotiated.stream('session-before-health', 0, { onEvent: () => undefined, onState: () => undefined })
+  const beforeHealthSocket = FakeWebSocket.instances[0]
+  assert(beforeHealthSocket && new URL(beforeHealthSocket.url).searchParams.get('token') === negotiatedToken, 'Before health advertises the capability the token stays a query parameter')
+  assert(beforeHealthSocket.protocols === undefined, 'Before health advertises the capability no subprotocol is offered')
+  await negotiated.health()
+  negotiated.stream('session-subprotocol', 3, { onEvent: () => undefined, onState: () => undefined })
+  const subprotocolSocket = FakeWebSocket.instances[1]
+  assert(subprotocolSocket, 'A negotiated stream should create a socket')
+  assert(!new URL(subprotocolSocket.url).searchParams.has('token'), 'A negotiated stream must not carry the token in its URL')
+  assert(new URL(subprotocolSocket.url).searchParams.get('after') === '3', 'A negotiated stream keeps its cursor parameters')
+  const desktopEncoding = `agentsdock-token.${Buffer.from(negotiatedToken, 'utf8').toString('base64url')}`
+  assert(
+    JSON.stringify(subprotocolSocket.protocols) === JSON.stringify(['agentsdock-events-v1', desktopEncoding]),
+    `The token subprotocol must match the desktop client's base64url form, got ${JSON.stringify(subprotocolSocket.protocols)}`,
+  )
+  negotiated.configure('https://legacy-auth.example', 'legacy-token')
+  await negotiated.health()
+  negotiated.stream('session-legacy', 0, { onEvent: () => undefined, onState: () => undefined })
+  const legacySocket = FakeWebSocket.instances[2]
+  assert(legacySocket && new URL(legacySocket.url).searchParams.get('token') === 'legacy-token' && legacySocket.protocols === undefined, 'A server without the capability keeps the query token after reconfiguration')
+  negotiated.dispose()
+  globalThis.fetch = fetchBeforeNegotiation
 
 } finally {
   globalThis.WebSocket = originalWebSocket

@@ -85,6 +85,7 @@ import type {
   Surface,
   UpdateSurfaceInput,
 } from '../types'
+import { base64 } from '../lib/base64'
 import { normalizeServerURL } from '../lib/format'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../lib/provider-usage'
 import { parseSyncedSideChat, type SyncedSideChat } from '../lib/side-chat'
@@ -126,6 +127,7 @@ const UPLOAD_STALL_TIMEOUT_MS = 2 * 60_000
 const UPLOAD_RESPONSE_TIMEOUT_MS = 5 * 60_000
 const UPLOAD_TIMEOUT_CAP_MS = 8 * 60 * 60_000
 const FATAL_WEBSOCKET_CLOSE_CODES = new Set([4401, 4404, 4409])
+const EVENTS_STREAM_PROTOCOL = 'agentsdock-events-v1'
 
 export interface ServerErrorDetail {
   code?: string
@@ -193,6 +195,8 @@ export interface TimelineStreamHandlers {
 interface ClientConfiguration {
   readonly baseURL: string
   readonly token: string
+  /** Learned from /api/health; a reconfigured client starts over at false. */
+  websocketSubprotocolAuth: boolean
 }
 
 interface ClientScope {
@@ -296,7 +300,16 @@ export class AgentServerClient {
     return authHeaders(this.configuration.token)
   }
 
-  health(): Promise<Health> { return this.request('/api/health', {}, 30_000, true) }
+  async health(): Promise<Health> {
+    const configuration = this.configuration
+    const health = await this.request<Health>('/api/health', {}, 30_000, true)
+    // Same rule as the desktop client: the capability is advertised per server,
+    // so only the configuration that made this request learns it.
+    if (this.configuration === configuration) {
+      configuration.websocketSubprotocolAuth = health.capabilities?.websocket_auth_v1?.available === true
+    }
+    return health
+  }
   codexServerGoals(): Promise<CodexGoalsConfiguration> {
     return this.request('/api/admin/codex/goals', {}, 30_000, false, 'native-control')
   }
@@ -1112,9 +1125,16 @@ export class AgentServerClient {
       const url = new URL(endpoint)
       url.searchParams.set('after', String(lastSeq))
       url.searchParams.set('visible', 'true')
-      if (token) url.searchParams.set('token', token)
+      // Once /api/health advertised websocket_auth_v1 the token travels as a
+      // subprotocol, in the desktop client's exact `agentsdock-token.<base64url>`
+      // form, instead of a query parameter that proxies and access logs see.
+      // Older servers keep the query form.
+      const protocols = scope.configuration.websocketSubprotocolAuth
+        ? [EVENTS_STREAM_PROTOCOL, ...(token ? [`agentsdock-token.${base64(token).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`] : [])]
+        : undefined
+      if (!protocols && token) url.searchParams.set('token', token)
       try {
-        socket = new WebSocket(url.toString())
+        socket = new WebSocket(url.toString(), protocols)
       } catch (error) {
         reportState(false, websocketErrorDetail('timeline', error))
         scheduleRetry()
@@ -1393,7 +1413,7 @@ export class AgentServerClient {
 }
 
 function createConfiguration(baseURL: string, token: string): ClientConfiguration {
-  return Object.freeze({ baseURL: normalizeServerURL(baseURL), token })
+  return { baseURL: normalizeServerURL(baseURL), token, websocketSubprotocolAuth: false }
 }
 
 function buildURL(baseURL: string, path: string): string {
