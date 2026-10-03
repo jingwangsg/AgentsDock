@@ -22,9 +22,11 @@ read-only repository permissions and no signing or deployment credentials.
 
 ## Team Hub validation
 
+The Team Hub package source is `server/agentsdock_team_hub`; its tests are part
+of the server suite. From `server/`:
+
 ```sh
-uv sync --project team-hub --dev
-uv run --project team-hub python -m unittest discover -s team-hub/tests
+PYTHONDONTWRITEBYTECODE=1 uv run --python 3.13 python -m unittest tests.test_team_hub_foundation tests.test_team_hub_host
 ```
 
 See the component READMEs for server and mobile development instructions.

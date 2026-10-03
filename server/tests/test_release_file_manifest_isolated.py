@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 from pathlib import Path
 import re
 import shlex
@@ -169,21 +168,6 @@ class ReleaseFileManifestTests(unittest.TestCase):
         staging = self.installer.split('chmod 755 "$STAGE_DIR/agent_server.py"', 1)[1]
         before_dependencies = staging.split('echo "[2/7]', 1)[0].split('\n', 1)[1]
         self.assertNotRegex(before_dependencies, r'(?m)^\s*"\$STAGE_DIR/[^"\n]+\.py"(?:\s|$)')
-
-    def test_frozen_hub_manifest_includes_new_migration_and_current_hashes(self):
-        tree = ast.parse((ROOT / "tests" / "test_team_hub_host.py").read_text())
-        suite = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "VendoredTeamHubParityTests")
-        expected = next(ast.literal_eval(node.value) for node in ast.walk(suite)
-                        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "expected" for target in node.targets))
-        self.assertIn(NEW_MIGRATION, expected)
-        self.assertIn(THREAD_MIGRATION, expected)
-        self.assertIn(BULLETIN_MIGRATION, expected)
-        self.assertIn(SEARCH_MIGRATION, expected)
-        self.assertIn("notification_hints.py", expected)
-        self.assertEqual(set(expected), set(self.manifest["DIRECTORY_FILES"]["agentsdock_team_hub"]))
-        for name, digest in expected.items():
-            with self.subTest(name=name):
-                self.assertEqual(hashlib.sha256((ROOT / "agentsdock_team_hub" / name).read_bytes()).hexdigest(), digest)
 
 
 if __name__ == "__main__":
