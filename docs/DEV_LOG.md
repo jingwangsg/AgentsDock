@@ -1,5 +1,128 @@
 # Public development log
 
+## 2026-10-04 — Load-balance and code-quality pass across server, desktop and Android
+
+- A code audit looked for traffic funnelled through one connection or one lock,
+  for logic duplicated across modules, and for abstractions that hide two
+  behaviours behind one switch. The fixes below landed as separate branches,
+  each with a regression test that failed before the change.
+
+### Server
+
+- Chat metadata writes no longer wait on disk while holding the global session
+  lock: create, reorder, backend-lock, provider-session binding and ordinary
+  PATCHes mark the store dirty under the lock and wait for the sessions.json
+  write after releasing it; read markers and usage checkpoints only mark dirty
+  and let the 0.25 s writer coalesce them. Authorization-bearing patches
+  (`provider_jobs_access`, `codex_provider`, `subagent_limit`) keep the write
+  under the lock because their failure path restores a snapshot. The
+  provider-session binding also releases the active-turn lock before waiting
+  for disk. In-process measurement with a 50 ms-per-write slow disk: a second
+  chat's title PATCH p99 dropped from 139 ms to under 1 ms, its read-marker
+  POST p99 from 265 ms to under 1 ms, and 200 writes coalesced into 100.
+- Each timeline event's JSONL append and the 1 s update-status poll run off the
+  event loop (`asyncio.to_thread`), so a slow or network state directory no
+  longer stalls every chat on one chat's write.
+- A hub remote now holds three ssh connections instead of one: the chat tunnel,
+  a bulk-transfer tunnel that carries uploads and every file-body download
+  (attachments, diffs, workspace previews/downloads, exports), and an
+  inference-proxy connection that carries only the `-R` reverse forward when
+  `AGENTSDOCK_INFERENCE_PROXY_PORT` is set. The chat event stream no longer
+  queues behind a large download or an LLM token stream on a ~27 KiB/s proxied
+  link. Requires a hub restart so the old chat tunnel releases the proxy port.
+- The six agent helper CLIs (`agentsdock_chats/jobs/team/publish/emergency/mail`)
+  share one `agentsdock_cli_common.py` for authority-file parsing, origin
+  validation, loopback checks and the no-redirect HTTP opener; the
+  `AGENTSDOCK_CHAT_ID` consistency check now has one implementation and one
+  message. `local_session_ownership.py` reuses `server_instances.py` primitives
+  instead of a 146-line backported copy.
+- The public and interactive chat-share stores open SQLite through one
+  `private_sqlite.py` (symlink/owner/mode checks, also used by the secure-peer
+  delivery ledger); the interactive store no longer inherits from the public
+  store to reach private methods. Both share routers use `share_route_helpers.py`
+  for bounded JSON bodies and admission slots; the `public=`/`create=` boolean
+  switches became separate functions.
+- `claude_model_catalog.py` and `codex_model_catalog.py` share
+  `native_model_store.py` (LRU plus file persistence); cached rows are now
+  deep-copied on both providers. `claude_history_repair.py` and
+  `codex_history_repair.py` read pinned JSONL through `pinned_jsonl.py`; a
+  path swapped for a FIFO after the lstat now fails closed instead of blocking.
+- Ten literal duplicates inside `agent_server.py` are single helpers now
+  (provider history cursor commit, `parse_ps_rows` reuse, bounded JSON POST
+  framing, the shielded cross-chat acceptance tail, `queue_insert_index`,
+  abandoned-update finalization, the Team Hub role-change guard, the hub
+  capability expansion, `switch_logical_run`'s two except branches, the
+  Claude/Codex steer-fence failure). A `require_session()` guard helper was
+  tried and reverted: tests that extract handlers by name into fixed
+  namespaces broke, and 65 two-line guards were not worth that surface.
+- `side_questions.py` drops its never-configured `answer` path and the
+  `claude -p` fallback (about 130 lines); the isolated-subprocess helpers used by
+  title generation and the Codex provider move to `isolated_process.py`.
+  `execution_ownership.py` loses its test-only release hook.
+- The `team-hub/` package no longer carries a second, stale copy of the hub
+  source (10 of 23 migrations, 90 diverged functions):
+  `team-hub/src/agentsdock_team_hub` is a symbolic link to
+  `server/agentsdock_team_hub`, `uv build --project team-hub` produces a wheel
+  with all 12 modules and 23 migrations, and the duplicated or outdated
+  `team-hub/tests` are gone. The self-pinning sha256 parity test was removed;
+  `test_release_file_manifest_isolated` still pins the release file set.
+- Verified with the server suite in eight shards on the merged tree (all
+  remaining failures pre-exist on main: `SERVER_SHUTDOWN_PHASE_COUNT` 19 vs 20,
+  `test_claude_shutdown_status_isolated`, `test_execution_ownership` ×2,
+  `test_npm_release_package`), plus focused regressions for every change above.
+  Not verified against a live remote host or a network state directory.
+
+### Desktop
+
+- Background polling: jobs are fetched with the 30 s health/session refresh
+  instead of on a third timer, and the inactive-profile health sweep runs half a
+  period out of phase, so a proxied remote no longer sees health, sessions, jobs
+  and probes in one burst. Inactive hub remotes get a 20 s probe budget instead
+  of 5 s (one request measured 3-8 s on a Sky-proxied link).
+- Port forwards are keyed by chat and remote port: two chats forwarding the same
+  port get separate listeners, and archiving one chat no longer closes the
+  other's tunnel. `ports:open`/`ports:stop` IPC now carry the chat id.
+- `collapsedFolders` keeps its reference when a session poll removes nothing, so
+  the sidebar does not re-render on every poll.
+- The four WebSocket loops (terminal, events, emergency, mail hints) share one
+  `reconnectingSocket()` with the same backoff, jitter and watchdog; the four
+  HTTP error mappings share `throwServerError()`. Pinned by sixteen new
+  reconnect tests. No visible behaviour change.
+- Shared renderer pieces: `ProviderInteractionShelf`, `ContextUsageRing` /
+  `ContextUsageMeter` and `lib/provider-runtime.ts` replace copies kept
+  separately for Claude and Codex; `DialogShell` leaves `Dialogs.tsx`; chat and
+  Team reference chips share `reconcileReferenceSpans`; the composer's
+  atomic-reference key handling is one pure function used by the composer, the
+  queue editor and the job prompt editor. Dead code removed:
+  `atomicChatReference*`, the `localizeChrome` dialog prop, the
+  `connection_tested` analytics event (desktop never sent it).
+- Pure-forward service methods use `withScope` / `withWorkspaceScope`
+  (38 methods); diff parsing moved from `lib/timeline.ts` to
+  `lib/unified-diff.ts`; an IPC test asserts the main and preload channel sets
+  match (320 invoke channels).
+- Verified with `pnpm typecheck`, the full vitest suite (the two
+  `node:sqlite` bundling failures pre-exist) and a production build. Not
+  exercised in the running app.
+
+### Android
+
+- The chat list is fetched with `?summary=true`; selected-chat detail fields
+  still arrive with its timeline page. After `turn_finished`, artifact,
+  upload and interaction events the app re-reads only that chat's row, once per
+  500 ms burst, instead of the whole list plus health; job events re-read jobs
+  once per burst.
+- Every component that holds a connection for a request now uses one exported
+  fence, `capturedConnectionIsCurrent`, instead of seventeen hand-written
+  variants (extra per-call conditions stay at the call sites).
+- Cross-chat exchange cards subscribe to participant titles only, not the whole
+  chat list. The events WebSocket sends the token as a subprotocol when the
+  server advertises `websocket_auth_v1`, matching the desktop; older servers
+  keep the query form. The unused client terminal transport and duplicated
+  helpers were removed; `stream()` takes a handlers object.
+- Verified with `tsc`, the CI-listed mobile test scripts and the full `tests/`
+  run (four pre-existing failures). Not verified on a device or emulator; no
+  Android build was produced.
+
 ## 2026-10-04 — Android shows tabs opened elsewhere, and its browser tabs reach the server's localhost
 
 - The Android app now lists terminal and browser tabs opened on another
