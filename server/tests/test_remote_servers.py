@@ -556,6 +556,25 @@ with socket.socket() as listener:
         assert job.error is None, job.log
         assert not rs.load_registry(manager.path)[0].attached
 
+    def test_a_deploy_naming_a_registered_install_updates_that_entry_and_keeps_its_id(self) -> None:
+        self.fake_host(existing_port=7860)
+        manager, _ = self.run_job(rs.RemoteDeployRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server", name="first"))
+        [server] = rs.load_registry(manager.path)
+
+        async def main() -> rs.DeployJob:
+            await manager.start()
+            job = manager.start_deploy(rs.RemoteDeployRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))
+            await job.task
+            await manager.stop()
+            return job
+
+        job = asyncio.run(main())
+        assert job.error is None, job.log
+        # Clients address a remote as /api/remote/<id>; a second entry for the same install
+        # would strand every saved profile on the retired id.
+        [again] = rs.load_registry(manager.path)
+        assert (again.id, again.name) == (server.id, "first")
+
     def test_a_rename_during_a_redeploy_survives_its_write_back(self) -> None:
         self.fake_host(existing_port=7860)
         manager, _ = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))

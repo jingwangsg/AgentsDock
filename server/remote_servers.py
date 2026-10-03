@@ -1213,6 +1213,15 @@ class RemoteServerManager:
             raise HTTPException(status_code=409, detail="Another remote deployment is already running.")
         if redeploy_id is not None and redeploy_id not in self.servers:
             raise HTTPException(status_code=404, detail="Unknown remote server.")
+        if redeploy_id is None and isinstance(request, RemoteDeployRequest):
+            # A deploy naming a host and directory that already hold a registered server
+            # is that server's update: keep its id (clients address it as /api/remote/<id>)
+            # instead of registering a second entry and retiring the first.
+            install_dir = default_install_dir(request.ssh_host) if request.install_dir == DEFAULT_INSTALL_DIR else request.install_dir
+            same_install = [server for server in self.servers.values()
+                            if server.ssh_host == request.ssh_host and server.install_dir == install_dir]
+            if same_install:
+                redeploy_id = same_install[0].id
         if not shutil.which("ssh") and not Path(ssh_binary()).exists():
             raise HTTPException(status_code=503, detail="ssh is not installed on this server.")
         job = DeployJob(job_id=secrets.token_hex(8))
