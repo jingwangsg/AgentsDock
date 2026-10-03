@@ -17191,6 +17191,11 @@ async def append_event(
         or session_id in DELETED_SESSION_TOMBSTONES
     ):
         return discarded_event()
+    if event_type == "error":
+        # Remembered until this run's terminal event, which resends "go on".
+        run_id = str((payload or {}).get("run_id") or "")
+        if run_id and MODEL_CAPACITY_ERROR_RE.search(str((payload or {}).get("message") or "")):
+            MODEL_CAPACITY_ERROR_RUNS.add(run_id)
     async with event_delivery_lock(session_id):
         if (
             session_id in DELETING_SESSIONS
@@ -46487,6 +46492,82 @@ async def finalize_cross_chat_terminal(event: dict[str, Any]) -> None:
             await revoke_cross_chat_capability(run_id)
 
 
+# A Codex or Claude turn that fails because the model is at capacity is resent
+# as the user message "go on", the same way a user recovers by hand.
+# Codex: "Selected model is at capacity…"; Claude: 'API Error: 529 {… "overloaded_error" …}'.
+# A bare "529" is not matched: raw stderr reaches the error message on some paths.
+MODEL_CAPACITY_ERROR_RE = re.compile(r"at capacity|overloaded", re.IGNORECASE)
+MODEL_CAPACITY_RESEND_PROMPT = "go on"
+# Consecutive resends per chat before the error is left to the user. A turn
+# that ends without a capacity error or a message sent by the user resets it.
+MODEL_CAPACITY_RESEND_LIMIT = 5
+# Runs whose error event matched; cleared by their terminal event. A run that
+# is stopped between the two leaves one string behind, which is tolerated.
+MODEL_CAPACITY_ERROR_RUNS: set[str] = set()
+MODEL_CAPACITY_RESEND_ATTEMPTS: dict[str, int] = {}
+
+
+def schedule_model_capacity_resend(session_id: str, event: dict[str, Any]) -> None:
+    """Resend "go on" in its own task; turn admission must not delay the terminal path."""
+    run_id = str(event.get("run_id") or "")
+    capacity_failure = run_id in MODEL_CAPACITY_ERROR_RUNS
+    MODEL_CAPACITY_ERROR_RUNS.discard(run_id)
+    if not capacity_failure or event.get("stopped") or event.get("exit_code") == 0:
+        MODEL_CAPACITY_RESEND_ATTEMPTS.pop(session_id, None)
+        return
+    sess = STORE.sessions.get(session_id)
+    if (
+        SERVER_SHUTTING_DOWN
+        or sess is None
+        # Turns the server starts on its own (jobs, deliveries, controls).
+        or event.get("purpose")
+        # The slot is already released here, so a busy chat means a message was
+        # admitted meanwhile; it or a queued row continues the work, and
+        # start_turn would otherwise queue "go on" behind it.
+        or session_id in BUSY_SESSIONS
+        or QUEUED_TURNS.get(session_id)
+        or RUN_NOW_TURNS.get(session_id)
+    ):
+        return
+    attempts = MODEL_CAPACITY_RESEND_ATTEMPTS.get(session_id, 0)
+    if attempts >= MODEL_CAPACITY_RESEND_LIMIT:
+        logger.warning(
+            "model capacity resend limit reached session=%s attempts=%s",
+            session_id,
+            attempts,
+        )
+        return
+    MODEL_CAPACITY_RESEND_ATTEMPTS[session_id] = attempts + 1
+    # The app advertises its interactive transport on every send. Without it
+    # Claude would run on the print transport and Codex under the
+    # non-interactive approval policy instead of the chat's own settings.
+    backend = str(sess.get("backend") or DEFAULT_BACKEND).strip().lower()
+    client_capabilities = {
+        BACKEND_CODEX: [CODEX_INTERACTIVE_CLIENT_CAPABILITY],
+        BACKEND_CLAUDE: [CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY],
+    }.get(backend, [])
+
+    async def resend() -> None:
+        try:
+            # The terminal path's queue drain may already own promotion; then
+            # start_turn queues the message and that drain runs it.
+            await start_turn(
+                session_id,
+                TurnRequest(
+                    prompt=MODEL_CAPACITY_RESEND_PROMPT,
+                    client_capabilities=client_capabilities,
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "model capacity resend failed session=%s error=%s",
+                session_id,
+                concise_error_message(exc),
+            )
+
+    register_session_task(SESSION_TURN_TASKS, session_id, asyncio.create_task(resend()))
+
+
 async def append_turn_finished_event(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     # Persist before the terminal notification. Existing session-list refresh /
     # polling paths pick up the title without a new protocol or synthetic turn.
@@ -46547,6 +46628,7 @@ async def append_turn_finished_event(session_id: str, payload: dict[str, Any]) -
                 event.get("run_id"),
                 concise_error_message(exc),
             )
+    schedule_model_capacity_resend(session_id, event)
     return event
 
 
@@ -93377,6 +93459,7 @@ MAX_TURN_REQUEST_RECEIPTS = 1024
 
 @app.post("/api/sessions/{session_id}/turns")
 async def post_turn(session_id: str, req: TurnRequest) -> dict[str, Any]:
+    MODEL_CAPACITY_RESEND_ATTEMPTS.pop(session_id, None)
     if not req.client_request_id:
         return await admit_turn(session_id, req)
     key = (session_id, req.client_request_id)

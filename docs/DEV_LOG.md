@@ -1,5 +1,23 @@
 # Public development log
 
+## 2026-10-03 — Chats resend "go on" after a model capacity error
+
+- When a Codex or Claude turn fails with a model capacity error ("Selected
+  model is at capacity", "overloaded", the body of an HTTP 529), the server
+  immediately sends the user message "go on" to that chat with the same
+  interactive transport the app uses, as a user would by hand. The message
+  goes through normal turn admission, so it appears in the timeline like any
+  typed message and may briefly show as queued.
+- At most five consecutive resends per chat. Any turn in that chat that ends
+  without a capacity error, or any message sent by the user, starts the count
+  over. Stopped turns, chats that already have a queued or just-admitted
+  message, and turns the server starts on its own (scheduled jobs, cross-chat
+  deliveries, provider controls) are left alone.
+- Verified with server tests for the error classifier, the resend and its
+  transport capability, the limit, the reset paths, the skip cases, and the
+  error-event marking. Not exercised against a live capacity error in the
+  app, since the provider outage cannot be triggered on demand.
+
 ## 2026-10-03 — Context compaction works the same way for Claude and Codex
 
 - Claude chats can now compact their context from the provider panel and from
