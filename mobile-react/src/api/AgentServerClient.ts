@@ -405,10 +405,12 @@ export class AgentServerClient {
   }
   async sessions(): Promise<Session[]> {
     const { sessions } = await this.get<{ sessions: Session[] }>('/api/sessions?summary=true')
-    // The summary list omits the emergency pair when there is nothing to report,
-    // while the full session object sends an explicit null/0 tombstone. The store
-    // merges list rows over the retained session by spreading, so an omitted key
-    // would keep an alert another client already acknowledged.
+    // load-bearing: the server keeps these two keys sparse in summary rows on
+    // purpose (agent_server.public_session, pinned by test_emergency_alerts) and
+    // sends the explicit null/0 tombstone only on the emergency stream. This
+    // store merges list rows over the retained session by spreading, so a
+    // summary consumer must restore the tombstone itself or an alert another
+    // client already acknowledged would survive here.
     return sessions.map(session => 'emergency_alert' in session
       ? session
       : { ...session, emergency_alert: null, unacknowledged_emergency_count: 0 })
