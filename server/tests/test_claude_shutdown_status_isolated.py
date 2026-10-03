@@ -51,6 +51,7 @@ async def probe(error, late_shutdown=False):
     changed_paths = set()
     seen_artifacts = set()
     manifest_path = None
+    compaction_state = {"manual": False}
 ''').body[0]
     setup.body.append(classify)
     setup.body.append(ast.Try(body=[ast.Raise(exc=ast.Name(id="error", ctx=ast.Load()))], handlers=[handler], orelse=[], finalbody=[]))
