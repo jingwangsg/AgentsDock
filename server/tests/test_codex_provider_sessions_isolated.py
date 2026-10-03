@@ -28,7 +28,7 @@ FUNCTIONS = {"preview_session_runtime_update", "session_backend_locked", "public
     "effective_opencode_permission_mode", "ensure_opencode_permission_mode_update_allowed",
     "session_subagent_limit_control", "validate_session_subagent_limit",
     "record_codex_subagent_limit_application",
-    "create_session", "create_session_with_history", "update_session", "require_session", "ensure_backend_update_allowed", "codex_runtime_settings", "_fork_session_locked"}
+    "create_session", "create_session_with_history", "update_session", "ensure_backend_update_allowed", "codex_runtime_settings", "_fork_session_locked"}
 MODELS = {"CreateSessionRequest", "UpdateSessionRequest"}
 tree = ast.parse(SOURCE.read_text())
 nodes = []

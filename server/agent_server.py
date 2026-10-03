@@ -8584,7 +8584,9 @@ async def persist_durable_provider_cross_chat_reference_grants(
     if not target_session_ids:
         return None
     async with STORE._lock:
-        source = require_session(source_session_id)
+        source = STORE.sessions.get(source_session_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="session not found")
         if source.get("archived"):
             raise HTTPException(
                 status_code=409,
@@ -11717,13 +11719,6 @@ class SessionStore:
 STORE = SessionStore()
 
 
-def require_session(session_id: str) -> dict[str, Any]:
-    session = STORE.sessions.get(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="session not found")
-    return session
-
-
 def requested_job_schedule_kind(
     schedule_kind: Any,
     interval_seconds: Any,
@@ -12185,7 +12180,9 @@ class JobStore:
         redact_chat_reference_errors: bool = False,
     ) -> dict[str, Any]:
         validate_job_text_bounds(req.title, req.prompt)
-        parent_session = require_session(req.session_id)
+        parent_session = STORE.sessions.get(req.session_id)
+        if not parent_session:
+            raise HTTPException(status_code=404, detail="session not found")
         if parent_session.get("archived"):
             raise HTTPException(
                 status_code=409,
@@ -12284,7 +12281,9 @@ class JobStore:
             # Recheck inside the job lock. If archive won the race, its durable
             # session state is already visible; if create won, archive waits
             # for this lock and pauses the newly inserted job immediately.
-            current_parent = require_session(req.session_id)
+            current_parent = STORE.sessions.get(req.session_id)
+            if not current_parent:
+                raise HTTPException(status_code=404, detail="session not found")
             if current_parent.get("archived"):
                 raise HTTPException(
                     status_code=409,
@@ -18393,7 +18392,8 @@ async def enqueue_turn(
 
 async def unqueue_turn(session_id: str, queued_id: str) -> dict[str, Any]:
     await wait_for_queue_recovery_admission()
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
 
     removed: dict[str, Any] | None = None
     async with QUEUE_LOCK:
@@ -22987,7 +22987,8 @@ def reject_promoted_queue_mutation(session_id: str, queued_id: str) -> None:
 
 async def update_queued_turn(session_id: str, queued_id: str, req: UpdateQueuedTurnRequest) -> dict[str, Any]:
     await wait_for_queue_recovery_admission()
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     async_result = await update_async_queued_message(session_id, queued_id, req)
     if async_result is not None:
         return async_result
@@ -23433,7 +23434,8 @@ async def update_queued_turn(session_id: str, queued_id: str, req: UpdateQueuedT
 
 async def move_queued_turn(session_id: str, queued_id: str, req: MoveQueuedTurnRequest) -> dict[str, Any]:
     await wait_for_queue_recovery_admission()
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     direction = req.direction.strip().lower()
     if direction not in {"up", "down"}:
         raise HTTPException(status_code=400, detail="direction must be up or down")
@@ -24567,7 +24569,8 @@ async def _run_queued_turn_now_once(
     *,
     require_native: bool = False,
 ) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     if stop_cleanup_in_progress(session_id):
         raise HTTPException(
             status_code=409,
@@ -28723,7 +28726,9 @@ def _ensure_terminal_session_locked(
     columns: int | None = None,
     rows: int | None = None,
 ) -> dict[str, Any]:
-    sess = require_session(session_id)
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="session not found")
     ensure_session_not_deleting(session_id)
     if bool(sess.get("archived")):
         raise HTTPException(status_code=409, detail="unarchive this chat before opening its terminal")
@@ -29325,7 +29330,8 @@ TERMINAL_ATTACHMENTS = TerminalAttachmentRegistry()
 
 
 def terminal_snapshot(session_id: str, *, lines: int = 240, created: bool = False) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     name = terminal_session_name(session_id)
     exists = tmux_session_exists(name)
     line_count = max(20, min(int(lines or 240), TMUX_CAPTURE_MAX_LINES))
@@ -29374,7 +29380,9 @@ def terminal_snapshot(session_id: str, *, lines: int = 240, created: bool = Fals
 
 
 def require_existing_terminal_session(session_id: str) -> str:
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
     ensure_session_not_deleting(session_id)
     if bool(session.get("archived")):
         raise HTTPException(status_code=409, detail="archived chats do not have an active terminal")
@@ -29446,7 +29454,8 @@ def exit_terminal_auto_scroll(session_id: str) -> None:
 
 
 def _kill_terminal_session_locked(session_id: str) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     name = terminal_session_name(session_id)
     existed = False
     if shutil.which("tmux") is not None:
@@ -29469,7 +29478,8 @@ def kill_terminal_session(session_id: str) -> dict[str, Any]:
 
 
 def terminal_windows_snapshot(session_id: str) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     name = terminal_session_name(session_id)
     if not tmux_session_exists(name):
         return {"session_id": session_id, "name": name, "exists": False, "mouse_enabled": False, "windows": []}
@@ -29696,7 +29706,9 @@ def best_process_label(processes: list[dict[str, Any]], fallback: str | None) ->
 
 
 def tmux_panes_snapshot(session_id: str, *, include_all: bool = False) -> dict[str, Any]:
-    sess = require_session(session_id)
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="session not found")
     result = run_tmux([
         "list-panes",
         "-a",
@@ -29786,7 +29798,8 @@ def tmux_panes_snapshot(session_id: str, *, include_all: bool = False) -> dict[s
 
 
 def capture_tmux_pane(session_id: str, pane_id: str, *, lines: int = 500) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     clean = str(pane_id or "").strip()
     if not clean:
         raise HTTPException(status_code=400, detail="pane_id is required")
@@ -38021,7 +38034,9 @@ async def start_turn_durably(session_id: str, req: TurnRequest) -> dict[str, Any
         except ManagedServerUpdatePendingError:
             async with session_lifecycle_lock(session_id):
                 ensure_session_not_deleting(session_id)
-                sess = require_session(session_id)
+                sess = STORE.sessions.get(session_id)
+                if not sess:
+                    raise HTTPException(status_code=404, detail="session not found")
                 if sess.get("archived"):
                     raise HTTPException(
                         status_code=409,
@@ -44770,7 +44785,9 @@ async def authorize_provider_jobs_operation(
         action="jobs",
         session_id=session_id,
     )
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
     issued_access = effective_provider_jobs_access({
         "provider_jobs_access": capability.get("provider_jobs_access"),
     })
@@ -45629,7 +45646,8 @@ async def skip_queued_cross_chat_delivery(
 ) -> dict[str, Any]:
     """Skip one exact local delivery without admitting or reordering work."""
 
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
 
     envelope_id = str(req.cross_chat_envelope_id or "")
     exchange_id = str(req.cross_chat_exchange_id or "")
@@ -53890,7 +53908,9 @@ async def refresh_idle_claude_context_usage(session_id: str) -> bool:
 
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        session = require_session(session_id)
+        session = STORE.sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="session not found")
         if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CLAUDE:
             raise HTTPException(
                 status_code=409,
@@ -53952,7 +53972,9 @@ async def refresh_idle_claude_context_usage(session_id: str) -> bool:
                 )
 
         async with STORE._lock:
-            current = require_session(session_id)
+            current = STORE.sessions.get(session_id)
+            if not current:
+                raise HTTPException(status_code=404, detail="session not found")
             provider_session_id = str(
                 claude_provider_id_for_session(current) or ""
             ).strip()
@@ -57503,7 +57525,9 @@ async def acquire_codex_control_thread(
             reservation_task,
         )
     ensure_session_not_deleting(session_id)
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
     if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CODEX:
         raise HTTPException(status_code=409, detail="Codex controls require a Codex chat")
     if CODEX_TRANSPORT == CODEX_TRANSPORT_EXEC:
@@ -74129,7 +74153,9 @@ async def _start_turn_locked(
             status_code=410,
             detail=SECURE_PEER_AGENT_RELAY_UNAVAILABLE,
         )
-    sess = require_session(session_id)
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="session not found")
     if sess.get("archived"):
         raise HTTPException(status_code=409, detail="archived chats cannot start turns")
     if req.purpose == "chat_mailbox_wake" or mailbox_wake_claim is not None:
@@ -88065,7 +88091,8 @@ async def capture_session_tmux_pane(session_id: str, pane_id: str, lines: int = 
 
 @app.get("/api/sessions/{session_id}/processes")
 async def get_session_processes(session_id: str) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     async with ACTIVE_LOCK:
         active = ACTIVE.get(session_id)
         snapshot_input = active_snapshot_input(active) if active else None
@@ -88081,7 +88108,8 @@ async def get_session_processes(session_id: str) -> dict[str, Any]:
 
 @app.get("/api/sessions/{session_id}/processes/log")
 async def tail_session_process_log(session_id: str, path: str, lines: int = 200) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     async with ACTIVE_LOCK:
         active = ACTIVE.get(session_id)
         snapshot_input = active_snapshot_input(active) if active else None
@@ -88389,7 +88417,8 @@ async def bulk_import_sessions_guarded(
 
 @app.get("/api/sessions/{session_id}/timeline-index")
 async def get_timeline_index(session_id: str) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     return await scan_transcript(build_timeline_index, session_id)
 
 
@@ -88398,7 +88427,9 @@ async def get_session_subagents(
     session_id: str,
     limit: int = Query(default=64, ge=1, le=SUBAGENT_SNAPSHOT_STATE_LIMIT),
 ) -> dict[str, Any]:
-    session = require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
+    session = STORE.sessions[session_id]
     if str(session.get("backend") or "") == BACKEND_CODEX and session_provider_id(session):
         try:
             manager = await codex_app_server_manager(session)
@@ -88418,14 +88449,16 @@ async def search_session_timeline(
     q: str = Query(min_length=2, max_length=500),
     limit: int = Query(default=40, ge=1, le=100),
 ) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     ensure_session_not_initializing(session_id)
     return await asyncio.to_thread(search_timeline_index, session_id, q, limit)
 
 
 def require_timeline_pin_session(session_id: str) -> None:
     ensure_session_not_deleting(session_id)
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
 
 
 def timeline_pin_storage_http_error(exc: TimelinePinStorageError) -> HTTPException:
@@ -88584,7 +88617,9 @@ async def export_session(session_id: str, format: Literal["markdown", "html", "j
     """Download a chat: readable Markdown or HTML, or its client-safe event log."""
 
     ensure_session_not_initializing(session_id)
-    sess = require_session(session_id)
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="session not found")
     title = str(sess.get("title") or "Conversation")
     extension = {"markdown": "md", "html": "html", "jsonl": "jsonl"}[format]
     stem = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]+', " ", title).split())
@@ -88697,7 +88732,9 @@ async def get_session(
     semantic_before: int | None = None,
 ) -> dict[str, Any]:
     ensure_session_not_initializing(session_id)
-    sess = require_session(session_id)
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="session not found")
     # Opening a chat is the moment to notice that its provider transcript grew
     # somewhere else (the provider's own CLI, or another machine sharing it).
     # Scheduled rather than awaited so the open stays fast; the client's event
@@ -88777,7 +88814,9 @@ async def get_session(
 async def import_history(session_id: str, req: ImportHistoryRequest) -> dict[str, Any]:
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        sess = require_session(session_id)
+        sess = STORE.sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
         async with ACTIVE_LOCK:
             provider_starting = any(
                 task is not asyncio.current_task() and not task.done()
@@ -88823,7 +88862,9 @@ async def prune_imported_history(
 
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        sess = require_session(session_id)
+        sess = STORE.sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
         async with ACTIVE_LOCK:
             provider_starting = any(
                 task is not asyncio.current_task() and not task.done()
@@ -89068,7 +89109,9 @@ async def update_session(session_id: str, req: UpdateSessionRequest) -> dict[str
     patch = req.model_dump(exclude_unset=True)
     if SESSION_LIFECYCLE_UPDATE_FIELDS.intersection(patch):
         async with session_lifecycle_lock(session_id):
-            current = require_session(session_id)
+            current = STORE.sessions.get(session_id)
+            if not current:
+                raise HTTPException(status_code=404, detail="session not found")
             if req.archived is False and current.get("archived"):
                 try:
                     # An earlier archive may have failed to save jobs.json
@@ -89216,7 +89259,9 @@ async def update_session(session_id: str, req: UpdateSessionRequest) -> dict[str
 
 
 async def codex_runtime_snapshot(session_id: str) -> dict[str, Any]:
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
     is_codex = str(session.get("backend") or DEFAULT_BACKEND) == BACKEND_CODEX
     available = is_codex and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC
     thread_id = str(session_provider_id(session) or "")
@@ -89443,7 +89488,9 @@ async def reload_session_provider(session_id: str) -> dict[str, Any]:
 
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        session = require_session(session_id)
+        session = STORE.sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="session not found")
         backend = str(
             session.get("backend") or DEFAULT_BACKEND
         ).strip().lower()
@@ -89670,7 +89717,9 @@ async def get_session_provider_commands(
 ) -> dict[str, Any]:
     """Return one sanitized, session-scoped native command inventory."""
 
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
     snapshot, _inventory = await discover_session_provider_commands(
         session_id,
         dict(session),
@@ -89690,7 +89739,9 @@ async def load_codex_runtime(session_id: str) -> dict[str, Any]:
 
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        session = require_session(session_id)
+        session = STORE.sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="session not found")
         if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CODEX:
             raise HTTPException(
                 status_code=409,
@@ -89914,7 +89965,9 @@ async def kill_codex_writers(session_id: str) -> dict[str, Any]:
     process writing the thread's rollout, a `codex resume` left open included.
     The next turn resumes the same thread; AgentsDock history is untouched.
     """
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
     if str(session.get("backend") or DEFAULT_BACKEND).strip().lower() != BACKEND_CODEX:
         raise HTTPException(status_code=409, detail="Only Codex chats have a provider thread to release.")
     provider_id = str(session_provider_id(session) or "")
@@ -89972,7 +90025,9 @@ async def rotate_codex_thread(
     req = req or CodexRotateRequest()
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        session = require_session(session_id)
+        session = STORE.sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="session not found")
         if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CODEX:
             raise HTTPException(
                 status_code=409,
@@ -90433,7 +90488,9 @@ async def manage_claude_mcp(
     mutating = request is not None
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        session = require_session(session_id)
+        session = STORE.sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="session not found")
         if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CLAUDE:
             raise HTTPException(
                 status_code=409,
@@ -90642,7 +90699,9 @@ async def refresh_claude_goal(
 
 
 def require_claude_goal_session(session_id: str) -> dict[str, Any]:
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
     if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CLAUDE:
         raise HTTPException(status_code=400, detail="Goals here require a Claude chat")
     if CLAUDE_TRANSPORT == CLAUDE_TRANSPORT_PRINT or not claude_sdk_dependency_available():
@@ -90672,7 +90731,9 @@ async def post_claude_compact(session_id: str) -> dict[str, Any]:
     ``compact_boundary`` into ``claude_compaction_started``/``_completed``
     rows, mirroring the Codex compaction lifecycle in the timeline.
     """
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
     if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CLAUDE:
         raise HTTPException(status_code=400, detail="Context compaction here requires a Claude chat")
     if CLAUDE_TRANSPORT == CLAUDE_TRANSPORT_PRINT or not claude_sdk_dependency_available():
@@ -90738,7 +90799,9 @@ async def delete_claude_goal(session_id: str) -> dict[str, Any]:
 
 
 async def claude_runtime_snapshot(session_id: str) -> dict[str, Any]:
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
     is_claude = str(session.get("backend") or DEFAULT_BACKEND) == BACKEND_CLAUDE
     sdk_available = claude_sdk_dependency_available()
     configured = CLAUDE_TRANSPORT != CLAUDE_TRANSPORT_PRINT
@@ -90877,7 +90940,9 @@ async def get_codex_permission_profiles(session_id: str) -> dict[str, Any]:
 async def _get_codex_permission_profiles_locked(
     session_id: str,
 ) -> dict[str, Any]:
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
     if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CODEX:
         raise HTTPException(
             status_code=409,
@@ -90932,7 +90997,9 @@ async def _get_codex_permission_profiles_locked(
 
 @app.get("/api/sessions/{session_id}/codex/goal")
 async def get_codex_goal(session_id: str) -> dict[str, Any]:
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
     return {
         "enabled": CODEX_GOALS_ENABLED,
         "goal": session.get("codex_goal"),
@@ -91897,7 +91964,9 @@ async def acknowledge_session_emergency(
 ) -> dict[str, Any]:
     async with session_lifecycle_lock(session_id):
         ensure_session_not_initializing(session_id)
-        sess = require_session(session_id)
+        sess = STORE.sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
         alert_id = req.expected_alert_id
         acknowledged_event = await asyncio.to_thread(
             find_emergency_acknowledgement_event,
@@ -93100,7 +93169,9 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
         })
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        sess = require_session(session_id)
+        sess = STORE.sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
         backend = str(sess.get("backend") or DEFAULT_BACKEND).lower()
         if backend not in {BACKEND_CLAUDE, BACKEND_CODEX}:
             raise HTTPException(status_code=409, detail={
@@ -93552,7 +93623,9 @@ async def reload_session_history(session_id: str) -> dict[str, Any]:
     """
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        sess = require_session(session_id)
+        sess = STORE.sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
         if str(sess.get("backend") or DEFAULT_BACKEND).lower() not in {BACKEND_CLAUDE, BACKEND_CODEX}:
             raise HTTPException(status_code=409, detail={
                 "code": "history_reload_unsupported_backend",
@@ -93817,7 +93890,9 @@ async def list_agent_handoff_routes(
 ) -> dict[str, Any]:
     async with session_lifecycle_lock(source_session_id):
         ensure_session_not_deleting(source_session_id)
-        source = require_session(source_session_id)
+        source = STORE.sessions.get(source_session_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="session not found")
         routes = [
             admin_provider_cross_chat_route(source_session_id, route)
             for route in provider_cross_chat_routes(source)
@@ -93846,7 +93921,9 @@ async def create_agent_handoff_route(
     async with session_lifecycle_lock(source_session_id):
         ensure_session_not_deleting(source_session_id)
         async with STORE._lock:
-            source = require_session(source_session_id)
+            source = STORE.sessions.get(source_session_id)
+            if source is None:
+                raise HTTPException(status_code=404, detail="session not found")
             if source.get(PENDING_PROVIDER_CROSS_CHAT_GRANT_KEY) is not None:
                 raise HTTPException(status_code=503, detail="a cross-chat route grant is still reconciling")
             routes = provider_cross_chat_routes(source)
@@ -93948,7 +94025,9 @@ async def update_agent_handoff_route(
     async with session_lifecycle_lock(source_session_id):
         ensure_session_not_deleting(source_session_id)
         async with STORE._lock:
-            source = require_session(source_session_id)
+            source = STORE.sessions.get(source_session_id)
+            if source is None:
+                raise HTTPException(status_code=404, detail="session not found")
             if source.get(PENDING_PROVIDER_CROSS_CHAT_GRANT_KEY) is not None:
                 raise HTTPException(status_code=503, detail="a cross-chat route grant is still reconciling")
             routes = provider_cross_chat_routes(source)
@@ -94045,7 +94124,9 @@ async def delete_agent_handoff_route(
     async with session_lifecycle_lock(source_session_id):
         ensure_session_not_deleting(source_session_id)
         async with STORE._lock:
-            source = require_session(source_session_id)
+            source = STORE.sessions.get(source_session_id)
+            if source is None:
+                raise HTTPException(status_code=404, detail="session not found")
             if source.get(PENDING_PROVIDER_CROSS_CHAT_GRANT_KEY) is not None:
                 raise HTTPException(status_code=503, detail="a cross-chat route grant is still reconciling")
             routes = provider_cross_chat_routes(source)
@@ -98231,7 +98312,8 @@ async def list_jobs(session_id: str | None = None) -> dict[str, Any]:
 
 @app.get("/api/sessions/{session_id}/jobs")
 async def list_session_jobs(session_id: str) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     jobs = sorted(
         (public_job(job) for job in JOBS.jobs.values() if job.get("session_id") == session_id),
         key=lambda job: job.get("updated_at") or "",
@@ -98271,7 +98353,8 @@ async def get_session_job_runs(
     before_seq: int | None = Query(default=None, ge=1),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     try:
         return await asyncio.to_thread(
             read_scheduled_job_runs,
@@ -98329,7 +98412,8 @@ async def get_session_run_trace(
     after_seq: int = Query(default=0, ge=0),
     limit: int = Query(default=160, ge=1, le=1_000),
 ) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     try:
         return await asyncio.to_thread(
             read_indexed_run_trace,
@@ -99109,7 +99193,8 @@ async def emergency_alert_events(ws: WebSocket) -> None:
 
 @app.get("/api/sessions/{session_id}/diffs/{run_id}")
 async def get_turn_code_diff(session_id: str, run_id: str) -> FileResponse:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", run_id or ""):
         raise HTTPException(status_code=404, detail="code diff not found")
     patch_path = code_diffs_dir(session_id) / f"{run_id}.patch"
@@ -99393,7 +99478,8 @@ async def publish_agent_artifacts(
     req: PublishArtifactsRequest,
 ) -> dict[str, Any]:
     await authorize_provider_action(request, action="publish", session_id=session_id)
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     ensure_session_not_deleting(session_id)
 
     try:
@@ -99506,7 +99592,9 @@ async def raise_agent_emergency_alert(
         raise HTTPException(status_code=422, detail="emergency message is empty")
     request_digest = emergency_request_digest(message)
     async with session_lifecycle_lock(session_id):
-        sess = require_session(session_id)
+        sess = STORE.sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
         ensure_session_not_deleting(session_id)
         if sess.get("archived"):
             raise HTTPException(
@@ -99659,7 +99747,9 @@ async def commit_staged_upload(
     """Atomically expose file+metadata and commit their owning event."""
 
     async with session_lifecycle_lock(session_id):
-        session = require_session(session_id)
+        session = STORE.sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="session not found")
         ensure_session_not_deleting(session_id)
         if bool(session.get("archived")):
             raise HTTPException(status_code=409, detail="archived chats cannot accept uploads")
@@ -99702,7 +99792,9 @@ def upload_filename(file: UploadFile) -> str:
 
 @app.post("/api/sessions/{session_id}/files")
 async def upload_file(session_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
-    session = require_session(session_id)
+    session = STORE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
     ensure_session_not_deleting(session_id)
     if bool(session.get("archived")):
         raise HTTPException(status_code=409, detail="archived chats cannot accept uploads")
@@ -99887,7 +99979,8 @@ async def list_session_files(
     offset: int = Query(default=0, ge=0),
     content_prefix: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     records = await asyncio.to_thread(list_session_file_records, session_id)
     if content_prefix:
         prefix = content_prefix.strip().lower()
@@ -99916,7 +100009,8 @@ async def list_session_files(
 
 @app.get("/api/sessions/{session_id}/files/{file_id}/event")
 async def get_session_file_event(session_id: str, file_id: str) -> dict[str, Any]:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     event = await asyncio.to_thread(
         resolve_session_file_event,
         session_id,
@@ -99928,7 +100022,8 @@ async def get_session_file_event(session_id: str, file_id: str) -> dict[str, Any
 @app.get("/api/sessions/{session_id}/links/file")
 @app.head("/api/sessions/{session_id}/links/file")
 async def get_session_linked_file(session_id: str, target: str) -> FileResponse:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     meta = await asyncio.to_thread(session_file_for_link, session_id, target)
     return FileResponse(
         meta["path"],
@@ -99941,7 +100036,8 @@ async def get_session_linked_file(session_id: str, target: str) -> FileResponse:
 @app.get("/api/sessions/{session_id}/files/{file_id}")
 @app.head("/api/sessions/{session_id}/files/{file_id}")
 async def get_session_file(session_id: str, file_id: str) -> FileResponse:
-    require_session(session_id)
+    if session_id not in STORE.sessions:
+        raise HTTPException(status_code=404, detail="session not found")
     meta = await asyncio.to_thread(
         require_session_file_meta,
         session_id,
@@ -99968,7 +100064,8 @@ async def get_file(
     break already-installed desktop and mobile clients.
     """
     if session_id is not None:
-        require_session(session_id)
+        if session_id not in STORE.sessions:
+            raise HTTPException(status_code=404, detail="session not found")
         meta = await asyncio.to_thread(
             require_session_file_meta,
             session_id,
