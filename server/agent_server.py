@@ -86530,6 +86530,30 @@ async def server_update_status(
         return public_status
 
 
+async def finalize_abandoned_update_or_409(status: dict[str, Any]) -> dict[str, Any]:
+    """Pass a settled status through; finalize an abandoned active-phase one first."""
+
+    if str(status.get("phase") or "") not in SERVER_UPDATE_ACTIVE_PHASES:
+        return status
+    updater_active = await asyncio.to_thread(server_update_is_active, status)
+    if (
+        updater_active
+        or server_update_status_age_seconds(status)
+        < SERVER_UPDATE_START_GRACE_SECONDS
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="a server update is already running",
+        )
+    try:
+        return await asyncio.to_thread(finalize_abandoned_server_update, status)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="the previous server update could not be safely finalized",
+        ) from exc
+
+
 async def check_server_update(
     body: ServerUpdateCheckRequest | None = None,
 ) -> dict[str, Any]:
@@ -86549,27 +86573,7 @@ async def check_server_update(
             return public_server_update_status(status)
         if managed_server_update_is_pending(status):
             return public_server_update_status(status)
-        if str(status.get("phase") or "") in SERVER_UPDATE_ACTIVE_PHASES:
-            updater_active = await asyncio.to_thread(server_update_is_active, status)
-            if (
-                updater_active
-                or server_update_status_age_seconds(status)
-                < SERVER_UPDATE_START_GRACE_SECONDS
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail="a server update is already running",
-                )
-            try:
-                status = await asyncio.to_thread(
-                    finalize_abandoned_server_update,
-                    status,
-                )
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail="the previous server update could not be safely finalized",
-                ) from exc
+        status = await finalize_abandoned_update_or_409(status)
         track: Literal["stable", "beta"] = (
             body.track
             if body is not None and body.track is not None
@@ -86905,27 +86909,7 @@ async def _start_server_update(
                 status_code=503,
                 detail=managed_update_provider_quiesce_failure_detail(),
             )
-        if str(status.get("phase") or "") in SERVER_UPDATE_ACTIVE_PHASES:
-            updater_active = await asyncio.to_thread(server_update_is_active, status)
-            if (
-                updater_active
-                or server_update_status_age_seconds(status)
-                < SERVER_UPDATE_START_GRACE_SECONDS
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail="a server update is already running",
-                )
-            try:
-                status = await asyncio.to_thread(
-                    finalize_abandoned_server_update,
-                    status,
-                )
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail="the previous server update could not be safely finalized",
-                ) from exc
+        status = await finalize_abandoned_update_or_409(status)
         pending_schedule_id = (
             str(status.get("schedule_id") or "").strip()
             if managed_server_update_is_pending(status)
