@@ -222,7 +222,7 @@ export function androidTerminalHTML(config: AndroidTerminalConfig): string {
       }
       return (term.modes.applicationCursorKeysMode ? '\\x1bO' : '\\x1b[') + letter;
     };
-    const KEY_TEXT = { escape: '\\x1b', tab: '\\t', home: '\\x1b[H', end: '\\x1b[F', pageup: '\\x1b[5~', pagedown: '\\x1b[6~', dash: '-', slash: '/', pipe: '|', tilde: '~' };
+    const KEY_TEXT = { escape: '\\x1b', tab: '\\t', enter: '\\r', home: '\\x1b[H', end: '\\x1b[F', pageup: '\\x1b[5~', pagedown: '\\x1b[6~', dash: '-', slash: '/', pipe: '|', tilde: '~' };
     const ARROWS = { up: 'A', down: 'B', right: 'C', left: 'D' };
     const key = name => {
       focus();

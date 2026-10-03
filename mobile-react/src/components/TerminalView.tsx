@@ -13,7 +13,7 @@ import { IconButton } from './ui'
 
 /** Keys a soft keyboard lacks; Ctrl and Alt stay pressed for the next key. Android only: the web view terminal sends them. */
 const TERMINAL_KEYS: { name: TerminalKeyName | 'ctrl' | 'alt'; label: string }[] = [
-  { name: 'escape', label: 'Esc' }, { name: 'tab', label: 'Tab' }, { name: 'ctrl', label: 'Ctrl' }, { name: 'alt', label: 'Alt' },
+  { name: 'escape', label: 'Esc' }, { name: 'tab', label: 'Tab' }, { name: 'enter', label: 'Enter' }, { name: 'ctrl', label: 'Ctrl' }, { name: 'alt', label: 'Alt' },
   { name: 'left', label: '←' }, { name: 'down', label: '↓' }, { name: 'up', label: '↑' }, { name: 'right', label: '→' },
   { name: 'home', label: 'Home' }, { name: 'end', label: 'End' }, { name: 'pageup', label: 'PgUp' }, { name: 'pagedown', label: 'PgDn' },
   { name: 'dash', label: '-' }, { name: 'slash', label: '/' }, { name: 'pipe', label: '|' }, { name: 'tilde', label: '~' },

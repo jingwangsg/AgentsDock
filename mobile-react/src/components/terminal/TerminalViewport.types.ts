@@ -8,7 +8,7 @@ export type TerminalConnectionStatus = {
 
 /** Keys the terminal key row can send; Ctrl and Alt are sticky modifiers applied to the next key. */
 export type TerminalKeyName =
-  | 'escape' | 'tab' | 'up' | 'down' | 'left' | 'right' | 'home' | 'end' | 'pageup' | 'pagedown'
+  | 'escape' | 'tab' | 'enter' | 'up' | 'down' | 'left' | 'right' | 'home' | 'end' | 'pageup' | 'pagedown'
   | 'dash' | 'slash' | 'pipe' | 'tilde'
 
 export type TerminalModifierState = { ctrl: boolean; alt: boolean }
