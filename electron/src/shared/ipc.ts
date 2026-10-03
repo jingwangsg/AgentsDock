@@ -1,5 +1,5 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from './provider-usage'
-import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, RuntimeCliUpdate } from './types'
+import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, InferenceProxyStatus, RuntimeCliUpdate } from './types'
 import type { CanvasHostTheme } from './canvas'
 import type { ChatOutputsSummary } from './chat-outputs'
 import type {
@@ -382,6 +382,19 @@ export interface AgentsDockAPI {
     cancel(): Promise<void>
     remove(profileId: string): Promise<void>
     redeploy(profileId: string, force: boolean): Promise<{ redeployed: boolean; running: number | null }>
+  }
+  /** The NV Inference Hub proxy on this machine: its config and LaunchAgent, plus the hub's reverse forward of its port. */
+  inferenceProxy: {
+    status(): Promise<InferenceProxyStatus>
+    /** Saves the port and points the local hub at it; the hub applies it on its next restart. */
+    setPort(port: number): Promise<InferenceProxyStatus>
+    addKey(name: string, apiKey: string): Promise<InferenceProxyStatus>
+    removeKey(name: string): Promise<InferenceProxyStatus>
+    setKeyEnabled(name: string, enabled: boolean): Promise<InferenceProxyStatus>
+    start(): Promise<InferenceProxyStatus>
+    stop(): Promise<InferenceProxyStatus>
+    /** Copies the proxy token inside the main process; it never crosses into the renderer. */
+    copyProxyToken(): Promise<boolean>
   }
   /** The local AgentsServer on 127.0.0.1:7850 that every client connects to. */
   hub: {

@@ -762,6 +762,58 @@ if "-N" in sys.argv:
         assert rewrite[-1].startswith("set -a; . /mnt/lustre/.agentsdock-server/env; set +a; ")
         assert "url.ssh://git@127.0.0.1:12052/.insteadOf" in rewrite[-1] and "ssh://git@git.example:12051/" in rewrite[-1]
 
+    def test_every_server_main_tunnel_reverse_forwards_the_inference_proxy_port(self) -> None:
+        script = self.tmp_path / "ssh"
+        calls = self.tmp_path / "tunnel-calls.jsonl"
+        script.write_text(f"""#!{sys.executable}
+import json, sys, time
+with open({str(calls)!r}, "a") as out:
+    out.write(json.dumps(sys.argv[1:]) + "\\n")
+if "-N" in sys.argv:
+    time.sleep(30)
+""")
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
+        self.enterContext(mock.patch.dict(os.environ, {
+            "AGENTSDOCK_INFERENCE_PROXY_PORT": "20001",
+            "AGENTSDOCK_OCI_TUNNEL_SSH_ARGS": "-R 12052:git.example:12051",
+        }))
+        self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
+        oci_port, plain_port = free_port(), free_port()
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
+        rs.save_registry(manager.path, [
+            make_server(id="aaaaaaaaaaaa", ssh_host="oci@sky-cluster", local_port=oci_port),
+            make_server(id="bbbbbbbbbbbb", ssh_host="plain-host", local_port=plain_port),
+        ])
+
+        async def main() -> None:
+            await manager.start()
+            try:
+                # Two servers, each with its main and its upload tunnel, plus the oci@ site forward's git rewrite.
+                for _ in range(200):
+                    if calls.exists() and len(calls.read_text().splitlines()) == 5:
+                        return
+                    await asyncio.sleep(0.05)
+                self.fail("tunnels did not start")
+            finally:
+                await manager.stop()
+
+        asyncio.run(main())
+        records = [json.loads(line) for line in calls.read_text().splitlines()]
+        tunnels = [argv for argv in records if "-N" in argv]
+        main_specs = {f"127.0.0.1:{oci_port}:127.0.0.1:7850", f"127.0.0.1:{plain_port}:127.0.0.1:7850"}
+        mains = [argv for argv in tunnels if argv[-2] in main_specs]
+        uploads = [argv for argv in tunnels if argv[-2] not in main_specs]
+        assert len(mains) == 2 and len(uploads) == 2
+        # Every host, not only oci@, carries the forward; the upload tunnel must not claim the remote port too.
+        for argv in mains:
+            assert ("-R", "20001:127.0.0.1:20001") in zip(argv, argv[1:])
+        assert all("-R" not in argv for argv in uploads)
+        # The git rewrite reads the site forwards only; the proxy port is not a git server.
+        [rewrite] = [argv for argv in records if "-N" not in argv]
+        assert "ssh://git@git.example:12051/" in rewrite[-1] and "20001" not in rewrite[-1]
+
     def test_osmo_tunnel_forwards_through_the_workflow_and_reports_an_ended_one(self) -> None:
         self.fake_osmo()
         script = self.tmp_path / "ssh"

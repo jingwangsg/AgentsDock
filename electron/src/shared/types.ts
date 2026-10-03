@@ -2681,3 +2681,30 @@ export interface AppEventMap {
   'native:menu': { command: string }
   'native:close-request': { requestId: string }
 }
+
+export interface InferenceProxyKey {
+  name: string
+  enabled: boolean
+  /** Last characters of the upstream key, enough to tell entries apart; the key itself never reaches the renderer. */
+  hint: string
+}
+
+/** The NV Inference Hub proxy on this machine, as the desktop's Settings page shows it. */
+export interface InferenceProxyStatus {
+  port: number
+  upstreamBaseUrl: string
+  /** `http://127.0.0.1:<port>/v1`, the base URL clients use on this machine and on every remote server. */
+  baseUrl: string
+  hasProxyToken: boolean
+  keys: InferenceProxyKey[]
+  /** LaunchAgent state: no plist installed, loaded but not running, or running. */
+  service: 'not-installed' | 'stopped' | 'running'
+  /** `GET /healthz` answered on the configured port. */
+  healthy: boolean
+  /** The local hub's env file exists (install.sh wrote it); without a local hub there are no remote servers to forward to. */
+  localHubInstalled: boolean
+  /** Port the local hub reverse-forwards to every remote server (its env file), or null when unset. */
+  hubForwardPort: number | null
+  configFile: string
+  plistFile: string
+}

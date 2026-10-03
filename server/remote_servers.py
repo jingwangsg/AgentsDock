@@ -613,7 +613,12 @@ class Tunnel:
                     # connections or the upload tunnel, which would contend for the same remote port.
                     self._site_args = (shlex.split(os.environ.get("AGENTSDOCK_OCI_TUNNEL_SSH_ARGS", ""))
                                        if self.role == "main" and self.server.ssh_host.startswith("oci@") else [])
-                    options = [*route.options, *self._site_args]
+                    # The inference proxy on this machine holds the upstream API keys; chats on
+                    # every remote host reach it at 127.0.0.1:<port> through this reverse forward.
+                    # Kept apart from the site forwards so the git rewrite does not scan it.
+                    proxy_port = os.environ.get("AGENTSDOCK_INFERENCE_PROXY_PORT", "").strip()
+                    proxy_args = ["-R", f"{proxy_port}:127.0.0.1:{proxy_port}"] if self.role == "main" and proxy_port else []
+                    options = [*route.options, *self._site_args, *proxy_args]
                 self._route = route
                 proc = await asyncio.create_subprocess_exec(
                     ssh_binary(), *options, *args,

@@ -35,6 +35,7 @@ import { CodexServerSettings } from './CodexServerSettings'
 import { CodexSubagentSettings } from './CodexSubagentSettings'
 import { RuntimeHealthPanel } from './RuntimeHealth'
 import { ServerManagement } from './ServerManagement'
+import { InferenceHubSettings } from './InferenceHubSettings'
 import { KeyboardShortcutsSettings } from './KeyboardShortcutsSettings'
 import { ShortcutKey } from './ShortcutTooltip'
 import { WorkingDirectoryInput } from './WorkingDirectoryInput'
@@ -470,7 +471,7 @@ export function Dialogs() {
   </>
 }
 
-type AppSettingsSection = 'general' | 'shortcuts' | 'server' | 'updates'
+type AppSettingsSection = 'general' | 'shortcuts' | 'server' | 'inferenceHub' | 'updates'
 
 export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdatesVisible, onServerReleaseChecksVisible, onCoordinatedServerUpdate }: {
   serverSettings?: ReactNode; serverUpdates?: ReactNode; onServerUpdatesVisible?: (visible: boolean) => void
@@ -505,7 +506,7 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
     const selectSection = (event: Event) => {
       const next = (event as CustomEvent<AppSettingsSection | 'appearance'>).detail
       if (next === 'appearance') setSection('general')
-      else if (next === 'general' || next === 'shortcuts' || next === 'server' || next === 'updates') setSection(next)
+      else if (next === 'general' || next === 'shortcuts' || next === 'server' || next === 'inferenceHub' || next === 'updates') setSection(next)
     }
     window.addEventListener('agentsdock:app-settings-section', selectSection)
     return () => window.removeEventListener('agentsdock:app-settings-section', selectSection)
@@ -604,6 +605,7 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
             <button ref={section === 'general' ? activeSectionRef : undefined} type="button" className={section === 'general' ? 'active' : ''} aria-current={section === 'general' ? 'page' : undefined} onClick={() => setSection('general')}><span>{t('settings.general')}</span></button>
             <button ref={section === 'shortcuts' ? activeSectionRef : undefined} type="button" className={section === 'shortcuts' ? 'active' : ''} aria-current={section === 'shortcuts' ? 'page' : undefined} onClick={() => setSection('shortcuts')}><span>{t('settings.keyboardShortcuts')}</span></button>
             <button ref={section === 'server' ? activeSectionRef : undefined} type="button" className={section === 'server' ? 'active' : ''} aria-current={section === 'server' ? 'page' : undefined} onClick={() => setSection('server')}><span>{t('settings.server')}</span></button>
+            <button ref={section === 'inferenceHub' ? activeSectionRef : undefined} type="button" className={section === 'inferenceHub' ? 'active' : ''} aria-current={section === 'inferenceHub' ? 'page' : undefined} onClick={() => setSection('inferenceHub')}><span>{t('settings.inferenceHub')}</span></button>
             <button ref={section === 'updates' ? activeSectionRef : undefined} type="button" className={section === 'updates' ? 'active' : ''} aria-current={section === 'updates' ? 'page' : undefined} onClick={() => setSection('updates')}><span>{t('settings.updates')}</span></button>
           </nav>
         </aside>
@@ -650,6 +652,7 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
             <header><h2 id="app-settings-server-title">{t('settings.server')}</h2></header>
             {serverSettings}
           </section>}
+          {section === 'inferenceHub' && <InferenceHubSettings />}
           {section === 'updates' && <section className="app-settings-section" aria-labelledby="app-settings-updates-title">
             <header><h2 id="app-settings-updates-title">{t('settings.updates')}</h2></header>
             <div className="app-settings-list">

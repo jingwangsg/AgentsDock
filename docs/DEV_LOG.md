@@ -1,5 +1,39 @@
 # Public development log
 
+## 2026-10-03 — NV Inference Hub settings page and proxy port forwarding
+
+- Settings gains an **NV Inference Hub** section beside Server. It manages the
+  inference proxy on this machine: the service that holds the upstream API
+  keys and answers OpenAI-style requests on `127.0.0.1:<port>` (default
+  20001) for a per-machine proxy token. The page shows whether the proxy's
+  LaunchAgent (`com.agentsdock.inference-proxy`) is running and answering
+  `/healthz`, starts and stops it, edits the port, adds, disables and removes
+  upstream keys, and copies the endpoint URL and the proxy token. Keys stay in
+  the proxy's own private config file; the renderer only ever sees a key's
+  name and its last four characters, and the token is copied inside the main
+  process. Every change restarts a running proxy, which reads its config only
+  at start.
+- Saving the port also writes `AGENTSDOCK_INFERENCE_PROXY_PORT` into the local
+  hub's env file. AgentsServer adds `-R <port>:127.0.0.1:<port>` to the
+  long-lived tunnel of every remote server, not only `oci@` hosts and never
+  the upload tunnel, so chats on each remote host reach the proxy at the same
+  loopback address as chats on the hub. The hub applies the variable on its
+  next restart; the page says so after a save and shows whether the hub's
+  configured port matches.
+- Checks run: Electron type check and production build; new main-process,
+  component and settings-dialog tests, including a regression test for
+  StrictMode, whose double mount had dropped the loaded state because the
+  mount flag was not reset; the server tunnel test for the new forward
+  alongside the existing `oci@` site-forward test; the full Vitest suite,
+  where the only failures are the two pre-existing `node:sqlite` bundling
+  errors also seen on main. Exercised in an isolated dev instance of the
+  desktop app against the real local hub, driven through Electron's remote
+  debugging port: saved the port, started the LaunchAgent (service running,
+  `/healthz` 200), added and removed a scratch key (proxy restarted each
+  time, raw key absent from the DOM), and the hub env line was written. Not
+  exercised: a remote server reaching the forward after a hub restart, light
+  theme and narrow widths.
+
 ## 2026-10-03 — Context compaction works the same way for Claude and Codex
 
 - Claude chats can now compact their context from the provider panel and from
