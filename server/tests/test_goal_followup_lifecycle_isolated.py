@@ -24,7 +24,7 @@ SOURCE = (Path(__file__).resolve().parents[1] / "agent_server.py")
 NAMES = {
     "run_codex_app_server", "native_steer_fence_failure", "retain_codex_goal_run_owner", "bind_active_turn",
     "turn_slot_is_owned", "codex_goal_followup_requires_native",
-    "_run_queued_turn_now_once", "queue_insert_index", "NonNativeForceSendRequiresLifecycleLock",
+    "_run_queued_turn_now_once", "queue_insert_index", "require_session", "NonNativeForceSendRequiresLifecycleLock",
     "async_route_queue_fields", "await_native_steer_result",
     "withdraw_unaccepted_native_steer",
 }

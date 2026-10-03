@@ -35,7 +35,7 @@ FUNCTIONS = {
     "provider_cross_chat_route_snapshot_for_hints", "normalized_provider_cross_chat_route_snapshot",
     "provider_cross_chat_pair_is_live", "live_provider_cross_chat_route",
     "provider_cross_chat_route_availability", "pending_admission_provider_cross_chat_route",
-    "list_agent_handoff_routes", "create_agent_handoff_route", "delete_agent_handoff_route", "reject_unavailable_route_target",
+    "list_agent_handoff_routes", "create_agent_handoff_route", "delete_agent_handoff_route", "reject_unavailable_route_target", "require_session",
     "provider_cross_chat_delivery_pair_is_live", "admit_cross_chat_delivery_run",
     "provider_cross_chat_route_id_is_revoked", "retire_deleted_provider_cross_chat_pairs",
     "deliver_cross_chat_live_response_locked", "reconcile_cross_chat_handoffs", "reconcile_cross_chat_exchange_leg",

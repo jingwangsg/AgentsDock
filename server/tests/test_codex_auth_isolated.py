@@ -24,7 +24,7 @@ from tests.test_codex_app_server import FakeProcessFactory, NO_RESPONSE, wait_un
 SOURCE = (Path(__file__).resolve().parents[1] / "agent_server.py")
 NAMES = {"codex_auth_operation", "reserve_codex_goals_reconfiguration",
          "release_codex_goals_reconfiguration", "active_codex_work_labels", "queued_turn_backend",
-         "acquire_codex_control_thread"}
+         "acquire_codex_control_thread", "require_session"}
 nodes = [node for node in ast.parse(SOURCE.read_text()).body
          if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in NAMES]
 assert {node.name for node in nodes} == NAMES

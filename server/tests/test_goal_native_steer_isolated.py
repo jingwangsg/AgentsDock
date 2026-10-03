@@ -23,7 +23,7 @@ NAMES = {
     "NativeSteerHandoffError", "send_codex_goal_steer", "commit_codex_goal_steer",
     "consume_codex_native_turn", "codex_goal_steer_selection_is_plain",
     "mark_native_steer_accepted", "fence_native_steer_delivery",
-    "requeue_native_steer_after_safe_rejection", "queue_insert_index", "native_steer_requeue_event_payload",
+    "requeue_native_steer_after_safe_rejection", "queue_insert_index", "require_session", "native_steer_requeue_event_payload",
     "join_task_despite_caller_cancellation", "concise_error_message",
     "is_codex_reconnect_notice", "is_codex_app_server_retry_notice",
     "codex_reasoning_text", "codex_app_server_reasoning_summary", "codex_app_server_reasoning_plaintext",
