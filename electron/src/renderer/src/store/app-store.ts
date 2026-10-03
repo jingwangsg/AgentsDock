@@ -494,6 +494,29 @@ const pendingCrossChatQueueRefreshes = new Map<string, { scope: RendererProfileS
 // localStorage, not setWorkspacePreference: switching servers keeps the layout.
 const INSPECTOR_VISIBLE_KEY = 'agentsdock:inspector-visible'
 
+function beginProfileSwitch(profileId: string): void {
+  pendingNamespaceAdoption = null
+  useAppStore.setState(state => ({
+    switchingProfileId: profileId,
+    creatingChat: false,
+    turnAdmissionTokens: {},
+    pendingTurnSubmissions: {},
+    stoppingSessionIds: new Set(),
+    error: null,
+    modals: {
+      ...state.modals,
+      newChat: false,
+      resume: false,
+      folder: false,
+      digest: false,
+      job: false,
+      search: false,
+      review: false,
+      importChats: false
+    }
+  }))
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   initialized: false,
   profiles: [],
@@ -1066,26 +1089,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       toProfileId: profileId,
       force
     })
-    pendingNamespaceAdoption = null
-    set(state => ({
-      switchingProfileId: profileId,
-      creatingChat: false,
-      turnAdmissionTokens: {},
-      pendingTurnSubmissions: {},
-      stoppingSessionIds: new Set(),
-      error: null,
-      modals: {
-        ...state.modals,
-        newChat: false,
-        resume: false,
-        folder: false,
-        digest: false,
-        job: false,
-        search: false,
-        review: false,
-        importChats: false
-      }
-    }))
+    beginProfileSwitch(profileId)
     try {
       await flushActiveWorkspace()
     } catch (error) {
@@ -1155,26 +1159,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const workspaceTransition = beginWorkspaceTransition()
     const intent = ++profileSwitchIntent
     bufferedMailHints.clear()
-    pendingNamespaceAdoption = null
-    set(state => ({
-      switchingProfileId: profileId,
-      creatingChat: false,
-      turnAdmissionTokens: {},
-      pendingTurnSubmissions: {},
-      stoppingSessionIds: new Set(),
-      error: null,
-      modals: {
-        ...state.modals,
-        newChat: false,
-        resume: false,
-        folder: false,
-        digest: false,
-        job: false,
-        search: false,
-        review: false,
-        importChats: false
-      }
-    }))
+    beginProfileSwitch(profileId)
     try {
       await flushActiveWorkspace()
     } catch (error) {
