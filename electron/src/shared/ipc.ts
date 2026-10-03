@@ -659,8 +659,8 @@ export interface AgentsDockAPI {
       remotePort: number,
       preferredLocalPort?: number
     ): Promise<ForwardedPort>
-    stop(profileId: string, profileGeneration: number, remotePort: number): Promise<void>
-    open(profileId: string, profileGeneration: number, remotePort: number): Promise<void>
+    stop(profileId: string, profileGeneration: number, sessionId: string, remotePort: number): Promise<void>
+    open(profileId: string, profileGeneration: number, sessionId: string, remotePort: number): Promise<void>
   }
   pins: {
     list(scope: WorkspaceProfileScope, sessionId: string): Promise<PinnedItem[]>

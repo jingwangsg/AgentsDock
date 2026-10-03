@@ -21,7 +21,7 @@ interface TunnelBridge {
 type PortTunnelChangeListener = (ports: ForwardedPort[]) => void
 
 interface ManagedTunnel {
-  readonly key: number
+  readonly key: string
   readonly sessionId: string
   readonly remotePort: number
   readonly preferredLocalPort: number | undefined
@@ -41,7 +41,7 @@ interface ManagedTunnel {
  * IPv4 loopback-only; callers cannot provide a bind address.
  */
 export class PortTunnelManager {
-  private readonly tunnels = new Map<number, ManagedTunnel>()
+  private readonly tunnels = new Map<string, ManagedTunnel>()
   private changeListener: PortTunnelChangeListener | null = null
 
   constructor(private readonly minimumRemotePort = 1_024) {}
@@ -70,7 +70,7 @@ export class PortTunnelManager {
     if (typeof createRemoteSocket !== 'function') throw new Error('A remote port tunnel transport is required.')
     const boundedSessionBridgeLimit = boundedBridgeLimit(maxBridgesPerSession)
 
-    const key = remotePort
+    const key = tunnelKey(sessionId, remotePort)
     const existing = this.tunnels.get(key)
     if (existing && !existing.closed) {
       await existing.ready
@@ -124,11 +124,12 @@ export class PortTunnelManager {
     }
   }
 
-  async stop(remotePort: number): Promise<void> {
+  async stop(sessionId: string, remotePort: number): Promise<void> {
+    requireSessionId(sessionId)
     requireTCPPort(remotePort, 'Remote', this.minimumRemotePort)
-    const tunnel = this.tunnels.get(remotePort)
+    const tunnel = this.tunnels.get(tunnelKey(sessionId, remotePort))
     if (!tunnel) return
-    this.tunnels.delete(remotePort)
+    this.tunnels.delete(tunnel.key)
     this.notifyChanged()
     await stopTunnel(tunnel)
   }
@@ -145,23 +146,20 @@ export class PortTunnelManager {
   ): boolean {
     requireSessionId(sessionId)
     requireTCPPort(remotePort, 'Remote', this.minimumRemotePort)
-    const tunnel = this.tunnels.get(remotePort)
-    if (
-      !tunnel
-      || tunnel.sessionId !== sessionId
-      || tunnel.createRemoteSocket !== createRemoteSocket
-    ) return false
-    this.tunnels.delete(remotePort)
+    const tunnel = this.tunnels.get(tunnelKey(sessionId, remotePort))
+    if (!tunnel || tunnel.createRemoteSocket !== createRemoteSocket) return false
+    this.tunnels.delete(tunnel.key)
     this.notifyChanged()
     void stopTunnel(tunnel)
     return true
   }
 
-  url(remotePort: number): string {
+  url(sessionId: string, remotePort: number): string {
+    requireSessionId(sessionId)
     requireTCPPort(remotePort, 'Remote', this.minimumRemotePort)
-    const tunnel = this.tunnels.get(remotePort)
+    const tunnel = this.tunnels.get(tunnelKey(sessionId, remotePort))
     if (!tunnel || tunnel.closed || tunnel.localPort < 1) {
-      throw new Error(`Remote port ${remotePort} is not forwarded for this server profile.`)
+      throw new Error(`Remote port ${remotePort} is not forwarded for this chat.`)
     }
     return localURL(tunnel.localPort)
   }
@@ -513,6 +511,15 @@ function requireTCPPort(value: number, label: string, minimum = 1_024): void {
   if (!Number.isSafeInteger(value) || value < minimum || value > 65_535) {
     throw new Error(`${label} port must be an integer from ${minimum} through 65535.`)
   }
+}
+
+/**
+ * The server addresses a tunnel by chat (`/api/sessions/<id>/ports/<port>/tunnel/ws`),
+ * so two chats forwarding one remote port must own separate listeners; otherwise the
+ * second chat rides the first chat's socket and loses it when that chat is archived.
+ */
+function tunnelKey(sessionId: string, remotePort: number): string {
+  return `${sessionId}:${remotePort}`
 }
 
 function localURL(localPort: number): string {

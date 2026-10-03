@@ -596,10 +596,10 @@ describe('background refresh failures', () => {
     vi.spyOn(cache, 'putSessions').mockImplementation(() => { throw failure })
     const internals = service as unknown as {
       scope: unknown
-      runBackgroundRefresh(includeJobs: boolean, scope: unknown): Promise<void>
+      runBackgroundRefresh(scope: unknown): Promise<void>
     }
 
-    await expect(internals.runBackgroundRefresh(false, internals.scope)).resolves.toBeUndefined()
+    await expect(internals.runBackgroundRefresh(internals.scope)).resolves.toBeUndefined()
     expect(cache.putSessions).toHaveBeenCalledOnce()
   })
 
@@ -636,7 +636,7 @@ describe('background refresh failures', () => {
       await vi.advanceTimersByTimeAsync(1)
       expect(active.health).toHaveBeenCalledOnce()
       expect(active.sessions).toHaveBeenCalledOnce()
-      expect(active.jobs).not.toHaveBeenCalled()
+      expect(active.jobs).toHaveBeenCalledOnce()
     } finally {
       service?.stop()
       vi.useRealTimers()
@@ -969,6 +969,47 @@ describe('background refresh failures', () => {
       await expect(refreshed).resolves.toEqual(expect.objectContaining({
         sessions: [expect.objectContaining({ title: 'Explicit refresh' })]
       }))
+    } finally {
+      service?.stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it('polls jobs once per interval with the session poll and offsets the inactive sweep by half a period', async () => {
+    vi.useFakeTimers()
+    let service: AppService | null = null
+    try {
+      const active = fakeClient()
+      const inactiveHealth = vi.fn(async () => ({ ok: true }))
+      ;({ service } = createProfileService({
+        'http://a.test:7850': [active],
+        'http://b.test:7850': Array.from({ length: 4 }, () => fakeClient({ health: inactiveHealth }))
+      }))
+      service.start()
+      await settleImmediateRefresh()
+      expect(inactiveHealth).toHaveBeenCalledOnce()
+      active.health.mockClear()
+      active.sessions.mockClear()
+      active.jobs.mockClear()
+
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(inactiveHealth).toHaveBeenCalledTimes(2)
+      expect(active.health).not.toHaveBeenCalled()
+      expect(active.jobs).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(active.health).toHaveBeenCalledOnce()
+      expect(active.sessions).toHaveBeenCalledOnce()
+      expect(active.jobs).toHaveBeenCalledOnce()
+      expect(inactiveHealth).toHaveBeenCalledTimes(2)
+
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(inactiveHealth).toHaveBeenCalledTimes(3)
+      expect(active.jobs).toHaveBeenCalledOnce()
+
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(active.jobs).toHaveBeenCalledTimes(2)
+      expect(inactiveHealth).toHaveBeenCalledTimes(3)
     } finally {
       service?.stop()
       vi.useRealTimers()
@@ -8101,6 +8142,35 @@ describe('credential-free profile metadata and asynchronous authentication', () 
     expect(service.listServers().find(profile => profile.id === 'b')).toMatchObject({ connectionState: 'cached', lastConnectionError: null })
   })
 
+  it('gives an inactive hub remote a longer health budget than a direct server', async () => {
+    vi.useFakeTimers()
+    try {
+      const { service, settings, clientFactory } = prepare(3)
+      settings.updateProfile('a', { serverUrl: DEFAULT_SERVER_URL, accessToken: 'hub' })
+      settings.updateProfile('b', { serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1`, accessToken: 'hub' })
+      settings.setProfileServerIdentity('b', 'server-b')
+      settings.setProfileServerIdentity('c', 'server-c')
+      // Both answer in 8 s: measured for one request over a Sky-proxied hub remote.
+      clientFactory.mockImplementation(url => fakeClient({
+        health: () => new Promise<Health>(resolve => setTimeout(() => resolve({
+          ok: true, server_identity: url.endsWith('/api/remote/r1') ? 'server-b' : 'server-c'
+        }), 8_000))
+      }) as unknown as AgentServerClient)
+
+      const probing = (service as unknown as { refreshInactiveProfileHealth(): Promise<void> }).refreshInactiveProfileHealth()
+      await vi.advanceTimersByTimeAsync(8_000)
+      await probing
+
+      const profiles = (await service.bootstrap()).profiles
+      expect(profiles.find(profile => profile.id === 'b')).toMatchObject({ connectionState: 'online', lastConnectionError: null })
+      expect(profiles.find(profile => profile.id === 'c')).toMatchObject({
+        connectionState: 'offline', lastConnectionError: 'Server health check timed out after 5 seconds.'
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('switches to the hub with a new token while a hub remote is active, and the remote gets the token', async () => {
     const { service, settings } = prepare(3)
     settings.updateProfile('a', { serverUrl: DEFAULT_SERVER_URL, accessToken: 'hub-old' })
@@ -10067,14 +10137,14 @@ describe('server profile lifecycle', () => {
       isDestroyed: () => false, isFocused: () => true, on: vi.fn(),
       webContents: { send: vi.fn(), isDestroyed: () => false, isLoadingMainFrame: () => false }
     } as never)
-    const internals = service as unknown as { scope: unknown; runBackgroundRefresh(includeJobs: boolean, scope: unknown): Promise<void> }
+    const internals = service as unknown as { scope: unknown; runBackgroundRefresh(scope: unknown): Promise<void> }
     const poll = async (rows: Session[]) => {
       client.sessions.mockResolvedValueOnce(rows)
-      await internals.runBackgroundRefresh(false, internals.scope)
+      await internals.runBackgroundRefresh(internals.scope)
     }
 
     // The first poll of a scope is a baseline: a turn that ended before this run stays quiet.
-    await internals.runBackgroundRefresh(false, internals.scope)
+    await internals.runBackgroundRefresh(internals.scope)
     expect(electronHarness.notifications).toHaveLength(0)
     // Progress inside a turn is not a turn end.
     await poll([summary(6, 'assistant_text')])
@@ -10502,7 +10572,7 @@ describe('rapid profile resource teardown', () => {
     expect(a.portTunnelSocket).not.toHaveBeenCalled()
   })
 
-  it('shares one remote-port listener across chats and emits profile-wide snapshots', async () => {
+  it('keeps one listener per chat for the same remote port and emits profile-wide snapshots', async () => {
     const manager = new PortTunnelManager()
     const a = fakeClient({
       health: async () => portForwardingHealth(),
@@ -10523,18 +10593,20 @@ describe('rapid profile resource teardown', () => {
     const fromA = await service.startForwardedPort('a', initial.profileGeneration, 'chat-a', 7007)
     const fromB = await service.startForwardedPort('a', initial.profileGeneration, 'chat-b', 7007)
 
-    expect(fromB).toEqual(fromA)
-    expect(fromB.sessionId).toBe('chat-a')
-    expect(service.listForwardedPorts('a', initial.profileGeneration)).toEqual([fromA])
+    expect(fromB.sessionId).toBe('chat-b')
+    expect(fromB.localPort).not.toBe(fromA.localPort)
+    expect(service.listForwardedPorts('a', initial.profileGeneration)).toEqual([fromA, fromB])
     expect(send).toHaveBeenCalledWith('ports:changed', {
       profileId: 'a',
       profileGeneration: initial.profileGeneration,
-      ports: [fromA]
+      ports: [fromA, fromB]
     })
 
-    await service.openForwardedPort('a', initial.profileGeneration, 7007)
-    expect(electronHarness.shellOpenExternal).toHaveBeenCalledWith(fromA.localUrl)
-    await service.stopForwardedPort('a', initial.profileGeneration, 7007)
+    await service.openForwardedPort('a', initial.profileGeneration, 'chat-b', 7007)
+    expect(electronHarness.shellOpenExternal).toHaveBeenCalledWith(fromB.localUrl)
+    await service.stopForwardedPort('a', initial.profileGeneration, 'chat-a', 7007)
+    expect(service.listForwardedPorts('a', initial.profileGeneration)).toEqual([fromB])
+    await service.stopForwardedPort('a', initial.profileGeneration, 'chat-b', 7007)
     expect(service.listForwardedPorts('a', initial.profileGeneration)).toEqual([])
     expect(send).toHaveBeenLastCalledWith('ports:changed', {
       profileId: 'a',
@@ -10615,7 +10687,7 @@ describe('rapid profile resource teardown', () => {
     await expect(service.startForwardedPort('a', initial.profileGeneration, 'chat-a', 7007, 17007))
       .resolves.toMatchObject({ remotePort: 7007, localPort: 17007, state: 'open' })
     expect(a.portTunnelSocket).toHaveBeenCalledWith('chat-a', 7007)
-    await service.openForwardedPort('a', initial.profileGeneration, 7007)
+    await service.openForwardedPort('a', initial.profileGeneration, 'chat-a', 7007)
     expect(electronHarness.shellOpenExternal).toHaveBeenCalledWith('http://127.0.0.1:17007')
 
     await service.switchServer('b')
@@ -10715,7 +10787,6 @@ describe('rapid profile resource teardown', () => {
         client: AgentServerClient
         windows: Set<unknown>
         pollTimer: NodeJS.Timeout | null
-        jobsPollTimer: NodeJS.Timeout | null
         searchBackfillTimer: NodeJS.Timeout | null
         refreshInFlight: Map<number, Promise<void>>
         runtimeRefreshInFlight: Map<number, Promise<void>>
@@ -10745,7 +10816,6 @@ describe('rapid profile resource teardown', () => {
       expect(initialClient.jobs).toHaveBeenCalledTimes(2)
       expect(internals.refreshInFlight.size).toBe(1)
       const pollTimer = internals.pollTimer
-      const jobsPollTimer = internals.jobsPollTimer
       const activeTimerCount = vi.getTimerCount()
 
       // Authentication now yields before activation. Keep this teardown test's
@@ -10772,7 +10842,6 @@ describe('rapid profile resource teardown', () => {
       expect(internals.client).toBe(switchRequests.at(-1)?.client)
       expect(internals.refreshInFlight.size).toBe(1)
       expect(internals.pollTimer).toBe(pollTimer)
-      expect(internals.jobsPollTimer).toBe(jobsPollTimer)
       expect(vi.getTimerCount()).toBe(activeTimerCount)
       expect(internals.windows.size).toBe(1)
       expect(window.on).toHaveBeenCalledOnce()
@@ -10820,7 +10889,6 @@ describe('rapid profile resource teardown', () => {
       expect(internals.filesRefreshInFlight.size).toBe(0)
       expect(internals.fileDownloads.size).toBe(0)
       expect(internals.pollTimer).toBe(pollTimer)
-      expect(internals.jobsPollTimer).toBe(jobsPollTimer)
       expect(vi.getTimerCount()).toBe(activeTimerCount)
       expect(internals.windows.size).toBe(1)
       expect(window.on).toHaveBeenCalledOnce()

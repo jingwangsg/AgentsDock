@@ -247,6 +247,8 @@ const BACKGROUND_REFRESH_INTERVAL_MS = 30_000
 const FOREGROUND_INTERACTION_QUIET_MS = 3_000
 const INACTIVE_PROFILE_HEALTH_INTERVAL_MS = 30_000
 const INACTIVE_PROFILE_HEALTH_TIMEOUT_MS = 5_000
+// A hub remote answers through the hub's ssh relay; one request measured 3-8 s over a Sky-proxied link.
+const INACTIVE_HUB_REMOTE_HEALTH_TIMEOUT_MS = 20_000
 const INACTIVE_PROFILE_HEALTH_MAX_CONCURRENCY = 2
 const INACTIVE_PROFILE_HEALTH_FRESH_MS = 75_000
 const MAX_REMEMBERED_EMERGENCY_ALERT_IDS = 4_096
@@ -454,7 +456,6 @@ export class AppService {
   private backgroundApplyQuietWaiters = new Map<number, Set<(apply: boolean) => void>>()
   private foregroundSensitiveRefreshes = new Set<number>()
   private foregroundApplyBypassGenerations = new Set<number>()
-  private jobsPollTimer: NodeJS.Timeout | null = null
   private searchBackfillTimer: NodeJS.Timeout | null = null
   private health: Health | null = null
   private readonly onServerReachable?: AppServiceOptions['onServerReachable']
@@ -634,14 +635,18 @@ export class AppService {
     const adopted = this.adoptLocalHubToken()
     if (!this.clientAvailable || (adopted && this.hubProfile()?.id === this.activeProfileId)) this.activateProfile(this.activeProfileId, false, true)
     this.running = true
-    void this.runBackgroundRefresh(true, this.captureScope())
+    void this.runBackgroundRefresh(this.captureScope())
     void this.refreshInactiveProfileHealth()
     this.pollTimer = setInterval(
       () => this.scheduleBackgroundRefresh(this.captureScope()),
       BACKGROUND_REFRESH_INTERVAL_MS
     )
-    this.profileHealthPollTimer = setInterval(() => void this.refreshInactiveProfileHealth(), INACTIVE_PROFILE_HEALTH_INTERVAL_MS)
-    this.jobsPollTimer = setInterval(() => void this.refreshJobs(this.captureScope()), 30_000)
+    // Half a period out of phase with pollTimer: on a slow proxied link the
+    // health/sessions/jobs requests and the inactive probes must not share one tick.
+    this.profileHealthPollTimer = setTimeout(() => {
+      this.profileHealthPollTimer = setInterval(() => void this.refreshInactiveProfileHealth(), INACTIVE_PROFILE_HEALTH_INTERVAL_MS)
+      void this.refreshInactiveProfileHealth()
+    }, INACTIVE_PROFILE_HEALTH_INTERVAL_MS / 2)
     this.scheduleSearchBackfill(1_000)
   }
 
@@ -671,14 +676,12 @@ export class AppService {
     if (this.pollTimer) clearInterval(this.pollTimer)
     if (this.deferredBackgroundRefreshTimer) clearTimeout(this.deferredBackgroundRefreshTimer)
     if (this.profileHealthPollTimer) clearInterval(this.profileHealthPollTimer)
-    if (this.jobsPollTimer) clearInterval(this.jobsPollTimer)
     if (this.searchBackfillTimer) clearTimeout(this.searchBackfillTimer)
     this.pollTimer = null
     this.deferredBackgroundRefreshTimer = null
     this.deferredBackgroundRefresh = null
     this.lastForegroundInteractionAt = Number.NEGATIVE_INFINITY
     this.profileHealthPollTimer = null
-    this.jobsPollTimer = null
     this.searchBackfillTimer = null
     cleanup(() => this.closeAllTimelineSubscriptions())
     cleanup(() => this.stopEmergencyStream())
@@ -1536,7 +1539,7 @@ export class AppService {
     }
     if (hub.id === this.activeProfileId) {
       const scope = this.activateProfile(hub.id, false, true)
-      void this.runBackgroundRefresh(true, scope)
+      void this.runBackgroundRefresh(scope)
     } else this.invalidateProfileHealthProbe(hub.id)
     return true
   }
@@ -1545,7 +1548,7 @@ export class AppService {
   async startLocalHub(): Promise<void> {
     await startLocalServerAgent()
     appLog('hub', 'started the local server LaunchAgent')
-    if (this.hubProfile()?.id === this.activeProfileId) await this.runBackgroundRefresh(true, this.captureScope())
+    if (this.hubProfile()?.id === this.activeProfileId) await this.runBackgroundRefresh(this.captureScope())
     this.requestInactiveProfileHealthSweep()
   }
 
@@ -5230,19 +5233,21 @@ export class AppService {
   async stopForwardedPort(
     profileId: string,
     profileGeneration: number,
+    sessionId: string,
     remotePort: number
   ): Promise<void> {
     const scope = this.requireProfileScope(profileId, profileGeneration)
-    await this.portTunnels.stop(remotePort)
+    await this.portTunnels.stop(sessionId, remotePort)
     this.assertCurrentScope(scope)
   }
   async openForwardedPort(
     profileId: string,
     profileGeneration: number,
+    sessionId: string,
     remotePort: number
   ): Promise<void> {
     const scope = this.requireProfileScope(profileId, profileGeneration)
-    const url = this.portTunnels.url(remotePort)
+    const url = this.portTunnels.url(sessionId, remotePort)
     this.assertCurrentScope(scope)
     await shell.openExternal(url)
     this.assertCurrentScope(scope)
@@ -5470,7 +5475,7 @@ export class AppService {
     if (!this.running || !this.isCurrentScope(scope)) return
     const now = Date.now()
     if (!this.isValidatedScope(scope) || now - this.lastForegroundInteractionAt >= FOREGROUND_INTERACTION_QUIET_MS) {
-      void this.runBackgroundRefresh(false, scope)
+      void this.runBackgroundRefresh(scope)
       return
     }
 
@@ -5508,7 +5513,7 @@ export class AppService {
 
     this.deferredBackgroundRefresh = null
     if (this.isCurrentScope(pending)) {
-      void this.runBackgroundRefresh(false, pending)
+      void this.runBackgroundRefresh(pending)
     }
   }
 
@@ -5580,8 +5585,8 @@ export class AppService {
     for (const finish of [...waiters]) finish(true)
   }
 
-  private runBackgroundRefresh(includeJobs: boolean, scope = this.captureScope()): Promise<void> {
-    return this.refreshAll(false, includeJobs, scope, true).catch(error => {
+  private runBackgroundRefresh(scope = this.captureScope()): Promise<void> {
+    return this.refreshAll(false, true, scope, true).catch(error => {
       appLog('sync', 'background refresh failed', {
         profileId: scope.profileId,
         generation: scope.generation,
@@ -5703,7 +5708,7 @@ export class AppService {
     if (announcedError && !announce && scope.serverUrl === DEFAULT_SERVER_URL
       && !this.settings.getProfile(scope.profileId)?.hasAccessToken && this.adoptLocalHubToken()) {
       const adopted = this.activateProfile(scope.profileId, false, true)
-      void this.runBackgroundRefresh(true, adopted)
+      void this.runBackgroundRefresh(adopted)
       return
     }
     if (announcedError) {
@@ -5754,7 +5759,8 @@ export class AppService {
     }
     const durationMs = Date.now() - started
     const syncState = `${activeScope.profileId}:${health.status}:${sessions.status}:${jobs.status}`
-    if (includeJobs || durationMs >= 250 || syncState !== this.lastSyncState) {
+    // Jobs ride every background poll now; only an explicit refresh is worth a routine log line.
+    if (announce || durationMs >= 250 || syncState !== this.lastSyncState) {
       appLog('sync', 'background refresh finished', {
         durationMs,
         profileId: activeScope.profileId,
@@ -5893,7 +5899,7 @@ export class AppService {
         if (!this.profileAuthorityOperations.has(scope.profileId)) {
           void this.updateServerAndSwitch(scope.profileId, { resetServerIdentity: true })
             .then(payload => {
-              if (!payload.profileTransitionWarning) return this.runBackgroundRefresh(true, this.captureScope())
+              if (!payload.profileTransitionWarning) return this.runBackgroundRefresh(this.captureScope())
               // The manual path shows this in the dialog; here the profile row is the only place, and
               // refreshes stay paused until the reset is retried.
               this.setProfileRuntime(scope.profileId, { connectionState: 'offline', lastConnectionError: payload.profileTransitionWarning, lastConnectionCheckedAt: null })
@@ -7146,12 +7152,15 @@ export class AppService {
   }
 
   private async profileHealthWithTimeout(profileId: string, client: AgentServerClient): Promise<Health> {
+    const timeoutMs = this.isHubRemoteProfile(this.settings.serverUrl(profileId))
+      ? INACTIVE_HUB_REMOTE_HEALTH_TIMEOUT_MS
+      : INACTIVE_PROFILE_HEALTH_TIMEOUT_MS
     let timer: NodeJS.Timeout | null = null
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         this.disposeProfileHealthProbeClient(profileId, client)
-        reject(new Error(`Server health check timed out after ${INACTIVE_PROFILE_HEALTH_TIMEOUT_MS / 1000} seconds.`))
-      }, INACTIVE_PROFILE_HEALTH_TIMEOUT_MS)
+        reject(new Error(`Server health check timed out after ${timeoutMs / 1000} seconds.`))
+      }, timeoutMs)
     })
     try {
       return await Promise.race([client.health(), timeout])
@@ -7261,7 +7270,7 @@ export class AppService {
     for (const remote of this.settings.listProfiles()) {
       if (!isHubRemoteUrl(DEFAULT_SERVER_URL, remote.serverUrl)) continue
       this.persistServerUpdate(remote.id, { accessToken: token })
-      if (remote.id === this.activeProfileId) void this.runBackgroundRefresh(true, this.activateProfile(remote.id, false, true))
+      if (remote.id === this.activeProfileId) void this.runBackgroundRefresh(this.activateProfile(remote.id, false, true))
       else {
         // As for an edited profile: its last error (a 401 with the old token) no longer applies.
         this.invalidateProfileHealthProbe(remote.id)

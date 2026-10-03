@@ -106,13 +106,41 @@ describe('PortTunnelManager', () => {
     managers.push(manager)
     const createRemote = () => new FakeWebSocket() as unknown as WebSocket
     const first = await manager.start('chat-a', 8080, preferredPort, createRemote)
-    const second = await manager.start('chat-b', 8080, preferredPort, () => new FakeWebSocket() as unknown as WebSocket)
+    const second = await manager.start('chat-a', 8080, preferredPort, () => new FakeWebSocket() as unknown as WebSocket)
 
     expect(first.localPort).toBe(preferredPort)
     expect(second).toEqual(first)
-    expect(second.sessionId).toBe('chat-a')
-    await expect(manager.start('chat-b', 8080, preferredPort + 1, createRemote))
+    await expect(manager.start('chat-a', 8080, preferredPort + 1, createRemote))
       .rejects.toThrow(`already forwarded on local port ${preferredPort}`)
+  })
+
+  it('keys tunnels by chat so two chats forwarding one remote port get separate listeners', async () => {
+    const manager = new PortTunnelManager()
+    managers.push(manager)
+    const remoteA = vi.fn(() => new FakeWebSocket() as unknown as WebSocket)
+    const remoteB = vi.fn(() => new FakeWebSocket() as unknown as WebSocket)
+    const fromA = await manager.start('chat-a', 8080, undefined, remoteA)
+    const fromB = await manager.start('chat-b', 8080, undefined, remoteB)
+
+    expect(fromB.sessionId).toBe('chat-b')
+    expect(fromB.localPort).not.toBe(fromA.localPort)
+    expect(manager.list()).toHaveLength(2)
+    expect(manager.url('chat-a', 8080)).toBe(fromA.localUrl)
+    expect(manager.url('chat-b', 8080)).toBe(fromB.localUrl)
+
+    await openLocalConnection(fromB.localPort)
+    await eventually(() => remoteB.mock.calls.length === 1)
+    expect(remoteA).not.toHaveBeenCalled()
+
+    manager.disposeSession('chat-a')
+    expect(manager.list()).toEqual([expect.objectContaining({ sessionId: 'chat-b', remotePort: 8080 })])
+    expect(() => manager.url('chat-a', 8080)).toThrow('not forwarded')
+    expect(await connectOutcome(fromA.localPort)).toBe('refused')
+    await openLocalConnection(fromB.localPort)
+    await eventually(() => remoteB.mock.calls.length === 2)
+
+    await manager.stop('chat-b', 8080)
+    expect(manager.list()).toEqual([])
   })
 
   it('publishes full profile-wide snapshots after listener lifecycle changes', async () => {
@@ -137,7 +165,7 @@ describe('PortTunnelManager', () => {
       expect.objectContaining({ sessionId: 'chat-b', remotePort: 8080 })
     ])
 
-    await manager.stop(8080)
+    await manager.stop('chat-b', 8080)
     expect(snapshots.at(-1)).toEqual([])
 
     await manager.start('chat-c', 9090, undefined, () => new FakeWebSocket() as unknown as WebSocket)
@@ -276,7 +304,7 @@ describe('PortTunnelManager', () => {
     await eventually(() => remote.listeners.has('open'))
     remote.open()
 
-    await manager.stop(7007)
+    await manager.stop('chat-a', 7007)
 
     expect(manager.list()).toEqual([])
     expect(remote.readyState).toBe(3)
@@ -303,7 +331,7 @@ describe('PortTunnelManager', () => {
     await eventually(() => manager.list().length === 0)
     expect(snapshots.at(-1)).toEqual([])
     expect(remoteSockets[1].readyState).toBe(3)
-    expect(() => manager.url(7007)).toThrow('is not forwarded for this server profile')
+    expect(() => manager.url('chat-a', 7007)).toThrow('is not forwarded for this chat')
     await expect(connectOutcome(forwarded.localPort)).resolves.toBe('refused')
   })
 
