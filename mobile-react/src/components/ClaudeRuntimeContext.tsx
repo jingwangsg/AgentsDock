@@ -14,9 +14,10 @@ import {
   latestClaudeControlEventSeq,
 } from '../lib/claude-controls'
 import { subscribeProviderRuntimeChanged } from '../lib/provider-runtime-events'
-import { client, useAppStore } from '../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import type { ClaudeRuntimeSnapshot, Session } from '../types'
 import type { AgentServerClient } from '../api/AgentServerClient'
+import { errorMessage } from '../lib/format'
 
 interface ClaudeRuntimeContextValue {
   supported: boolean
@@ -427,18 +428,8 @@ function runtimeScopeIsCurrent(
   sessionId: string,
 ): boolean {
   const state = useAppStore.getState()
-  return client === connection
-    && !connection.isDisposed
-    && connection.isValidated
-    && state.activeProfileId === profileId
-    && state.profileGeneration === generation
-    && state.switchingProfileId === null
+  return capturedConnectionIsCurrent(connection, profileId, generation)
     && state.selectedSessionId === sessionId
-    && state.connected
-    && !state.connecting
     && !state.workspaceAdopting
 }
 
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause)
-}

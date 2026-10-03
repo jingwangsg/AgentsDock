@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
 import { useRecyclingState } from '@shopify/flash-list'
+import { useShallow } from 'zustand/react/shallow'
 import { AlertTriangle, ChevronDown, ChevronRight, MessageSquareShare } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
 import { exactQueuedDeliverySkipAvailable } from '../lib/chat-references'
@@ -523,7 +524,6 @@ function CrossChatExchangeCardScoped({ event, events, rowKey, sessionId, profile
     .filter(candidate => (candidate.exchange_id?.trim() || candidate.cross_chat_exchange_id?.trim() || '') === exchangeId)
     .sort((left, right) => left.seq - right.seq || left.id.localeCompare(right.id)), [event, events, exchangeId])
   const observedLegs = useMemo(() => lifecycleExchangeLegs(lifecycleEvents), [lifecycleEvents])
-  const sessions = useAppStore(state => state.sessions)
   const canSkipExactDelivery = useAppStore(state => exactQueuedDeliverySkipAvailable(state.health))
   const [open, setOpen] = useRecyclingState(false, [profileGeneration, rowKey, sessionId])
   const [showEarlier, setShowEarlier] = useRecyclingState(false, [profileGeneration, rowKey, sessionId])
@@ -600,14 +600,18 @@ function CrossChatExchangeCardScoped({ event, events, rowKey, sessionId, profile
     || ''
   const sourceId = latestExchangeString(lifecycleEvents, candidate => candidate.source_session_id) || firstLeg?.source_session_id || ''
   const targetId = latestExchangeString(lifecycleEvents, candidate => candidate.target_session_id) || firstLeg?.target_session_id || ''
-  const titleFor = (id: string, fallback: string) => sessions.find(candidate => candidate.id === id)?.title
+  // The card reads chat titles and the counterpart's archived flag from the
+  // list; subscribing to the list itself re-rendered every card on every live
+  // event of the open chat, while titles change only on rename or auto-title.
+  const titles = useAppStore(useShallow(state => Object.fromEntries(state.sessions.map(candidate => [candidate.id, candidate.title]))))
+  const titleFor = (id: string, fallback: string) => titles[id]
     || latestParticipantTitle(lifecycleEvents, id, requesterId, responderId)
     || fallback
   const requesterTitle = titleFor(requesterId, requesterId === sessionId ? 'This chat' : 'Requesting agent')
   const responderTitle = titleFor(responderId, responderId === sessionId ? 'This chat' : 'Responding agent')
   const counterpartId = counterpartSessionId(sessionId, sourceId, targetId, requesterId, responderId)
   const counterpartTitle = titleFor(counterpartId, 'another chat')
-  const counterpartAvailable = sessions.some(candidate => candidate.id === counterpartId && !candidate.archived)
+  const counterpartAvailable = useAppStore(state => state.sessions.some(candidate => candidate.id === counterpartId && !candidate.archived))
 
   const loadExchange = async (expectedScope?: TimelineWorkspaceScope, force = false) => {
     if (!exchangeId || (!force && exchange && snapshotCurrent) || loadingRef.current || cancellingRef.current) return

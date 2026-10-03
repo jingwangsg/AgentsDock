@@ -21,11 +21,10 @@ import {
   type ChangesDetailView,
   type ChangesFilter,
 } from '../lib/workspace-changes'
-import { client, useAppStore } from '../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { WorkspaceGitConflict, WorkspaceGitDiff, WorkspaceGitFile, WorkspaceGitStatus } from '../types'
 import { Text, TextInput } from './AppText'
-import { connectionIsCurrent } from './CodeReview'
 import { MonacoDiffView } from './MonacoDiffView'
 import { IconButton, Loading, SheetCloseButton } from './ui'
 
@@ -106,7 +105,7 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
   const [workspaceWidth, setWorkspaceWidth] = useState(0)
   // Bumped by every status read and every action so a slower earlier read cannot overwrite a newer result.
   const statusEpoch = useRef(0)
-  const isCurrent = useCallback(() => connectionIsCurrent(connection, activeProfileId, profileGeneration), [activeProfileId, connection, profileGeneration])
+  const isCurrent = useCallback(() => capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration), [activeProfileId, connection, profileGeneration])
 
   useEffect(() => {
     let cancelled = false

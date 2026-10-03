@@ -12,7 +12,7 @@ import {
 } from '../lib/code-review'
 import { buildFileTree, type FileTreeDirectory, type FileTreeNode } from '../lib/file-tree'
 import { readReviewLayout, writeReviewLayout, type ReviewLayoutPreference } from '../lib/review-layout-preference'
-import { client, useAppStore } from '../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { fonts } from '../lib/typography'
 import { Text } from './AppText'
@@ -99,7 +99,7 @@ function ScopedCodeReview({ sessionId, runId, onClose, connection, connectionKey
     if (!runId || !connectionReady) return () => { cancelled = true }
     void connection.codeDiff(sessionId, runId)
       .then(value => {
-        if (cancelled || !connectionIsCurrent(connection, activeProfileId, profileGeneration)) return
+        if (cancelled || !capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) return
         const limited = limitReviewSource(value.text)
         if (limited.source.trim() && parseReviewableDiff(limited.source).length) {
           setDiff(limited.source)
@@ -111,11 +111,11 @@ function ScopedCodeReview({ sessionId, runId, onClose, connection, connectionKey
         }
       })
       .catch(reason => {
-        if (cancelled || !connectionIsCurrent(connection, activeProfileId, profileGeneration)) return
+        if (cancelled || !capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) return
         setError(reason instanceof Error ? reason.message : String(reason))
       })
       .finally(() => {
-        if (!cancelled && connectionIsCurrent(connection, activeProfileId, profileGeneration)) setLoading(false)
+        if (!cancelled && capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) setLoading(false)
       })
     return () => { cancelled = true }
   }, [activeProfileId, connection, connectionReady, profileGeneration, runId, sessionId])
@@ -219,18 +219,6 @@ function directoryStats(node: FileTreeDirectory, files: DiffFile[]): { count: nu
   return stats
 }
 
-// Shared with WorkspaceChanges, which follows the same profile-scoped fetch pattern.
-export function connectionIsCurrent(connection: AgentServerClient, profileId: string | null, generation: number): boolean {
-  const state = useAppStore.getState()
-  return !connection.isDisposed
-    && connection.isValidated
-    && client === connection
-    && state.activeProfileId === profileId
-    && state.profileGeneration === generation
-    && state.connected
-    && !state.connecting
-    && !state.switchingProfileId
-}
 
 const styles = StyleSheet.create({
   root: { flex: 1 }, header: { minHeight: 64, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingTop: 8, paddingBottom: 4, flexDirection: 'row', alignItems: 'center', gap: 8 }, title: { fontSize: 15, fontWeight: '800' },

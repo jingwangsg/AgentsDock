@@ -26,6 +26,18 @@ export function resetComponentStore(state: Partial<AppState> = {}): void {
   useAppStore.setState({ ...initialState(), ...state }, true)
 }
 
+/** The production fence evaluated against this mock's state and client. */
+export function capturedConnectionIsCurrent(connection: AgentServerClient, profileId: string | null, generation: number): boolean {
+  const state = useAppStore.getState()
+  return client === connection
+    && connection.isValidated
+    && state.activeProfileId === profileId
+    && state.profileGeneration === generation
+    && state.connected
+    && !state.connecting
+    && !state.switchingProfileId
+}
+
 /** Replace the selected connection, preserving production identity semantics. */
 export function setTestClient(next: Partial<AgentServerClient> = {}): AgentServerClient {
   client = { isValidated: true, ...next } as AgentServerClient

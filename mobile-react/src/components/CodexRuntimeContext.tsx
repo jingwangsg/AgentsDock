@@ -16,11 +16,12 @@ import {
   latestCodexControlEventSeq,
   remainingAutoResolveSeconds,
 } from '../lib/codex-controls'
-import { client, useAppStore } from '../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { mergeGoalSnapshot } from '../lib/codex-goals'
 import { subscribeCodexGoalsConfiguration } from '../lib/codex-goals-configuration'
 import type { CodexGoal, CodexGoalInput, CodexGoalSnapshot, CodexRuntimeSnapshot, Session } from '../types'
 import type { AgentServerClient } from '../api/AgentServerClient'
+import { errorMessage } from '../lib/format'
 
 export {
   codexStatusLabel,
@@ -449,18 +450,8 @@ function runtimeScopeIsCurrent(
   sessionId: string,
 ): boolean {
   const state = useAppStore.getState()
-  return client === connection
-    && !connection.isDisposed
-    && connection.isValidated
-    && state.activeProfileId === profileId
-    && state.profileGeneration === generation
+  return capturedConnectionIsCurrent(connection, profileId, generation)
     && state.selectedSessionId === sessionId
-    && state.connected
-    && !state.connecting
-    && !state.switchingProfileId
     && !state.workspaceAdopting
 }
 
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause)
-}

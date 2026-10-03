@@ -67,9 +67,9 @@ let openGate: () => void = () => {}
 client.markValidated()
 client.sessionPage = async sessionId => page(sessionId === sessionB.id ? sessionB : sessionA)
 client.files = async (): Promise<FilesPage> => ({ files: [], total: 0, offset: 0, limit: 60, has_more: false })
-client.stream = (_sessionId, _after, onEvent, onState) => {
-  emit = onEvent
-  onState(true)
+client.stream = (_sessionId, _after, handlers) => {
+  emit = handlers.onEvent
+  handlers.onState(true)
   return () => { emit = null }
 }
 client.health = async () => health

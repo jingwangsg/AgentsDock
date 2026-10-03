@@ -71,8 +71,11 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (url === 'https://validation.example/api/health') {
     return Promise.resolve(new Response(JSON.stringify({ ok: true, server_identity: 'validated-server', api_contract_version: 7 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }
-  if (url === 'https://validation.example/api/sessions') {
-    return Promise.resolve(new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  if (url === 'https://validation.example/api/sessions?summary=true') {
+    return Promise.resolve(new Response(JSON.stringify({ sessions: [
+      { id: 'quiet', title: 'Quiet', backend: 'codex' },
+      { id: 'alerting', title: 'Alerting', backend: 'codex', emergency_alert: { id: 'alert-1', status: 'active' }, unacknowledged_emergency_count: 1 },
+    ] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }
   if (url === 'https://revoke.example/api/health') {
     return Promise.resolve(new Response(JSON.stringify({ ok: true, server_identity: 'revoke-server', api_contract_version: 7 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
@@ -458,7 +461,7 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (url.startsWith('https://auth-reject.example/api/')) {
     return Promise.resolve(new Response(JSON.stringify({ detail: 'Access token rejected' }), { status: 401, headers: { 'Content-Type': 'application/json' } }))
   }
-  if (url === 'https://validation-detail.example/api/sessions') {
+  if (url === 'https://validation-detail.example/api/sessions?summary=true') {
     return Promise.resolve(new Response(JSON.stringify({
       detail: [{
         type: 'string_too_short',
@@ -1180,8 +1183,7 @@ try {
     ['URL access', () => validationClient.url('/api/sessions')],
     ['file URL access', () => validationClient.fileURL('chat', 'file')],
     ['auth header access', () => validationClient.authHeaders()],
-    ['timeline stream', () => validationClient.stream('session', 0, () => undefined, () => undefined)],
-    ['terminal socket', () => validationClient.terminal('session', 80, 24, null, () => undefined, () => undefined)],
+    ['timeline stream', () => validationClient.stream('session', 0, { onEvent: () => undefined, onState: () => undefined })],
   ] satisfies Array<[string, () => unknown]>) {
     assertThrows(
       action,
@@ -1193,7 +1195,11 @@ try {
   assert(validationClient.isValidated, 'markValidated should unlock a validation-required client')
   assert(validationClient.fileURL('chat', 'file') === 'https://validation.example/api/sessions/chat/files/file', 'Validated clients should expose scoped file URLs')
   assert(validationClient.authHeaders()['X-ZenithDock-Token'] === 'validation-token', 'Validated clients should expose their auth header')
-  assert((await validationClient.sessions()).length === 0, 'Validated clients should allow non-health HTTP requests')
+  const summarySessions = await validationClient.sessions()
+  assert(fetchRecords.at(-1)?.url === 'https://validation.example/api/sessions?summary=true', 'The chat list must request the summary projection like the desktop client')
+  assert(summarySessions.length === 2, 'Validated clients should allow non-health HTTP requests')
+  assert(summarySessions[0]?.emergency_alert === null && summarySessions[0]?.unacknowledged_emergency_count === 0, 'A summary row without emergency keys must carry the explicit cleared tombstone')
+  assert(summarySessions[1]?.emergency_alert?.id === 'alert-1' && summarySessions[1]?.unacknowledged_emergency_count === 1, 'A summary row with an active alert must keep it')
   validationClient.configure('https://revoke.example', 'revoke-token')
   validationClient.markValidated()
   const pendingRevocationRequest = validationClient.sessions()
@@ -1379,6 +1385,7 @@ class FakeWebSocket {
   static instances: FakeWebSocket[] = []
 
   readonly url: string
+  readonly protocols: string[] | undefined
   readyState = FakeWebSocket.CONNECTING
   binaryType = 'blob'
   closeCalls = 0
@@ -1388,8 +1395,9 @@ class FakeWebSocket {
   onclose: ((event: FakeCloseEvent) => void) | null = null
   onerror: (() => void) | null = null
 
-  constructor(url: string | URL) {
+  constructor(url: string | URL, protocols?: string | string[]) {
     this.url = String(url)
+    this.protocols = typeof protocols === 'string' ? [protocols] : protocols
     FakeWebSocket.instances.push(this)
   }
 
@@ -1419,7 +1427,7 @@ globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
 try {
   FakeWebSocket.instances = []
   const captured = new AgentServerClient('https://captured.example', 'captured-token')
-  captured.stream('session-one', 4, () => undefined, () => undefined)
+  captured.stream('session-one', 4, { onEvent: () => undefined, onState: () => undefined })
   const firstSocket = FakeWebSocket.instances[0]
   assert(firstSocket, 'Timeline stream should create a socket')
   assert(new URL(firstSocket.url).searchParams.get('visible') === 'true', 'Timeline streams should identify themselves as visible clients')
@@ -1445,13 +1453,11 @@ try {
   const runtimeClient = new AgentServerClient('https://runtime.example', 'runtime-token')
   const runtimePackets: Array<{ session_id: string; usage_generation?: number | null }> = []
   const runtimeTimelineSeqs: number[] = []
-  runtimeClient.stream(
-    'session-runtime',
-    5,
-    event => { runtimeTimelineSeqs.push(event.seq) },
-    () => undefined,
-    event => { runtimePackets.push(event) },
-  )
+  runtimeClient.stream('session-runtime', 5, {
+    onEvent: event => { runtimeTimelineSeqs.push(event.seq) },
+    onState: () => undefined,
+    onProviderRuntime: event => { runtimePackets.push(event) },
+  })
   const runtimeSocket = FakeWebSocket.instances[0]
   assert(runtimeSocket, 'Provider runtime test should create a timeline socket')
   runtimeSocket.onmessage?.({ data: JSON.stringify({
@@ -1491,26 +1497,22 @@ try {
   FakeWebSocket.instances = []
   const revoked = new AgentServerClient('https://revoked.example', 'revoked-token', { requireValidation: true })
   revoked.markValidated()
-  revoked.stream('session-revoked', 0, () => undefined, () => undefined)
+  revoked.stream('session-revoked', 0, { onEvent: () => undefined, onState: () => undefined })
   const revokedTimelineSocket = FakeWebSocket.instances[0]
-  const revokedTerminal = revoked.terminal('session-revoked', 80, 24, null, () => undefined, () => undefined)
-  const revokedTerminalSocket = FakeWebSocket.instances[1]
-  assert(revokedTimelineSocket && revokedTerminalSocket, 'Validated client should create both authenticated transports')
+  assert(revokedTimelineSocket, 'Validated client should create the authenticated timeline transport')
   revoked.revokeValidation()
   assert(revokedTimelineSocket.closeCalls === 1, 'Revocation should close the timeline socket')
-  assert(revokedTerminalSocket.closeCalls === 1, 'Revocation should close the terminal socket')
   revoked.revokeValidation()
-  assert(revokedTimelineSocket.closeCalls === 1 && revokedTerminalSocket.closeCalls === 1, 'Repeated revocation should not close transports twice')
+  assert(revokedTimelineSocket.closeCalls === 1, 'Repeated revocation should not close the transport twice')
   await delay(550)
-  assert(FakeWebSocket.instances.length === 2, 'Revocation should cancel authenticated transport retries')
-  revokedTerminal.close()
+  assert(FakeWebSocket.instances.length === 1, 'Revocation should cancel authenticated transport retries')
   revoked.dispose()
 
   FakeWebSocket.instances = []
   const states: Array<{ connected: boolean; detail?: WebSocketStateDetail }> = []
   const fatal = new AgentServerClient('https://fatal.example', 'fatal-token', { requireValidation: true })
   fatal.markValidated()
-  fatal.stream('session-two', 0, () => undefined, (connected, detail) => states.push({ connected, detail }))
+  fatal.stream('session-two', 0, { onEvent: () => undefined, onState: (connected, detail) => states.push({ connected, detail }) })
   const fatalSocket = FakeWebSocket.instances[0]
   assert(fatalSocket, 'Fatal timeline test should create a socket')
   fatalSocket.emitClose(4401)
@@ -1527,7 +1529,7 @@ try {
   FakeWebSocket.instances = []
   const retrying = new AgentServerClient('https://retry.example', 'retry-token')
   let disposedTimelineEvents = 0
-  retrying.stream('session-retry', 0, () => { disposedTimelineEvents += 1 }, () => undefined)
+  retrying.stream('session-retry', 0, { onEvent: () => { disposedTimelineEvents += 1 }, onState: () => undefined })
   const retryingSocket = FakeWebSocket.instances[0]
   assert(retryingSocket, 'Retry disposal test should create a socket')
   retryingSocket.emitClose(1006)
@@ -1546,7 +1548,7 @@ try {
     hubProxied.fileURL('chat', 'file') === 'http://hub.example:7850/api/remote/abc123/api/sessions/chat/files/file',
     'A hub-proxied base must keep its /api/remote/{id} prefix in HTTP URLs',
   )
-  hubProxied.stream('session-hub', 0, () => undefined, () => undefined)
+  hubProxied.stream('session-hub', 0, { onEvent: () => undefined, onState: () => undefined })
   const hubSocket = FakeWebSocket.instances[0]
   assert(hubSocket, 'A hub-proxied client should still open a timeline socket')
   assert(
@@ -1555,22 +1557,41 @@ try {
   )
   hubProxied.dispose()
 
+  // Token subprotocol negotiation follows the desktop client: query token until
+  // /api/health advertises websocket_auth_v1, then `agentsdock-token.<base64url>`.
+  // The HTTP mock above is already restored here, so health gets a local stub.
+  const fetchBeforeNegotiation = globalThis.fetch
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const url = String(input)
+    const capabilities = url.startsWith('https://subprotocol.example') ? { websocket_auth_v1: { available: true, required: false, version: 1 } } : {}
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, server_identity: new URL(url).hostname, api_contract_version: 7, capabilities }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }) as typeof fetch
   FakeWebSocket.instances = []
-  const terminalStates: boolean[] = []
-  let terminalData = ''
-  const terminalClient = new AgentServerClient('https://terminal.example', 'terminal-token')
-  const terminal = terminalClient.terminal('session-three', 80, 24, null, data => { terminalData += data }, connected => terminalStates.push(connected))
-  const terminalSocket = FakeWebSocket.instances[0]
-  assert(terminalSocket, 'Terminal should create a socket')
-  terminalClient.dispose()
-  terminalSocket.onmessage?.({ data: 'queued terminal data' })
-  terminalSocket.onmessage?.({ data: '{"type":"ready","name":"stale"}' })
-  assert(terminalSocket.closeCalls === 1, 'Client disposal should close the terminal socket')
-  assert(terminalStates.filter(connected => !connected).length === 1, 'Terminal disposal should report one disconnect')
-  assert(!terminalStates.includes(true), 'Terminal should ignore ready packets queued after disposal')
-  assert(terminalData === '', 'Terminal should ignore data packets queued after disposal')
-  terminal.close()
-  assert(terminalSocket.closeCalls === 1, 'Terminal close should remain idempotent after client disposal')
+  const negotiatedToken = 'tok\u00ff\u00ff+/'
+  const negotiated = new AgentServerClient('https://subprotocol.example', negotiatedToken)
+  negotiated.stream('session-before-health', 0, { onEvent: () => undefined, onState: () => undefined })
+  const beforeHealthSocket = FakeWebSocket.instances[0]
+  assert(beforeHealthSocket && new URL(beforeHealthSocket.url).searchParams.get('token') === negotiatedToken, 'Before health advertises the capability the token stays a query parameter')
+  assert(beforeHealthSocket.protocols === undefined, 'Before health advertises the capability no subprotocol is offered')
+  await negotiated.health()
+  negotiated.stream('session-subprotocol', 3, { onEvent: () => undefined, onState: () => undefined })
+  const subprotocolSocket = FakeWebSocket.instances[1]
+  assert(subprotocolSocket, 'A negotiated stream should create a socket')
+  assert(!new URL(subprotocolSocket.url).searchParams.has('token'), 'A negotiated stream must not carry the token in its URL')
+  assert(new URL(subprotocolSocket.url).searchParams.get('after') === '3', 'A negotiated stream keeps its cursor parameters')
+  const desktopEncoding = `agentsdock-token.${Buffer.from(negotiatedToken, 'utf8').toString('base64url')}`
+  assert(
+    JSON.stringify(subprotocolSocket.protocols) === JSON.stringify(['agentsdock-events-v1', desktopEncoding]),
+    `The token subprotocol must match the desktop client's base64url form, got ${JSON.stringify(subprotocolSocket.protocols)}`,
+  )
+  negotiated.configure('https://legacy-auth.example', 'legacy-token')
+  await negotiated.health()
+  negotiated.stream('session-legacy', 0, { onEvent: () => undefined, onState: () => undefined })
+  const legacySocket = FakeWebSocket.instances[2]
+  assert(legacySocket && new URL(legacySocket.url).searchParams.get('token') === 'legacy-token' && legacySocket.protocols === undefined, 'A server without the capability keeps the query token after reconfiguration')
+  negotiated.dispose()
+  globalThis.fetch = fetchBeforeNegotiation
+
 } finally {
   globalThis.WebSocket = originalWebSocket
 }

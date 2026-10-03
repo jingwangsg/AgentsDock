@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { ChevronLeft, ChevronRight, ClipboardCopy, ClipboardPaste, Columns2, Keyboard as KeyboardIcon, Plus, Rows2, Trash2, X } from 'lucide-react-native'
 import { AgentServerClientDisposedError, type AgentServerClient } from '../api/AgentServerClient'
 import { scaleAppFont } from '../lib/typography'
-import { client, useAppStore } from '../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { TerminalWindow } from '../types'
 import { Text } from './AppText'
@@ -70,9 +70,9 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
   const refresh = useCallback(async () => {
     try {
       const next = await connection.terminalWindows(terminal.id)
-      if (connectionIsCurrent(connection, activeProfileId, profileGeneration)) setWindows(next.windows)
+      if (capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) setWindows(next.windows)
     } catch (error) {
-      if (connectionIsCurrent(connection, activeProfileId, profileGeneration) && !(error instanceof AgentServerClientDisposedError)) {
+      if (capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration) && !(error instanceof AgentServerClientDisposedError)) {
         // The terminal websocket may still be creating its first window.
       }
     }
@@ -96,29 +96,29 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
   const action = async (name: 'new-window' | 'split-right' | 'split-down' | 'next-window' | 'previous-window' | 'kill-window' | 'select-window', target?: string) => {
     try {
       const next = await connection.terminalAction(terminal.id, name, target)
-      if (connectionIsCurrent(connection, activeProfileId, profileGeneration)) setWindows(next.windows)
+      if (capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) setWindows(next.windows)
     } catch (error) {
-      if (connectionIsCurrent(connection, activeProfileId, profileGeneration) && !(error instanceof AgentServerClientDisposedError)) {
+      if (capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration) && !(error instanceof AgentServerClientDisposedError)) {
         flash(error instanceof Error ? error.message : 'Terminal action failed')
       }
     }
   }
   const flash = (message: string) => {
-    if (!connectionIsCurrent(connection, activeProfileId, profileGeneration)) return
+    if (!capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) return
     if (noticeTimer.current) clearTimeout(noticeTimer.current)
     setNotice(message)
     noticeTimer.current = setTimeout(() => {
       noticeTimer.current = null
-      if (connectionIsCurrent(connection, activeProfileId, profileGeneration)) setNotice('')
+      if (capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) setNotice('')
     }, 1_200)
   }
   const copy = async () => {
     const copied = await viewport.current?.copy()
-    if (connectionIsCurrent(connection, activeProfileId, profileGeneration)) flash(copied ? 'Copied' : 'Select text to copy')
+    if (capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) flash(copied ? 'Copied' : 'Select text to copy')
   }
   const paste = async () => {
     const pasted = await viewport.current?.paste()
-    if (connectionIsCurrent(connection, activeProfileId, profileGeneration)) flash(pasted ? 'Pasted' : 'Clipboard empty')
+    if (capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) flash(pasted ? 'Pasted' : 'Clipboard empty')
   }
   const close = () => {
     const nativeTerminal = viewport.current
@@ -160,7 +160,7 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
         fontSize={scaleAppFont(13, fontScale)}
         style={styles.terminal}
         onStatus={event => {
-          if (!connectionIsCurrent(connection, activeProfileId, profileGeneration)) return
+          if (!capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) return
           const value = event.nativeEvent
           setStatus(value.status)
           if (value.message) setNotice(value.message)
@@ -182,17 +182,6 @@ function terminalSocketURL(connection: AgentServerClient, terminal: TerminalTarg
   return endpoint.toString()
 }
 
-function connectionIsCurrent(connection: AgentServerClient, profileId: string | null, generation: number): boolean {
-  const state = useAppStore.getState()
-  return !connection.isDisposed
-    && connection.isValidated
-    && client === connection
-    && state.activeProfileId === profileId
-    && state.profileGeneration === generation
-    && state.connected
-    && !state.connecting
-    && !state.switchingProfileId
-}
 
 const styles = StyleSheet.create({
   root: { flex: 1, minHeight: 0, borderTopWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },

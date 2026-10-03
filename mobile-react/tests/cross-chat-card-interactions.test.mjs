@@ -115,6 +115,25 @@ test('conversation surface renders shared presentation without store state or ac
   } finally { await act(async () => renderer.unmount()) }
 })
 
+test('an exchange card re-renders for a title change, not for live-event metadata', async () => {
+  resetFixture()
+  let commits = 0
+  let renderer
+  await act(async () => {
+    renderer = TestRenderer.create(React.createElement(React.Profiler, { id: 'card', onRender: () => { commits += 1 } },
+      React.createElement(CrossChatExchangeCard, { event: event(), rowKey: 'row', sessionId: 'target' })))
+  })
+  try {
+    const mounted = commits
+    // A live event rewrites the list array and the streamed chat's row; titles are unchanged.
+    await act(async () => publish({ sessions: fixture.state.sessions.map(session => session.id === 'target' ? { ...session, latest_event_seq: 9 } : session) }))
+    assert.equal(commits, mounted, 'a live-event metadata change must not re-render the card')
+    await act(async () => publish({ sessions: fixture.state.sessions.map(session => session.id === 'source' ? { ...session, title: 'Renamed source' } : session) }))
+    assert.ok(commits > mounted, 'a participant title change must re-render the card')
+    assert.ok(JSON.stringify(renderer.toJSON()).includes('Renamed source'))
+  } finally { await act(async () => renderer.unmount()) }
+})
+
 test('expanding a live exchange renders authenticated Markdown with conversation tint and original font scale', async () => {
   resetFixture()
   const body = '# Result\n\n**Ready** with `code`, [details](https://example.com), and $x^2$.'

@@ -55,10 +55,12 @@ test('deferred native callbacks remain bound to their originating profile genera
 })
 
 test('direct-client surfaces do not mount until the active client is validated', () => {
+  // Validation, connected and not-switching are the store's capturedConnectionIsCurrent();
+  // each surface must route its result callbacks through it.
+  const store = fs.readFileSync(path.resolve('src/store/useAppStore.ts'), 'utf8')
+  assert.match(store, /export function capturedConnectionIsCurrent\([\s\S]*?connection\.isValidated[\s\S]*?state\.connected[\s\S]*?!state\.switchingProfileId/)
   for (const name of ['MediaGrid', 'TerminalView', 'CodeReview', 'Dialogs']) {
     const source = component(name)
-    assert.match(source, /connection\.isValidated/, `${name} must require client validation`)
-    assert.match(source, /state\.connected/, `${name} callbacks must require a connected store`)
-    assert.match(source, /!state\.switchingProfileId/, `${name} callbacks must reject profile switching`)
+    assert.match(source, /capturedConnectionIsCurrent\(connection/, `${name} must fence results through the shared connection check`)
   }
 })

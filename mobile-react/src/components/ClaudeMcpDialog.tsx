@@ -24,7 +24,7 @@ import {
 import { AgentServerClient, ServerError } from '../api/AgentServerClient'
 import { claudeMcpManagementCapability } from '../lib/claude-mcp'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
-import { client, useAppStore } from '../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette, type Palette } from '../theme'
 import type { ClaudeMcpActionType, ClaudeMcpServer, ClaudeMcpSnapshot } from '../types'
 import { Text } from './AppText'
@@ -500,16 +500,9 @@ function mcpScopeIsCurrent(
 ): boolean {
   const state = useAppStore.getState()
   const session = state.sessions.find(candidate => candidate.id === sessionId)
-  return client === connection
-    && !connection.isDisposed
-    && connection.isValidated
-    && state.activeProfileId === profileId
-    && state.profileGeneration === profileGeneration
+  return capturedConnectionIsCurrent(connection, profileId, profileGeneration)
     && state.selectedSessionId === sessionId
     && session?.backend === 'claude'
-    && state.connected
-    && !state.connecting
-    && !state.switchingProfileId
     && !state.workspaceAdopting
 }
 

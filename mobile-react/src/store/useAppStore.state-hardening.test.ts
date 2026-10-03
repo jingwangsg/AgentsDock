@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import type { Job, PublicServerProfile } from '../types'
-import { client, useAppStore } from './useAppStore'
+import { AgentServerClient } from '../api/AgentServerClient'
+import { capturedConnectionIsCurrent, client, useAppStore } from './useAppStore'
 
 function deferred<T = void>(): { promise: Promise<T>; resolve(value: T): void } {
   let resolve: (value: T) => void = () => {}
@@ -41,6 +42,28 @@ useAppStore.setState({
   sendingSessionIds: new Set(['chat-sending']),
   error: null,
 })
+
+{
+  // The component request fence: every condition flips it on its own.
+  assert.equal(capturedConnectionIsCurrent(client, 'uninitialized', 0), true)
+  assert.equal(capturedConnectionIsCurrent(client, 'profile-b', 0), false, 'another profile is not current')
+  assert.equal(capturedConnectionIsCurrent(client, 'uninitialized', 1), false, 'a newer generation is not current')
+  const stranger = new AgentServerClient('http://127.0.0.1:7999', '', { requireValidation: true })
+  stranger.markValidated()
+  assert.equal(capturedConnectionIsCurrent(stranger, 'uninitialized', 0), false, 'a validated client that is not the active one is not current')
+  stranger.dispose()
+  for (const [patch, label] of [
+    [{ connected: false }, 'disconnected'],
+    [{ connecting: true }, 'connecting'],
+    [{ switchingProfileId: 'profile-b' }, 'switching profiles'],
+  ] as const) {
+    const before = { connected: useAppStore.getState().connected, connecting: useAppStore.getState().connecting, switchingProfileId: useAppStore.getState().switchingProfileId }
+    useAppStore.setState(patch)
+    assert.equal(capturedConnectionIsCurrent(client, 'uninitialized', 0), false, `${label} must block the fence`)
+    useAppStore.setState(before)
+  }
+  assert.equal(capturedConnectionIsCurrent(client, 'uninitialized', 0), true)
+}
 
 await assert.rejects(
   useAppStore.getState().switchServerProfile('profile-b'),

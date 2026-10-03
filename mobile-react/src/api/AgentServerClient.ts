@@ -85,6 +85,7 @@ import type {
   Surface,
   UpdateSurfaceInput,
 } from '../types'
+import { base64 } from '../lib/base64'
 import { normalizeServerURL } from '../lib/format'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../lib/provider-usage'
 import { parseSyncedSideChat, type SyncedSideChat } from '../lib/side-chat'
@@ -126,6 +127,7 @@ const UPLOAD_STALL_TIMEOUT_MS = 2 * 60_000
 const UPLOAD_RESPONSE_TIMEOUT_MS = 5 * 60_000
 const UPLOAD_TIMEOUT_CAP_MS = 8 * 60 * 60_000
 const FATAL_WEBSOCKET_CLOSE_CODES = new Set([4401, 4404, 4409])
+const EVENTS_STREAM_PROTOCOL = 'agentsdock-events-v1'
 
 export interface ServerErrorDetail {
   code?: string
@@ -182,16 +184,19 @@ export interface WebSocketStateDetail {
   error: WebSocketConnectionError
 }
 
-export interface TerminalConnection {
-  write(data: string): void
-  resize(columns: number, rows: number): void
-  scroll(delta: number): void
-  close(): void
+export interface TimelineStreamHandlers {
+  onEvent: (event: Event) => void
+  onState: (connected: boolean, detail?: WebSocketStateDetail) => void
+  onProviderRuntime?: (event: ProviderRuntimeChanged) => void
+  onProviderUsage?: (backend: UsageBackend) => void
+  onSideChatChanged?: (revision: number) => void
 }
 
 interface ClientConfiguration {
   readonly baseURL: string
   readonly token: string
+  /** Learned from /api/health; a reconfigured client starts over at false. */
+  websocketSubprotocolAuth: boolean
 }
 
 interface ClientScope {
@@ -295,7 +300,16 @@ export class AgentServerClient {
     return authHeaders(this.configuration.token)
   }
 
-  health(): Promise<Health> { return this.request('/api/health', {}, 30_000, true) }
+  async health(): Promise<Health> {
+    const configuration = this.configuration
+    const health = await this.request<Health>('/api/health', {}, 30_000, true)
+    // Same rule as the desktop client: the capability is advertised per server,
+    // so only the configuration that made this request learns it.
+    if (this.configuration === configuration) {
+      configuration.websocketSubprotocolAuth = health.capabilities?.websocket_auth_v1?.available === true
+    }
+    return health
+  }
   codexServerGoals(): Promise<CodexGoalsConfiguration> {
     return this.request('/api/admin/codex/goals', {}, 30_000, false, 'native-control')
   }
@@ -389,7 +403,16 @@ export class AgentServerClient {
       'team-network',
     )
   }
-  async sessions(): Promise<Session[]> { return (await this.get<{ sessions: Session[] }>('/api/sessions')).sessions }
+  async sessions(): Promise<Session[]> {
+    const { sessions } = await this.get<{ sessions: Session[] }>('/api/sessions?summary=true')
+    // The summary list omits the emergency pair when there is nothing to report,
+    // while the full session object sends an explicit null/0 tombstone. The store
+    // merges list rows over the retained session by spreading, so an omitted key
+    // would keep an alert another client already acknowledged.
+    return sessions.map(session => 'emergency_alert' in session
+      ? session
+      : { ...session, emergency_alert: null, unacknowledged_emergency_count: 0 })
+  }
   async jobs(): Promise<Job[]> { return (await this.get<{ jobs: Job[] }>('/api/jobs')).jobs }
 
   workspaceInfo(sessionId: string): Promise<WorkspaceInfo> {
@@ -1059,15 +1082,8 @@ export class AgentServerClient {
     })
   }
 
-  stream(
-    sessionId: string,
-    after: number,
-    onEvent: (event: Event) => void,
-    onState: (connected: boolean, detail?: WebSocketStateDetail) => void,
-    onProviderRuntime?: (event: ProviderRuntimeChanged) => void,
-    onProviderUsage?: (backend: UsageBackend) => void,
-    onSideChatChanged?: (revision: number) => void,
-  ): () => void {
+  stream(sessionId: string, after: number, handlers: TimelineStreamHandlers): () => void {
+    const { onEvent, onState, onProviderRuntime, onProviderUsage, onSideChatChanged } = handlers
     const scope = this.captureScope()
     const endpoint = new URL(buildURL(scope.configuration.baseURL, `/api/sessions/${encodeURIComponent(sessionId)}/events`))
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -1109,9 +1125,16 @@ export class AgentServerClient {
       const url = new URL(endpoint)
       url.searchParams.set('after', String(lastSeq))
       url.searchParams.set('visible', 'true')
-      if (token) url.searchParams.set('token', token)
+      // Once /api/health advertised websocket_auth_v1 the token travels as a
+      // subprotocol, in the desktop client's exact `agentsdock-token.<base64url>`
+      // form, instead of a query parameter that proxies and access logs see.
+      // Older servers keep the query form.
+      const protocols = scope.configuration.websocketSubprotocolAuth
+        ? [EVENTS_STREAM_PROTOCOL, ...(token ? [`agentsdock-token.${base64(token).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`] : [])]
+        : undefined
+      if (!protocols && token) url.searchParams.set('token', token)
       try {
-        socket = new WebSocket(url.toString())
+        socket = new WebSocket(url.toString(), protocols)
       } catch (error) {
         reportState(false, websocketErrorDetail('timeline', error))
         scheduleRetry()
@@ -1201,67 +1224,6 @@ export class AgentServerClient {
     this.transportStops.add(stop)
     connect()
     return stop
-  }
-
-  terminal(
-    sessionId: string,
-    columns: number,
-    rows: number,
-    cwd: string | null,
-    onData: (data: string) => void,
-    onState: (connected: boolean, name?: string, detail?: WebSocketStateDetail) => void,
-  ): TerminalConnection {
-    const scope = this.captureScope()
-    const endpoint = new URL(buildURL(scope.configuration.baseURL, `/api/sessions/${encodeURIComponent(sessionId)}/terminal/ws`))
-    endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
-    endpoint.searchParams.set('columns', String(columns))
-    endpoint.searchParams.set('rows', String(rows))
-    if (cwd) endpoint.searchParams.set('cwd', cwd)
-    if (scope.configuration.token) endpoint.searchParams.set('token', scope.configuration.token)
-    const socket = new WebSocket(endpoint.toString())
-    let closed = false
-    const unregister = () => { this.transportStops.delete(close) }
-    const close = () => {
-      if (closed) {
-        unregister()
-        return
-      }
-      closed = true
-      unregister()
-      socket.close()
-      onState(false)
-    }
-    this.transportStops.add(close)
-    socket.binaryType = 'arraybuffer'
-    socket.onmessage = message => {
-      if (closed) return
-      if (typeof message.data === 'string') {
-        try {
-          const control = JSON.parse(message.data) as { type?: string; name?: string }
-          if (control.type === 'ready') onState(true, control.name)
-          return
-        } catch { onData(message.data); return }
-      }
-      if (message.data instanceof ArrayBuffer) onData(new TextDecoder().decode(new Uint8Array(message.data)))
-    }
-    socket.onclose = event => {
-      if (closed) return
-      closed = true
-      unregister()
-      const fatal = FATAL_WEBSOCKET_CLOSE_CODES.has(event.code)
-      const detail = fatal ? websocketCloseDetail('terminal', event.code, event.reason, true, false) : undefined
-      if (event.code === 4401 && detail) {
-        this.invalidateValidation(true)
-        this.reportAuthorizationFailure(detail.error)
-      }
-      onState(false, undefined, detail)
-    }
-    return {
-      write: data => { if (!closed && socket.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data)) },
-      resize: (nextColumns, nextRows) => { if (!closed && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', columns: nextColumns, rows: nextRows })) },
-      scroll: delta => { if (!closed && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'scroll', delta })) },
-      close,
-    }
   }
 
   private get<T>(path: string, timeoutMs?: number): Promise<T> { return this.request(path, {}, timeoutMs) }
@@ -1451,7 +1413,7 @@ export class AgentServerClient {
 }
 
 function createConfiguration(baseURL: string, token: string): ClientConfiguration {
-  return Object.freeze({ baseURL: normalizeServerURL(baseURL), token })
+  return { baseURL: normalizeServerURL(baseURL), token, websocketSubprotocolAuth: false }
 }
 
 function buildURL(baseURL: string, path: string): string {

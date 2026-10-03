@@ -1,4 +1,5 @@
 import type { CodexTokenUsage, Event, JsonValue } from '../types'
+import { firstObject, objectValue } from './json-record'
 
 export interface CodexContextUsage {
   contextTokens: number | null
@@ -178,20 +179,6 @@ function parseUsageRecords(root: Record<string, JsonValue>, event: Event | null)
     snapshotAt: cleanString(recordString(root, ['snapshot_at', 'snapshotAt']) ?? event?.snapshot_at),
     seq: event?.seq ?? null,
   }
-}
-
-function objectValue(value: unknown): Record<string, JsonValue> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, JsonValue>
-    : null
-}
-
-function firstObject(record: Record<string, JsonValue>, keys: readonly string[]): Record<string, JsonValue> | null {
-  for (const key of keys) {
-    const candidate = objectValue(record[key])
-    if (candidate) return candidate
-  }
-  return null
 }
 
 function uniqueRecords(records: Array<Record<string, JsonValue> | null>): Record<string, JsonValue>[] {
