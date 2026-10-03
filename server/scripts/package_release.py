@@ -88,6 +88,7 @@ FILES = (
     "interactive_chat_controls.py",
     "private_sqlite.py",
     "share_route_helpers.py",
+    "native_model_store.py",
     "install.sh",
     "uninstall.sh",
     "instances.sh",

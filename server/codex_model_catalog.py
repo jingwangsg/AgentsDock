@@ -6,22 +6,19 @@ labels, descriptions and reasoning-effort options are retained.
 """
 from __future__ import annotations
 
-from collections import OrderedDict
-import copy
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
-import threading
 import unicodedata
 from typing import Any
+
+from native_model_store import NativeModelStore
 
 MAX_MODELS = 512
 MAX_EFFORTS = 16
 MAX_DESCRIPTION = 200
 CACHE_LIMIT = 4
-STORE_MAX_BYTES = 4 * 1024 * 1024
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/\-]{0,255}")
 EFFORT_ID = re.compile(r"[a-z][a-z0-9_\-]{0,31}")
 
@@ -119,18 +116,21 @@ def parse_model_list(result: Any) -> list[dict[str, Any]]:
     return rows
 
 
-_LOCK = threading.Lock()
-_CACHE: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
-# Durable copy of _CACHE so a restarted hub serves the CLI's picker before any
+def _clean_rows(rows: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(rows, list) or len(rows) > MAX_MODELS:
+        return None
+    clean = [_clean_row(row) for row in rows]
+    return clean if all(row is not None for row in clean) else None
+
+
+# The durable copy lets a restarted hub serve the CLI's picker before any
 # Codex chat starts a shared app-server. The key changes with the launcher
 # build and the signed-in account, so no TTL is needed.
-_STORE_PATH: Path | None = None
+_STORE = NativeModelStore(validate_rows=_clean_rows, limit=CACHE_LIMIT)
 
 
 def configure_native_models_store(path: Path | None) -> None:
-    global _STORE_PATH
-    with _LOCK:
-        _STORE_PATH = path
+    _STORE.configure(path)
 
 
 def native_catalog_key(binary_identity: tuple[Any, ...], account_identity: Any) -> str:
@@ -138,74 +138,16 @@ def native_catalog_key(binary_identity: tuple[Any, ...], account_identity: Any) 
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _read_store() -> OrderedDict[str, list[dict[str, Any]]]:
-    store: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
-    if _STORE_PATH is None:
-        return store
-    try:
-        with _STORE_PATH.open("rb") as stream:
-            raw = stream.read(STORE_MAX_BYTES + 1)
-        payload = json.loads(raw) if len(raw) <= STORE_MAX_BYTES else None
-    except (OSError, ValueError):
-        payload = None
-    if isinstance(payload, dict):
-        for key, rows in payload.items():
-            if not isinstance(key, str) or len(key) != 64:
-                continue
-            if not isinstance(rows, list) or len(rows) > MAX_MODELS:
-                continue
-            clean = [_clean_row(row) for row in rows]
-            if all(row is not None for row in clean):
-                store[key] = clean
-    return store
-
-
-def _write_store(store: OrderedDict[str, list[dict[str, Any]]]) -> None:
-    assert _STORE_PATH is not None
-    _STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _STORE_PATH.with_name(_STORE_PATH.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        json.dump(store, stream)
-    os.replace(tmp, _STORE_PATH)
-
-
 def remember_native_models(rows: list[dict[str, Any]], *, key: str) -> None:
-    clean = [_clean_row(row) for row in rows]
-    if any(row is None for row in clean):
+    clean = _clean_rows(rows)
+    if clean is None:
         raise CodexModelCatalogUnavailable("Codex model metadata is invalid")
-    with _LOCK:
-        _CACHE[key] = clean
-        _CACHE.move_to_end(key)
-        while len(_CACHE) > CACHE_LIMIT:
-            _CACHE.popitem(last=False)
-        if _STORE_PATH is not None:
-            store = _read_store()
-            store[key] = clean
-            store.move_to_end(key)
-            while len(store) > CACHE_LIMIT:
-                store.popitem(last=False)
-            try:
-                _write_store(store)
-            except OSError:
-                pass  # Best effort: the in-memory copy above already serves this process.
+    _STORE.remember(key, clean)
 
 
 def cached_native_models(key: str) -> list[dict[str, Any]] | None:
-    with _LOCK:
-        rows = _CACHE.get(key)
-        if rows is None:
-            rows = _read_store().get(key)
-            if rows is not None:
-                _CACHE[key] = rows
-        return copy.deepcopy(rows) if rows is not None else None
+    return _STORE.cached(key)
 
 
 def clear_native_models() -> None:
-    with _LOCK:
-        _CACHE.clear()
-        if _STORE_PATH is not None:
-            try:
-                _STORE_PATH.unlink()
-            except OSError:
-                pass
+    _STORE.clear()

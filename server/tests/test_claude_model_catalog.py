@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import claude_model_catalog as catalog
+import native_model_store
 
 class NativeModelLabelTests(unittest.TestCase):
     def parse(self, *models):
@@ -170,7 +171,7 @@ class NativeSDKCatalogCaptureTests(unittest.IsolatedAsyncioTestCase):
                 client = default_claude_sdk_client_factory(options)
                 with self.assertRaises(RuntimeError):
                     await client.connect()
-            self.assertEqual(len(catalog._CACHE), 0)
+            self.assertEqual(len(catalog._STORE.cache), 0)
 
 
 class PassiveNativeModelCacheTests(unittest.TestCase):
@@ -202,17 +203,17 @@ class PassiveNativeModelCacheTests(unittest.TestCase):
             rows.clear()
             self.assertEqual(len(self.read()), 1)
             popen.assert_not_called()
-        self.assertNotIn("private", repr(catalog._CACHE))
+        self.assertNotIn("private", repr(catalog._STORE.cache))
 
     def test_cache_expires_and_is_bounded(self):
-        with patch.object(catalog.time, "monotonic", return_value=1):
+        with patch.object(native_model_store.time, "monotonic", return_value=1):
             self.remember()
-        with patch.object(catalog.time, "monotonic", return_value=1 + catalog.CACHE_TTL_SECONDS):
+        with patch.object(native_model_store.time, "monotonic", return_value=1 + catalog.CACHE_TTL_SECONDS):
             self.assertIsNone(self.read())
         for n in range(catalog.CACHE_LIMIT + 5):
             self.env["ANTHROPIC_API_KEY"] = str(n)
             self.remember()
-        self.assertEqual(len(catalog._CACHE), catalog.CACHE_LIMIT)
+        self.assertEqual(len(catalog._STORE.cache), catalog.CACHE_LIMIT)
 
     def test_empty_native_list_is_authoritative(self):
         self.info = {"models": []}
@@ -304,12 +305,13 @@ class DurableNativeModelStoreTests(unittest.TestCase):
         self.remember()
         self.assertEqual(stat.S_IMODE(self.store.stat().st_mode), 0o600)
         self.assertNotIn("private", self.store.read_text())
-        catalog._CACHE.clear()  # A hub restart loses memory, not the file.
+        catalog._STORE.cache.clear()  # A hub restart loses memory, not the file.
         self.assertEqual(self.read(), self.rows)
         self.remember()
-        with patch.object(catalog.time, "monotonic", return_value=1e9):
+        with patch.object(native_model_store.time, "monotonic", return_value=1e9):
             self.assertEqual(self.read(), self.rows)
-        self.assertEqual(len(catalog._CACHE), 0)
+        # An expired memory entry is dropped, then refilled from the durable copy.
+        self.assertEqual(len(catalog._STORE.cache), 1)
 
     def test_durable_copy_follows_the_fingerprint_and_is_bounded(self):
         self.remember()
@@ -317,7 +319,7 @@ class DurableNativeModelStoreTests(unittest.TestCase):
         for n in range(catalog.CACHE_LIMIT + 5):
             self.env["ANTHROPIC_API_KEY"] = str(n)
             self.remember()
-        catalog._CACHE.clear()
+        catalog._STORE.cache.clear()
         self.assertEqual(len(json.loads(self.store.read_text())), catalog.CACHE_LIMIT)
         self.assertEqual(self.read(), self.rows)
         self.env["ANTHROPIC_API_KEY"] = "0"
@@ -338,7 +340,7 @@ class DurableNativeModelStoreTests(unittest.TestCase):
                 self.store.write_text(damaged)
                 self.assertIsNone(self.read())
         self.remember()
-        catalog._CACHE.clear()
+        catalog._STORE.cache.clear()
         self.assertEqual(self.read(), self.rows)
 
     def test_unwritable_store_keeps_the_in_memory_copy(self):

@@ -411,7 +411,7 @@ class ClaudeNativeProbeTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.log = self.tmp / "spawns.jsonl"
         self.store = self.tmp / "claude-native-models.json"
-        previous_store = claude_model_catalog._STORE_PATH
+        previous_store = claude_model_catalog._STORE.path
         claude_model_catalog.configure_native_models_store(self.store)
         self.addCleanup(claude_model_catalog.configure_native_models_store, previous_store)
         claude_model_catalog.clear_native_models()
