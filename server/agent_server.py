@@ -75806,8 +75806,8 @@ SERVER_RESTART_FORCE_KILL_DELAY_SECONDS = 3.0
 SERVER_SHUTDOWN_PHASE_TIMEOUT_SECONDS = 5.0
 # Number of bounded_shutdown_phase calls in the lifespan teardown; keep in sync
 # so the cooperative watchdog budget below honours every phase ("remote-servers"
-# stops the hub tunnels).
-SERVER_SHUTDOWN_PHASE_COUNT = 19
+# stops the hub tunnels, "terminal-shells" kills the terminal tab shells).
+SERVER_SHUTDOWN_PHASE_COUNT = 20
 DEFAULT_UVICORN_GRACEFUL_SHUTDOWN_SECONDS = 20.0
 MAX_UVICORN_GRACEFUL_SHUTDOWN_SECONDS = 60.0
 SERVER_SHUTDOWN_STRAGGLERS: set[asyncio.Task[Any]] = set()
