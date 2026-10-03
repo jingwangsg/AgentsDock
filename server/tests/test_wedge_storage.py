@@ -1374,13 +1374,6 @@ class OffLoopDiskIoTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(threads[0], threading.main_thread().name)
         self.assertLess(max(gaps), 0.25)
 
-    async def test_cross_chat_ledger_calls_run_on_their_own_worker(self) -> None:
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        store = agent_server.CrossChatStore(Path(temp.name) / "ledger.sqlite3")
-        name = await store._call(lambda: threading.current_thread().name)
-        self.assertTrue(name.startswith("cross-chat-store"), name)
-
 
 if __name__ == "__main__":
     unittest.main()

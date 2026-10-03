@@ -14543,11 +14543,6 @@ CODEX_PERMISSION_PROFILES_CACHE: dict[
 ] = {}
 HANDOFF_DIGEST_JOBS: dict[str, dict[str, Any]] = {}
 HANDOFF_DIGEST_JOBS_LOCK = asyncio.Lock()
-# SQLite admits one writer and the ledger's RLock already serialized every
-# call, so a single dedicated thread loses no concurrency; it keeps a connect()
-# parked on SQLite's busy timeout from occupying a shared default-executor
-# thread that the ~650 other to_thread call sites depend on.
-CROSS_CHAT_STORE_EXECUTOR = ThreadPoolExecutor(1, thread_name_prefix="cross-chat-store")
 
 
 class CrossChatStore:
@@ -14572,9 +14567,7 @@ class CrossChatStore:
             return callback()
 
     async def _call(self, callback: Callable[[], Any]) -> Any:
-        # asyncio.to_thread's contract (context propagated), on the ledger pool.
-        call = functools.partial(contextvars.copy_context().run, self._locked_call, callback)
-        return await asyncio.get_running_loop().run_in_executor(CROSS_CHAT_STORE_EXECUTOR, call)
+        return await asyncio.to_thread(self._locked_call, callback)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
