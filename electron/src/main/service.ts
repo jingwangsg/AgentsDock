@@ -2041,38 +2041,19 @@ export class AppService {
   }
 
   async previewChatShare(expected: WorkspaceProfileScope, sessionId: string) {
-    const scope = this.requireWorkspaceScope(expected)
-    await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const result = await scope.client.previewChatShare(sessionId)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withWorkspaceScope(expected, client => client.previewChatShare(sessionId))
   }
 
   async listChatShares(expected: WorkspaceProfileScope, sessionId: string, mode: ChatShareMode) {
-    const scope = this.requireWorkspaceScope(expected)
-    await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const result = await scope.client.listChatShares(sessionId, mode)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withWorkspaceScope(expected, client => client.listChatShares(sessionId, mode))
   }
 
   async createChatShare(expected: WorkspaceProfileScope, sessionId: string, input: CreateChatShareInput) {
-    const scope = this.requireWorkspaceScope(expected)
-    await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const result = await scope.client.createChatShare(sessionId, input)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withWorkspaceScope(expected, client => client.createChatShare(sessionId, input))
   }
 
   async revokeChatShare(expected: WorkspaceProfileScope, sessionId: string, mode: ChatShareMode, shareId: string) {
-    const scope = this.requireWorkspaceScope(expected)
-    await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    await scope.client.revokeChatShare(sessionId, mode, shareId)
-    this.assertCurrentScope(scope)
+    await this.withWorkspaceScope(expected, client => client.revokeChatShare(sessionId, mode, shareId))
   }
 
   async serverRestartStatus(expected: WorkspaceProfileScope): Promise<ServerRestartStatus> {
@@ -2609,19 +2590,11 @@ export class AppService {
   }
 
   async createSurface(input: CreateSurfaceInput): Promise<Surface> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const surface = await scope.client.createSurface(input)
-    this.assertCurrentScope(scope)
-    return surface
+    return this.withScope(client => client.createSurface(input))
   }
 
   async updateSurface(surfaceId: string, patch: UpdateSurfaceInput): Promise<Surface> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const surface = await scope.client.updateSurface(surfaceId, patch)
-    this.assertCurrentScope(scope)
-    return surface
+    return this.withScope(client => client.updateSurface(surfaceId, patch))
   }
 
   async removeSurface(surfaceId: string): Promise<void> {
@@ -2857,11 +2830,7 @@ export class AppService {
   }
 
   async restoreCheckpoint(sessionId: string, runId: string, expectedRevision: string): Promise<WorkspaceGitStatus> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const status = await scope.client.restoreCheckpoint(sessionId, runId, expectedRevision)
-    this.assertCurrentScope(scope)
-    return status
+    return this.withScope(client => client.restoreCheckpoint(sessionId, runId, expectedRevision))
   }
 
   async reorderSession(sessionId: string, relativeTo: string, placement: 'before' | 'after', targetFolder?: string): Promise<Session[]> {
@@ -3282,11 +3251,7 @@ export class AppService {
   }
 
   async codeDiff(sessionId: string, runId: string): Promise<string> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const diff = await scope.client.codeDiff(sessionId, runId)
-    this.assertCurrentScope(scope)
-    return diff
+    return this.withScope(client => client.codeDiff(sessionId, runId))
   }
 
   async searchTimeline(sessionId: string, query: string, limit = 40): Promise<TimelineSearchResult[]> {
@@ -3860,11 +3825,7 @@ export class AppService {
   }
 
   async stopTurn(sessionId: string): Promise<TurnStopResult> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const result = await scope.client.stopTurn(sessionId)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withScope(client => client.stopTurn(sessionId))
   }
 
   async codexRuntime(sessionId: string): Promise<CodexRuntimeSnapshot> {
@@ -4152,11 +4113,7 @@ export class AppService {
   }
 
   async crossChatHandoff(envelopeId: string): Promise<CrossChatHandoff> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const handoff = await scope.client.crossChatHandoff(envelopeId)
-    this.assertCurrentScope(scope)
-    return handoff
+    return this.withScope(client => client.crossChatHandoff(envelopeId))
   }
 
   async chatInbox(expected: WorkspaceProfileScope, sessionId: string, cursor: string | null = null, limit = 25) {
@@ -4176,27 +4133,15 @@ export class AppService {
   }
 
   async cancelCrossChatHandoff(envelopeId: string): Promise<CrossChatHandoffSummary> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const handoff = await scope.client.cancelCrossChatHandoff(envelopeId)
-    this.assertCurrentScope(scope)
-    return handoff
+    return this.withScope(client => client.cancelCrossChatHandoff(envelopeId))
   }
 
   async crossChatExchange(exchangeId: string): Promise<CrossChatExchange> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const exchange = await scope.client.crossChatExchange(exchangeId)
-    this.assertCurrentScope(scope)
-    return exchange
+    return this.withScope(client => client.crossChatExchange(exchangeId))
   }
 
   async cancelCrossChatExchange(exchangeId: string): Promise<CrossChatExchange> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const exchange = await scope.client.cancelCrossChatExchange(exchangeId)
-    this.assertCurrentScope(scope)
-    return exchange
+    return this.withScope(client => client.cancelCrossChatExchange(exchangeId))
   }
 
   async removeQueued(sessionId: string, queuedId: string): Promise<boolean> {
@@ -4324,11 +4269,7 @@ export class AppService {
     return removed
   }
   async runJob(jobId: string): Promise<JobRunNowResult> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const started = await scope.client.runJob(jobId)
-    this.assertCurrentScope(scope)
-    return started
+    return this.withScope(client => client.runJob(jobId))
   }
 
   async chooseFiles(rendererId: number): Promise<NativeFileRef[]> {
@@ -4540,20 +4481,11 @@ export class AppService {
   }
 
   async workspaceInfo(sessionId: string): Promise<WorkspaceInfo> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const info = await scope.client.workspaceInfo(sessionId)
-    this.assertCurrentScope(scope)
-    return info
+    return this.withScope(client => client.workspaceInfo(sessionId))
   }
 
   async backgroundActivity(expected: WorkspaceProfileScope, sessionId: string): Promise<BackgroundActivityItem[]> {
-    const scope = this.requireWorkspaceScope(expected)
-    await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const result = await scope.client.backgroundActivity(sessionId)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withWorkspaceScope(expected, client => client.backgroundActivity(sessionId))
   }
 
   async stopBackgroundActivity(expected: WorkspaceProfileScope, sessionId: string, id: string): Promise<boolean> {
@@ -4564,71 +4496,35 @@ export class AppService {
   }
 
   async workspaceGitStatus(expected: WorkspaceProfileScope, sessionId: string) {
-    const scope = this.requireWorkspaceScope(expected)
-    await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const result = await scope.client.workspaceGitStatus(sessionId)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withWorkspaceScope(expected, client => client.workspaceGitStatus(sessionId))
   }
 
   async workspaceGitDiff(expected: WorkspaceProfileScope, sessionId: string, path: string, view: WorkspaceGitView) {
-    const scope = this.requireWorkspaceScope(expected)
-    await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const result = await scope.client.workspaceGitDiff(sessionId, path, view)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withWorkspaceScope(expected, client => client.workspaceGitDiff(sessionId, path, view))
   }
 
   async workspaceGitConflict(expected: WorkspaceProfileScope, sessionId: string, path: string) {
-    const scope = this.requireWorkspaceScope(expected)
-    await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const result = await scope.client.workspaceGitConflict(sessionId, path)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withWorkspaceScope(expected, client => client.workspaceGitConflict(sessionId, path))
   }
 
   async workspaceGitAction(expected: WorkspaceProfileScope, sessionId: string, input: WorkspaceGitAction) {
-    const scope = this.requireWorkspaceScope(expected)
-    await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const result = await scope.client.workspaceGitAction(sessionId, input)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withWorkspaceScope(expected, client => client.workspaceGitAction(sessionId, input))
   }
 
   async workspaceEntries(sessionId: string, path = '', offset = 0, limit = 500): Promise<WorkspaceEntriesPage> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const page = await scope.client.workspaceEntries(sessionId, path, offset, limit)
-    this.assertCurrentScope(scope)
-    return page
+    return this.withScope(client => client.workspaceEntries(sessionId, path, offset, limit))
   }
 
   async killCodexWriters(sessionId: string): Promise<CodexKillWritersResult> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const result = await scope.client.killCodexWriters(sessionId)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withScope(client => client.killCodexWriters(sessionId))
   }
 
   async listCanvases(sessionId: string): Promise<{ canvases: CanvasSummary[] }> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const result = await scope.client.listCanvases(sessionId)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withScope(client => client.listCanvases(sessionId))
   }
 
   async getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const record = await scope.client.getCanvas(sessionId, name)
-    this.assertCurrentScope(scope)
-    return record
+    return this.withScope(client => client.getCanvas(sessionId, name))
   }
 
   /** Aggregates the whole cached history so the panel is not limited to the renderer's event window. */
@@ -4647,11 +4543,7 @@ export class AppService {
   }
 
   async putCanvasState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const result = await scope.client.putCanvasState(sessionId, name, state)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withScope(client => client.putCanvasState(sessionId, name, state))
   }
 
   /** Canvas source edits and comment threads: one scoped call each, like the state PUT above. */
@@ -4700,27 +4592,15 @@ export class AppService {
   }
 
   async workspaceSearch(sessionId: string, query = '', limit = 100): Promise<WorkspaceSearchPage> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const page = await scope.client.workspaceSearch(sessionId, query, limit)
-    this.assertCurrentScope(scope)
-    return page
+    return this.withScope(client => client.workspaceSearch(sessionId, query, limit))
   }
 
   async completeWorkingDirectory(path: string, limit = 24): Promise<WorkingDirectoryCompletion> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const completion = await scope.client.completeWorkingDirectory(path, limit)
-    this.assertCurrentScope(scope)
-    return completion
+    return this.withScope(client => client.completeWorkingDirectory(path, limit))
   }
 
   async workspaceFile(sessionId: string, path: string): Promise<WorkspaceFile> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const file = await scope.client.workspaceFile(sessionId, path)
-    this.assertCurrentScope(scope)
-    return file
+    return this.withScope(client => client.workspaceFile(sessionId, path))
   }
 
   async absoluteFile(sessionId: string, path: string): Promise<WorkspaceFile> {
@@ -4764,19 +4644,11 @@ export class AppService {
     path: string,
     kind: 'file' | 'directory'
   ): Promise<WorkspaceCreateResult> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const result = await scope.client.createWorkspaceEntry(sessionId, path, kind)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withScope(client => client.createWorkspaceEntry(sessionId, path, kind))
   }
 
   async writeWorkspaceFile(sessionId: string, path: string, content: string, expectedRevision: string): Promise<WorkspaceFile> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const file = await scope.client.writeWorkspaceFile(sessionId, path, content, expectedRevision)
-    this.assertCurrentScope(scope)
-    return file
+    return this.withScope(client => client.writeWorkspaceFile(sessionId, path, content, expectedRevision))
   }
 
   async overwriteWorkspaceFile(sessionId: string, path: string, content: string): Promise<WorkspaceFile> {
@@ -4908,11 +4780,7 @@ export class AppService {
     newName: string,
     expectedRevision: string
   ): Promise<WorkspaceRenameResult> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const result = await scope.client.renameWorkspaceEntry(sessionId, path, newName, expectedRevision)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withScope(client => client.renameWorkspaceEntry(sessionId, path, newName, expectedRevision))
   }
 
   async removeWorkspaceEntry(
@@ -4921,11 +4789,7 @@ export class AppService {
     expectedRevision: string,
     recursive: boolean
   ): Promise<WorkspaceRemoveResult> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const result = await scope.client.removeWorkspaceEntry(sessionId, path, expectedRevision, recursive)
-    this.assertCurrentScope(scope)
-    return result
+    return this.withScope(client => client.removeWorkspaceEntry(sessionId, path, expectedRevision, recursive))
   }
 
   async saveFile(sessionId: string, file: AgentFile): Promise<string | null> {
@@ -5088,19 +4952,11 @@ export class AppService {
   }
 
   async previewDigest(input: DigestInput): Promise<string> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const preview = await scope.client.previewDigest(input.sourceSessionId, input.targetSessionId, input.detail, input.userPrompt)
-    this.assertCurrentScope(scope)
-    return preview
+    return this.withScope(client => client.previewDigest(input.sourceSessionId, input.targetSessionId, input.detail, input.userPrompt))
   }
 
   async sendDigest(input: DigestInput): Promise<boolean> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const sent = await scope.client.sendDigest(input.sourceSessionId, input.targetSessionId, input.detail, input.userPrompt)
-    this.assertCurrentScope(scope)
-    return sent
+    return this.withScope(client => client.sendDigest(input.sourceSessionId, input.targetSessionId, input.detail, input.userPrompt))
   }
   async runtime(refresh = false, handoff = false): Promise<RuntimeCatalog> {
     const scope = this.captureScope()
@@ -5111,35 +4967,19 @@ export class AppService {
     return this.runtimeCatalog
   }
   async processes(sessionId: string): Promise<ProcessSnapshot> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const processes = await scope.client.processes(sessionId)
-    this.assertCurrentScope(scope)
-    return processes
+    return this.withScope(client => client.processes(sessionId))
   }
 
   async processLog(sessionId: string, path: string, lines?: number): Promise<string> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const log = await scope.client.processLog(sessionId, path, lines)
-    this.assertCurrentScope(scope)
-    return log
+    return this.withScope(client => client.processLog(sessionId, path, lines))
   }
 
   async tmux(sessionId: string, includeAll?: boolean): Promise<TmuxPane[]> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const panes = await scope.client.tmux(sessionId, includeAll)
-    this.assertCurrentScope(scope)
-    return panes
+    return this.withScope(client => client.tmux(sessionId, includeAll))
   }
 
   async captureTmux(sessionId: string, paneId: string, lines?: number): Promise<string> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    const capture = await scope.client.captureTmux(sessionId, paneId, lines)
-    this.assertCurrentScope(scope)
-    return capture
+    return this.withScope(client => client.captureTmux(sessionId, paneId, lines))
   }
   async connectTerminal(profileId: string, profileGeneration: number, sessionId: string, options: TerminalConnectOptions): Promise<void> {
     const scope = this.requireProfileScope(profileId, profileGeneration)
@@ -6695,6 +6535,27 @@ export class AppService {
     await this.refreshAll(true, false, scope)
     this.assertCurrentScope(scope)
     if (!this.isValidatedScope(scope)) throw new Error('The server profile has not passed its identity check.')
+  }
+
+  private async withScope<T>(fn: (client: AgentServerClient) => Promise<T>): Promise<T> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const result = await fn(scope.client)
+    // load-bearing: the profile may have switched while the request was in flight; a reply
+    // from a retired scope must not be handed back as if it belonged to the current profile.
+    this.assertCurrentScope(scope)
+    return result
+  }
+
+  private async withWorkspaceScope<T>(expected: WorkspaceProfileScope, fn: (client: AgentServerClient) => Promise<T>): Promise<T> {
+    const scope = this.requireWorkspaceScope(expected)
+    await this.ensureValidatedScope(scope)
+    // load-bearing: ensureValidatedScope yields; re-check before the request is issued and
+    // again after it so a retired scope never contacts the server or returns a reply.
+    this.assertCurrentScope(scope)
+    const result = await fn(scope.client)
+    this.assertCurrentScope(scope)
+    return result
   }
 
   private activateProfile(
