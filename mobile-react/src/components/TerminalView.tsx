@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Keyboard, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { ChevronLeft, ChevronRight, ClipboardCopy, ClipboardPaste, Columns2, Keyboard as KeyboardIcon, Plus, Rows2, Trash2, X } from 'lucide-react-native'
 import { AgentServerClientDisposedError, type AgentServerClient } from '../api/AgentServerClient'
 import { scaleAppFont } from '../lib/typography'
@@ -77,6 +77,21 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
   const [status, setStatus] = useState('Connecting')
   const [notice, setNotice] = useState('')
   const [modifiers, setModifiers] = useState<TerminalModifierState>({ ctrl: false, alt: false })
+  const rootRef = useRef<View>(null)
+  const [keyboardOverlap, setKeyboardOverlap] = useState(0)
+  useEffect(() => {
+    if (Platform.OS !== 'android') return
+    // The key row has to stay above the soft keyboard. The compact layout shows the terminal
+    // in a full-screen Modal whose window does not shrink for the keyboard, so measure how far
+    // the keyboard reaches into this view; a window that did shrink measures zero overlap.
+    const shown = Keyboard.addListener('keyboardDidShow', event => {
+      rootRef.current?.measureInWindow((_x, y, _width, height) => {
+        setKeyboardOverlap(Math.max(0, Math.round(y + height - event.endCoordinates.screenY)))
+      })
+    })
+    const hidden = Keyboard.addListener('keyboardDidHide', () => setKeyboardOverlap(0))
+    return () => { shown.remove(); hidden.remove() }
+  }, [])
   const refresh = useCallback(async () => {
     try {
       const next = await connection.terminalWindows(terminal.id)
@@ -146,7 +161,7 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
     if (nativeTerminal) void nativeTerminal.blur().catch(() => undefined)
     onClose?.()
   }
-  return <View collapsable={false} style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border }]}>
+  return <View ref={rootRef} collapsable={false} style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border, paddingBottom: keyboardOverlap }]}>
     <View
       collapsable={false}
       pointerEvents="auto"

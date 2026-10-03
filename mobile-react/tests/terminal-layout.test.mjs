@@ -63,3 +63,9 @@ test('android terminal inline script keeps control escapes double-escaped for th
   assert.doesNotMatch(inline, /(?<!\\)\\x[0-9a-fA-F]{2}/)
   assert.doesNotMatch(inline, /'(?<!\\)\\t'/)
 })
+
+test('the key row stays above the soft keyboard inside the full-screen terminal modal', () => {
+  assert.match(source, /Keyboard\.addListener\('keyboardDidShow'/)
+  assert.match(source, /measureInWindow\(\(_x, y, _width, height\) => \{\s*setKeyboardOverlap\(Math\.max\(0, Math\.round\(y \+ height - event\.endCoordinates\.screenY\)\)\)/)
+  assert.match(source, /paddingBottom: keyboardOverlap/)
+})
