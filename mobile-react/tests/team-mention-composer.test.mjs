@@ -30,7 +30,7 @@ const mocks = {
   'expo-image-picker': `export async function launchImageLibraryAsync(){return {canceled:true}}`,
   '@expo/ui/community/menu': `export const MenuView='MenuView';`,
   'lucide-react-native': `export const AlertCircle='AlertCircle', ArrowDown='ArrowDown', ArrowUp='ArrowUp', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', CornerDownRight='CornerDownRight', File='File', Mail='Mail', MessageCircleMore='MessageCircleMore', MessageSquareShare='MessageSquareShare', Paperclip='Paperclip', Pencil='Pencil', Search='Search', Send='Send', Square='Square', Trash2='Trash2', X='X', Server='Server', RefreshCw='RefreshCw';`,
-  '../store/useAppStore': `export const useAppStore=globalThis.__teamComposerFixture.store; export const client=globalThis.__teamComposerFixture.client;`,
+  '../store/useAppStore': `export const useAppStore=globalThis.__teamComposerFixture.store; export const client=globalThis.__teamComposerFixture.client; export const capturedConnectionIsCurrent=(connection, profileId, generation)=>{ const state=useAppStore.getState(); return client===connection && connection.isValidated && state.activeProfileId===profileId && state.profileGeneration===generation && state.connected && !state.connecting && !state.switchingProfileId };`,
   '../lib/analytics': `export function trackEvent(){}`,
   '../lib/app-keyboard': `export async function dismissAppKeyboard(){}`,
   './AppText': `import {forwardRef,createElement} from 'react'; export const Text='Text'; export const TextInput=forwardRef((props,ref)=>createElement('TextInput',{...props,ref}));`,

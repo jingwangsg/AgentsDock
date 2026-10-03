@@ -24,7 +24,7 @@ test('the client exposes a typed native-control usage method', () => {
 })
 
 test('the timeline stream routes ephemeral provider_usage_changed packets', () => {
-  assert.match(api, /onProviderUsage\?: \(backend: UsageBackend\) => void,/)
+  assert.match(api, /export interface TimelineStreamHandlers \{[\s\S]*?onProviderUsage\?: \(backend: UsageBackend\) => void/)
   assert.match(api, /if \(isProviderUsageChanged\(packet\)\) \{\s*if \(packet\.session_id === sessionId\) onProviderUsage\?\.\(packet\.backend\)/)
   assert.match(api, /packet\.type === 'provider_usage_changed'/)
   assert.match(api, /packet\.ephemeral === true/)
