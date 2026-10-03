@@ -2041,88 +2041,38 @@ export class AgentServerClient {
     // (re)attaching viewer; the tmux-specific REST resize does not apply, and a 4404 means
     // the tab (not a chat) is gone.
     const standalone = isStandaloneTerminalId(sessionId)
-    let stopped = false
-    let retryDelay = 500
-    let retry: NodeJS.Timeout | null = null
-    let activeConnectWatchdog: NodeJS.Timeout | null = null
     let resizeSync: NodeJS.Timeout | null = null
-    let socket: WebSocket | null = null
     let fatalError: string | null = null
     let columns = options.columns
     let rows = options.rows
-    const stop = (): void => {
-      if (stopped) return
-      stopped = true
-      if (retry) clearTimeout(retry)
-      if (activeConnectWatchdog) clearTimeout(activeConnectWatchdog)
-      if (resizeSync) clearTimeout(resizeSync)
-      retry = null
-      activeConnectWatchdog = null
-      resizeSync = null
-      configuration.transports.delete(stop)
-      socket?.close()
-    }
-    const syncTerminalSize = (): void => {
-      if (stopped || standalone) return
-      if (resizeSync) clearTimeout(resizeSync)
-      resizeSync = setTimeout(() => {
-        resizeSync = null
-        void this.post(`/api/sessions/${encodeURIComponent(sessionId)}/terminal/resize`, { columns, rows }, configuration).catch(() => undefined)
-      }, 120)
-    }
-
-    const connect = (): void => {
-      if (stopped) return
-      retry = null
-      onState({ sessionId, state: retryDelay === 500 ? 'connecting' : 'reconnecting' })
-      const url = new URL(endpoint)
-      url.searchParams.set('columns', String(columns))
-      url.searchParams.set('rows', String(rows))
-      if (options.cwd) url.searchParams.set('cwd', options.cwd)
-      const protocols = authenticatedWebSocketProtocols(
-        configuration,
-        url,
-        TERMINAL_STREAM_PROTOCOL
-      )
-      const currentDecoder = new TextDecoder()
-      const current = new WebSocket(url, protocols)
-      socket = current
-      current.binaryType = 'arraybuffer'
-      let disconnected = false
-      let connectWatchdog: NodeJS.Timeout | null = null
-      const clearConnectWatchdog = (): void => {
-        const timer = connectWatchdog
-        if (!timer) return
-        clearTimeout(timer)
-        connectWatchdog = null
-        if (activeConnectWatchdog === timer) activeConnectWatchdog = null
-      }
-      const reconnect = (error?: string | null): void => {
-        if (stopped || disconnected || socket !== current) return
-        disconnected = true
-        clearConnectWatchdog()
-        onState({ sessionId, state: 'reconnecting', error: error || null })
-        const jitter = Math.floor(Math.random() * Math.min(250, retryDelay / 3))
-        retry = setTimeout(connect, retryDelay + jitter)
-        retryDelay = Math.min(10_000, retryDelay * 2)
-      }
-      connectWatchdog = setTimeout(() => {
-        if (stopped || disconnected || socket !== current || current.readyState !== 0) return
-        current.close()
-        reconnect('Terminal connection timed out')
-      }, 10_000)
-      activeConnectWatchdog = connectWatchdog
-      current.addEventListener('open', () => {
-        if (stopped || disconnected || socket !== current) return
-        clearConnectWatchdog()
-      })
-      current.addEventListener('message', message => {
-        if (stopped || disconnected || socket !== current) return
+    let decoder = new TextDecoder()
+    const link = reconnectingSocket(configuration, {
+      connectTimeoutMs: 10_000,
+      timedOutError: 'Terminal connection timed out',
+      interruptedError: 'Terminal connection interrupted',
+      open: attempt => {
+        onState({ sessionId, state: attempt === 0 ? 'connecting' : 'reconnecting' })
+        const url = new URL(endpoint)
+        url.searchParams.set('columns', String(columns))
+        url.searchParams.set('rows', String(rows))
+        if (options.cwd) url.searchParams.set('cwd', options.cwd)
+        const protocols = authenticatedWebSocketProtocols(
+          configuration,
+          url,
+          TERMINAL_STREAM_PROTOCOL
+        )
+        decoder = new TextDecoder()
+        const socket = new WebSocket(url, protocols)
+        socket.binaryType = 'arraybuffer'
+        return socket
+      },
+      onOpen: (_socket, link) => link.established(),
+      onMessage: (message, socket, link) => {
         if (typeof message.data === 'string') {
           try {
             const control = JSON.parse(message.data) as { type?: string; name?: string; message?: string }
             if (control.type === 'ready') {
-              retryDelay = 500
+              link.resetBackoff()
               onState({ sessionId, state: 'connected', name: control.name ?? null })
             } else if (control.type === 'error') {
               // Unmarked server control errors can be transient (for example,
@@ -2130,8 +2080,8 @@ export class AgentServerClient {
               // 44xx close codes below are durable/fatal. Retry this socket so
               // a recoverable validation or attach error cannot permanently
               // disable the terminal for the lifetime of the renderer.
-              reconnect(control.message || 'Terminal connection failed')
-              current.close()
+              link.disconnect(control.message || 'Terminal connection failed')
+              socket.close()
             }
           } catch { /* ignore malformed control packets */ }
           return
@@ -2142,26 +2092,20 @@ export class AgentServerClient {
         else if (message.data && typeof message.data === 'object' && 'byteLength' in message.data) bytes = new Uint8Array(message.data as ArrayBuffer)
         else if (message.data instanceof Blob) {
           void message.data.arrayBuffer().then(buffer => {
-            if (stopped || disconnected || socket !== current) return
+            if (link.stopped || link.socket !== socket) return
             const blobBytes = new Uint8Array(buffer)
-            if (blobBytes.byteLength) onData(currentDecoder.decode(blobBytes, { stream: true }))
+            if (blobBytes.byteLength) onData(decoder.decode(blobBytes, { stream: true }))
           })
           return
         }
-        if (bytes?.byteLength) onData(currentDecoder.decode(bytes, { stream: true }))
-      })
-      current.addEventListener('close', event => {
-        clearConnectWatchdog()
-        if (socket !== current || disconnected) return
-        const tail = currentDecoder.decode()
-        if (stopped) {
-          if (!fatalError) onState({ sessionId, state: 'disconnected' })
-          return
-        }
+        if (bytes?.byteLength) onData(decoder.decode(bytes, { stream: true }))
+      },
+      onClose: (event, link) => {
+        const tail = decoder.decode()
         if (tail) onData(tail)
         if (event.code === TERMINAL_SHELL_EXITED_CLOSE_CODE) {
           // The shell itself ended (for example `exit`); the next connect starts a new one.
-          stop()
+          link.stop()
           onState({ sessionId, state: 'disconnected' })
           return
         }
@@ -2173,35 +2117,41 @@ export class AgentServerClient {
               : event.code === 4406
                 ? 'Terminal protocol was rejected'
                 : 'Unarchive this chat before opening its terminal.'
-          stop()
+          link.stop()
           onState({ sessionId, state: 'error', error: fatalError })
           return
         }
-        reconnect(event.reason)
-      })
-      current.addEventListener('error', () => {
-        if (stopped || disconnected || socket !== current) return
-        current.close()
-        reconnect('Terminal connection interrupted')
-      })
+        link.disconnect(event.reason)
+      },
+      onCloseAfterStop: () => {
+        // load-bearing: a fatal close already reported state 'error'; 'disconnected' must not replace it.
+        if (!fatalError) onState({ sessionId, state: 'disconnected' })
+      },
+      onDisconnect: error => onState({ sessionId, state: 'reconnecting', error: error || null })
+    })
+    const syncTerminalSize = (): void => {
+      if (link.stopped || standalone) return
+      if (resizeSync) clearTimeout(resizeSync)
+      resizeSync = setTimeout(() => {
+        resizeSync = null
+        // configure()/dispose() stop the loop without reaching this timer; never post to a stale scope.
+        if (link.stopped) return
+        void this.post(`/api/sessions/${encodeURIComponent(sessionId)}/terminal/resize`, { columns, rows }, configuration).catch(() => undefined)
+      }, 120)
     }
-
-    configuration.transports.add(stop)
-    if (configuration.abortController.signal.aborted) stop()
-    else connect()
     return {
       write(data: string): void {
-        if (stopped) return
-        if (socket?.readyState === 1) socket.send(new TextEncoder().encode(data))
+        if (link.stopped) return
+        if (link.socket?.readyState === 1) link.socket.send(new TextEncoder().encode(data))
       },
       resize(nextColumns: number, nextRows: number): void {
-        if (stopped) return
+        if (link.stopped) return
         columns = nextColumns
         rows = nextRows
-        if (socket?.readyState === 1) socket.send(JSON.stringify({ type: 'resize', columns, rows }))
+        if (link.socket?.readyState === 1) link.socket.send(JSON.stringify({ type: 'resize', columns, rows }))
         syncTerminalSize()
       },
-      close: stop
+      close: link.stop
     }
   }
 
@@ -2302,65 +2252,36 @@ export class AgentServerClient {
     const configuration = this.configuration
     const endpoint = new URL(configurationURL(configuration, `/api/sessions/${encodeURIComponent(sessionId)}/events`))
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
-    let stopped = false
     let lastSeq = after
-    let retryDelay = 500
-    let socket: WebSocket | null = null
-    let retry: NodeJS.Timeout | null = null
-    let connectWatchdog: NodeJS.Timeout | null = null
-    const stop = (): void => {
-      if (stopped) return
-      stopped = true
-      if (retry) clearTimeout(retry)
-      if (connectWatchdog) clearTimeout(connectWatchdog)
-      retry = null
-      connectWatchdog = null
-      configuration.transports.delete(stop)
-      socket?.close()
-    }
-    const connect = (): void => {
-      if (stopped) return
-      const url = new URL(endpoint)
-      url.searchParams.set('after', String(lastSeq))
-      url.searchParams.set('visible', 'true')
-      if (onReasoningStream) {
-        url.searchParams.set('reasoning_stream', 'true')
-        url.searchParams.set('reasoning_text', 'true')
-      }
-      const protocols = authenticatedWebSocketProtocols(
-        configuration,
-        url,
-        EVENTS_STREAM_PROTOCOL
-      )
-      const current = new WebSocket(url, protocols)
-      socket = current
-      let disconnected = false
-      let reasoningInstance = ''
-      let reasoningRevision = -1
-      const disconnect = (error?: string): void => {
-        if (stopped || disconnected) return
-        disconnected = true
-        if (connectWatchdog) clearTimeout(connectWatchdog)
-        connectWatchdog = null
-        onState(false, error)
-        const jitter = Math.floor(Math.random() * Math.min(250, retryDelay / 3))
-        retry = setTimeout(connect, retryDelay + jitter)
-        retryDelay = Math.min(10_000, retryDelay * 2)
-      }
-      connectWatchdog = setTimeout(() => {
-        if (stopped || disconnected || current.readyState !== 0) return
-        current.close()
-        disconnect('Live updates timed out')
-      }, 10_000)
-      current.addEventListener('open', () => {
-        if (stopped || disconnected) return
-        if (connectWatchdog) clearTimeout(connectWatchdog)
-        connectWatchdog = null
-        retryDelay = 500
+    let reasoningInstance = ''
+    let reasoningRevision = -1
+    return reconnectingSocket(configuration, {
+      connectTimeoutMs: 10_000,
+      timedOutError: 'Live updates timed out',
+      interruptedError: 'Live updates disconnected',
+      open: () => {
+        const url = new URL(endpoint)
+        url.searchParams.set('after', String(lastSeq))
+        url.searchParams.set('visible', 'true')
+        if (onReasoningStream) {
+          url.searchParams.set('reasoning_stream', 'true')
+          url.searchParams.set('reasoning_text', 'true')
+        }
+        const protocols = authenticatedWebSocketProtocols(
+          configuration,
+          url,
+          EVENTS_STREAM_PROTOCOL
+        )
+        reasoningInstance = ''
+        reasoningRevision = -1
+        return new WebSocket(url, protocols)
+      },
+      onOpen: (_socket, link) => {
+        link.established()
+        link.resetBackoff()
         onState(true)
-      })
-      current.addEventListener('message', message => {
-        if (stopped || disconnected) return
+      },
+      onMessage: message => {
         try {
           const packet = JSON.parse(String(message.data)) as unknown
           if (packet && typeof packet === 'object' && 'type' in packet && packet.type === 'reasoning_summary_stream') {
@@ -2396,17 +2317,10 @@ export class AgentServerClient {
           lastSeq = event.seq
           onEvent(compactTimelineEvent(event))
         } catch { /* ignore malformed packets */ }
-      })
-      current.addEventListener('close', () => disconnect())
-      current.addEventListener('error', () => {
-        current.close()
-        disconnect('Live updates disconnected')
-      })
-    }
-    configuration.transports.add(stop)
-    if (configuration.abortController.signal.aborted) stop()
-    else connect()
-    return stop
+      },
+      onClose: (_event, link) => link.disconnect(),
+      onDisconnect: error => onState(false, error)
+    }).stop
   }
 
   emergencyStream(
@@ -2421,68 +2335,23 @@ export class AgentServerClient {
     const configuration = this.configuration
     const endpoint = new URL(configurationURL(configuration, '/api/emergency-alerts/events'))
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
-    let stopped = false
-    let retryDelay = 500
-    let socket: WebSocket | null = null
-    let retry: NodeJS.Timeout | null = null
-    let activeConnectWatchdog: NodeJS.Timeout | null = null
-    const stop = (): void => {
-      if (stopped) return
-      stopped = true
-      if (retry) clearTimeout(retry)
-      if (activeConnectWatchdog) clearTimeout(activeConnectWatchdog)
-      retry = null
-      activeConnectWatchdog = null
-      configuration.transports.delete(stop)
-      socket?.close()
-    }
-    const connect = (): void => {
-      if (stopped) return
-      retry = null
-      const url = new URL(endpoint)
-      const current = new WebSocket(
-        url,
-        [
-          EMERGENCY_STREAM_PROTOCOL,
-          ...agentTokenWebSocketProtocols(configuration.token)
-        ]
-      )
-      socket = current
-      let disconnected = false
-      let connectWatchdog: NodeJS.Timeout | null = null
-      const clearConnectWatchdog = (): void => {
-        const timer = connectWatchdog
-        if (!timer) return
-        clearTimeout(timer)
-        connectWatchdog = null
-        if (activeConnectWatchdog === timer) activeConnectWatchdog = null
-      }
-      const disconnect = (error?: string): void => {
-        if (stopped || disconnected || socket !== current) return
-        disconnected = true
-        clearConnectWatchdog()
-        onState(false, error)
-        const jitter = Math.floor(Math.random() * Math.min(250, retryDelay / 3))
-        retry = setTimeout(connect, retryDelay + jitter)
-        retryDelay = Math.min(10_000, retryDelay * 2)
-      }
-      connectWatchdog = setTimeout(() => {
-        if (stopped || disconnected || socket !== current || current.readyState !== 0) return
-        current.close()
-        disconnect('Emergency alert stream timed out')
-      }, 10_000)
-      activeConnectWatchdog = connectWatchdog
-      current.addEventListener('open', () => {
-        if (stopped || disconnected || socket !== current) return
-        clearConnectWatchdog()
-        retryDelay = 500
+    return reconnectingSocket(configuration, {
+      connectTimeoutMs: 10_000,
+      timedOutError: 'Emergency alert stream timed out',
+      interruptedError: 'Emergency alert stream disconnected',
+      open: () => new WebSocket(endpoint, [
+        EMERGENCY_STREAM_PROTOCOL,
+        ...agentTokenWebSocketProtocols(configuration.token)
+      ]),
+      onOpen: (_socket, link) => {
+        link.established()
+        link.resetBackoff()
         onState(true)
-      })
-      current.addEventListener('message', message => {
-        if (stopped || disconnected || socket !== current) return
+      },
+      onMessage: (message, socket, link) => {
         const rejectPacket = (reason: string): void => {
-          current.close(1008, 'Invalid emergency alert packet')
-          disconnect(reason)
+          socket.close(1008, 'Invalid emergency alert packet')
+          link.disconnect(reason)
         }
         try {
           const raw = String(message.data)
@@ -2521,32 +2390,22 @@ export class AgentServerClient {
         } catch {
           rejectPacket('Emergency alert stream sent malformed JSON')
         }
-      })
-      current.addEventListener('close', event => {
-        clearConnectWatchdog()
-        if (stopped || disconnected || socket !== current) return
+      },
+      onClose: (event, link) => {
         const fatalError = event.code === 4401
           ? 'Emergency alert authorization failed'
           : event.code === 4406
             ? 'Emergency alert protocol was rejected'
             : null
         if (fatalError) {
-          stop()
+          link.stop()
           onState(false, fatalError)
           return
         }
-        disconnect(event.reason || undefined)
-      })
-      current.addEventListener('error', () => {
-        if (stopped || disconnected || socket !== current) return
-        current.close()
-        disconnect('Emergency alert stream disconnected')
-      })
-    }
-    configuration.transports.add(stop)
-    if (configuration.abortController.signal.aborted) stop()
-    else connect()
-    return stop
+        link.disconnect(event.reason || undefined)
+      },
+      onDisconnect: error => onState(false, error)
+    }).stop
   }
 
   /** One metadata-only stream. Retries only follow transport failure, never idle polling. */
@@ -2563,58 +2422,32 @@ export class AgentServerClient {
     const protocol = activity ? TEAM_ACTIVITY_HINTS_PROTOCOL : TEAM_MAIL_HINTS_PROTOCOL
     const endpoint = new URL(configurationURL(configuration, TEAM_MAIL_HINTS_PATH))
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
-    let stopped = false
-    let socket: WebSocket | null = null
-    let retry: NodeJS.Timeout | null = null
-    let watchdog: NodeJS.Timeout | null = null
-    let delay = 500
-    const clearWatchdog = (): void => { if (watchdog) clearTimeout(watchdog); watchdog = null }
-    const stop = (): void => {
-      if (stopped) return
-      stopped = true
-      if (retry) clearTimeout(retry)
-      retry = null
-      clearWatchdog()
-      configuration.transports.delete(stop)
-      socket?.close()
-    }
-    const fatal = (): void => { stop(); onFatal() }
-    const connect = (): void => {
-      if (stopped) return
-      retry = null
-      const current = new WebSocket(endpoint, [protocol, ...agentTokenWebSocketProtocols(configuration.token)])
-      socket = current
-      let disconnected = false
-      let first: MailHintPacket | null = null
-      let offered: MailboxCoverage | null = null
-      const active = (): boolean => !stopped && !disconnected && socket === current
-      const disconnect = (): void => {
-        if (!active()) return
-        disconnected = true
-        clearWatchdog()
-        onDisconnect()
-        retry = setTimeout(connect, delay + Math.floor(Math.random() * Math.min(250, delay / 3)))
-        delay = Math.min(10_000, delay * 2)
-      }
+    let first: MailHintPacket | null = null
+    let offered: MailboxCoverage | null = null
+    const fatal = (link: ReconnectingSocketLink): void => { link.stop(); onFatal() }
+    return reconnectingSocket(configuration, {
       // Includes the first authenticated snapshot, not merely TCP connection.
       // Member bootstrap may wait 15s for its feed, 10s for exact retained-
       // anchor proof and 5s for its first write; retain 5s scheduling margin.
       // This bounds bootstrap only, never idle.
-      watchdog = setTimeout(() => { if (active()) { disconnect(); current.close() } }, 35_000)
-      current.addEventListener('open', () => {
-        if (!active()) return
+      connectTimeoutMs: 35_000,
+      open: () => {
+        first = null
+        offered = null
+        return new WebSocket(endpoint, [protocol, ...agentTokenWebSocketProtocols(configuration.token)])
+      },
+      onOpen: (socket, link) => {
         try {
-          if (current.protocol !== protocol) throw new Error('Mail protocol was not negotiated')
+          if (socket.protocol !== protocol) throw new Error('Mail protocol was not negotiated')
           offered = previousCursor()
           const previous = activity && offered ? { version: 2,
             mail: { ...offered, reset: false },
             bulletin: { ...(activity.previousBulletin() ?? emptyBulletinCursor(mailbox.team_id)), reset: false }
           } : offered
-          current.send(JSON.stringify({ version: activity ? 2 : 1, team_id: mailbox.team_id, previous_cursor: previous }))
-        } catch { fatal() }
-      })
-      current.addEventListener('message', message => {
-        if (!active()) return
+          socket.send(JSON.stringify({ version: activity ? 2 : 1, team_id: mailbox.team_id, previous_cursor: previous }))
+        } catch { fatal(link) }
+      },
+      onMessage: (message, _socket, link) => {
         try {
           if (typeof message.data !== 'string' || message.data.length > TEAM_MAIL_HINTS_MAX_PACKET_CHARS) throw new Error('Invalid packet')
           const packet = activity ? parseTeamActivityHintPacket(JSON.parse(message.data)) : parseMailHintPacket(JSON.parse(message.data))
@@ -2624,24 +2457,19 @@ export class AgentServerClient {
           if (!first) {
             if (packet.type !== 'snapshot' || (offered && offered.recipient_server_id !== packet.cursor.recipient_server_id && !packet.cursor.reset)) throw new Error('Invalid snapshot')
             first = packet
-            delay = 500
-            clearWatchdog()
+            link.resetBackoff()
+            link.established()
           } else if (packet.type !== 'hint' || packet.stream_id !== first.stream_id
             || packet.cursor.recipient_server_id !== first.cursor.recipient_server_id) throw new Error('Stream changed')
           onPacket(packet)
-        } catch { fatal() }
-      })
-      current.addEventListener('close', event => {
-        if (!active()) return
-        if ([1008, 4401, 4403, 4406].includes(event.code)) fatal()
-        else disconnect()
-      })
-      current.addEventListener('error', () => { if (active()) { disconnect(); current.close() } })
-    }
-    configuration.transports.add(stop)
-    if (configuration.abortController.signal.aborted) stop()
-    else connect()
-    return stop
+        } catch { fatal(link) }
+      },
+      onClose: (event, link) => {
+        if ([1008, 4401, 4403, 4406].includes(event.code)) fatal(link)
+        else link.disconnect()
+      },
+      onDisconnect: () => onDisconnect()
+    }).stop
   }
 
   private get<T>(path: string, configuration = this.configuration, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, maxResponseBytes?: number): Promise<T> {
@@ -3058,6 +2886,114 @@ function cancelConfiguration(configuration: ClientConfiguration): void {
   if (!configuration.abortController.signal.aborted) configuration.abortController.abort()
   for (const stop of [...configuration.transports]) stop()
   configuration.transports.clear()
+}
+
+/** Lifecycle handle of one reconnectingSocket() loop; the same object reaches every hook and the caller. */
+interface ReconnectingSocketLink {
+  readonly stopped: boolean
+  /** The attempt in flight; null before the first attempt and between a drop and its retry. */
+  readonly socket: WebSocket | null
+  /** Ends the connect watchdog. Each protocol decides what counts as connected (open, `ready`, first snapshot). */
+  established(): void
+  /** The next drop waits 500 ms again instead of continuing the doubling. */
+  resetBackoff(): void
+  /** Drops the current socket and schedules the next attempt. The caller closes the socket. */
+  disconnect(error?: string): void
+  /** Ends the loop: no retry, no transports entry, no hook other than onCloseAfterStop. */
+  stop(): void
+}
+
+interface ReconnectingSocketOptions {
+  /** Builds one attempt's socket (attempt 0 is the first), so cursors and sizes carry over. */
+  open(attempt: number): WebSocket
+  /** Budget until established(); on expiry the socket is closed and disconnect(timedOutError) runs. */
+  connectTimeoutMs: number
+  timedOutError?: string
+  /** disconnect() reason after a socket 'error' event. */
+  interruptedError?: string
+  onOpen?(socket: WebSocket, link: ReconnectingSocketLink): void
+  onMessage(message: MessageEvent, socket: WebSocket, link: ReconnectingSocketLink): void
+  /** The current socket closed while the loop was live; the hook picks stop() or disconnect(). */
+  onClose(event: CloseEvent, link: ReconnectingSocketLink): void
+  /** The current socket closed after stop(). */
+  onCloseAfterStop?(): void
+  /** One drop, before its retry is scheduled. */
+  onDisconnect(error?: string): void
+}
+
+/**
+ * One WebSocket loop: connect, retry with a doubling backoff (500 ms to 10 s, jitter below
+ * min(250, delay / 3)), a connect watchdog, and a stop registered in configuration.transports
+ * so configure()/dispose() end it. Hooks run only for the socket currently in flight, so a
+ * replaced socket's late events never reach protocol code.
+ */
+function reconnectingSocket(configuration: ClientConfiguration, options: ReconnectingSocketOptions): ReconnectingSocketLink {
+  let stopped = false
+  let socket: WebSocket | null = null
+  let retry: NodeJS.Timeout | null = null
+  let watchdog: NodeJS.Timeout | null = null
+  let retryDelay = 500
+  let attempt = 0
+  const clearWatchdog = (): void => { if (watchdog) clearTimeout(watchdog); watchdog = null }
+  const stop = (): void => {
+    if (stopped) return
+    stopped = true
+    if (retry) clearTimeout(retry)
+    retry = null
+    clearWatchdog()
+    configuration.transports.delete(stop)
+    socket?.close()
+  }
+  const disconnect = (error?: string): void => {
+    if (stopped || !socket) return
+    socket = null
+    clearWatchdog()
+    options.onDisconnect(error)
+    const jitter = Math.floor(Math.random() * Math.min(250, retryDelay / 3))
+    retry = setTimeout(connect, retryDelay + jitter)
+    retryDelay = Math.min(10_000, retryDelay * 2)
+  }
+  const link: ReconnectingSocketLink = {
+    get stopped() { return stopped },
+    get socket() { return socket },
+    established: clearWatchdog,
+    resetBackoff() { retryDelay = 500 },
+    disconnect,
+    stop
+  }
+  const connect = (): void => {
+    if (stopped) return
+    retry = null
+    const current = options.open(attempt++)
+    socket = current
+    watchdog = setTimeout(() => {
+      if (stopped || socket !== current) return
+      current.close()
+      disconnect(options.timedOutError)
+    }, options.connectTimeoutMs)
+    current.addEventListener('open', () => {
+      if (stopped || socket !== current) return
+      options.onOpen?.(current, link)
+    })
+    current.addEventListener('message', message => {
+      if (stopped || socket !== current) return
+      options.onMessage(message, current, link)
+    })
+    current.addEventListener('close', event => {
+      if (socket !== current) return
+      if (stopped) { options.onCloseAfterStop?.(); return }
+      options.onClose(event, link)
+    })
+    current.addEventListener('error', () => {
+      if (stopped || socket !== current) return
+      current.close()
+      disconnect(options.interruptedError)
+    })
+  }
+  configuration.transports.add(stop)
+  if (configuration.abortController.signal.aborted) stop()
+  else connect()
+  return link
 }
 
 function configurationURL(configuration: ClientConfiguration, path: string): string {
