@@ -21,8 +21,8 @@ import threading
 from types import MappingProxyType
 from typing import Callable
 
-from claude_history_provenance import ClaudeInterruptionTracker
-from claude_goals import ClaudeGoalHistoryNormalizer, is_claude_synthetic_no_response
+from claude_history_provenance import ClaudeInterruptionTracker, ClaudeCommandHistoryNormalizer
+from claude_goals import is_claude_synthetic_no_response
 from claude_sdk_client import CLAUDE_SDK_LITERAL_MESSAGE_PREFIX
 
 
@@ -685,19 +685,19 @@ class _Proof:
     interruptions: tuple[tuple[tuple[int, str, str], str], ...] = ()
     companions: frozenset[tuple[str, int, str]] = frozenset()
     assistant_replays: frozenset[tuple] = frozenset()
-    goal_commands: tuple = ()
+    command_rewrites: tuple = ()
     interruption_index: MappingProxyType = field(init=False, repr=False)
-    goal_command_index: MappingProxyType = field(init=False, repr=False)
+    command_rewrite_index: MappingProxyType = field(init=False, repr=False)
     cache_signature: frozenset = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "interruption_index", MappingProxyType(dict(self.interruptions)))
-        object.__setattr__(self, "goal_command_index", MappingProxyType(dict(self.goal_commands)))
+        object.__setattr__(self, "command_rewrite_index", MappingProxyType(dict(self.command_rewrites)))
         object.__setattr__(self, "cache_signature", self.targets | frozenset(
             ("interruption", key, origin) for key, origin in self.interruptions)
             | frozenset(("companion", *key) for key in self.companions)
             | frozenset(("assistant_replay", *key) for key in self.assistant_replays)
-            | frozenset(("goal_command", key, text) for key, text in self.goal_commands))
+            | frozenset(("command_rewrite", key, text) for key, text in self.command_rewrites))
 
     def signature(self) -> frozenset:
         return self.cache_signature
@@ -958,8 +958,8 @@ def _prove(session_id: str, provider_id: str, events: Path, root: Path,
     interruptions = {}
     interruption_count = 0
     tracker = ClaudeInterruptionTracker()
-    goal_history = ClaudeGoalHistoryNormalizer()
-    goal_sources = {}
+    commands = ClaudeCommandHistoryNormalizer()
+    command_sources = {}
     synthetic_sources = {}
     steer_intervals = _steer_intervals(native_events, provider_id)
     scheduled_ranges = {}
@@ -980,16 +980,16 @@ def _prove(session_id: str, provider_id: str, events: Path, root: Path,
         async_inputs.source(event, offset)
         wake_inputs.source(event, offset)
         origin = tracker.consume(event)
-        normalized_goal = goal_history.consume(event)
+        normalized = commands.consume(event)
         identity = (event.get("uuid"), event.get("sessionId"), event.get("timestamp"))
         if is_claude_synthetic_no_response(event) and identity[1] == provider_id:
             synthetic_sources.setdefault(identity, []).append(offset)
-        if normalized_goal is not event and identity[1] == provider_id:
-            raw_goal = normalize_user(event)
-            if isinstance(raw_goal, str):
-                goal_sources.setdefault((identity, _text_key(raw_goal)), []).append(
-                    (offset, normalized_goal["message"]["content"]))
-        if len(goal_sources) + len(synthetic_sources) > MAX_TARGETS:
+        if normalized is not event and identity[1] == provider_id:
+            raw = normalize_user(event)
+            if isinstance(raw, str):
+                command_sources.setdefault((identity, _text_key(raw)), []).append(
+                    (offset, None if normalized is None else normalized["message"]["content"]))
+        if len(command_sources) + len(synthetic_sources) > MAX_TARGETS:
             raise _Unproven()
         if event.get("type") != "user":
             continue
@@ -1028,7 +1028,7 @@ def _prove(session_id: str, provider_id: str, events: Path, root: Path,
             raise _Unproven()
     targets = set()
     corrected = []
-    goal_commands = []
+    command_rewrites = []
     _owned_assistants, owned_inputs = assistant_replays.exact_owned_sources()
     candidate_counts = {}
     candidate_origin_counts = {}
@@ -1055,9 +1055,14 @@ def _prove(session_id: str, provider_id: str, events: Path, root: Path,
                for identity, digest, offset in owned_inputs):
             targets.add(target)
             continue
-        commands = goal_sources.get((candidate_origins.get(target), key), ())
-        if len(commands) == 1 and start < commands[0][0] <= end:
-            canonical = commands[0][1]
+        sources = command_sources.get((candidate_origins.get(target), key), ())
+        if len(sources) == 1 and start < sources[0][0] <= end:
+            canonical = sources[0][1]
+            if canonical is None:
+                # The source row is a slash command's local output, which the
+                # import now omits; its old imported copy is hidden.
+                targets.add(target)
+                continue
             native_time = _timestamp(candidate_origins[target][2])
             owners = []
             for native_run, starts in assistant_replays.starts.items():
@@ -1072,7 +1077,7 @@ def _prove(session_id: str, provider_id: str, events: Path, root: Path,
             if len(owners) == 1:
                 targets.add(target)
             else:
-                goal_commands.append((target, canonical))
+                command_rewrites.append((target, canonical))
             continue
         # A scheduled wake is ordinary provider user input, not isMeta. Prove
         # its complete text, native occurrence interval, exact source identity
@@ -1131,7 +1136,7 @@ def _prove(session_id: str, provider_id: str, events: Path, root: Path,
             companions.add(("history_imported", eligible_batches[run][0], run))
             companions.add(("turn_finished", eligible_batches[run][1], run))
     return _Proof(provider_id, events_stamp, source, source_stamp, frozenset(targets),
-                  tuple(corrected), frozenset(companions), proven_assistants, tuple(goal_commands))
+                  tuple(corrected), frozenset(companions), proven_assistants, tuple(command_rewrites))
 
 
 def _bounded_records(path: Path, expected, start: int, end: int):
@@ -1382,9 +1387,9 @@ class ClaudeMetadataRepairWindow:
 def _project_proof_event(session_id: str, event: dict, proof: _Proof | None) -> dict | None:
     if proof is None or event.get("session_id") not in (None, "", session_id):
         return None
-    canonical = proof.goal_command_index.get(_target(event))
+    canonical = proof.command_rewrite_index.get(_target(event))
     if canonical is not None:
-        return {**event, "prompt": canonical, "provider_history_repair": "source_proven_goal_command"}
+        return {**event, "prompt": canonical, "provider_history_repair": "source_proven_command_rewrite"}
     if proof.assistant_replays and _assistant_target(event) in proof.assistant_replays:
         return {**event, "text": "", "metadata_only": True,
                 "provider_history_repair": "source_proven_assistant_replay"}
@@ -1550,11 +1555,11 @@ class ClaudeMetadataRepairCache:
                 inputs = previous.targets | proof.targets
                 interruptions = {**dict(previous.interruptions), **dict(proof.interruptions)}
                 assistants = previous.assistant_replays | proof.assistant_replays
-                commands = {**dict(previous.goal_commands), **dict(proof.goal_commands)}
+                rewrites = {**dict(previous.command_rewrites), **dict(proof.command_rewrites)}
                 entries = ([(key[0], key[1], "input", key) for key in inputs]
                            + [(key[0], key[1], "interruption", key) for key in interruptions]
                            + [(key[1], key[2], "assistant", key) for key in assistants]
-                           + [(key[0], key[1], "goal_command", key) for key in commands])
+                           + [(key[0], key[1], "command_rewrite", key) for key in rewrites])
                 entries.sort(key=lambda entry: entry[0], reverse=True)
                 evicted_runs = {entry[1] for entry in entries[MAX_TARGETS:]}
                 retained = entries[:MAX_TARGETS]
@@ -1568,7 +1573,7 @@ class ClaudeMetadataRepairCache:
                                tuple((key, interruptions[key]) for _, _, kind, key in retained if kind == "interruption"),
                                frozenset(companions),
                                frozenset(key for _, _, kind, key in retained if kind == "assistant"),
-                               tuple((key, commands[key]) for _, _, kind, key in retained if kind == "goal_command"))
+                               tuple((key, rewrites[key]) for _, _, kind, key in retained if kind == "command_rewrite"))
             with self._lock:
                 cancelled = self._preparation_cancelled
                 self._preparing_session = None

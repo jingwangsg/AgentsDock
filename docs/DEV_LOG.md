@@ -1,5 +1,27 @@
 # Public development log
 
+## 2026-10-03 — A Claude slash command no longer appears as raw XML in the chat
+
+- When Claude Code runs a slash command such as `/compact` or `/model`, its
+  transcript stores the command as a user row holding a `<command-name>`
+  wrapper and the command's local output as a second user row holding
+  `<local-command-stdout>`. History sync imported both verbatim, so after a
+  compaction the desktop and Android timelines showed two "You" bubbles of raw
+  XML. The import now reads the wrapper as the command Claude Code itself
+  displays (`/compact`) and omits the output row when its parent is that
+  wrapper, as every `system` row of the transcript already was. A command
+  this chat ran itself therefore matches its own
+  turn and is not imported a second time; a command typed in the Claude CLI
+  shows as `/compact` after a Resume. Pasted copies that lack this structure
+  stay as submitted. Rows imported before this change are corrected when the
+  chat is read through the existing source-proven repair, which covers chats
+  whose event log is under 32 MiB; a larger chat keeps them until its history
+  is reloaded. Codex chats were not affected: Codex records a compaction
+  summary as a typed provider notice, which was already hidden.
+- `/goal` is handled by the same rule; it no longer has a rule of its own.
+- Verified with the isolated parser and repair tests, and on an isolated
+  server importing a transcript that holds the real rows of a compaction.
+
 ## 2026-10-03 — Context compaction works the same way for Claude and Codex
 
 - Claude chats can now compact their context from the provider panel and from

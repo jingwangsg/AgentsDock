@@ -10,6 +10,7 @@ import hmac
 import json
 from pathlib import Path
 import re
+import tempfile
 import unittest
 from unittest.mock import Mock
 from claude_history_provenance import ClaudeInterruptionTracker
@@ -163,6 +164,59 @@ class ClaudeHistoryMetadataTests(unittest.TestCase):
             {"kind": "user", "text": "Actual request"},
             {"kind": "assistant", "text": "Actual answer"},
         ])
+
+    def test_slash_command_rows_read_as_the_command_and_their_local_output_is_omitted(self) -> None:
+        wrapper = ("<command-name>/review</command-name>\n            <command-message>review</command-message>\n"
+                   "            <command-args> staged files </command-args>")
+        events = [
+            user_event("Actual request"),
+            {"type": "assistant", "message": {"content": "Actual answer"}},
+            user_event(wrapper, uuid="cmd-1", sessionId="s-1"),
+            user_event("<local-command-stdout>Review queued</local-command-stdout>", uuid="out-1", parentUuid="cmd-1", sessionId="s-1"),
+            user_event("<local-command-stderr>Denied</local-command-stderr>", uuid="out-2", parentUuid="cmd-1", sessionId="s-1"),
+            user_event("Next request"),
+        ]
+        self.assertEqual(self.projection["parse_claude_history_events"](events, None), [
+            {"kind": "user", "text": "Actual request"},
+            {"kind": "assistant", "text": "Actual answer"},
+            {"kind": "user", "text": "/review staged files"},
+            {"kind": "user", "text": "Next request"},
+        ])
+        # Custom commands and skills are stored message-first, sometimes without args.
+        for text, command in (
+            ("<command-message>paper-research</command-message>\n<command-name>/paper-research</command-name>\n"
+             "<command-args>read: paper.pdf</command-args>", "/paper-research read: paper.pdf"),
+            ("<command-message>echo-test</command-message>\n<command-name>/echo-test</command-name>", "/echo-test"),
+        ):
+            self.assertEqual(self.projection["parse_claude_history_events"]([user_event(text)], None), [{"kind": "user", "text": command}])
+
+    def test_local_output_without_its_wrapper_parent_stays_as_submitted(self) -> None:
+        wrapper = "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>"
+        output = "<local-command-stdout>Compacted </local-command-stdout>"
+        for events in (
+            [user_event(output, uuid="out-1", parentUuid="cmd-1", sessionId="s-1")],
+            [user_event(wrapper, uuid="cmd-1", sessionId="s-1"), user_event(output, uuid="out-1", parentUuid="cmd-1", sessionId="s-2")],
+            [user_event(wrapper, uuid="cmd-1", sessionId="s-1"), user_event(output, uuid="out-1", parentUuid="other", sessionId="s-1")],
+        ):
+            with self.subTest(events=events):
+                self.assertEqual(self.projection["parse_claude_history_events"](events, None)[-1], {"kind": "user", "text": output})
+        quoted = "Claude printed:\n" + wrapper
+        self.assertEqual(self.projection["parse_claude_history_events"]([user_event(quoted)], None), [{"kind": "user", "text": quoted}])
+
+    def test_delta_finds_the_wrapper_written_before_its_cursor(self) -> None:
+        wrapper = user_event("<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>",
+                             uuid="cmd-1", sessionId="s-1")
+        output = user_event("<local-command-stdout>Compacted </local-command-stdout>", uuid="out-1", parentUuid="cmd-1", sessionId="s-1")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "transcript.jsonl"
+            first = json.dumps(wrapper).encode("utf-8") + b"\n"
+            path.write_bytes(first + json.dumps(output).encode("utf-8") + b"\n")
+            end = path.stat().st_size
+            self.projection["bounded_jsonl_records_range"] = Mock(return_value=iter([(output, end)]))
+            self.assertEqual(self.projection["parse_provider_history_delta"](
+                path, "claude", len(first), end, limit=None,
+                expected_stat={}, previous_last_item_digest="previous",
+            ), ([], end, "previous", False))
 
     def test_preview_skips_generated_skill_context(self) -> None:
         events = [user_event(COMMAND, isMeta=True), user_event(REFERENCE, isMeta=True), user_event("Real preview")]

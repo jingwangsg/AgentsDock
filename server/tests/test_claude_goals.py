@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
-from claude_goals import ClaudeGoalProjection, ClaudeGoalHistoryNormalizer, is_claude_synthetic_no_response, MAX_GOAL_RECORD_BYTES
+from claude_goals import ClaudeGoalProjection, is_claude_synthetic_no_response, MAX_GOAL_RECORD_BYTES
 
 
 SESSION = "8a865fcc-fc32-4373-9524-7cc8e62cfbc2"
@@ -63,26 +63,6 @@ class ClaudeHistoryRootTests(unittest.TestCase):
 
 
 class ClaudeGoalProjectionTests(unittest.TestCase):
-    def test_only_native_goal_parent_proves_xml_command_and_clear(self):
-        tracker = ClaudeGoalHistoryNormalizer()
-        parent = record(sentinel=True)
-        command = {"type": "user", "sessionId": SESSION, "isSidechain": False,
-                   "uuid": str(uuid4()), "parentUuid": parent["uuid"], "promptId": str(uuid4()),
-                   "message": {"role": "user", "content": "<command-name>/goal</command-name>\n <command-message>goal</command-message>\n <command-args>Reply STAGE2</command-args>"}}
-        self.assertIs(tracker.consume(command), command)
-        tracker.consume(parent)
-        self.assertEqual(tracker.consume(command)["message"]["content"], "/goal Reply STAGE2")
-        foreign = {**command, "sessionId": FORK}
-        self.assertIs(tracker.consume(foreign), foreign)
-        cleared = record(met=True, sentinel=True)
-        caveat = {**command, "uuid": str(uuid4()), "parentUuid": cleared["uuid"], "isMeta": True,
-                  "message": {"role": "user", "content": "<local-command-caveat>Native local command</local-command-caveat>"}}
-        clear = {**command, "parentUuid": caveat["uuid"], "message": {"role": "user", "content": command["message"]["content"].replace("Reply STAGE2", "clear")}}
-        tracker.consume(cleared); tracker.consume(caveat)
-        self.assertEqual(tracker.consume(clear)["message"]["content"], "/goal clear")
-        clear["promptId"] = str(uuid4())
-        self.assertIs(tracker.consume(clear), clear)
-
     def test_synthetic_no_response_is_not_a_model_answer(self):
         message = {"role": "assistant", "model": "<synthetic>", "usage": {"output_tokens": 0},
                    "content": [{"type": "text", "text": "No response requested."}]}
