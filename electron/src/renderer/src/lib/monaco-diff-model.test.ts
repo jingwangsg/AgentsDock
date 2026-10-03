@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildMonacoDiffModel, languageIdForPath } from './monaco-diff-model'
-import { parseReviewableDiff } from './timeline'
+import { parseReviewableDiff } from './unified-diff'
 
 const gapLabel = (unchanged: number | null) => unchanged == null ? '⋯' : `⋯ ${unchanged} unchanged`
 const file = (source: string[]) => parseReviewableDiff(source.join('\n'))[0]

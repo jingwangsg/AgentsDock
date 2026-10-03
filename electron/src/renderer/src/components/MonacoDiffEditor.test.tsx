@@ -1,7 +1,7 @@
 import { cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildMonacoDiffModel } from '../lib/monaco-diff-model'
-import { parseReviewableDiff } from '../lib/timeline'
+import { parseReviewableDiff } from '../lib/unified-diff'
 import { MonacoDiffEditor } from './MonacoDiffEditor'
 
 // jsdom cannot run Monaco; this fake records what the host component asks of it.

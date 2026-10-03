@@ -49,7 +49,7 @@ import {
   savedWorkspaceColumnStyle,
   savedWorkspaceSidebarVisible
 } from './components/WorkspaceResizeHandles'
-import { reviewTargetBelongsToSession, sameCodeReviewTarget, type CodeReviewTarget } from './lib/timeline'
+import { reviewTargetBelongsToSession, sameCodeReviewTarget, type CodeReviewTarget } from './lib/unified-diff'
 import { closeTopTransient } from './lib/transient-close'
 import { installRendererStallMonitor } from './lib/renderer-stall-monitor'
 import { nativeFileRefsFromFiles } from './lib/native-files'
