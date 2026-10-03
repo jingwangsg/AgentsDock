@@ -80442,9 +80442,15 @@ def request_exact_secure_peer_control_authorized(request: Request) -> bool:
     return bool(candidate) and token_matches(candidate)
 
 
-def team_hub_bootstrap_post_transport_error(
+def bounded_json_post_error(
     request: Request,
+    *,
+    max_bytes: int,
+    min_bytes: int,
+    label: str,
 ) -> tuple[int, str] | None:
+    """Validate exact bounded JSON framing before any body is read."""
+
     raw_headers = request.scope.get("headers", [])
     content_types = [
         value
@@ -80452,12 +80458,12 @@ def team_hub_bootstrap_post_transport_error(
         if bytes(name).lower() == b"content-type"
     ]
     if content_types != [b"application/json"]:
-        return 415, "bootstrap proof requests require application/json"
+        return 415, f"{label} requests require application/json"
     if any(
         bytes(name).lower() == b"transfer-encoding"
         for name, _value in raw_headers
     ):
-        return 400, "bootstrap proof requests do not accept transfer encoding"
+        return 400, f"{label} requests do not accept transfer encoding"
     content_lengths = [
         value
         for name, value in raw_headers
@@ -80466,18 +80472,29 @@ def team_hub_bootstrap_post_transport_error(
     if len(content_lengths) != 1:
         return (
             411 if not content_lengths else 400,
-            "bootstrap proof request content length is invalid",
+            f"{label} request content length is invalid",
         )
     try:
         raw_length = content_lengths[0].decode("ascii")
         size = int(raw_length, 10)
     except (UnicodeDecodeError, ValueError):
-        return 400, "bootstrap proof request content length is invalid"
-    if raw_length != str(size) or size <= 0:
-        return 400, "bootstrap proof request content length is invalid"
-    if size > TEAM_HUB_BOOTSTRAP_MAX_BODY_BYTES:
-        return 413, "bootstrap proof request body is too large"
+        return 400, f"{label} request content length is invalid"
+    if raw_length != str(size) or size < min_bytes:
+        return 400, f"{label} request content length is invalid"
+    if size > max_bytes:
+        return 413, f"{label} request body is too large"
     return None
+
+
+def team_hub_bootstrap_post_transport_error(
+    request: Request,
+) -> tuple[int, str] | None:
+    return bounded_json_post_error(
+        request,
+        max_bytes=TEAM_HUB_BOOTSTRAP_MAX_BODY_BYTES,
+        min_bytes=1,
+        label="bootstrap proof",
+    )
 
 
 def server_restart_post_transport_error(request: Request) -> tuple[int, str] | None:
@@ -80558,40 +80575,12 @@ def privileged_native_json_transport(
 def secure_peer_post_transport_error(request: Request) -> tuple[int, str] | None:
     """Validate the exact bounded JSON framing before secret-bearing parsing."""
 
-    raw_headers = request.scope.get("headers", [])
-    content_types = [
-        value
-        for name, value in raw_headers
-        if bytes(name).lower() == b"content-type"
-    ]
-    if content_types != [b"application/json"]:
-        return 415, "secure peer requests require application/json"
-    if any(
-        bytes(name).lower() == b"transfer-encoding"
-        for name, _value in raw_headers
-    ):
-        return 400, "secure peer requests do not accept transfer encoding"
-    content_lengths = [
-        value
-        for name, value in raw_headers
-        if bytes(name).lower() == b"content-length"
-    ]
-    if len(content_lengths) != 1:
-        return (
-            411 if not content_lengths else 400,
-            "secure peer request content length is invalid",
-        )
-    try:
-        raw_length = content_lengths[0].decode("ascii")
-        size = int(raw_length, 10)
-    except (UnicodeDecodeError, ValueError):
-        return 400, "secure peer request content length is invalid"
-    if raw_length != str(size) or not 2 <= size <= SECURE_PEER_MAX_BODY_BYTES:
-        return (
-            413 if size > SECURE_PEER_MAX_BODY_BYTES else 400,
-            "secure peer request content length is invalid",
-        )
-    return None
+    return bounded_json_post_error(
+        request,
+        max_bytes=SECURE_PEER_MAX_BODY_BYTES,
+        min_bytes=2,
+        label="secure peer",
+    )
 
 
 def secure_peer_attachment_put_transport_error(
