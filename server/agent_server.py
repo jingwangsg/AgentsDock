@@ -81847,6 +81847,30 @@ async def bootstrap_requested_team_network(body: TeamHubHostEnableRequest) -> No
         ) from exc
 
 
+def ensure_team_hub_role_change_allowed() -> None:
+    """A role change must not race a managed restart or a pending/active update."""
+
+    if managed_server_restart_blocks_work():
+        raise TeamHubHostControlFailure(
+            "team_hub_host_restart_active",
+            "AgentsServer is restarting and cannot change its Team Network role.",
+            status_code=409,
+            action="Retry after the server reconnects.",
+            retryable=True,
+        )
+    update = read_server_update_status()
+    if str(update.get("phase") or "") in (
+        SERVER_UPDATE_ACTIVE_PHASES | {SERVER_UPDATE_PENDING_PHASE}
+    ):
+        raise TeamHubHostControlFailure(
+            "team_hub_host_update_active",
+            "AgentsServer cannot change its Team Network role during an update.",
+            status_code=409,
+            action="Finish or cancel the server update, then retry.",
+            retryable=True,
+        )
+
+
 async def enable_team_hub_host(
     body: TeamHubHostEnableRequest,
 ) -> dict[str, Any]:
@@ -81940,25 +81964,7 @@ async def enable_team_hub_host(
                 retryable=None,
             )
             return public_team_hub_host_control_status(completed)
-        if managed_server_restart_blocks_work():
-            raise TeamHubHostControlFailure(
-                "team_hub_host_restart_active",
-                "AgentsServer is restarting and cannot change its Team Network role.",
-                status_code=409,
-                action="Retry after the server reconnects.",
-                retryable=True,
-            )
-        update = read_server_update_status()
-        if str(update.get("phase") or "") in (
-            SERVER_UPDATE_ACTIVE_PHASES | {SERVER_UPDATE_PENDING_PHASE}
-        ):
-            raise TeamHubHostControlFailure(
-                "team_hub_host_update_active",
-                "AgentsServer cannot change its Team Network role during an update.",
-                status_code=409,
-                action="Finish or cancel the server update, then retry.",
-                retryable=True,
-            )
+        ensure_team_hub_role_change_allowed()
         write_team_hub_host_control_status(
             phase="starting",
             request_id=request_id,
@@ -82096,25 +82102,7 @@ async def disable_team_hub_host(
                 _live_reactivation=None,
             )
             return public_team_hub_host_control_status(completed)
-        if managed_server_restart_blocks_work():
-            raise TeamHubHostControlFailure(
-                "team_hub_host_restart_active",
-                "AgentsServer is restarting and cannot change its Team Network role.",
-                status_code=409,
-                action="Retry after the server reconnects.",
-                retryable=True,
-            )
-        update = read_server_update_status()
-        if str(update.get("phase") or "") in (
-            SERVER_UPDATE_ACTIVE_PHASES | {SERVER_UPDATE_PENDING_PHASE}
-        ):
-            raise TeamHubHostControlFailure(
-                "team_hub_host_update_active",
-                "AgentsServer cannot change its Team Network role during an update.",
-                status_code=409,
-                action="Finish or cancel the server update, then retry.",
-                retryable=True,
-            )
+        ensure_team_hub_role_change_allowed()
         try:
             config_snapshot = await asyncio.to_thread(
                 persist_team_hub_host_settings,

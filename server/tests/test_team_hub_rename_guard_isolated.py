@@ -15,7 +15,7 @@ def load_guards():
     source = (Path(__file__).resolve().parents[1] / "agent_server.py")
     parsed = ast.parse(source.read_text())
     selected = {"TeamHubHostControlFailure", "TeamHubHostEnableRequest", "canonical_server_display_name",
-        "enable_team_hub_host", "disable_team_hub_host", "team_hub_host_control_capability"}
+        "enable_team_hub_host", "disable_team_hub_host", "ensure_team_hub_role_change_allowed", "team_hub_host_control_capability"}
     module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
         *[node for node in parsed.body if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in selected]], type_ignores=[])
     namespace = {"BaseModel": BaseModel, "Field": Field, "field_validator": field_validator,
