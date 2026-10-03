@@ -87217,8 +87217,7 @@ async def _start_server_update(
                             hub_capability.get("startup_failure_reason") or ""
                         ).strip()
                     )
-                    if hub_snapshot is not None:
-                        expected_hub_id = str(hub_capability.get("hub_id") or "")
+                    if hub_snapshot is not None or failed_hub_repair:
                         expected_hub_transport = str(
                             hub_capability.get("transport") or ""
                         )
@@ -87242,6 +87241,8 @@ async def _start_server_update(
                                 ),
                                 "",
                             )
+                    if hub_snapshot is not None:
+                        expected_hub_id = str(hub_capability.get("hub_id") or "")
                         if (
                             hub_capability.get("available") is not True
                             or hub_capability.get("designated_host") is not True
@@ -87291,29 +87292,6 @@ async def _start_server_update(
                             ]
                         )
                     elif failed_hub_repair:
-                        expected_hub_transport = str(
-                            hub_capability.get("transport") or ""
-                        )
-                        raw_hub_url = hub_capability.get("hub_url")
-                        expected_hub_url = (
-                            str(raw_hub_url) if raw_hub_url is not None else None
-                        )
-                        raw_hub_routes = hub_capability.get("routes")
-                        expected_hub_routes = (
-                            [dict(route) for route in raw_hub_routes]
-                            if isinstance(raw_hub_routes, list)
-                            and all(isinstance(route, dict) for route in raw_hub_routes)
-                            else None
-                        )
-                        if expected_hub_routes is not None:
-                            expected_hub_direct_ip_url = next(
-                                (
-                                    str(route.get("hub_url") or "")
-                                    for route in expected_hub_routes
-                                    if route.get("transport") == "direct_ip"
-                                ),
-                                "",
-                            )
                         if (
                             expected_hub_transport
                             not in {"loopback", "tailscale_serve", "direct_ip"}
