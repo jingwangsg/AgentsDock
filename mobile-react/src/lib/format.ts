@@ -178,41 +178,6 @@ export function runtimeSummary(session: Session, catalog: RuntimeCatalog | null)
   return `${backendLabel(session.backend)} · ${runtimeChipLabel(catalog, session.backend, session.model, session.effort)}`
 }
 
-export function mergeEvents(current: Event[], incoming: Event[]): Event[] {
-  if (!incoming.length) return current
-  if (!current.length) return incoming.length === 1 ? incoming : [...incoming].sort((a, b) => a.seq - b.seq)
-  if (incoming.length === 1 && incoming[0].seq > current[current.length - 1].seq) return [...current, incoming[0]]
-  const byId = new Map(current.map(event => [event.id, event]))
-  for (const event of incoming) byId.set(event.id, event)
-  const merged = [...byId.values()].sort((a, b) => a.seq - b.seq)
-  return merged.length === current.length && merged.every((event, index) => event === current[index])
-    ? current
-    : merged
-}
-
-export function mergeFiles(current: AgentFile[], incoming: AgentFile[]): AgentFile[] {
-  if (!incoming.length) return current
-  const byId = new Map(current.map(file => [file.id, file]))
-  for (const file of incoming) {
-    const existing = byId.get(file.id)
-    byId.set(file.id, existing && sameFlatRecord(existing, file) ? existing : file)
-  }
-  const merged = [...byId.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
-  return merged.length === current.length && merged.every((file, index) => file === current[index])
-    ? current
-    : merged
-}
-
-function sameFlatRecord(left: object, right: object): boolean {
-  const leftRecord = left as Record<string, unknown>
-  const rightRecord = right as Record<string, unknown>
-  const keys = new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)])
-  for (const key of keys) {
-    if (leftRecord[key] !== rightRecord[key]) return false
-  }
-  return true
-}
-
 export function filesNewestFirst(files: readonly AgentFile[]): AgentFile[] {
   return files
     .map((file, index) => ({ file, index, createdAt: fileTimestamp(file.created_at) }))

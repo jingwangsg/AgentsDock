@@ -35,7 +35,7 @@ import {
   type UpdateServerProfileInput,
 } from '../lib/server-profile-ui'
 import { hubProxyBaseURL, hubProxyRemoteId } from '../lib/server-profiles'
-import { normalizeServerURL } from '../lib/format'
+import { errorMessage, normalizeServerURL } from '../lib/format'
 import { usePalette } from '../theme'
 import { Text, TextInput } from './AppText'
 import { IconButton, SheetCloseButton } from './ui'
@@ -835,10 +835,6 @@ function SecondaryButton({ icon: Icon, label, accessibilityLabel, disabled, busy
     onPress={onPress}
     style={({ pressed }) => [styles.secondaryButton, compact && styles.compactButton, { backgroundColor: colors.raised, opacity: disabled ? 0.35 : pressed ? 0.65 : 1 }]}
   >{busy ? <ActivityIndicator size="small" color={colors.blue} /> : Icon ? <Icon size={15} color={colors.muted} /> : null}{compact && busy ? null : <Text style={[styles.secondaryButtonText, { color: colors.text }]} numberOfLines={1}>{label}</Text>}</Pressable>
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 function normalizeComparableURL(value?: string): string {

@@ -182,11 +182,12 @@ export interface WebSocketStateDetail {
   error: WebSocketConnectionError
 }
 
-export interface TerminalConnection {
-  write(data: string): void
-  resize(columns: number, rows: number): void
-  scroll(delta: number): void
-  close(): void
+export interface TimelineStreamHandlers {
+  onEvent: (event: Event) => void
+  onState: (connected: boolean, detail?: WebSocketStateDetail) => void
+  onProviderRuntime?: (event: ProviderRuntimeChanged) => void
+  onProviderUsage?: (backend: UsageBackend) => void
+  onSideChatChanged?: (revision: number) => void
 }
 
 interface ClientConfiguration {
@@ -1068,15 +1069,8 @@ export class AgentServerClient {
     })
   }
 
-  stream(
-    sessionId: string,
-    after: number,
-    onEvent: (event: Event) => void,
-    onState: (connected: boolean, detail?: WebSocketStateDetail) => void,
-    onProviderRuntime?: (event: ProviderRuntimeChanged) => void,
-    onProviderUsage?: (backend: UsageBackend) => void,
-    onSideChatChanged?: (revision: number) => void,
-  ): () => void {
+  stream(sessionId: string, after: number, handlers: TimelineStreamHandlers): () => void {
+    const { onEvent, onState, onProviderRuntime, onProviderUsage, onSideChatChanged } = handlers
     const scope = this.captureScope()
     const endpoint = new URL(buildURL(scope.configuration.baseURL, `/api/sessions/${encodeURIComponent(sessionId)}/events`))
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -1210,67 +1204,6 @@ export class AgentServerClient {
     this.transportStops.add(stop)
     connect()
     return stop
-  }
-
-  terminal(
-    sessionId: string,
-    columns: number,
-    rows: number,
-    cwd: string | null,
-    onData: (data: string) => void,
-    onState: (connected: boolean, name?: string, detail?: WebSocketStateDetail) => void,
-  ): TerminalConnection {
-    const scope = this.captureScope()
-    const endpoint = new URL(buildURL(scope.configuration.baseURL, `/api/sessions/${encodeURIComponent(sessionId)}/terminal/ws`))
-    endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
-    endpoint.searchParams.set('columns', String(columns))
-    endpoint.searchParams.set('rows', String(rows))
-    if (cwd) endpoint.searchParams.set('cwd', cwd)
-    if (scope.configuration.token) endpoint.searchParams.set('token', scope.configuration.token)
-    const socket = new WebSocket(endpoint.toString())
-    let closed = false
-    const unregister = () => { this.transportStops.delete(close) }
-    const close = () => {
-      if (closed) {
-        unregister()
-        return
-      }
-      closed = true
-      unregister()
-      socket.close()
-      onState(false)
-    }
-    this.transportStops.add(close)
-    socket.binaryType = 'arraybuffer'
-    socket.onmessage = message => {
-      if (closed) return
-      if (typeof message.data === 'string') {
-        try {
-          const control = JSON.parse(message.data) as { type?: string; name?: string }
-          if (control.type === 'ready') onState(true, control.name)
-          return
-        } catch { onData(message.data); return }
-      }
-      if (message.data instanceof ArrayBuffer) onData(new TextDecoder().decode(new Uint8Array(message.data)))
-    }
-    socket.onclose = event => {
-      if (closed) return
-      closed = true
-      unregister()
-      const fatal = FATAL_WEBSOCKET_CLOSE_CODES.has(event.code)
-      const detail = fatal ? websocketCloseDetail('terminal', event.code, event.reason, true, false) : undefined
-      if (event.code === 4401 && detail) {
-        this.invalidateValidation(true)
-        this.reportAuthorizationFailure(detail.error)
-      }
-      onState(false, undefined, detail)
-    }
-    return {
-      write: data => { if (!closed && socket.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data)) },
-      resize: (nextColumns, nextRows) => { if (!closed && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', columns: nextColumns, rows: nextRows })) },
-      scroll: delta => { if (!closed && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'scroll', delta })) },
-      close,
-    }
   }
 
   private get<T>(path: string, timeoutMs?: number): Promise<T> { return this.request(path, {}, timeoutMs) }

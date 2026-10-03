@@ -92,9 +92,9 @@ client.sessionPage = async sessionId => {
   return page(sessionId === sessionB.id ? sessionB : sessionA)
 }
 client.files = async (): Promise<FilesPage> => ({ files: [], total: 0, offset: 0, limit: 60, has_more: false })
-client.stream = (sessionId, _after, _onEvent, onState) => {
+client.stream = (sessionId, _after, handlers) => {
   streamStarts.push(sessionId)
-  onState(true)
+  handlers.onState(true)
   let stopped = false
   return () => {
     if (stopped) return

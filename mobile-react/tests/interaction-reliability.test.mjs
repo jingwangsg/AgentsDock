@@ -358,7 +358,7 @@ test('battery-critical work is foreground-bound, coalesced, and released', () =>
   assert.match(store, /async syncSelectedSession[\s\S]*?scheduleLiveSnapshotSave\(scope, next, true\)/)
   assert.match(store, /const READ_RECEIPT_DEBOUNCE_MS = 3_000/)
   assert.match(store, /if \(await Notifications\.setBadgeCountAsync\(count\)\) lastBadgeCount = count/)
-  assert.match(format, /if \(!incoming\.length\) return current/)
+  assert.match(timelineMemory, /if \(!incoming\.length\) return current/)
   assert.match(timeline, /reuseStableTimelineRows\(stableRows\.current, projectedRows\)/)
   assert.match(timelineRowReuse, /sameReferences\(left\.events, right\.events\)/)
 

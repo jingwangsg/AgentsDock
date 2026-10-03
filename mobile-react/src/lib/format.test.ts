@@ -1,5 +1,5 @@
 import type { AgentFile, Event } from '../types'
-import { filesNewestFirst, formatChatDateTime, formatDateTime, hasInjectedProviderAuthority, isImage, mergeEvents, mergeFiles, messageText, normalizeServerURL } from './format'
+import { filesNewestFirst, formatChatDateTime, formatDateTime, hasInjectedProviderAuthority, isImage, messageText, normalizeServerURL } from './format'
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message)
@@ -40,23 +40,12 @@ export function runFormatTests(): void {
   assert(isImage({ id: 'image-3', filename: 'picker-item', content_type: 'image/heif' }), 'image MIME metadata must enable a preview without a filename extension')
   assert(!isImage({ id: 'file-1', filename: 'report.pdf', content_type: 'application/pdf' }), 'documents must keep the file treatment')
 
-  const event = (seq: number): Event => ({ id: `event-${seq}`, session_id: 'chat-1', seq, type: 'assistant_text', ts: `2026-07-16T19:42:${String(seq).padStart(2, '0')}Z` })
-  const current = [event(1), event(2)]
-  assert(mergeEvents(current, [current[0], current[1]]) === current, 'an already-covered live tail must preserve the current event-array identity')
-  const appended = mergeEvents(current, [event(3)])
-  assert(appended.length === 3 && appended[2].seq === 3, 'the common live append path must preserve timeline order')
-  const merged = mergeEvents(appended, [{ ...event(2), text: 'updated' }])
-  assert(merged.length === 3 && merged[1].text === 'updated', 'event reconciliation must still replace an existing event ID')
-
   const file = (id: string, created_at?: string | null, seq?: number | null, event_seq?: number | null): AgentFile => ({ id, filename: `${id}.png`, created_at, seq, event_seq })
   const files = [
     file('middle', '2026-07-23T18:02:00Z', 20),
     file('oldest', '2026-07-23T18:01:00Z', 10),
     file('newest', '2026-07-23T18:03:00Z', 30),
   ]
-  assert(mergeFiles(files, []) === files, 'non-file live events must preserve the current file-array identity')
-  const orderedFiles = [files[1], files[0], files[2]]
-  assert(mergeFiles(orderedFiles, [{ ...orderedFiles[0] }]) === orderedFiles, 'identical file metadata must preserve file and array identities')
   const newestFirst = filesNewestFirst(files)
   assert(newestFirst.map(value => value.id).join(',') === 'newest,middle,oldest', 'file viewers must show newest files first')
   assert(files.map(value => value.id).join(',') === 'middle,oldest,newest', 'display ordering must not mutate snapshot state')

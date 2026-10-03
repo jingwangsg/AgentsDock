@@ -21,6 +21,7 @@ import { mergeGoalSnapshot } from '../lib/codex-goals'
 import { subscribeCodexGoalsConfiguration } from '../lib/codex-goals-configuration'
 import type { CodexGoal, CodexGoalInput, CodexGoalSnapshot, CodexRuntimeSnapshot, Session } from '../types'
 import type { AgentServerClient } from '../api/AgentServerClient'
+import { errorMessage } from '../lib/format'
 
 export {
   codexStatusLabel,
@@ -454,6 +455,3 @@ function runtimeScopeIsCurrent(
     && !state.workspaceAdopting
 }
 
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause)
-}

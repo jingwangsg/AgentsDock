@@ -1183,8 +1183,7 @@ try {
     ['URL access', () => validationClient.url('/api/sessions')],
     ['file URL access', () => validationClient.fileURL('chat', 'file')],
     ['auth header access', () => validationClient.authHeaders()],
-    ['timeline stream', () => validationClient.stream('session', 0, () => undefined, () => undefined)],
-    ['terminal socket', () => validationClient.terminal('session', 80, 24, null, () => undefined, () => undefined)],
+    ['timeline stream', () => validationClient.stream('session', 0, { onEvent: () => undefined, onState: () => undefined })],
   ] satisfies Array<[string, () => unknown]>) {
     assertThrows(
       action,
@@ -1426,7 +1425,7 @@ globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
 try {
   FakeWebSocket.instances = []
   const captured = new AgentServerClient('https://captured.example', 'captured-token')
-  captured.stream('session-one', 4, () => undefined, () => undefined)
+  captured.stream('session-one', 4, { onEvent: () => undefined, onState: () => undefined })
   const firstSocket = FakeWebSocket.instances[0]
   assert(firstSocket, 'Timeline stream should create a socket')
   assert(new URL(firstSocket.url).searchParams.get('visible') === 'true', 'Timeline streams should identify themselves as visible clients')
@@ -1452,13 +1451,11 @@ try {
   const runtimeClient = new AgentServerClient('https://runtime.example', 'runtime-token')
   const runtimePackets: Array<{ session_id: string; usage_generation?: number | null }> = []
   const runtimeTimelineSeqs: number[] = []
-  runtimeClient.stream(
-    'session-runtime',
-    5,
-    event => { runtimeTimelineSeqs.push(event.seq) },
-    () => undefined,
-    event => { runtimePackets.push(event) },
-  )
+  runtimeClient.stream('session-runtime', 5, {
+    onEvent: event => { runtimeTimelineSeqs.push(event.seq) },
+    onState: () => undefined,
+    onProviderRuntime: event => { runtimePackets.push(event) },
+  })
   const runtimeSocket = FakeWebSocket.instances[0]
   assert(runtimeSocket, 'Provider runtime test should create a timeline socket')
   runtimeSocket.onmessage?.({ data: JSON.stringify({
@@ -1498,26 +1495,22 @@ try {
   FakeWebSocket.instances = []
   const revoked = new AgentServerClient('https://revoked.example', 'revoked-token', { requireValidation: true })
   revoked.markValidated()
-  revoked.stream('session-revoked', 0, () => undefined, () => undefined)
+  revoked.stream('session-revoked', 0, { onEvent: () => undefined, onState: () => undefined })
   const revokedTimelineSocket = FakeWebSocket.instances[0]
-  const revokedTerminal = revoked.terminal('session-revoked', 80, 24, null, () => undefined, () => undefined)
-  const revokedTerminalSocket = FakeWebSocket.instances[1]
-  assert(revokedTimelineSocket && revokedTerminalSocket, 'Validated client should create both authenticated transports')
+  assert(revokedTimelineSocket, 'Validated client should create the authenticated timeline transport')
   revoked.revokeValidation()
   assert(revokedTimelineSocket.closeCalls === 1, 'Revocation should close the timeline socket')
-  assert(revokedTerminalSocket.closeCalls === 1, 'Revocation should close the terminal socket')
   revoked.revokeValidation()
-  assert(revokedTimelineSocket.closeCalls === 1 && revokedTerminalSocket.closeCalls === 1, 'Repeated revocation should not close transports twice')
+  assert(revokedTimelineSocket.closeCalls === 1, 'Repeated revocation should not close the transport twice')
   await delay(550)
-  assert(FakeWebSocket.instances.length === 2, 'Revocation should cancel authenticated transport retries')
-  revokedTerminal.close()
+  assert(FakeWebSocket.instances.length === 1, 'Revocation should cancel authenticated transport retries')
   revoked.dispose()
 
   FakeWebSocket.instances = []
   const states: Array<{ connected: boolean; detail?: WebSocketStateDetail }> = []
   const fatal = new AgentServerClient('https://fatal.example', 'fatal-token', { requireValidation: true })
   fatal.markValidated()
-  fatal.stream('session-two', 0, () => undefined, (connected, detail) => states.push({ connected, detail }))
+  fatal.stream('session-two', 0, { onEvent: () => undefined, onState: (connected, detail) => states.push({ connected, detail }) })
   const fatalSocket = FakeWebSocket.instances[0]
   assert(fatalSocket, 'Fatal timeline test should create a socket')
   fatalSocket.emitClose(4401)
@@ -1534,7 +1527,7 @@ try {
   FakeWebSocket.instances = []
   const retrying = new AgentServerClient('https://retry.example', 'retry-token')
   let disposedTimelineEvents = 0
-  retrying.stream('session-retry', 0, () => { disposedTimelineEvents += 1 }, () => undefined)
+  retrying.stream('session-retry', 0, { onEvent: () => { disposedTimelineEvents += 1 }, onState: () => undefined })
   const retryingSocket = FakeWebSocket.instances[0]
   assert(retryingSocket, 'Retry disposal test should create a socket')
   retryingSocket.emitClose(1006)
@@ -1553,7 +1546,7 @@ try {
     hubProxied.fileURL('chat', 'file') === 'http://hub.example:7850/api/remote/abc123/api/sessions/chat/files/file',
     'A hub-proxied base must keep its /api/remote/{id} prefix in HTTP URLs',
   )
-  hubProxied.stream('session-hub', 0, () => undefined, () => undefined)
+  hubProxied.stream('session-hub', 0, { onEvent: () => undefined, onState: () => undefined })
   const hubSocket = FakeWebSocket.instances[0]
   assert(hubSocket, 'A hub-proxied client should still open a timeline socket')
   assert(
@@ -1562,22 +1555,6 @@ try {
   )
   hubProxied.dispose()
 
-  FakeWebSocket.instances = []
-  const terminalStates: boolean[] = []
-  let terminalData = ''
-  const terminalClient = new AgentServerClient('https://terminal.example', 'terminal-token')
-  const terminal = terminalClient.terminal('session-three', 80, 24, null, data => { terminalData += data }, connected => terminalStates.push(connected))
-  const terminalSocket = FakeWebSocket.instances[0]
-  assert(terminalSocket, 'Terminal should create a socket')
-  terminalClient.dispose()
-  terminalSocket.onmessage?.({ data: 'queued terminal data' })
-  terminalSocket.onmessage?.({ data: '{"type":"ready","name":"stale"}' })
-  assert(terminalSocket.closeCalls === 1, 'Client disposal should close the terminal socket')
-  assert(terminalStates.filter(connected => !connected).length === 1, 'Terminal disposal should report one disconnect')
-  assert(!terminalStates.includes(true), 'Terminal should ignore ready packets queued after disposal')
-  assert(terminalData === '', 'Terminal should ignore data packets queued after disposal')
-  terminal.close()
-  assert(terminalSocket.closeCalls === 1, 'Terminal close should remain idempotent after client disposal')
 } finally {
   globalThis.WebSocket = originalWebSocket
 }

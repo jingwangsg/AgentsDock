@@ -17,6 +17,7 @@ import { subscribeProviderRuntimeChanged } from '../lib/provider-runtime-events'
 import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import type { ClaudeRuntimeSnapshot, Session } from '../types'
 import type { AgentServerClient } from '../api/AgentServerClient'
+import { errorMessage } from '../lib/format'
 
 interface ClaudeRuntimeContextValue {
   supported: boolean
@@ -432,6 +433,3 @@ function runtimeScopeIsCurrent(
     && !state.workspaceAdopting
 }
 
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause)
-}

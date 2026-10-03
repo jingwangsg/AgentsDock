@@ -1,4 +1,5 @@
 import type { ClaudeTokenUsage, JsonValue } from '../types'
+import { firstObject, objectValue } from './json-record'
 
 export interface ClaudeContextUsage {
   contextTokens: number
@@ -47,20 +48,6 @@ export function formatContextPercent(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return '—'
   const bounded = clampPercent(value)
   return `${Number.isInteger(bounded) ? bounded.toFixed(0) : bounded.toFixed(1)}%`
-}
-
-function objectValue(value: unknown): Record<string, JsonValue> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, JsonValue>
-    : null
-}
-
-function firstObject(record: Record<string, JsonValue>, keys: readonly string[]): Record<string, JsonValue> | null {
-  for (const key of keys) {
-    const candidate = objectValue(record[key])
-    if (candidate) return candidate
-  }
-  return null
 }
 
 function firstNumber(records: readonly Record<string, JsonValue>[], keys: readonly string[]): number | null {

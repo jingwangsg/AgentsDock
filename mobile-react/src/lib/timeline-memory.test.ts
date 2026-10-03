@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import type { Event, Snapshot } from '../types'
+import type { AgentFile, Event, Snapshot } from '../types'
 import { projectTimeline } from './timeline'
 import { importedCrossChatDelivery } from './imported-cross-chat-delivery'
 import {
@@ -13,6 +13,8 @@ import {
   dropRewoundEvents,
   historicalTimelineEvents,
   liveTimelineEventsWereTrimmed,
+  mergeEvents,
+  mergeFiles,
   mergeHistoryWithLiveSnapshot,
   sanitizeTimelineEvent,
   sanitizeTimelineFile,
@@ -505,3 +507,19 @@ console.log('timeline memory regressions passed')
   assert(dropRewoundEvents(later).length === 3, 'rows after the tombstone are never removed by it')
 }
 console.log('rewound row dropping passed')
+
+{
+  const current = [event(1), event(2)]
+  assert.equal(mergeEvents(current, [current[0], current[1]]), current, 'an already-covered live tail must preserve the current event-array identity')
+  const appended = mergeEvents(current, [event(3)])
+  assert.ok(appended.length === 3 && appended[2].seq === 3, 'the common live append path must preserve timeline order')
+  const merged = mergeEvents(appended, [{ ...event(2), text: 'updated' }])
+  assert.ok(merged.length === 3 && merged[1].text === 'updated', 'event reconciliation must still replace an existing event ID')
+
+  const file = (id: string, seq: number): AgentFile => ({ id, filename: `${id}.png`, created_at: '2026-07-23T18:00:00Z', seq })
+  const files = [file('oldest', 10), file('middle', 20), file('newest', 30)]
+  assert.equal(mergeFiles(files, []), files, 'non-file live events must preserve the current file-array identity')
+  assert.equal(mergeFiles(files, [{ ...files[0] }]), files, 'identical file metadata must preserve file and array identities')
+  assert.deepEqual(mergeFiles([files[2]], [files[0]]).map(value => value.id), ['oldest', 'newest'], 'files merge by id ordered by seq')
+}
+console.log('timeline merge semantics passed')

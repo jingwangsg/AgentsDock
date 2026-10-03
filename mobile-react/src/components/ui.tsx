@@ -7,22 +7,7 @@ import { Text } from './AppText'
 
 export function IconButton({ icon: Icon, onPress, disabled, selected, size = 18, touchSize = 44, label, testID, activateOnPressIn = false }: { icon: LucideIcon; onPress: () => void; disabled?: boolean; selected?: boolean; size?: number; touchSize?: number; label?: string; testID?: string; activateOnPressIn?: boolean }) {
   const colors = usePalette()
-  const pressInHandled = useRef(false)
-  const handlePressIn = () => {
-    if (!activateOnPressIn) return
-    pressInHandled.current = true
-    onPress()
-  }
-  const handlePress = () => {
-    if (activateOnPressIn && pressInHandled.current) {
-      pressInHandled.current = false
-      return
-    }
-    onPress()
-  }
-  const handlePressOut = () => {
-    if (activateOnPressIn) setTimeout(() => { pressInHandled.current = false }, 0)
-  }
+  const press = usePressActivation(onPress, activateOnPressIn)
   return (
     <Pressable
       accessibilityRole="button"
@@ -31,9 +16,9 @@ export function IconButton({ icon: Icon, onPress, disabled, selected, size = 18,
       testID={testID}
       disabled={disabled}
       pressRetentionOffset={14}
-      onPress={handlePress}
-      onPressIn={handlePressIn}
-      onPressOut={handlePressOut}
+      onPress={press.onPress}
+      onPressIn={press.onPressIn}
+      onPressOut={press.onPressOut}
       style={({ pressed }) => [styles.iconButton, { width: touchSize, height: touchSize, backgroundColor: selected ? colors.raised : 'transparent', opacity: disabled ? 0.35 : pressed ? 0.65 : 1 }]}
     >
       <Icon size={size} color={selected ? colors.blue : colors.muted} strokeWidth={1.8} />
@@ -44,22 +29,7 @@ export function IconButton({ icon: Icon, onPress, disabled, selected, size = 18,
 /** A protected close target kept below the native page-sheet drag recognizer. */
 export function SheetCloseButton({ onPress, disabled, label = 'Close', testID, activateOnPressIn = false }: { onPress: () => void; disabled?: boolean; label?: string; testID?: string; activateOnPressIn?: boolean }) {
   const colors = usePalette()
-  const pressInHandled = useRef(false)
-  const handlePressIn = () => {
-    if (!activateOnPressIn) return
-    pressInHandled.current = true
-    onPress()
-  }
-  const handlePress = () => {
-    if (activateOnPressIn && pressInHandled.current) {
-      pressInHandled.current = false
-      return
-    }
-    onPress()
-  }
-  const handlePressOut = () => {
-    if (activateOnPressIn) setTimeout(() => { pressInHandled.current = false }, 0)
-  }
+  const press = usePressActivation(onPress, activateOnPressIn)
   return <Pressable
     accessibilityRole="button"
     accessibilityLabel={label}
@@ -67,11 +37,38 @@ export function SheetCloseButton({ onPress, disabled, label = 'Close', testID, a
     testID={testID}
     disabled={disabled}
     pressRetentionOffset={20}
-    onPress={handlePress}
-    onPressIn={handlePressIn}
-    onPressOut={handlePressOut}
+    onPress={press.onPress}
+    onPressIn={press.onPressIn}
+    onPressOut={press.onPressOut}
     style={({ pressed }) => [styles.sheetClose, { backgroundColor: colors.raised, opacity: disabled ? 0.35 : pressed ? 0.6 : 1 }]}
   ><X size={21} color={colors.muted} strokeWidth={2} /></Pressable>
+}
+
+/**
+ * Pressable handlers that fire `onPress` exactly once per touch. With
+ * `activateOnPressIn` the press fires on touch-down (sheet close targets sit
+ * under the native page-sheet drag recognizer) and the following onPress is
+ * swallowed.
+ */
+function usePressActivation(onPress: () => void, activateOnPressIn: boolean) {
+  const pressInHandled = useRef(false)
+  return {
+    onPressIn: () => {
+      if (!activateOnPressIn) return
+      pressInHandled.current = true
+      onPress()
+    },
+    onPress: () => {
+      if (activateOnPressIn && pressInHandled.current) {
+        pressInHandled.current = false
+        return
+      }
+      onPress()
+    },
+    onPressOut: () => {
+      if (activateOnPressIn) setTimeout(() => { pressInHandled.current = false }, 0)
+    },
+  }
 }
 
 export function SectionHeader({ title, trailing }: { title: string; trailing?: ReactNode }) {

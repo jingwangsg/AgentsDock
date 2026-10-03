@@ -10,6 +10,7 @@ import type { CodexGoal, CodexGoalSnapshot, CodexGoalStatus } from '../types'
 import { Text, TextInput } from './AppText'
 import { useCodexRuntime } from './CodexRuntimeContext'
 import { SheetCloseButton } from './ui'
+import { errorMessage } from '../lib/format'
 
 export function CodexGoalBar() {
   const colors = usePalette()
@@ -301,7 +302,6 @@ function GoalAction({ label, accessibilityLabel = label, icon: Icon, disabled, b
   </Pressable>
 }
 
-function errorMessage(cause: unknown) { return cause instanceof Error ? cause.message : String(cause) }
 const GOAL_STATUSES: CodexGoalStatus[] = ['active', 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete']
 const styles = StyleSheet.create({
   card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 5, gap: 4, marginBottom: 7 },

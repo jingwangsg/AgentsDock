@@ -85,9 +85,9 @@ client.sessionPage = async (sessionId, options) => {
   pageCalls.push({ sessionId, options })
   return page(sessionId === sessionA.id ? serverRow : sessionB)
 }
-client.stream = (_sessionId, _after, onEvent, onState) => {
-  emit = onEvent
-  onState(true)
+client.stream = (_sessionId, _after, handlers) => {
+  emit = handlers.onEvent
+  handlers.onState(true)
   return () => { emit = null }
 }
 

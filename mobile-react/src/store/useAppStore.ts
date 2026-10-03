@@ -49,7 +49,7 @@ import type {
   UpdateSurfaceInput,
 } from '../types'
 import { AgentServerClient, AgentServerClientDisposedError, AgentServerClientUnvalidatedError, ServerError, WebSocketConnectionError } from '../api/AgentServerClient'
-import { errorMessage, mergeEvents, mergeFiles, normalizeServerURL } from '../lib/format'
+import { errorMessage, normalizeServerURL } from '../lib/format'
 import { reconcileHealthActiveSessions } from '../lib/active-sessions'
 import { isServerSetupRequired, shouldAutoConnectServer } from '../lib/first-launch'
 import { SNAPSHOT_CACHE_VERSION, shouldReplaceCachedTimeline, snapshotLatestSeq } from '../lib/history'
@@ -87,6 +87,8 @@ import {
   boundLiveTimelineEvents,
   historicalTimelineEvents,
   liveTimelineEventsWereTrimmed,
+  mergeEvents,
+  mergeFiles,
   sanitizeTimelineEvent,
   sanitizeTimelineFile,
   snapshotMapWith,
@@ -5103,17 +5105,19 @@ function startSelectedStream(
   streamSessionId = sessionId
   streamLatestSeq = after
   set({ liveConnected: false, syncSessionId: sessionId, syncStatus: 'syncing', syncError: null })
-  streamStop = scope.client.stream(
-    sessionId,
-    after,
-    event => {
-      if (!connectionIsCurrent(scope) || event.session_id !== sessionId || generation !== streamGeneration || epoch !== selectionEpoch || get().selectedSessionId !== sessionId) return
+  // Each handler applies only while this stream is still the selected chat's current one.
+  const guarded = <T extends unknown[]>(handler: (...args: T) => void) => (...args: T): void => {
+    if (!connectionIsCurrent(scope) || generation !== streamGeneration || epoch !== selectionEpoch || get().selectedSessionId !== sessionId) return
+    handler(...args)
+  }
+  streamStop = scope.client.stream(sessionId, after, {
+    onEvent: guarded(event => {
+      if (event.session_id !== sessionId) return
       streamLatestSeq = Math.max(streamLatestSeq, event.seq)
       if (event.type === 'raw_event') return
       applyLiveEvent(scope, event, set, get)
-    },
-    (connected, detail) => {
-      if (!connectionIsCurrent(scope) || generation !== streamGeneration || epoch !== selectionEpoch || get().selectedSessionId !== sessionId) return
+    }),
+    onState: guarded((connected, detail) => {
       if (connected) {
         cancelSyncRecovery(set)
         set({
@@ -5146,31 +5150,17 @@ function startSelectedStream(
       } else {
         set({ liveConnected: false, syncSessionId: sessionId, syncStatus: 'reconnecting' })
       }
-    },
-    event => {
-      if (
-        !connectionIsCurrent(scope)
-        || generation !== streamGeneration
-        || epoch !== selectionEpoch
-        || get().selectedSessionId !== sessionId
-        || event.session_id !== sessionId
-        || event.backend !== 'claude'
-        || event.runtime !== 'context_usage'
-      ) return
+    }),
+    onProviderRuntime: guarded(event => {
+      if (event.session_id !== sessionId || event.backend !== 'claude' || event.runtime !== 'context_usage') return
       publishProviderRuntimeChanged({
         connection: scope.client,
         profileId: scope.profileId,
         profileGeneration: scope.generation,
         event,
       })
-    },
-    backend => {
-      if (
-        !connectionIsCurrent(scope)
-        || generation !== streamGeneration
-        || epoch !== selectionEpoch
-        || get().selectedSessionId !== sessionId
-      ) return
+    }),
+    onProviderUsage: guarded(backend => {
       publishProviderUsageChanged({
         connection: scope.client,
         profileId: scope.profileId,
@@ -5178,22 +5168,16 @@ function startSelectedStream(
         sessionId,
         backend,
       })
-    },
-    revision => {
-      if (
-        !connectionIsCurrent(scope)
-        || generation !== streamGeneration
-        || epoch !== selectionEpoch
-        || get().selectedSessionId !== sessionId
-      ) return
+    }),
+    onSideChatChanged: guarded(revision => {
       publishSideChatChanged({
         profileId: scope.profileId,
         profileGeneration: scope.generation,
         sessionId,
         revision,
       })
-    },
-  )
+    }),
+  })
 }
 
 function hasSelectedStream(sessionId: string | null): boolean {
