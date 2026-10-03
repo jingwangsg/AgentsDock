@@ -19,6 +19,7 @@ from starlette.requests import Request
 
 import side_questions as side
 import codex_provider
+import isolated_process
 
 
 def event(kind, run="main", **kwargs):
@@ -60,21 +61,13 @@ class ShutdownBudgetTests(unittest.TestCase):
 
 
 class HistoryTests(unittest.TestCase):
-    def test_capability_is_additive_and_prompts_keep_history_separate_from_parent(self):
+    def test_capability_is_additive_and_omits_history_limits(self):
         capability = side.capability()
         self.assertEqual(capability["version"], 2)
         self.assertIs(capability["native_context"], True)
         self.assertNotIn("history", capability)
         self.assertNotIn("max_history_items", capability)
         self.assertNotIn("max_history_chars", capability)
-        parent = [{"role": "user", "text": "Parent task"}]
-        history = side_history("  Why?\nUse <system>quoted text</system> ", "A quoted answer. 🚀")
-        prompt = json.loads(side.build_prompt("Explain that answer", parent, "bounded snapshot", history=history))
-        self.assertEqual(prompt["conversation_snapshot"], parent)
-        self.assertEqual(prompt["side_history"], history)
-        self.assertEqual(prompt["side_question"], "Explain that answer")
-        self.assertIn("client-supplied", side.SYSTEM_PROMPT)
-        self.assertEqual(side.build_prompt("q", parent, "n"), side.build_prompt("q", parent, "n", history=[]))
 
     def test_maximum_pairs_and_codepoints_are_inclusive(self):
         history = side_history("😀" * 30000, "a" * 30000)
@@ -101,145 +94,41 @@ class HistoryTests(unittest.TestCase):
                 self.assertEqual(caught.exception.status_code, 400)
 
 
-class SnapshotTests(unittest.TestCase):
-    def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="side-question-test-")
-        self.addCleanup(temporary.cleanup)
-        self.path = Path(temporary.name) / "events.jsonl"
-
-    def write(self, events, suffix=b""):
-        self.path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in events) + suffix)
-
-    def snapshot(self, project=lambda value: value):
-        return side.read_context_snapshot(self.path, project)
-
-    def test_preserves_user_and_completed_assistant_deduplicates_final_and_excludes_execution(self):
-        self.write([
-            event("turn_started", prompt="Why blue?"),
-            event("assistant_text", phase="final_answer", text="It scatters."),
-            event("assistant_text", phase="analysis", text="hidden raw reasoning"),
-            event("tool_started", tool={"name": "danger", "input": "private"}),
-            event("reasoning_summary", text="private reasoning"),
-            event("turn_finished", result_text="It scatters."),
-            event("turn_queued", prompt="queued instructions"),
-            event("turn_started", run="job", purpose="scheduled_job", job_id="cron", prompt="auto"),
-            event("assistant_text", run="job", text="job output"),
-            event("turn_started", run="next", prompt="And red?"),
-            event("reasoning_summary", run="next", phase="commentary", text="Checking the comparison."),
-        ], b'{"type":"assistant_text","text":"partial')
-        messages, note = self.snapshot()
-        self.assertEqual(messages, [
-            {"role": "user", "text": "Why blue?"}, {"role": "assistant", "text": "It scatters."},
-            {"role": "user", "text": "And red?"},
-            {"role": "assistant", "text": "Checking the comparison."},
-        ])
-        self.assertIn("excludes tool results", note)
-        self.assertNotIn("Older text was omitted", note)
-
-    def test_projector_removes_authority_and_hidden_import_segments(self):
-        self.write([event("turn_started", prompt="user text AUTHORITY"),
-                    event("assistant_text", text="answer"),
-                    event("turn_started", prompt="hidden provider wake"),
-                    event("assistant_text", text="hidden wake answer"),
-                    event("turn_started", prompt="human question"),
-                    event("assistant_text", text="human answer")])
-        def project(row):
-            if row.get("prompt") == "hidden provider wake":
-                return {**row, "prompt": ""}
-            return {**row, "prompt": str(row.get("prompt", "")).replace(" AUTHORITY", "")}
-        messages, _ = self.snapshot(project)
-        self.assertEqual([message["text"] for message in messages],
-                         ["user text", "answer", "human question", "human answer"])
-
-    def test_tail_requires_new_boundary_and_discloses_truncation(self):
-        self.write([event("turn_started", prompt="old"), event("assistant_text", text="x" * 500),
-                    event("assistant_text", text="unproven mid-run"),
-                    event("turn_started", run="latest", prompt="latest question"),
-                    event("assistant_text", run="latest", text="latest answer")])
-        with patch.object(side, "MAX_LOG_BYTES", 390):
-            messages, note = self.snapshot()
-        self.assertEqual([message["text"] for message in messages], ["latest question", "latest answer"])
-        self.assertIn("Older text was omitted", note)
-
-    def test_context_budget_keeps_latest_message_and_labels_trim(self):
-        self.write([event("turn_started", prompt="question"), event("assistant_text", text="abcdef" * 10)])
-        with patch.object(side, "MAX_CONTEXT_CHARS", 20):
-            messages, note = self.snapshot()
-        self.assertEqual(messages[0]["text"], "[Beginning omitted]\n" + ("abcdef" * 10)[-20:])
-        self.assertIn("Older text was omitted", note)
-
-    def test_empty_context_fails_without_fake_prompt(self):
-        self.write([event("turn_queued", prompt="not accepted"), event("assistant_text", text="orphan")])
-        with self.assertRaises(side.SideQuestionError) as caught:
-            self.snapshot()
-        self.assertEqual(caught.exception.status_code, 409)
-
-    def test_environment_strips_authority_without_replacing_auth_home(self):
-        env = {"HOME": "/synthetic/auth-home", "PATH": "/bin", "ANTHROPIC_API_KEY": "synthetic",
-               "AGENTSDOCK_CHAT_ID": "parent", "AGENTSDOCK_TEAM_AUTHORITY": "secret",
-               "ZENITHBOT_AGENT_TOKEN": "secret", "CODEX_THREAD_ID": "parent",
-               "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1", "TMUX": "parent"}
-        self.assertEqual(side.isolated_environment(env),
-                         {"HOME": "/synthetic/auth-home", "PATH": "/bin", "ANTHROPIC_API_KEY": "synthetic"})
-
-
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_history_is_frozen_for_receipt_identity_and_provider_input(self):
-        answer = AsyncMock(return_value={"answer": "follow-up"})
-        runtime = side.SideQuestions(answer)
-        self.addAsyncCleanup(runtime.close)
-        history = side_history()
-        original = side_history()
-        receipt = runtime.submit("owner", "chat", "id", "Why?", history=history)
-        history[0]["text"] = "mutated by caller"
-        history.append({"role": "user", "text": "new unpaired message"})
-        self.assertEqual(await receipt.task, {"answer": "follow-up"})
-        answer.assert_awaited_once_with("chat", "Why?", history=original)
-        answer.await_args.kwargs["history"][1]["text"] = "mutated by provider callback"
-        self.assertIs(runtime.submit("owner", "chat", "id", "Why?", history=original), receipt)
-        for changed in (side_history(answer="Different answer"), []):
-            with self.assertRaises(side.SideQuestionError) as caught:
-                runtime.submit("owner", "chat", "id", "Why?", history=changed)
-            self.assertEqual(caught.exception.status_code, 409)
-
-    async def test_empty_and_omitted_history_replay_same_legacy_callback(self):
-        answer = AsyncMock(return_value={"answer": "legacy"})
-        runtime = side.SideQuestions(answer)
-        self.addAsyncCleanup(runtime.close)
-        receipt = runtime.submit("o", "s", "id", "q")
-        self.assertIs(runtime.submit("o", "s", "id", "q", history=[]), receipt)
-        await receipt.task
-        answer.assert_awaited_once_with("s", "q")
+    def runtime(self, ask):
+        handle = SimpleNamespace(ask=ask, close=AsyncMock())
+        self.factory = AsyncMock(return_value=handle)
+        return side.SideQuestions(native_factory=self.factory)
 
     async def test_duplicate_identity_coalesces_and_changed_question_conflicts(self):
         ready = asyncio.Event()
         calls = []
-        async def answer(sid, question):
-            calls.append((sid, question))
+        async def ask(question, *, history):
+            calls.append(question)
             await ready.wait()
             return {"answer": "one"}
-        runtime = side.SideQuestions(answer)
-        first = runtime.submit("owner", "chat", "request", "question")
-        self.assertIs(runtime.submit("owner", "chat", "request", "question"), first)
+        runtime = self.runtime(ask)
+        first = runtime.submit("owner", "chat", "request", "question", side_chat_id="panel")
+        self.assertIs(runtime.submit("owner", "chat", "request", "question", side_chat_id="panel"), first)
         with self.assertRaises(side.SideQuestionError):
-            runtime.submit("owner", "chat", "request", "changed")
+            runtime.submit("owner", "chat", "request", "changed", side_chat_id="panel")
         ready.set()
         self.assertEqual(await first.task, {"answer": "one"})
-        self.assertEqual(calls, [("chat", "question")])
-        self.assertIs(runtime.submit("owner", "chat", "request", "question"), first)
+        self.assertEqual(calls, ["question"])
+        self.assertIs(runtime.submit("owner", "chat", "request", "question", side_chat_id="panel"), first)
         await runtime.close()
 
     async def test_cancel_only_exact_owner_session_request_and_reaps_before_return(self):
         entered = asyncio.Event()
         reaped = asyncio.Event()
-        async def answer(sid, question):
+        async def ask(question, *, history):
             entered.set()
             try:
                 await asyncio.Event().wait()
             finally:
                 reaped.set()
-        runtime = side.SideQuestions(answer)
-        receipt = runtime.submit("owner", "chat", "request", "q")
+        runtime = self.runtime(ask)
+        receipt = runtime.submit("owner", "chat", "request", "q", side_chat_id="panel")
         await entered.wait()
         self.assertEqual(await runtime.cancel("other", "chat", "request"), "not_found")
         self.assertEqual(await runtime.cancel("owner", "other", "request"), "not_found")
@@ -250,22 +139,21 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.close()
 
     async def test_delete_overtaking_post_fences_delayed_request(self):
-        answer = AsyncMock()
-        runtime = side.SideQuestions(answer)
+        runtime = self.runtime(AsyncMock())
         self.assertEqual(await runtime.cancel("owner", "chat", "request"), "not_found")
         with self.assertRaises(side.SideQuestionError) as caught:
-            runtime.submit("owner", "chat", "request", "delayed")
+            runtime.submit("owner", "chat", "request", "delayed", side_chat_id="panel")
         self.assertEqual(caught.exception.status_code, 409)
-        answer.assert_not_awaited()
+        self.factory.assert_not_awaited()
 
     async def test_failure_replays_without_second_provider_call_and_shutdown_cancels(self):
-        answer = AsyncMock(side_effect=side.SideQuestionError(503, "unavailable"))
-        runtime = side.SideQuestions(answer)
-        receipt = runtime.submit("o", "s", "r", "q")
+        ask = AsyncMock(side_effect=side.SideQuestionError(503, "unavailable"))
+        runtime = self.runtime(ask)
+        receipt = runtime.submit("o", "s", "r", "q", side_chat_id="panel")
         with self.assertRaises(side.SideQuestionError):
             await receipt.task
-        self.assertIs(runtime.submit("o", "s", "r", "q"), receipt)
-        answer.assert_awaited_once()
+        self.assertIs(runtime.submit("o", "s", "r", "q", side_chat_id="panel"), receipt)
+        ask.assert_awaited_once()
         await runtime.close()
         self.assertEqual(runtime.receipts, {})
 
@@ -485,10 +373,8 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.finish = asyncio.Event()
         self.cancelled = asyncio.Event()
         self.calls = 0
-        self.inputs = []
-        async def answer(sid, question, *, history=None):
+        async def ask(question, *, history):
             self.calls += 1
-            self.inputs.append({"session_id": sid, "question": question, "history": history})
             self.started.set()
             try:
                 await self.finish.wait()
@@ -496,7 +382,8 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             except asyncio.CancelledError:
                 self.cancelled.set()
                 raise
-        self.runtime = side.SideQuestions(answer)
+        handle = SimpleNamespace(ask=ask, close=AsyncMock())
+        self.runtime = side.SideQuestions(native_factory=AsyncMock(return_value=handle))
         self.authorize = Mock()
         router = side.create_side_question_router(authorize=self.authorize,
             session_exists=lambda sid: sid == "chat", runtime=self.runtime)
@@ -507,6 +394,8 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.close()
 
     def request(self, value=None, *, ensure_ascii=True):
+        # Native side chats are addressed by panel; a request without one is rejected before the factory.
+        value = {"side_chat_id": "panel", **value}
         queue = asyncio.Queue()
         queue.put_nowait({"type": "http.request", "body": json.dumps(value, ensure_ascii=ensure_ascii).encode(), "more_body": False})
         return Request({"type": "http", "method": "POST", "path": "/", "headers":
@@ -523,14 +412,6 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertTrue(queue.empty())
         self.authorize.assert_called_once_with(request)
-
-    async def test_utf8_history_larger_than_old_body_limit_is_accepted_and_kept_verbatim(self):
-        history = side_history("😀" * 30000, "答" * 30000)
-        request, _ = self.request({"request_id": "followup", "question": "Why?", "history": history}, ensure_ascii=False)
-        self.finish.set()
-        response = await self.post("chat", request)
-        self.assertEqual(json.loads(response.body)["answer"], "Contextual answer")
-        self.assertEqual(self.inputs, [{"session_id": "chat", "question": "Why?", "history": history}])
 
     async def test_invalid_history_rejects_before_provider_start(self):
         for history in (None, "text", side_history() * 17, side_history("x" * 60000, "y"),
@@ -550,19 +431,6 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             await self.post("chat", request)
         self.assertEqual(caught.exception.status_code, 413)
         self.assertEqual(self.calls, 0)
-
-    async def test_history_change_under_duplicate_id_conflicts_without_cancelling_first(self):
-        request, _ = self.request({"request_id": "same", "question": "Why?", "history": side_history()})
-        task = asyncio.create_task(self.post("chat", request))
-        await self.started.wait()
-        changed, _ = self.request({"request_id": "same", "question": "Why?", "history": side_history(answer="Other")})
-        with self.assertRaises(HTTPException) as caught:
-            await self.post("chat", changed)
-        self.assertEqual(caught.exception.status_code, 409)
-        self.assertFalse(self.cancelled.is_set())
-        self.finish.set()
-        self.assertEqual(json.loads((await task).body)["answer"], "Contextual answer")
-        self.assertEqual(self.calls, 1)
 
     async def test_disconnect_cancels_provider_without_polling(self):
         request, queue = self.request({"request_id": "request", "question": "Question?"})
@@ -617,139 +485,6 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             await self.post("chat", request)
         self.assertEqual(caught.exception.status_code, 401)
         self.assertEqual(self.calls, 0)
-
-
-class ProviderTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        signals = patch.object(side.os, "killpg")
-        self.killpg = signals.start()
-        self.addCleanup(signals.stop)
-
-    async def test_claude_has_empty_tools_safe_mode_and_no_persistence(self):
-        help_text = "--safe-mode --tools --no-session-persistence --strict-mcp-config --name"
-        runner = AsyncMock(side_effect=[help_text, '{"result":"A contextual answer","is_error":false}'])
-        with patch.object(side, "run_isolated_command", runner), patch.object(side, "_CLAUDE_SUPPORTED", set()):
-            answer = await side.answer_claude("snapshot", executable="synthetic-claude", model="sonnet",
-                                              env={"HOME": "/synthetic", "AGENTSDOCK_CHAT_ID": "main"})
-        self.assertEqual(answer, "A contextual answer")
-        command = runner.await_args.args[0]
-        for flag in ("--safe-mode", "--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands"):
-            self.assertIn(flag, command)
-        self.assertEqual(command[command.index("--tools") + 1], "")
-        self.assertEqual(command[command.index("--name") + 1], "Side question")
-        self.assertEqual(command[command.index("--setting-sources") + 1], "")
-        self.assertEqual(json.loads(command[command.index("--mcp-config") + 1]), {"mcpServers": {}})
-        self.assertNotIn("--resume", command)
-        self.assertNotIn("--continue", command)
-        self.assertNotIn("--fork-session", command)
-        self.assertNotIn("AGENTSDOCK_CHAT_ID", runner.await_args.kwargs["env"])
-        self.assertFalse(Path(runner.await_args.kwargs["cwd"]).exists())
-
-    async def test_old_claude_fails_closed(self):
-        runner = AsyncMock(return_value="--tools")
-        with patch.object(side, "run_isolated_command", runner), patch.object(side, "_CLAUDE_SUPPORTED", set()):
-            with self.assertRaises(side.SideQuestionError) as caught:
-                await side.answer_claude("q", executable="old-claude", model=None, env={})
-        self.assertEqual(caught.exception.status_code, 503)
-        runner.assert_awaited_once()
-
-    async def test_owned_process_reads_chunked_output_to_eof(self):
-        proc = fake_process([b'{"res', b'ult":"ok"}', b''], [b'warning', b''])
-        with patch.object(side.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)):
-            output = await side.run_isolated_command(["fake"], prompt="q", cwd="/synthetic", env={})
-        self.assertEqual(output, '{"result":"ok"}')
-        self.assertEqual(proc.stdout.read.await_count, 3)
-        self.assertEqual(proc.stderr.read.await_count, 2)
-
-    async def test_legacy_answer_process_has_no_default_elapsed_time_cutoff(self):
-        started, release = asyncio.Event(), asyncio.Event()
-        proc = fake_process([], [b""])
-
-        async def read(_):
-            started.set()
-            await release.wait()
-            proc.stdout.read = AsyncMock(return_value=b"")
-            return b"Long answer"
-
-        proc.stdout.read = read
-        loop = asyncio.get_running_loop()
-        clock = loop.time
-        elapsed = 0
-        with patch.object(side.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)), \
-                patch.object(loop, "slow_callback_duration", 1000), \
-                patch.object(loop, "time", side_effect=lambda: clock() + elapsed):
-            task = asyncio.create_task(side.run_isolated_command(
-                ["fake"], prompt="q", cwd="/synthetic", env={}))
-            self.addAsyncCleanup(self._cancel_task, task)
-            await started.wait()
-            elapsed = 151
-            await asyncio.sleep(0.01)
-            self.assertFalse(task.done())
-            self.killpg.assert_not_called()
-            release.set()
-            self.assertEqual(await task, "Long answer")
-
-    async def _cancel_task(self, task):
-        if not task.done():
-            task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-
-    async def test_output_limit_is_enforced_across_chunks(self):
-        proc = fake_process([b'1234', b'5678', b''], [b''])
-        with patch.object(side.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)), \
-                patch.object(side, "MAX_OUTPUT_BYTES", 6):
-            with self.assertRaises(side.SideQuestionError) as caught:
-                await side.run_isolated_command(["fake"], prompt="q", cwd="/synthetic", env={})
-        self.assertEqual(caught.exception.status_code, 502)
-
-    async def test_cancellation_during_spawn_joins_and_kills_only_owned_process(self):
-        started, release = asyncio.Event(), asyncio.Event()
-        proc = fake_process([b''], [b''])
-        async def spawn(*args, **kwargs):
-            self.assertTrue(kwargs["start_new_session"])
-            started.set()
-            await release.wait()
-            return proc
-        with patch.object(side.asyncio, "create_subprocess_exec", spawn):
-            task = asyncio.create_task(side.run_isolated_command(["fake"], prompt="q", cwd="/synthetic", env={}))
-            await started.wait()
-            task.cancel()
-            await asyncio.sleep(0)
-            task.cancel()
-            release.set()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-        self.assertEqual({call.args[0] for call in self.killpg.call_args_list}, {proc.pid})
-        self.assertIsNotNone(proc.returncode)
-
-    async def test_exited_leader_with_child_pipe_is_killed_on_cancellation(self):
-        reading = asyncio.Event()
-        proc = fake_process([], [b''])
-        proc.returncode = 0
-        async def read(_):
-            reading.set()
-            await asyncio.Event().wait()
-        proc.stdout.read = read
-        with patch.object(side.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)):
-            task = asyncio.create_task(side.run_isolated_command(["fake"], prompt="q", cwd="/synthetic", env={}))
-            await reading.wait()
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-        self.assertEqual({call.args[0] for call in self.killpg.call_args_list}, {proc.pid})
-        self.assertEqual(self.killpg.call_count, 2)
-
-
-def fake_process(stdout, stderr):
-    proc = SimpleNamespace(pid=123456, returncode=None,
-        stdin=SimpleNamespace(write=Mock(), drain=AsyncMock(), close=Mock()),
-        stdout=SimpleNamespace(read=AsyncMock(side_effect=stdout)),
-        stderr=SimpleNamespace(read=AsyncMock(side_effect=stderr)))
-    async def wait():
-        proc.returncode = 0
-        return 0
-    proc.wait = AsyncMock(side_effect=wait)
-    return proc
 
 
 class ServerGlueTests(unittest.TestCase):
@@ -847,7 +582,7 @@ class ServerCallbackTests(unittest.IsolatedAsyncioTestCase):
                                      closed=False, thread_id="side-fork")
         self.codex_factory = Mock(return_value=self.codex)
         self.options = SimpleNamespace(resume="claude-parent")
-        self.namespace = dict(asyncio=asyncio, side_questions=side, STATE_DIR=root,
+        self.namespace = dict(asyncio=asyncio, side_questions=side, isolated_process=isolated_process, STATE_DIR=root,
             SERVER_SHUTTING_DOWN=False, STORE=SimpleNamespace(sessions={"chat": self.session}),
             CODEX_GOALS_RECONFIGURING=False,
             codex_provider=codex_provider,
@@ -959,8 +694,7 @@ class ServerCallbackTests(unittest.IsolatedAsyncioTestCase):
         initial_active = json.dumps(self.parent_active, sort_keys=True)
         initial_queue = json.dumps(self.parent_queue, sort_keys=True)
         initial_bytes = self.path.read_bytes()
-        with patch.object(side, "read_context_snapshot", side_effect=AssertionError("snapshot forbidden")), \
-                patch.dict(sys.modules, {"codex_side_question": SimpleNamespace(NativeCodexSideChat=self.codex_factory)}):
+        with patch.dict(sys.modules, {"codex_side_question": SimpleNamespace(NativeCodexSideChat=self.codex_factory)}):
             claude = await self.namespace["create_native_side_chat"]("chat")
             first = await claude.ask("Why?", history=[])
             self.assertEqual(first["answer"], "Native Claude answer")

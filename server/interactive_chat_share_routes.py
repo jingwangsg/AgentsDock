@@ -18,7 +18,7 @@ from interactive_chat_shares import (
     InteractiveChatShareStore, Unavailable, ValidationError, Conflict, SHARE_ID,
     MAX_PROMPT_BYTES, csrf_token, _utf8_size,
 )
-from public_chat_share_routes import chat_share_origin
+from share_route_helpers import admission_slot, bounded_json_body, chat_share_origin
 import interactive_chat_share_web as web
 from interactive_chat_controls import ChatControlError
 from shared_chat_video_stream import SharedVideoResponse, SharedFileResponse, SharedImageResponse
@@ -66,7 +66,7 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
     store_lock = threading.Lock()
     locks = weakref.WeakValueDictionary()
     streams = 0
-    active_workers = 0
+    worker = admission_slot(8)
     active_submissions = 0
 
     class SharedChatStreamResponse(StreamingResponse):
@@ -89,28 +89,23 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
             locks[share_id] = lock
         return lock
 
-    async def worker(operation):
-        nonlocal active_workers
-        if active_workers >= 8:
-            raise HTTPException(503, "Sharing is busy; retry shortly")
-        active_workers += 1
-        task = asyncio.create_task(asyncio.to_thread(operation))
-        def finished(_):
-            nonlocal active_workers
-            active_workers -= 1
-            if not task.cancelled():
-                task.exception()
-        task.add_done_callback(finished)
-        return await asyncio.shield(task)
+    def open_store():
+        nonlocal cached_store
+        with store_lock:
+            if cached_store is None:
+                if not (Path(storage_root) / "interactive.sqlite3").is_file():
+                    raise Unavailable()
+                cached_store = InteractiveChatShareStore.open_existing(storage_root)
+            return cached_store
 
-    def store(create=False):
+    def create_store():
         nonlocal cached_store, writable_store
         with store_lock:
-            if cached_store is None or (create and not writable_store):
-                if not create and not (Path(storage_root) / "interactive.sqlite3").is_file():
-                    raise Unavailable()
-                cached_store = InteractiveChatShareStore(storage_root) if create else InteractiveChatShareStore.open_existing(storage_root)
-                writable_store = create
+            # open_existing never migrates; the first authenticated create
+            # replaces an anonymously cached store so the schema upgrade runs.
+            if not writable_store:
+                cached_store = InteractiveChatShareStore(storage_root)
+                writable_store = True
             return cached_store
 
     def origin(base):
@@ -125,7 +120,7 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
         if SHARE_ID.fullmatch(share_id) is None:
             raise HTTPException(404, "Shared conversation unavailable")
         try:
-            bound_origin = await worker(lambda: store().share_origin(share_id))
+            bound_origin = await worker(lambda: open_store().share_origin(share_id))
         except Unavailable:
             raise HTTPException(404, "Shared conversation unavailable") from None
         expected = origin(bound_origin or public_base_url())
@@ -153,30 +148,6 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
     def result(value, status=200):
         return JSONResponse(value, status_code=status, headers=HEADERS)
 
-    async def body_bytes(request, limit, *, timeout=10):
-        async def read():
-            data = bytearray()
-            async for chunk in request.stream():
-                if len(data) + len(chunk) > limit:
-                    raise HTTPException(413, "Request is too large")
-                data.extend(chunk)
-            return bytes(data)
-        try:
-            return await asyncio.wait_for(read(), timeout)
-        except asyncio.TimeoutError:
-            raise HTTPException(408, "Request body was not received") from None
-
-    async def json_body(request, *, limit=8192):
-        if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
-            raise HTTPException(415, "Use application/json")
-        try:
-            value = json.loads(await body_bytes(request, limit))
-        except (ValueError, UnicodeError, RecursionError):
-            raise HTTPException(400, "Invalid JSON") from None
-        if not isinstance(value, dict):
-            raise HTTPException(400, "Expected a JSON object")
-        return value
-
     async def auth(request, share_id, *, write=False):
         expected = await public_guard(request, share_id, write=write)
         if SHARE_ID.fullmatch(share_id) is None:
@@ -188,7 +159,7 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
             raise HTTPException(404, "Shared conversation unavailable")
         token = cookies[0]
         try:
-            grant = await worker(lambda: store().authenticate(share_id, token))
+            grant = await worker(lambda: open_store().authenticate(share_id, token))
         except Unavailable:
             raise HTTPException(404, "Shared conversation unavailable") from None
         if not session_exists(grant["session_id"]):
@@ -236,14 +207,14 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
     @router.post("/api/admin/interactive-chat-shares/{session_id}")
     async def create(session_id: str, request: Request):
         management(request, session_id, exists=True)
-        value = await json_body(request)
+        value = await bounded_json_body(request, limit=8192, timeout=10)
         if value.get("confirmed_interactive") is not True or set(value) - {"confirmed_interactive", "title", "expires_at", "base_url"}:
             raise HTTPException(400, "Trusted interactive collaboration must be explicitly confirmed")
         if "base_url" in value and (not isinstance(value["base_url"], str) or not value["base_url"]):
             raise HTTPException(400, "Invalid chat link origin")
         base = origin(value.get("base_url") or public_base_url() or str(request.base_url).rstrip("/"))
         try:
-            created = await worker(lambda: store(True).create_share(session_id, title=value.get("title"), expires_at=value.get("expires_at"), public_origin=base))
+            created = await worker(lambda: create_store().create_share(session_id, title=value.get("title"), expires_at=value.get("expires_at"), public_origin=base))
         except ValidationError as exc:
             raise HTTPException(400, str(exc)) from None
         invite = created.pop("invitation_token")
@@ -254,7 +225,7 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
     async def listing(session_id: str, request: Request):
         management(request, session_id)
         try:
-            shares = await worker(lambda: store().list_shares(session_id))
+            shares = await worker(lambda: open_store().list_shares(session_id))
         except Unavailable:
             shares = []
         return result({"shares": shares})
@@ -264,7 +235,7 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
         management(request, session_id)
         async with share_lock(share_id):
             try:
-                revoked = await worker(lambda: store().revoke_share(share_id, session_id=session_id))
+                revoked = await worker(lambda: open_store().revoke_share(share_id, session_id=session_id))
             except Unavailable:
                 revoked = False
         if not revoked:
@@ -292,12 +263,12 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
     @router.post("/interactive-chat/{share_id}/redeem", include_in_schema=False)
     async def redeem(share_id: str, request: Request):
         expected = await public_guard(request, share_id, write=True)
-        value = await json_body(request)
+        value = await bounded_json_body(request, limit=8192, timeout=10)
         if set(value) != {"invitation_token"} or SHARE_ID.fullmatch(share_id) is None:
             raise HTTPException(404, "Invitation unavailable")
         async with share_lock(share_id):
             try:
-                token = await worker(lambda: store().redeem(share_id, value["invitation_token"]))
+                token = await worker(lambda: open_store().redeem(share_id, value["invitation_token"]))
             except Unavailable:
                 raise HTTPException(404, "Invitation unavailable") from None
         response = result({"redeemed": True, "csrf": csrf_token(token)})
@@ -346,7 +317,7 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
     async def prompt(share_id: str, request: Request):
         nonlocal active_submissions
         await auth(request, share_id, write=True)
-        value = await json_body(request, limit=MAX_PROMPT_BYTES + 4096)
+        value = await bounded_json_body(request, limit=MAX_PROMPT_BYTES + 4096, timeout=10)
         if set(value) - {"prompt", "upload_ids", "request_id"} or not isinstance(value.get("prompt"), str):
             raise HTTPException(400, "Only a prompt and this share's uploads are accepted")
         request_id = value.get("request_id")
@@ -357,7 +328,7 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
                 grant, token = await auth(request, share_id, write=True)
                 try:
                     _utf8_size(value["prompt"], "Prompt", MAX_PROMPT_BYTES)
-                    refs = await worker(lambda: store().upload_refs(share_id, token, value.get("upload_ids", [])))
+                    refs = await worker(lambda: open_store().upload_refs(share_id, token, value.get("upload_ids", [])))
                 except ValidationError as exc:
                     raise HTTPException(400, str(exc)) from None
                 except Unavailable:
@@ -365,7 +336,7 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
                 if not value["prompt"].strip() and not refs:
                     raise HTTPException(400, "Write a prompt or attach a file")
                 try:
-                    previous = await worker(lambda: store().reserve_submission(share_id, token, request_id, value["prompt"], refs))
+                    previous = await worker(lambda: open_store().reserve_submission(share_id, token, request_id, value["prompt"], refs))
                 except Conflict as exc:
                     raise HTTPException(409, str(exc)) from None
                 if previous is not None:
@@ -380,7 +351,7 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
                         if not receipt["queued"] or not isinstance(queued_id, str) or re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", queued_id) is None:
                             raise ValueError("Invalid queued message receipt")
                         public_receipt["queued_id"] = queued_id
-                    await worker(lambda: store().accept_submission(share_id, request_id, public_receipt))
+                    await worker(lambda: open_store().accept_submission(share_id, request_id, public_receipt))
                 except Exception:
                     raise HTTPException(503, "Message acceptance is unconfirmed. Inspect the chat before sending again; this request will not be automatically retried") from None
                 return public_receipt
@@ -427,12 +398,12 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
                     async with share_lock(share_id):
                         grant, token = await auth(request, share_id, write=True)
                         try:
-                            upload_id = await worker(lambda: store().reserve_upload(share_id, token, name=name, media_type=media_type, byte_size=size))
+                            upload_id = await worker(lambda: open_store().reserve_upload(share_id, token, name=name, media_type=media_type, byte_size=size))
                         except ValidationError as exc:
                             raise HTTPException(400, str(exc)) from None
                         try:
                             private_ref = await save_upload(grant["session_id"], share_id, name, media_type, data)
-                            await worker(lambda: store().complete_upload(share_id, token, upload_id, private_ref))
+                            await worker(lambda: open_store().complete_upload(share_id, token, upload_id, private_ref))
                         except Exception:
                             raise HTTPException(503, "File upload could not be confirmed; inspect this chat before uploading again") from None
                         return {"id": upload_id, "name": name, "media_type": media_type, "byte_size": size}
@@ -459,7 +430,7 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
     async def control(share_id: str, request: Request):
         nonlocal active_submissions
         await auth(request, share_id, write=True)
-        value = await json_body(request, limit=MAX_PROMPT_BYTES + 4096)
+        value = await bounded_json_body(request, limit=MAX_PROMPT_BYTES + 4096, timeout=10)
         if (set(value) != {"action", "payload", "request_id"} or not isinstance(value.get("action"), str)
                 or value["action"] not in CONTROL_ACTIONS | CONTROL_READ_ACTIONS
                 or not isinstance(value.get("payload"), dict)):
@@ -490,7 +461,7 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
             async with share_lock(share_id):
                 grant, token = await auth(request, share_id, write=True)
                 try:
-                    previous = await worker(lambda: store().reserve_submission(share_id, token, request_id, encoded, [], operation="control:" + action))
+                    previous = await worker(lambda: open_store().reserve_submission(share_id, token, request_id, encoded, [], operation="control:" + action))
                 except Conflict as exc:
                     raise HTTPException(409, str(exc)) from None
                 if previous is not None:
@@ -503,13 +474,13 @@ def create_interactive_chat_share_router(*, storage_root, authorize, session_exi
                     public_result = accepted.get("result")
                     json.dumps(public_result, ensure_ascii=False, allow_nan=False)
                     receipt = {"accepted": True, "action": action, "request_id": request_id, "result": public_result}
-                    await worker(lambda: store().accept_submission(share_id, request_id, receipt))
+                    await worker(lambda: open_store().accept_submission(share_id, request_id, receipt))
                 except ChatControlError as exc:
                     # Only this typed validator error guarantees no callback ran.
                     receipt = {"accepted": False, "action": action, "request_id": request_id,
                         "error_code": "forbidden" if exc.code == "forbidden" else "invalid_request",
                         "detail": "This chat control request is not permitted" if exc.code == "forbidden" else "Invalid chat control request"}
-                    await worker(lambda: store().accept_submission(share_id, request_id, receipt))
+                    await worker(lambda: open_store().accept_submission(share_id, request_id, receipt))
                 except Exception:
                     raise HTTPException(503, "Action acceptance is unconfirmed. Inspect this chat before trying again; this request will not be automatically retried") from None
                 return receipt

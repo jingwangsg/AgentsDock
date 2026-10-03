@@ -37,6 +37,7 @@ NEW_MODULES = {
     "interactive_chat_shares.py", "interactive_chat_share_routes.py",
     "interactive_chat_share_web.py", "interactive_chat_projection.py", "interactive_chat_runtime.py",
     "interactive_chat_native.py", "interactive_chat_controls.py", "shared_chat_videos.py", "shared_chat_video_stream.py",
+    "private_sqlite.py", "share_route_helpers.py", "native_model_store.py", "isolated_process.py",
 }
 NEW_MIGRATION = "migrations/0020_team_mail_arrivals.sql"
 THREAD_MIGRATION = "migrations/0021_team_mail_threads.sql"

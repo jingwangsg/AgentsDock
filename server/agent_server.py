@@ -187,6 +187,7 @@ from claude_background_reconciliation import (
 )
 from public_chat_share_routes import create_public_chat_share_router, redact_public_share_path
 from interactive_chat_share_routes import create_interactive_chat_share_router
+import isolated_process
 import side_questions
 import title_generation
 from shared_chat_videos import (SharedVideoUnavailable, shared_chat_video_descriptor,
@@ -85070,7 +85071,7 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
                         model=model if isinstance(model, str) and model.strip() else None,
                         cwd=cwd, fork_overrides=fork_overrides, turn_overrides=turn_overrides,
                         server_request_handler=side_server_request,
-                        env=side_questions.isolated_environment(runner_env()),
+                        env=isolated_process.isolated_environment(runner_env()),
                         provider_selection=provider_selection, durable=durable,
                         resume_state=(persisted_state or {}).get("codex"), persist_state=save_codex_state)
                 result = {"answer": await self.codex.ask(question, on_step=on_step),

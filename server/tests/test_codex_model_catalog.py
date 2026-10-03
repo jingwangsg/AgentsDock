@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 import codex_model_catalog as catalog
+import native_model_store
 
 # Shape captured from codex-cli 0.157.1 app-server protocol v2 ``model/list``;
 # unrelated fields trimmed, one hidden row and one deprecated field kept.
@@ -108,7 +109,7 @@ class DurableStoreTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.store = self.root / "state/codex-native-models.json"
-        self.previous = catalog._STORE_PATH
+        self.previous = catalog._STORE.path
         catalog.configure_native_models_store(self.store)
         self.addCleanup(catalog.configure_native_models_store, self.previous)
         catalog.clear_native_models()
@@ -127,7 +128,7 @@ class DurableStoreTests(unittest.TestCase):
         self.assertIsNone(catalog.cached_native_models(self.key))
         catalog.remember_native_models(PARSED, key=self.key)
         self.assertEqual(stat.S_IMODE(self.store.stat().st_mode), 0o600)
-        catalog._CACHE.clear()  # A hub restart loses memory, not the file.
+        catalog._STORE.cache.clear()  # A hub restart loses memory, not the file.
         rows = catalog.cached_native_models(self.key)
         self.assertEqual(rows, PARSED)
         rows[0]["efforts"].clear()  # Callers get copies, never the cached rows.
@@ -138,7 +139,7 @@ class DurableStoreTests(unittest.TestCase):
         keys = [catalog.native_catalog_key(self.identity, ["acct", str(n)]) for n in range(catalog.CACHE_LIMIT + 2)]
         for key in keys:
             catalog.remember_native_models(PARSED, key=key)
-        catalog._CACHE.clear()
+        catalog._STORE.cache.clear()
         stored = json.loads(self.store.read_text())
         self.assertEqual(len(stored), catalog.CACHE_LIMIT)
         self.assertIsNone(catalog.cached_native_models(keys[0]))
@@ -152,12 +153,12 @@ class DurableStoreTests(unittest.TestCase):
                         json.dumps({self.key: "rows"})):
             with self.subTest(damaged=damaged[:24]):
                 self.store.write_text(damaged)
-                catalog._CACHE.clear()
+                catalog._STORE.cache.clear()
                 self.assertIsNone(catalog.cached_native_models(self.key))
-        self.store.write_text("x" * (catalog.STORE_MAX_BYTES + 1))
+        self.store.write_text("x" * (native_model_store.STORE_MAX_BYTES + 1))
         self.assertIsNone(catalog.cached_native_models(self.key))
         catalog.remember_native_models(PARSED, key=self.key)
-        catalog._CACHE.clear()
+        catalog._STORE.cache.clear()
         self.assertEqual(catalog.cached_native_models(self.key), PARSED)
 
     def test_invalid_rows_are_rejected_before_they_reach_the_store(self):

@@ -1549,7 +1549,7 @@ class CodexNativeModelRefreshTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        previous = codex_model_catalog._STORE_PATH
+        previous = codex_model_catalog._STORE.path
         codex_model_catalog.configure_native_models_store(root / "codex-native-models.json")
         self.addCleanup(codex_model_catalog.configure_native_models_store, previous)
         codex_model_catalog.clear_native_models()
@@ -1588,7 +1588,7 @@ class CodexNativeModelRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(rows[0]["is_default"])
         self.assertEqual(rows[0]["efforts"], [{"value": "medium", "description": "Balanced"}])
         # The durable copy is what a restarted hub reads.
-        codex_model_catalog._CACHE.clear()
+        codex_model_catalog._STORE.cache.clear()
         self.assertEqual(agent_server.codex_native_models(), rows)
 
     async def test_failed_request_keeps_the_previous_copy(self) -> None:

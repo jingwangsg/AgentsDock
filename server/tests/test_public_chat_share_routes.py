@@ -588,7 +588,7 @@ class PublicChatShareRouteTests(unittest.TestCase):
         self.assertNotIn("private internal detail", response.text)
 
     def test_recursive_management_decoder_failure_is_a_client_error(self):
-        with mock.patch.object(routes.json, "loads", side_effect=RecursionError):
+        with mock.patch("share_route_helpers.json.loads", side_effect=RecursionError):
             response = self.client.post(self.admin + "/preview", content=b"{}",
                                         headers={**self.auth, "Content-Type": "application/json"})
         self.assertEqual(response.status_code, 400)

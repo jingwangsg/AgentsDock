@@ -6,17 +6,15 @@ is discarded.
 """
 from __future__ import annotations
 
-from collections import OrderedDict
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import shutil
-import threading
-import time
 import unicodedata
 from typing import Any
+
+from native_model_store import NativeModelStore
 
 MAX_MODELS = 512
 MAX_DESCRIPTION = 200
@@ -115,19 +113,6 @@ def parse_native_models(info: Any) -> list[dict[str, str]]:
 
 CACHE_TTL_SECONDS = 300.0
 CACHE_LIMIT = 16
-STORE_MAX_BYTES = 4 * 1024 * 1024
-_CACHE_LOCK = threading.Lock()
-_CACHE: OrderedDict[str, tuple[float, list[dict[str, str]]]] = OrderedDict()
-# Durable copy of _CACHE so a restarted hub serves the native picker before
-# any chat reconnects. It needs no TTL: native_catalog_key already changes
-# with the CLI binary, settings, credentials, or account identity.
-_STORE_PATH: Path | None = None
-
-
-def configure_native_models_store(path: Path | None) -> None:
-    global _STORE_PATH
-    with _CACHE_LOCK:
-        _STORE_PATH = path
 
 
 def _clean_rows(rows: Any) -> list[dict[str, str]] | None:
@@ -149,32 +134,14 @@ def _clean_rows(rows: Any) -> list[dict[str, str]] | None:
     return clean
 
 
-def _read_store() -> OrderedDict[str, list[dict[str, str]]]:
-    store: OrderedDict[str, list[dict[str, str]]] = OrderedDict()
-    if _STORE_PATH is None:
-        return store
-    try:
-        with _STORE_PATH.open("rb") as stream:
-            raw = stream.read(STORE_MAX_BYTES + 1)
-        payload = json.loads(raw) if len(raw) <= STORE_MAX_BYTES else None
-    except (OSError, ValueError):
-        payload = None
-    if isinstance(payload, dict):
-        for key, rows in payload.items():
-            clean = _clean_rows(rows)
-            if isinstance(key, str) and len(key) == 64 and clean is not None:
-                store[key] = clean
-    return store
+# The durable copy lets a restarted hub serve the native picker before any
+# chat reconnects. It needs no TTL: native_catalog_key already changes with
+# the CLI binary, settings, credentials, or account identity.
+_STORE = NativeModelStore(validate_rows=_clean_rows, limit=CACHE_LIMIT, ttl=CACHE_TTL_SECONDS)
 
 
-def _write_store(store: OrderedDict[str, list[dict[str, str]]]) -> None:
-    assert _STORE_PATH is not None
-    _STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _STORE_PATH.with_name(_STORE_PATH.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        json.dump(store, stream)
-    os.replace(tmp, _STORE_PATH)
+def configure_native_models_store(path: Path | None) -> None:
+    _STORE.configure(path)
 
 
 def _file_revision(path: Path) -> tuple:
@@ -267,43 +234,15 @@ def remember_native_models(info: Any, *, key: str, executable: str,
         return "revision changed during connect"
     if _has_project_settings(cwd, env):
         return "project settings pin models"
-    models = parse_native_models(info)
-    with _CACHE_LOCK:
-        _CACHE[key] = (time.monotonic(), models)
-        _CACHE.move_to_end(key)
-        while len(_CACHE) > CACHE_LIMIT:
-            _CACHE.popitem(last=False)
-        if _STORE_PATH is not None:
-            store = _read_store()
-            store[key] = models
-            store.move_to_end(key)
-            while len(store) > CACHE_LIMIT:
-                store.popitem(last=False)
-            try:
-                _write_store(store)
-            except OSError:
-                pass  # Best effort: the in-memory copy above already serves this process.
+    _STORE.remember(key, parse_native_models(info))
     return ""
 
 
 def cached_native_models(executable: str, *, env: dict[str, str]) -> list[dict[str, str]] | None:
-    key = native_catalog_key(executable, env)
-    with _CACHE_LOCK:
-        entry = _CACHE.get(key)
-        if entry is not None and time.monotonic() - entry[0] < CACHE_TTL_SECONDS:
-            return [dict(row) for row in entry[1]]
-        if entry is not None:
-            del _CACHE[key]
-        return _read_store().get(key)
+    return _STORE.cached(native_catalog_key(executable, env))
 
 
 def clear_native_models() -> None:
-    with _CACHE_LOCK:
-        _CACHE.clear()
-        # Authentication failures call this: a signed-out hub must not keep
-        # serving the previous account's picker from disk either.
-        if _STORE_PATH is not None:
-            try:
-                _STORE_PATH.unlink()
-            except OSError:
-                pass
+    # Authentication failures call this: a signed-out hub must not keep
+    # serving the previous account's picker from disk either.
+    _STORE.clear()
