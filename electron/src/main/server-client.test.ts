@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TERMINAL_SHELL_EXITED_CLOSE_CODE } from '../shared/terminal'
 import { closeSync, openSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -245,6 +245,133 @@ describe('Team Mail metadata websocket', () => {
     vi.advanceTimersByTime(600_000)
     expect(FakeWebSocket.instances).toHaveLength(1)
     expect(test.fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('AgentServerClient reconnecting websocket loops', () => {
+  const mailbox = { hub_id: 'hub-a', team_id: 'team-a', recipient_server_id: null }
+  const mailSnapshot = { type: 'snapshot', server_identity: 'server-a', hub_id: 'hub-a', stream_id: 'a'.repeat(32),
+    cursor: { version: 1, team_id: 'team-a', recipient_server_id: 'node-a', through_sequence: 3, arrival_id: `tmsg_${'a'.repeat(32)}`, reset: false } }
+  const transportsOf = (client: AgentServerClient): Set<unknown> =>
+    (client as unknown as { configuration: { transports: Set<unknown> } }).configuration.transports
+  interface Loop { stop(): void; disconnects: ReturnType<typeof vi.fn> }
+  // One adapter per loop: `disconnects` records each "dropped, retrying" notification as the
+  // caller sees it, `establish` replays the protocol's own "healthy" handshake on a socket.
+  const loops: Array<{ name: string; connectTimeoutMs: number; timedOut: string[]; start(client: AgentServerClient): Loop; establish(socket: FakeWebSocket): void }> = [
+    { name: 'terminal', connectTimeoutMs: 10_000, timedOut: ['Terminal connection timed out'],
+      start(client) {
+        const disconnects = vi.fn()
+        const connection = client.terminal('chat', { columns: 80, rows: 24 }, () => {}, state => {
+          if (state.state === 'reconnecting' && 'error' in state) disconnects(state.error ?? undefined)
+        })
+        return { stop: connection.close, disconnects }
+      },
+      establish(socket) { socket.emit('open'); socket.emit('message', JSON.stringify({ type: 'ready', name: 'zsh' })) } },
+    { name: 'stream', connectTimeoutMs: 10_000, timedOut: ['Live updates timed out'],
+      start(client) {
+        const disconnects = vi.fn()
+        const stop = client.stream('chat', 0, () => {}, (connected, error) => { if (!connected) disconnects(error) })
+        return { stop, disconnects }
+      },
+      establish(socket) { socket.emit('open') } },
+    { name: 'emergencyStream', connectTimeoutMs: 10_000, timedOut: ['Emergency alert stream timed out'],
+      start(client) {
+        const disconnects = vi.fn()
+        const stop = client.emergencyStream('server-a', () => {}, (connected, error) => { if (!connected) disconnects(error) })
+        return { stop, disconnects }
+      },
+      establish(socket) { socket.emit('open') } },
+    { name: 'mailHintStream', connectTimeoutMs: 35_000, timedOut: [],
+      start(client) {
+        const disconnects = vi.fn()
+        const stop = client.mailHintStream('server-a', mailbox, () => null, () => {}, () => {}, disconnects)
+        return { stop, disconnects }
+      },
+      establish(socket) { socket.emit('open'); socket.emit('message', JSON.stringify(mailSnapshot)) } }
+  ]
+
+  describe.each(loops)('$name', loop => {
+    beforeEach(() => { vi.useFakeTimers(); vi.stubGlobal('WebSocket', FakeWebSocket) })
+    afterEach(() => { FakeWebSocket.instances = []; vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+    const start = (): Loop & { client: AgentServerClient } => {
+      const client = new AgentServerClient('https://example.test:7850', 'token')
+      return { client, ...loop.start(client) }
+    }
+
+    it('doubles the retry delay from 500 ms to a 10 s cap, jitters below min(250, delay / 3), and restarts after a healthy connection', () => {
+      const random = 0.999999
+      vi.spyOn(Math, 'random').mockReturnValue(random)
+      const test = start()
+      const expectNextAttemptAfter = (delay: number): void => {
+        const attempts = FakeWebSocket.instances.length
+        FakeWebSocket.instances.at(-1)!.emit('close', undefined, { code: 1006 })
+        vi.advanceTimersByTime(delay + Math.floor(random * Math.min(250, delay / 3)) - 1)
+        expect(FakeWebSocket.instances).toHaveLength(attempts)
+        vi.advanceTimersByTime(1)
+        expect(FakeWebSocket.instances).toHaveLength(attempts + 1)
+      }
+      for (const delay of [500, 1000, 2000, 4000, 8000, 10_000, 10_000]) expectNextAttemptAfter(delay)
+      expect(test.disconnects).toHaveBeenCalledTimes(7)
+      loop.establish(FakeWebSocket.instances.at(-1)!)
+      expectNextAttemptAfter(500)
+      test.stop()
+    })
+
+    it('closes a socket whose handshake has not completed by the deadline and retries', () => {
+      vi.spyOn(Math, 'random').mockReturnValue(0)
+      const test = start()
+      const first = FakeWebSocket.instances[0]
+      first.readyState = 0
+      vi.advanceTimersByTime(loop.connectTimeoutMs - 1)
+      expect(first.closed).toBe(false)
+      vi.advanceTimersByTime(1)
+      expect(first.closed).toBe(true)
+      expect(test.disconnects).toHaveBeenCalledTimes(1)
+      expect(test.disconnects.mock.lastCall).toEqual(loop.timedOut)
+      vi.advanceTimersByTime(500)
+      expect(FakeWebSocket.instances).toHaveLength(2)
+      test.stop()
+    })
+
+    it('never retries after stop(), whether stop lands during the retry wait or before the server closes the socket', () => {
+      vi.spyOn(Math, 'random').mockReturnValue(0)
+      const waiting = start()
+      expect(transportsOf(waiting.client).size).toBe(1)
+      FakeWebSocket.instances[0].emit('close', undefined, { code: 1006 })
+      waiting.stop()
+      const connected = start()
+      const socket = FakeWebSocket.instances[1]
+      loop.establish(socket)
+      connected.stop()
+      expect(socket.closed).toBe(true)
+      socket.emit('close', undefined, { code: 1000 })
+      vi.advanceTimersByTime(60_000)
+      expect(FakeWebSocket.instances).toHaveLength(2)
+      expect(vi.getTimerCount()).toBe(0)
+      expect(transportsOf(waiting.client).size).toBe(0)
+      expect(transportsOf(connected.client).size).toBe(0)
+      expect(connected.disconnects).not.toHaveBeenCalled()
+    })
+
+    it('ignores late open, close, and error callbacks from a socket it already replaced', () => {
+      vi.spyOn(Math, 'random').mockReturnValue(0)
+      const test = start()
+      const first = FakeWebSocket.instances[0]
+      first.emit('error')
+      expect(first.closed).toBe(true)
+      expect(test.disconnects).toHaveBeenCalledTimes(1)
+      vi.advanceTimersByTime(500)
+      const second = FakeWebSocket.instances[1]
+      loop.establish(second)
+      first.emit('open')
+      first.emit('close', undefined, { code: 1006 })
+      first.emit('error')
+      vi.advanceTimersByTime(60_000)
+      expect(FakeWebSocket.instances).toHaveLength(2)
+      expect(second.closed).toBe(false)
+      expect(test.disconnects).toHaveBeenCalledTimes(1)
+      test.stop()
+    })
   })
 })
 
