@@ -1,5 +1,6 @@
 import type { Backend, ChatReference, ChatReferenceAction, Health, Session } from '@shared/types'
 import type { SecurePeerRemoteRoute } from '@shared/secure-peer'
+import { reconcileReferenceSpans } from './team-references'
 
 export interface ChatMentionTrigger {
   kind: '@' | '/chat'
@@ -311,79 +312,7 @@ export function reconcileChatReferences(
   nextText: string,
   references: readonly ChatReference[]
 ): ChatReference[] {
-  if (!references.length || previousText === nextText) return [...references]
-  let prefix = 0
-  const maxPrefix = Math.min(previousText.length, nextText.length)
-  while (prefix < maxPrefix && previousText[prefix] === nextText[prefix]) prefix += 1
-
-  let suffix = 0
-  const remainingPrevious = previousText.length - prefix
-  const remainingNext = nextText.length - prefix
-  while (
-    suffix < remainingPrevious
-    && suffix < remainingNext
-    && previousText[previousText.length - 1 - suffix] === nextText[nextText.length - 1 - suffix]
-  ) suffix += 1
-
-  const previousEditEnd = previousText.length - suffix
-  const nextEditEnd = nextText.length - suffix
-  const delta = nextEditEnd - previousEditEnd
-  const reconciled = references.flatMap(reference => {
-    if (reference.source_text_end <= prefix) return [reference]
-    if (reference.source_text_start >= previousEditEnd) {
-      return [{
-        ...reference,
-        source_text_start: reference.source_text_start + delta,
-        source_text_end: reference.source_text_end + delta
-      }]
-    }
-    return []
-  })
-  return reconciled.filter(reference => chatReferenceTokenMatches(nextText, reference))
-}
-
-export function atomicChatReferenceCaret(caret: number, references: readonly ChatReference[]): number {
-  const reference = references.find(candidate => candidate.source_text_start < caret && caret < candidate.source_text_end)
-  if (!reference) return caret
-  return caret - reference.source_text_start < reference.source_text_end - caret
-    ? reference.source_text_start
-    : reference.source_text_end
-}
-
-export function atomicChatReferenceNavigation(
-  caret: number,
-  references: readonly ChatReference[],
-  key: 'ArrowLeft' | 'ArrowRight'
-): number | null {
-  const reference = key === 'ArrowLeft'
-    ? [...references].reverse().find(candidate => candidate.source_text_start < caret && caret <= candidate.source_text_end)
-    : references.find(candidate => candidate.source_text_start <= caret && caret < candidate.source_text_end)
-  if (!reference) return null
-  return key === 'ArrowLeft' ? reference.source_text_start : reference.source_text_end
-}
-
-export function atomicChatReferenceDeletion(
-  text: string,
-  references: readonly ChatReference[],
-  selectionStart: number,
-  selectionEnd: number,
-  key: 'Backspace' | 'Delete'
-): { text: string; caret: number } | null {
-  let start = Math.max(0, Math.min(selectionStart, selectionEnd, text.length))
-  let end = Math.max(start, Math.min(Math.max(selectionStart, selectionEnd), text.length))
-  const collapsed = start === end
-  const ordered = [...references].sort((left, right) => left.source_text_start - right.source_text_start)
-  const touched = collapsed
-    ? ordered.filter(reference => key === 'Backspace'
-      ? reference.source_text_start < start && start <= reference.source_text_end
-      : reference.source_text_start <= start && start < reference.source_text_end)
-    : ordered.filter(reference => reference.source_text_start < end && start < reference.source_text_end)
-  if (!touched.length) return null
-  start = Math.min(start, ...touched.map(reference => reference.source_text_start))
-  end = Math.max(end, ...touched.map(reference => reference.source_text_end))
-  if (collapsed && text[end] === ' ') end += 1
-  else if (collapsed && text[start - 1] === ' ') start -= 1
-  return { text: `${text.slice(0, start)}${text.slice(end)}`, caret: start }
+  return reconcileReferenceSpans(previousText, nextText, references, chatReferenceTokenMatches)
 }
 
 export function validChatReferences(

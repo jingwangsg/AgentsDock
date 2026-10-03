@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatReference, TeamRecipientReference, TeamReference } from '@shared/types'
 import {
+  atomicComposerReferenceCaret,
   atomicComposerReferenceDeletion,
+  atomicComposerReferenceNavigation,
   insertTeamReference,
   orderedComposerReferenceSpans,
   parseStoredTeamReferences,
@@ -96,6 +98,20 @@ describe('Team Network composer references', () => {
     expect(validComposerReferences(text, [legacyChat], [team], (_value, refs) => [...refs])).toEqual({
       chatReferences: [], teamReferences: [team]
     })
+  })
+
+  it('treats a resolved @ route hint as one atomic textarea token', () => {
+    const text = 'Tell @Training now'
+    const reference: ChatReference = {
+      session_id: 'training', display_title_snapshot: 'Training',
+      source_text_start: 5, source_text_end: 14, action: 'route'
+    }
+    expect(atomicComposerReferenceCaret(8, [reference])).toBe(5)
+    expect(atomicComposerReferenceCaret(12, [reference])).toBe(14)
+    expect(atomicComposerReferenceNavigation(14, [reference], 'ArrowLeft')).toBe(5)
+    expect(atomicComposerReferenceNavigation(5, [reference], 'ArrowRight')).toBe(14)
+    expect(atomicComposerReferenceDeletion(text, [reference], 14, 14, 'Backspace')).toEqual({ text: 'Tell now', caret: 5 })
+    expect(atomicComposerReferenceDeletion(text, [reference], 5, 5, 'Delete')).toEqual({ text: 'Tell now', caret: 5 })
   })
 
   it('treats mixed chat and Team chips atomically during deletion', () => {
