@@ -1,5 +1,5 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from '../shared/provider-usage'
-import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, session, shell } from 'electron'
 import { bannerDedupeKey, notificationBannerContent, type NotificationPopupController } from './notification-popup'
 import { rememberedFolderOrder } from '../shared/folders'
 import { applyOpenCodeSessionEvent } from '../shared/opencode'
@@ -13,7 +13,7 @@ import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
 import { isImportedHistoryRecord, isImportedProviderControlMetadata, mergeProviderInterruptionEvent } from '../shared/provider-origin'
 import type { ChatShareMode, CreateChatShareInput } from '../shared/chat-shares'
 import type { WorkspaceGitAction, WorkspaceGitStatus, WorkspaceGitView } from '../shared/workspace-git'
-import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, SessionExportFormat } from '../shared/types'
+import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, CreateSurfaceInput, SessionExportFormat, Surface, UpdateSurfaceInput } from '../shared/types'
 import { buildCanvasPage, type CanvasHostTheme } from './canvas-protocol'
 import { parseMailHintPageAcknowledgment, TEAM_MAIL_HINTS_ENABLED, type MailHintPageAcknowledgment, type MailHintScope } from '../shared/team-mail-hints'
 import { TeamMailHintController } from './team-mail-hint-controller'
@@ -120,7 +120,6 @@ import type {
   SessionRewindResult,
   SessionSnapshot,
   SubagentSnapshot,
-  TerminalAction,
   TerminalConnectOptions,
   TerminalWindowsSnapshot,
   TimelineIndex,
@@ -148,6 +147,7 @@ import { updateQueuedTurns } from '../shared/queue'
 import { runtimeCatalogHasSelectableModels } from '../shared/runtime-catalog'
 import { incompleteLeadingRunId, isNativeGoalSteerEvent, isNativeSteerTransitionStop } from '../shared/semantic-timeline'
 import { DEFAULT_SERVER_URL, normalizeServerURL } from '../shared/server-url'
+import { isStandaloneTerminalId } from '../shared/terminal'
 import { t } from '../shared/i18n'
 import { isLoopbackHostname, normalizeDirectIPTeamHubURL, normalizeTailscaleServeTeamHubURL } from '../shared/team-hub-url'
 import { agentFileBelongsToSession, isolateSessionEvent } from '../shared/session-files'
@@ -171,6 +171,7 @@ import {
 } from './server-client'
 import { PinSyncCoordinator, type PinSyncContext } from './pin-sync'
 import { PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL, PortTunnelManager } from './port-tunnel-manager'
+import { BrowserProxy } from './browser-proxy'
 import { FileUploadGrantRegistry } from './file-upload-grants'
 import { SettingsStore, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
@@ -484,6 +485,7 @@ export class AppService {
   private terminalConnections = new Map<string, TerminalConnection>()
   private terminalLeases = new Map<string, number>()
   private readonly portTunnels: PortTunnelManager
+  private readonly browserProxies = new Map<string, { proxy: BrowserProxy; ready: Promise<string> }>()
   private readonly removeTeamHubProfile: (profileId: string) => Promise<void | { rollback(): void; cleanupWarning?: string }>
   private readonly fileUploadGrants: FileUploadGrantRegistry
   private readonly clipboardTempRoot: string
@@ -688,6 +690,7 @@ export class AppService {
     cleanup(() => this.disconnectAllTerminals())
     this.terminalLeases.clear()
     cleanup(() => this.portTunnels.disposeAll())
+    cleanup(() => this.disposeBrowserProxies())
     cleanup(() => this.notificationPopups?.dispose())
     cleanup(() => this.fileUploadGrants.clear())
     cleanup(() => this.removeClipboardStagingDirectory())
@@ -2587,6 +2590,89 @@ export class AppService {
     this.emitSessions(scope, sessions)
     this.refreshProfileUnread(scope)
     return sessions
+  }
+
+  async listSurfaces(): Promise<Surface[]> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const surfaces = await scope.client.surfaces()
+    this.assertCurrentScope(scope)
+    for (const [id, { proxy }] of this.browserProxies) {
+      if (surfaces.some(surface => surface.id === id && surface.kind === 'browser')) continue
+      proxy.dispose()
+      this.browserProxies.delete(id)
+    }
+    return surfaces
+  }
+
+  async createSurface(input: CreateSurfaceInput): Promise<Surface> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const surface = await scope.client.createSurface(input)
+    this.assertCurrentScope(scope)
+    return surface
+  }
+
+  async updateSurface(surfaceId: string, patch: UpdateSurfaceInput): Promise<Surface> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const surface = await scope.client.updateSurface(surfaceId, patch)
+    this.assertCurrentScope(scope)
+    return surface
+  }
+
+  async removeSurface(surfaceId: string): Promise<void> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    if (isStandaloneTerminalId(surfaceId)) this.disconnectTerminal(surfaceId)
+    await scope.client.deleteSurface(surfaceId)
+    this.assertCurrentScope(scope)
+    this.browserProxies.get(surfaceId)?.proxy.dispose()
+    this.browserProxies.delete(surfaceId)
+  }
+
+  async prepareBrowser(surfaceId: string): Promise<string> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    const existing = this.browserProxies.get(surfaceId)
+    if (existing) {
+      const partition = await existing.ready
+      this.assertCurrentScope(scope)
+      return partition
+    }
+    const proxy = new BrowserProxy()
+    const ready = (async () => {
+      const surfaces = await scope.client.surfaces()
+      this.assertCurrentScope(scope)
+      if (!surfaces.some(surface => surface.id === surfaceId && surface.kind === 'browser')) {
+        throw new Error('Browser tab was not found on this server.')
+      }
+      const config = await proxy.start(surfaceId, port => {
+        this.assertCurrentScope(scope)
+        return scope.client.portTunnelSocket(surfaceId, port)
+      })
+      this.assertCurrentScope(scope)
+      const partition = `persist:agentsdock-browser-${encodeURIComponent(scope.profileId)}-${encodeURIComponent(scope.namespace)}-${surfaceId}`
+      const browserSession = session.fromPartition(partition)
+      await browserSession.setProxy(config)
+      this.assertCurrentScope(scope)
+      await browserSession.closeAllConnections()
+      this.assertCurrentScope(scope)
+      return partition
+    })()
+    const entry = { proxy, ready }
+    this.browserProxies.set(surfaceId, entry)
+    try { return await ready } catch (error) {
+      proxy.dispose()
+      if (this.browserProxies.get(surfaceId) === entry) this.browserProxies.delete(surfaceId)
+      throw error
+    }
+  }
+
+  private disposeBrowserProxies(): void {
+    for (const { proxy } of this.browserProxies.values()) proxy.dispose()
+    this.browserProxies.clear()
   }
 
   async createSession(input: CreateSessionInput): Promise<Session> {
@@ -5056,7 +5142,7 @@ export class AppService {
     const scope = this.requireProfileScope(profileId, profileGeneration)
     await this.ensureValidatedScope(scope)
     const tmux = this.health?.capabilities?.tmux
-    if (tmux?.available === false) throw new Error(tmux.action || tmux.message || 'tmux is required for terminal sessions.')
+    if (!isStandaloneTerminalId(sessionId) && tmux?.available === false) throw new Error(tmux.action || tmux.message || 'tmux is required for terminal sessions.')
     this.disconnectTerminal(sessionId)
     const lease = (this.terminalLeases.get(sessionId) ?? 0) + 1
     this.terminalLeases.set(sessionId, lease)
@@ -5083,9 +5169,6 @@ export class AppService {
   resizeTerminal(profileId: string, profileGeneration: number, sessionId: string, columns: number, rows: number): void {
     if (this.profileScopeMatches(profileId, profileGeneration)) this.terminalConnections.get(sessionId)?.resize(columns, rows)
   }
-  scrollTerminal(profileId: string, profileGeneration: number, sessionId: string, delta: number): void {
-    if (this.profileScopeMatches(profileId, profileGeneration)) this.terminalConnections.get(sessionId)?.scroll(delta)
-  }
   disconnectTerminalForProfile(profileId: string, profileGeneration: number, sessionId: string): void {
     this.requireProfileScope(profileId, profileGeneration)
     this.disconnectTerminal(sessionId)
@@ -5095,25 +5178,10 @@ export class AppService {
     this.terminalConnections.get(sessionId)?.close()
     this.terminalConnections.delete(sessionId)
   }
-  async killTerminal(profileId: string, profileGeneration: number, sessionId: string): Promise<boolean> {
-    const scope = this.requireProfileScope(profileId, profileGeneration)
-    await this.ensureValidatedScope(scope)
-    this.disconnectTerminal(sessionId)
-    const deleted = await scope.client.deleteTerminal(sessionId)
-    this.assertCurrentScope(scope)
-    return deleted
-  }
   async terminalWindows(profileId: string, profileGeneration: number, sessionId: string): Promise<TerminalWindowsSnapshot> {
     const scope = this.requireProfileScope(profileId, profileGeneration)
     await this.ensureValidatedScope(scope)
     const windows = await scope.client.terminalWindows(sessionId)
-    this.assertCurrentScope(scope)
-    return windows
-  }
-  async terminalAction(profileId: string, profileGeneration: number, sessionId: string, action: TerminalAction, target?: string): Promise<TerminalWindowsSnapshot> {
-    const scope = this.requireProfileScope(profileId, profileGeneration)
-    await this.ensureValidatedScope(scope)
-    const windows = await scope.client.terminalAction(sessionId, action, target)
     this.assertCurrentScope(scope)
     return windows
   }
@@ -6678,6 +6746,7 @@ export class AppService {
     retire(() => this.disconnectAllTerminals())
     this.terminalLeases.clear()
     retire(() => this.portTunnels.disposeAll())
+    retire(() => this.disposeBrowserProxies())
     retire(() => this.subagentProjector.reset())
     retire(() => this.abortAllRendererFileOperations())
     const previousClientAvailable = this.clientAvailable

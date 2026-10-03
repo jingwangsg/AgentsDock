@@ -134,9 +134,24 @@ export function sanitizeTimelineEvent(event: Event): Event {
   return next
 }
 
+/**
+ * Every `history_rewound` tombstone in a list removes the closed range it
+ * names from the rows before it. The live stream applies a tombstone as it
+ * arrives, but a page fetched after a disconnect, a reconnect replay or a
+ * cached snapshot can hold both the tombstone and the rows it removed.
+ */
+export function dropRewoundEvents(events: Event[]): Event[] {
+  const tombstones = events.filter(event => event.type === 'history_rewound'
+    && Number.isSafeInteger(event.from_seq) && Number.isSafeInteger(event.through_seq))
+  if (!tombstones.length) return events
+  const kept = events.filter(event => !tombstones.some(tombstone =>
+    event.seq < tombstone.seq && event.seq >= (tombstone.from_seq as number) && event.seq <= (tombstone.through_seq as number)))
+  return kept.length === events.length ? events : kept
+}
+
 export function boundLiveTimelineEvents(events: Event[]): Event[] {
   return takeWithinBudget(
-    retainLatestThreadStatus(events),
+    retainLatestThreadStatus(dropRewoundEvents(events)),
     'newest',
     LIVE_TIMELINE_EVENT_LIMIT,
     TIMELINE_CHARACTER_BUDGET,
@@ -153,7 +168,7 @@ export function liveTimelineEventsWereTrimmed(source: Event[], bounded: Event[])
 
 export function boundHistoricalTimelineEvents(events: Event[]): Event[] {
   return takeWithinBudget(
-    events,
+    dropRewoundEvents(events),
     'newest',
     HISTORY_WINDOW_EVENT_LIMIT,
     HISTORY_TIMELINE_CHARACTER_BUDGET,

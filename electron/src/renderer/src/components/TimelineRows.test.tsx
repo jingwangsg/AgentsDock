@@ -600,13 +600,13 @@ describe('timeline pin state', () => {
       render(<TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} rewindIdle checkpointRestoreSupported />)
       fireEvent.click(screen.getByTitle('Edit this turn'))
       expect(useAppStore.getState().editingTurn['chat-1']).toEqual({
-        runId: 'run-a', seq: 3, originalPrompt: 'Rename the helper', previousDraft: 'Half-typed follow-up'
+        runId: 'run-a', seq: 3, originalPrompt: 'Rename the helper', previousDraft: 'Half-typed follow-up', previousUploads: []
       })
       expect(useAppStore.getState().drafts['chat-1']).toBe('Rename the helper')
       fireEvent.click(screen.getByTitle('Restore checkpoint'))
       expect(confirm).toHaveBeenCalledOnce()
-      expect((confirm.mock.calls[0][0] as CustomEvent<{ sessionId: string; runId: string }>).detail)
-        .toEqual({ sessionId: 'chat-1', runId: 'run-a' })
+      expect((confirm.mock.calls[0][0] as CustomEvent<{ sessionId: string; runId: string; files: unknown[] }>).detail)
+        .toEqual({ sessionId: 'chat-1', runId: 'run-a', files: [] })
     } finally {
       window.removeEventListener('agentsdock:confirm-restore-checkpoint', confirm)
     }
@@ -2425,6 +2425,30 @@ describe('timeline pin state', () => {
     expect(container.querySelector('.tool-event pre')?.textContent?.slice(TOOL_OUTPUT_PREVIEW_CHARS)).toBe(
       '\n\n[AgentsDock omitted 11 characters from this tool output]'
     )
+  })
+
+  it('shows a JSON object tool result as key: value lines and leaves bracketed plain text alone', () => {
+    for (const [output, expected] of [
+      ['{"type":"search","queries":["a","b"]}', 'type: search\nqueries:\n  - a\n  - b'],
+      ['[Earlier tool output truncated by AgentsServer]', '[Earlier tool output truncated by AgentsServer]']
+    ]) {
+      const toolResult: Event = {
+        id: 'tool-result', session_id: 'chat-1', seq: 1, type: 'tool_finished',
+        ts: '2026-07-10T14:29:00Z', output, tool: { name: 'exec' }
+      }
+      const item: TraceItem = {
+        kind: 'trace', id: 'trace-1', key: 'trace-1', seq: 1, events: [toolResult], promotedCommentaryIds: [], active: false
+      }
+      const { container, unmount } = render(
+        <TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />
+      )
+
+      fireEvent.click(within(container).getByRole('button', { name: /1 tool/ }))
+      fireEvent.click(within(container).getByRole('button', { name: /exec.*Success/i }))
+
+      expect(container.querySelector('.tool-event pre')?.textContent).toBe(expected)
+      unmount()
+    }
   })
 
   it('shows every active commentary update in one flat expanded activity stream', () => {

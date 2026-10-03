@@ -223,7 +223,7 @@ describe('AppSettingsDialog', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Keyboard shortcuts' }))
     expect(within(dialog).getByRole('button', { name: 'Keyboard shortcuts' })).toHaveAttribute('aria-current', 'page')
     expect(within(dialog).getByRole('heading', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
-    expect(within(dialog).getAllByRole('listitem')).toHaveLength(26)
+    expect(within(dialog).getAllByRole('listitem')).toHaveLength(21)
     expect(within(dialog).getByText('Rename chat')).toBeInTheDocument()
     expect(within(dialog).getByText('Toggle chat list')).toBeInTheDocument()
     expect(within(dialog).getByText('Stop response')).toBeInTheDocument()

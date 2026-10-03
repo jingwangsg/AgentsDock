@@ -401,6 +401,7 @@ except OSError:
     SERVER_VERSION = "development"
 SESSIONS_FILE = STATE_DIR / "sessions.json"
 SESSIONS_BACKUP_DIR = STATE_DIR / "sessions-backups"
+SURFACES_FILE = STATE_DIR / "surfaces.json"
 JOBS_FILE = STATE_DIR / "jobs.json"
 HANDOFF_DIGEST_JOBS_FILE = STATE_DIR / "handoff_digest_jobs.json"
 CROSS_CHAT_DB_FILE = STATE_DIR / "cross_chat.sqlite3"
@@ -1908,7 +1909,7 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Continue through ordinary inspection errors when a safe retry or narrow fix is available.
 - Treat milestone completion as progress, not completion of the user's whole request. Before finishing, join child tasks you started and wait for every requested milestone and acceptance check; automate only when explicitly asked.
 - Never detach required work with `nohup`, `disown`, `setsid`, shell `&`, or Bash `run_in_background`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a tracked Agent/workflow; background Bash does not guarantee a completion wake-up.
-- This is AgentsDock, not Slack; never use Slack file helpers.
+- This is AgentsDock, not Slack: deliver files to the user through the AgentsDock provider tool below, never through Slack sharing. A configured Slack MCP server's tools, including its file search and listing tools, remain available for Slack tasks.
 - Link editor-readable files with Markdown paths relative to the chat working directory, optionally with `#L42`; do not use `file://`.
 - Publish user-facing files, images included, only with the AgentsDock provider tool described below; chat Markdown cannot display a local image (`![](path)` renders broken). Say “attached” only after a successful JSON receipt; if the tool returns an error, quote it and give the absolute path. Older-server fallback, only when the tool is absent: write `{{"files":["/absolute/path.ext"]}}` to resolved `$AGENTSDOCK_MANIFEST_PATH` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
 - Never use Claude's `Monitor`, `ScheduleWakeup`, `/loop`, or `CronCreate`; under AgentsDock they cannot durably deliver a later chat update. Only when explicitly asked, use the Jobs helper through the provider tool.
@@ -1941,7 +1942,7 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Render inline math as `$...$` and display math as `$$...$$`.
 - Continue through ordinary inspection errors when a safe retry or narrow fix is available.
 - Never detach required work with `nohup`, `disown`, `setsid`, or shell `&`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a provider-tracked exec, Agent, or workflow; an explicitly requested durable service must use an observable service manager.
-- This is AgentsDock, not Slack; create files locally and never call Slack file helpers.
+- This is AgentsDock, not Slack: create files locally and deliver them through the AgentsDock provider tool below, never through Slack sharing. A configured Slack MCP server's tools, including its file search and listing tools, remain available for Slack tasks.
 - Link editor-readable files with Markdown paths relative to the chat working directory, optionally with `#L42`; do not use `file://`.
 - Publish user-facing files, images included, only with the AgentsDock provider tool described below; chat Markdown cannot display a local image (`![](path)` renders broken). Say “attached” only after a successful JSON receipt; if the tool returns an error, quote it and give the absolute path. Older-server fallback, only when the tool is absent: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
 - Never rely on provider-local timers, loops, or detached processes to wake this AgentsDock chat or deliver a later reply. Manage durable scheduled jobs only when explicitly asked through the run-bound provider tool; query it instead of relying on a prompt snapshot.
@@ -1962,7 +1963,7 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Render inline math as `$...$` and display math as `$$...$$`.
 - Continue through ordinary inspection errors when a safe retry or narrow fix is available.
 - Never detach required work with `nohup`, `disown`, `setsid`, or shell `&`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a provider-tracked Agent/workflow; an explicitly requested durable service must use an observable service manager.
-- This is AgentsDock, not Slack; create files locally and never call Slack file helpers.
+- This is AgentsDock, not Slack: create files locally and deliver them through the AgentsDock provider tool below, never through Slack sharing. A configured Slack MCP server's tools, including its file search and listing tools, remain available for Slack tasks.
 - Publish user-facing files, images included, only through the run-bound AgentsDock provider tool; chat Markdown cannot display a local image (`![](path)` renders broken). Say “attached” only after a successful JSON receipt; if the tool returns an error, quote it and give the absolute path. Older-server fallback, only when the tool is absent: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
 - Never rely on provider-local timers, loops, or detached processes to wake this AgentsDock chat or deliver a later reply. Manage durable scheduled jobs only when explicitly asked and only through the Jobs helper in the run-bound provider tool.
 - Use the Chats helper through the run-bound provider tool for cross-chat messages.
@@ -6577,16 +6578,16 @@ def port_tunnel_websocket_authorized(ws: WebSocket) -> bool:
     return canonical == encoded and hmac.compare_digest(decoded, expected)
 
 
-def canonical_port_tunnel_port(value: Any) -> int:
+def canonical_port_tunnel_port(value: Any, minimum_port: int = PORT_TUNNEL_MIN_PORT) -> int:
     """Validate the only network destination a tunnel caller may choose."""
 
     raw = str(value or "")
     if not re.fullmatch(r"[0-9]{1,5}", raw):
         raise ValueError("port must be an explicit decimal TCP port")
     port = int(raw)
-    if port < PORT_TUNNEL_MIN_PORT or port > PORT_TUNNEL_MAX_PORT:
+    if port < minimum_port or port > PORT_TUNNEL_MAX_PORT:
         raise ValueError(
-            f"port must be between {PORT_TUNNEL_MIN_PORT} and "
+            f"port must be between {minimum_port} and "
             f"{PORT_TUNNEL_MAX_PORT}"
         )
     return port
@@ -7283,6 +7284,21 @@ class HandoffDigestRequest(BaseModel):
 
 class HandoffDigestSendRequest(HandoffDigestRequest):
     target_session_id: str
+
+
+class SurfaceCreateRequest(BaseModel):
+    kind: Literal["terminal", "browser"]
+    folder: str | None = None
+    cwd: str | None = None
+    url: str | None = None
+
+
+class SurfacePatchRequest(BaseModel):
+    """Only fields the client sent are applied; `name: null` clears a rename."""
+    name: str | None = None
+    folder: str | None = None
+    url: str | None = None
+    page_title: str | None = None
 
 
 class TerminalOpenRequest(BaseModel):
@@ -28450,6 +28466,181 @@ def scrub_tmux_global_secret_environment() -> None:
 TERMINAL_FALLBACK_SHELLS = ("/bin/bash", "/bin/zsh", "/bin/sh")
 TERMINAL_DISABLED_SHELL_NAMES = {"false", "nologin"}
 TERMINAL_SESSION_LOCK_STRIPES = tuple(threading.Lock() for _ in range(64))
+# Terminal and browser tabs ("surfaces") are shared by every client of this server, so a
+# tab opened on the desktop shows up on the phone. A terminal tab's shell is owned by the
+# server too: viewers attach and detach, and a late viewer gets the scrollback replayed.
+STANDALONE_TERMINAL_PREFIX = "term_"
+SURFACE_ID_PREFIXES = {"terminal": STANDALONE_TERMINAL_PREFIX, "browser": "browser_"}
+TERMINAL_SCROLLBACK_BYTES = 512 * 1024
+# WebSocket close code telling viewers the shell itself ended, as opposed to a dropped link.
+TERMINAL_SHELL_EXITED_CLOSE_CODE = 4410
+
+
+
+def load_surfaces() -> dict[str, dict[str, Any]]:
+    try:
+        loaded = json.loads(SURFACES_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(loaded, list):
+        return {}
+    return {item["id"]: item for item in loaded if isinstance(item, dict) and isinstance(item.get("id"), str)}
+
+
+SURFACES: dict[str, dict[str, Any]] = load_surfaces()
+# Seeded from the clock so a restarted server never repeats a revision a client already saw.
+SURFACES_REVISION = int(time.time())
+
+
+def save_surfaces() -> None:
+    global SURFACES_REVISION
+    SURFACES_REVISION += 1
+    scratch = SURFACES_FILE.with_suffix(".json.tmp")
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+    scratch.write_text(json.dumps(list(SURFACES.values()), ensure_ascii=False, indent=2))
+    os.replace(scratch, SURFACES_FILE)
+
+
+class TerminalShell:
+    """The shell behind one terminal tab; the server owns it so any client can attach, leave and come back."""
+
+    def __init__(self, process: subprocess.Popen[bytes], master_fd: int, name: str) -> None:
+        self.process = process
+        self.master_fd = master_fd
+        self.name = name
+        self.scrollback = bytearray()
+        self.viewers: set[WebSocket] = set()
+        self.exited = False
+        self.pump = asyncio.create_task(self._pump_output())
+
+    async def _pump_output(self) -> None:
+        try:
+            while True:
+                try:
+                    data = await read_terminal_output(self.master_fd)
+                except OSError:
+                    return  # EIO: the shell closed its side of the pty
+                if not data:
+                    return
+                self.scrollback += data
+                if len(self.scrollback) > TERMINAL_SCROLLBACK_BYTES:
+                    # Drop whole lines where possible so a replay does not start inside an escape sequence.
+                    cut = len(self.scrollback) - TERMINAL_SCROLLBACK_BYTES
+                    newline = self.scrollback.find(b"\n", cut)
+                    del self.scrollback[:newline + 1 if newline >= 0 else cut]
+                for ws in list(self.viewers):
+                    try:
+                        await ws.send_bytes(data)
+                    except Exception:
+                        self.viewers.discard(ws)
+        finally:
+            # Flag first: a viewer joins only after checking this flag, with no await in
+            # between, so the list below misses nobody.
+            self.exited = True
+            await asyncio.to_thread(stop_terminal_client, self.process, self.master_fd)
+            for ws in list(self.viewers):
+                await self.dismiss_viewer(ws)
+            self.viewers.clear()
+
+    async def dismiss_viewer(self, ws: WebSocket) -> None:
+        with suppress(Exception):
+            await ws.close(code=TERMINAL_SHELL_EXITED_CLOSE_CODE)
+
+    async def kill(self) -> None:
+        self.pump.cancel()
+        with suppress(asyncio.CancelledError):
+            await self.pump
+
+
+TERMINAL_SHELLS: dict[str, TerminalShell] = {}
+TERMINAL_SHELLS_LOCK = asyncio.Lock()
+
+
+async def kill_terminal_shells() -> None:
+    shells = list(TERMINAL_SHELLS.values())
+    TERMINAL_SHELLS.clear()
+    for shell in shells:
+        await shell.kill()
+
+
+async def standalone_terminal_websocket(
+    ws: WebSocket,
+    terminal_id: str,
+    columns: int,
+    rows: int,
+    cwd: str | None,
+    subprotocol: str | None,
+) -> None:
+    await ws.accept(subprotocol=subprotocol)
+    cols, lines = terminal_dimensions(columns, rows)
+    # The tab lookup and the shell start share one lock with DELETE, so a tab deleted
+    # during an attach cannot be left with a running shell.
+    async with TERMINAL_SHELLS_LOCK:
+        surface = SURFACES.get(terminal_id)
+        if surface is None:
+            await ws.close(code=4404)
+            return
+        shell = TERMINAL_SHELLS.get(terminal_id)
+        if shell is None or shell.exited:
+            process, master_fd, name = await asyncio.to_thread(spawn_terminal_shell, cwd or surface.get("cwd"), cols, lines)
+            shell = TERMINAL_SHELLS[terminal_id] = TerminalShell(process, master_fd, name)
+    try:
+        await ws.send_json({
+            "type": "ready",
+            "session_id": terminal_id,
+            "name": shell.name,
+            "columns": cols,
+            "rows": lines,
+        })
+        if shell.exited:
+            # It ended while `ready` was in flight, before this socket was a viewer.
+            await shell.dismiss_viewer(ws)
+            return
+        # Join and replay with no await in between: the pump writes only to viewers, so
+        # this one sees every byte once, in order.
+        shell.viewers.add(ws)
+        if shell.scrollback:
+            await ws.send_bytes(bytes(shell.scrollback))
+        # The newest viewer sizes the pty; the others see its width.
+        set_pty_dimensions(shell.master_fd, cols, lines)
+        while True:
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+            data = message.get("bytes")
+            if data:
+                await write_terminal_input(shell.master_fd, data)
+                continue
+            text = message.get("text")
+            if not text:
+                continue
+            try:
+                control = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(control, dict) and control.get("type") == "resize":
+                with suppress(TypeError, ValueError):
+                    set_pty_dimensions(shell.master_fd, *terminal_dimensions(control.get("columns"), control.get("rows")))
+    except (WebSocketDisconnect, OSError, RuntimeError):
+        # OSError: input to a shell that has exited. RuntimeError: the pump closed this
+        # socket while a send above was still in flight.
+        pass
+    finally:
+        shell.viewers.discard(ws)
+        with suppress(RuntimeError):
+            await ws.close()
+
+
+def utf8_terminal_environment(env: dict[str, str]) -> None:
+    """Give the shell a UTF-8 locale so non-ASCII output is not mangled into '?' or '_'."""
+    for name in ("LC_ALL", "LC_CTYPE", "LANG"):
+        value = env.get(name, "")
+        if not value:
+            continue
+        if "utf-8" in value.lower().replace("utf8", "utf-8"):
+            return
+        del env[name]
+    env["LANG"] = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
 
 
 def terminal_session_lock(session_id: str) -> threading.Lock:
@@ -28646,6 +28837,49 @@ def ensure_terminal_session(
         )
 
 
+def spawn_terminal_shell(cwd: str | None, columns: int, rows: int) -> tuple[subprocess.Popen[bytes], int, str]:
+    """Start a login shell on a fresh pty for a terminal tab; TerminalShell owns it from here."""
+    shell = resolve_terminal_login_shell()
+    workdir = existing_cwd(cwd or DEFAULT_CWD)
+    master_fd, slave_fd = pty.openpty()
+    env = os.environ.copy()
+    for secret_name in PROVIDER_SECRET_ENV_NAMES:
+        env.pop(secret_name, None)
+    env.pop("TMUX", None)
+    env.pop("TMUX_PANE", None)
+    env["TERM"] = "xterm-256color"
+    env["COLORTERM"] = "truecolor"
+    env["SHELL"] = shell
+    env["PATH"] = terminal_session_path()
+    utf8_terminal_environment(env)
+    try:
+        set_pty_dimensions(slave_fd, columns, rows)
+        process = subprocess.Popen(
+            [shell, "-l"],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            cwd=workdir,
+            env=env,
+            close_fds=True,
+            start_new_session=True,
+            # Job control (Ctrl-C, fg/bg) needs the pty as the controlling terminal of the
+            # new session; Popen has already put it on fd 0 when this runs.
+            preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0),
+        )
+    except Exception:
+        os.close(master_fd)
+        raise
+    finally:
+        os.close(slave_fd)
+    try:
+        os.set_blocking(master_fd, False)
+    except BaseException:
+        stop_terminal_client(process, master_fd)
+        raise
+    return process, master_fd, Path(shell).name
+
+
 def spawn_terminal_client(
     session_id: str,
     cwd: str | None,
@@ -28751,12 +28985,13 @@ def stop_terminal_client(process: subprocess.Popen[bytes], master_fd: int) -> No
         os.close(master_fd)
     if process.poll() is not None:
         return
-    with suppress(ProcessLookupError):
+    # macOS answers EPERM, not ESRCH, for a group whose leader is already mid-exit.
+    with suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, signal.SIGTERM)
     try:
         process.wait(timeout=1.5)
     except subprocess.TimeoutExpired:
-        with suppress(ProcessLookupError):
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGKILL)
         with suppress(subprocess.TimeoutExpired):
             process.wait(timeout=1)
@@ -30002,6 +30237,40 @@ def tail_jsonl_file(path: Path, limit: int = 40, max_bytes: int = 2 * 1024 * 102
     return records
 
 
+def readable_structured_text(value: Any, depth: int = 0) -> str:
+    """Nested data as indented ``key: value`` lines, so a tool result never reads as JSON."""
+    pad = "  " * depth
+    if isinstance(value, list) and value:
+        lines: list[str] = []
+        for item in value:
+            if isinstance(item, (dict, list)) and item:
+                lines.append(f"{pad}- {readable_structured_text(item, depth + 1).lstrip()}")
+            else:
+                scalar = readable_scalar_text(item).replace("\n", f"\n{pad}  ")
+                lines.append(f"{pad}- {scalar}")
+        return "\n".join(lines)
+    if isinstance(value, dict) and value:
+        lines = []
+        for key, item in value.items():
+            if isinstance(item, (dict, list)) and item:
+                lines.append(f"{pad}{key}:\n{readable_structured_text(item, depth + 1)}")
+            elif isinstance(item, str) and "\n" in item:
+                lines.append(f"{pad}{key}:\n" + "\n".join(f"{pad}  {line}" for line in item.split("\n")))
+            else:
+                lines.append(f"{pad}{key}: {readable_scalar_text(item)}")
+        return "\n".join(lines)
+    # Scalars and empty containers; str() already prints [] and {}.
+    return f"{pad}{readable_scalar_text(value)}"
+
+
+def readable_scalar_text(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def event_output_text(value: Any) -> str:
     if value is None:
         return ""
@@ -30021,9 +30290,18 @@ def event_output_text(value: Any) -> str:
                 elif block_type == "tool_reference":
                     name = str(block.get("tool_name") or block.get("name") or "tool")
                     parts.append(f"[tool reference: {name}]")
+                elif isinstance(block.get("diff"), str) and block.get("path"):
+                    # Codex fileChange: head the patch the way apply_patch writes it.
+                    kind = block.get("kind")
+                    kind_type = kind.get("type") if isinstance(kind, dict) else kind
+                    verb = {"add": "Add", "delete": "Delete"}.get(str(kind_type or "").lower(), "Update")
+                    header = f"*** {verb} File: {block['path']}"
+                    move_path = kind.get("move_path") if isinstance(kind, dict) else None
+                    if move_path:
+                        header += f"\n*** Move to: {move_path}"
+                    parts.append(f"{header}\n{block['diff'].rstrip()}\n")
                 else:
-                    with suppress(Exception):
-                        parts.append(json.dumps(block, separators=(",", ":")))
+                    parts.append(readable_structured_text(block) + "\n")
             else:
                 parts.append(str(block))
         return compact_memory_text("\n".join(part for part in parts if part.strip()), 12_000)
@@ -30034,8 +30312,41 @@ def event_output_text(value: Any) -> str:
             return compact_memory_text(str(value.get("message") or ""), 12_000)
         if value.get("type") == "image":
             return "[image result]"
-        with suppress(Exception):
-            return compact_memory_text(json.dumps(value, separators=(",", ":")), 12_000)
+        if isinstance(value.get("content"), list):
+            # MCP CallToolResult: show the tool's text, not the JSON envelope.
+            text = event_output_text(value["content"])
+            structured = value.get("structuredContent")
+            if structured is None:
+                return text
+            with suppress(Exception):
+                if json.loads(text) == structured:
+                    return text
+            # Some servers answer "Action completed." in the text block and put
+            # the payload only in structuredContent; show both, never neither.
+            if isinstance(structured, dict) and isinstance(structured.get("content"), list):
+                dumped = event_output_text(structured)
+            else:
+                dumped = readable_structured_text(structured)
+            return compact_memory_text(f"{text}\n{dumped}" if text.strip() else dumped, 12_000)
+        action = str(value.get("type") or "")
+        if (
+            action in {"search", "openPage", "findInPage", "other"}
+            and set(value) <= {"type", "query", "queries", "url", "pattern"}
+        ):
+            # Codex webSearch action: say what was done, as Codex's own UI does.
+            queries = [str(query) for query in (value.get("queries") or []) if query]
+            if not queries and value.get("query"):
+                queries = [str(value["query"])]
+            if action == "search":
+                if len(queries) == 1:
+                    return f"Searched the web for: {queries[0]}"
+                return "Searched the web" + (" for:\n" + "\n".join(f"  {query}" for query in queries) if queries else "")
+            if action == "openPage":
+                return f"Opened page: {value.get('url') or ''}".rstrip(": ")
+            if action == "findInPage":
+                return f"Searched page {value.get('url') or ''} for: {value.get('pattern') or ''}"
+            return "Web search"
+        return compact_memory_text(readable_structured_text(value), 12_000)
     return str(value)
 
 
@@ -79603,6 +79914,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         SERVER_SHUTTING_DOWN = True
+        await bounded_shutdown_phase("terminal-shells", kill_terminal_shells())
         await bounded_shutdown_phase("remote-servers", REMOTE_SERVERS.stop())
         await bounded_shutdown_phase("side-questions", asyncio.gather(
             SIDE_QUESTIONS.close(), close_generated_session_titles(),
@@ -83012,6 +83324,7 @@ async def health() -> dict[str, Any]:
         "server_instance_id": SERVER_INSTANCE_ID,
         "server_name": AGENTSDOCK_SERVER_DISPLAY_NAME,
         "server_update": server_update_health_projection(),
+        "surfaces_revision": SURFACES_REVISION,
         "state_dir": str(STATE_DIR),
         "default_backend": DEFAULT_BACKEND,
         "default_cwd": existing_cwd(DEFAULT_CWD),
@@ -87863,6 +88176,56 @@ async def run_session_terminal_action(session_id: str, req: TerminalActionReques
 @app.delete("/api/sessions/{session_id}/terminal")
 async def delete_session_terminal(session_id: str) -> dict[str, Any]:
     return await asyncio.to_thread(kill_terminal_session, session_id)
+
+
+@app.get("/api/surfaces")
+async def list_surfaces() -> dict[str, Any]:
+    return {"surfaces": list(SURFACES.values()), "revision": SURFACES_REVISION}
+
+
+@app.post("/api/surfaces")
+async def create_surface(req: SurfaceCreateRequest) -> dict[str, Any]:
+    now = now_iso()
+    surface = {
+        "id": f"{SURFACE_ID_PREFIXES[req.kind]}{uuid.uuid4().hex[:16]}",
+        "kind": req.kind,
+        "name": None,
+        "folder": (req.folder or "").strip() or "General",
+        "cwd": ((req.cwd or "").strip() or None) if req.kind == "terminal" else None,
+        "url": ((req.url or "").strip() or None) if req.kind == "browser" else None,
+        "page_title": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    SURFACES[surface["id"]] = surface
+    save_surfaces()
+    return {"surface": surface}
+
+
+@app.patch("/api/surfaces/{surface_id}")
+async def update_surface(surface_id: str, req: SurfacePatchRequest) -> dict[str, Any]:
+    surface = SURFACES.get(surface_id)
+    if surface is None:
+        raise HTTPException(status_code=404, detail="surface not found")
+    # A blank value clears the field; a tab always has a folder.
+    for field, value in req.model_dump(exclude_unset=True).items():
+        surface[field] = (value or "").strip() or ("General" if field == "folder" else None)
+    surface["updated_at"] = now_iso()
+    save_surfaces()
+    return {"surface": surface}
+
+
+@app.delete("/api/surfaces/{surface_id}")
+async def delete_surface(surface_id: str) -> dict[str, Any]:
+    async with session_lifecycle_lock(surface_id), TERMINAL_SHELLS_LOCK:
+        if SURFACES.pop(surface_id, None) is None:
+            raise HTTPException(status_code=404, detail="surface not found")
+        shell = TERMINAL_SHELLS.pop(surface_id, None)
+    if shell is not None:
+        await shell.kill()
+    await PORT_TUNNELS.close_session(surface_id, code=PORT_TUNNEL_CLOSE_NOT_FOUND, reason="Browser tab was closed")
+    save_surfaces()
+    return {"deleted": True}
 
 
 @app.get("/api/sessions/{session_id}/tmux")
@@ -92989,6 +93352,28 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
             and (req.to_seq is None or durable_event_seq(event) == req.to_seq)
         ), None)
         if target_index is None:
+            # A client that gave up waiting (a Codex fork over a slow hub tunnel
+            # can outlast its request timeout) retries the same edit after the
+            # server already rewound. If the chat still sits exactly at that
+            # rewind, answer as the first request would have, so the edited
+            # message is sent instead of "that turn is no longer in history".
+            for event in reversed(events):
+                if event.get("type") == "turn_started":
+                    break  # a turn ran after any rewind: the removed turn is genuinely gone
+                if (
+                    event.get("type") == "history_rewound"
+                    and str(event.get("to_run_id") or "") == req.to_run_id
+                    and (req.to_seq is None or event.get("from_seq") == req.to_seq)
+                ):
+                    return {
+                        "ok": True,
+                        "from_seq": event.get("from_seq"),
+                        "through_seq": event.get("through_seq"),
+                        "removed_events": event.get("removed_events"),
+                        "provider_rewind": event.get("provider_rewind"),
+                        "session": public_session(sess),
+                        "replayed": True,
+                    }
             raise HTTPException(status_code=409, detail={
                 "code": "rewind_target_not_found",
                 "message": "That turn is no longer in this chat's history.",
@@ -98522,7 +98907,9 @@ async def session_port_tunnel(
     port: str,
     ws: WebSocket,
 ) -> None:
-    """Run an authenticated session-lifecycle-scoped loopback proxy."""
+    """Run an authenticated loopback proxy owned by a chat or browser tab."""
+
+    browser = session_id.startswith("browser_")
 
     requested_protocols = port_tunnel_requested_protocols(ws)
     tunnel_protocol = (
@@ -98551,7 +98938,7 @@ async def session_port_tunnel(
         )
         return
     try:
-        target_port = canonical_port_tunnel_port(port)
+        target_port = canonical_port_tunnel_port(port, 1 if browser else PORT_TUNNEL_MIN_PORT)
     except ValueError as exc:
         await reject_before_accept(PORT_TUNNEL_CLOSE_INVALID_REQUEST, str(exc))
         return
@@ -98590,13 +98977,13 @@ async def session_port_tunnel(
             return
         reserved = True
         async with session_lifecycle_lock(session_id):
-            session = STORE.sessions.get(session_id)
-            if not session:
+            session = SURFACES.get(session_id) if browser else STORE.sessions.get(session_id)
+            if not session or (browser and session.get("kind") != "browser"):
                 rejection = (
                     PORT_TUNNEL_CLOSE_NOT_FOUND,
                     "Session was not found",
                 )
-            elif bool(session.get("archived")):
+            elif not browser and bool(session.get("archived")):
                 rejection = (
                     PORT_TUNNEL_CLOSE_ARCHIVED,
                     "Archived sessions cannot open port tunnels",
@@ -98636,13 +99023,13 @@ async def session_port_tunnel(
         # create a post-archive proxy. The lifecycle lock also closes the
         # admission race with deletion.
         async with session_lifecycle_lock(session_id):
-            current = STORE.sessions.get(session_id)
-            if not current:
+            current = SURFACES.get(session_id) if browser else STORE.sessions.get(session_id)
+            if not current or (browser and current.get("kind") != "browser"):
                 rejection = (
                     PORT_TUNNEL_CLOSE_NOT_FOUND,
                     "Session was deleted while the tunnel was connecting",
                 )
-            elif bool(current.get("archived")):
+            elif not browser and bool(current.get("archived")):
                 rejection = (
                     PORT_TUNNEL_CLOSE_ARCHIVED,
                     "Session was archived while the tunnel was connecting",
@@ -98714,6 +99101,9 @@ async def session_terminal(
     if not websocket_authorized(ws):
         await ws.accept(subprotocol=selected_subprotocol)
         await ws.close(code=4401)
+        return
+    if session_id.startswith(STANDALONE_TERMINAL_PREFIX):
+        await standalone_terminal_websocket(ws, session_id, columns, rows, cwd, selected_subprotocol)
         return
     if session_id not in STORE.sessions:
         await ws.accept(subprotocol=selected_subprotocol)
@@ -99565,6 +99955,30 @@ async def commit_staged_upload(
             raise
 
 
+def upload_filename(file: UploadFile) -> str:
+    """Prefer the RFC 5987 ``filename*`` a client sends beside an ASCII fallback.
+
+    The desktop app writes ``filename="__.jpg"; filename*=UTF-8''%E6%88%AA...``
+    for a non-ASCII name; the multipart parser only reads the fallback.
+    """
+    disposition = str(file.headers.get("content-disposition") or "")
+    match = re.search(r"filename\*=utf-8''([^;]+)", disposition, re.IGNORECASE)
+    if match:
+        with suppress(UnicodeDecodeError):
+            decoded = unquote(match.group(1).strip(), errors="strict").strip()
+            if decoded:
+                return decoded
+    filename = file.filename or "upload"
+    # React Native percent-encodes the whole name into filename="…" (its
+    # FormData calls encodeURIComponent), so 截图.jpg arrives as %E6%88%AA….
+    if filename.isascii() and re.search(r"%[0-9A-Fa-f]{2}", filename):
+        with suppress(UnicodeDecodeError):
+            decoded = unquote(filename, errors="strict").strip()
+            if decoded:
+                return decoded
+    return filename
+
+
 @app.post("/api/sessions/{session_id}/files")
 async def upload_file(session_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
     session = STORE.sessions.get(session_id)
@@ -99576,7 +99990,7 @@ async def upload_file(session_id: str, file: UploadFile = File(...)) -> dict[str
 
     ensure_dirs()
     file_id = f"file_{uuid.uuid4().hex[:16]}"
-    filename = safe_name(file.filename or "upload")
+    filename = safe_name(upload_filename(file))
     final_root = FILES_ROOT / file_id
     staging_root = Path(tempfile.mkdtemp(
         prefix=f".{file_id}-upload-",

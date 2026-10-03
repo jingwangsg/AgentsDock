@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type {
   AgentCrossChatRoutesSnapshot, AgentFile, Backend, BootstrapPayload, ChatReference, ChatSyncStatus, CreateSessionInput, Event, ForwardedPort, Health, Job, NativeFileRef, QueuedTurn, TeamReference,
   ProfileBootstrapPayload, ProfileConnectionEvent, ProfileNotificationRoute, ProviderCommandSelection, PublicServerProfile, RuntimeCatalog, Session, SessionSnapshot,
-  ServerForceRestartConfirmation, SessionExportFormat, TimelinePage, UpdateServerProfilePatch, WorkspaceProfileScope
+  ServerForceRestartConfirmation, SessionExportFormat, Surface, SurfaceKind, TimelinePage, UpdateServerProfilePatch, UpdateSurfaceInput, WorkspaceProfileScope
 } from '@shared/types'
 import { updateQueuedTurns as reduceQueuedTurns } from '@shared/queue'
 import type { TeamHubScope } from '@shared/team-hub'
@@ -211,7 +211,7 @@ interface AppState {
   uploadPathsBySession: Record<string, NativeFileRef[]>
   drafts: Record<string, string>
   /** Per-chat "edit this turn" mode; `previousDraft` is restored on cancel. */
-  editingTurn: Record<string, { runId: string; seq?: number; originalPrompt: string; previousDraft: string } | null>
+  editingTurn: Record<string, { runId: string; seq?: number; originalPrompt: string; previousDraft: string; previousUploads: AgentFile[] } | null>
   chatReferencesBySession: Record<string, ChatReference[]>
   teamReferencesBySession: Record<string, TeamReference[]>
   agentRoutesBySession: Record<string, AgentCrossChatRoutesSnapshot>
@@ -221,6 +221,10 @@ interface AppState {
   folderOrder: string[]
   collapsedFolders: Set<string>
   archivedCollapsed: boolean
+  /** The server's terminal and browser tabs for the active profile, and the health revision they were loaded for. */
+  surfaces: Surface[]
+  surfacesRevision: number | undefined
+  selectedSurfaceId: string | null
   inspectorVisible: boolean
   activeSessionIds: Set<string>
   turnAdmissionTokens: Record<string, string>
@@ -278,13 +282,13 @@ interface AppState {
   renameFolder(source: string, target: string): Promise<boolean>
   forkSession(sessionId: string): Promise<void>
   exportSession(sessionId: string, format: SessionExportFormat): Promise<void>
-  beginEditingTurn(sessionId: string, runId: string, prompt: string, seq?: number): void
+  beginEditingTurn(sessionId: string, runId: string, prompt: string, seq?: number, files?: AgentFile[]): void
   cancelEditingTurn(sessionId: string): void
   /** Truncates history to before `runId`'s turn; resolves false (with `error` set) when refused. */
   /** `toSeq` names the turn_started row: imported turns all share their import's run id. */
   rewindSession(sessionId: string, runId: string, toSeq?: number): Promise<boolean>
   /** Restores the pre-turn workspace checkpoint, then rewinds the chat to that turn. */
-  restoreCheckpoint(sessionId: string, runId: string): Promise<boolean>
+  restoreCheckpoint(sessionId: string, runId: string, files?: AgentFile[]): Promise<boolean>
   deleteSession(sessionId: string): Promise<boolean>
   markRead(sessionId: string, force?: boolean): Promise<void>
   markUnread(sessionId: string): Promise<void>
@@ -299,6 +303,12 @@ interface AppState {
   setQueued(sessionId: string, turns: QueuedTurn[]): void
   toggleFolder(folder: string): void
   setFolderOrder(order: string[]): void
+  /** Reads the server's terminal and browser tabs; runs on every health revision change and sidebar refresh. */
+  refreshSurfaces(): Promise<void>
+  createSurface(kind: SurfaceKind, folder: string): Promise<void>
+  selectSurface(surfaceId: string): void
+  updateSurface(surfaceId: string, patch: UpdateSurfaceInput): Promise<void>
+  removeSurface(surfaceId: string): Promise<void>
   setArchivedCollapsed(value: boolean): void
   setInspectorVisible(value: boolean): void
   setModal<K extends keyof ModalState>(key: K, value: boolean): void
@@ -523,6 +533,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   revokingAgentRouteIds: new Set(),
   folderOrder: [],
   collapsedFolders: new Set(),
+  surfaces: [],
+  surfacesRevision: undefined,
+  selectedSurfaceId: null,
   // Archived starts collapsed on every launch and server switch; expanding it lasts only this session.
   archivedCollapsed: true,
   // The shared-chat page loads this store too; a browser that blocks storage throws on access.
@@ -670,6 +683,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       })
       if (incompatible && get().error !== error) set({ error })
+      // The revision moves whenever any device opens, renames, or closes a tab. The bootstrap may already
+      // carry the current revision while no tab is loaded yet, so compare with the loaded list, not the last health.
+      if (connected && payload.health && payload.health.surfaces_revision !== get().surfacesRevision) {
+        set({ surfacesRevision: payload.health.surfaces_revision })
+        void get().refreshSurfaces()
+      }
       if (connected && (!current.connected || serverInstanceChanged)) {
         const repairScope = captureProfileScope(get())
         for (const [sessionId, snapshot] of Object.entries(get().snapshots)) {
@@ -998,6 +1017,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         forwardedPorts: [],
         forwardedPortsRevision: 0
       })
+      // The main process connects before this renderer listens for server:connection, and it reports
+      // again only when the connection changes, so the cached health here can be the only copy of the
+      // current tab revision for a long while.
+      if (payload.health?.ok && payload.health.surfaces_revision !== undefined) {
+        set({ surfacesRevision: payload.health.surfaces_revision })
+        void get().refreshSurfaces()
+      }
       bufferingBootstrapConnections = false
       const bootstrapConnection = bootstrapConnections.get(bootstrapConnectionKey({
         profileId: payload.activeProfileId ?? '',
@@ -1214,6 +1240,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async selectSessionInPane(sessionId, pane, force = false, focus = true, suppressErrors = false) {
     if (get().switchingProfileId || !get().sessions.some(session => session.id === sessionId)) return
+    // Opening a chat by any route (sidebar, new chat, switcher, notification) leaves the terminal or browser tab.
+    if (get().selectedSurfaceId) set({ selectedSurfaceId: null })
     const scope = captureProfileScope(get())
     const previousSync = get().syncBySession[sessionId]
     const previousFocusedSync = get().selectedSessionId === sessionId
@@ -2075,6 +2103,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         const sessions = reconcileSessions(state.sessions, incoming)
         return sessions === state.sessions ? state : { sessions }
       })
+      // Only a server that has reported a tab revision has tabs to re-read; older servers have no tab endpoint.
+      if (get().surfacesRevision !== undefined) void get().refreshSurfaces()
       // The sidebar refresh is the single full refresh: after the list is
       // reconciled, re-pull the history of every open chat pane too (this is
       // what the removed per-chat header refresh used to do).
@@ -2326,10 +2356,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().selectSession(session.id)
     } catch (error) { if (profileScopeMatches(scope, get())) set({ error: forkErrorMessage(error) }) }
   },
-  beginEditingTurn(sessionId, runId, prompt, seq) {
+  beginEditingTurn(sessionId, runId, prompt, seq, files) {
     set(state => ({
-      editingTurn: { ...state.editingTurn, [sessionId]: { runId, seq, originalPrompt: prompt, previousDraft: state.drafts[sessionId] ?? '' } },
-      drafts: { ...state.drafts, [sessionId]: prompt }
+      editingTurn: { ...state.editingTurn, [sessionId]: { runId, seq, originalPrompt: prompt, previousDraft: state.drafts[sessionId] ?? '', previousUploads: state.uploadsBySession[sessionId] ?? [] } },
+      drafts: { ...state.drafts, [sessionId]: prompt },
+      // The edited message's attachments return to the composer, so the resend keeps them.
+      uploadsBySession: { ...state.uploadsBySession, [sessionId]: files ?? [] }
     }))
   },
   cancelEditingTurn(sessionId) {
@@ -2338,7 +2370,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!editing) return state
       return {
         editingTurn: { ...state.editingTurn, [sessionId]: null },
-        drafts: { ...state.drafts, [sessionId]: editing.previousDraft }
+        drafts: { ...state.drafts, [sessionId]: editing.previousDraft },
+        uploadsBySession: { ...state.uploadsBySession, [sessionId]: editing.previousUploads }
       }
     })
   },
@@ -2380,7 +2413,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false
     }
   },
-  async restoreCheckpoint(sessionId, runId) {
+  async restoreCheckpoint(sessionId, runId, files) {
     const current = get()
     if (current.switchingProfileId) return false
     const git = window.agentsDock.workspaceGit
@@ -2406,7 +2439,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     if (!profileScopeMatches(scope, get())) return false
     window.dispatchEvent(new CustomEvent('agentsdock:workspace-git-changed', { detail: sessionId }))
-    return get().rewindSession(sessionId, runId)
+    const rewound = await get().rewindSession(sessionId, runId)
+    // The removed message's uploads stay on the server; offer them for the next message.
+    if (rewound && files?.length) set(state => ({ uploadsBySession: { ...state.uploadsBySession, [sessionId]: mergeFiles(state.uploadsBySession[sessionId] ?? [], files) } }))
+    return rewound
   },
   async deleteSession(sessionId) {
     if (get().switchingProfileId) return false
@@ -2698,6 +2734,61 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ collapsedFolders: next }); void setWorkspacePreference(scope, 'collapsedFolders', [...next]).catch(() => undefined)
   },
   setFolderOrder(order) { const scope = captureWorkspaceScope(get()); set({ folderOrder: order }); void setWorkspacePreference(scope, 'folderOrder', order).catch(() => undefined) },
+  async refreshSurfaces() {
+    const scope = captureProfileScope(get())
+    try {
+      const surfaces = await window.agentsDock.surfaces.list()
+      if (!profileScopeMatches(scope, get())) return
+      set(state => ({ surfaces, selectedSurfaceId: surfaces.some(surface => surface.id === state.selectedSurfaceId) ? state.selectedSurfaceId : null }))
+    } catch (error) { if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) }) }
+  },
+  async createSurface(kind, folder) {
+    const scope = captureProfileScope(get())
+    const state = get()
+    const folderSeed = newestAvailableSession(state.sessions.filter(session => (session.folder?.trim() || 'General') === folder))
+    try {
+      const surface = await window.agentsDock.surfaces.create({
+        kind,
+        folder,
+        cwd: kind === 'terminal' ? folderSeed?.cwd?.trim() || state.health?.default_cwd?.trim() || null : null
+      })
+      if (!profileScopeMatches(scope, get())) return
+      // Creating moved the server's revision, so a health-triggered refresh may already have listed it.
+      set(current => ({ surfaces: [...current.surfaces.filter(item => item.id !== surface.id), surface], selectedSurfaceId: surface.id }))
+    } catch (error) { if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) }) }
+  },
+  selectSurface(surfaceId) {
+    set({ selectedSurfaceId: get().surfaces.some(surface => surface.id === surfaceId) ? surfaceId : null })
+  },
+  async updateSurface(surfaceId, patch) {
+    const scope = captureProfileScope(get())
+    if (!get().surfaces.some(surface => surface.id === surfaceId)) return
+    set(state => ({ surfaces: state.surfaces.map(surface => surface.id === surfaceId ? { ...surface, ...patch } : surface) }))
+    try {
+      const updated = await window.agentsDock.surfaces.update(surfaceId, patch)
+      if (!profileScopeMatches(scope, get())) return
+      set(state => ({ surfaces: state.surfaces.map(surface => surface.id === surfaceId ? updated : surface) }))
+    } catch (error) {
+      if (!profileScopeMatches(scope, get())) return
+      set({ error: errorMessage(error) })
+      void get().refreshSurfaces()
+    }
+  },
+  async removeSurface(surfaceId) {
+    const scope = captureProfileScope(get())
+    if (!get().surfaces.some(surface => surface.id === surfaceId)) return
+    set(state => ({
+      surfaces: state.surfaces.filter(surface => surface.id !== surfaceId),
+      selectedSurfaceId: state.selectedSurfaceId === surfaceId ? null : state.selectedSurfaceId
+    }))
+    try {
+      await window.agentsDock.surfaces.remove(surfaceId)
+    } catch (error) {
+      if (!profileScopeMatches(scope, get())) return
+      set({ error: errorMessage(error) })
+      void get().refreshSurfaces()
+    }
+  },
   setArchivedCollapsed(value) { set({ archivedCollapsed: value }) },
   setInspectorVisible(value) { set({ inspectorVisible: value }); saveLocalStorage(INSPECTOR_VISIBLE_KEY, String(value)) },
   setModal(key, value) {
@@ -3164,6 +3255,10 @@ function workspaceStateFromBootstrap(
     agentRouteErrorsBySession: {},
     revokingAgentRouteIds: new Set(),
     folderOrder: payload.folderOrder,
+    // Tabs belong to the server; the first health report for this profile loads them.
+    surfaces: [],
+    surfacesRevision: undefined,
+    selectedSurfaceId: null,
     collapsedFolders: new Set(payload.collapsedFolders.filter(folder => !emergencyFolders.has(folder))),
     archivedCollapsed: payload.sessions.some(session => session.archived && activeEmergencyAlert(session))
       ? false
@@ -5228,6 +5323,9 @@ export function handleMenuCommand(command: string, get: () => AppState, set: (va
   else if (command === 'rename-chat') {
     // Over an open dialog (including Rename itself) this would discard its input or stack a second one.
     if (document.querySelector('[role="dialog"][data-state="open"], [aria-modal="true"]')) return
+    // A browser/terminal tab in front leaves the chat behind it selected; rename what is shown.
+    const surface = get().surfaces.find(candidate => candidate.id === get().selectedSurfaceId)
+    if (surface) { window.dispatchEvent(new CustomEvent('agentsdock:rename-surface', { detail: { surfaceId: surface.id } })); return }
     const session = get().sessions.find(candidate => candidate.id === get().selectedSessionId)
     if (session) window.dispatchEvent(new CustomEvent('agentsdock:rename-chat', { detail: session }))
   }

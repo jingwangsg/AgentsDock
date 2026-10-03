@@ -317,7 +317,8 @@ function createWindow(): BrowserWindow {
       devTools: !app.isPackaged,
       webSecurity: true,
       allowRunningInsecureContent: false,
-      navigateOnDragDrop: false
+      navigateOnDragDrop: false,
+      webviewTag: true
     }
   })
 
@@ -341,7 +342,22 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
   window.webContents.on('will-navigate', event => event.preventDefault())
-  window.webContents.on('will-attach-webview', event => event.preventDefault())
+  // Browser tabs are plain web pages inside <webview>: no preload, no Node, sandboxed like the app.
+  window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete webPreferences.preload
+    webPreferences.nodeIntegration = false
+    webPreferences.contextIsolation = true
+    webPreferences.sandbox = true
+    // A tab shows about:blank until it has an address.
+    if (params.src !== 'about:blank' && !isWebPageURL(params.src)) event.preventDefault()
+  })
+  window.webContents.on('did-attach-webview', (_event, guest) => {
+    // Pop-ups open in the tab itself; window.open() with no address would only blank the page.
+    guest.setWindowOpenHandler(({ url }) => {
+      if (isWebPageURL(url)) void guest.loadURL(url)
+      return { action: 'deny' }
+    })
+  })
   installWindowCloseFlush(window, {
     onTimeout: requestId => appLog('persistence', 'renderer close flush timed out', { requestId })
   })
@@ -488,6 +504,14 @@ function createMenu(window: () => BrowserWindow | null): void {
       { label: t('native.documentation'), click: () => void openExternalURL('https://github.com/ZhengyiLuo/AgentsDock') }
     ] }
   ])))
+}
+
+function isWebPageURL(value: string): boolean {
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol)
+  } catch {
+    return false
+  }
 }
 
 function isExternalURL(value: string): boolean {

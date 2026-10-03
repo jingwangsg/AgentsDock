@@ -127,6 +127,28 @@ exec /bin/bash {shlex.quote(str(ROOT / 'install.sh'))} --show-token
             self.assertFalse((root / "runtime").exists())
             self.assertFalse((root / "state").exists())
 
+    def test_show_token_reads_export_prefixed_env_line(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            home, config = root / "home", root / "config"
+            home.mkdir()
+            config.mkdir()
+            token_file = config / "env"
+            token_file.write_text(f"export AGENTSDOCK_AGENT_TOKEN={TOKEN}\n")
+            token_file.chmod(0o600)
+            result = subprocess.run(
+                ["/bin/bash", str(ROOT / "install.sh"), "--show-token"],
+                env={
+                    "PATH": "/usr/bin:/bin", "HOME": str(home),
+                    "AGENTS_SERVER_INSTALL_DIR": str(root / "runtime"),
+                    "AGENTS_SERVER_CONFIG_DIR": str(config),
+                    "AGENTSDOCK_STATE_DIR": str(root / "state"),
+                },
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, TOKEN + "\n")
+
     def test_no_empty_or_eof_never_changes_clipboard(self):
         for answer in ("no\n", "\n", "\x04"):
             with self.subTest(answer=answer), tempfile.TemporaryDirectory() as temporary:

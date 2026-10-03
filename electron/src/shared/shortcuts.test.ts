@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { catalogs, localeOptions } from './locales'
-import { APP_SHORTCUT_GROUPS, APP_SHORTCUTS, shortcutAccelerator, shortcutDisplay, shortcutIsAvailable, shortcutKeycaps, shortcutTranslationKey } from './shortcuts'
+import { APP_SHORTCUT_GROUPS, APP_SHORTCUTS, shortcutAccelerator, shortcutDisplay, shortcutKeycaps, shortcutTranslationKey } from './shortcuts'
 
 describe('app shortcut catalog', () => {
   it('keeps native accelerators and visible Mac labels together', () => {
@@ -28,18 +28,9 @@ describe('app shortcut catalog', () => {
   })
 
   it('rejects display-only shortcuts as native accelerators', () => {
-    expect(() => shortcutAccelerator('toggleTerminal')).toThrow('not registered')
     expect(() => shortcutAccelerator('focusLeftChatPane')).toThrow('not registered')
     expect(() => shortcutAccelerator('stopTurn')).toThrow('not registered')
     expect(() => shortcutAccelerator('switchServerByNumber')).toThrow('not registered')
-  })
-
-  it('does not advertise macOS-only terminal chords as available elsewhere', () => {
-    expect(shortcutIsAvailable('terminalNewWindow', 'mac')).toBe(true)
-    expect(shortcutIsAvailable('terminalNewWindow', 'other')).toBe(false)
-    expect(shortcutIsAvailable('terminalSplitRight', 'other')).toBe(false)
-    expect(shortcutIsAvailable('terminalSplitDown', 'other')).toBe(false)
-    expect(shortcutIsAvailable('terminalFind', 'other')).toBe(true)
   })
 
   it('splits display chords into individual website-style keycaps', () => {

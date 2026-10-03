@@ -17,11 +17,6 @@ export const APP_SHORTCUTS = {
   toggleInspector: { label: 'Toggle inspector', accelerator: 'CmdOrCtrl+L', mac: '⌘L', other: 'Ctrl+L' },
   jumpLatest: { label: 'Jump to latest', accelerator: 'CmdOrCtrl+Down', mac: '⌘↓', other: 'Ctrl+↓' },
   closeSurface: { label: 'Close', accelerator: 'CmdOrCtrl+W', mac: '⌘W', other: 'Ctrl+W' },
-  toggleTerminal: { label: 'Toggle terminal', mac: '⌃`', other: 'Ctrl+`' },
-  terminalNewWindow: { label: 'New tmux window', mac: '⌘T', other: 'Ctrl+T' },
-  terminalSplitRight: { label: 'Split pane right', mac: '⌘D', other: 'Ctrl+D' },
-  terminalSplitDown: { label: 'Split pane down', mac: '⇧⌘D', other: 'Ctrl+Shift+D' },
-  terminalFind: { label: 'Find in terminal', mac: '⌘F', other: 'Ctrl+F' },
   sendMessage: { label: 'Send message', mac: '↩', other: 'Enter' },
   steerMessage: { label: 'Steer now', mac: '⌘↩', other: 'Ctrl+Enter' },
   stopTurn: { label: 'Stop response', mac: '⎋', other: 'Esc' }
@@ -29,13 +24,7 @@ export const APP_SHORTCUTS = {
 
 export type AppShortcutId = keyof typeof APP_SHORTCUTS
 export type ShortcutPlatform = 'mac' | 'other'
-export type AppShortcutGroupId = 'general' | 'navigation' | 'terminal' | 'messaging'
-
-const MAC_ONLY_SHORTCUTS = new Set<AppShortcutId>([
-  'terminalNewWindow',
-  'terminalSplitRight',
-  'terminalSplitDown'
-])
+export type AppShortcutGroupId = 'general' | 'navigation' | 'messaging'
 
 export const APP_SHORTCUT_GROUPS = [
   {
@@ -45,10 +34,6 @@ export const APP_SHORTCUT_GROUPS = [
   {
     id: 'navigation',
     shortcuts: ['nextWorkspaceTab', 'previousWorkspaceTab', 'focusLeftChatPane', 'focusRightChatPane', 'nextServer', 'previousServer', 'switchServerByNumber', 'toggleSidebar', 'toggleInspector', 'jumpLatest']
-  },
-  {
-    id: 'terminal',
-    shortcuts: ['toggleTerminal', 'terminalNewWindow', 'terminalSplitRight', 'terminalSplitDown', 'terminalFind']
   },
   {
     id: 'messaging',
@@ -61,10 +46,6 @@ export const APP_SHORTCUT_GROUPS = [
 
 export function shortcutTranslationKey(id: AppShortcutId): string {
   return `shortcuts.action.${id}`
-}
-
-export function shortcutIsAvailable(id: AppShortcutId, platform: ShortcutPlatform): boolean {
-  return platform === 'mac' || !MAC_ONLY_SHORTCUTS.has(id)
 }
 
 export function shortcutDisplay(id: AppShortcutId, platform: ShortcutPlatform): string {

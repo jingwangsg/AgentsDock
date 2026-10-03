@@ -14,7 +14,6 @@ import './zed-skin.generated.css'
 import './zed-skin.chrome.css'
 import './zed-skin.controls.css'
 import './zed-skin.timeline.css'
-import '@xterm/xterm/css/xterm.css'
 import 'highlight.js/styles/github-dark.css'
 
 initializeAppearance()

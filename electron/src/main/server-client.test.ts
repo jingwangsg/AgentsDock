@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { TERMINAL_SHELL_EXITED_CLOSE_CODE } from '../shared/terminal'
 import { closeSync, openSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -2387,6 +2388,29 @@ describe('AgentServerClient live stream', () => {
       }
     })
 
+    it('sends a non-ASCII filename as UTF-8 in the quoted filename and as filename*', async () => {
+      const file = await openedFile(CHUNK)
+      let head = ''
+      vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init: RequestInit = {}) => {
+        const chunks: Buffer[] = []
+        for await (const chunk of init.body as unknown as Readable) chunks.push(chunk as Buffer)
+        head = Buffer.concat(chunks).subarray(0, 400).toString('utf8')
+        return new Response(JSON.stringify(uploaded), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }))
+
+      try {
+        const client = new AgentServerClient('http://example.test:7850', 'secret', {
+          timeoutSignal: () => new AbortController().signal
+        })
+        await client.uploadOpened('chat', { ...file.source, filename: '截图 "测试".jpg' })
+
+        expect(head).toContain('filename="截图 %22测试%22.jpg"')
+        expect(head).toContain(`filename*=UTF-8''${encodeURIComponent('截图 "测试".jpg')}`)
+      } finally {
+        await file.cleanup()
+      }
+    })
+
     it('abandons an upload once the link stops taking its body', async () => {
       const file = await openedFile(20 * CHUNK)
       vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init: RequestInit = {}) => {
@@ -2878,21 +2902,6 @@ describe('AgentServerClient live stream', () => {
     expect(new Headers(init.headers).get('X-AgentsDock-Token')).toBe('secret')
   })
 
-  it('closes a specific tmux window through the structured terminal API', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      session_id: 'chat',
-      name: 'zd_chat',
-      exists: true,
-      windows: [{ id: '@1', index: 0, name: 'bash', active: true, panes: 1 }]
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-    vi.stubGlobal('fetch', fetchMock)
-    const client = new AgentServerClient('http://example.test:7850', 'secret')
-    await client.terminalAction('chat', 'kill-window', '2')
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toContain('/api/sessions/chat/terminal/action')
-    expect(JSON.parse(String(init.body))).toEqual({ action: 'kill-window', target: '2' })
-  })
-
   it('attaches a binary terminal stream with dimensions, input, resize, and intentional detach', () => {
     vi.useFakeTimers()
     vi.stubGlobal('WebSocket', FakeWebSocket)
@@ -2925,10 +2934,8 @@ describe('AgentServerClient live stream', () => {
 
     connection.write('pwd\r')
     connection.resize(160, 52)
-    connection.scroll(-6)
     expect(new TextDecoder().decode(socket.sent[0] as Uint8Array)).toBe('pwd\r')
     expect(JSON.parse(String(socket.sent[1]))).toEqual({ type: 'resize', columns: 160, rows: 52 })
-    expect(JSON.parse(String(socket.sent[2]))).toEqual({ type: 'scroll', delta: -6 })
     vi.advanceTimersByTime(120)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [resizeURL, resizeInit] = fetchMock.mock.calls[0] as [string, RequestInit]
@@ -3004,6 +3011,52 @@ describe('AgentServerClient live stream', () => {
     connection.close()
   })
 
+  it('reattaches a terminal tab after a dropped link, stops when its shell exits, and keeps tmux resizes off its REST route', () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const states: Array<{ state: string; error?: string | null }> = []
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    const connection = client.terminal('term_0123abcd', { columns: 80, rows: 24, cwd: '/work/app' }, () => {}, state => states.push(state))
+    const first = FakeWebSocket.instances[0]
+    expect(first.url.pathname).toBe('/api/sessions/term_0123abcd/terminal/ws')
+    expect(first.url.searchParams.get('cwd')).toBe('/work/app')
+
+    first.emit('open')
+    first.emit('message', JSON.stringify({ type: 'ready', name: 'zsh' }))
+    connection.resize(100, 30)
+    vi.advanceTimersByTime(1_000)
+    expect(first.sent).toContain(JSON.stringify({ type: 'resize', columns: 100, rows: 30 }))
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    // A dropped link: the shell is still running on the server, so reattach.
+    first.emit('close', undefined, { code: 1006 })
+    expect(states.at(-1)).toEqual(expect.objectContaining({ state: 'reconnecting' }))
+    vi.advanceTimersByTime(500)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    const second = FakeWebSocket.instances[1]
+    second.emit('open')
+    second.emit('message', JSON.stringify({ type: 'ready', name: 'zsh' }))
+
+    // The user typed `exit`: the server says the shell itself ended.
+    second.emit('close', undefined, { code: TERMINAL_SHELL_EXITED_CLOSE_CODE })
+    vi.advanceTimersByTime(20_000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(states.at(-1)).toEqual({ sessionId: 'term_0123abcd', state: 'disconnected' })
+    expect(second.closed).toBe(true)
+  })
+
+  it('explains a 4404 on a terminal tab as a missing tab or a server that needs updating', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const states: Array<{ state: string; error?: string | null }> = []
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    client.terminal('term_old_server', { columns: 80, rows: 24 }, () => {}, state => states.push(state))
+    FakeWebSocket.instances[0].emit('close', undefined, { code: 4404 })
+    expect(states.at(-1)).toEqual({ sessionId: 'term_old_server', state: 'error', error: 'This terminal tab is gone from the server, or the AgentsServer is too old for terminal tabs.' })
+  })
+
   it('opens port tunnels with encoded routes and subprotocol-only authentication', () => {
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const client = new AgentServerClient('https://example.test:7850', 'port-secret')
@@ -3031,6 +3084,16 @@ describe('AgentServerClient live stream', () => {
 
     expect(() => client.portTunnelSocket('chat', 443)).toThrow('1024 through 65535')
     expect(FakeWebSocket.instances).toEqual([])
+  })
+
+  it('allows browser tabs to reach HTTP and HTTPS ports through the authenticated tunnel', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new AgentServerClient('https://example.test:7850', 'secret')
+    client.portTunnelSocket('browser_test', 443)
+    expect(FakeWebSocket.instances[0].url.pathname).toBe('/api/sessions/browser_test/ports/443/tunnel/ws')
+    expect(FakeWebSocket.instances[0].protocols).toContain('agentsdock-port-tunnel-v1')
+    expect(() => client.portTunnelSocket('browser_test', 0)).toThrow('1 through 65535')
+    client.dispose()
   })
 
   it('reconnects after an unmarked terminal error control packet and preserves its message', () => {

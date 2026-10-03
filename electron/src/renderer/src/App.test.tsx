@@ -61,7 +61,6 @@ vi.mock('./components/SideChatPopover', () => ({ SideChatPopover: (props: any) =
   return <div data-testid="side-chat-popover" />
 } }))
 vi.mock('./components/CodeReview', () => ({ CodeReview: () => <div data-testid="review" /> }))
-vi.mock('./components/TerminalDock', () => ({ TerminalDock: () => <div data-testid="terminal" /> }))
 vi.mock('./components/TeamNetwork', () => ({
   TeamNetwork: (props: {
     initialMailboxTarget?: { teamId: string; address: { kind: 'server' | 'agent' | 'human'; id: string } } | null

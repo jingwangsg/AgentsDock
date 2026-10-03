@@ -58,21 +58,6 @@ describe('ChatHeader', () => {
     })
   })
 
-  it('toggles the docked terminal without replacing the chat workspace', async () => {
-    const toggle = vi.fn()
-    useAppStore.setState({
-      sessions: [{ id: 'chat', title: 'Chat', backend: 'codex' }],
-      selectedSessionId: 'chat'
-    })
-    render(<ChatHeader terminalOpen={false} onTerminalToggle={toggle} />)
-
-    const button = screen.getByRole('button', { name: 'Open terminal panel' })
-    expect(button).toHaveAttribute('aria-pressed', 'false')
-    await userEvent.setup().click(button)
-    expect(toggle).toHaveBeenCalledOnce()
-    expect(screen.queryByRole('navigation', { name: 'Chat workspace' })).not.toBeInTheDocument()
-  })
-
   it('toggles the outputs panel from the header and reflects its open state', async () => {
     const toggle = vi.fn()
     useAppStore.setState({
@@ -110,7 +95,7 @@ describe('ChatHeader', () => {
       sessions: [{ id: 'chat', title: 'Chat', backend: 'codex' }],
       selectedSessionId: 'chat'
     })
-    const { container } = render(<ChatHeader sidebarVisible={false} onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} />)
+    const { container } = render(<ChatHeader sidebarVisible={false} onSidebarToggle={() => undefined} />)
 
     expect(container.querySelector('.header-actions > :first-child')).toBe(screen.getByRole('button', { name: 'Chat actions' }))
     expect(screen.queryByRole('button', { name: 'Side chat' })).not.toBeInTheDocument()

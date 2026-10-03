@@ -2,7 +2,6 @@ import { t } from '@shared/i18n'
 import {
   APP_SHORTCUT_GROUPS,
   shortcutDisplay,
-  shortcutIsAvailable,
   shortcutKeycaps,
   shortcutTranslationKey,
   type ShortcutPlatform
@@ -29,12 +28,10 @@ export function KeyboardShortcutsSettings({
         <ul className="app-settings-list">
           {group.shortcuts.map(shortcut => <li key={shortcut} className="app-settings-row app-settings-shortcut-row">
             <span className="app-settings-row-title">{t(shortcutTranslationKey(shortcut))}</span>
-            {shortcutIsAvailable(shortcut, platform)
-              ? <span className="app-settings-shortcut-keys">
-                  <span className="sr-only">{shortcutDisplay(shortcut, platform)}</span>
-                  {shortcutKeycaps(shortcut, platform).map((key, index) => <kbd key={`${key}-${index}`} className="app-settings-shortcut-key" aria-hidden="true">{key}</kbd>)}
-                </span>
-              : <span className="app-settings-value app-settings-shortcut-unavailable">{t('shortcuts.macOnly')}</span>}
+            <span className="app-settings-shortcut-keys">
+              <span className="sr-only">{shortcutDisplay(shortcut, platform)}</span>
+              {shortcutKeycaps(shortcut, platform).map((key, index) => <kbd key={`${key}-${index}`} className="app-settings-shortcut-key" aria-hidden="true">{key}</kbd>)}
+            </span>
           </li>)}
         </ul>
       </section>)}

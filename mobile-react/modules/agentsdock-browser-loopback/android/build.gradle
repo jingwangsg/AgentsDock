@@ -1,0 +1,21 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.zhengyiluo.agentsdock'
+version = '1.0.0'
+
+android {
+  namespace 'com.zhengyiluo.agentsdock.browserloopback'
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+
+dependencies {
+  // The versions react-native-webview and React Native already ship.
+  implementation 'androidx.webkit:webkit:1.14.0'
+  implementation 'com.squareup.okhttp3:okhttp:4.9.2'
+}

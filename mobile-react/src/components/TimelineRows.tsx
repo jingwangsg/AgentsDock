@@ -203,7 +203,7 @@ function MessageRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRo
   const beginEditingTurn = () => {
     if (!row.runId) return
     // Resend the original prompt, not its display form.
-    useAppStore.getState().beginEditingTurn(sessionId, row.runId, row.events[0]?.prompt ?? full, row.events[0]?.seq)
+    useAppStore.getState().beginEditingTurn(sessionId, row.runId, row.events[0]?.prompt ?? full, row.events[0]?.seq, row.files)
   }
   const confirmRestoreCheckpoint = () => {
     if (!row.runId) return
@@ -213,7 +213,7 @@ function MessageRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRo
       'This reverts the workspace files to their state before this turn and rewinds the chat to this message. Later messages are removed.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Restore checkpoint', style: 'destructive', onPress: () => { void useAppStore.getState().restoreCheckpoint(sessionId, runId, profileGeneration) } },
+        { text: 'Restore checkpoint', style: 'destructive', onPress: () => { void useAppStore.getState().restoreCheckpoint(sessionId, runId, profileGeneration, row.files) } },
       ],
     )
   }

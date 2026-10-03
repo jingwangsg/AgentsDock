@@ -67,7 +67,6 @@ Never add message or prompt text, chat/job/agent/folder names, skill or command 
 
 | Event | Emitted when | Event-specific properties |
 | --- | --- | --- |
-| `terminal_opened` | The terminal is explicitly opened. | None |
 | `file_view_opened` | A supported file or media preview is opened from a tracked surface. | None |
 | `digest_opened` | The digest dialog opens. | None |
 | `search_opened` | The chat-search dialog opens. | None |

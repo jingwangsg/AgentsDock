@@ -387,6 +387,39 @@ class SessionRewindTests(RewindFixture):
         self.assertEqual((sess["codex_thread_id"], sess["session_id"]), ("thread-1", "thread-1"))
         self.assertEqual(len(self.stored_events()), 10)
 
+    async def test_a_repeated_rewind_for_the_already_removed_turn_replays_its_result(self) -> None:
+        # The client's first request timed out on a slow hub tunnel after the server had rewound;
+        # its retry names a turn that is gone, and must not be told the turn vanished.
+        self.chat(backend="codex")
+        server.CODEX_THREAD_SESSION_INDEX["thread-1"] = "chat"
+
+        async def fork(*_args, **_kwargs):
+            self.assertTrue(await server.persist_abandoned_fork_provider_thread("forked-thread"))
+            return "forked-thread"
+
+        with patch.object(server, "fork_codex_thread", AsyncMock(side_effect=fork)), patch.object(
+            server, "bind_forked_codex_thread", AsyncMock(side_effect=self.persisting_bind),
+        ):
+            first = await server.rewind_session("chat", rewind_request())
+        self.assertEqual([event["seq"] for event in self.stored_events()], [1, 2, 3, 4, 5, 6, 7, 10, 11])
+
+        second = await server.rewind_session("chat", rewind_request(to_seq=8, expected_latest_seq=11))
+        self.assertTrue(second["replayed"])
+        self.assertEqual(
+            (second["from_seq"], second["through_seq"], second["removed_events"], second["provider_rewind"]),
+            (first["from_seq"], first["through_seq"], first["removed_events"], "codex_fork"),
+        )
+        # No second tombstone and no provider work: the history is as the first rewind left it.
+        self.assertEqual([event["seq"] for event in self.stored_events()], [1, 2, 3, 4, 5, 6, 7, 10, 11])
+        # A different edited-message seq is not that rewind.
+        await self.assertRewindRejected(rewind_request(to_seq=9, expected_latest_seq=11), 409, "rewind_target_not_found")
+
+        # Once a turn ran after the rewind the removed turn is genuinely gone.
+        with server.events_path("chat").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"session_id": "chat", "seq": 12, "id": "e12", "type": "turn_started", "run_id": "fourth",
+                                     "ts": "2026-09-08T10:06:00Z", "prompt": "Later question"}) + "\n")
+        await self.assertRewindRejected(rewind_request(expected_latest_seq=12), 409, "rewind_target_not_found")
+
     async def test_rewind_admission_rejections(self) -> None:
         self.chat()
         await self.assertRewindRejected(rewind_request(confirmed=False), 400, "rewind_confirmation_required")

@@ -1160,7 +1160,8 @@ read_env_value() {
   local contents=""
   [[ -n "$file" && ( -e "$file" || -L "$file" ) ]] || return 0
   contents="$(read_owned_config_file "$file")" || return 1
-  printf '%s\n' "$contents" | sed -n "s/^${name}=//p" | tail -n 1
+  # The server's own parser (parse_config_env_file) accepts an `export ` prefix.
+  printf '%s\n' "$contents" | sed -En "s/^(export[[:blank:]]+)?${name}=//p" | tail -n 1
 }
 
 env_file_has_key() {
@@ -1172,7 +1173,7 @@ env_file_has_key() {
     echo "$file changed or became unsafe while reading configuration." >&2
     exit 1
   }
-  printf '%s\n' "$contents" | grep -q "^${name}="
+  printf '%s\n' "$contents" | grep -Eq "^(export[[:blank:]]+)?${name}="
 }
 
 decode_server_name_env_value() {
@@ -4101,7 +4102,7 @@ write_runtime_env() {
     local filter_status=0
     preserved_contents="$(read_owned_config_file "$PRESERVE_SOURCE")" || return 1
     if printf '%s\n' "$preserved_contents" \
-      | grep -Ev '^(AGENTSDOCK_(STATE_DIR|AGENT_CWD|AGENT_BIND|AGENT_PORT|AGENT_TOKEN|SERVER_NAME|TEAM_HUB_MODE|TEAM_HUB_TRANSPORT|TEAM_HUB_URL|TEAM_HUB_DIRECT_IP_URL|TEAM_HUB_REACTIVATION_HUB_ID|TEAM_HUB_REACTIVATION_OPERATION_ID|TEAM_HUB_REACTIVATION_SNAPSHOT|TEAM_HUB_UPDATE_HUB_ID|TEAM_HUB_UPDATE_OPERATION_ID|TEAM_HUB_UPDATE_SNAPSHOT)|AGENTS_SERVER_(STATE_DIR|INSTALL_DIR|CONFIG_DIR|INSTANCE)|ZENITHBOT_AGENT_(DIR|CWD|BIND|PORT|TOKEN)|ZENITHDOCK_AGENT_TOKEN|PATH)=' \
+      | grep -Ev '^(export[[:blank:]]+)?(AGENTSDOCK_(STATE_DIR|AGENT_CWD|AGENT_BIND|AGENT_PORT|AGENT_TOKEN|SERVER_NAME|TEAM_HUB_MODE|TEAM_HUB_TRANSPORT|TEAM_HUB_URL|TEAM_HUB_DIRECT_IP_URL|TEAM_HUB_REACTIVATION_HUB_ID|TEAM_HUB_REACTIVATION_OPERATION_ID|TEAM_HUB_REACTIVATION_SNAPSHOT|TEAM_HUB_UPDATE_HUB_ID|TEAM_HUB_UPDATE_OPERATION_ID|TEAM_HUB_UPDATE_SNAPSHOT)|AGENTS_SERVER_(STATE_DIR|INSTALL_DIR|CONFIG_DIR|INSTANCE)|ZENITHBOT_AGENT_(DIR|CWD|BIND|PORT|TOKEN)|ZENITHDOCK_AGENT_TOKEN|PATH)=' \
       > "$env_temp"; then
       :
     else

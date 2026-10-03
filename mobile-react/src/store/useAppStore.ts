@@ -44,6 +44,9 @@ import type {
   UpdateJobInput,
   UploadRef,
   WorkspacePreferences,
+  Surface,
+  SurfaceKind,
+  UpdateSurfaceInput,
 } from '../types'
 import { AgentServerClient, AgentServerClientDisposedError, AgentServerClientUnvalidatedError, ServerError, WebSocketConnectionError } from '../api/AgentServerClient'
 import { errorMessage, mergeEvents, mergeFiles, normalizeServerURL } from '../lib/format'
@@ -478,6 +481,11 @@ interface AppState {
   runtime: RuntimeCatalog | null
   sessions: Session[]
   selectedSessionId: string | null
+  /** The server's terminal and browser tabs for the active profile; refreshed with the chat list. */
+  surfaces: Surface[]
+  /** The server's `surfaces_revision` that `surfaces` was read at; null until the first read. */
+  surfacesRevision: number | null
+  selectedSurfaceId: string | null
   snapshots: Record<string, Snapshot>
   historyWindow: HistoryWindow | null
   loadingSessionId: string | null
@@ -495,7 +503,7 @@ interface AppState {
   jobs: Job[]
   drafts: Record<string, string>
   /** An earlier user turn being edited in the composer; sending it rewinds the chat first. */
-  editingTurn: Record<string, { runId: string; seq?: number; previousDraft: string } | null>
+  editingTurn: Record<string, { runId: string; seq?: number; previousDraft: string; previousUploads: AgentFile[] } | null>
   chatReferencesBySession: Record<string, ChatReference[]>
   agentRoutesBySession: Record<string, AgentCrossChatRoutesSnapshot>
   agentRouteErrorsBySession: Record<string, string | null>
@@ -548,6 +556,11 @@ interface AppState {
   cancelPendingServerUpdate(expectedGeneration?: number): Promise<boolean>
   refreshRuntime(): Promise<void>
   refreshSessions(expectedGeneration?: number): Promise<void>
+  refreshSurfaces(expectedGeneration?: number): Promise<void>
+  createSurface(kind: SurfaceKind, folder: string, expectedGeneration?: number): Promise<boolean>
+  selectSurface(surfaceId: string | null): void
+  updateSurface(surfaceId: string, patch: UpdateSurfaceInput, expectedGeneration?: number): Promise<void>
+  removeSurface(surfaceId: string, expectedGeneration?: number): Promise<void>
   selectSession(sessionId: string, expectedGeneration?: number): Promise<void>
   syncSelectedSession(reason?: SyncReason): Promise<void>
   loadOlder(sessionId?: string): Promise<number>
@@ -578,7 +591,7 @@ interface AppState {
   quickCreateSession(expectedGeneration?: number, preset?: { folder: string; backend: Backend }): Promise<boolean>
   setChatDefaults(patch: Partial<ChatDefaults>): void
   forkSession(sessionId: string, expectedGeneration?: number): Promise<void>
-  beginEditingTurn(sessionId: string, runId: string, prompt: string, seq?: number): void
+  beginEditingTurn(sessionId: string, runId: string, prompt: string, seq?: number, files?: AgentFile[]): void
   cancelEditingTurn(sessionId: string): void
   /** Truncates the chat to the rows before `runId` and rewinds the provider. Resolves false when refused. */
   /** `toSeq` names the turn_started row: imported turns all share their import's run id. */
@@ -586,7 +599,7 @@ interface AppState {
   /** Removes what history sync appended after the chat's first turn and syncs again. */
   reloadHistory(sessionId: string, expectedGeneration?: number): Promise<boolean>
   /** Reverts the workspace to before `runId`, then rewinds the chat to it. */
-  restoreCheckpoint(sessionId: string, runId: string, expectedGeneration?: number): Promise<boolean>
+  restoreCheckpoint(sessionId: string, runId: string, expectedGeneration?: number, files?: AgentFile[]): Promise<boolean>
   deleteSession(sessionId: string, expectedGeneration?: number): Promise<void>
   reorderSession(sessionId: string, targetId: string, placement: 'before' | 'after', expectedGeneration?: number, targetFolder?: string): Promise<void>
   markRead(sessionId: string, expectedGeneration?: number): Promise<void>
@@ -643,6 +656,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   runtime: null,
   sessions: [],
   selectedSessionId: null,
+  surfaces: [],
+  surfacesRevision: null,
+  selectedSurfaceId: null,
   snapshots: {},
   historyWindow: null,
   loadingSessionId: null,
@@ -724,6 +740,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           serverConfigured: activeProfile.serverConfigured,
           token,
           sessions,
+          // Tabs belong to the server; the first chat-list refresh for this profile loads them.
+          surfaces: [],
+          surfacesRevision: null,
+          selectedSurfaceId: null,
           pins,
           drafts: workspace.drafts,
           chatReferencesBySession: workspace.chatReferencesBySession ?? {},
@@ -1087,6 +1107,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     })
     void updateBadge(get())
+    // Read tabs now rather than at the next chat-list poll, a minute away.
+    if (health.surfaces_revision !== undefined) void get().refreshSurfaces(scope.generation)
     const saves: Promise<void>[] = [saveCurrentWorkspace(get)]
     if (sessionsResult.status === 'fulfilled') saves.push(saveCachedSessions(scope.namespace, sessions))
     void Promise.all(saves).catch(error => { if (connectionIsCurrent(scope)) set({ error: errorMessage(error) }) })
@@ -1321,6 +1343,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           activeSessionIds: reconcileHealthActiveSessions(health, state.activeSessionIds, activeRevisionAtRequest, activeSessionRevision),
         }
       })
+      // Any device creating, changing, or closing a tab moves the revision; an unchanged one spares the list fetch.
+      // Compare with the list's own revision: connecting and the runtime refresh store health without reading tabs.
+      if (health.surfaces_revision !== undefined && health.surfaces_revision !== get().surfacesRevision) void get().refreshSurfaces(scope.generation)
       // Chats that are not on screen have no timeline stream, so their turn
       // ends surface only here, when polled health drops them from `active`.
       // The selected chat notifies from its streamed terminal event instead.
@@ -1358,6 +1383,75 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  async refreshSurfaces(expectedGeneration) {
+    // Tabs follow the chat list: a failed read (an older server, a dropped link) keeps the
+    // last list, and the chat-list refresh already reports connection problems.
+    let scope: ConnectionScope
+    try { scope = captureValidatedConnection(get, expectedGeneration) } catch { return }
+    // The list is read after this health, so it is at least this new.
+    const revision = get().health?.surfaces_revision ?? null
+    let surfaces: Surface[]
+    try { surfaces = await scope.client.listSurfaces() } catch { return }
+    if (!connectionIsCurrent(scope)) return
+    set(state => ({ surfaces, surfacesRevision: revision, selectedSurfaceId: surfaces.some(surface => surface.id === state.selectedSurfaceId) ? state.selectedSurfaceId : null }))
+  },
+
+  async createSurface(kind, folder, expectedGeneration) {
+    const scope = validatedConnectionOrReport(get, set, expectedGeneration)
+    if (!scope) return false
+    const state = get()
+    // A terminal starts where the folder's newest chat works, else where the server works by default.
+    const newest = newestChatInFolder(state.sessions, folder)
+    try {
+      const surface = await scope.client.createSurface({
+        kind,
+        folder,
+        cwd: kind === 'terminal' ? newest?.cwd?.trim() || state.health?.default_cwd?.trim() || null : null,
+      })
+      if (!connectionIsCurrent(scope)) return false
+      set(current => ({ surfaces: [...current.surfaces.filter(item => item.id !== surface.id), surface], selectedSurfaceId: surface.id }))
+      return true
+    } catch (error) {
+      if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) })
+      return false
+    }
+  },
+
+  selectSurface(surfaceId) {
+    set(state => ({ selectedSurfaceId: surfaceId && state.surfaces.some(surface => surface.id === surfaceId) ? surfaceId : null }))
+  },
+
+  async updateSurface(surfaceId, patch, expectedGeneration) {
+    const scope = validatedConnectionOrReport(get, set, expectedGeneration)
+    if (!scope || !get().surfaces.some(surface => surface.id === surfaceId)) return
+    set(state => ({ surfaces: state.surfaces.map(surface => surface.id === surfaceId ? { ...surface, ...patch } : surface) }))
+    try {
+      const updated = await scope.client.updateSurface(surfaceId, patch)
+      if (!connectionIsCurrent(scope)) return
+      set(state => ({ surfaces: state.surfaces.map(surface => surface.id === surfaceId ? updated : surface) }))
+    } catch (error) {
+      if (isStaleConnectionError(error, scope)) return
+      set({ error: errorMessage(error) })
+      void get().refreshSurfaces(scope.generation)
+    }
+  },
+
+  async removeSurface(surfaceId, expectedGeneration) {
+    const scope = validatedConnectionOrReport(get, set, expectedGeneration)
+    if (!scope || !get().surfaces.some(surface => surface.id === surfaceId)) return
+    set(state => ({
+      surfaces: state.surfaces.filter(surface => surface.id !== surfaceId),
+      selectedSurfaceId: state.selectedSurfaceId === surfaceId ? null : state.selectedSurfaceId,
+    }))
+    try {
+      await scope.client.deleteSurface(surfaceId)
+    } catch (error) {
+      if (isStaleConnectionError(error, scope)) return
+      set({ error: errorMessage(error) })
+      void get().refreshSurfaces(scope.generation)
+    }
+  },
+
   async selectSession(sessionId, expectedGeneration) {
     if (expectedGeneration !== undefined && expectedGeneration !== get().profileGeneration) return
     const scope = captureConnection()
@@ -1369,6 +1463,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const existing = get().snapshots[sessionId]
     set({
       selectedSessionId: sessionId,
+      // Opening a chat leaves the terminal or browser tab.
+      selectedSurfaceId: null,
       historyWindow: null,
       error: null,
       liveConnected: false,
@@ -2794,9 +2890,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       && !session.archived && !isWelcomeSession(session.id))
     // Folder menu preset: its folder and backend win, and the folder's newest
     // chat supplies the working directory.
-    const folderSeed = preset ? state.sessions
-      .filter(session => !session.archived && (session.folder?.trim() || 'General') === preset.folder)
-      .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))[0] : undefined
+    const folderSeed = preset ? newestChatInFolder(state.sessions, preset.folder) : undefined
     const defaultCwd = state.health?.default_cwd?.trim() || ''
     const backends = selectableChatBackends(state.health)
     const backend: Backend = preset && backends.includes(preset.backend) ? preset.backend
@@ -2854,10 +2948,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) { if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) }) }
     finally { forkSessionInFlight.delete(inFlightKey) }
   },
-  beginEditingTurn(sessionId, runId, prompt, seq) {
+  beginEditingTurn(sessionId, runId, prompt, seq, files) {
     set(state => ({
-      editingTurn: { ...state.editingTurn, [sessionId]: { runId, seq, previousDraft: state.drafts[sessionId] ?? '' } },
+      editingTurn: { ...state.editingTurn, [sessionId]: { runId, seq, previousDraft: state.drafts[sessionId] ?? '', previousUploads: state.uploads[sessionId] ?? [] } },
       drafts: { ...state.drafts, [sessionId]: prompt },
+      // The edited message's attachments return to the composer, so the resend keeps them.
+      uploads: { ...state.uploads, [sessionId]: files ?? [] },
     }))
   },
   cancelEditingTurn(sessionId) {
@@ -2867,6 +2963,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return {
         editingTurn: { ...state.editingTurn, [sessionId]: null },
         drafts: { ...state.drafts, [sessionId]: editing.previousDraft },
+        uploads: { ...state.uploads, [sessionId]: editing.previousUploads },
       }
     })
   },
@@ -2939,7 +3036,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false
     } finally { rewindSessionInFlight.delete(inFlightKey) }
   },
-  async restoreCheckpoint(sessionId, runId, expectedGeneration) {
+  async restoreCheckpoint(sessionId, runId, expectedGeneration, files) {
     const scope = validatedConnectionOrReport(get, set, expectedGeneration)
     if (!scope) return false
     const state = get()
@@ -2963,7 +3060,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!isStaleConnectionError(error, scope)) set({ error: errorMessage(error) })
       return false
     } finally { rewindSessionInFlight.delete(inFlightKey) }
-    return get().rewindSession(sessionId, runId, scope.generation)
+    const rewound = await get().rewindSession(sessionId, runId, scope.generation)
+    // The removed message's uploads stay on the server; offer them for the next message.
+    if (rewound && files?.length) set(state => ({ uploads: { ...state.uploads, [sessionId]: mergeFiles(state.uploads[sessionId] ?? [], files) } }))
+    return rewound
   },
   async deleteSession(sessionId, expectedGeneration) {
     const scope = validatedConnectionOrReport(get, set, expectedGeneration)
@@ -3832,6 +3932,9 @@ async function prepareServerProfileActivation(
       health: null,
       runtime: null,
       sessions,
+      surfaces: [],
+      surfacesRevision: null,
+      selectedSurfaceId: null,
       selectedSessionId: selected,
       snapshots: selected && snapshot ? { [selected]: snapshot } : {},
       historyWindow: null,
@@ -4387,6 +4490,13 @@ function updateProfileRuntime(
 
 function unreadCount(sessions: readonly Session[]): number {
   return sessions.filter(session => !session.archived && (session.manual_unread || (session.latest_agent_event_seq ?? 0) > (session.last_read_agent_event_seq ?? 0))).length
+}
+
+/** The folder's newest live chat; a chat or terminal created there starts in its directory. */
+function newestChatInFolder(sessions: readonly Session[], folder: string): Session | undefined {
+  return sessions
+    .filter(session => !session.archived && (session.folder?.trim() || 'General') === folder)
+    .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))[0]
 }
 
 // Folders learned from loaded or refreshed sessions are persisted, so archiving

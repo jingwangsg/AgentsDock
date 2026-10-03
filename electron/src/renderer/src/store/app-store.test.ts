@@ -451,7 +451,7 @@ describe('turn editing and history rewind', () => {
     seeded()
     useAppStore.getState().beginEditingTurn('chat-1', 'run-3', 'Original third prompt')
     expect(useAppStore.getState().editingTurn['chat-1']).toEqual({
-      runId: 'run-3', originalPrompt: 'Original third prompt', previousDraft: 'Half-typed follow-up'
+      runId: 'run-3', originalPrompt: 'Original third prompt', previousDraft: 'Half-typed follow-up', previousUploads: []
     })
     expect(useAppStore.getState().drafts['chat-1']).toBe('Original third prompt')
 
@@ -459,6 +459,18 @@ describe('turn editing and history rewind', () => {
 
     expect(useAppStore.getState().editingTurn['chat-1']).toBeNull()
     expect(useAppStore.getState().drafts['chat-1']).toBe('Half-typed follow-up')
+  })
+
+  it('returns the edited message\'s attachments to the composer and the previous ones on cancel', () => {
+    seeded()
+    const attachment = (id: string) => ({ id, session_id: 'chat-1', kind: 'upload', filename: `${id}.png`, size: 1, content_type: 'image/png', created_at: '2026-10-03T00:00:00Z' }) as unknown as AgentFile
+    useAppStore.setState({ uploadsBySession: { 'chat-1': [attachment('shelf-file')] } })
+    useAppStore.getState().beginEditingTurn('chat-1', 'run-3', 'Original third prompt', 3, [attachment('third-file')])
+    expect(useAppStore.getState().uploadsBySession['chat-1'].map(file => file.id)).toEqual(['third-file'])
+
+    useAppStore.getState().cancelEditingTurn('chat-1')
+
+    expect(useAppStore.getState().uploadsBySession['chat-1'].map(file => file.id)).toEqual(['shelf-file'])
   })
 
   it('reload history trims the removed import batches locally', async () => {
@@ -548,7 +560,9 @@ describe('turn editing and history rewind', () => {
     const changed = vi.fn()
     window.addEventListener('agentsdock:workspace-git-changed', changed)
     try {
-      await expect(useAppStore.getState().restoreCheckpoint('chat-1', 'run-3')).resolves.toBe(true)
+      const attachment = { id: 'third-file', session_id: 'chat-1', kind: 'upload', filename: 'third-file.png', size: 1, content_type: 'image/png', created_at: '2026-10-03T00:00:00Z' } as unknown as AgentFile
+      await expect(useAppStore.getState().restoreCheckpoint('chat-1', 'run-3', [attachment])).resolves.toBe(true)
+      expect(useAppStore.getState().uploadsBySession['chat-1'].map(file => file.id)).toEqual(['third-file'])
     } finally {
       window.removeEventListener('agentsdock:workspace-git-changed', changed)
     }
@@ -752,6 +766,31 @@ describe('server shortcut navigation', () => {
     window.removeEventListener('agentsdock:rename-chat', renameChat)
     expect(renameChat).toHaveBeenCalledOnce()
     expect((renameChat.mock.calls[0][0] as CustomEvent).detail).toEqual(session)
+  })
+
+  it('renames the browser or terminal tab in front on Cmd+R, not the chat behind it', () => {
+    const renameChat = vi.fn()
+    const renameSurface = vi.fn()
+    window.addEventListener('agentsdock:rename-chat', renameChat)
+    window.addEventListener('agentsdock:rename-surface', renameSurface)
+    const surface = { id: 'surface-a', kind: 'terminal' as const, name: null, folder: '', cwd: null, url: null, page_title: null, created_at: '', updated_at: '' }
+    useAppStore.setState({
+      sessions: [{ id: 'chat-a', title: 'Draft', backend: 'claude' as const }],
+      selectedSessionId: 'chat-a',
+      surfaces: [surface],
+      selectedSurfaceId: 'surface-a'
+    })
+    handleMenuCommand('rename-chat', useAppStore.getState, value => useAppStore.setState(value))
+    // A stale tab id (its surface already gone) falls back to the chat that is actually shown.
+    useAppStore.setState({ surfaces: [] })
+    handleMenuCommand('rename-chat', useAppStore.getState, value => useAppStore.setState(value))
+
+    window.removeEventListener('agentsdock:rename-chat', renameChat)
+    window.removeEventListener('agentsdock:rename-surface', renameSurface)
+    useAppStore.setState({ surfaces: [], selectedSurfaceId: null })
+    expect(renameSurface).toHaveBeenCalledOnce()
+    expect((renameSurface.mock.calls[0][0] as CustomEvent).detail).toEqual({ surfaceId: 'surface-a' })
+    expect(renameChat).toHaveBeenCalledOnce()
   })
 
   it('keeps an open chat search open and asks it to restore focus', () => {

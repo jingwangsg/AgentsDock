@@ -6,7 +6,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AlertCircle, PanelLeftOpen, Settings, X } from 'lucide-react-native'
-import type { Backend } from '../types'
+import type { Backend, SurfaceKind } from '../types'
 import { trackEvent } from '../lib/analytics'
 import { dismissAppKeyboard, useAppKeyboardLifecycle } from '../lib/app-keyboard'
 import { chatWorkspaceLayout, sidebarWidth } from '../lib/chat-layout'
@@ -25,6 +25,7 @@ import { WorkspaceChanges } from './WorkspaceChanges'
 import { DigestDialog, JobDialog, ProcessDialog, SearchDialog, ServerSetupDialog, SettingsDialog, TmuxDialog } from './Dialogs'
 import { Inspector } from './Inspector'
 import { Sidebar } from './Sidebar'
+import { SurfaceScreen } from './SurfaceScreen'
 import { ServerProfilesSheet, type ServerProfileListItem } from './ServerProfiles'
 import { TerminalView } from './TerminalView'
 import { TeamNetwork } from './TeamNetwork'
@@ -57,6 +58,7 @@ function AppShellContent() {
   const serverConfigured = useAppStore(state => state.serverConfigured)
   const serverURL = useAppStore(state => state.serverURL)
   const selectedId = useAppStore(state => state.selectedSessionId)
+  const selectedSurface = useAppStore(useShallow(state => state.surfaces.find(surface => surface.id === state.selectedSurfaceId) ?? null))
   const selected = useAppStore(useShallow(state => {
     const session = state.sessions.find(value => value.id === state.selectedSessionId)
     return session ? {
@@ -169,6 +171,11 @@ function AppShellContent() {
     setMcpSessionId(sessionId)
     requestAnimationFrame(dismissAppKeyboard)
   }, [])
+  const quickNewSurface = useCallback(async (folder: string, kind: SurfaceKind) => {
+    const created = await useAppStore.getState().createSurface(kind, folder, profileGeneration)
+    if (created && compact) setMobileChatOpen(true)
+    requestAnimationFrame(dismissAppKeyboard)
+  }, [compact, profileGeneration])
   const quickNewChat = useCallback(async (preset?: { folder: string; backend: Backend }) => {
     if (quickChatInFlight.current) return
     quickChatInFlight.current = true
@@ -270,7 +277,7 @@ function AppShellContent() {
     void readSidebarCollapsed().then(collapsed => { if (active) setSidebarCollapsed(collapsed) })
     return () => { active = false }
   }, [])
-  useEffect(() => { if (!selectedId) setMobileChatOpen(false) }, [selectedId])
+  useEffect(() => { if (!selectedId && !selectedSurface) setMobileChatOpen(false) }, [selectedId, selectedSurface])
   // Folding a book-style device mid-chat drops from two panes to one: keep the
   // open chat in view instead of falling back to the list.
   const previousCompact = useRef(compact)
@@ -375,18 +382,22 @@ function AppShellContent() {
   if (!initialized) return <View style={[styles.fill, { backgroundColor: colors.background }]}><Loading label="Starting AgentsDock" /></View>
 
   const connectionKey = `${activeProfileId ?? 'none'}:${profileGeneration}`
-  const sidebar = <Sidebar key={`sidebar:${connectionKey}`} profiles={serverProfileItems} activeProfileId={activeProfileId} switchingProfileId={switchingProfileId} onSwitchServer={switchServer} onSetupServer={() => openServers('edit-active')} onManageServers={() => openServers('manage')} onSettings={openSettings} onTeamNetwork={openTeamNetwork} onNewChat={() => void quickNewChat()} onNewChatIn={(folder, backend) => void quickNewChat({ folder, backend })} onOpenChat={() => { trackEvent('chat_opened'); openMobileChat() }} />
+  const sidebar = <Sidebar key={`sidebar:${connectionKey}`} profiles={serverProfileItems} activeProfileId={activeProfileId} switchingProfileId={switchingProfileId} onSwitchServer={switchServer} onSetupServer={() => openServers('edit-active')} onManageServers={() => openServers('manage')} onSettings={openSettings} onTeamNetwork={openTeamNetwork} onNewChat={() => void quickNewChat()} onNewChatIn={(folder, backend) => void quickNewChat({ folder, backend })} onNewSurfaceIn={(folder, kind) => void quickNewSurface(folder, kind)} onOpenChat={() => { trackEvent('chat_opened'); openMobileChat() }} />
   // The collapsed rail stays mounted (see sidebarWidth), so it must also leave
   // the accessibility tree or screen readers land on invisible controls.
   const sidebarRail = <View style={{ width: sidebarWidth(width, sidebarCollapsed), overflow: 'hidden' }} accessibilityElementsHidden={sidebarCollapsed} importantForAccessibility={sidebarCollapsed ? 'no-hide-descendants' : 'auto'}>{sidebar}</View>
   const chat = selected
     ? <ChatScreen key={`${connectionKey}:${selected.id}`} sessionId={selected.id} compact={compact} inlineInspectorAvailable={chatLayout.inlineInspectorAvailable} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} onBack={closeMobileChat} onOptions={openOptions} onSearch={openSearch} onToggleInspector={() => setInspectorVisible(value => !value)} onReview={openReview} onChanges={() => openInspectorAction('changes')} onSetupServer={() => openServers('edit-active')} onOpenMcp={() => openClaudeMcp(selected.id)} onShellAction={action => { if (action === 'details') openOptions(); else if (action === 'new-chat') void quickNewChat(); else openInspectorAction(action) }} />
     : <NoChat connecting={connecting} onSettings={() => openServers('manage')} onShowChatList={!compact && sidebarCollapsed ? toggleSidebar : undefined} />
+  // A selected terminal or browser tab takes the chat's place until a chat is opened again.
+  const content = selectedSurface
+    ? <SurfaceScreen key={`${connectionKey}:${selectedSurface.id}`} surface={selectedSurface} compact={compact} onBack={closeMobileChat} />
+    : chat
 
   return <View style={[styles.fill, { backgroundColor: colors.background }]}>
     <AndroidUpdateCoordinator />
     {error && !showServerSetup ? <View testID="global-error-slot" style={styles.errorSlot}><View style={[styles.error, { backgroundColor: colors.surface, borderColor: colors.red }]}><AlertCircle size={17} color={colors.red} /><View style={styles.errorContent}><Text style={[styles.errorText, { color: colors.text }]} numberOfLines={canCancelPendingServerUpdate ? 4 : 3}>{error}</Text>{canCancelPendingServerUpdate ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel scheduled server update" accessibilityHint="Cancels the pending update so messages can be sent again" accessibilityState={{ disabled: cancelingServerUpdate, busy: cancelingServerUpdate }} testID="error-cancel-server-update" disabled={cancelingServerUpdate} onPress={() => { void cancelCurrentServerUpdate() }} style={({ pressed }) => [styles.errorAction, { backgroundColor: colors.raised, borderColor: colors.border, opacity: cancelingServerUpdate ? 0.45 : pressed ? 0.68 : 1 }]}>{cancelingServerUpdate ? <ActivityIndicator size="small" color={colors.blue} /> : <Text style={[styles.errorActionText, { color: colors.blue }]}>Cancel update</Text>}</Pressable> : null}</View>{!canCancelPendingServerUpdate ? <IconButton icon={Settings} size={15} onPress={openSettings} label="Settings" testID="error-settings" /> : null}<IconButton icon={X} size={15} onPress={clearError} disabled={cancelingServerUpdate} label="Dismiss" testID="error-dismiss" /></View></View> : null}
-    {compact ? <View style={styles.fill}>{sidebar}{modalScopeCurrent && mobileChatOpen && selected ? <MobileChatPane width={width} backgroundColor={colors.background} onClose={closeMobileChat}>{chat}</MobileChatPane> : null}</View> : <View style={styles.workspace}>{sidebarRail}<View style={styles.chat}>{chat}</View>{showInspector && selected && !isWelcomeSession(selected.id) ? <View style={{ width: Math.min(350, width * 0.29) }}><Inspector key={`inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => openInspectorAction('digest')} onJob={jobId => openInspectorAction('job', jobId)} onTerminal={() => openInspectorAction('terminal')} onProcesses={() => openInspectorAction('processes')} onTmux={() => openInspectorAction('tmux')} onChanges={() => openInspectorAction('changes')} /></View> : null}</View>}
+    {compact ? <View style={styles.fill}>{sidebar}{modalScopeCurrent && mobileChatOpen && (selectedSurface || selected) ? <MobileChatPane width={width} backgroundColor={colors.background} onClose={closeMobileChat}>{content}</MobileChatPane> : null}</View> : <View style={styles.workspace}>{sidebarRail}<View style={styles.chat}>{content}</View>{showInspector && selected && !selectedSurface && !isWelcomeSession(selected.id) ? <View style={{ width: Math.min(350, width * 0.29) }}><Inspector key={`inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => openInspectorAction('digest')} onJob={jobId => openInspectorAction('job', jobId)} onTerminal={() => openInspectorAction('terminal')} onProcesses={() => openInspectorAction('processes')} onTmux={() => openInspectorAction('tmux')} onChanges={() => openInspectorAction('changes')} /></View> : null}</View>}
 
     <ServerSetupDialog
       visible={showServerSetup}
@@ -457,7 +468,7 @@ function AppShellContent() {
         paddingTop: fullscreenModalTopPadding(insets, Platform.OS),
       }]}
       edges={['right', 'bottom', 'left']}
-    ><TerminalView session={selected} onClose={closeTerminal} /></SafeAreaView></Modal> : null}
+    ><TerminalView terminal={selected} tmux onClose={closeTerminal} /></SafeAreaView></Modal> : null}
   </View>
 }
 

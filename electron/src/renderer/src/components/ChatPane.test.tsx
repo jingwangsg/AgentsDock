@@ -119,7 +119,6 @@ describe('ChatPane', () => {
       session={secondary}
       focused={false}
       split
-      terminalOpen={false}
     />)
 
     expect(runtimeProviders.claude).not.toHaveBeenCalled()
@@ -144,7 +143,6 @@ describe('ChatPane', () => {
       session={emergencyPrimary}
       focused
       split
-      terminalOpen={false}
     />)
 
     const workspace = container.querySelector('.chat-workspace')
@@ -228,6 +226,5 @@ function renderSecondary(session: Session = secondary) {
     session={session}
     focused={false}
     split
-    terminalOpen={false}
   />)
 }

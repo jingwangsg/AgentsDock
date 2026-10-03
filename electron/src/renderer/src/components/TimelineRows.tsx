@@ -5,6 +5,7 @@ import { timelineCount, timelineEventLabel, timelineStatusLabel } from '../lib/t
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Bot, Check, ChevronRight, Clock3, Code2, Copy, FileText, History, LoaderCircle, MessageSquareShare, Pencil, Pin, RotateCcw, Siren, Sparkles, Square, TerminalSquare, Wrench, X } from 'lucide-react'
 import { compactToolOutputPreview } from '@shared/event-compaction'
+import { readableToolInput, readableValue } from '../lib/tool-input'
 import { agentFileBelongsToSession } from '@shared/session-files'
 import { isImportedProviderInterruption } from '@shared/provider-origin'
 import { codexLifecycleSemanticKey, isCompactionCompletedEvent, isCompactionStartedEvent } from '@shared/semantic-timeline'
@@ -99,8 +100,8 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
             : <time>{formatTime(event.ts)}</time>}
           {!item.pending && <button type="button" className={`pin-button ${pinned ? 'active' : ''}`} aria-pressed={pinned} title={pinned ? t('timeline.ui.unpinMessage') : t('timeline.ui.pinMessage')} onClick={() => runTimelineAction(togglePin())}><Pin size={12} fill={pinned ? 'currentColor' : 'none'} /></button>}
           <button type="button" title={t('timeline.ui.copyFullMessage')} onClick={() => runTimelineAction(copy())}>{copied ? <Check size={12} /> : <Copy size={12} />}</button>
-          {canEditTurn && <button type="button" title={t('timeline.rewind.editTurn')} onClick={() => useAppStore.getState().beginEditingTurn(sessionId, item.runId!, primary.prompt ?? text, primary.seq)}><Pencil size={12} /></button>}
-          {canRestoreCheckpoint && <button type="button" title={t('timeline.rewind.restoreCheckpoint')} onClick={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-restore-checkpoint', { detail: { sessionId, runId: item.runId } }))}><RotateCcw size={12} /></button>}
+          {canEditTurn && <button type="button" title={t('timeline.rewind.editTurn')} onClick={() => useAppStore.getState().beginEditingTurn(sessionId, item.runId!, primary.prompt ?? text, primary.seq, files)}><Pencil size={12} /></button>}
+          {canRestoreCheckpoint && <button type="button" title={t('timeline.rewind.restoreCheckpoint')} onClick={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-restore-checkpoint', { detail: { sessionId, runId: item.runId, files } }))}><RotateCcw size={12} /></button>}
         </header>
         <div className="message-parts">
           {events.map(part => <MarkdownContent
@@ -989,7 +990,20 @@ function traceToolHasInput(entry: TraceToolEntry): boolean {
 function traceToolInput(entry: TraceToolEntry): string {
   const input = entry.started?.tool?.input ?? entry.finished?.tool?.input
   if (!traceToolHasInput(entry) || input == null) return ''
-  return JSON.stringify(input, null, 2) ?? String(input)
+  return readableToolInput(entry.started?.tool?.name ?? entry.finished?.tool?.name, input)
+}
+
+/** A result that is one JSON object or array reads as key: value lines; anything else stays as the tool wrote it. */
+function readableToolOutput(output: string): string {
+  const trimmed = output.trim()
+  const first = trimmed[0]
+  const last = trimmed[trimmed.length - 1]
+  if (!((first === '{' && last === '}') || (first === '[' && last === ']'))) return output
+  try {
+    return readableValue(JSON.parse(trimmed))
+  } catch {
+    return output
+  }
 }
 
 function traceToolStatus(entry: TraceToolEntry): { label: string; tone: string } {
@@ -1013,7 +1027,7 @@ function ToolEvent({ entry, nativeCodex = false, active = false, runLive = false
   const status = traceToolStatus(entry)
   const input = open ? traceToolInput(entry) : ''
   const rawOutput = entry.finished?.output || entry.finished?.message || ''
-  const output = open && rawOutput ? compactToolOutputPreview(rawOutput) : ''
+  const output = open && rawOutput ? compactToolOutputPreview(readableToolOutput(rawOutput)) : ''
   const hasDetails = traceToolHasInput(entry) || Boolean(rawOutput)
   const nativeLabel = !entry.finished && runLive ? t('timeline.ui.running')
     : !entry.finished ? t('timeline.ui.stopped')

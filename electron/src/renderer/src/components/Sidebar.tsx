@@ -8,26 +8,27 @@ import {
   type CollisionDetection, type DragEndEvent, type DragOverEvent, type DragStartEvent
 } from '@dnd-kit/core'
 import {
-  Archive, ArchiveRestore, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Folder, FolderPlus, GripVertical, Inbox, LoaderCircle, MoreHorizontal,
-  Columns2, History, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, Trash2, Undo2, UsersRound
+  Archive, ArchiveRestore, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Folder, FolderPlus, Globe, GripVertical, Inbox, LoaderCircle, MoreHorizontal,
+  Columns2, History, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, SquareTerminal, Trash2, Undo2, UsersRound, X
 } from 'lucide-react'
-import type { Session } from '@shared/types'
+import type { Session, Surface } from '@shared/types'
 import { completedPrefixForkAvailable } from '@shared/session-fork'
 import { localSessionImportSupported } from '@shared/local-session-import'
-import { selectableChatBackends } from '@shared/runtime-catalog'
+import { readyChatBackends } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
 import { activeEmergencyAlert } from '../lib/emergency-alert'
 import { backendLabel, shortRelativeTime, workingDirectoryTail } from '../lib/format'
 import { openSessionHistoryResult } from '../lib/session-history-search'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 import { rankSessionsForSearch, sidebarFolders } from '../lib/sessions'
+import { surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
 import { handleMenuCommand, selectMailHintPending, selectBulletinHintPending, sessionUnread, useAppStore } from '../store/app-store'
 import { BackendMark } from './BackendMark'
 import { ServerSelector } from './ServerSelector'
 import { ShortcutTooltip } from './ShortcutTooltip'
 
-interface Section { id: string; title: string; sessions: Session[]; kind: 'pinned' | 'folder' | 'archived' | 'search' }
+interface Section { id: string; title: string; sessions: Session[]; surfaces: Surface[]; kind: 'pinned' | 'folder' | 'archived' | 'search' }
 interface DropIndicator { id: string; placement: 'before' | 'after' | 'inside' }
 interface DragItemData { type: 'session' | 'folder'; label?: string; section?: string }
 
@@ -56,7 +57,10 @@ const sidebarCollisionDetection: CollisionDetection = (args) => {
 export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   useLocale()
   const sessions = useAppStore(state => state.sessions)
-  const selectedId = useAppStore(state => state.selectedSessionId)
+  const surfaces = useAppStore(state => state.surfaces)
+  const selectedSurfaceId = useAppStore(state => state.selectedSurfaceId)
+  // While a terminal or browser tab is open, no chat row reads as selected.
+  const selectedId = useAppStore(state => state.selectedSurfaceId ? null : state.selectedSessionId)
   const chatPanes = useAppStore(state => state.chatPanes)
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
@@ -80,7 +84,7 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const sidebarScrollingUntil = useRef(0)
   const sidebarScrollTimer = useRef<number | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: SIDEBAR_LONG_PRESS }))
-  const sections = useMemo(() => buildSections(sessions, folderOrder, ''), [sessions, folderOrder, getLocale()])
+  const sections = useMemo(() => buildSections(sessions, folderOrder, '', undefined, surfaces), [sessions, folderOrder, surfaces, getLocale()])
   const computedFolders = useMemo(() => sidebarFolders(sessions, folderOrder), [folderOrder, sessions])
   const stableFolders = useRef(computedFolders)
   if (!stringArraysEqual(stableFolders.current, computedFolders)) stableFolders.current = computedFolders
@@ -260,6 +264,7 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
               key={section.id}
               section={section}
               selectedId={selectedId}
+              selectedSurfaceId={selectedSurfaceId}
               chatPanes={chatPanes}
               collapsed={section.kind === 'archived' ? archivedCollapsed : section.kind === 'folder' && collapsed.has(section.title)}
               drop={drop}
@@ -268,7 +273,7 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
               isSidebarScrolling={isSidebarScrolling}
             />
           ))}
-          {!sections.some(section => section.sessions.length) && <div className="sidebar-empty">{t("ui.Sidebar.Sidebar.no_chats_found_14dbfb5")}</div>}
+          {!sections.some(section => section.sessions.length || section.surfaces.length) && <div className="sidebar-empty">{t("ui.Sidebar.Sidebar.no_chats_found_14dbfb5")}</div>}
         </div>
         <DragOverlay dropAnimation={null}>{dragging && <div className="drag-overlay"><GripVertical size={13} />{dragging.label}</div>}</DragOverlay>
       </DndContext>
@@ -279,8 +284,8 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   )
 }
 
-function SidebarSection({ section, selectedId, chatPanes, collapsed, drop, suppressClick, folders, isSidebarScrolling }: {
-  section: Section; selectedId: string | null; chatPanes: { primary: string | null; secondary: string | null }; collapsed: boolean; drop: DropIndicator | null; suppressClick: (id: string) => boolean
+function SidebarSection({ section, selectedId, selectedSurfaceId, chatPanes, collapsed, drop, suppressClick, folders, isSidebarScrolling }: {
+  section: Section; selectedId: string | null; selectedSurfaceId: string | null; chatPanes: { primary: string | null; secondary: string | null }; collapsed: boolean; drop: DropIndicator | null; suppressClick: (id: string) => boolean
   folders: string[]; isSidebarScrolling: () => boolean
 }) {
   useLocale()
@@ -303,7 +308,44 @@ function SidebarSection({ section, selectedId, chatPanes, collapsed, drop, suppr
       {!collapsed && section.sessions.map(session => (
         <SessionRow key={session.id} session={session} selected={session.id === selectedId} visiblePane={splitOpen ? chatPanes.primary === session.id ? 'primary' : chatPanes.secondary === session.id ? 'secondary' : null : null} sectionId={section.id} dropIndicator={drop?.id === `session:${session.id}` ? `drop-${drop.placement}` : ''} suppressClick={suppressClick} folders={folders} isSidebarScrolling={isSidebarScrolling} />
       ))}
+      {!collapsed && section.surfaces.map(surface => (
+        <SurfaceRow key={surface.id} surface={surface} selected={surface.id === selectedSurfaceId} />
+      ))}
     </section>
+  )
+}
+
+function SurfaceRow({ surface, selected }: { surface: Surface; selected: boolean }) {
+  useLocale()
+  const select = () => {
+    window.dispatchEvent(new Event('agentsdock:close-teamspace'))
+    useAppStore.getState().selectSurface(surface.id)
+  }
+  const Icon = surface.kind === 'terminal' ? SquareTerminal : Globe
+  return (
+    <ContextMenu.Root>
+      <ContextMenu.Trigger asChild>
+        <div
+          className={`session-row surface-row ${selected ? 'selected' : ''}`}
+          role="button"
+          tabIndex={0}
+          onClick={select}
+          onKeyDown={event => { if (event.key === 'Enter') select() }}
+        >
+          <Icon size={18} aria-hidden="true" />
+          <span className="session-copy"><strong>{surfaceTitle(surface)}</strong><small title={surface.kind === 'terminal' ? surface.cwd || undefined : surface.url || undefined}>{surfaceSubline(surface)}</small></span>
+        </div>
+      </ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Content className="menu-content">
+          <MenuItem icon={Pencil} label={t('surface.renameMenu')} onSelect={() => {
+            select()
+            window.dispatchEvent(new CustomEvent('agentsdock:rename-surface', { detail: { surfaceId: surface.id } }))
+          }} />
+          <MenuItem icon={X} label={t('surface.close')} onSelect={() => void useAppStore.getState().removeSurface(surface.id)} />
+        </ContextMenu.Content>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
   )
 }
 
@@ -339,9 +381,11 @@ function FolderHeader({ section, collapsed, drop, onToggle, suppressClick, folde
       <ContextMenu.Trigger asChild>{header}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content className="menu-content">
-          {selectableChatBackends(health, runtimeCatalog).map(backend => (
+          {readyChatBackends(health, runtimeCatalog).map(backend => (
             <MenuItem key={backend} icon={Plus} label={t('ui.sidebar.newBackendChat', { backend: backendLabel(backend) })} onSelect={() => void useAppStore.getState().requestNewChat({ folder: section.title, backend })} />
           ))}
+          <MenuItem icon={SquareTerminal} label={t('ui.sidebar.newTerminal')} onSelect={() => void useAppStore.getState().createSurface('terminal', section.title)} />
+          <MenuItem icon={Globe} label={t('ui.sidebar.newBrowser')} onSelect={() => void useAppStore.getState().createSurface('browser', section.title)} />
           <ContextMenu.Separator className="menu-separator" />
           <MenuItem icon={Pencil} label={t('ui.sidebar.renameFolder')} onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:rename-folder', { detail: { folder: section.title } }))} />
           {position > 0 && <MenuItem icon={ArrowUp} label={t('ui.sidebar.moveFolderUp')} onSelect={() => swapWith(position - 1)} />}
@@ -412,10 +456,9 @@ const SessionRow = memo(function SessionRow({ session, selected, visiblePane, se
           {...draggable.listeners}
           {...draggable.attributes}
         >
-          {running
-            ? <LoaderCircle className="spin session-spinner" size={18} aria-label={t('ui.sidebar.running')} />
-            : <BackendMark backend={session.backend} size={18} />}
+          <BackendMark backend={session.backend} size={18} />
           <span className="session-copy"><strong>{session.title}</strong><small title={emergency?.message || (needsUserAction ? t("ui.Sidebar.SessionRow.this_agent_is_paused_until_you_respond_82dc6e8") : session.cwd || undefined)}>{emergency ? t("ui.Sidebar.SessionRow.emergency_89e4490", { "message": String(emergency.message) }) : needsUserAction ? t("ui.Sidebar.SessionRow.action_needed_c2d066a", { "chat": String(backendLabel(session.backend)) }) : sessionSubline(session, unread)}</small></span>
+          {running && <LoaderCircle className="spin session-spinner" size={14} aria-label={t('ui.sidebar.running')} />}
           {emergency && <span key={emergency.id} className="sr-only" role="alert">{t('ui.sidebar.emergency', { title: session.title, message: emergency.message })}</span>}
           {visiblePane && <span className="sr-only">{t(visiblePane === 'primary' ? 'ui.sidebar.firstPane' : 'ui.sidebar.secondPane')}</span>}
           {(emergency || needsUserAction || unread) && <span className={`status-dot ${emergency ? 'emergency' : needsUserAction ? 'attention' : 'unread'}`} aria-hidden="true" />}
@@ -486,9 +529,9 @@ function MenuItem({ icon: Icon, label, onSelect, danger, disabled, title }: { ic
   return <ContextMenu.Item className={`menu-item ${danger ? 'danger' : ''}`} disabled={disabled} title={title} onSelect={onSelect}><Icon size={14} />{label}</ContextMenu.Item>
 }
 
-export function buildSections(sessions: Session[], folderOrder: string[], query: string, historySessionIds: Set<string> = new Set()): Section[] {
+export function buildSections(sessions: Session[], folderOrder: string[], query: string, historySessionIds: Set<string> = new Set(), surfaces: Surface[] = []): Section[] {
   const filtered = rankSessionsForSearch(sessions, query, historySessionIds)
-  if (query.trim()) return filtered.length ? [{ id: 'search', title: t("ui.Sidebar.buildSections.matches_98abff2"), sessions: filtered, kind: 'search' }] : []
+  if (query.trim()) return filtered.length ? [{ id: 'search', title: t("ui.Sidebar.buildSections.matches_98abff2"), sessions: filtered, surfaces: [], kind: 'search' }] : []
   const pinned = filtered.filter(session => session.pinned && !session.archived)
   const archived = filtered.filter(session => session.archived)
   const byFolder = new Map<string, Session[]>()
@@ -497,10 +540,14 @@ export function buildSections(sessions: Session[], folderOrder: string[], query:
     byFolder.set(folder, [...(byFolder.get(folder) ?? []), session])
   }
   const folders = sidebarFolders(filtered, folderOrder)
+  // A folder that only a terminal or browser tab lives in still gets listed, after the chat folders.
+  for (const folder of [...new Set(surfaces.map(surface => surface.folder))].sort()) {
+    if (!folders.includes(folder)) folders.push(folder)
+  }
   return [
-    ...(pinned.length ? [{ id: 'pinned', title: t("ui.Sidebar.buildSections.pinned_f20c879"), sessions: pinned, kind: 'pinned' as const }] : []),
-    ...folders.map(folder => ({ id: `folder:${folder}`, title: folder, sessions: byFolder.get(folder) ?? [], kind: 'folder' as const })),
-    ...(archived.length ? [{ id: 'archived', title: t("ui.Sidebar.buildSections.archived_bdb8650"), sessions: archived, kind: 'archived' as const }] : [])
+    ...(pinned.length ? [{ id: 'pinned', title: t("ui.Sidebar.buildSections.pinned_f20c879"), sessions: pinned, surfaces: [], kind: 'pinned' as const }] : []),
+    ...folders.map(folder => ({ id: `folder:${folder}`, title: folder, sessions: byFolder.get(folder) ?? [], surfaces: surfaces.filter(surface => surface.folder === folder), kind: 'folder' as const })),
+    ...(archived.length ? [{ id: 'archived', title: t("ui.Sidebar.buildSections.archived_bdb8650"), sessions: archived, surfaces: [], kind: 'archived' as const }] : [])
   ]
 }
 

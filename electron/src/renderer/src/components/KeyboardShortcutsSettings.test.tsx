@@ -35,9 +35,6 @@ describe('KeyboardShortcutsSettings', () => {
     const label = screen.getByText('Toggle chat list')
     const keycaps = Array.from(label.closest('li')!.querySelectorAll('kbd')).map(key => key.textContent)
     expect(keycaps).toEqual(['Ctrl', '/'])
-    const terminalLabel = screen.getByText('New tmux window')
-    const availability = within(terminalLabel.closest('li') as HTMLElement).getByText('macOS only')
-    expect(availability.tagName).toBe('SPAN')
   })
 
   it('updates its category, groups, and actions in Simplified Chinese', () => {

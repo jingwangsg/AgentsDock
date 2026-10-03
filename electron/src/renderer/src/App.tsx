@@ -1,7 +1,7 @@
 // Localized display strings use semantic catalog keys.
 import { t } from '@shared/i18n'
 import { useLocale } from './lib/i18n'
-import { saveLocalStorage, verifyLocalStorageWritable } from './lib/local-storage'
+import { verifyLocalStorageWritable } from './lib/local-storage'
 import {
   useCallback,
   useEffect,
@@ -33,7 +33,7 @@ import { SideChatPopover } from './components/SideChatPopover'
 import { currentShortcutPlatform } from './components/ShortcutTooltip'
 import { SideChatController } from './lib/side-chat'
 import { Sidebar } from './components/Sidebar'
-import { TerminalDock } from './components/TerminalDock'
+import { SurfaceStack } from './components/SurfacePane'
 import { TeamNetwork, type PendingSecurePeerInvite, type TeamNetworkMailboxTarget, type TeamNetworkMessageTarget, type TeamNetworkSection } from './components/TeamNetwork'
 import { CanvasPane, canvasNameFromPath, type CanvasTarget } from './components/CanvasPane'
 import { Timeline } from './components/Timeline'
@@ -42,7 +42,6 @@ import { WorkspaceEditor } from './components/WorkspaceEditor'
 import { trackEvent } from './lib/analytics'
 import { TEAM_NETWORK_UI_ENABLED } from './lib/team-network-ui'
 import { activeEmergencyAlert } from './lib/emergency-alert'
-import { isTerminalToggleShortcut } from './lib/workspace-shortcuts'
 import {
   WorkspaceResizeHandles,
   persistWorkspaceSidebarVisible,
@@ -209,42 +208,28 @@ export function App() {
   const teamspaceMailboxRequestSequence = useRef(0)
   const queuedSecurePeerInvite = useRef<string | null>(null)
   const [sidebarVisible, setSidebarVisible] = useState(savedWorkspaceSidebarVisible)
-  const [terminalOpenBySession, setTerminalOpenBySession] = useState<Record<string, boolean>>(() => {
-    try {
-      const saved = localStorage.getItem('agentsdock:terminal-open')
-      if (saved) return JSON.parse(saved) as Record<string, boolean>
-      const legacy = JSON.parse(localStorage.getItem('agentsdock:workspace-modes') || '{}') as Record<string, string>
-      return Object.fromEntries(Object.entries(legacy).map(([sessionId, mode]) => [sessionId, mode === 'terminal']))
-    } catch { return {} }
-  })
+  const surfaces = useAppStore(state => state.surfaces)
+  const selectedSurfaceId = useAppStore(state => state.selectedSurfaceId)
+  const selectedSurface = surfaces.find(surface => surface.id === selectedSurfaceId) ?? null
   const reviewTarget = scopedReviewTarget?.profileId === activeProfileId && scopedReviewTarget.profileGeneration === profileGeneration
     ? scopedReviewTarget.target
     : null
   // With the Team Network UI hidden the pane never opens, whatever sets the scope key.
   const teamspaceOpen = TEAM_NETWORK_UI_ENABLED && teamspaceScopeKey === activeRenderKey
-  const canvasOpen = Boolean(canvasTarget && selectedSession && canvasTarget.sessionId === selectedSession.id && !teamspaceOpen)
+  const surfaceOpen = Boolean(selectedSurface) && !teamspaceOpen
+  const canvasOpen = Boolean(canvasTarget && selectedSession && canvasTarget.sessionId === selectedSession.id && !teamspaceOpen && !surfaceOpen)
   const previousTeamspaceOpen = useRef(false)
   useEffect(() => {
     if (teamspaceOpen && !previousTeamspaceOpen.current) trackEvent('team_network_opened')
     previousTeamspaceOpen.current = teamspaceOpen
   }, [teamspaceOpen])
-  const terminalOpen = selectedSessionId && !selectedSession?.archived ? terminalOpenBySession[selectedWorkspaceKey] ?? false : false
   const toggleSidebar = useCallback(() => {
     persistWorkspaceSidebarVisible(!sidebarVisible)
     setSidebarVisible(!sidebarVisible)
   }, [sidebarVisible])
-  const setTerminalOpen = useCallback((sessionId: string, open: boolean) => {
-    if (open) trackEvent('terminal_opened')
-    const scopedKey = profileSessionKey(activeProfileId, sessionId, activeServerIdentity)
-    setTerminalOpenBySession(current => {
-      const next = { ...current, [scopedKey]: open }
-      saveLocalStorage('agentsdock:terminal-open', JSON.stringify(next))
-      return next
-    })
-  }, [activeProfileId, activeServerIdentity])
   const reviewVisible = Boolean(reviewTarget) && inspectorTab === 'review'
   const dockOpen = inspectorVisible || reviewVisible
-  const visibleDockOpen = !teamspaceOpen && dockOpen
+  const visibleDockOpen = !teamspaceOpen && !surfaceOpen && dockOpen
   const splitOpen = Boolean(primarySession && secondarySession)
   const clearFileDragTimeout = useCallback(() => {
     if (fileDragTimeout.current !== null) {
@@ -478,28 +463,6 @@ export function App() {
     ) dismissSplitWorkspace()
   }, [activeProfileId, activeServerIdentity, chatPanes.primary, chatPanes.secondary, dismissSplitWorkspace, primarySession?.cwd, profileGeneration, secondarySession?.cwd, selectedSessionId, splitOpen])
   useEffect(() => {
-    if (!activeProfileId || !selectedSessionId) return
-    const scopedKey = profileSessionKey(activeProfileId, selectedSessionId, activeServerIdentity)
-    setTerminalOpenBySession(current => {
-      if (Object.prototype.hasOwnProperty.call(current, scopedKey) || !Object.prototype.hasOwnProperty.call(current, selectedSessionId)) return current
-      const next = { ...current, [scopedKey]: current[selectedSessionId] }
-      delete next[selectedSessionId]
-      saveLocalStorage('agentsdock:terminal-open', JSON.stringify(next))
-      return next
-    })
-  }, [activeProfileId, activeServerIdentity, selectedSessionId])
-  useEffect(() => {
-    if (!selectedSession?.archived) return
-    const scopedKey = profileSessionKey(activeProfileId, selectedSession.id, activeServerIdentity)
-    if (!terminalOpenBySession[scopedKey]) return
-    setTerminalOpenBySession(current => {
-      if (!current[scopedKey]) return current
-      const next = { ...current, [scopedKey]: false }
-      saveLocalStorage('agentsdock:terminal-open', JSON.stringify(next))
-      return next
-    })
-  }, [activeProfileId, activeServerIdentity, selectedSession?.id, selectedSession?.archived, terminalOpenBySession])
-  useEffect(() => {
     const focusSplitPane = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || event.shiftKey) return
       if (document.querySelector('[aria-modal="true"]')) return
@@ -547,12 +510,6 @@ export function App() {
         toggleSidebar()
         return
       }
-      if (isTerminalToggleShortcut(event) && selectedSessionId) {
-        event.preventDefault()
-        event.stopPropagation()
-        setTerminalOpen(selectedSessionId, !terminalOpen)
-        return
-      }
       if (!(event.metaKey || event.ctrlKey)) return
       const key = event.key.toLowerCase()
       if (!event.shiftKey && key === 'l') {
@@ -564,7 +521,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleWorkspaceShortcut, true)
     return () => window.removeEventListener('keydown', handleWorkspaceShortcut, true)
-  }, [inspectorVisible, reviewVisible, selectedSessionId, setTerminalOpen, terminalOpen, toggleSidebar])
+  }, [inspectorVisible, reviewVisible, toggleSidebar])
   useEffect(() => {
     window.addEventListener('agentsdock:toggle-sidebar', toggleSidebar)
     return () => window.removeEventListener('agentsdock:toggle-sidebar', toggleSidebar)
@@ -677,11 +634,11 @@ export function App() {
     const closeSurface = () => {
       if (closeTopTransient()) return
       if (teamspaceOpen) { setTeamspaceScopeKey(null); return }
+      if (selectedSurface) { void useAppStore.getState().removeSurface(selectedSurface.id); return }
       const closeWorkspaceFile = new Event('agentsdock:workspace-close-active', { cancelable: true })
       window.dispatchEvent(closeWorkspaceFile)
       if (closeWorkspaceFile.defaultPrevented) return
       if (reviewVisible) { setScopedReviewTarget(null); setInspectorTab('details'); return }
-      if (terminalOpen && selectedSessionId) { setTerminalOpen(selectedSessionId, false); return }
       if (splitWorkspaceTargetRef.current) { dismissSplitWorkspace(); return }
       if (splitOpen) { useAppStore.getState().closeChatPane(focusedChatPane); return }
       if (closingWindowRef.current) return
@@ -693,7 +650,7 @@ export function App() {
     }
     window.addEventListener('agentsdock:close-surface', closeSurface)
     return () => window.removeEventListener('agentsdock:close-surface', closeSurface)
-  }, [dismissSplitWorkspace, focusedChatPane, reviewVisible, selectedSessionId, setTerminalOpen, splitOpen, teamspaceOpen, terminalOpen])
+  }, [dismissSplitWorkspace, focusedChatPane, reviewVisible, selectedSurface, splitOpen, teamspaceOpen])
   useEffect(() => window.agentsDock.events.on('native:close-request', ({ requestId }) => {
     void (async () => {
       let saved = false
@@ -715,13 +672,6 @@ export function App() {
       }
     })()
   }), [])
-  const toggleTerminal = useCallback(() => {
-    if (!selectedSessionId || selectedSession?.archived) return
-    setTerminalOpen(selectedSessionId, !terminalOpen)
-  }, [selectedSession?.archived, selectedSessionId, setTerminalOpen, terminalOpen])
-  const closeTerminal = useCallback(() => {
-    if (selectedSessionId) setTerminalOpen(selectedSessionId, false)
-  }, [selectedSessionId, setTerminalOpen])
   const canDropFiles = Boolean(selectedSession && !selectedSession.archived && !switchingProfileId)
   const dragContainsFiles = (event: ReactDragEvent<HTMLDivElement>) => Array.from(event.dataTransfer.types).includes('Files')
   const handleFileDragEnter = (event: ReactDragEvent<HTMLDivElement>) => {
@@ -829,9 +779,7 @@ export function App() {
       key={`header:${selectedRenderKey}`}
       session={noServerConfigured ? null : undefined}
       sidebarVisible={sidebarVisible}
-      terminalOpen={terminalOpen}
       onSidebarToggle={toggleSidebar}
-      onTerminalToggle={selectedSession?.archived ? undefined : toggleTerminal}
       outputsOpen={outputsOpen}
       onOutputsToggle={selectedSession ? () => setOutputsOpen(open => !open) : undefined}
       onOpenSplit={sessionId => void useAppStore.getState().openSessionInSplit(sessionId)}
@@ -870,7 +818,8 @@ export function App() {
     <main className={`app-shell ${sidebarVisible ? '' : 'sidebar-hidden '}${visibleDockOpen ? 'inspector-open' : ''}${reviewVisible && !teamspaceOpen ? ' review-open' : ''}${teamspaceOpen ? ' teamspace-open' : ''}${switchingProfileId ? ' profile-switching' : ''}`} style={columnStyle}>
       <ChatFontApplier />
       <Sidebar key={`sidebar:${activeRenderKey}`} hidden={!sidebarVisible} />
-      <section className={`conversation-pane${teamspaceOpen ? ' teamspace-pane' : splitOpen ? ' split-open' : selectedSession ? ' workspace-editor-open' : ''}${canvasOpen ? ' canvas-open' : ''}`} aria-busy={Boolean(switchingProfileId)} inert={switchingProfileId ? true : undefined}>
+      <section className={`conversation-pane${teamspaceOpen ? ' teamspace-pane' : surfaceOpen ? '' : splitOpen ? ' split-open' : selectedSession ? ' workspace-editor-open' : ''}${canvasOpen ? ' canvas-open' : ''}`} aria-busy={Boolean(switchingProfileId)} inert={switchingProfileId ? true : undefined}>
+        <SurfaceStack surfaces={surfaces} selectedId={surfaceOpen ? selectedSurfaceId : null} sidebarVisible={sidebarVisible} onSidebarToggle={toggleSidebar} />
         {teamspaceOpen
           ? <TeamNetwork
             key={`teamspace:${activeRenderKey}`}
@@ -886,6 +835,8 @@ export function App() {
               return null
             })}
           />
+          : surfaceOpen
+          ? null
           : splitOpen && primarySession && secondarySession
           ? <>
             <ChatSplitView
@@ -898,9 +849,7 @@ export function App() {
                 focused={focusedChatPane === 'primary'}
                 split
                 sidebarVisible={sidebarVisible}
-                terminalOpen={focusedChatPane === 'primary' && terminalOpen}
                 onSidebarToggle={toggleSidebar}
-                onTerminalToggle={toggleTerminal}
               />}
               secondary={<ChatPane
                 key={`${activeRenderKey}:${secondarySession.id}`}
@@ -910,8 +859,6 @@ export function App() {
                 focused={focusedChatPane === 'secondary'}
                 split
                 sidebarVisible={sidebarVisible}
-                terminalOpen={focusedChatPane === 'secondary' && terminalOpen}
-                onTerminalToggle={toggleTerminal}
               />}
             />
             {splitWorkspaceTarget && splitWorkspaceSession && <div
@@ -969,12 +916,6 @@ export function App() {
         sidebarVisible={sidebarVisible}
         inspectorOpen={visibleDockOpen}
         inspectorMode={reviewVisible ? 'review' : 'inspector'}
-      />}
-      {!switchingProfileId && !teamspaceOpen && selectedSession && <TerminalDock
-        key={`terminal:${selectedRenderKey}`}
-        open={terminalOpen}
-        session={selectedSession}
-        onRequestClose={closeTerminal}
       />}
       {!storageFull && error && <div className="error-toast" role="alert"><span>{error}</span><button type="button" className="icon-button" aria-label={t("ui.App.App.dismiss_error_2db0466")} title={t("ui.App.App.dismiss_error_2db0466")} onClick={() => useAppStore.getState().setError(null)}><X size={16} /></button></div>}
       <div className="top-right-notice-stack">

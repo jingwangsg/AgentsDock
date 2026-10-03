@@ -294,6 +294,11 @@ export function registerIpc(
   handle('sessions:bulk-import', items => service.bulkImportSessions(
     parseBulkImportSessionItems(items, LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT)
   ))
+  handle('surfaces:list', () => service.listSurfaces())
+  handle('surfaces:create', input => service.createSurface(input))
+  handle('surfaces:update', (surfaceId, patch) => service.updateSurface(surfaceId, patch))
+  handle('surfaces:remove', surfaceId => service.removeSurface(surfaceId))
+  handle('surfaces:browser:prepare', surfaceId => service.prepareBrowser(surfaceId))
   handle('provider-commands:list', (sessionId, refresh) => service.providerCommands(sessionId, Boolean(refresh)))
 
   handle('timeline:cached', sessionId => service.cachedTimeline(sessionId))
@@ -471,9 +476,7 @@ export function registerIpc(
   handle('tmux:capture', (sessionId, paneId, lines) => service.captureTmux(sessionId, paneId, lines))
   handle('terminal:connect', (profileId, profileGeneration, sessionId, options) => service.connectTerminal(profileId, profileGeneration, sessionId, options))
   handle('terminal:disconnect', (profileId, profileGeneration, sessionId) => service.disconnectTerminalForProfile(profileId, profileGeneration, sessionId))
-  handle('terminal:kill', (profileId, profileGeneration, sessionId) => service.killTerminal(profileId, profileGeneration, sessionId))
   handle('terminal:windows', (profileId, profileGeneration, sessionId) => service.terminalWindows(profileId, profileGeneration, sessionId))
-  handle('terminal:action', (profileId, profileGeneration, sessionId, action, target) => service.terminalAction(profileId, profileGeneration, sessionId, action, target))
   handle('ports:list', (profileId, profileGeneration) => service.listForwardedPorts(profileId, profileGeneration))
   handle('ports:start', (profileId, profileGeneration, sessionId, remotePort, preferredLocalPort) => (
     service.startForwardedPort(profileId, profileGeneration, sessionId, remotePort, preferredLocalPort)
@@ -491,10 +494,6 @@ export function registerIpc(
   ipcMain.removeAllListeners('terminal:resize')
   ipcMain.on('terminal:resize', (event, profileId, profileGeneration, sessionId, columns, rows) => {
     if (acceptTrustedSender(event, 'terminal:resize')) service.resizeTerminal(profileId, profileGeneration, sessionId, columns, rows)
-  })
-  ipcMain.removeAllListeners('terminal:scroll')
-  ipcMain.on('terminal:scroll', (event, profileId, profileGeneration, sessionId, delta) => {
-    if (acceptTrustedSender(event, 'terminal:scroll')) service.scrollTerminal(profileId, profileGeneration, sessionId, delta)
   })
   handle('pins:list', (scope, sessionId) => service.pins(scope, sessionId))
   handle('pins:put', (scope, item) => service.putPin(scope, item))

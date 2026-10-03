@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import * as Notifications from 'expo-notifications'
 import { AppState as NativeAppState } from 'react-native'
 import { SNAPSHOT_CACHE_VERSION } from '../lib/history'
-import type { Event, FilesPage, Health, Session, Snapshot, TimelinePage } from '../types'
+import type { AgentFile, Event, FilesPage, Health, Session, Snapshot, TimelinePage } from '../types'
 import { client, useAppStore } from './useAppStore'
 
 const timestamp = '2026-09-28T12:00:00.000Z'
@@ -147,14 +147,19 @@ try {
   await useAppStore.getState().refreshSessions()
   assert.equal(scheduled.length, before + 3, 'an unchanged idle set does not notify again')
 
-  // Editing an earlier turn seeds the composer and restores the previous draft on cancel.
+  // Editing an earlier turn seeds the composer with its text and attachments and restores both on cancel.
+  const attachment = (id: string): AgentFile => ({ id, session_id: sessionA.id, kind: 'upload', filename: `${id}.png`, size: 1, content_type: 'image/png', created_at: timestamp } as unknown as AgentFile)
   useAppStore.getState().setSessionDraft(sessionA.id, 'half typed')
-  useAppStore.getState().beginEditingTurn(sessionA.id, 'run-1', 'First')
-  assert.deepEqual(useAppStore.getState().editingTurn[sessionA.id], { runId: 'run-1', seq: undefined, previousDraft: 'half typed' })
+  useAppStore.setState({ uploads: { [sessionA.id]: [attachment('shelf-file')] } })
+  useAppStore.getState().beginEditingTurn(sessionA.id, 'run-1', 'First', undefined, [attachment('first-file')])
+  assert.deepEqual(useAppStore.getState().editingTurn[sessionA.id], { runId: 'run-1', seq: undefined, previousDraft: 'half typed', previousUploads: [attachment('shelf-file')] })
   assert.equal(useAppStore.getState().drafts[sessionA.id], 'First')
+  assert.deepEqual(useAppStore.getState().uploads[sessionA.id].map(value => value.id), ['first-file'], 'the edited message\'s attachments are back in the composer')
   useAppStore.getState().cancelEditingTurn(sessionA.id)
   assert.equal(useAppStore.getState().editingTurn[sessionA.id], null)
   assert.equal(useAppStore.getState().drafts[sessionA.id], 'half typed')
+  assert.deepEqual(useAppStore.getState().uploads[sessionA.id].map(value => value.id), ['shelf-file'], 'cancel restores the previous attachments')
+  useAppStore.setState({ uploads: {} })
 
   // Rewind is refused without the capability, and does not touch the server.
   let rewindCalls = 0
@@ -195,8 +200,9 @@ try {
   client.workspaceGitStatus = async () => { calls.push('status'); return { root: '/', branch: 'main', head: 'abc', revision: 'rev-1' } }
   client.restoreCheckpoint = async (_sessionId, runId, expectedRevision) => { calls.push(`restore:${runId}:${expectedRevision}`); return { root: '/', branch: 'main', head: 'def', revision: 'rev-2' } }
   client.rewindSession = async (_sessionId, runId) => { calls.push(`rewind:${runId}`); return { ok: true, from_seq: 2, through_seq: 2, removed_events: 0, provider_rewind: 'codex_reset', session: sessionA } }
-  assert.equal(await useAppStore.getState().restoreCheckpoint(sessionA.id, 'run-1'), true)
+  assert.equal(await useAppStore.getState().restoreCheckpoint(sessionA.id, 'run-1', undefined, [attachment('restored-file')]), true)
   assert.deepEqual(calls, ['status', 'restore:run-1:rev-1', 'rewind:run-1'])
+  assert.deepEqual((useAppStore.getState().uploads[sessionA.id] ?? []).map(value => value.id), ['restored-file'], 'a restored message leaves its attachments in the composer')
 
   // Reload history prunes every removed batch locally.
   useAppStore.setState(state => ({ snapshots: { ...state.snapshots, [sessionA.id]: { ...state.snapshots[sessionA.id]!, events: initialEvents } } }))

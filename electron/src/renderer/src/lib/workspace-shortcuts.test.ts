@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  isTerminalToggleShortcut,
   workspaceTabNavigationShortcut,
   workspaceTabNavigationTarget
 } from './workspace-shortcuts'
@@ -10,18 +9,6 @@ const shortcut = (patch: Partial<KeyboardEvent> = {}) => ({
 }) as KeyboardEvent
 
 describe('workspace shortcuts', () => {
-  it('uses the VS Code Control-backtick terminal toggle', () => {
-    expect(isTerminalToggleShortcut(shortcut())).toBe(true)
-    expect(isTerminalToggleShortcut(shortcut({ key: 'Dead' }))).toBe(true)
-  })
-
-  it('does not retain the old Command-Shift-T shortcut or steal modified backticks', () => {
-    expect(isTerminalToggleShortcut(shortcut({ ctrlKey: false, metaKey: true, shiftKey: true, key: 't', code: 'KeyT' }))).toBe(false)
-    expect(isTerminalToggleShortcut(shortcut({ altKey: true }))).toBe(false)
-    expect(isTerminalToggleShortcut(shortcut({ shiftKey: true }))).toBe(false)
-    expect(isTerminalToggleShortcut(shortcut({ repeat: true }))).toBe(false)
-  })
-
   it('maps Command-number to Chat followed by the open file tabs', () => {
     expect(workspaceTabNavigationShortcut(shortcut({ key: '1', code: 'Digit1', ctrlKey: false, metaKey: true }))).toEqual({ kind: 'select', index: 0 })
     expect(workspaceTabNavigationShortcut(shortcut({ key: '9', code: 'Digit9', ctrlKey: false, metaKey: true }))).toEqual({ kind: 'select', index: 8 })

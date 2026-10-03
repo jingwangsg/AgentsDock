@@ -1514,11 +1514,41 @@ export interface HealthCapabilities {
   [key: string]: JsonValue | InteractiveProviderCapability | CursorBackendCapability | ScheduledJobsCapability | AgentEmergencyAlertsCapability | ProviderJobsAccessControlCapability | AgentTeamMailCapability | CrossChatHandoffsCapability | TeamHubV1Capability | ServerUpdatesCapability | WorkingDirectoryCompletionCapability | RemoteServersCapability | SessionRewindCapability | LocalProviderCommandsCapability | undefined
 }
 
+/** A sidebar tab that is not a chat: a shell on the server, or a web page. The server keeps the list so every client shows the same tabs. */
+export type SurfaceKind = 'terminal' | 'browser'
+
+export interface Surface {
+  id: string
+  kind: SurfaceKind
+  /** The user's rename; null shows the default title (the page title, or "Terminal"). */
+  name: string | null
+  folder: string
+  /** Terminal: the directory its shell starts in. */
+  cwd: string | null
+  /** Browser: the page it last showed. */
+  url: string | null
+  /** Browser: the title of that page. */
+  page_title: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateSurfaceInput {
+  kind: SurfaceKind
+  folder: string
+  cwd?: string | null
+  url?: string | null
+}
+
+export type UpdateSurfaceInput = Partial<Pick<Surface, 'name' | 'folder' | 'url' | 'page_title'>>
+
 export interface Health {
   ok: boolean
   state_dir?: string
   server_identity?: string
   server_instance_id?: string
+  /** Moves whenever any device creates, changes, or closes a tab; the chat-list refresh re-reads tabs only then. */
+  surfaces_revision?: number
   api_contract_version?: number
   active?: string[]
   active_sessions?: string[]

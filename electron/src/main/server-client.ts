@@ -1,7 +1,7 @@
 import { createReadStream, openAsBlob } from 'node:fs'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../shared/provider-usage'
 import { parseCodexAuthStatus } from '../shared/codex-auth'
-import type { BackgroundActivityItem, CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, RuntimeCliUpdate, SessionExportFormat } from '../shared/types'
+import type { BackgroundActivityItem, CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, CreateSurfaceInput, RuntimeCliUpdate, SessionExportFormat, Surface, UpdateSurfaceInput } from '../shared/types'
 import { parseCodexProviderConfiguration, parseCodexProviderModels, parseCodexProviderTestResult, validateCodexProviderInput, validateCodexProviderModelTestInput, validateCodexProviderSelection } from '../shared/codex-provider'
 import { randomUUID } from 'node:crypto'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
@@ -97,7 +97,6 @@ import type {
   SessionHistoryReloadResult,
   SessionRewindResult,
   SubagentSnapshot,
-  TerminalAction,
   TerminalConnectOptions,
   TerminalStateEvent,
   TerminalWindowsSnapshot,
@@ -123,6 +122,7 @@ import type {
 } from '../shared/types'
 import { t } from '../shared/i18n'
 import { normalizeServerURL } from '../shared/server-url'
+import { isStandaloneTerminalId, TERMINAL_SHELL_EXITED_CLOSE_CODE } from '../shared/terminal'
 import { teamNetworkValidationMessage } from '../shared/server-errors'
 import { isReasoningSummaryStream } from '../shared/reasoning-stream'
 import { deriveTeamHubBootstrapControlURL } from '../shared/team-hub-url'
@@ -140,6 +140,9 @@ import { parseTeamActivityHintPacket, TEAM_ACTIVITY_HINTS_PROTOCOL, emptyBulleti
   type BulletinChangeCursor, type TeamActivityHintPacket } from '../shared/team-bulletin-hints'
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+// A rewind forks the provider thread; over a remote hub tunnel that outlasts an
+// ordinary request, and the server finishes it even after the client gives up.
+const REWIND_REQUEST_TIMEOUT_MS = 120_000
 const SESSION_EXPORT_TIMEOUT_MS = 120_000
 // Snapshot scans have a server-side 30s deadline. Leave response/transport
 // headroom without extending unrelated requests or retrying a creation.
@@ -319,7 +322,6 @@ export interface OpenedUploadSource {
 export interface TerminalConnection {
   write(data: string): void
   resize(columns: number, rows: number): void
-  scroll(delta: number): void
   close(): void
 }
 
@@ -938,6 +940,12 @@ export class AgentServerClient {
     return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}/redeploy`, { method: 'POST' })
   }
   async sessions(): Promise<Session[]> { return (await this.get<{ sessions: Session[] }>('/api/sessions?summary=true')).sessions }
+  async surfaces(): Promise<Surface[]> { return (await this.get<{ surfaces: Surface[] }>('/api/surfaces')).surfaces }
+  async createSurface(input: CreateSurfaceInput): Promise<Surface> { return (await this.post<{ surface: Surface }>('/api/surfaces', input)).surface }
+  async updateSurface(surfaceId: string, patch: UpdateSurfaceInput): Promise<Surface> {
+    return (await this.patch<{ surface: Surface }>(`/api/surfaces/${encodeURIComponent(surfaceId)}`, patch)).surface
+  }
+  async deleteSurface(surfaceId: string): Promise<void> { await this.delete(`/api/surfaces/${encodeURIComponent(surfaceId)}`) }
   async jobs(): Promise<Job[]> { return (await this.get<{ jobs: Job[] }>('/api/jobs')).jobs }
 
   async pinnedItems(sessionId: string): Promise<PinnedItemsSnapshot> {
@@ -1075,7 +1083,7 @@ export class AgentServerClient {
   async rewindSession(sessionId: string, toRunId: string, expectedLatestSeq: number, toSeq?: number): Promise<SessionRewindResult> {
     const rewind = (latestSeq: number) => this.post<SessionRewindResult>(`/api/sessions/${encodeURIComponent(sessionId)}/rewind`, {
       to_run_id: toRunId, to_seq: toSeq, expected_latest_seq: latestSeq, confirmed: true
-    })
+    }, this.configuration, REWIND_REQUEST_TIMEOUT_MS)
     try {
       return await rewind(expectedLatestSeq)
     } catch (error) {
@@ -1701,7 +1709,7 @@ export class AgentServerClient {
     const contentType = inferredFileContentType(filename)
     const boundary = `----AgentsDock-${randomUUID().replaceAll('-', '')}`
     const prefix = Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${asciiUploadFilename(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}\r\nContent-Type: ${contentType}\r\n\r\n`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${quotedUploadFilename(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}\r\nContent-Type: ${contentType}\r\n\r\n`,
       'utf8'
     )
     const suffix = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8')
@@ -2029,6 +2037,10 @@ export class AgentServerClient {
     const configuration = this.configuration
     const endpoint = new URL(configurationURL(configuration, `/api/sessions/${encodeURIComponent(sessionId)}/terminal/ws`))
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
+    // A terminal tab's shell lives on the server, which replays its scrollback to every
+    // (re)attaching viewer; the tmux-specific REST resize does not apply, and a 4404 means
+    // the tab (not a chat) is gone.
+    const standalone = isStandaloneTerminalId(sessionId)
     let stopped = false
     let retryDelay = 500
     let retry: NodeJS.Timeout | null = null
@@ -2051,7 +2063,7 @@ export class AgentServerClient {
       socket?.close()
     }
     const syncTerminalSize = (): void => {
-      if (stopped) return
+      if (stopped || standalone) return
       if (resizeSync) clearTimeout(resizeSync)
       resizeSync = setTimeout(() => {
         resizeSync = null
@@ -2147,11 +2159,17 @@ export class AgentServerClient {
           return
         }
         if (tail) onData(tail)
+        if (event.code === TERMINAL_SHELL_EXITED_CLOSE_CODE) {
+          // The shell itself ended (for example `exit`); the next connect starts a new one.
+          stop()
+          onState({ sessionId, state: 'disconnected' })
+          return
+        }
         if (event.code === 4401 || event.code === 4404 || event.code === 4406 || event.code === 4409) {
           fatalError = event.code === 4401
             ? 'Terminal authorization failed'
             : event.code === 4404
-              ? 'Chat not found'
+              ? standalone ? 'This terminal tab is gone from the server, or the AgentsServer is too old for terminal tabs.' : 'Chat not found'
               : event.code === 4406
                 ? 'Terminal protocol was rejected'
                 : 'Unarchive this chat before opening its terminal.'
@@ -2183,19 +2201,15 @@ export class AgentServerClient {
         if (socket?.readyState === 1) socket.send(JSON.stringify({ type: 'resize', columns, rows }))
         syncTerminalSize()
       },
-      scroll(delta: number): void {
-        if (stopped) return
-        const bounded = Math.max(-80, Math.min(80, Math.trunc(delta)))
-        if (bounded && socket?.readyState === 1) socket.send(JSON.stringify({ type: 'scroll', delta: bounded }))
-      },
       close: stop
     }
   }
 
-  /** Opens one authenticated loopback proxy scoped to a chat lifecycle. */
+  /** Opens one authenticated loopback proxy scoped to a chat or browser tab. */
   portTunnelSocket(sessionId: string, remotePort: number): WebSocket {
-    if (!Number.isSafeInteger(remotePort) || remotePort < 1_024 || remotePort > 65_535) {
-      throw new Error('Remote port must be an integer from 1024 through 65535.')
+    const minimumPort = sessionId.startsWith('browser_') ? 1 : 1_024
+    if (!Number.isSafeInteger(remotePort) || remotePort < minimumPort || remotePort > 65_535) {
+      throw new Error(`Remote port must be an integer from ${minimumPort} through 65535.`)
     }
     const configuration = this.configuration
     const endpoint = new URL(configurationURL(
@@ -2224,17 +2238,8 @@ export class AgentServerClient {
     return socket
   }
 
-  async deleteTerminal(sessionId: string): Promise<boolean> {
-    const response = await this.delete<{ killed?: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/terminal`)
-    return response.killed ?? true
-  }
-
   terminalWindows(sessionId: string): Promise<TerminalWindowsSnapshot> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/terminal/windows`)
-  }
-
-  terminalAction(sessionId: string, action: TerminalAction, target?: string): Promise<TerminalWindowsSnapshot> {
-    return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/terminal/action`, { action, target: target ?? null })
   }
 
   async sendDigest(sourceSessionId: string, targetSessionId: string, detail: string, userPrompt: string): Promise<boolean> {
@@ -3194,9 +3199,13 @@ function boundedUploadFilename(value: string): string {
   return name
 }
 
-function asciiUploadFilename(value: string): string {
-  const fallback = value.replace(/[^\x20-\x7e]|["\\]/g, '_')
-  return fallback || 'upload'
+/**
+ * The quoted filename carries the UTF-8 name itself, escaped the way browsers
+ * and React Native do, so a server that ignores filename* still stores a
+ * non-ASCII name instead of underscores.
+ */
+function quotedUploadFilename(value: string): string {
+  return value.replaceAll('\r', '%0D').replaceAll('\n', '%0A').replaceAll('"', '%22')
 }
 
 function multipartFileBody(

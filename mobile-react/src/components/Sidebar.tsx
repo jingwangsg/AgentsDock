@@ -2,14 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActionSheetIOS, Alert, Image, Platform, Pressable, StyleSheet, View } from 'react-native'
 import DraggableFlatList, { ScaleDecorator, type DragEndParams } from 'react-native-draggable-flatlist'
 import { MenuView, type MenuAction, type MenuComponentRef } from '@expo/ui/community/menu'
-import { ChevronDown, ChevronRight, FolderPlus, Network, Plus, RefreshCw, Search, Server, Settings } from 'lucide-react-native'
+import { ChevronDown, ChevronRight, FolderPlus, Globe, Network, Plus, RefreshCw, Search, Server, Settings, Terminal } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAppStore } from '../store/useAppStore'
 import { radius, usePalette } from '../theme'
-import type { Backend, Session, TimelineSearchResult } from '../types'
+import type { Backend, Session, Surface, SurfaceKind, TimelineSearchResult } from '../types'
 import { backendLabel, formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
 import { compareSessions, orderedSessionSections, resolveSidebarDrop, sessionSection } from '../lib/session-order'
 import { selectableChatBackends } from '../lib/runtime-catalog'
+import { promptSurfaceRename, surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { sessionNeedsProviderInteraction, sessionPendingInteractionCount } from '../lib/claude-controls'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { isServerSetupRequired } from '../lib/first-launch'
@@ -23,7 +24,7 @@ import { IconButton } from './ui'
 import { ServerProfileSelector, type ServerProfileListItem } from './ServerProfiles'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 
-type Row = { kind: 'header'; key: string; title: string; folder: string; count: number } | { kind: 'session'; key: string; session: Session; searchResult?: TimelineSearchResult }
+type Row = { kind: 'header'; key: string; title: string; folder: string; count: number } | { kind: 'session'; key: string; session: Session; searchResult?: TimelineSearchResult } | { kind: 'surface'; key: string; surface: Surface }
 
 type ProfileScope = {
   activeProfileId: string | null
@@ -54,7 +55,7 @@ function sessionScopeIsCurrent(scope: ProfileScope, sessionId: string): boolean 
     && state.sessions.some(session => session.id === sessionId)
 }
 
-export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitchServer, onSetupServer, onManageServers, onSettings, onTeamNetwork, onNewChat, onNewChatIn, onOpenChat }: {
+export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitchServer, onSetupServer, onManageServers, onSettings, onTeamNetwork, onNewChat, onNewChatIn, onNewSurfaceIn, onOpenChat }: {
   profiles: readonly ServerProfileListItem[]
   activeProfileId: string | null
   switchingProfileId?: string | null
@@ -65,6 +66,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   onTeamNetwork: () => void
   onNewChat: () => void
   onNewChatIn: (folder: string, backend: Backend) => void
+  onNewSurfaceIn: (folder: string, kind: SurfaceKind) => void
   onOpenChat?: () => void
 }) {
   const colors = usePalette()
@@ -72,6 +74,9 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   const needsServerSetup = useAppStore(state => isServerSetupRequired({ serverConfigured: state.serverConfigured, serverURL: state.serverURL }))
   const sessions = useAppStore(state => state.sessions)
   const selected = useAppStore(state => state.selectedSessionId)
+  const surfaces = useAppStore(state => state.surfaces)
+  const selectedSurfaceId = useAppStore(state => state.selectedSurfaceId)
+  const selectSurface = useAppStore(state => state.selectSurface)
   const active = useAppStore(state => state.activeSessionIds)
   const folderOrder = useAppStore(state => state.folderOrder)
   const collapsedFolders = useAppStore(state => state.collapsedFolders)
@@ -162,24 +167,37 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
       ? sessions.filter(session => session.title.toLowerCase().includes(clean) || matchedByContent.has(session.id))
           .sort((a, b) => Number(b.title.toLowerCase().includes(clean)) - Number(a.title.toLowerCase().includes(clean)))
       : sessions
-    return orderedSessionSections(filtered, folderOrder, true, !clean).flatMap<Row>(section => {
+    const sections = orderedSessionSections(filtered, folderOrder, true, !clean)
+    // Tabs are not searched. A folder holding only tabs is still listed, ahead of Archived.
+    if (!clean) {
+      for (const folder of new Set(surfaces.map(surface => surface.folder))) {
+        if (sections.some(section => section.id === folder)) continue
+        const archivedAt = sections.findIndex(section => section.id === 'Archived')
+        sections.splice(archivedAt >= 0 ? archivedAt : sections.length, 0, { id: folder, title: folder, sessions: [] })
+      }
+    }
+    return sections.flatMap<Row>(section => {
       const folder = section.id
       const values = section.sessions
+      const tabs = clean ? [] : surfaces.filter(surface => surface.folder === folder)
       return [
-        { kind: 'header', key: `header:${folder}`, title: folder, folder, count: values.length },
-        ...((collapsed.has(folder) && !clean ? [] : values.map(session => ({
-          kind: 'session' as const,
-          key: session.id,
-          session,
-          // A visible title match is a request to open that chat at its live
-          // position. Do not silently reinterpret the same row as an older
-          // content hit merely because the server also found the query in its
-          // transcript.
-          searchResult: sidebarContentResult(session.title, clean, contentResults.get(session.id)),
-        })))),
+        { kind: 'header', key: `header:${folder}`, title: folder, folder, count: values.length + tabs.length },
+        ...((collapsed.has(folder) && !clean ? [] : [
+          ...values.map(session => ({
+            kind: 'session' as const,
+            key: session.id,
+            session,
+            // A visible title match is a request to open that chat at its live
+            // position. Do not silently reinterpret the same row as an older
+            // content hit merely because the server also found the query in its
+            // transcript.
+            searchResult: sidebarContentResult(session.title, clean, contentResults.get(session.id)),
+          })),
+          ...tabs.map(surface => ({ kind: 'surface' as const, key: surface.id, surface })),
+        ])),
       ]
     })
-  }, [collapsed, folderOrder, query, searchResults, sessions])
+  }, [collapsed, folderOrder, query, searchResults, sessions, surfaces])
   const openSessionRow = useCallback((session: Session, result?: TimelineSearchResult) => {
     if (!sessionScopeIsCurrent(profileScope, session.id) || openingSearchResult.current) return
     dismissSearchKeyboard()
@@ -348,8 +366,11 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     const openMenu = liftedMenu.current
     liftedMenu.current = null
     if (from === to) { openMenu?.(); return }
+    // Tabs keep the server's order; only chats and folders reorder, so a drop is judged without tab rows.
+    const moved = data[to]
+    const chatRows = data.filter((row): row is Exclude<Row, { kind: 'surface' }> => row.kind !== 'surface')
     // A drop made while the server changed is refused (and drawn back) like any other.
-    const drop = profileScopeIsCurrent(profileScope) ? resolveSidebarDrop(data, to, sessions, folders) : null
+    const drop = profileScopeIsCurrent(profileScope) && moved.kind !== 'surface' ? resolveSidebarDrop(chatRows, chatRows.indexOf(moved), sessions, folders) : null
     if (drop?.kind === 'folder-order') { setFolderOrder(drop.order, profileScope.profileGeneration); return }
     setDropped({ base: rows, data, refused: !drop })
     if (!drop) return
@@ -464,14 +485,26 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           }}
           onMove={direction => moveFolder(item.folder, direction)}
           onNewChat={backend => onNewChatIn(item.folder, backend)}
+          onNewSurface={kind => onNewSurfaceIn(item.folder, kind)}
           onRename={() => renameFolder(item.folder)}
           onDelete={() => deleteFolder(item.folder)}
+        /> : item.kind === 'surface' ? <SurfaceRow
+          surface={item.surface}
+          profileScope={profileScope}
+          selected={selectedSurfaceId === item.surface.id}
+          onDismissKeyboard={dismissSearchKeyboard}
+          onPress={() => {
+            dismissSearchKeyboard()
+            selectSurface(item.surface.id)
+            onOpenChat?.()
+          }}
+          promptText={promptText}
         /> : (() => {
           const { previousId, nextId } = reorderNeighbors.get(item.session.id) ?? { previousId: null, nextId: null }
           return <SessionRow
             session={item.session}
             profileScope={profileScope}
-            selected={selected === item.session.id}
+            selected={selected === item.session.id && !selectedSurfaceId}
             running={active.has(item.session.id)}
             searchSnippet={item.searchResult?.snippet}
             opening={openingSearchResultId === item.searchResult?.event_id}
@@ -504,7 +537,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   )
 }
 
-function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canMoveDown, onDismissKeyboard, onLift, onToggle, onMove, onNewChat, onRename, onDelete }: {
+function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canMoveDown, onDismissKeyboard, onLift, onToggle, onMove, onNewChat, onNewSurface, onRename, onDelete }: {
   item: Extract<Row, { kind: 'header' }>
   profileScope: ProfileScope
   collapsed: boolean
@@ -516,6 +549,7 @@ function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canM
   onToggle: () => void
   onMove: (direction: 'up' | 'down') => void
   onNewChat: (backend: Backend) => void
+  onNewSurface: (kind: SurfaceKind) => void
   onRename: () => void
   onDelete: () => void
 }) {
@@ -527,6 +561,8 @@ function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canM
     if (!profileScopeIsCurrent(profileScope)) return
     const backend = backends.find(value => id === `new:${value}`)
     if (backend) onNewChat(backend)
+    else if (id === 'new-terminal') onNewSurface('terminal')
+    else if (id === 'new-browser') onNewSurface('browser')
     else if (id === 'rename') onRename()
     else if (id === 'move-up') onMove('up')
     else if (id === 'move-down') onMove('down')
@@ -536,6 +572,8 @@ function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canM
   // same items in the same order; Move is hidden at the edges, not disabled.
   const actions: MenuAction[] = [
     ...backends.map(backend => ({ id: `new:${backend}`, title: `New ${backendLabel(backend)} chat`, image: 'plus' } satisfies MenuAction)),
+    { id: 'new-terminal', title: 'New Terminal', image: 'terminal' },
+    { id: 'new-browser', title: 'New Browser', image: 'globe' },
     { id: 'rename', title: 'Rename Folder', image: 'pencil' },
     ...(canMoveUp ? [{ id: 'move-up', title: 'Move Folder Up', image: 'arrow.up' } satisfies MenuAction] : []),
     ...(canMoveDown ? [{ id: 'move-down', title: 'Move Folder Down', image: 'arrow.down' } satisfies MenuAction] : []),
@@ -787,6 +825,75 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   return <View style={styles.sessionShell}>{pressableRow}<MenuView ref={menu} testID={`chat-actions-${session.id}`} title={session.title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>
 }
 
+function SurfaceRow({ surface, profileScope, selected, onDismissKeyboard, onPress, promptText }: {
+  surface: Surface
+  profileScope: ProfileScope
+  selected: boolean
+  onDismissKeyboard: () => void
+  onPress: () => void
+  promptText: (options: TextPromptOptions) => Promise<string | null>
+}) {
+  const colors = usePalette()
+  const updateSurface = useAppStore(state => state.updateSurface)
+  const removeSurface = useAppStore(state => state.removeSurface)
+  const menu = useRef<MenuComponentRef>(null)
+  const title = surfaceTitle(surface)
+  const rename = () => {
+    const scope = profileScope
+    if (!profileScopeIsCurrent(scope)) return
+    onDismissKeyboard()
+    void promptSurfaceRename(surface, promptText).then(patch => {
+      if (patch && profileScopeIsCurrent(scope)) void updateSurface(surface.id, patch, scope.profileGeneration)
+    })
+  }
+  const actions: MenuAction[] = [
+    { id: 'rename', title: 'Rename Tab', image: 'pencil' },
+    { id: 'close', title: 'Close Tab', image: 'xmark', attributes: { destructive: true } },
+  ]
+  const runAction = (id: string) => {
+    if (!profileScopeIsCurrent(profileScope)) return
+    if (id === 'rename') rename()
+    else if (id === 'close') void removeSurface(surface.id, profileScope.profileGeneration)
+  }
+  const openActionSheet = () => {
+    if (!profileScopeIsCurrent(profileScope)) return
+    onDismissKeyboard()
+    ActionSheetIOS.showActionSheetWithOptions({
+      title,
+      options: [...actions.map(action => action.title), 'Cancel'],
+      cancelButtonIndex: actions.length,
+      destructiveButtonIndex: actions.findIndex(action => action.attributes?.destructive),
+    }, index => {
+      const action = actions[index]
+      if (action?.id) runAction(action.id)
+    })
+  }
+  const Icon = surface.kind === 'terminal' ? Terminal : Globe
+  const row = <Pressable
+    testID={`tab-row-${surface.id}`}
+    accessibilityRole="button"
+    accessibilityLabel={title}
+    accessibilityHint="Tap to open. Long press for tab actions."
+    accessibilityState={{ selected }}
+    delayLongPress={350}
+    onLongPress={() => { if (Platform.OS === 'ios') openActionSheet(); else menu.current?.show() }}
+    onPress={() => { if (profileScopeIsCurrent(profileScope)) onPress() }}
+    style={({ pressed }) => [styles.session, Platform.OS !== 'ios' && styles.sessionInShell, {
+      backgroundColor: selected ? colors.selected : pressed ? colors.raised : colors.background,
+      borderColor: 'transparent',
+    }]}
+  >
+    {selected ? <View pointerEvents="none" style={[styles.selectedIndicator, { backgroundColor: colors.blue }]} /> : null}
+    <View style={[styles.backendStatus, styles.tabIcon]}><Icon size={18} color={colors.muted} /></View>
+    <View style={styles.sessionText}>
+      <Text style={[styles.sessionTitle, { color: colors.text }]} numberOfLines={1}>{title}</Text>
+      <Text style={[styles.sessionMeta, styles.tabMeta, { color: colors.muted }]} numberOfLines={1}>{surfaceSubline(surface)}</Text>
+    </View>
+  </Pressable>
+  if (Platform.OS === 'ios') return row
+  return <View style={styles.sessionShell}>{row}<MenuView ref={menu} testID={`tab-actions-${surface.id}`} title={title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1, minWidth: 250, borderRightWidth: StyleSheet.hairlineWidth },
   titleRow: { minHeight: 48, paddingHorizontal: 12, paddingTop: 4, flexDirection: 'row', alignItems: 'center' },
@@ -825,6 +932,8 @@ const styles = StyleSheet.create({
   sessionMeta: { flex: 1, minWidth: 0, fontSize: 10.5, fontWeight: '600' },
   sessionDate: { flexShrink: 0, fontSize: 9.5, fontWeight: '500' },
   backendStatus: { width: 22, height: 22 },
+  tabIcon: { alignItems: 'center', justifyContent: 'center' },
+  tabMeta: { marginTop: 2 },
   trailingStatusDot: { width: 8, height: 8, flexShrink: 0, marginHorizontal: 4, borderRadius: 4 },
   waitingBadge: { minWidth: 20, height: 20, flexShrink: 0, marginHorizontal: 1, paddingHorizontal: 5, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   waitingBadgeText: { fontSize: 10, fontWeight: '800' },

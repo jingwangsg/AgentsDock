@@ -1,5 +1,6 @@
 import type { Event } from '../types'
 import { foldMarkdownSource } from './math'
+import { readableToolInput, readableValue } from './tool-input'
 
 export const TRACE_TEXT_LIMIT = 4_000
 export const TRACE_DETAIL_LOADED_EVENT_LIMIT = 240
@@ -141,19 +142,26 @@ export function toolTraceHeadline(event?: Pick<Event, 'tool'>): string {
 
 function traceTextSource(event: Event): unknown {
   if (event.type === 'tool_started' && event.tool?.input != null) {
-    if (typeof event.tool.input === 'string') return event.tool.input
-    try {
-      return JSON.stringify(event.tool.input, null, 2)
-    } catch {
-      return '[Tool input could not be displayed]'
-    }
+    return readableToolInput(event.tool.name, event.tool.input)
   }
   if (event.type === 'tool_finished') {
-    return firstNonEmptyText(event.output, event.message, event.result_text, event.text)
-      ?? event.error
-      ?? ''
+    const text = firstNonEmptyText(event.output, event.message, event.result_text, event.text)
+    return text != null ? readableJsonText(text) : event.error ?? ''
   }
   return event.result_text ?? event.text ?? event.prompt ?? event.message ?? event.error ?? event.output ?? ''
+}
+
+/** A result that is one JSON object or array reads as key: value lines, like Mac; anything else stays as the tool wrote it. */
+function readableJsonText(text: string): string {
+  const trimmed = text.trim()
+  const first = trimmed[0]
+  const last = trimmed[trimmed.length - 1]
+  if (!((first === '{' && last === '}') || (first === '[' && last === ']'))) return text
+  try {
+    return readableValue(JSON.parse(trimmed))
+  } catch {
+    return text
+  }
 }
 
 function firstNonEmptyText(...values: Array<string | null | undefined>): string | null {

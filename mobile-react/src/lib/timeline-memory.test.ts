@@ -10,6 +10,7 @@ import {
   TIMELINE_CHARACTER_BUDGET,
   boundHistoricalTimelineEvents,
   boundLiveTimelineEvents,
+  dropRewoundEvents,
   historicalTimelineEvents,
   liveTimelineEventsWereTrimmed,
   mergeHistoryWithLiveSnapshot,
@@ -487,3 +488,20 @@ assert(budgetedDeliveries.length < costlyDeliveries.length, 'retained delivery s
 assert(budgetedDeliveries.reduce((total, value) => total + (value.prompt?.length ?? 0) + 256, 0) <= TIMELINE_CHARACTER_BUDGET)
 
 console.log('timeline memory regressions passed')
+
+// A page or cached snapshot that holds a rewind tombstone and the rows it removed shows neither.
+{
+  const row = (seq: number, type = 'assistant_text', extra: Record<string, unknown> = {}): Event => ({
+    id: `r${seq}`, session_id: 'chat', seq, type, ts: '2026-10-03T00:00:00Z', text: `row ${seq}`, ...extra,
+  } as Event)
+  const stale = [row(1, 'turn_started'), row(2), row(3, 'turn_started'), row(4), row(5, 'history_rewound', { from_seq: 3, through_seq: 4, to_run_id: 'run' }), row(6, 'turn_started')]
+  const dropped = dropRewoundEvents(stale)
+  assert(dropped.map(event => event.seq).join(',') === '1,2,5,6', 'rows inside the rewound range before the tombstone are dropped')
+  assert(boundLiveTimelineEvents(stale).map(event => event.seq).join(',') === '1,2,5,6', 'the live window drops rewound rows')
+  assert(boundHistoricalTimelineEvents(stale).map(event => event.seq).join(',') === '1,2,5,6', 'the history window drops rewound rows')
+  const clean = [row(1, 'turn_started'), row(2)]
+  assert(dropRewoundEvents(clean) === clean, 'a list without tombstones keeps its identity')
+  const later = [row(5, 'history_rewound', { from_seq: 3, through_seq: 4 }), row(7, 'turn_started'), row(8)]
+  assert(dropRewoundEvents(later).length === 3, 'rows after the tombstone are never removed by it')
+}
+console.log('rewound row dropping passed')

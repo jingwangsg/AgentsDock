@@ -95,6 +95,15 @@ export function selectableChatBackends(
     ...(opencodeBackendSupported(health) ? ['opencode' as const] : [])]
 }
 
+/** Backends a chat can start on this server right now: the optional Cursor and OpenCode only while their CLI is ready. */
+export function readyChatBackends(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): Backend[] {
+  return selectableChatBackends(health, catalog).filter(backend => (
+    backend === 'cursor' ? cursorBackendAvailable(health, catalog)
+      : backend === 'opencode' ? opencodeBackendAvailable(health, catalog)
+        : true
+  ))
+}
+
 /** Server contract support is independent of the optional CLI's readiness. */
 export function opencodeBackendSupported(health: Health | null | undefined): boolean {
   const capability = health?.capabilities?.opencode_backend

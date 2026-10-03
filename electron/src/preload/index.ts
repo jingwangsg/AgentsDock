@@ -233,6 +233,13 @@ const api: AgentsDockAPI = {
     bulkImport: items => ipcRenderer.invoke('sessions:bulk-import', items),
     export: (sessionId, format) => ipcRenderer.invoke('sessions:export', sessionId, format)
   },
+  surfaces: {
+    prepareBrowser: surfaceId => ipcRenderer.invoke('surfaces:browser:prepare', surfaceId),
+    list: () => ipcRenderer.invoke('surfaces:list'),
+    create: input => ipcRenderer.invoke('surfaces:create', input),
+    update: (surfaceId, patch) => ipcRenderer.invoke('surfaces:update', surfaceId, patch),
+    remove: surfaceId => ipcRenderer.invoke('surfaces:remove', surfaceId)
+  },
   providerCommands: {
     list: (sessionId, refresh) => ipcRenderer.invoke('provider-commands:list', sessionId, refresh)
   },
@@ -428,11 +435,8 @@ const api: AgentsDockAPI = {
     connect: (profileId, profileGeneration, sessionId, options) => ipcRenderer.invoke('terminal:connect', profileId, profileGeneration, sessionId, options),
     write: (profileId, profileGeneration, sessionId, data) => ipcRenderer.send('terminal:write', profileId, profileGeneration, sessionId, data),
     resize: (profileId, profileGeneration, sessionId, columns, rows) => ipcRenderer.send('terminal:resize', profileId, profileGeneration, sessionId, columns, rows),
-    scroll: (profileId, profileGeneration, sessionId, delta) => ipcRenderer.send('terminal:scroll', profileId, profileGeneration, sessionId, delta),
     disconnect: (profileId, profileGeneration, sessionId) => ipcRenderer.invoke('terminal:disconnect', profileId, profileGeneration, sessionId),
-    kill: (profileId, profileGeneration, sessionId) => ipcRenderer.invoke('terminal:kill', profileId, profileGeneration, sessionId),
-    windows: (profileId, profileGeneration, sessionId) => ipcRenderer.invoke('terminal:windows', profileId, profileGeneration, sessionId),
-    action: (profileId, profileGeneration, sessionId, action, target) => ipcRenderer.invoke('terminal:action', profileId, profileGeneration, sessionId, action, target)
+    windows: (profileId, profileGeneration, sessionId) => ipcRenderer.invoke('terminal:windows', profileId, profileGeneration, sessionId)
   },
   ports: {
     list: (profileId, profileGeneration) => ipcRenderer.invoke('ports:list', profileId, profileGeneration),

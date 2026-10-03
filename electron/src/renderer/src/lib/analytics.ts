@@ -112,7 +112,6 @@ function safeEventProps(props?: AnalyticsEventProps): Record<string, boolean> {
 /** The complete set of analytics events tracked in this app. Extend deliberately. */
 export const ANALYTICS_EVENTS = [
   'app_launched',
-  'terminal_opened',
   'file_view_opened',
   'job_schedule_opened',
   'scheduled_job_created',

@@ -8,7 +8,6 @@
 :root[data-skin="zed"] .split-workspace-overlay { background: var(--bg); }
 :root[data-skin="zed"] .chat-pane { background: var(--bg); }
 :root[data-skin="zed"] .chat-split-divider { background: color-mix(in srgb, var(--border) 80%, var(--bg)); }
-:root[data-skin="zed"] .terminal-dock-resize-handle::after { background: var(--surface-3); }
 :root[data-skin="zed"] .sidebar, :root[data-skin="zed"] .inspector { background: var(--bg); }
 :root[data-skin="zed"] .conversation-pane.teamspace-pane { background: var(--bg); }
 :root[data-skin="zed"] .teamspace { background: var(--surface-2); }
@@ -102,72 +101,8 @@
 :root[data-skin="zed"] .backend-codex .backend-fallback { color: var(--accent); }
 :root[data-skin="zed"] .drag-overlay { border-radius: 4px; }
 :root[data-skin="zed"] .editable-title input:hover, :root[data-skin="zed"] .editable-title input:focus { background: var(--bg); border-color: var(--border-soft); }
-:root[data-skin="zed"] .terminal-workspace { border-radius: 6px; }
-:root[data-skin="zed"] .terminal-window-tab { border-radius: 4px; }
-:root[data-skin="zed"] .terminal-window-select { border-radius: 4px 0 0 4px; }
-:root[data-skin="zed"] .terminal-window-select > small { border-radius: 4px; }
-:root[data-skin="zed"] .terminal-window-close { border-radius: 0 4px 4px 0; }
-:root[data-skin="zed"] .terminal-window-tabs > .terminal-add-window { border-radius: 4px; }
-:root[data-skin="zed"] .terminal-window-tabs > .terminal-ports-tab { border-radius: 4px; }
-:root[data-skin="zed"] .terminal-ports-tab small { border-radius: 6px; }
-:root[data-skin="zed"] .terminal-host { background: var(--bg); }
-:root[data-skin="zed"] .terminal-host .xterm-viewport { background: var(--bg); }
-:root[data-skin="zed"] .terminal-search { border: 1px solid var(--border); border-radius: 4px; }
-:root[data-skin="zed"] .terminal-search button:hover { background: var(--surface); }
-:root[data-skin="zed"] .terminal-confirm { border: 1px solid var(--border); border-radius: 4px; }
-:root[data-skin="zed"] .terminal-confirm > button:not(.danger-button) { border-radius: 4px; }
-:root[data-skin="zed"] .terminal-confirm > button:not(.danger-button):hover { background: var(--surface); }
-:root[data-skin="zed"] .terminal-error { color: var(--danger-text); border: 1px solid var(--border); border-radius: 4px; }
-:root[data-skin="zed"] .terminal-state-dot { background: var(--surface-3); }
-:root[data-skin="zed"] .terminal-port-suggestion { color: var(--text); border: 1px solid var(--border); border-radius: 6px; }
-:root[data-skin="zed"] .terminal-port-suggestion-icon { color: var(--accent); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; }
-:root[data-skin="zed"] .terminal-port-suggestion > div > span { color: var(--muted); }
-:root[data-skin="zed"] .terminal-port-forward { color: var(--text); background: var(--surface-3); border: 1px solid var(--accent); border-radius: 4px; }
-:root[data-skin="zed"] .terminal-port-forward:hover { background: var(--accent); }
-:root[data-skin="zed"] .terminal-port-dismiss, :root[data-skin="zed"] .ports-dismiss-detection { color: var(--muted); border-radius: 4px; }
-:root[data-skin="zed"] .ports-panel { color: var(--text); background: var(--bg); }
-:root[data-skin="zed"] .ports-panel-icon { color: var(--accent); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; }
-:root[data-skin="zed"] .ports-panel-title h2 { color: var(--text); }
-:root[data-skin="zed"] .ports-panel-title p { color: var(--muted); }
-:root[data-skin="zed"] .ports-refresh { color: var(--muted); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
-:root[data-skin="zed"] .ports-refresh:hover { background: var(--surface); }
-:root[data-skin="zed"] .ports-unavailable { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
-:root[data-skin="zed"] .ports-unavailable-icon { color: var(--amber); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
-:root[data-skin="zed"] .ports-unavailable strong { color: var(--amber); }
-:root[data-skin="zed"] .ports-unavailable p { color: var(--muted); }
-:root[data-skin="zed"] .ports-unavailable > div > span { color: var(--muted); }
-:root[data-skin="zed"] .ports-add-form { background: var(--bg); border: 1px solid var(--border-soft); border-radius: 6px; }
-:root[data-skin="zed"] .ports-add-form label { color: var(--muted); }
-:root[data-skin="zed"] .ports-add-form label small { color: var(--muted); }
-:root[data-skin="zed"] .ports-add-form input { color: var(--text); background: var(--bg); border: 1px solid var(--border); }
-:root[data-skin="zed"] .ports-add-form input:hover { border-color: var(--border); }
-:root[data-skin="zed"] .ports-add-form input:focus { border-color: var(--accent); }
-:root[data-skin="zed"] .ports-form-arrow { color: var(--faint); }
-:root[data-skin="zed"] .ports-error { color: var(--danger-text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
-:root[data-skin="zed"] .ports-error button { color: var(--danger-text); }
-:root[data-skin="zed"] .ports-section-heading strong { color: var(--text); }
-:root[data-skin="zed"] .ports-section-heading span { color: var(--muted); }
-:root[data-skin="zed"] .ports-detection-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
-:root[data-skin="zed"] .ports-detection-signal { color: var(--accent); background: var(--bg); border-radius: 4px; }
-:root[data-skin="zed"] .ports-detection-copy code { color: var(--muted); }
-:root[data-skin="zed"] .ports-table { background: var(--bg); border: 1px solid var(--border-soft); border-radius: 6px; }
-:root[data-skin="zed"] .ports-table-head { color: var(--muted); background: var(--bg); border-bottom: 1px solid var(--border-soft); }
-:root[data-skin="zed"] .ports-row { border-bottom: 1px solid var(--border-soft); }
-:root[data-skin="zed"] .ports-remote code { color: var(--accent); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
-:root[data-skin="zed"] .ports-local button { color: var(--accent); }
-:root[data-skin="zed"] .ports-local button:hover { color: var(--accent); background: var(--bg); }
-:root[data-skin="zed"] .ports-local button:disabled { color: var(--faint); }
-:root[data-skin="zed"] .ports-local > span { color: var(--muted); }
-:root[data-skin="zed"] .ports-status { color: var(--muted); }
-:root[data-skin="zed"] .ports-status > i { background: var(--surface-3); }
-:root[data-skin="zed"] .ports-status.error { color: var(--danger-text); }
-:root[data-skin="zed"] .ports-stop-button { color: var(--muted); border: 1px solid var(--border); }
-:root[data-skin="zed"] .ports-stop-button:hover { color: var(--danger-text); background: var(--bg); border-color: var(--border); }
-:root[data-skin="zed"] .ports-row-error { color: var(--danger-text); }
-:root[data-skin="zed"] .ports-empty { color: var(--muted); background: var(--bg); border: 1px dashed var(--border); border-radius: 6px; }
-:root[data-skin="zed"] .ports-empty-icon { color: var(--faint); background: var(--bg); border-radius: 4px; }
-:root[data-skin="zed"] .ports-empty strong { color: var(--text); }
-:root[data-skin="zed"] .ports-empty > div > span { color: var(--muted); }
+:root[data-skin="zed"] .terminal-surface { background: var(--bg); }
+:root[data-skin="zed"] .browser-surface-empty { background: var(--bg); }
 :root[data-skin="zed"] .timeline { background: var(--bg); }
 :root[data-skin="zed"] .unread-divider { color: var(--accent); }
 :root[data-skin="zed"] .unread-divider::before, :root[data-skin="zed"] .unread-divider::after { background: var(--accent); }
@@ -1095,12 +1030,6 @@
 :root[data-skin="zed"]:where([data-theme="light"]) .emergency-timeline-dock-copy > span, :root[data-skin="zed"]:where([data-theme="light"]) .emergency-timeline-dock-copy small { color: var(--faint); }
 :root[data-skin="zed"]:where([data-theme="light"]) .provider-reload-toast { color: var(--text); border-color: var(--border); }
 :root[data-skin="zed"]:where([data-theme="light"]) .provider-reload-toast.error { color: var(--text); background: var(--bg); border-color: var(--danger); }
-:root[data-skin="zed"]:where([data-theme="light"]) .ports-unavailable { background: var(--bg); border-color: var(--border); }
-:root[data-skin="zed"]:where([data-theme="light"]) .ports-unavailable-icon { color: var(--faint); background: var(--amber); border-color: var(--amber); }
-:root[data-skin="zed"]:where([data-theme="light"]) .ports-unavailable strong { color: var(--text); }
-:root[data-skin="zed"]:where([data-theme="light"]) .ports-unavailable p { color: var(--faint); }
-:root[data-skin="zed"]:where([data-theme="light"]) .ports-unavailable > div > span { color: var(--faint); }
-:root[data-skin="zed"]:where([data-theme="light"]) .ports-remote code { color: var(--text); }
 :root[data-skin="zed"]:where([data-theme="light"]) .codex-interaction-shelf { background: var(--bg); border-color: var(--amber); }
 :root[data-skin="zed"]:where([data-theme="light"]) .codex-interaction-shelf > header { background: var(--bg); border-color: var(--amber); }
 :root[data-skin="zed"]:where([data-theme="light"]) .codex-control-pending { background: var(--bg); border-color: var(--amber); }

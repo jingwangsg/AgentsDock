@@ -39,6 +39,8 @@ import type {
 import { DEFAULT_SERVER_URL } from '../shared/server-url'
 
 const electronHarness = vi.hoisted(() => ({
+  browserPartitions: [] as string[],
+  browserSession: { setProxy: vi.fn(async () => {}), closeAllConnections: vi.fn(async () => {}) },
   notificationSupported: false,
   showOpenDialog: vi.fn(),
   showSaveDialog: vi.fn(),
@@ -54,6 +56,10 @@ const electronHarness = vi.hoisted(() => ({
 
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp' },
+  session: { fromPartition: (partition: string) => {
+    electronHarness.browserPartitions.push(partition)
+    return electronHarness.browserSession
+  } },
   BrowserWindow: class {},
   dialog: {
     showOpenDialog: (...args: unknown[]) => electronHarness.showOpenDialog(...args),
@@ -95,6 +101,45 @@ import type { NotificationPopupRequest } from './notification-popup'
 import { mailHintPending, TEAM_MAIL_HINTS_PATH, TEAM_MAIL_HINTS_PROTOCOL, type MailHintPacket, type MailboxCoverage } from '../shared/team-mail-hints'
 
 const cleanup: Array<() => void> = []
+
+describe('browser routing ownership', () => {
+  it('keeps browser sessions separate for two server profiles with the same tab ID', async () => {
+    const surfaces = [{ id: 'browser_test', kind: 'browser' }]
+    const a = Object.assign(fakeClient({ health: async () => ({ ok: true, server_identity: 'server-a' }) }), {
+      surfaces: vi.fn(async () => surfaces)
+    })
+    const b = Object.assign(fakeClient({ health: async () => ({ ok: true, server_identity: 'server-b' }) }), {
+      surfaces: vi.fn(async () => surfaces)
+    })
+    const { service } = createProfileService({ 'http://a.test:7850': [a], 'http://b.test:7850': [b] })
+    const first = await service.prepareBrowser('browser_test')
+    expect(await service.prepareBrowser('browser_test')).toBe(first)
+    expect(a.surfaces).toHaveBeenCalledTimes(1)
+    await service.switchServer('b')
+    const second = await service.prepareBrowser('browser_test')
+    expect(first).not.toBe(second)
+    expect(electronHarness.browserSession.setProxy).toHaveBeenCalledWith(expect.objectContaining({ proxyBypassRules: '<-loopback>' }))
+  })
+
+  it('rejects a late setup result after switching servers', async () => {
+    const surfaces = deferred<Array<{ id: string; kind: string }>>()
+    const a = Object.assign(fakeClient({ health: async () => ({ ok: true, server_identity: 'server-a' }) }), {
+      surfaces: vi.fn(() => surfaces.promise)
+    })
+    const b = fakeClient({ health: async () => ({ ok: true, server_identity: 'server-b' }) })
+    const { service } = createProfileService({ 'http://a.test:7850': [a], 'http://b.test:7850': [b] })
+    await service.refreshServer('a', 1)
+    const pending = service.prepareBrowser('browser_test')
+    const rejected = expect(pending).rejects.toThrow()
+    await settleBackgroundWork()
+    expect(a.surfaces).toHaveBeenCalledTimes(1)
+    const count = electronHarness.browserPartitions.length
+    await service.switchServer('b')
+    surfaces.resolve([{ id: 'browser_test', kind: 'browser' }])
+    await rejected
+    expect(electronHarness.browserPartitions).toHaveLength(count)
+  })
+})
 
 describe('main-owned passive Team Mail hints', () => {
   const arrival = (seq: number) => ({ through_sequence: seq, arrival_id: seq ? `tmsg_${seq.toString(16).padStart(32, '0')}` : null })

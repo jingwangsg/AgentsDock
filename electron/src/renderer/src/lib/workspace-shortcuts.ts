@@ -4,15 +4,6 @@ export type WorkspaceTabNavigation =
   | { kind: 'cycle'; direction: -1 | 1 }
   | { kind: 'select'; index: number }
 
-export function isTerminalToggleShortcut(event: WorkspaceShortcutEvent): boolean {
-  return event.ctrlKey
-    && !event.repeat
-    && !event.metaKey
-    && !event.altKey
-    && !event.shiftKey
-    && (event.code === 'Backquote' || event.key === '`')
-}
-
 export function workspaceTabNavigationShortcut(event: WorkspaceShortcutEvent): WorkspaceTabNavigation | null {
   if (event.repeat) return null
   if (event.metaKey && event.altKey && !event.ctrlKey && !event.shiftKey) {

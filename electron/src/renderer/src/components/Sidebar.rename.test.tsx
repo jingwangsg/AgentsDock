@@ -182,26 +182,48 @@ describe('sidebar chat rename', () => {
     fireEvent.contextMenu(screen.getByText('General').closest('.section-header')!)
 
     const labels = (await screen.findAllByRole('menuitem')).map(item => item.textContent)
-    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'Rename Folder…', 'Delete Folder'])
+    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'New Terminal', 'New Browser', 'Rename Folder…', 'Delete Folder'])
   })
 
-  it('lists one New chat entry per selectable backend and seeds it with the folder', async () => {
+  it('lists one New chat entry per ready backend and seeds it with the folder', async () => {
     const requestNewChat = vi.fn().mockResolvedValue(undefined)
     useAppStore.setState({
       requestNewChat,
       sessions: [{ ...session, folder: 'Research' }],
       folderOrder: ['Research'],
-      health: { ok: true, capabilities: { cursor_backend: { available: true, required: false, message: '', action: null, version: 2 } } }
+      health: { ok: true, capabilities: { cursor_backend: { available: true, required: false, message: '', action: null, version: 2 } } },
+      runtimeCatalog: { backends: { cursor: { available: true, models: [{ value: 'auto', label: 'Auto' }], efforts: [] } } }
     })
     const user = userEvent.setup()
     render(<Sidebar />)
 
     fireEvent.contextMenu(screen.getByText('Research').closest('.section-header')!)
     const labels = (await screen.findAllByRole('menuitem')).map(item => item.textContent)
-    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'New Cursor Chat', 'Rename Folder…', 'Delete Folder'])
+    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'New Cursor Chat', 'New Terminal', 'New Browser', 'Rename Folder…', 'Delete Folder'])
     await user.click(screen.getByRole('menuitem', { name: 'New Cursor Chat' }))
 
     expect(requestNewChat).toHaveBeenCalledWith({ folder: 'Research', backend: 'cursor' })
+  })
+
+  it('hides Cursor and OpenCode while their CLI is missing on this server', async () => {
+    const missing = (backend: 'cursor' | 'opencode') => ({ backend, status: 'missing' as const, available: false, installed: false, authenticated: false, message: `${backend} is not installed.` })
+    useAppStore.setState({
+      sessions: [{ ...session, folder: 'Research' }],
+      folderOrder: ['Research'],
+      health: { ok: true, capabilities: {
+        cursor_backend: { available: true, required: false, message: '', action: null, version: 2 },
+        opencode_backend: { available: true, required: false, message: '', action: null, version: 1 }
+      } },
+      runtimeCatalog: { backends: {
+        cursor: { available: false, models: [], efforts: [], diagnostic: missing('cursor') },
+        opencode: { available: false, models: [], efforts: [], diagnostic: missing('opencode') }
+      } }
+    })
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByText('Research').closest('.section-header')!)
+    const labels = (await screen.findAllByRole('menuitem')).map(item => item.textContent)
+    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'New Terminal', 'New Browser', 'Rename Folder…', 'Delete Folder'])
   })
 
   it('moves folders up and down from the context menu and hides the item at the edges', async () => {

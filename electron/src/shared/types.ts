@@ -1354,6 +1354,34 @@ export interface TmuxPane {
   tags?: string[] | null
 }
 
+/** A sidebar tab that is not a chat: a shell on the server, or a web page. The server keeps the list so every client shows the same tabs. */
+export type SurfaceKind = 'terminal' | 'browser'
+
+export interface Surface {
+  id: string
+  kind: SurfaceKind
+  /** The user's rename; null shows the default title (the page title, or "Terminal"). */
+  name: string | null
+  folder: string
+  /** Terminal: the directory its shell starts in. */
+  cwd: string | null
+  /** Browser: the page it last showed. */
+  url: string | null
+  /** Browser: the title of that page. */
+  page_title: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateSurfaceInput {
+  kind: SurfaceKind
+  folder: string
+  cwd?: string | null
+  url?: string | null
+}
+
+export type UpdateSurfaceInput = Partial<Pick<Surface, 'name' | 'folder' | 'url' | 'page_title'>>
+
 export type TerminalConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error'
 
 export interface TerminalConnectOptions {
@@ -1370,8 +1398,6 @@ export interface TerminalStateEvent {
   profileId?: string
   profileGeneration?: number
 }
-
-export type TerminalAction = 'new-window' | 'split-right' | 'split-down' | 'next-window' | 'previous-window' | 'select-window' | 'kill-window' | 'kill-pane' | 'toggle-mouse'
 
 export interface TerminalWindow {
   id: string
@@ -1896,6 +1922,8 @@ export interface Health {
   server_name?: string
   /** Opaque boot identifier. A successful managed restart must change it. */
   server_instance_id?: string
+  /** Changes whenever a terminal or browser tab is created, renamed, or closed on this server. */
+  surfaces_revision?: number
   server_version?: string
   /** Separate component versions; server_version still describes execution. */
   gateway?: GatewayHealth

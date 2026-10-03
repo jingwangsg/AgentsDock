@@ -6,7 +6,7 @@ import { acceleratorFromKeyboardEvent, formatAccelerator } from '../lib/hotkey'
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { ArrowRight, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, Copy, Download, FileText, FolderOpen, GitFork, Import, KeyRound, LoaderCircle, RefreshCw, RotateCcw, Search, Server, Sparkles, X } from 'lucide-react'
-import type { AppUpdateStatus, AppUpdateTrack, Backend, BulkImportSessionItem, BulkImportSessionResult, ChatReference, ChatReferenceAction, CoordinatedServerUpdate, CreateJobInput, Health, Job, JobContextMode, JobScheduleKind, LocalSessionCandidate, ServerRestartBlockerSnapshot, ServerSetupCapabilities, ServerSetupProgress, ServerUpdateStatus, ServerUpdateTrack, Session, TeamReference, UpdateJobInput, WorkspaceProfileScope } from '@shared/types'
+import type { AgentFile, AppUpdateStatus, AppUpdateTrack, Backend, BulkImportSessionItem, BulkImportSessionResult, ChatReference, ChatReferenceAction, CoordinatedServerUpdate, CreateJobInput, Health, Job, JobContextMode, JobScheduleKind, LocalSessionCandidate, ServerRestartBlockerSnapshot, ServerSetupCapabilities, ServerSetupProgress, ServerUpdateStatus, ServerUpdateTrack, Session, TeamReference, UpdateJobInput, WorkspaceProfileScope } from '@shared/types'
 import { fuzzyScore } from '@shared/fuzzy'
 import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, cursorLocalSessionImportSupported, localSessionImportCapability, localSessionImportKey, localSessionImportListLimit, localSessionImportSupported } from '@shared/local-session-import'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
@@ -462,9 +462,9 @@ export function Dialogs() {
       description={session => t("ui.Dialogs.ConfirmDeleteDialog.and_its_agentsdock_history_will_be_removed_19e5a63", { "chat": String(session.title) })}
       cancelKey="ui.Dialogs.ConfirmDeleteDialog.cancel_19766ed" confirmKey="ui.Dialogs.ConfirmDeleteDialog.delete_chat_93291d9"
       run={session => useAppStore.getState().deleteSession(session.id)} />
-    <ConfirmActionDialog<{ sessionId: string; runId: string }> eventName="agentsdock:confirm-restore-checkpoint" titleKey="timeline.rewind.restoreCheckpoint"
+    <ConfirmActionDialog<{ sessionId: string; runId: string; files?: AgentFile[] }> eventName="agentsdock:confirm-restore-checkpoint" titleKey="timeline.rewind.restoreCheckpoint"
       description={() => t('sessionRewind.confirmRestore')} cancelKey="sessionRewind.cancel" confirmKey="timeline.rewind.restoreCheckpoint"
-      run={target => useAppStore.getState().restoreCheckpoint(target.sessionId, target.runId)} />
+      run={target => useAppStore.getState().restoreCheckpoint(target.sessionId, target.runId, target.files)} />
     <ConfirmActionDialog<Session> eventName="agentsdock:confirm-reload-history" titleKey="historyReload.title"
       description={() => t('historyReload.description')} cancelKey="sessionRewind.cancel" confirmKey="historyReload.confirm"
       run={session => useAppStore.getState().reloadHistory(session.id)} />

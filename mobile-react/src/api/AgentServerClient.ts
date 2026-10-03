@@ -81,6 +81,9 @@ import type {
   WorkspaceRemoveResult,
   WorkspaceRenameResult,
   WorkspaceSearchPage,
+  CreateSurfaceInput,
+  Surface,
+  UpdateSurfaceInput,
 } from '../types'
 import { normalizeServerURL } from '../lib/format'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../lib/provider-usage'
@@ -89,6 +92,7 @@ import type { BackgroundActivityItem } from '../lib/background-activity'
 import { teamNetworkRequestPath } from '../lib/team-network'
 import { retriesStaleGitAction } from '../lib/workspace-changes'
 import type { ConversationExportFormat } from '../lib/file-transfer'
+import { Utf8FilenameFormData } from '../lib/upload-filename'
 
 interface SessionResponse {
   session: Session
@@ -107,6 +111,9 @@ interface SessionResponse {
 }
 
 const TIMELINE_REQUEST_TIMEOUT_MS = 12_000
+// A rewind forks the provider thread; over a remote hub tunnel that outlasts an
+// ordinary request, and the server finishes it even after the client gives up.
+const REWIND_REQUEST_TIMEOUT_MS = 120_000
 const STREAM_CONNECT_TIMEOUT_MS = 10_000
 const STREAM_RETRY_INITIAL_MS = 500
 const STREAM_RETRY_MAX_MS = 30_000
@@ -466,6 +473,12 @@ export class AgentServerClient {
     const result = await this.delete<{ deleted?: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}`)
     return result.deleted !== false
   }
+  async listSurfaces(): Promise<Surface[]> { return (await this.get<{ surfaces: Surface[] }>('/api/surfaces')).surfaces }
+  async createSurface(input: CreateSurfaceInput): Promise<Surface> { return (await this.post<{ surface: Surface }>('/api/surfaces', input)).surface }
+  async updateSurface(surfaceId: string, patch: UpdateSurfaceInput): Promise<Surface> {
+    return (await this.patch<{ surface: Surface }>(`/api/surfaces/${encodeURIComponent(surfaceId)}`, patch)).surface
+  }
+  async deleteSurface(surfaceId: string): Promise<void> { await this.delete(`/api/surfaces/${encodeURIComponent(surfaceId)}`) }
   forkSession(sessionId: string): Promise<{ session: Session; sessions?: Session[] }> {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {})
   }
@@ -481,9 +494,9 @@ export class AgentServerClient {
   }
 
   async rewindSession(sessionId: string, toRunId: string, expectedLatestSeq: number, toSeq?: number): Promise<SessionRewindResult> {
-    const rewind = (latestSeq: number) => this.post<SessionRewindResult>(`/api/sessions/${encodeURIComponent(sessionId)}/rewind`, {
-      to_run_id: toRunId, to_seq: toSeq, expected_latest_seq: latestSeq, confirmed: true,
-    })
+    const rewind = (latestSeq: number) => this.request<SessionRewindResult>(`/api/sessions/${encodeURIComponent(sessionId)}/rewind`, {
+      method: 'POST', body: JSON.stringify({ to_run_id: toRunId, to_seq: toSeq, expected_latest_seq: latestSeq, confirmed: true }),
+    }, REWIND_REQUEST_TIMEOUT_MS)
     let latestSeq = expectedLatestSeq
     let staleRetried = false
     let busyRetried = false
@@ -953,7 +966,7 @@ export class AgentServerClient {
     }
     // React Native streams a `uri` part from storage and names it after `name`; its
     // XMLHttpRequest reports upload progress, which fetch does not.
-    const form = new FormData()
+    const form = new Utf8FilenameFormData()
     form.append('file', { uri: file.uri, name: file.name, type: file.type || 'application/octet-stream' } as unknown as Blob)
     const request = new XMLHttpRequest()
     request.open('POST', buildURL(scope.configuration.baseURL, `/api/sessions/${encodeURIComponent(sessionId)}/files`))

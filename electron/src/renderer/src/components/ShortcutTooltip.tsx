@@ -1,7 +1,6 @@
 import * as Tooltip from '@radix-ui/react-tooltip'
 import type { ReactElement } from 'react'
-import { t } from '@shared/i18n'
-import { APP_SHORTCUTS, shortcutDisplay, shortcutIsAvailable, type AppShortcutId, type ShortcutPlatform } from '@shared/shortcuts'
+import { APP_SHORTCUTS, shortcutDisplay, type AppShortcutId, type ShortcutPlatform } from '@shared/shortcuts'
 
 export function ShortcutKey({
   shortcut,
@@ -34,9 +33,7 @@ export function ShortcutTooltip({
       <Tooltip.Portal>
         <Tooltip.Content className="shortcut-tooltip" side={side} sideOffset={7} collisionPadding={8}>
           <span>{resolvedLabel}</span>
-          <span className="shortcut-tooltip-keys">{shortcuts.map(id => shortcutIsAvailable(id, platform)
-            ? <kbd key={id}>{shortcutDisplay(id, platform)}</kbd>
-            : <span key={id} className="shortcut-tooltip-platform-note">{t('shortcuts.macOnly')}</span>)}</span>
+          <span className="shortcut-tooltip-keys">{shortcuts.map(id => <kbd key={id}>{shortcutDisplay(id, platform)}</kbd>)}</span>
           <Tooltip.Arrow className="shortcut-tooltip-arrow" />
         </Tooltip.Content>
       </Tooltip.Portal>

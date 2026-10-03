@@ -6,6 +6,7 @@ import {
   codexCustomProviderAvailable,
   selectableChatBackendChoices,
   cursorBackendAvailable,
+  readyChatBackends,
   cursorBackendSupported,
   runtimeCatalogHasSelectableModels,
   runtimeCatalogOptions,
@@ -206,6 +207,10 @@ describe('optional Cursor backend admission', () => {
     expect(cursorBackendAvailable(cursorHealth, validCatalog)).toBe(false)
     expect(selectableChatBackends(cursorHealth, validCatalog)).toEqual(['claude', 'codex', 'cursor'])
     expect(selectableChatBackends(cursorHealth, null)).toEqual(['claude', 'codex', 'cursor'])
+    // Menus that cannot explain a disabled entry list only backends whose CLI is ready.
+    expect(readyChatBackends(cursorHealth, cursorCatalog)).toEqual(['claude', 'codex', 'cursor'])
+    expect(readyChatBackends(cursorHealth, validCatalog)).toEqual(['claude', 'codex'])
+    expect(readyChatBackends(cursorHealth, null)).toEqual(['claude', 'codex'])
     expect(cursorBackendSupported({
       ...cursorHealth,
       capabilities: {

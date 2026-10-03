@@ -29,9 +29,7 @@ export const ChatPane = memo(function ChatPane({
   focused,
   split,
   sidebarVisible = true,
-  terminalOpen,
-  onSidebarToggle,
-  onTerminalToggle
+  onSidebarToggle
 }: {
   pane: ChatPaneId
   session: Session
@@ -39,9 +37,7 @@ export const ChatPane = memo(function ChatPane({
   focused: boolean
   split: boolean
   sidebarVisible?: boolean
-  terminalOpen: boolean
   onSidebarToggle?: () => void
-  onTerminalToggle?: () => void
 }) {
   useLocale()
   const activeProfileId = useAppStore(state => state.activeProfileId)
@@ -149,9 +145,7 @@ export const ChatPane = memo(function ChatPane({
       session={session}
       focused={focused}
       sidebarVisible={sidebarVisible}
-      terminalOpen={terminalOpen}
       onSidebarToggle={pane === 'primary' ? onSidebarToggle : undefined}
-      onTerminalToggle={focused ? onTerminalToggle : undefined}
       outputsOpen={outputsOpen}
       onOutputsToggle={() => setOutputsOpen(open => !open)}
       onOpenSplit={!split || pane === 'primary' ? candidateId => void useAppStore.getState().openSessionInSplit(candidateId) : undefined}

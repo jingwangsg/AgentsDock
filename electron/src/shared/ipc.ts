@@ -1,5 +1,5 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from './provider-usage'
-import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, InferenceProxyStatus, RuntimeCliUpdate } from './types'
+import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, CreateSurfaceInput, InferenceProxyStatus, RuntimeCliUpdate, Surface, UpdateSurfaceInput } from './types'
 import type { CanvasHostTheme } from './canvas'
 import type { ChatOutputsSummary } from './chat-outputs'
 import type {
@@ -98,7 +98,6 @@ import type {
   TimelineSearchResult,
   TurnStopResult,
   TerminalConnectOptions,
-  TerminalAction,
   TerminalWindowsSnapshot,
   TmuxPane,
   UpdateSessionInput,
@@ -432,6 +431,14 @@ export interface AgentsDockAPI {
     /** Saves the chat's conversation through a native save dialog; null when cancelled. */
     export(sessionId: string, format: SessionExportFormat): Promise<string | null>
   }
+  /** Terminal and browser tabs, kept by the server for every client. */
+  surfaces: {
+    prepareBrowser(surfaceId: string): Promise<string>
+    list(): Promise<Surface[]>
+    create(input: CreateSurfaceInput): Promise<Surface>
+    update(surfaceId: string, patch: UpdateSurfaceInput): Promise<Surface>
+    remove(surfaceId: string): Promise<void>
+  }
   providerCommands: {
     list(sessionId: string, refresh?: boolean): Promise<ProviderCommandsSnapshot>
   }
@@ -640,11 +647,8 @@ export interface AgentsDockAPI {
     connect(profileId: string, profileGeneration: number, sessionId: string, options: TerminalConnectOptions): Promise<void>
     write(profileId: string, profileGeneration: number, sessionId: string, data: string): void
     resize(profileId: string, profileGeneration: number, sessionId: string, columns: number, rows: number): void
-    scroll(profileId: string, profileGeneration: number, sessionId: string, delta: number): void
     disconnect(profileId: string, profileGeneration: number, sessionId: string): Promise<void>
-    kill(profileId: string, profileGeneration: number, sessionId: string): Promise<boolean>
     windows(profileId: string, profileGeneration: number, sessionId: string): Promise<TerminalWindowsSnapshot>
-    action(profileId: string, profileGeneration: number, sessionId: string, action: TerminalAction, target?: string): Promise<TerminalWindowsSnapshot>
   }
   ports: {
     list(profileId: string, profileGeneration: number): Promise<ForwardedPort[]>

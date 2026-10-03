@@ -3,7 +3,7 @@ import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useEffect, useMemo, useState } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { Archive, ArchiveRestore, ArrowLeftRight, Check, ChevronRight, Columns2, Copy, Download, Folder, GitFork, History, Layers, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pin, RefreshCw, SquareTerminal, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowLeftRight, Check, ChevronRight, Columns2, Copy, Download, Folder, GitFork, History, Layers, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pin, RefreshCw, Trash2, X } from 'lucide-react'
 import type { Session } from '@shared/types'
 import { completedPrefixForkAvailable } from '@shared/session-fork'
 import { backendLabel, shortId } from '../lib/format'
@@ -21,10 +21,8 @@ export function ChatHeader({
   session: sessionProp,
   focused = true,
   sidebarVisible = true,
-  terminalOpen = false,
   outputsOpen = false,
   onSidebarToggle,
-  onTerminalToggle,
   onOutputsToggle,
   onOpenSplit,
   onSwapPanes,
@@ -33,10 +31,8 @@ export function ChatHeader({
   session?: Session | null
   focused?: boolean
   sidebarVisible?: boolean
-  terminalOpen?: boolean
   outputsOpen?: boolean
   onSidebarToggle?: () => void
-  onTerminalToggle?: () => void
   onOutputsToggle?: () => void
   onOpenSplit?: (sessionId: string) => void
   onSwapPanes?: () => void
@@ -180,12 +176,6 @@ export function ChatHeader({
         {sidebarButton}
         <ScheduledJobsPopover session={session} />
         {onSwapPanes && <button className="icon-button" title={t("ui.ChatHeader.ChatHeader.swap_chat_panes_7129f59")} aria-label={t("ui.ChatHeader.ChatHeader.swap_chat_panes_7129f59")} onClick={onSwapPanes}><ArrowLeftRight size={15} /></button>}
-        {focused && onTerminalToggle && <ShortcutTooltip shortcut="toggleTerminal" label={terminalOpen ? t("ui.ChatHeader.ChatHeader.close_terminal_panel_48e963f") : t("ui.ChatHeader.ChatHeader.open_terminal_panel_3284242")}><button
-          className={`icon-button terminal-toggle${terminalOpen ? ' active' : ''}`}
-          aria-label={terminalOpen ? t("ui.ChatHeader.ChatHeader.close_terminal_panel_48e963f") : t("ui.ChatHeader.ChatHeader.open_terminal_panel_3284242")}
-          aria-pressed={terminalOpen}
-          onClick={onTerminalToggle}
-        ><SquareTerminal size={16} /></button></ShortcutTooltip>}
         {onOutputsToggle && <button
           type="button"
           className={`icon-button outputs-toggle${outputsOpen ? ' active' : ''}`}

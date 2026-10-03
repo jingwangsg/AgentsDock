@@ -1,5 +1,120 @@
 # Public development log
 
+## 2026-10-04 — Android shows tabs opened elsewhere, and its browser tabs reach the server's localhost
+
+- The Android app now lists terminal and browser tabs opened on another
+  device. It re-read the tab list only when a chat-list poll saw the server's
+  tab revision differ from the last stored health, but connecting and the
+  runtime refresh also store health, so a change they saw first was never
+  read and a fresh connection never loaded tabs. The app now keeps the
+  revision its tab list was read at, reads tabs when it connects, and re-reads
+  them whenever the server's revision differs from that.
+- Android browser tabs send requests for localhost and loopback addresses
+  through the tab's authenticated port tunnel on the selected server, as the
+  desktop does. A native module (`agentsdock-browser-loopback`) runs a SOCKS
+  listener on the phone's 127.0.0.1 and points the app's web views at it for
+  loopback hosts only (WebView proxy override with reverse bypass); every
+  other page loads from the phone. Other destinations are refused, never
+  dialed. The listener runs while a browser tab is on screen. On a WebView
+  without proxy override, localhost stays the phone and the tab says so.
+  While a browser tab is open, another app on the same phone that finds the
+  listener's port can reach the same server loopback ports through it.
+- A browser tab takes its title from the page after a successful load and
+  when the page retitles itself, so the web view's own error page
+  ("网页无法打开") no longer names the tab on every device.
+- Verified by running the listener on the JVM against nv_l40 through the hub
+  (SOCKS5, SOCKS4/4a, IPv4 and IPv6 loopback, eight parallel requests, an
+  804 KB response, a 6 MB upload; non-loopback destinations refused), store
+  regression tests for the revision cases, type checks, and Android build 31.
+  The WebView proxy override itself has not been exercised on a device.
+
+## 2026-10-03 — Browser tabs reach the selected server's localhost
+
+- Desktop browser tabs now send loopback requests through the selected
+  AgentsServer's authenticated TCP tunnel. Pages retain their original URLs,
+  origins and cookies; cross-port fetches and WebSockets use the same route.
+  Ordinary network requests still connect from the desktop.
+- Each tab has a browser partition scoped to its server profile. Closing a
+  tab, deleting it from another client, switching profiles or quitting retires
+  its proxy connections. A failed preparation can be retried with Reload.
+- Chromium implicitly bypasses loopback when using PAC. The browser uses a
+  fixed SOCKS proxy with the bypass explicitly removed, and routes loopback
+  versus ordinary destinations inside that proxy.
+- Browser tab IDs are admitted by the existing authenticated tunnel endpoint;
+  missing or deleted tabs are rejected. Browser HTTP/HTTPS ports are supported
+  while the existing chat port restrictions remain in place. This change
+  requires updated desktop and server code; it does not update Android.
+- Verified in an isolated offscreen Electron app with the production renderer,
+  preload and IPC, against real AgentsServer authorization and disposable web
+  services. A resolver-separated loopback fixture reproduced connection refusal
+  before proxy setup; address entry, page load, cross-port fetch, WebSocket,
+  reload, preserved origin, sandboxing and tab deletion then passed. Server
+  profile isolation and late setup rejection have regression coverage. Type
+  checks, focused regressions and production compilation passed. Source and
+  local build only; no installed-app replacement or remote server deployment.
+
+## 2026-10-03 — Terminal and browser tabs replace the docked chat terminal
+
+- A folder's context menu lists New … Chat only for backends whose CLI is
+  ready on the connected server; Cursor and OpenCode disappear from it while
+  they are not installed there (the New Chat dialog still shows them disabled
+  with the reason).
+- A folder's context menu now offers New Terminal and New Browser next to the
+  New … Chat entries. Both open as sidebar tabs under that folder and stay
+  mounted while other tabs or chats are shown, so a shell keeps running and a
+  page keeps its state until the tab is closed (⌘W, the header button, or the
+  tab's context menu).
+- Tabs live on the AgentsServer (`/api/surfaces`, persisted in the state
+  directory), so the desktop and the Android app show the same tabs; a health
+  revision tells clients when another device changed them. A tab can be
+  renamed from its header, its context menu, or ⌘R while it is in front (the
+  shortcut renames the chat only when no tab is shown); without a rename a
+  browser tab shows its page title and a terminal tab says Terminal, and an
+  emptied name returns to that default.
+- A terminal tab's shell is owned by the server, started in the folder's
+  newest chat directory, with no tmux behind it. Viewers attach and detach
+  freely and a late viewer gets the scrollback replayed, so a shell opened on
+  the Mac can be followed on the phone. The shell ends when it exits
+  (viewers are told, and "New shell" starts another), when the tab is closed,
+  or when the server stops. The server gives the shell a UTF-8 locale when the
+  service environment lacks one. The desktop renders it with Ghostty's
+  terminal core (ghostty-web), which handles wide characters, IME composition,
+  and native paste; Android keeps its xterm web view.
+- A browser tab is a sandboxed web view with back, forward, reload, an address
+  bar that also searches, and "Open in default browser". Popups load in the
+  same tab; pages get no preload or Node access. Android shows the same tabs
+  in its chat list and opens them with a web view and address bar.
+- The chat header's terminal panel, its tmux window tabs, the Ports tab, and
+  the Control-backtick toggle are gone. Chats keep their persistent tmux
+  session for agents; the desktop no longer shows it.
+- The desktop terminal answers the shell's Primary Device Attributes query
+  itself: ghostty-web's core answers DSR only, and fish 4.1+ waits up to 10 s
+  for that answer before its first prompt, which showed as an empty black tab
+  on every account whose login shell hands off to fish. The tab list is also
+  read from the cached health at launch, so tabs no longer wait for the next
+  connection report before they appear in the sidebar.
+- Validated with server tests for the standalone shell route (UTF-8 round
+  trip, resize, unknown chat ids still rejected), main-process tests for the
+  non-reconnecting shell connection, renderer tests for the store, sidebar,
+  terminal and browser tabs, type checking, and a production build. The fish
+  fix was exercised in an isolated offscreen Electron app against a real
+  AgentsServer: the tab showed the fish greeting and prompt instead of an
+  empty screen.
+
+## 2026-10-03 — The installer reads `export`-prefixed lines in the config env file
+
+- The server writes `export CLAUDE_CODE_OAUTH_TOKEN=…` into its config env
+  file, and the server's own parser accepts an `export ` prefix on any line.
+  The installer read only bare `KEY=value` lines. On a file whose lines carry
+  the prefix, `install.sh --show-token` reported that no access token exists,
+  and a reinstall or update generated a new access token, which disconnected
+  every client configured with the old one. The installer now reads both
+  forms, and when it rewrites the keys it manages it also removes their
+  `export` lines, so the file keeps one line per key.
+- Verified with a `--show-token` test and a reinstall test on `export`-prefixed
+  files, the installer test modules, and `--show-token` on a real installation
+  whose file uses the prefix.
+
 ## 2026-10-03 — NV Inference Hub settings page and proxy port forwarding
 
 - Settings gains an **NV Inference Hub** section beside Server. It manages the
@@ -73,6 +188,116 @@
 - `/goal` is handled by the same rule; it no longer has a rule of its own.
 - Verified with the isolated parser and repair tests, and on an isolated
   server importing a transcript that holds the real rows of a compaction.
+
+## 2026-10-03 — The provider prompt no longer forbids Slack file tools
+
+- Every provider prompt said "never use Slack file helpers". The line meant
+  that files for the user go through the AgentsDock provider tool rather than
+  Slack sharing, but agents read it as a ban on a configured Slack MCP
+  server's file search and listing tools, so Slack tasks about files were
+  refused. The line now says the delivery rule and that Slack MCP tools,
+  file tools included, remain available for Slack tasks.
+- Verified with the prompt tests; the running servers pick it up at their
+  next restart.
+
+## 2026-10-03 — Editing or restoring a message keeps its attachments
+
+- Editing an earlier message seeded the composer with its text only, so the
+  resent message lost the files that were attached to it, and the rewind had
+  removed the original; restoring a checkpoint removed the message and its
+  attachments with it. On both desktop and Android the edited message's
+  attachments now return to the composer's attachment shelf with its text
+  (cancelling the edit restores whatever was on the shelf before), and a
+  checkpoint restore leaves the removed message's attachments on the shelf
+  for the next message. The server keeps uploads across a rewind and checks a
+  reused file id against its stored owner, so resending needs no new upload.
+- Verified with both stores' edit, cancel and restore tests and type checks;
+  local desktop package 99 and Android build 28 carry the change and were not
+  exercised on a device.
+
+## 2026-10-03 — Editing a turn on a slow remote chat no longer ends in "no longer in history"
+
+- Editing an earlier message rewinds the chat first. For a Codex chat that
+  forks the provider thread, and on a remote server reached through the hub's
+  SSH tunnel the fork outlasted the clients' 30 s request timeout: the server
+  finished the rewind, the client reported a failure and kept the edit open,
+  and the user's retry named a turn the first rewind had already removed,
+  which the server refused with "That turn is no longer in this chat's
+  history." Both clients now allow a rewind two minutes, and the server
+  answers a repeated rewind for the turn its latest rewind removed, while no
+  turn has run since, with that rewind's result, so the retry proceeds to send
+  the edited message. A rewind to a different message, or after a later turn,
+  is still refused as before.
+- Android also kept showing the removed turn: only the live stream applied a
+  `history_rewound` tombstone to the retained rows, while a page fetched after
+  a disconnect, a reconnect replay or a restored cached snapshot merged rows by
+  id and so held both the tombstone and the rows it removed. Every timeline
+  window now drops the rows a tombstone covers, so the chat matches the server
+  as soon as it is opened.
+- Verified with the server rewind tests, the Android timeline window test and
+  both clients' type checks; local desktop package 98 and Android build 27
+  carry the client parts and were not exercised on a device.
+
+## 2026-10-03 — A file attached from the desktop or Android keeps its non-ASCII name
+
+- The desktop app sent a non-ASCII upload name only as RFC 5987
+  `filename*=UTF-8''…` beside an ASCII fallback of underscores, and the
+  server's multipart parser reads the fallback, so a file named in Chinese
+  arrived as `__.jpg`. Android and browsers put the UTF-8 name straight into
+  `filename="…"`, which the server already kept. The server now prefers
+  `filename*` when a client sends it, and the desktop app also writes the
+  UTF-8 name into `filename="…"` with the same escaping browsers use, so an
+  older server stores the real name too.
+- Android had the opposite problem: React Native's FormData percent-encodes
+  the whole name into `filename="…"` (its own encodeURIComponent), so the
+  server stored 截图.jpg as `_E6_88_AA….jpg`. The server now decodes a
+  percent-encoded name when no `filename*` is present, and the Android app
+  sends the UTF-8 name in the quoted form with `filename*` beside it, the
+  same shape the desktop now uses, so an older server stores the real name.
+- Verified with server tests posting every form through the upload route, the
+  desktop and Android header tests and type checks. Local desktop package 97
+  and Android build 25 carry the client parts; neither was exercised on a
+  device.
+
+## 2026-10-03 — Tool results in the timeline read as text, not as JSON
+
+- A Codex chat stores an MCP tool call's result as the protocol object
+  `{content: [{type: "text", text}], structuredContent, _meta}`. The server's
+  egress flattener recognised text blocks only in a bare list, so this object
+  reached the desktop and Android timelines as one compact JSON string with
+  the tool's own output escaped inside it. The flattener now reads the
+  `content` list of such an object the same way it already read a list, so
+  the tool's text appears directly. Several text blocks are joined by line
+  breaks and an image block shows `[image result]`, as before. When the result
+  also carries `structuredContent` that the text does not already serialise,
+  the payload follows the text as indented JSON: Codex connector apps answer
+  "Action completed." in the text block and put the data only there.
+- Two other Codex results were stored as structures and shown as compact
+  JSON. A `WebSearch` action now reads as a sentence ("Searched the web for:
+  …", "Opened page: …", "Searched page … for: …"), as Codex's own UI puts it.
+  An `apply_patch` result lists each change as `*** Update File: path`
+  (`Add`, `Delete`, and `*** Move to:` where it applies) followed by its
+  patch, the same heading the Review fallback already uses.
+- The flattening happens when a page is served, so previously recorded chats
+  are corrected when they are read again. A result that had already been
+  truncated at write time before this change keeps its stored text.
+- Structured data is never shown as JSON any more. The server writes a
+  result's `structuredContent` and any other object as indented `key: value`
+  lines, with lists as `- ` items and multi-line text as an indented block.
+  Desktop and Android render a tool result whose text is one JSON object or
+  array the same way, such as a Bash command printing JSON or an MCP tool
+  answering with JSON text; any other text is shown as the tool wrote it.
+- Tool inputs read the same way on both clients, for Claude and Codex rows
+  alike: Bash shows its description and `$ command`, Read its path and line
+  range, Edit the file with removed (`- `) and added (`+ `) lines, Write the
+  path followed by the content, Codex `apply_patch` each change under its
+  `*** Update File:` heading, and every other tool its fields one per line.
+- Verified with unit tests on the server egress path and both clients'
+  formatters and trace rows, and by serving a copy of real Codex chats from
+  an isolated server through the semantic page route: every MCP tool result
+  in the pages was plain text. Android build 24 and local desktop package 96
+  carry the client part; both were packaged from this working tree and not
+  exercised on a device.
 
 ## 2026-10-03 — Context compaction works the same way for Claude and Codex
 

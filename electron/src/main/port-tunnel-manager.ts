@@ -44,6 +44,8 @@ export class PortTunnelManager {
   private readonly tunnels = new Map<number, ManagedTunnel>()
   private changeListener: PortTunnelChangeListener | null = null
 
+  constructor(private readonly minimumRemotePort = 1_024) {}
+
   setChangeListener(listener: PortTunnelChangeListener | null): void {
     this.changeListener = listener
   }
@@ -63,7 +65,7 @@ export class PortTunnelManager {
     maxBridgesPerSession = PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL
   ): Promise<ForwardedPort> {
     requireSessionId(sessionId)
-    requireTCPPort(remotePort, 'Remote')
+    requireTCPPort(remotePort, 'Remote', this.minimumRemotePort)
     if (preferredLocalPort !== undefined) requireTCPPort(preferredLocalPort, 'Local')
     if (typeof createRemoteSocket !== 'function') throw new Error('A remote port tunnel transport is required.')
     const boundedSessionBridgeLimit = boundedBridgeLimit(maxBridgesPerSession)
@@ -123,7 +125,7 @@ export class PortTunnelManager {
   }
 
   async stop(remotePort: number): Promise<void> {
-    requireTCPPort(remotePort, 'Remote')
+    requireTCPPort(remotePort, 'Remote', this.minimumRemotePort)
     const tunnel = this.tunnels.get(remotePort)
     if (!tunnel) return
     this.tunnels.delete(remotePort)
@@ -142,7 +144,7 @@ export class PortTunnelManager {
     createRemoteSocket: () => WebSocket
   ): boolean {
     requireSessionId(sessionId)
-    requireTCPPort(remotePort, 'Remote')
+    requireTCPPort(remotePort, 'Remote', this.minimumRemotePort)
     const tunnel = this.tunnels.get(remotePort)
     if (
       !tunnel
@@ -156,7 +158,7 @@ export class PortTunnelManager {
   }
 
   url(remotePort: number): string {
-    requireTCPPort(remotePort, 'Remote')
+    requireTCPPort(remotePort, 'Remote', this.minimumRemotePort)
     const tunnel = this.tunnels.get(remotePort)
     if (!tunnel || tunnel.closed || tunnel.localPort < 1) {
       throw new Error(`Remote port ${remotePort} is not forwarded for this server profile.`)
@@ -507,9 +509,9 @@ function requireSessionId(value: string): void {
   }
 }
 
-function requireTCPPort(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value < 1_024 || value > 65_535) {
-    throw new Error(`${label} port must be an integer from 1024 through 65535.`)
+function requireTCPPort(value: number, label: string, minimum = 1_024): void {
+  if (!Number.isSafeInteger(value) || value < minimum || value > 65_535) {
+    throw new Error(`${label} port must be an integer from ${minimum} through 65535.`)
   }
 }
 

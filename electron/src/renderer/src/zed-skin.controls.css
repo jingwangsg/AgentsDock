@@ -129,7 +129,6 @@
 
 /* ---------- tabs: flat strip, the active tab merges with the editor surface ---------- */
 :root[data-skin="zed"] .workspace-editor-file-tab,
-:root[data-skin="zed"] .terminal-window-tab,
 :root[data-skin="zed"] .inspector-workspace-tabs button {
   min-height: 28px; padding: 0 10px;
   border-radius: 0; border: 0;
@@ -138,8 +137,6 @@
 }
 :root[data-skin="zed"] .workspace-editor-file-tab.active,
 :root[data-skin="zed"] .workspace-editor-file-tab[aria-selected="true"],
-:root[data-skin="zed"] .terminal-window-tab.active,
-:root[data-skin="zed"] .terminal-window-tab[aria-selected="true"],
 :root[data-skin="zed"] .inspector-workspace-tabs button.active,
 :root[data-skin="zed"] .inspector-workspace-tabs button[aria-selected="true"] { background: var(--bg); color: var(--text); }
 

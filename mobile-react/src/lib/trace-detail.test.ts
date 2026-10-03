@@ -76,8 +76,8 @@ const startedTool = boundedTraceText({
   tool: { id: 'tool-started', name: 'exec', input: { command: 'pwd', timeout_ms: 10_000 } },
 })
 assert(
-  startedTool.includes('"command": "pwd"') && startedTool.includes('\n  "timeout_ms": 10000'),
-  'tool-start traces should pretty-print their input like Mac',
+  startedTool === '$ pwd\ntimeout_ms: 10000',
+  'tool-start traces should show the command like Mac, not the JSON object',
 )
 
 const finishedTool = boundedTraceText({
@@ -89,6 +89,14 @@ assert(
   finishedTool === 'actual stdout',
   'tool-finish traces should prefer actual output over their status message',
 )
+
+const jsonTool = boundedTraceText({ ...event(405, '', 'tool_finished'), output: '{"type":"search","queries":["a","b"]}' })
+assert(
+  jsonTool === 'type: search\nqueries:\n  - a\n  - b',
+  'tool-finish JSON results should read as key: value lines like Mac',
+)
+const bracketedTool = boundedTraceText({ ...event(406, '', 'tool_finished'), output: '[Earlier tool output truncated by AgentsServer]' })
+assert(bracketedTool === '[Earlier tool output truncated by AgentsServer]', 'bracketed plain text must stay as written')
 
 const longReasoningHeadline = reasoningTraceHeadline(`**${'r'.repeat(48_000)}**`)
 assert(

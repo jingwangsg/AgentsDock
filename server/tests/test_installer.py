@@ -2503,6 +2503,45 @@ chmod 755 "$project/.venv/bin/python"
             self.assertNotIn(token, result.stdout)
             self.assertNotIn("AGENTSDOCK_SETUP_RESULT=", result.stdout)
 
+    def test_reinstall_reuses_token_from_export_prefixed_env_lines(self):
+        # The server itself writes `export CLAUDE_CODE_OAUTH_TOKEN=...` into this
+        # file, and its own parser accepts `export` on every line.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            home, fake_bin, install_root, environment = self.fake_linux_preinstall_environment(root)
+            self.write_running_systemd_service(home)
+            config_root = root / "config"
+            config_root.mkdir()
+            token = "preserved_token_abcdefghijklmnopqrstuvwxyz0123456789"
+            self.write_private_file(
+                config_root / "env",
+                f"export AGENTSDOCK_AGENT_TOKEN={token}\nexport CLAUDE_CODE_OAUTH_TOKEN=keep-claude-token\n",
+            )
+            self.write_json_health_curl(fake_bin)
+            self.write_fake_uv(fake_bin)
+            environment.update(
+                {
+                    "FAKE_HEALTH_VERSION": self.release_version(),
+                    "FAKE_SERVER_IDENTITY": "server_export_env_12345678",
+                    "FAKE_TEAM_HUB_ID": "hub_export_env_12345678",
+                    "AGENTS_SERVER_HEALTH_CHECK_ATTEMPTS": "1",
+                }
+            )
+
+            result = subprocess.run(
+                ["/bin/bash", str(INSTALLER), "--execution-mode", "legacy", "--port", "17850", "--non-interactive"],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            installed_env = (config_root / "env").read_text()
+            token_lines = [line for line in installed_env.splitlines() if "AGENTSDOCK_AGENT_TOKEN=" in line]
+            self.assertEqual(token_lines, [f"AGENTSDOCK_AGENT_TOKEN={token}"])
+            self.assertIn("export CLAUDE_CODE_OAUTH_TOKEN=keep-claude-token\n", installed_env)
+
     def test_preflight_reports_every_missing_platform_prerequisite(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
