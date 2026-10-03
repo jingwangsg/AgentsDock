@@ -1,5 +1,35 @@
 # Public development log
 
+## 2026-10-04 — Outputs panel row actions; stale tests follow the source; local package 94 and Android build 32
+
+- The chat Outputs panel's artifact rows now offer Copy path, Download and Show
+  in Folder from a context menu, and canvas rows offer Copy path. Dismissing
+  the menu or picking an item no longer closes the panel, and Escape closes
+  only the open menu. On Android a long press on an artifact row offers Copy
+  path and Download, on a canvas row Copy path; the panel stays open and shows
+  the download progress. Verified with the panel's component tests and the
+  file-transfer behavioural tests on both clients plus type checks; not yet
+  exercised in the running desktop app or on a device.
+- Test suite repairs, none of them product changes: `SERVER_SHUTDOWN_PHASE_COUNT`
+  counts the terminal-shells phase (20) and the installer's launchctl stop
+  budget covers it; two name-extracting server tests declare the symbols the
+  source gained (`compaction_state`, `schedule_model_capacity_resend`);
+  `server/NOTICE` carries the desktop colour-theme attribution paragraph from
+  the checkout root; `provider_host_boot_identity` finds `sysctl` off a
+  service's PATH; four Android contract pins and the upload test follow the
+  current source. The electron workspace pins Node 24 (`.nvmrc`): under Node
+  22 vitest cannot bundle `node:sqlite` for two persistence round-trip tests.
+- Server suite: all eight shards pass on the merged tree except the
+  pre-existing `test_npm_release_package` legal-document check. Desktop:
+  typecheck, full vitest (Node 24) and production build pass. Android: type
+  check, every CI-listed script and the full `tests/` run pass.
+- Local desktop package 94 (`AgentsDock-0.2.0-94-mac-arm64.pkg`, unsigned,
+  not notarized) and Android build 32 (`AgentsDock-0.1.1-32-sideload.apk`,
+  debug-signed sideload flavour) were packaged from commit `ed1fb30c` and
+  attached to the working chat. Neither was installed or exercised on a
+  device; the hub and remote servers are being restarted onto the same
+  commit separately. Availability: local package.
+
 ## 2026-10-04 — Load-balance and code-quality pass across server, desktop and Android
 
 - A code audit looked for traffic funnelled through one connection or one lock,
