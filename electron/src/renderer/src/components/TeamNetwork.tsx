@@ -306,9 +306,7 @@ export function TeamNetwork({
     if (status.authenticated && workspace) setInviteOpen(true)
   }, [pendingSecurePeerInvite, status, workspace])
 
-  const clearTeamData = useCallback(() => {
-    dataEpoch.current += 1
-    receiptInFlight.current.clear()
+  const resetTeamState = useCallback(() => {
     setDetails(null)
     setCapabilities(null)
     setTeamMessagesCapability(null)
@@ -319,7 +317,6 @@ export function TeamNetwork({
     setProjectionAfterServerId(null)
     setProjectionHasMore(false)
     setBulletinPosts([])
-    setMailboxAddress(null)
     setMailboxEntries([])
     setDeviceSessions([])
     setDeviceSessionsCursor(null)
@@ -327,12 +324,19 @@ export function TeamNetwork({
     setPendingInvitations([])
     setInvitationsCursor(null)
     setInvitationsHasMore(false)
-    setDirectoryLoading(false)
     memberPageCursors.current.clear()
     invitationPageCursors.current.clear()
     deviceSessionPageCursors.current.clear()
-    consumedMailboxRequestId.current = null
   }, [replaceProjection])
+
+  const clearTeamData = useCallback(() => {
+    dataEpoch.current += 1
+    receiptInFlight.current.clear()
+    resetTeamState()
+    setMailboxAddress(null)
+    setDirectoryLoading(false)
+    consumedMailboxRequestId.current = null
+  }, [resetTeamState])
 
   const loadTeamData = useCallback(async (
     nextStatus: TeamHubStatus,
@@ -391,26 +395,7 @@ export function TeamNetwork({
         invalidateTeamNetworkSnapshot(nextStatus, teamId)
       }
     } else {
-      setDetails(null)
-      setCapabilities(null)
-      setTeamMessagesCapability(null)
-      setTeamMessagesInitialFeedLoad(null)
-      setTeamMessageUnreadCount(0)
-      setTeamMessageUnreadOverflow(false)
-      replaceProjection(null)
-      setProjectionAfterServerId(null)
-      setProjectionHasMore(false)
-      setBulletinPosts([])
-      setMailboxEntries([])
-      setDeviceSessions([])
-      setDeviceSessionsCursor(null)
-      setDeviceSessionsHasMore(false)
-      setPendingInvitations([])
-      setInvitationsCursor(null)
-      setInvitationsHasMore(false)
-      memberPageCursors.current.clear()
-      invitationPageCursors.current.clear()
-      deviceSessionPageCursors.current.clear()
+      resetTeamState()
     }
     try {
       const scope = scopeFrom(nextStatus)
@@ -463,7 +448,7 @@ export function TeamNetwork({
     } finally {
       if (dataEpoch.current === request) setBusy(null)
     }
-  }, [replaceProjection])
+  }, [replaceProjection, resetTeamState])
 
   useEffect(() => {
     if (!initialMessageTarget || !status?.authenticated || !workspace
@@ -1420,7 +1405,7 @@ export function TeamNetwork({
   const bindingLifecycleBusy = busy === 'connect' || busy === 'disconnect-network' || busy === 'forget-network'
   const connectionActions = <>{localBindingAction}{status?.transport === 'secure_peer' && status.connectionId && !status.designatedHost && <TeamNetworkHostAddressAction status={status} onUpdated={loadStatus} />}</>
   const localBindingManager = status && bindingManagerOpen && status.transport !== 'secure_peer'
-    ? <LocalBindingManager
+    ? <LocalBindingPanel
         status={status}
         busy={bindingLifecycleBusy}
         confirmingForget={confirmForgetBinding}
@@ -1760,7 +1745,7 @@ function ServerIdentity({ status }: { status: TeamHubStatus }) {
   return <article className="network-server-identity"><span className="network-server-icon"><Server size={20} /></span><div><strong>{status.serverName || 'AgentsServer'}</strong><span title={identity || undefined}>{t('teamNetwork.shell.serverIdentity', { identity: shortIdentity })}</span></div><b>{ownershipLabel}</b></article>
 }
 
-function LocalBindingManager({ status, busy, confirmingForget, error, notice, onClose, onDisconnect, onReconnect, onRequestForget, onCancelForget, onForget }: {
+function LocalBindingPanel({ status, busy, confirmingForget, error, notice, onClose, onDisconnect, onReconnect, onRequestForget, onCancelForget, onForget }: {
   status: TeamHubStatus
   busy: boolean
   confirmingForget: boolean

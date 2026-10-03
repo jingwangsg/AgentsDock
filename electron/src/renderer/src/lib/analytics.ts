@@ -146,7 +146,6 @@ export const ANALYTICS_EVENTS = [
   'digest_opened',
   'search_opened',
   'open_file_clicked',
-  'connection_tested',
   'server_added',
   'server_switched'
 ] as const

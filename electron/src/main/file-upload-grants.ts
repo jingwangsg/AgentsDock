@@ -89,21 +89,7 @@ export class FileUploadGrantRegistry {
     const expiresAt = now + this.ttlMs
     for (const item of resolved) {
       if (!replaceExisting && this.grants.has(item.requestedPath)) continue
-      const previous = this.grants.get(item.requestedPath)
-      if (previous) this.releaseGrant(item.requestedPath, previous)
-      this.grants.set(item.requestedPath, {
-        ...scope,
-        ...item,
-        selectionId: randomUUID(),
-        expiresAt,
-        sessionId: null,
-        declarationId: null,
-        declarationPending: false,
-        admissions: 0,
-        cleanup: null,
-        cleanupTimer: null,
-        activeAdmissions: new Set()
-      })
+      this.insertGrant(item, scope, expiresAt)
     }
   }
 
@@ -147,23 +133,7 @@ export class FileUploadGrantRegistry {
     }
     for (const grant of evictionCandidates) this.releaseGrant(grant.requestedPath, grant)
     const expiresAt = now + this.ttlMs
-    for (const item of resolved) {
-      const previous = this.grants.get(item.requestedPath)
-      if (previous) this.releaseGrant(item.requestedPath, previous)
-      this.grants.set(item.requestedPath, {
-        ...scope,
-        ...item,
-        selectionId: randomUUID(),
-        expiresAt,
-        sessionId: null,
-        declarationId: null,
-        declarationPending: false,
-        admissions: 0,
-        cleanup: null,
-        cleanupTimer: null,
-        activeAdmissions: new Set()
-      })
-    }
+    for (const item of resolved) this.insertGrant(item, scope, expiresAt)
   }
 
   captureAdmission(
@@ -375,6 +345,24 @@ export class FileUploadGrantRegistry {
     for (const [path, grant] of this.grants) {
       if (grant.expiresAt <= now) this.releaseGrant(path, grant)
     }
+  }
+
+  private insertGrant(item: Pick<FileUploadGrant, 'requestedPath' | 'canonicalPath' | 'device' | 'inode' | 'byteSize'>, scope: FileUploadGrantScope, expiresAt: number): void {
+    const previous = this.grants.get(item.requestedPath)
+    if (previous) this.releaseGrant(item.requestedPath, previous)
+    this.grants.set(item.requestedPath, {
+      ...scope,
+      ...item,
+      selectionId: randomUUID(),
+      expiresAt,
+      sessionId: null,
+      declarationId: null,
+      declarationPending: false,
+      admissions: 0,
+      cleanup: null,
+      cleanupTimer: null,
+      activeAdmissions: new Set()
+    })
   }
 
   private evictOldest(count: number): void {

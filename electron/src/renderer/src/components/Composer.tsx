@@ -85,10 +85,9 @@ import {
   type QueuedTurnCrossChatFence,
   type SteeringScope
 } from '../lib/queue-actions'
+import { atomicReferenceKeyAction } from '../lib/composer-reference-keys'
 import {
   atomicComposerReferenceCaret,
-  atomicComposerReferenceDeletion,
-  atomicComposerReferenceNavigation,
   insertTeamReference,
   orderedComposerReferenceSpans,
   parseStoredTeamReferences,
@@ -1980,37 +1979,17 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
             const collapsed = event.currentTarget.selectionStart === event.currentTarget.selectionEnd
             const selectionStart = composerDisplayToSource(projection, event.currentTarget.selectionStart, collapsed ? 'nearest' : 'start')
             const selectionEnd = composerDisplayToSource(projection, event.currentTarget.selectionEnd, collapsed ? 'nearest' : 'end')
-            if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === 'Backspace' || event.key === 'Delete')) {
-              const edit = atomicComposerReferenceDeletion(
-                draftRef.current,
-                atomicSpans,
-                selectionStart,
-                selectionEnd,
-                event.key
-              )
-              if (edit) {
-                event.preventDefault()
-                pendingCaretRef.current = edit.caret
-                updateComposerDraft(edit.text, edit.caret)
-                return
+            const atomicEdit = atomicReferenceKeyAction(event, draftRef.current, atomicSpans, selectionStart, selectionEnd)
+            if (atomicEdit) {
+              event.preventDefault()
+              if ('text' in atomicEdit) {
+                pendingCaretRef.current = atomicEdit.caret
+                updateComposerDraft(atomicEdit.text, atomicEdit.caret)
+              } else {
+                const displayCaret = composerSourceToDisplay(projection, atomicEdit.caret)
+                event.currentTarget.setSelectionRange(displayCaret, displayCaret)
               }
-            }
-            if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-              const start = selectionStart
-              const end = selectionEnd
-              if (start === end) {
-                const caret = atomicComposerReferenceNavigation(
-                  start,
-                  atomicSpans,
-                  event.key
-                )
-                if (caret !== null) {
-                  event.preventDefault()
-                  const displayCaret = composerSourceToDisplay(projection, caret)
-                  event.currentTarget.setSelectionRange(displayCaret, displayCaret)
-                  return
-                }
-              }
+              return
             }
             if (commandPaletteVisible) {
               if (event.key === 'Escape') {
@@ -4030,45 +4009,25 @@ const QueueShelf = memo(function QueueShelf({
               return
             }
           }
-          if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === 'Backspace' || event.key === 'Delete')) {
-            const edit = atomicComposerReferenceDeletion(
-              draft,
-              atomicSpans,
-              selectionStart,
-              selectionEnd,
-              event.key
-            )
-            if (edit) {
-              event.preventDefault()
+          const atomicEdit = atomicReferenceKeyAction(event, draft, atomicSpans, selectionStart, selectionEnd)
+          if (atomicEdit) {
+            event.preventDefault()
+            if ('text' in atomicEdit) {
               const reconciled = validComposerReferences(
-                edit.text,
-                reconcileChatReferences(draft, edit.text, editingReferences),
-                reconcileTeamReferences(draft, edit.text, editingTeamReferences),
+                atomicEdit.text,
+                reconcileChatReferences(draft, atomicEdit.text, editingReferences),
+                reconcileTeamReferences(draft, atomicEdit.text, editingTeamReferences),
                 (text, candidates) => validChatReferences(text, candidates, sessionId)
               )
               setEditingReferences(reconciled.chatReferences)
               setEditingTeamReferences(reconciled.teamReferences)
-              setDraft(edit.text)
-              queuedSelectionRef.current = { start: edit.caret, end: edit.caret, direction: 'none' }
-              return
+              setDraft(atomicEdit.text)
+              queuedSelectionRef.current = { start: atomicEdit.caret, end: atomicEdit.caret, direction: 'none' }
+            } else {
+              const displayCaret = composerSourceToDisplay(editingMessageProjection, atomicEdit.caret)
+              event.currentTarget.setSelectionRange(displayCaret, displayCaret)
             }
-          }
-          if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-            const start = selectionStart
-            const end = selectionEnd
-            if (start === end) {
-              const caret = atomicComposerReferenceNavigation(
-                start,
-                atomicSpans,
-                event.key
-              )
-              if (caret !== null) {
-                event.preventDefault()
-                const displayCaret = composerSourceToDisplay(editingMessageProjection, caret)
-                event.currentTarget.setSelectionRange(displayCaret, displayCaret)
-                return
-              }
-            }
+            return
           }
           if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
             event.preventDefault()

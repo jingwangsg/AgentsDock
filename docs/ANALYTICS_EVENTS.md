@@ -11,7 +11,7 @@ Every event has the same small app-owned envelope:
 - the event time; and
 - the Mixpanel project token used to route the event.
 
-Only `connection_tested`, `server_added`, `server_switched`, and the legacy `chats_bulk_imported` event include an event-specific `success` boolean. The runtime sanitizer discards every other property.
+Only `server_added`, `server_switched`, and the legacy `chats_bulk_imported` event include an event-specific `success` boolean. The runtime sanitizer discards every other property.
 
 Never add message or prompt text, chat/job/agent/folder names, skill or command names, file names or contents, paths or working directories, URLs or access tokens, session/chat/job/route IDs, schedule expressions, exact run times, or destination metadata. The client posts directly with IP collection disabled, omits credentials and referrer data, and does not use SDK autocapture or session replay.
 
@@ -76,7 +76,6 @@ Never add message or prompt text, chat/job/agent/folder names, skill or command 
 
 | Event | Emitted when | Event-specific properties |
 | --- | --- | --- |
-| `connection_tested` | A server connection test finishes. | `success` |
 | `server_added` | Adding a server profile finishes. | `success` |
 | `server_switched` | Explicitly switching to a server from Settings or the sidebar finishes. Automatic and superseded switches do not count. | `success` |
 

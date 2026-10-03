@@ -15,7 +15,8 @@ import { trackEvent } from '../lib/analytics'
 import { colorThemeOptions, readAppearance, readColorThemes, setAppearanceMode, setColorTheme, type AppearanceMode, type ColorThemeChoice, type ResolvedAppearance } from '../lib/appearance'
 import { t, useLanguagePreference, type LanguagePreference } from '../lib/i18n'
 import { canonicalizeLocalRouteHints, chatMentionTrigger, chatReferenceDisplayText, currentRouteHintReference, insertChatReference, parseStoredChatReferences, reconcileChatReferences, routeHintMentionsAvailable, supportedCrossChatTargetBackends, validChatReferences, type ChatMentionTrigger } from '../lib/chat-references'
-import { atomicComposerReferenceCaret, atomicComposerReferenceDeletion, atomicComposerReferenceNavigation, insertTeamReference, orderedComposerReferenceSpans, parseStoredTeamReferences, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceText, validComposerReferences, validTeamReferences, type TeamMentionTrigger } from '../lib/team-references'
+import { atomicReferenceKeyAction } from '../lib/composer-reference-keys'
+import { atomicComposerReferenceCaret, insertTeamReference, orderedComposerReferenceSpans, parseStoredTeamReferences, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceText, validComposerReferences, validTeamReferences, type TeamMentionTrigger } from '../lib/team-references'
 import { backendLabel, formatTime, runtimeLabel } from '../lib/format'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 import { useProfileSearch } from '../lib/profile-search'
@@ -3982,36 +3983,22 @@ function JobPromptEditor({
   }
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return
-    if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === 'Backspace' || event.key === 'Delete')) {
-      const edit = atomicComposerReferenceDeletion(
-        value,
-        orderedComposerReferenceSpans(chatReferences, teamReferences),
-        event.currentTarget.selectionStart ?? 0,
-        event.currentTarget.selectionEnd ?? 0,
-        event.key
-      )
-      if (edit) {
-        event.preventDefault()
-        updateText(edit.text, edit.caret)
-        window.requestAnimationFrame(() => textareaRef.current?.setSelectionRange(edit.caret, edit.caret))
-        return
+    const atomicEdit = atomicReferenceKeyAction(
+      event,
+      value,
+      orderedComposerReferenceSpans(chatReferences, teamReferences),
+      event.currentTarget.selectionStart ?? 0,
+      event.currentTarget.selectionEnd ?? 0
+    )
+    if (atomicEdit) {
+      event.preventDefault()
+      if ('text' in atomicEdit) {
+        updateText(atomicEdit.text, atomicEdit.caret)
+        window.requestAnimationFrame(() => textareaRef.current?.setSelectionRange(atomicEdit.caret, atomicEdit.caret))
+      } else {
+        event.currentTarget.setSelectionRange(atomicEdit.caret, atomicEdit.caret)
       }
-    }
-    if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-      const start = event.currentTarget.selectionStart ?? 0
-      const end = event.currentTarget.selectionEnd ?? start
-      if (start === end) {
-        const caret = atomicComposerReferenceNavigation(
-          start,
-          orderedComposerReferenceSpans(chatReferences, teamReferences),
-          event.key
-        )
-        if (caret !== null) {
-          event.preventDefault()
-          event.currentTarget.setSelectionRange(caret, caret)
-          return
-        }
-      }
+      return
     }
     if (teamMention) {
       if (event.key === 'Escape') {
