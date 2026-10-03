@@ -182,6 +182,7 @@ class StandaloneProviderContextTests(unittest.IsolatedAsyncioTestCase):
             agent_server.BACKEND_CLAUDE,
             cwd="/tmp/work",
             defer_runtime_broadcast=True,
+            flush=False,
         )
         events.assert_awaited_once()
         self.assertEqual(
