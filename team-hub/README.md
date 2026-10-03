@@ -158,17 +158,24 @@ The standalone `serve` command remains a development compatibility tool for
 an unbound database. It refuses an embedded-bound database and shares the same
 exclusive runtime lease, so it cannot bypass the one-designated-host rule.
 
-## Test
+## Source and tests
+
+The package source is `server/agentsdock_team_hub`. `team-hub/src/agentsdock_team_hub`
+is a symbolic link to that directory, so `uv run --project team-hub` and
+`uv build --project team-hub` use the server source directly; there is no
+second copy to keep in sync.
+
+The tests are part of the server suite (`server/tests/test_team_hub_*.py`,
+`test_secure_peer*.py`, `test_team_messages.py`). From the `server/` directory:
 
 ```bash
-uv sync --project team-hub --dev
-uv run --project team-hub python -m unittest discover -s team-hub/tests -v
+PYTHONDONTWRITEBYTECODE=1 uv run --python 3.13 python -m unittest \
+  tests.test_team_hub_foundation tests.test_team_hub_host -v
 ```
 
-Server integration tests additionally cover the mounted credential/CORS
-boundary, loopback and Serve transports, delegated bootstrap, managed
-restart/update drain, snapshot/restore,
-operation ownership and vendored source parity.
+They cover the mounted credential/CORS boundary, loopback and Serve
+transports, delegated bootstrap, managed restart/update drain,
+snapshot/restore and operation ownership.
 
 The complete API and security contract is in
 [`docs/TEAM_HUB_V1.md`](../docs/TEAM_HUB_V1.md).

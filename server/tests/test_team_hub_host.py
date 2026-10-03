@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -1744,72 +1743,6 @@ class ManagedTeamHubHostTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertTrue(snapshot.is_dir())
             await second.shutdown()
-
-class VendoredTeamHubParityTests(unittest.TestCase):
-    def test_vendored_runtime_matches_frozen_source_manifest_without_generated_files(self) -> None:
-        server_root = Path(__file__).resolve().parents[1]
-        vendored = server_root / "agentsdock_team_hub"
-        expected = {
-            "__init__.py": "154fbe20574096cff3a5012d8720d51e024c5f077cc1044c3ea6cd5ad6f96861",
-            "auth.py": "d939fd30bdd93cf53183de5b5ff21be43d2a7a2cc9d2ce6dc00a49c888db41db",
-            "cli.py": "c5827f30d90420d2e362389530154255ca6039c1c524edec29a5d219b96328d3",
-            "database.py": "b4e37974d0ca3ea9a471a4aa46b9d726734cf8dbf0483e757ca4a291b125ccd5",
-            "mail_hint_streams.py": "35cd603540187f6ae241118c2699463501d464bb91e0b7367d82b349dd137d16",
-            "mail_hints.py": "e3749610b85a8729335b9e80bfea99080be7ab45e46b1e505cb24f784daa07a4",
-            "migrations/0001_identity_auth.sql": "f55a62bf6dec527e1f71df91975deaf371e2af8b6e457b9d5577437e914dc186",
-            "migrations/0002_teamspace_ledger.sql": "9681100d3d6eb3986e133d761ce9d000dbcf10b5e50954c96bd168391ecacbf3",
-            "migrations/0003_service_runtime.sql": "e7668e2748a581a07aeaea78e78db3a62c6c28040881ab2b696b5d5de5ab34cc",
-            "migrations/0004_managed_host_binding.sql": "6984cc095f23059c38c68092217254eb1419bae45287b4e3ab1217c60eb78696",
-            "migrations/0005_tailnet_bootstrap_delegations.sql": "e47d25ea16353d023355cf875d008808cd3742cd038569abfb9607556cdbd09b",
-            "migrations/0006_team_network_mailbox.sql": "c215068c903b4b65cd7a0e52506f859b5301d7e7d5ac9a66ad1636e6efd84d63",
-            "migrations/0007_local_agent_mail.sql": "a01c33ef0d66de486e45bc3470a438ac0dd41edb5007eb6c12c26c240b4ca883",
-            "migrations/0008_managed_server_session.sql": "487b29e425b7c53ef019e9ff476f4b18615c5142975c6d0bac8c134dc84e849c",
-            "migrations/0009_team_messages.sql": "2ce774f0934e111c6443bda74fa7e8bbf8617094341c91b01b89cc0415eb05af",
-            "migrations/0010_team_attachment_orphan_reclamation.sql": "85192a1c821378743a5abf89f916070cfccb1aa67a79eac95f6a07ec1d888bc5",
-            "migrations/0011_human_admin_paging.sql": "29d165f8397f13451422a63ce948c67de49774de6fbb77b70fdca09647bb46f5",
-            "migrations/0012_network_content_deletions.sql": "71cf06fb160158530c7620da314364b1f8bc71d2981b788127193053875538b4",
-            "migrations/0013_team_message_revisions.sql": "d321c7940618ab8bae688713982ff2019ab97a0cecf2efe1b3575aa23cce57cf",
-            "migrations/0014_managed_network_owner.sql": "1b35fe5ac7493ffcf49e93f359170c686c9ac8fd3cb40531b6602efd2bbf6baa",
-            "migrations/0015_team_message_inbox_dismissals.sql": "f0a6bb3ceef53686db734cad0a61554c57935e552d52bbefc7e45a586ed2a1d1",
-            "migrations/0016_team_message_all_servers.sql": "d0ca28e2648a9f4d5bf11be41bbf6c3594263be7ef7b74cc284ff70e98f863a6",
-            "migrations/0017_skill_announcement_deletions.sql": "e5a1cbca1a8d2623ef34598c833f525a5bc7474b97062805a9cfff41cafe92f8",
-            "migrations/0018_team_mail_subjects.sql": "a0c902e663ce25c30d35fc6dea97e5af4c02c1c7555812d111f310b996fdf30a",
-            "migrations/0019_team_mailbox_state.sql": "346ef56314dfd766f085b2bbff274e3c7eefde9ad6cc1a4804b47077d3181ed6",
-            "migrations/0020_team_mail_arrivals.sql": "4f4c393a441b1eace56bc8b3cca4e0f2094cc68e8cb10b07a3a88c15ef6a7f7f",
-            "migrations/0021_team_mail_threads.sql": "34bf4718d053230d54a260258f78a683e07a1f5d0cb85e2ff8b57007db4836c9",
-            "migrations/0022_team_bulletin_changes.sql": "38695efad74590fcfcb76b0dd1e83f23ca2f1d6e3dadeaed83da684a26918d60",
-            "migrations/0023_team_message_search.sql": "abe6442afad762e5fb806c4181b59cc24981eba834a646b7dda49695ffffff71",
-            "migrations/__init__.py": "aaf340c45c8d39c2939814977ba4cef8eb6b3bd0671b0f7542ebe06f5431d6ec",
-            "notification_hints.py": "794f76b4240f8c534bdb3c5928c702d02dfc8e022d44224cb8fe8b4b9d9d96d2",
-            "secure_peer.py": "64e8046be90a1c3a20eaf572c33ce578fd3cfcf81ca52f58aa19a321a19eed2b",
-            "secure_peer_hub.py": "1f3f8c23b9de7180889fe04f9532af7e9000941526687a558bf6250cf647fa26",
-            "security.py": "0c1895c7443e7be07a2f53c7e4c4228e3ee04c65d6cd36f039b7bbba1813e4fa",
-            "service.py": "449462013919687089c8a227fa5b83e65fc2c6fc601cd09952a51300ab81255f",
-            "store.py": "c519e4d9c8a6a02dd630aa2035842df33f2574e44f7ae5a709d4bba92a42a3f4",
-        }
-        # Interpreter caches left by other local test runs are gitignored and
-        # never shipped; the packager rejects them on a real release tree.
-        entries = [path for path in vendored.rglob("*")
-                   if "__pycache__" not in path.relative_to(vendored).parts]
-        for path in entries:
-            self.assertFalse(path.is_symlink(), path)
-            self.assertTrue(path.is_file() or path.is_dir(), path)
-        self.assertEqual(
-            {path.relative_to(vendored).as_posix() for path in entries if path.is_dir()},
-            {"migrations"},
-        )
-        files = [path for path in entries if path.is_file()]
-        self.assertEqual(
-            {path.relative_to(vendored).as_posix() for path in files},
-            set(expected),
-        )
-        actual = {
-            path.relative_to(vendored).as_posix(): hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest()
-            for path in files
-        }
-        self.assertEqual(actual, expected)
 
 
 if __name__ == "__main__":
