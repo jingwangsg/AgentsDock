@@ -158,6 +158,11 @@ let syncInFlight: { sessionId: string; epoch: number; promise: Promise<void> } |
 let syncRecovery: { key: string; attempt: number; timer: ReturnType<typeof setTimeout> | null } | null = null
 let refreshSessionsInFlight: { scope: ConnectionScope; promise: Promise<void> } | null = null
 let refreshJobsInFlight: { scope: ConnectionScope; promise: Promise<void>; dirty: boolean } | null = null
+// Live events arrive in bursts (turn_finished plus its codex_* trailers, several
+// artifacts per tool call); the follow-up fetch runs once per quiet burst.
+const LIVE_EVENT_REFRESH_DEBOUNCE_MS = 500
+let pendingSessionRowRefresh: { scope: ConnectionScope; sessionIds: Set<string>; timer: ReturnType<typeof setTimeout> } | null = null
+let pendingJobsRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let quickCreateSessionInFlight: { scope: ConnectionScope; promise: Promise<boolean> } | null = null
 /** The hub deploy `deployHubRemoteServer` is currently polling, if any; lets cancelHubDeploy reach both the poll loop and the server-side job. */
 let hubDeployInFlight: { client: AgentServerClient; jobId: string; cancelled: boolean } | null = null
@@ -4918,7 +4923,7 @@ function applyLiveEvent(scope: ConnectionScope, event: Event, set: (value: Parti
     'codex_interaction_resolved',
     'claude_interaction_requested',
     'claude_interaction_resolved',
-  ].includes(event.type)) void get().refreshSessions()
+  ].includes(event.type)) scheduleSessionRowRefresh(scope, sessionId, set, get)
   if (event.type === 'history_rewound') {
     // The removed turns' children are gone server-side; refetch rather than guess which ids they were.
     set(state => {
@@ -4928,7 +4933,7 @@ function applyLiveEvent(scope: ConnectionScope, event: Event, set: (value: Parti
     })
     void get().refreshSubagents(sessionId)
   }
-  if (event.type.startsWith('job_')) void get().refreshJobs()
+  if (event.type.startsWith('job_')) scheduleJobsRefresh(scope, get)
   if (
     (event.type === 'queue_snapshot'
     && event.positions?.length
@@ -4947,6 +4952,75 @@ function applyLiveEvent(scope: ConnectionScope, event: Event, set: (value: Parti
     const session = get().sessions.find(value => value.id === sessionId)
     if (session) void notifyOnce(scope, session, event.run_id?.trim() || event.id)
   }
+}
+
+function scheduleSessionRowRefresh(
+  scope: ConnectionScope,
+  sessionId: string,
+  set: (value: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
+  get: () => AppState,
+): void {
+  const pending = pendingSessionRowRefresh?.scope === scope ? pendingSessionRowRefresh : null
+  if (pendingSessionRowRefresh) clearTimeout(pendingSessionRowRefresh.timer)
+  const sessionIds = pending?.sessionIds ?? new Set<string>()
+  sessionIds.add(sessionId)
+  const timer = setTimeout(() => {
+    if (pendingSessionRowRefresh?.timer !== timer) return
+    pendingSessionRowRefresh = null
+    for (const id of sessionIds) void refreshSessionRow(scope, id, set, get)
+  }, LIVE_EVENT_REFRESH_DEBOUNCE_MS)
+  pendingSessionRowRefresh = { scope, sessionIds, timer }
+}
+
+/**
+ * Re-reads one chat's list row after a live event changed server-side fields
+ * the event itself does not carry (title, pending interactions, backend lock).
+ * Replaces the whole-list refresh that used to follow each such event.
+ */
+async function refreshSessionRow(
+  scope: ConnectionScope,
+  sessionId: string,
+  set: (value: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
+  get: () => AppState,
+): Promise<void> {
+  if (NativeAppState.currentState !== 'active' || !get().connected || !connectionIsCurrent(scope)) return
+  const validationRevision = scope.client.validationRevision
+  const sessionRead = sessionMutations.captureRead()
+  // GET /api/sessions/{id} is the only route that returns a single session.
+  // Paging after the newest known event keeps the response to the session
+  // object plus at most one event the stream has already delivered.
+  const after = Math.max(get().snapshots[sessionId]?.latestSeq ?? 0, streamSessionId === sessionId ? streamLatestSeq : 0)
+  let incoming: Session
+  try {
+    incoming = (await scope.client.sessionPage(sessionId, { after, limit: 1, tail: false })).session
+  } catch (error) {
+    if (isStaleConnectionError(error, scope)) return
+    const message = errorMessage(error)
+    if (isDefinitiveValidationFailure(error, message)) forceValidationOffline(scope, message, set)
+    return
+  }
+  if (!validatedRevisionIsCurrent(scope, validationRevision)) return
+  let changed = false
+  set(state => {
+    const sessions = state.sessions.map(value => value.id === sessionId ? sessionMutations.reconcileIncoming(value, incoming, sessionRead) : value)
+    changed = sessions.some((value, index) => value !== state.sessions[index])
+    return changed
+      ? { sessions, profiles: updateProfileRuntime(state.profiles, scope.profileId, { cachedUnreadCount: unreadCount(sessions) }) }
+      : {}
+  })
+  if (!changed) return
+  void saveCachedSessions(scope.namespace, get().sessions)
+  void updateBadge(get())
+}
+
+function scheduleJobsRefresh(scope: ConnectionScope, get: () => AppState): void {
+  if (pendingJobsRefreshTimer) clearTimeout(pendingJobsRefreshTimer)
+  const timer = setTimeout(() => {
+    if (pendingJobsRefreshTimer !== timer) return
+    pendingJobsRefreshTimer = null
+    if (connectionIsCurrent(scope)) void get().refreshJobs()
+  }, LIVE_EVENT_REFRESH_DEBOUNCE_MS)
+  pendingJobsRefreshTimer = timer
 }
 
 /** Store mirror of a server history rewind; returns `snapshot` itself when no retained event is in range. */

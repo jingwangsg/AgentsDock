@@ -188,7 +188,9 @@ test('server bookkeeping packets update projections without churning the residen
   ]) assert.match(store, new RegExp(`'${type}'`))
   assert.match(store, /if \(timelineInternal && queuedTurns === snapshot\.queuedTurns\)/)
   assert.match(store, /const mergedEvents = timelineInternal \? snapshot\.events : mergeEvents/)
-  assert.match(store, /if \(event\.type\.startsWith\('job_'\)\) void get\(\)\.refreshJobs\(\)/)
+  // Job events arrive in bursts; the jobs list is re-read once per quiet burst, not per event.
+  assert.match(store, /if \(event\.type\.startsWith\('job_'\)\) scheduleJobsRefresh\(scope, get\)/)
+  assert.match(store, /if \(connectionIsCurrent\(scope\)\) void get\(\)\.refreshJobs\(\)/)
 })
 
 test('iOS keyboard avoidance keeps the composer toolbar above attachment pickers', () => {
