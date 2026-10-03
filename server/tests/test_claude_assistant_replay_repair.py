@@ -145,7 +145,7 @@ class AssistantReplayRepairTests(unittest.TestCase):
                 for row in self.rows:
                     if row is not self.imported:
                         self.assertIsNone(self.cache.project_event("chat-one", row))
-                with patch.object(repair, "_regular_stamp", side_effect=AssertionError("Per-event I/O")):
+                with patch.object(repair, "regular_stamp", side_effect=AssertionError("Per-event I/O")):
                     self.assertIsNotNone(self.cache.project_event("chat-one", self.imported))
                     self.assertFalse(self.cache.prepare("chat-one", "provider-one", self.events, self.root, lambda row: None))
 

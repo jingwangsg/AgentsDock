@@ -91,6 +91,7 @@ FILES = (
     "share_route_helpers.py",
     "native_model_store.py",
     "isolated_process.py",
+    "pinned_jsonl.py",
     "install.sh",
     "uninstall.sh",
     "instances.sh",

@@ -11,10 +11,8 @@ from dataclasses import dataclass, field
 import hashlib
 import hmac
 import json
-import os
 from pathlib import Path
 import re
-import stat
 import threading
 import time
 from typing import Callable
@@ -24,6 +22,7 @@ from claude_history_repair import (
     MAX_EVENTS_BYTES, MAX_KEYS, MAX_SESSIONS, MAX_TARGETS,
     _DIGEST, _Unproven, _records, _stamp, _text_key,
 )
+from pinned_jsonl import pinned_records, regular_stamp
 
 
 MAX_PRIOR_SOURCE_PATHS = 2
@@ -148,14 +147,6 @@ class _NativeReadBudget:
             raise CodexNativeHistoryProofUnavailable("Codex history proof was cancelled or exceeded its work budget")
 
 
-def _native_stamp(path: Path) -> tuple[int, int, int, int]:
-    """Pin a regular file without a total-size cutoff or following symlinks."""
-    value = path.lstat()
-    if not stat.S_ISREG(value.st_mode):
-        raise _Unproven()
-    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
-
-
 def _native_records(path: Path, expected: tuple[int, int, int, int], budget: _NativeReadBudget,
                     *, end: int | None = None):
     """Stream one fixed prefix; tool volume does not consume retained-key budget.
@@ -164,33 +155,8 @@ def _native_records(path: Path, expected: tuple[int, int, int, int], budget: _Na
     parse or hash a later unrelated source tail. Cancellation is checked between
     individually bounded records, including records that carry no public text.
     """
-    budget.check()
-    boundary = expected[2] if end is None else end
-    if type(boundary) is not int or not 0 <= boundary <= expected[2]:
-        raise _Unproven()
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                         | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0))
-    with os.fdopen(descriptor, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != expected:
-            raise _Unproven()
-        offset = 0
-        while offset < boundary:
-            budget.check()
-            line = stream.readline(min(NATIVE_PROOF_LINE_BYTES + 1, boundary - offset))
-            if not line or len(line) > NATIVE_PROOF_LINE_BYTES or not line.endswith(b"\n"):
-                raise _Unproven()
-            offset += len(line)
-            record = json.loads(line)
-            if not isinstance(record, dict):
-                raise _Unproven()
-            yield record, offset, line
-        info = os.fstat(stream.fileno())
-        if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != expected:
-            raise _Unproven()
-    budget.check()
-    if _native_stamp(path) != expected:
-        raise _Unproven()
+    return pinned_records(path, expected, max_line_bytes=NATIVE_PROOF_LINE_BYTES, end=end,
+                          check_budget=budget.check)
 
 
 def _native_event_identity(event: dict) -> dict:
@@ -751,7 +717,7 @@ def _prove_native_replays(session_id: str, provider_id: str, events: Path, sourc
                           budget: _NativeReadBudget) -> _NativeProof:
     if not _PROVIDER_ID.fullmatch(provider_id):
         raise _Unproven()
-    stamp = _native_stamp(events)
+    stamp = regular_stamp(events)
     batches, terminals, candidates, native, owners = {}, {}, [], {}, {}
     deliveries = _AsyncDeliveryIndex()
     previous_seq, retained = 0, 0
@@ -836,7 +802,7 @@ def _prove_native_source(thread: str, source: Path, root: Path, batches: dict, c
         raise _Unproven()
     source = source.resolve(strict=True)
     source.relative_to(root.resolve(strict=True))
-    stamp = _native_stamp(source)
+    stamp = regular_stamp(source)
     wanted, eligible = {}, {}
     for run, (first, last, checkpoint) in batches.items():
         cursor = checkpoint["cursor"]
@@ -1154,7 +1120,7 @@ def filter_native_codex_history_items(session_id: str, provider_id: str, events:
         if not _PROVIDER_ID.fullmatch(provider_id):
             raise _Unproven()
         budget = _NativeReadBudget(cancelled, deadline)
-        stamp = _native_stamp(events)
+        stamp = regular_stamp(events)
         owners, native, assistant_items, wake_keys, native_count = {}, {}, {}, set(), 0
         deliveries = _AsyncDeliveryIndex()
         prove_deliveries = (source_path is not None and root is not None

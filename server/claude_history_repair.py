@@ -16,7 +16,6 @@ import json
 import os
 from pathlib import Path
 import re
-import stat
 import threading
 from types import MappingProxyType
 from typing import Callable
@@ -24,6 +23,7 @@ from typing import Callable
 from claude_history_provenance import ClaudeInterruptionTracker, ClaudeCommandHistoryNormalizer
 from claude_goals import is_claude_synthetic_no_response
 from claude_sdk_client import CLAUDE_SDK_LITERAL_MESSAGE_PREFIX
+from pinned_jsonl import Unproven as _Unproven, pinned_records, regular_stamp
 
 
 MAX_BYTES = 96 * 1024 * 1024
@@ -45,53 +45,19 @@ _ASYNC_WRAPPER = re.compile(
 )
 
 
-class _Unproven(ValueError):
-    pass
-
-
 class _Oversized(_Unproven):
     pass
 
 
-def _regular_stamp(path: Path) -> tuple[int, int, int, int]:
-    value = path.lstat()
-    if not stat.S_ISREG(value.st_mode):
-        raise _Unproven()
-    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
-
-
 def _stamp(path: Path) -> tuple[int, int, int, int]:
-    value = _regular_stamp(path)
+    value = regular_stamp(path)
     if value[2] > MAX_BYTES:
         raise _Oversized()
     return value
 
 
 def _records(path: Path, expected: tuple[int, int, int, int]):
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    with os.fdopen(descriptor, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != expected:
-            raise _Unproven()
-        count = 0
-        offset = 0
-        while offset < expected[2]:
-            line = stream.readline(min(MAX_LINE_BYTES + 1, expected[2] - offset))
-            if len(line) > MAX_LINE_BYTES or not line.endswith(b"\n"):
-                raise _Unproven()
-            count += 1
-            if count > MAX_RECORDS:
-                raise _Unproven()
-            offset += len(line)
-            event = json.loads(line)
-            if not isinstance(event, dict):
-                raise _Unproven()
-            yield event, offset, line
-        final = os.fstat(stream.fileno())
-        if (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns) != expected:
-            raise _Unproven()
-    if _stamp(path) != expected:
-        raise _Unproven()
+    return pinned_records(path, expected, max_line_bytes=MAX_LINE_BYTES, max_records=MAX_RECORDS)
 
 
 def _text_key(text: str) -> str:
@@ -585,7 +551,7 @@ def filter_native_claude_mailbox_wake_items(
     try:
         if not items or len(items) > MAX_TARGETS:
             return items
-        stamp = _regular_stamp(events)
+        stamp = regular_stamp(events)
         native = _AssistantReplays(provider_id, normalize_assistant)
         for event, _offset in _bounded_records(events, stamp, max(0, stamp[2] - MAX_EVENTS_BYTES), stamp[2]):
             if event.get("session_id") in (None, "", session_id):
@@ -607,7 +573,7 @@ def filter_native_claude_mailbox_wake_items(
             return items
         source = source.resolve(strict=True)
         source.relative_to(root.resolve(strict=True))
-        source_stamp = _regular_stamp(source)
+        source_stamp = regular_stamp(source)
         start, end = sync_checkpoint.get("previous_source_offset"), cursor.get("source_offset")
         previous, expected = sync_checkpoint.get("previous_source_digest"), cursor.get("source_digest")
         if (type(start) is not int or type(end) is not int or not 0 <= start < end <= source_stamp[2]
@@ -1171,7 +1137,7 @@ def _bounded_records(path: Path, expected, start: int, end: int):
         final = os.fstat(stream.fileno())
         if (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns) != expected:
             raise _Unproven()
-    if _regular_stamp(path) != expected:
+    if regular_stamp(path) != expected:
         raise _Unproven()
 
 
@@ -1283,7 +1249,7 @@ def _prove_recent_scheduled(session_id: str, provider_id: str, events: Path, roo
         raise _Unproven()
     source = source.resolve(strict=True)
     source.relative_to(root.resolve(strict=True))
-    source_stamp = _regular_stamp(source)
+    source_stamp = regular_stamp(source)
     eligible = {run: batch for run, batch in eligible.items()
                 if (batch[4].get("source_dev"), batch[4].get("source_ino")) == source_stamp[:2]
                 and batch[3] <= source_stamp[2]}
@@ -1437,7 +1403,7 @@ class ClaudeMetadataRepairCache:
         This cache never contributes to the global timeline-index signature.
         """
         try:
-            stamp = _regular_stamp(events)
+            stamp = regular_stamp(events)
         except (OSError, ValueError):
             stamp = (0, 0, 0, 0)
         empty = ClaudeMetadataRepairWindow(session_id, _Proof(provider_id, stamp, None, None, frozenset()))
@@ -1451,7 +1417,7 @@ class ClaudeMetadataRepairCache:
                 cached = self._windows.get(key)
             if cached is not None and cached._proof.source is not None:
                 try:
-                    if _regular_stamp(cached._proof.source) != cached._proof.source_stamp:
+                    if regular_stamp(cached._proof.source) != cached._proof.source_stamp:
                         return None
                 except (OSError, ValueError):
                     return None
@@ -1519,7 +1485,7 @@ class ClaudeMetadataRepairCache:
                 except _Oversized:
                     if normalize_full_user is None:
                         raise
-                    stamp = _regular_stamp(events)
+                    stamp = regular_stamp(events)
                 # During an explicit import refresh keep the old immutable
                 # proof available to memory-only event readers until replace.
                 if not refresh:
