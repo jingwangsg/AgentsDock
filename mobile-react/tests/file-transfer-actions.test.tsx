@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict'
 import { act, create, type ReactTestInstance } from 'react-test-renderer'
 import { MediaGrid } from '../src/components/MediaGrid'
+import { ChatOutputsPanel } from '../src/components/ChatOutputsPanel'
 import { ArtifactFileViewerModal } from '../src/components/file-viewer/ArtifactFileViewerModal'
 import { WorkspaceFileViewerModal } from '../src/components/file-viewer/WorkspaceFileViewerModal'
 import { FileViewerContext } from '../src/components/file-viewer/FileViewerContext'
 import { useFileTransfer } from '../src/components/file-viewer/useFileTransfer'
 import { FileTransferNotice } from '../src/components/file-viewer/FileTransferNotice'
-import { Directory, File, nativeTransfer, setTestWidth } from './file-transfer-mocks'
+import { ActionSheetIOS, Alert, Directory, File, Platform, clipboardWrites, nativeTransfer, setTestWidth } from './file-transfer-mocks'
 import { resetComponentStore, setTestClient, useAppStore } from './component-mocks/app-store'
-import type { AgentFile, WorkspaceInfo } from '../src/types'
+import type { AgentFile, CanvasSummary, Event, WorkspaceInfo } from '../src/types'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -303,4 +304,56 @@ assert.equal(nativeTransfer.downloads.length, 0)
 await close()
 
 console.log('PASS picker cancellation, missing capability, provider collisions, cloud error, separate Share, A→B→A stale guard')
+
+// Outputs & sources: a long-press copies the server path or downloads the artifact without leaving the
+// sheet. iOS uses an action sheet; Android an alert, because MenuView cannot open inside its Modal.
+for (const os of ['ios', 'android'] as const) {
+  reset()
+  Platform.OS = os
+  clipboardWrites.length = 0
+  ;(Alert as any).__reset()
+  const sheets: Array<{ title?: string; options: string[]; callback: (index: number) => void }> = []
+  ActionSheetIOS.showActionSheetWithOptions = (options, callback) => { sheets.push({ ...options, callback }) }
+  const menu = () => {
+    if (os === 'ios') {
+      const sheet = sheets.at(-1)!
+      return { title: sheet.title, choices: sheet.options, choose: (text: string) => sheet.callback(sheet.options.indexOf(text)) }
+    }
+    const alert = (Alert as any).__calls.at(-1) as { title: string; buttons: Array<{ text: string; onPress?: () => void }> }
+    return { title: alert.title, choices: alert.buttons.map(button => button.text), choose: (text: string) => alert.buttons.find(button => button.text === text)!.onPress!() }
+  }
+  const artifact: AgentFile = { ...baseFile, source_path: '/server/workspace/out/report.txt', path: '/server/files/file-one.txt' }
+  const event = { id: 'event-1', seq: 1, session_id: 'session-a', type: 'artifact_created', ts: 't', artifact } as Event
+  useAppStore.setState({ snapshots: { 'session-a': { events: [event] } } } as any)
+  setTestClient({ ...connection(), listCanvases: async () => ({ canvases: [{ name: 'board', path: '/server/canvases/board.canvas.tsx' } as CanvasSummary] }) })
+  let closed = 0
+  await act(async () => {
+    renderer = create(<FileViewerContext.Provider value={viewerContext}><ChatOutputsPanel sessionId="session-a" visible onClose={() => { closed += 1 }} onReview={() => {}} onChanges={() => {}} onOpenCanvas={() => {}} /></FileViewerContext.Provider>)
+  })
+  // Canvases arrive after the first aggregation; the panel folds them in after its 1 s debounce.
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 1_100)) })
+  const longPress = async (row: string) => { const node = label(row); assert(node, `Expected the ${row} row`); await act(async () => { node.props.onLongPress() }) }
+
+  await longPress('report.txt. TXT file')
+  assert.equal(menu().title, 'report.txt')
+  assert.deepEqual(menu().choices, os === 'ios' ? ['Copy path', 'Download', 'Cancel'] : ['Cancel', 'Copy path', 'Download'], `${os}: artifact actions`)
+  await act(async () => menu().choose('Copy path'))
+  await longPress('board. Canvas')
+  assert.deepEqual(menu().choices, os === 'ios' ? ['Copy path', 'Cancel'] : ['Cancel', 'Copy path'], `${os}: canvas actions`)
+  await act(async () => menu().choose('Copy path'))
+  assert.deepEqual(clipboardWrites, ['/server/workspace/out/report.txt', '/server/canvases/board.canvas.tsx'], `${os}: the agent's server path, then the canvas file path`)
+
+  await longPress('report.txt. TXT file')
+  await act(async () => menu().choose('Download'))
+  await flush()
+  assert.equal(nativeTransfer.pickerCalls, 1)
+  assert.equal(nativeTransfer.downloads.length, 1)
+  assert.equal(nativeTransfer.downloads[0].options.headers?.Authorization, 'Bearer synthetic-test-token')
+  assert.match(nativeTransfer.downloads[0].url, /\/sessions\/session-a\/files\/file%2Fone$/)
+  assert.match(rendered(), /Saved .* to the selected folder/, `${os}: the transfer notice renders inside the sheet`)
+  assert.equal(closed, 0, `${os}: long-press actions keep the sheet open`)
+  await close()
+  console.log(`PASS ${os} Outputs & sources long-press: copy artifact and canvas paths, authenticated download in place`)
+}
+Platform.OS = 'ios'
 console.log('All rendered file transfer behavioral tests passed')

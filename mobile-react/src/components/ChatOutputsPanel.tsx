@@ -1,16 +1,22 @@
 // "Outputs & sources" page sheet for one chat: port of the Electron ChatOutputsPanel.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { AccessibilityInfo, ActionSheetIOS, Alert, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
+import * as Clipboard from 'expo-clipboard'
+import * as Haptics from 'expo-haptics'
 import { FileDiff, FileText, Frame, GitBranch, Globe, Image, MessageSquare, Paperclip, Plug, Search, Sparkles, type LucideIcon } from 'lucide-react-native'
 import { collectChatOutputs, type ChatOutputsSummary } from '../lib/chat-outputs'
+import { artifactTransferRequest } from '../lib/file-transfer'
 import { mobileFileViewerKind } from '../lib/file-viewer'
-import { client, useAppStore } from '../store/useAppStore'
+import { agentFileAbsolutePath } from '../lib/format'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
-import type { CanvasSummary, Event } from '../types'
+import type { AgentFile, CanvasSummary, Event } from '../types'
 import { Text } from './AppText'
 import { SheetCloseButton } from './ui'
 import { useFileViewer } from './file-viewer/FileViewerContext'
+import { FileTransferNotice } from './file-viewer/FileTransferNotice'
+import { useFileTransfer } from './file-viewer/useFileTransfer'
 
 const COLLAPSED_SOURCE_ROWS = 6
 const REFRESH_DEBOUNCE_MS = 1_000
@@ -24,9 +30,11 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
   const events = useAppStore(state => state.snapshots[sessionId]?.events ?? EMPTY_EVENTS)
   const hasMore = useAppStore(state => Boolean(state.snapshots[sessionId]?.hasMore))
   const total = useAppStore(state => state.snapshots[sessionId]?.total ?? null)
+  const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const seekTimelineResult = useAppStore(state => state.seekTimelineResult)
   const { openArtifacts } = useFileViewer()
+  const transfer = useFileTransfer(`${activeProfileId ?? 'none'}:${profileGeneration}:${sessionId}`)
   const [summary, setSummary] = useState<ChatOutputsSummary | null>(null)
   const [allSources, setAllSources] = useState(false)
   const [canvases, setCanvases] = useState<CanvasSummary[]>([])
@@ -81,6 +89,23 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
     // The timeline's only jump mechanism is the search-result seek; it reads session_id, event_id and seq.
     closeThen(() => void seekTimelineResult({ session_id: sessionId, event_id: event.id, seq: event.seq, role: 'trace', snippet: '' }, profileGeneration))
   }
+  // Long-press actions keep this sheet open. MenuView does not open inside a Modal on Android,
+  // whose alerts hold at most three buttons.
+  const showActions = (title: string, actions: { text: string; onPress: () => void }[]) => {
+    if (Platform.OS !== 'ios') {
+      Alert.alert(title, undefined, [{ text: 'Cancel', style: 'cancel' }, ...actions])
+      return
+    }
+    ActionSheetIOS.showActionSheetWithOptions({ title, options: [...actions.map(action => action.text), 'Cancel'], cancelButtonIndex: actions.length }, index => actions[index]?.onPress())
+  }
+  const copyPath = (path: string) => void Clipboard.setStringAsync(path).then(() => {
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined)
+    AccessibilityInfo.announceForAccessibility('Path copied')
+  })
+  const download = (file: AgentFile) => {
+    const connection = client
+    void transfer.start(artifactTransferRequest(file, sessionId, connection, 'download', () => capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration) && useAppStore.getState().selectedSessionId === sessionId))
+  }
   const plural = (count: number, one: string, other: string) => `${count} ${count === 1 ? one : other}`
   const sources = summary?.sources ?? []
   const visibleSources = allSources ? sources : sources.slice(0, COLLAPSED_SOURCE_ROWS)
@@ -93,20 +118,27 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
         <SheetCloseButton onPress={onClose} label="Close outputs and sources" testID="chat-outputs-close" />
       </View>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="always">
+        <FileTransferNotice state={transfer.state} onCancel={transfer.cancel} onDismiss={transfer.dismiss} />
         <Text style={[styles.section, { color: colors.muted }]}>Outputs</Text>
         {summary && summary.outputs.length === 0 ? <Text style={[styles.empty, { color: colors.muted }]}>No outputs yet</Text> : null}
         {summary?.outputs.map(item => {
           switch (item.kind) {
             case 'canvas':
-              return <Row key={`canvas:${item.path}`} icon={Frame} label={item.label} secondary="Canvas" onPress={() => closeThen(() => onOpenCanvas(item.name))} />
+              return <Row key={`canvas:${item.path}`} icon={Frame} label={item.label} secondary="Canvas" onPress={() => closeThen(() => onOpenCanvas(item.name))}
+                onLongPress={() => showActions(item.label, [{ text: 'Copy path', onPress: () => copyPath(item.path) }])} />
             case 'artifact': {
               const kind = mobileFileViewerKind(item.filename, item.contentType)
               const media = kind === 'image' || kind === 'video'
               const extension = /\.([a-z0-9]+)$/i.exec(item.filename)?.[1]
               const file = eventById(item.eventId)?.artifact
+              const path = file ? agentFileAbsolutePath(file) : null
               return <Row key={`artifact:${item.eventId}:${item.filename}`} icon={media ? Image : FileText} label={item.label}
                 secondary={media ? 'Generated image' : extension ? `${extension.toUpperCase()} file` : 'File'}
-                onPress={file ? () => closeThen(() => openArtifacts({ sessionId, files: [file], initialId: file.id, ownerKey: `chat-outputs:${file.id}` })) : undefined} />
+                onPress={file ? () => closeThen(() => openArtifacts({ sessionId, files: [file], initialId: file.id, ownerKey: `chat-outputs:${file.id}` })) : undefined}
+                onLongPress={file ? () => showActions(item.label, [
+                  ...(path ? [{ text: 'Copy path', onPress: () => copyPath(path) }] : []),
+                  { text: 'Download', onPress: () => download(file) },
+                ]) : undefined} />
             }
             case 'local_preview':
               return <Row key={`preview:${item.host}`} icon={Globe} label="Local preview" secondary={item.host} onPress={() => void Linking.openURL(item.url)} />
@@ -146,7 +178,7 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
   </Modal>
 }
 
-function Row({ icon: Icon, label, secondary, onPress }: { icon: LucideIcon; label: string; secondary: string; onPress?: () => void }) {
+function Row({ icon: Icon, label, secondary, onPress, onLongPress }: { icon: LucideIcon; label: string; secondary: string; onPress?: () => void; onLongPress?: () => void }) {
   const colors = usePalette()
   return <Pressable
     accessibilityRole="button"
@@ -154,6 +186,7 @@ function Row({ icon: Icon, label, secondary, onPress }: { icon: LucideIcon; labe
     accessibilityState={{ disabled: !onPress }}
     disabled={!onPress}
     onPress={onPress}
+    onLongPress={onLongPress}
     style={({ pressed }) => [styles.row, { borderColor: colors.border, backgroundColor: colors.surface, opacity: pressed ? 0.6 : 1 }]}
   >
     <Icon size={16} color={colors.muted} strokeWidth={1.8} />

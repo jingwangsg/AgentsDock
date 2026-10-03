@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
@@ -9,8 +9,11 @@ import { ChatOutputsPanel } from './ChatOutputsPanel'
 
 const outputs = vi.fn()
 const openExternal = vi.fn()
+const writeClipboard = vi.fn()
+const save = vi.fn()
+const reveal = vi.fn()
 
-const chart = { id: 'art_1', filename: 'chart.png', content_type: 'image/png', title: 'Sales chart' } as AgentFile
+const chart = { id: 'art_1', filename: 'chart.png', content_type: 'image/png', title: 'Sales chart', source_path: '/work/out/chart.png', path: '/srv/files/art_1.png' } as AgentFile
 const summary: ChatOutputsSummary = {
   outputs: [
     { kind: 'canvas', label: 'Budget board', path: 'canvases/budget.canvas.tsx' },
@@ -44,9 +47,12 @@ async function renderPanel(onClose = vi.fn(), value: ChatOutputsSummary = summar
 beforeEach(() => {
   outputs.mockReset()
   openExternal.mockReset()
+  writeClipboard.mockReset().mockResolvedValue(undefined)
+  save.mockReset().mockResolvedValue('/Users/me/Downloads/chart.png')
+  reveal.mockReset().mockResolvedValue(undefined)
   Object.defineProperty(window, 'agentsDock', {
     configurable: true,
-    value: { chat: { outputs }, native: { openExternal } } as unknown as AgentsDockAPI
+    value: { chat: { outputs }, native: { openExternal, writeClipboard }, files: { save, reveal } } as unknown as AgentsDockAPI
   })
   useAppStore.setState({ snapshots: { chat: snapshot([]) } })
 })
@@ -100,6 +106,47 @@ describe('ChatOutputsPanel', () => {
     ])
     expect(openExternal).toHaveBeenCalledExactlyOnceWith('http://localhost:5173/app')
     for (const name of ['agentsdock:open-canvas', 'agentsdock:open-agent-file', 'agentsdock:find-event', 'agentsdock:review-diff']) window.removeEventListener(name, record)
+  })
+
+  it('right-clicking an output offers copy path, download and show in folder without closing the card', async () => {
+    const { onClose } = await renderPanel()
+    const user = userEvent.setup()
+    const pick = async (row: RegExp, item: string) => {
+      fireEvent.contextMenu(screen.getByRole('button', { name: row }))
+      await user.click(await screen.findByRole('menuitem', { name: item }))
+    }
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: /^Sales chart/ }))
+    expect((await screen.findAllByRole('menuitem')).map(item => item.textContent)).toEqual(['Copy path', 'Download', 'Show in Folder'])
+    await user.keyboard('{Escape}')
+    await pick(/^Sales chart/, 'Copy path')
+    await pick(/^Sales chart/, 'Download')
+    await pick(/^Sales chart/, 'Show in Folder')
+    await pick(/^Budget board/, 'Copy path')
+
+    // The server-side path the agent wrote, not the stored copy; canvases copy their own file path.
+    expect(writeClipboard.mock.calls).toEqual([['/work/out/chart.png'], ['canvases/budget.canvas.tsx']])
+    expect(save).toHaveBeenCalledExactlyOnceWith('chat', chart)
+    expect(reveal).toHaveBeenCalledExactlyOnceWith('chat', chart)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('a pointer-down or Escape that dismisses a row menu leaves the card open', async () => {
+    const { onClose } = await renderPanel()
+    const user = userEvent.setup()
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: /^Budget board/ }))
+    await screen.findByRole('menu')
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    fireEvent.contextMenu(screen.getByRole('button', { name: /^Budget board/ }))
+    await screen.findByRole('menu')
+    fireEvent.pointerDown(document.documentElement)
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    expect(onClose).not.toHaveBeenCalled()
+
+    fireEvent.pointerDown(document.body)
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 
   it('collapses sources to six rows behind a view-all toggle', async () => {

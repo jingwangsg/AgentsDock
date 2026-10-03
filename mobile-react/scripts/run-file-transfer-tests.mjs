@@ -31,7 +31,7 @@ try {
         context.onResolve({ filter: /.*/ }, args => {
           if (args.path === 'lucide-react-native') return { path: 'icons', namespace: 'transfer-test' }
           if (['react-native-keyboard-controller', 'react-native-safe-area-context', 'react-native-svg'].includes(args.path)) return { path: resolve(projectRoot, 'tests/component-mocks/native-wrappers.ts') }
-          if (['react-native', 'expo-file-system', 'expo-file-system/legacy', 'expo-sharing', 'expo-image', 'expo-clipboard', '@shopify/flash-list'].includes(args.path)) return { path: mocks }
+          if (['react-native', 'expo-file-system', 'expo-file-system/legacy', 'expo-sharing', 'expo-image', 'expo-clipboard', 'expo-haptics', '@shopify/flash-list'].includes(args.path)) return { path: mocks }
           if (/(?:^|\/)store\/useAppStore(?:\.[jt]sx?)?$/.test(args.path)) return { path: resolve(projectRoot, 'tests/component-mocks/app-store.ts') }
           if (/\/(?:FilePreview|ArtifactVideoPlayer|VideoThumbnailLoader|TextPromptDialog)$/.test(args.path)) return { path: mocks }
           return undefined

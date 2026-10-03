@@ -1,7 +1,8 @@
 import { createElement } from 'react'
 export * from './component-mocks/react-native'
 export const KeyboardAvoidingView = 'KeyboardAvoidingView'
-export const ActionSheetIOS = { showActionSheetWithOptions() {} }
+export const ActionSheetIOS = { showActionSheetWithOptions(_options: { title?: string; options: string[] }, _callback: (index: number) => void) {} }
+export const AccessibilityInfo = { announceForAccessibility(_message: string) {} }
 export let testWidth = 390
 export function setTestWidth(width: number) { testWidth = width }
 export const useWindowDimensions = () => ({ width: testWidth, height: 1024, scale: 2, fontScale: 1 })
@@ -76,7 +77,10 @@ export async function shareAsync(uri: string) { nativeTransfer.shares.push(uri);
 export async function deleteAsync() {}
 export async function getInfoAsync() { return { exists: false } }
 export async function downloadAsync() { throw new Error('Legacy transfer must not run in these tests') }
-export async function setStringAsync() {}
+export const clipboardWrites: string[] = []
+export async function setStringAsync(value: string) { clipboardWrites.push(value) }
+export const NotificationFeedbackType = { Success: 'success', Error: 'error' }
+export async function notificationAsync() {}
 export function FlashList({ data: items = [], renderItem, ListEmptyComponent }: any) { return createElement('List', {}, items.length ? items.map((item: any, index: number) => createElement('Row', { key: index }, renderItem({ item, index }))) : ListEmptyComponent) }
 // Preview engines and native pixels are outside this transfer test. Keep their
 // public fallback Download callback so that production viewer routing runs.

@@ -2,9 +2,11 @@
 import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useEffect, useRef, useState, type ComponentType } from 'react'
-import { FileDiff, FileText, Frame, Globe, Image, MessageSquare, Paperclip, Plug, Search, Sparkles, X } from 'lucide-react'
+import * as ContextMenu from '@radix-ui/react-context-menu'
+import { Copy, Download, FileDiff, FileText, FolderOpen, Frame, Globe, Image, MessageSquare, Paperclip, Plug, Search, Sparkles, X } from 'lucide-react'
 import type { ChatOutputsSummary } from '@shared/chat-outputs'
 import { isPreviewableFile } from '@shared/file-content-type'
+import { saveAgentFile } from '../lib/file-actions'
 import type { CodeReviewTarget } from '../lib/unified-diff'
 import { timelineCount } from '../lib/timeline-labels'
 import { useTransientClose } from '../lib/transient-close'
@@ -20,6 +22,8 @@ export function ChatOutputsPanel({ sessionId, onClose }: { sessionId: string; on
   const [allSources, setAllSources] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const firstLoad = useRef(true)
+  // The pointer-down that dismisses a row menu, or picks an item in its portal, must not also close this card.
+  const menuOpen = useRef(false)
   const events = useAppStore(state => state.snapshots[sessionId]?.events)
   // Registered so the app-level Escape closes only this card, not the surface beneath it as well.
   useTransientClose(true, onClose)
@@ -38,11 +42,12 @@ export function ChatOutputsPanel({ sessionId, onClose }: { sessionId: string; on
   }, [events, sessionId])
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    // An open row menu handles Escape first (capture phase) and marks it handled.
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape' && !event.defaultPrevented) onClose() }
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null
       // The header toggle closes the card itself; closing here too would reopen it on the same click.
-      if (panelRef.current?.contains(target) || target?.closest('[data-chat-outputs-toggle]')) return
+      if (menuOpen.current || panelRef.current?.contains(target) || target?.closest('[data-chat-outputs-toggle]')) return
       onClose()
     }
     document.addEventListener('keydown', onKeyDown)
@@ -54,6 +59,9 @@ export function ChatOutputsPanel({ sessionId, onClose }: { sessionId: string; on
   }, [onClose])
 
   const findEvent = (eventId: string) => window.dispatchEvent(new CustomEvent('agentsdock:find-event', { detail: { sessionId, eventId } }))
+  const trackMenu = (open: boolean) => { menuOpen.current = open }
+  const reportFailure = (operation: Promise<unknown>) => void operation.catch(error => useAppStore.getState().setError(error instanceof Error ? error.message : String(error)))
+  const copyPath = (path: string): RowAction => ({ icon: Copy, label: t('chatOutputs.copyPath'), onSelect: () => reportFailure(window.agentsDock.native.writeClipboard(path)) })
   const sources = summary?.sources ?? []
   const visibleSources = allSources ? sources : sources.slice(0, COLLAPSED_SOURCE_ROWS)
 
@@ -70,13 +78,21 @@ export function ChatOutputsPanel({ sessionId, onClose }: { sessionId: string; on
           switch (item.kind) {
             case 'canvas':
               return <Row key={`canvas:${item.path}`} icon={Frame} label={item.label} secondary={t('chatOutputs.canvas')}
-                onClick={() => window.dispatchEvent(new CustomEvent('agentsdock:open-canvas', { detail: { sessionId, path: item.path } }))} />
+                onClick={() => window.dispatchEvent(new CustomEvent('agentsdock:open-canvas', { detail: { sessionId, path: item.path } }))}
+                actions={[copyPath(item.path)]} onMenuOpenChange={trackMenu} />
             case 'artifact': {
               const previewable = isPreviewableFile({ filename: item.filename, content_type: item.contentType })
               const extension = /\.([a-z0-9]+)$/i.exec(item.filename)?.[1]
+              // Its absolute path on the server, as the timeline card copies it.
+              const path = item.file.source_path || item.file.path
               return <Row key={`artifact:${item.eventId}:${item.filename}`} icon={previewable ? Image : FileText} label={item.label}
                 secondary={previewable ? t('chatOutputs.generatedImage') : extension ? t('chatOutputs.fileWithExt', { ext: extension.toUpperCase() }) : t('chatOutputs.file')}
-                onClick={() => requestOpenAgentFile(sessionId, item.file)} />
+                onClick={() => requestOpenAgentFile(sessionId, item.file)}
+                actions={[
+                  ...(path ? [copyPath(path)] : []),
+                  { icon: Download, label: t('chatOutputs.download'), onSelect: () => void saveAgentFile(sessionId, item.file) },
+                  { icon: FolderOpen, label: t('chatOutputs.showInFolder'), onSelect: () => reportFailure(window.agentsDock.files.reveal(sessionId, item.file)) }
+                ]} onMenuOpenChange={trackMenu} />
             }
             case 'local_preview':
               return <Row key={`preview:${item.host}`} icon={Globe} label={t('chatOutputs.localPreview')} secondary={item.host}
@@ -117,9 +133,20 @@ export function ChatOutputsPanel({ sessionId, onClose }: { sessionId: string; on
   </div>
 }
 
-function Row({ icon: Icon, label, secondary, onClick }: { icon: ComponentType<{ size?: number }>; label: string; secondary: string; onClick: () => void }) {
-  return <button type="button" className="chat-outputs-row" title={label} onClick={onClick}>
+type RowAction = { icon: ComponentType<{ size?: number }>; label: string; onSelect: () => void }
+
+function Row({ icon: Icon, label, secondary, onClick, actions, onMenuOpenChange }: { icon: ComponentType<{ size?: number }>; label: string; secondary: string; onClick: () => void; actions?: RowAction[]; onMenuOpenChange?: (open: boolean) => void }) {
+  const row = <button type="button" className="chat-outputs-row" title={label} onClick={onClick}>
     <Icon size={16} />
     <span><strong>{label}</strong><small>{secondary}</small></span>
   </button>
+  if (!actions) return row
+  return <ContextMenu.Root onOpenChange={onMenuOpenChange}>
+    <ContextMenu.Trigger asChild>{row}</ContextMenu.Trigger>
+    <ContextMenu.Portal>
+      <ContextMenu.Content className="menu-content">
+        {actions.map(action => <ContextMenu.Item key={action.label} className="menu-item" onSelect={action.onSelect}><action.icon size={14} />{action.label}</ContextMenu.Item>)}
+      </ContextMenu.Content>
+    </ContextMenu.Portal>
+  </ContextMenu.Root>
 }
