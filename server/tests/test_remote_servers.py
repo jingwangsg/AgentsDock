@@ -326,6 +326,9 @@ class RemoteServerTests(unittest.TestCase):
             "-o", "ControlMaster=no", "-o", "ControlPath=none",
             "-L", "127.0.0.1:7851:127.0.0.1:7850", "osmo_9000",
         ]
+        # No local port: a reverse-only connection (the inference tunnel) has no -L.
+        reverse_only = rs.tunnel_args("osmo_9000", None, 7850)
+        assert reverse_only[-3:] == ["-o", "ControlPath=none", "osmo_9000"] and "-L" not in reverse_only
         assert rs.revive_args("osmo_9000", "~/.agentsdock-server")[-3:] == ["bash", "-lc", "exec bash ~/.agentsdock-server/start.sh"]
         assert rs.remote_shell_args("h")[-4:] == ["h", "bash", "-s", "--"]
         with self.assertRaises(ValueError):
@@ -726,6 +729,7 @@ if "-N" in sys.argv:
         self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
         self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
         self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_TUNNEL_SSH_ARGS": "-R 12052:git.example:12051 -o ExitOnForwardFailure=no"}))
+        os.environ.pop("AGENTSDOCK_INFERENCE_PROXY_PORT", None)
         self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
         oci_port = free_port()
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
@@ -737,7 +741,7 @@ if "-N" in sys.argv:
         async def main() -> None:
             await manager.start()
             try:
-                # Two servers, each with its main and its upload tunnel, plus one git rewrite.
+                # Two servers, each with its main and its bulk tunnel, plus one git rewrite.
                 for _ in range(200):
                     if calls.exists() and len(calls.read_text().splitlines()) == 5:
                         return
@@ -752,9 +756,9 @@ if "-N" in sys.argv:
         [oci] = [argv for argv in tunnels if argv[-2] == f"127.0.0.1:{oci_port}:127.0.0.1:7850"]
         # Before the tunnel's own options, so ExitOnForwardFailure=no wins over its =yes.
         assert oci[:9] == ["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x", "-R", "12052:git.example:12051", "-o", "ExitOnForwardFailure=no", "-N"]
-        # The upload tunnel must not claim the site forward's remote port a second time.
-        [oci_upload] = [argv for argv in tunnels if argv[-1] == "sky-cluster" and argv is not oci]
-        assert oci_upload[:5] == ["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x", "-N"]
+        # The bulk tunnel must not claim the site forward's remote port a second time.
+        [oci_bulk] = [argv for argv in tunnels if argv[-1] == "sky-cluster" and argv is not oci]
+        assert oci_bulk[:5] == ["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x", "-N"]
         assert all("-R" not in argv for argv in tunnels if argv[-1] == "plain-host")
         # Once connected, git on the host is pointed at the forward, in the server's HOME.
         [rewrite] = [argv for argv in records if "-N" not in argv]
@@ -762,7 +766,7 @@ if "-N" in sys.argv:
         assert rewrite[-1].startswith("set -a; . /mnt/lustre/.agentsdock-server/env; set +a; ")
         assert "url.ssh://git@127.0.0.1:12052/.insteadOf" in rewrite[-1] and "ssh://git@git.example:12051/" in rewrite[-1]
 
-    def test_every_server_main_tunnel_reverse_forwards_the_inference_proxy_port(self) -> None:
+    def test_every_server_gets_an_inference_tunnel_that_alone_reverse_forwards_the_proxy_port(self) -> None:
         script = self.tmp_path / "ssh"
         calls = self.tmp_path / "tunnel-calls.jsonl"
         script.write_text(f"""#!{sys.executable}
@@ -790,26 +794,36 @@ if "-N" in sys.argv:
         async def main() -> None:
             await manager.start()
             try:
-                # Two servers, each with its main and its upload tunnel, plus the oci@ site forward's git rewrite.
+                # Two servers, each with its main, bulk and inference tunnel, plus the oci@ site forward's git rewrite.
                 for _ in range(200):
-                    if calls.exists() and len(calls.read_text().splitlines()) == 5:
-                        return
+                    if calls.exists() and len(calls.read_text().splitlines()) == 7:
+                        break
                     await asyncio.sleep(0.05)
-                self.fail("tunnels did not start")
+                else:
+                    self.fail("tunnels did not start")
+                assert set(manager.inference_tunnels) == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
+                # No -L, so no local port to keep free for it.
+                assert manager._reserved_ports() == {oci_port, plain_port} | {tunnel.server.local_port for tunnel in manager.bulk_tunnels.values()}
+                plain_inference = manager.inference_tunnels["bbbbbbbbbbbb"]
+                await manager.remove("bbbbbbbbbbbb")
+                assert "bbbbbbbbbbbb" not in manager.inference_tunnels and plain_inference.status["state"] == "stopped"
             finally:
                 await manager.stop()
 
         asyncio.run(main())
         records = [json.loads(line) for line in calls.read_text().splitlines()]
         tunnels = [argv for argv in records if "-N" in argv]
-        main_specs = {f"127.0.0.1:{oci_port}:127.0.0.1:7850", f"127.0.0.1:{plain_port}:127.0.0.1:7850"}
-        mains = [argv for argv in tunnels if argv[-2] in main_specs]
-        uploads = [argv for argv in tunnels if argv[-2] not in main_specs]
-        assert len(mains) == 2 and len(uploads) == 2
-        # Every host, not only oci@, carries the forward; the upload tunnel must not claim the remote port too.
-        for argv in mains:
-            assert ("-R", "20001:127.0.0.1:20001") in zip(argv, argv[1:])
-        assert all("-R" not in argv for argv in uploads)
+        inference = [argv for argv in tunnels if "-L" not in argv]
+        forwards = [argv for argv in tunnels if "-L" in argv]
+        assert len(inference) == 2 and len(forwards) == 4
+        # Every host, not only oci@, gets the forward, on a connection that carries nothing else;
+        # the main and bulk tunnels must not claim the remote port too.
+        for argv in inference:
+            assert ("-R", "20001:127.0.0.1:20001") in zip(argv, argv[1:]) and argv.count("-R") == 1
+        assert sorted(argv[-1] for argv in inference) == ["plain-host", "sky-cluster"]
+        [oci_inference] = [argv for argv in inference if argv[-1] == "sky-cluster"]
+        assert oci_inference[:7] == ["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x", "-R", "20001:127.0.0.1:20001", "-N"]
+        assert all("20001:127.0.0.1:20001" not in argv for argv in forwards)
         # The git rewrite reads the site forwards only, since the proxy port is not a git server,
         # and its own short connection carries no proxy forward.
         [rewrite] = [argv for argv in records if "-N" not in argv]
@@ -847,6 +861,7 @@ time.sleep(30)
             asyncio.run(main())
         assert any("AGENTSDOCK_INFERENCE_PROXY_PORT='twenty'" in line for line in logs.output)
         assert all("-R" not in argv for argv in (json.loads(line) for line in calls.read_text().splitlines()))
+        assert manager.inference_tunnels == {}
 
     def test_osmo_tunnel_forwards_through_the_workflow_and_reports_an_ended_one(self) -> None:
         self.fake_osmo()
@@ -861,6 +876,9 @@ time.sleep(30)
         script.chmod(0o700)
         self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
         self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
+        # The ssh count below assumes no inference tunnel; the developer's shell may export the port.
+        self.enterContext(mock.patch.dict(os.environ))
+        os.environ.pop("AGENTSDOCK_INFERENCE_PROXY_PORT", None)
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
         running_port = free_port()
         rs.save_registry(manager.path, [
@@ -1057,10 +1075,10 @@ time.sleep(30)
 
         asyncio.run(main())
 
-    def test_chat_uploads_take_the_remotes_upload_tunnel(self) -> None:
+    def test_chat_uploads_take_the_remotes_bulk_tunnel(self) -> None:
         async def main() -> None:
             manager, remote, _dead, hub_port, close = await hub_with_fake(self.tmp_path)
-            upload_server, upload_task, upload_port = await serve(fake_upstream(identity="upload-tunnel"))
+            bulk_server, bulk_task, bulk_port = await serve(fake_upstream(identity="bulk-tunnel"))
             base = f"http://127.0.0.1:{hub_port}/api/remote/{remote.id}/api/sessions/sess_1"
             headers = {"X-AgentsDock-Token": HUB_TOKEN}
             try:
@@ -1075,22 +1093,54 @@ time.sleep(30)
                     # A hub that manages no tunnels keeps uploads on the main tunnel.
                     assert (await post_upload())["identity"] == "fake-remote"
 
-                    # Never started: only its port matters here, and tunnel_status(upload=True) must read this one.
-                    manager.upload_tunnels[remote.id] = rs.Tunnel(remote.model_copy(update={"local_port": upload_port}), None, role="upload")
+                    # Never started: only its port matters here, and tunnel_status(bulk=True) must read this one.
+                    manager.bulk_tunnels[remote.id] = rs.Tunnel(remote.model_copy(update={"local_port": bulk_port}), None, role="bulk")
                     posted = await post_upload()
-                    assert posted["identity"] == "upload-tunnel" and posted["size"] == int(posted["content_length"]) > len(payload)
-                    # Listing and downloading files, and everything else, stay on the main tunnel.
-                    for path in ("files?offset=0&limit=60", "files/file_1", "pins"):
+                    assert posted["identity"] == "bulk-tunnel" and posted["size"] == int(posted["content_length"]) > len(payload)
+                    # Listing files, and everything else, stay on the main tunnel.
+                    for path in ("files?offset=0&limit=60", "pins"):
                         assert (await client.get(f"{base}/{path}", headers=headers)).json()["identity"] == "fake-remote", path
                     assert (await client.post(f"{base}/turns", headers=headers, json={})).json()["identity"] == "fake-remote"
-                    assert manager.tunnel_status(remote.id, upload=True) == {"state": "starting", "restarts": 0, "last_error": None}
+                    assert manager.tunnel_status(remote.id, bulk=True) == {"state": "starting", "restarts": 0, "last_error": None}
             finally:
                 await close()
-                await stop(upload_server, upload_task)
+                await stop(bulk_server, bulk_task)
 
         asyncio.run(main())
 
-    def test_a_remote_gets_an_upload_tunnel_on_its_own_unpersisted_port(self) -> None:
+    def test_download_path_rule_matches_file_bodies_only(self) -> None:
+        for path in ("api/sessions/s1/files/f1", "api/sessions/s1/links/file", "api/files/f1", "api/sessions/s1/diffs/run_1",
+                     "api/sessions/s1/workspace/preview", "api/sessions/s1/workspace/download", "api/sessions/s1/export"):
+            assert rs.DOWNLOAD_PATH_RE.fullmatch(path), path
+        # JSON routes next to them: the file listing, a file's event, text read as JSON, and anything else.
+        for path in ("api/sessions/s1/files", "api/sessions/s1/files/f1/event", "api/sessions/s1/workspace/file",
+                     "api/sessions/s1/workspace/absolute-file", "api/sessions/s1/pins", "api/files", "api/health"):
+            assert rs.DOWNLOAD_PATH_RE.fullmatch(path) is None, path
+
+    def test_file_body_downloads_take_the_remotes_bulk_tunnel(self) -> None:
+        async def main() -> None:
+            manager, remote, _dead, hub_port, close = await hub_with_fake(self.tmp_path)
+            bulk_server, bulk_task, bulk_port = await serve(fake_upstream(identity="bulk-tunnel"))
+            base = f"http://127.0.0.1:{hub_port}/api/remote/{remote.id}/api/sessions/sess_1"
+            headers = {"X-AgentsDock-Token": HUB_TOKEN}
+            try:
+                # Never started: only its port matters here.
+                manager.bulk_tunnels[remote.id] = rs.Tunnel(remote.model_copy(update={"local_port": bulk_port}), None, role="bulk")
+                async with httpx.AsyncClient() as client:
+                    for path in ("files/file_1", "links/file?target=notes.md", "diffs/run_1",
+                                 "workspace/preview?path=shot.png", "workspace/download?path=build.tgz", "export"):
+                        assert (await client.get(f"{base}/{path}", headers=headers)).json()["identity"] == "bulk-tunnel", path
+                    # The JSON routes beside them stay on the main tunnel, as does a POST to a download path.
+                    for path in ("files?offset=0&limit=60", "files/file_1/event", "workspace/file?path=a.py"):
+                        assert (await client.get(f"{base}/{path}", headers=headers)).json()["identity"] == "fake-remote", path
+                    assert (await client.post(f"{base}/diffs/run_1", headers=headers, json={})).json()["identity"] == "fake-remote"
+            finally:
+                await close()
+                await stop(bulk_server, bulk_task)
+
+        asyncio.run(main())
+
+    def test_a_remote_gets_a_bulk_tunnel_on_its_own_unpersisted_port_and_no_inference_tunnel_unconfigured(self) -> None:
         script = self.tmp_path / "ssh"
         calls = self.tmp_path / "tunnel-calls.jsonl"
         script.write_text(f"""#!{sys.executable}
@@ -1101,6 +1151,8 @@ time.sleep(30)
 """)
         script.chmod(0o700)
         self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        self.enterContext(mock.patch.dict(os.environ))
+        os.environ.pop("AGENTSDOCK_INFERENCE_PROXY_PORT", None)
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
         server = make_server(ssh_host="lab", local_port=free_port())
         rs.save_registry(manager.path, [server])
@@ -1112,16 +1164,18 @@ time.sleep(30)
                     if calls.exists() and len(calls.read_text().splitlines()) == 2:
                         break
                     await asyncio.sleep(0.05)
-                upload = manager.upload_tunnels[server.id]
-                assert upload.server.local_port != server.local_port
-                assert manager.upload_port(server) == upload.server.local_port
-                assert upload.server.local_port in manager._reserved_ports()
-                # The registry keeps the one port clients may see; the upload port is this process's business.
+                bulk = manager.bulk_tunnels[server.id]
+                assert bulk.server.local_port != server.local_port
+                assert manager.bulk_port(server) == bulk.server.local_port
+                assert bulk.server.local_port in manager._reserved_ports()
+                # The registry keeps the one port clients may see; the bulk port is this process's business.
                 assert rs.load_registry(manager.path) == [server]
                 forwards = sorted(json.loads(line)[-2] for line in calls.read_text().splitlines())
-                assert forwards == sorted(f"127.0.0.1:{port}:127.0.0.1:7850" for port in (server.local_port, upload.server.local_port))
+                assert forwards == sorted(f"127.0.0.1:{port}:127.0.0.1:7850" for port in (server.local_port, bulk.server.local_port))
+                # Without AGENTSDOCK_INFERENCE_PROXY_PORT there is nothing to reverse forward.
+                assert manager.inference_tunnels == {}
                 await manager.remove(server.id)
-                assert server.id not in manager.upload_tunnels and upload.status["state"] == "stopped"
+                assert server.id not in manager.bulk_tunnels and bulk.status["state"] == "stopped"
             finally:
                 await manager.stop()
 
