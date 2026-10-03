@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.client
-import ipaddress
 import json
 import os
 import re
@@ -15,8 +14,17 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
 from typing import Any
+
+from agentsdock_cli_common import (
+    CLIError,
+    bounded_identity_value,
+    provider_authority,
+    provider_headers,
+    provider_opener,
+    selected_authority_path,
+    validated_server_url,
+)
 
 # The legacy ``response_timeout_seconds`` wire field is now only a requested
 # heartbeat interval.  There is deliberately no client response-deadline
@@ -33,168 +41,22 @@ LIVE_RESPONSE_SOCKET_GRACE_SECONDS = 10
 LIVE_RESPONSE_POST_SOCKET_SECONDS = 10
 IDEMPOTENT_POST_RETRY_DELAYS_SECONDS = (0.1, 0.5)
 IDEMPOTENT_GET_RETRY_DELAYS_SECONDS = (0.1, 0.5)
-PROVIDER_RUNTIME_VALUE_MAX_BYTES = 4096
 PROVIDER_RUNTIME_HANDLE_MAX_COUNT = 64
 MESSAGE_STDIN_MAX_CHARS = 100_000
 MESSAGE_STDIN_MAX_BYTES = 400 * 1024
 
 
-class ChatsCLIError(RuntimeError):
-    pass
-
-
-class LiveWaitRetryable(ChatsCLIError):
+class LiveWaitRetryable(CLIError):
     """One bounded live-wait slice lost transport, but its lease is intact."""
 
 
-class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
-
-
-def host_is_loopback(host: str) -> bool:
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return host.lower() == "localhost"
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        address = address.ipv4_mapped
-    return address.is_loopback
-
-
-def _canonical_http_origin(value: str, label: str) -> tuple[str, bool]:
-    raw = value.strip()
-    try:
-        parsed = urllib.parse.urlsplit(raw)
-        port = parsed.port or 80
-    except ValueError as exc:
-        raise ChatsCLIError(f"{label} must be an HTTP origin") from exc
-    if (
-        parsed.scheme.lower() != "http"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ChatsCLIError(f"{label} must be an HTTP origin")
-    host = parsed.hostname.lower()
-    try:
-        address = ipaddress.ip_address(host)
-        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-            address = address.ipv4_mapped
-        host = address.compressed
-        loopback = address.is_loopback
-        url_host = f"[{host}]" if isinstance(address, ipaddress.IPv6Address) else host
-    except ValueError:
-        loopback = host == "localhost"
-        url_host = host
-    return f"http://{url_host}:{port}", loopback
-
-
-def _authority_server_origin(path: str | None) -> str:
-    authority_path = _authority_path(path)
-    try:
-        if authority_path.stat().st_mode & 0o077:
-            raise ChatsCLIError("authority file permissions are unsafe")
-        payload = json.loads(authority_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ChatsCLIError(f"could not read authority file: {exc}") from exc
-    return _bounded_identity_value(
-        payload.get("provider_server_origin"),
-        "authority provider_server_origin",
-    )
-
-
-def environment() -> str:
-    raw_server_url = os.environ.get("AGENTSDOCK_SERVER_URL", "").strip()
-    if not raw_server_url:
-        raise ChatsCLIError("missing AgentsDock agent environment")
-    server_origin, loopback = _canonical_http_origin(
-        raw_server_url,
-        "AGENTSDOCK_SERVER_URL",
-    )
-    runtime_origin = _bounded_runtime_value(
-        "AGENTSDOCK_PROVIDER_SERVER_ORIGIN"
-    )
-    if runtime_origin:
-        canonical_runtime, _runtime_loopback = _canonical_http_origin(
-            runtime_origin,
-            "AGENTSDOCK_PROVIDER_SERVER_ORIGIN",
-        )
-        if canonical_runtime != server_origin:
-            raise ChatsCLIError(
-                "AGENTSDOCK_SERVER_URL conflicts with the live provider origin"
-            )
-    if loopback:
-        return raw_server_url.rstrip("/")
-    authority_origin = _authority_server_origin(None)
-    if not authority_origin:
-        raise ChatsCLIError(
-            "non-loopback AGENTSDOCK_SERVER_URL must match the authority origin"
-        )
-    canonical_authority, _authority_loopback = _canonical_http_origin(
-        authority_origin,
-        "authority provider_server_origin",
-    )
-    if canonical_authority != server_origin:
-        raise ChatsCLIError(
-            "non-loopback AGENTSDOCK_SERVER_URL must match the authority origin"
-        )
-    return server_origin
-
-
-def _bounded_identity_value(value: str | None, label: str) -> str:
-    clean = str(value or "").strip()
-    try:
-        encoded_size = len(clean.encode("utf-8"))
-    except UnicodeEncodeError as exc:
-        raise ChatsCLIError(f"{label} is not valid UTF-8") from exc
-    if encoded_size > PROVIDER_RUNTIME_VALUE_MAX_BYTES:
-        raise ChatsCLIError(f"{label} exceeds the provider runtime limit")
-    return clean
-
-
 def _bounded_runtime_value(name: str) -> str:
-    return _bounded_identity_value(os.environ.get(name), name)
-
-
-def _authority_path(path: str | None) -> Path:
-    explicit = _bounded_identity_value(path, "--authority-file")
-    ambient = _bounded_runtime_value("AGENTSDOCK_PROVIDER_AUTHORITY_FILE")
-    if explicit and ambient:
-        explicit_key = os.path.abspath(os.path.expanduser(explicit))
-        ambient_key = os.path.abspath(os.path.expanduser(ambient))
-        if explicit_key != ambient_key:
-            raise ChatsCLIError(
-                "--authority-file conflicts with the live provider authority"
-            )
-    selected = explicit or ambient
-    if not selected:
-        raise ChatsCLIError("--authority-file is required")
-    return Path(selected).expanduser()
+    return bounded_identity_value(os.environ.get(name), name)
 
 
 def authority(path: str | None) -> str:
-    authority_path = _authority_path(path)
-    try:
-        mode = authority_path.stat().st_mode & 0o777
-        if mode & 0o077:
-            raise ChatsCLIError("authority file permissions are unsafe")
-        payload = json.loads(authority_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ChatsCLIError(f"could not read authority file: {exc}") from exc
-    token = str(payload.get("provider_capability") or payload.get("capability") or "")
-    source_session_id = str(payload.get("source_session_id") or "").strip()
-    if not token or not source_session_id:
-        raise ChatsCLIError("authority file is invalid")
-    environment_chat_id = _bounded_runtime_value("AGENTSDOCK_CHAT_ID")
-    if environment_chat_id and environment_chat_id != source_session_id:
-        raise ChatsCLIError(
-            "AGENTSDOCK_CHAT_ID does not match the authority file"
-        )
-    return token
+    capability, _chat_id = provider_authority(path)
+    return capability
 
 
 def positive_target_index(value: str) -> int:
@@ -211,19 +73,19 @@ def positive_target_index(value: str) -> int:
 def provider_handle(index: int, action: str) -> tuple[str, bool]:
     count_text = _bounded_runtime_value("AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT")
     if re.fullmatch(r"0|[1-9][0-9]*", count_text) is None:
-        raise ChatsCLIError("the live @Chat handle count is unavailable")
+        raise CLIError("the live @Chat handle count is unavailable")
     count = int(count_text)
     if count > PROVIDER_RUNTIME_HANDLE_MAX_COUNT or index > count:
-        raise ChatsCLIError("the requested @Chat handle is unavailable")
+        raise CLIError("the requested @Chat handle is unavailable")
     prefix = f"AGENTSDOCK_CROSS_CHAT_HANDLE_{index}"
     handle = _bounded_runtime_value(prefix)
     granted_action = _bounded_runtime_value(f"{prefix}_ACTION")
     async_text = _bounded_runtime_value(f"{prefix}_ASYNC")
     expected_action = "instruction" if action == "instruction" else "request_reply"
     if not handle or granted_action != expected_action or async_text not in {"0", "1"}:
-        raise ChatsCLIError("the requested @Chat handle is unavailable")
+        raise CLIError("the requested @Chat handle is unavailable")
     if action == "instruction" and async_text != "0":
-        raise ChatsCLIError("the requested @Chat handle is malformed")
+        raise CLIError("the requested @Chat handle is malformed")
     return handle, async_text == "1"
 
 
@@ -231,7 +93,7 @@ def respond_current(args: argparse.Namespace) -> dict[str, Any]:
     if _bounded_runtime_value("AGENTSDOCK_CROSS_CHAT_RESPONSE_MODE") == "async_route_v1":
         route_id = _bounded_runtime_value("AGENTSDOCK_CROSS_CHAT_RESPONSE_ROUTE_ID")
         if re.fullmatch(r"route_[0-9a-f]{32}", route_id) is None:
-            raise ChatsCLIError("the current inbound conversation route is unavailable")
+            raise CLIError("the current inbound conversation route is unavailable")
         values = vars(args).copy()
         values.update({"route": route_id, "target": None, "target_index": None,
                        "mode": "async_route_v1", "async_response": True})
@@ -250,10 +112,10 @@ def respond_current(args: argparse.Namespace) -> dict[str, Any]:
         or re.fullmatch(r"leg_[0-9a-f]{32}", inbound_leg_id) is None
         or followup not in {"none", "allowed", "allowed-async"}
     ):
-        raise ChatsCLIError("the current inbound reply grant is unavailable")
+        raise CLIError("the current inbound reply grant is unavailable")
     request_response = bool(args.request_response)
     if request_response and followup == "none":
-        raise ChatsCLIError("the current inbound reply has no follow-up grant")
+        raise CLIError("the current inbound reply has no follow-up grant")
     values = vars(args).copy()
     values.update({
         "exchange": exchange_id,
@@ -263,26 +125,12 @@ def respond_current(args: argparse.Namespace) -> dict[str, Any]:
     return respond(argparse.Namespace(**values))
 
 
-def provider_headers(capability: str) -> dict[str, str]:
-    """Return the one canonical header accepted by agent-helper routes.
-
-    The retired cross-chat-specific header is intentionally omitted.  The
-    server rejects requests that mix legacy and current authority names so a
-    browser or stale helper cannot smuggle ambiguous credentials.
-    """
-
-    return {
-        "Accept": "application/json",
-        "X-AgentsDock-Provider-Capability": capability,
-    }
-
-
 def post_json(
     path: str,
     payload: dict[str, Any],
     capability: str,
 ) -> dict[str, Any]:
-    server_url = environment()
+    server_url = validated_server_url()
     body = json.dumps(payload).encode("utf-8")
     headers = {
         **provider_headers(capability),
@@ -294,10 +142,7 @@ def post_json(
         headers=headers,
         method="POST",
     )
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        NoRedirectHandler(),
-    )
+    opener = provider_opener()
     promotion_deadline = time.monotonic() + 10.0
     transport_retry = 0
     while True:
@@ -324,7 +169,7 @@ def post_json(
                     transport_retry += 1
                     time.sleep(delay)
                     continue
-                raise ChatsCLIError(
+                raise CLIError(
                     "could not confirm whether AgentsServer accepted the "
                     "request because its error response was truncated; do "
                     "not resend it with different wording"
@@ -342,7 +187,7 @@ def post_json(
                 # Promotion has made no durable target effect yet.
                 time.sleep(0.05)
                 continue
-            raise ChatsCLIError(
+            raise CLIError(
                 f"server rejected handoff ({exc.code}): {detail or exc.reason}"
             ) from exc
         except (
@@ -366,16 +211,16 @@ def post_json(
                 continue
             detail = getattr(exc, "reason", exc)
             if retryable:
-                raise ChatsCLIError(
+                raise CLIError(
                     "could not confirm whether AgentsServer accepted the "
                     "request after retrying the same idempotency key; do not "
                     f"resend it with different wording: {detail}"
                 ) from exc
-            raise ChatsCLIError(
+            raise CLIError(
                 f"could not reach AgentsServer: {detail}"
             ) from exc
     if not isinstance(result, dict):
-        raise ChatsCLIError("AgentsServer returned an invalid response")
+        raise CLIError("AgentsServer returned an invalid response")
     return result
 
 
@@ -386,16 +231,13 @@ def get_json(
     timeout: float = 30,
     live_slice: bool = False,
 ) -> dict[str, Any]:
-    server_url = environment()
+    server_url = validated_server_url()
     request = urllib.request.Request(
         f"{server_url}{path}",
         headers=provider_headers(capability),
         method="GET",
     )
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        NoRedirectHandler(),
-    )
+    opener = provider_opener()
     transport_retry = 0
 
     def retry_delay() -> float:
@@ -421,7 +263,7 @@ def get_json(
                     transport_retry += 1
                     time.sleep(delay)
                     continue
-                raise ChatsCLIError(
+                raise CLIError(
                     "AgentsServer returned a truncated error response after "
                     "retrying the exact live-response lease"
                 ) from read_exc
@@ -436,7 +278,7 @@ def get_json(
                 raise LiveWaitRetryable(
                     "the live-response transport is temporarily unavailable"
                 ) from exc
-            raise ChatsCLIError(
+            raise CLIError(
                 f"server rejected request ({exc.code}): {detail or exc.reason}"
             ) from exc
         except (
@@ -459,7 +301,7 @@ def get_json(
                 # the result for this exact live provider-run owner.
                 time.sleep(delay)
                 continue
-            raise ChatsCLIError(
+            raise CLIError(
                 f"could not reach AgentsServer: {getattr(exc, 'reason', exc)}"
             ) from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -468,7 +310,7 @@ def get_json(
             # remain one bounded provider-tool observation, so fail it
             # immediately instead of multiplying its socket-timeout budget.
             if live_slice:
-                raise ChatsCLIError(
+                raise CLIError(
                     "AgentsServer returned an invalid live-response body"
                 ) from exc
             # Other side-effect-free GETs retain the small ambiguity retry
@@ -479,11 +321,11 @@ def get_json(
                 transport_retry += 1
                 time.sleep(delay)
                 continue
-            raise ChatsCLIError(
+            raise CLIError(
                 "AgentsServer returned an invalid live-response body"
             ) from exc
     if not isinstance(result, dict):
-        raise ChatsCLIError("AgentsServer returned an invalid response")
+        raise CLIError("AgentsServer returned an invalid response")
     return result
 
 
@@ -500,11 +342,11 @@ def await_live_response(
     inbound_leg_id = str(receipt.get("inbound_leg_id") or "")
     lease_id = str(receipt.get("live_response_lease_id") or "")
     if not re.fullmatch(r"exchange_[0-9a-f]{32}", exchange_id):
-        raise ChatsCLIError("live response exchange id is invalid")
+        raise CLIError("live response exchange id is invalid")
     if not re.fullmatch(r"leg_[0-9a-f]{32}", inbound_leg_id):
-        raise ChatsCLIError("live response inbound leg id is invalid")
+        raise CLIError("live response inbound leg id is invalid")
     if not re.fullmatch(r"lease_[0-9a-f]{32}", lease_id):
-        raise ChatsCLIError("live response lease id is invalid")
+        raise CLIError("live response lease id is invalid")
     heartbeat_seconds = live_response_heartbeat_seconds(timeout_seconds)
     query = urllib.parse.urlencode({
         "lease_id": lease_id,
@@ -579,7 +421,7 @@ def await_live_response(
         or result.get("exchange_id") != exchange_id
         or not isinstance(result.get("inbound_leg_id"), str)
     ):
-        raise ChatsCLIError("AgentsServer returned an invalid live response")
+        raise CLIError("AgentsServer returned an invalid live response")
     if valid_pending:
         return {**result, "live_response_lease_id": lease_id}
     return result
@@ -604,7 +446,7 @@ def list_routes(args: argparse.Namespace) -> dict[str, Any]:
     capability = authority(args.authority_file)
     cursor = str(getattr(args, "cursor", None) or "")
     if cursor and re.fullmatch(r"route_[0-9a-f]{32}", cursor) is None:
-        raise ChatsCLIError("--cursor must be the previous route page's next_cursor")
+        raise CLIError("--cursor must be the previous route page's next_cursor")
     path = "/api/agent/cross-chat/routes"
     if cursor:
         path += "?" + urllib.parse.urlencode({"cursor": cursor})
@@ -613,16 +455,16 @@ def list_routes(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(routes, list) or any(
         not isinstance(route, dict) for route in routes
     ):
-        raise ChatsCLIError("AgentsServer returned an invalid route list")
+        raise CLIError("AgentsServer returned an invalid route list")
     next_cursor = result.get("next_cursor")
     if next_cursor is not None and (
         not isinstance(next_cursor, str)
         or re.fullmatch(r"route_[0-9a-f]{32}", next_cursor) is None
         or next_cursor == cursor
     ):
-        raise ChatsCLIError("AgentsServer returned an invalid route cursor")
+        raise CLIError("AgentsServer returned an invalid route cursor")
     if cursor and "next_cursor" not in result:
-        raise ChatsCLIError("this AgentsServer does not support paginated route discovery")
+        raise CLIError("this AgentsServer does not support paginated route discovery")
     return result
 
 
@@ -633,7 +475,7 @@ def inbox(args: argparse.Namespace) -> dict[str, Any]:
     cursor = getattr(args, "cursor", None)
     if cursor is not None:
         if not isinstance(cursor, str) or not 1 <= len(cursor) <= 128:
-            raise ChatsCLIError("--cursor must be the previous inbox page's next_cursor")
+            raise CLIError("--cursor must be the previous inbox page's next_cursor")
         path += "?" + urllib.parse.urlencode({"cursor": cursor})
     return get_json(path, capability)
 
@@ -643,9 +485,9 @@ def read_inbox(args: argparse.Namespace) -> dict[str, Any]:
     sender = str(args.sender or "").strip()
     request_id = str(args.request_id or "").strip()
     if not 1 <= len(sender) <= 128:
-        raise ChatsCLIError("--sender must contain 1 to 128 characters")
+        raise CLIError("--sender must contain 1 to 128 characters")
     if not 8 <= len(request_id) <= 128:
-        raise ChatsCLIError("--request-id must contain 8 to 128 characters and be reused for retries")
+        raise CLIError("--request-id must contain 8 to 128 characters and be reused for retries")
     capability = authority(args.authority_file)
     return post_json("/api/agent/cross-chat/inbox/read", {
         "source_session_id": sender, "request_id": request_id,
@@ -671,14 +513,14 @@ def negotiated_route_mode(capability: str, route_id: str, requested: str = "") -
     )
     routes = response.get("routes")
     if not isinstance(routes, list):
-        raise ChatsCLIError("AgentsServer returned an invalid route list")
+        raise CLIError("AgentsServer returned an invalid route list")
     matches = [route for route in routes if isinstance(route, dict)
                and route.get("route_id") == route_id]
     if len(matches) != 1 or matches[0].get("available") is not True:
-        raise ChatsCLIError("the requested route is unavailable")
+        raise CLIError("the requested route is unavailable")
     mode = str(matches[0].get("mode") or "")
     if mode not in {"", "async_route_v1"} or (requested and mode != requested):
-        raise ChatsCLIError("AgentsServer did not negotiate the requested conversation mode")
+        raise CLIError("AgentsServer did not negotiate the requested conversation mode")
     return mode
 
 
@@ -686,17 +528,17 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
     capability = authority(args.authority_file)
     message = str(args.message or "").strip()
     if not message:
-        raise ChatsCLIError("--message must not be empty")
+        raise CLIError("--message must not be empty")
     route = str(getattr(args, "route", None) or "")
     target = str(getattr(args, "target", None) or "")
     target_index = getattr(args, "target_index", None)
     if sum((bool(route), bool(target), target_index is not None)) != 1:
-        raise ChatsCLIError(
+        raise CLIError(
             "provide exactly one of --route, --target, or --target-index"
         )
     if target_index is not None:
         if bool(getattr(args, "async_response", False)):
-            raise ChatsCLIError(
+            raise CLIError(
                 "--async-response is selected by the live @Chat grant"
             )
         target, grant_is_async = provider_handle(int(target_index), action)
@@ -706,15 +548,15 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
     requested_mode = str(getattr(args, "mode", None) or "")
     reply_to = str(getattr(args, "reply_to", None) or "").strip()
     if reply_to and (not route or re.fullmatch(r"handoff_[0-9a-f]{32}", reply_to) is None):
-        raise ChatsCLIError("--reply-to requires an exact asynchronous route and message ID from the inbox")
+        raise CLIError("--reply-to requires an exact asynchronous route and message ID from the inbox")
     if requested_mode and not route:
-        raise ChatsCLIError("conversation mode requires an exact route")
+        raise CLIError("conversation mode requires an exact route")
     discover_mode = bool(requested_mode or reply_to) or (
         _bounded_runtime_value("AGENTSDOCK_CROSS_CHAT_MODE") == "async_route_v1"
     )
     mode = negotiated_route_mode(capability, route, requested_mode) if route and discover_mode else ""
     if reply_to and mode != "async_route_v1":
-        raise ChatsCLIError("--reply-to is not supported by legacy exchanges")
+        raise CLIError("--reply-to is not supported by legacy exchanges")
     if mode == "async_route_v1":
         # Ask is an explicitly sent question in this mode. Any response is a
         # separate message, so neither alias opens a legacy exchange or wait.
@@ -773,7 +615,7 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
                     or result.get("execution_started") is not False))
                 or ("wake_policy" in result and result["wake_policy"] != "idle_only")
                 or re.fullmatch(r"handoff_[0-9a-f]{32}", str(result.get("message_id") or "")) is None):
-            raise ChatsCLIError(
+            raise CLIError(
                 "AgentsServer returned an invalid asynchronous message receipt. "
                 "Delivery may already be stored; do not resend with a new idempotency key."
             )
@@ -819,7 +661,7 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
                 "pending": True,
             }
         elif frozenset(result) == frozenset(minimal_expected):
-            raise ChatsCLIError(
+            raise CLIError(
                 "AgentsServer does not support a live response for this route"
             )
     has_live_response = live_wait and frozenset(result) == frozenset(expected)
@@ -857,7 +699,7 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
                 )
             )
         ):
-            raise ChatsCLIError("AgentsServer returned an invalid route handoff response")
+            raise CLIError("AgentsServer returned an invalid route handoff response")
     else:
         if (
             frozenset(result) not in {
@@ -885,7 +727,7 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
                 )
             )
         ):
-            raise ChatsCLIError("AgentsServer returned an invalid direct handoff response")
+            raise CLIError("AgentsServer returned an invalid direct handoff response")
     return result
 
 
@@ -901,11 +743,11 @@ def respond(args: argparse.Namespace) -> dict[str, Any]:
     capability = authority(args.authority_file)
     message = str(args.message or "").strip()
     if not message:
-        raise ChatsCLIError("--message must not be empty")
+        raise CLIError("--message must not be empty")
     request_response = bool(args.request_response)
     async_response = bool(getattr(args, "async_response", False))
     if async_response and not request_response:
-        raise ChatsCLIError("--async-response requires --request-response")
+        raise CLIError("--async-response requires --request-response")
     live_wait = request_response and not async_response
     stable_key = "cli_" + hashlib.sha256(
         (
@@ -974,7 +816,7 @@ def respond(args: argparse.Namespace) -> dict[str, Any]:
                 "pending": True,
             }
         elif frozenset(result) == frozenset(minimal_expected):
-            raise ChatsCLIError(
+            raise CLIError(
                 "AgentsServer does not support a live follow-up response"
             )
     has_live_response = live_wait and frozenset(result) == frozenset(expected)
@@ -1010,7 +852,7 @@ def respond(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
     ):
-        raise ChatsCLIError(
+        raise CLIError(
             "AgentsServer returned an invalid cross-chat response"
         )
     return result
@@ -1019,18 +861,18 @@ def respond(args: argparse.Namespace) -> dict[str, Any]:
 def read_message_stdin() -> str:
     """Read an explicitly selected body, bounded before any authority or I/O."""
     if sys.stdin.isatty():
-        raise ChatsCLIError("--message-stdin requires piped text; no message was sent")
+        raise CLIError("--message-stdin requires piped text; no message was sent")
     stream = getattr(sys.stdin, "buffer", sys.stdin)
     raw = stream.read(MESSAGE_STDIN_MAX_BYTES + 1)
     try:
         message = raw.decode("utf-8") if isinstance(raw, bytes) else raw
         size = len(message.encode("utf-8"))
     except (UnicodeDecodeError, UnicodeEncodeError) as exc:
-        raise ChatsCLIError("message stdin is not valid UTF-8; no message was sent") from exc
+        raise CLIError("message stdin is not valid UTF-8; no message was sent") from exc
     if size > MESSAGE_STDIN_MAX_BYTES or len(message) > MESSAGE_STDIN_MAX_CHARS:
-        raise ChatsCLIError("message stdin is too large; no message was sent")
+        raise CLIError("message stdin is too large; no message was sent")
     if "\x00" in message or not message.strip():
-        raise ChatsCLIError("message stdin must contain nonempty text; no message was sent")
+        raise CLIError("message stdin must contain nonempty text; no message was sent")
     return message
 
 
@@ -1211,7 +1053,7 @@ def main(argv: list[str] | None = None) -> int:
         args = parser().parse_args(argv)
         if getattr(args, "message_stdin", False):
             args.message = read_message_stdin()
-        selected_authority = _authority_path(args.authority_file)
+        selected_authority = selected_authority_path(args.authority_file)
         os.environ["AGENTSDOCK_PROVIDER_AUTHORITY_FILE"] = str(
             selected_authority
         )
@@ -1222,7 +1064,7 @@ def main(argv: list[str] | None = None) -> int:
         # observation.  Exit nonzero after printing the receipt so automation
         # cannot silently treat network ambiguity as server-owned waiting.
         return 2 if result.get("transport_error") is True else 0
-    except ChatsCLIError as exc:
+    except CLIError as exc:
         print(f"agentsdock-chats: {exc}", file=sys.stderr)
         return 2
     finally:

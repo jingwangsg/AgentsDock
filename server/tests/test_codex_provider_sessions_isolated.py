@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 import codex_provider
 import local_session_ownership
+import server_instances
 from tests import test_codex_subagent_config_isolated as config_fixture
 
 SOURCE = (Path(__file__).resolve().parents[1] / "agent_server.py")
@@ -150,7 +151,7 @@ class PerChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.ns["public_session"](persisted[custom["id"]], summary=True)["codex_provider"], "custom")
 
     async def test_resume_uses_isolated_ownership_guard_and_releases_it_after_rejection(self):
-        peer = local_session_ownership.Instance("peer", self.root)
+        peer = server_instances.Instance("peer", self.root)
         peer.config.mkdir(parents=True)
         (peer.config / "env").write_text("")
         peer.state.mkdir(parents=True)

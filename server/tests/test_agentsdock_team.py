@@ -598,7 +598,7 @@ class AgentsDockTeamCLITests(unittest.TestCase):
             "AGENTSDOCK_CHAT_ID": "source",
         }, clear=True):
             self.assertEqual(
-                agentsdock_team._provider_authority(None),
+                agentsdock_team.provider_authority(None),
                 ("provider-secret", "source"),
             )
 
@@ -615,29 +615,29 @@ class AgentsDockTeamCLITests(unittest.TestCase):
             "AGENTSDOCK_CHAT_ID": "source",
         }, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_team.TeamCLIError,
+                agentsdock_team.CLIError,
                 "conflicts with the live provider authority",
             ):
-                agentsdock_team._provider_authority(str(other))
+                agentsdock_team.provider_authority(str(other))
         with patch.dict(agentsdock_team.os.environ, {
             "AGENTSDOCK_PROVIDER_AUTHORITY_FILE": ambient,
             "AGENTSDOCK_CHAT_ID": "other-source",
         }, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_team.TeamCLIError,
+                agentsdock_team.CLIError,
                 "does not match the authority file",
             ):
-                agentsdock_team._provider_authority(None)
+                agentsdock_team.provider_authority(None)
 
     def test_oversized_provider_authority_environment_fails_closed(self) -> None:
         with patch.dict(agentsdock_team.os.environ, {
             "AGENTSDOCK_PROVIDER_AUTHORITY_FILE": "x" * 4097,
         }, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_team.TeamCLIError,
+                agentsdock_team.CLIError,
                 "exceeds the provider runtime limit",
             ):
-                agentsdock_team._provider_authority(None)
+                agentsdock_team.provider_authority(None)
 
     def test_send_reads_body_from_stdin_and_validates_attachments(self) -> None:
         attachment = self.root / "runbook.md"

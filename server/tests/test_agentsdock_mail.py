@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 import agent_server
+import agentsdock_cli_common
 import agentsdock_mail
 from agentsdock_team_hub.store import HubError, HubStore
 
@@ -80,20 +81,20 @@ class AgentsDockMailCLITests(unittest.TestCase):
         )
         handlers = build_opener.call_args.args
         self.assertEqual(handlers[0].proxies, {})
-        self.assertIsInstance(handlers[1], agentsdock_mail.NoRedirectHandler)
+        self.assertIsInstance(handlers[1], agentsdock_cli_common.NoRedirectHandler)
 
     def test_remote_url_and_unsafe_authority_are_rejected(self) -> None:
         with patch.dict("os.environ", {
             "AGENTSDOCK_SERVER_URL": "http://10.0.0.8:7850",
         }, clear=True):
-            with self.assertRaises(agentsdock_mail.MailCLIError):
+            with self.assertRaises(agentsdock_mail.CLIError):
                 agentsdock_mail.list_routes(argparse.Namespace(
                     authority_file=self.authority(),
                 ))
         with patch.dict("os.environ", {
             "AGENTSDOCK_SERVER_URL": "http://127.0.0.1:7850",
         }, clear=True):
-            with self.assertRaises(agentsdock_mail.MailCLIError):
+            with self.assertRaises(agentsdock_mail.CLIError):
                 agentsdock_mail.list_routes(argparse.Namespace(
                     authority_file=self.authority(0o644),
                 ))
@@ -105,7 +106,7 @@ class AgentsDockMailCLITests(unittest.TestCase):
             "AGENTSDOCK_CHAT_ID": "source",
         }, clear=True):
             self.assertEqual(
-                agentsdock_mail._provider_authority(None),
+                agentsdock_mail.provider_authority(None),
                 ("provider-secret", "source"),
             )
 
@@ -122,29 +123,29 @@ class AgentsDockMailCLITests(unittest.TestCase):
             "AGENTSDOCK_CHAT_ID": "source",
         }, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_mail.MailCLIError,
+                agentsdock_mail.CLIError,
                 "conflicts with the live provider authority",
             ):
-                agentsdock_mail._provider_authority(str(other))
+                agentsdock_mail.provider_authority(str(other))
         with patch.dict("os.environ", {
             "AGENTSDOCK_PROVIDER_AUTHORITY_FILE": ambient,
             "AGENTSDOCK_CHAT_ID": "other-source",
         }, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_mail.MailCLIError,
+                agentsdock_mail.CLIError,
                 "does not match the authority file",
             ):
-                agentsdock_mail._provider_authority(None)
+                agentsdock_mail.provider_authority(None)
 
     def test_oversized_provider_authority_environment_fails_closed(self) -> None:
         with patch.dict("os.environ", {
             "AGENTSDOCK_PROVIDER_AUTHORITY_FILE": "x" * 4097,
         }, clear=True):
             with self.assertRaisesRegex(
-                agentsdock_mail.MailCLIError,
+                agentsdock_mail.CLIError,
                 "exceeds the provider runtime limit",
             ):
-                agentsdock_mail._provider_authority(None)
+                agentsdock_mail.provider_authority(None)
 
     def test_send_uses_opaque_route_and_strict_receipt(self) -> None:
         route_id = "mail_" + "a" * 32
@@ -190,7 +191,7 @@ class AgentsDockMailCLITests(unittest.TestCase):
 
     def test_send_rejects_request_kind_even_when_called_without_parser(self) -> None:
         with patch.object(agentsdock_mail.sys, "stdin", io.StringIO("body")):
-            with self.assertRaises(agentsdock_mail.MailCLIError):
+            with self.assertRaises(agentsdock_mail.CLIError):
                 agentsdock_mail.send(argparse.Namespace(
                     authority_file=self.authority(),
                     route="mail_" + "a" * 32,
@@ -212,21 +213,21 @@ class AgentsDockMailCLITests(unittest.TestCase):
                 return True
 
         with patch.object(agentsdock_mail.sys, "stdin", TTY("secret")):
-            with self.assertRaises(agentsdock_mail.MailCLIError):
+            with self.assertRaises(agentsdock_mail.CLIError):
                 agentsdock_mail.send(args)
         with patch.object(
             agentsdock_mail.sys,
             "stdin",
             io.TextIOWrapper(io.BytesIO(b"\xff"), encoding="utf-8"),
         ):
-            with self.assertRaises(agentsdock_mail.MailCLIError):
+            with self.assertRaises(agentsdock_mail.CLIError):
                 agentsdock_mail.send(args)
         with patch.object(
             agentsdock_mail.sys,
             "stdin",
             io.StringIO("x" * (agentsdock_mail.MAIL_BODY_MAX_BYTES + 1)),
         ):
-            with self.assertRaises(agentsdock_mail.MailCLIError):
+            with self.assertRaises(agentsdock_mail.CLIError):
                 agentsdock_mail.send(args)
 
 

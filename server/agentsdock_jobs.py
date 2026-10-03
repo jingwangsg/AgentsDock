@@ -4,76 +4,23 @@
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import json
 import os
 import re
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
-from pathlib import Path
 from typing import Any
 
-
-PROVIDER_RUNTIME_VALUE_MAX_BYTES = 4096
-
-
-class JobsCLIError(RuntimeError):
-    """A safe, user-facing CLI failure."""
-
-
-class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
-
-
-def host_is_loopback(host: str) -> bool:
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return host.lower() == "localhost"
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        address = address.ipv4_mapped
-    return address.is_loopback
-
-
-def canonical_http_origin(value: str, label: str) -> tuple[str, bool]:
-    raw = value.strip()
-    try:
-        parsed = urllib.parse.urlsplit(raw)
-        port = parsed.port or 80
-    except ValueError as exc:
-        raise JobsCLIError(f"{label} must be an HTTP origin") from exc
-    if (
-        parsed.scheme.lower() != "http"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise JobsCLIError(f"{label} must be an HTTP origin")
-    host = parsed.hostname.lower()
-    try:
-        address = ipaddress.ip_address(host)
-        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-            address = address.ipv4_mapped
-        host = address.compressed
-        loopback = address.is_loopback
-        url_host = f"[{host}]" if isinstance(address, ipaddress.IPv6Address) else host
-    except ValueError:
-        loopback = host == "localhost"
-        url_host = host
-    return f"http://{url_host}:{port}", loopback
-
-
-def nonempty_chat_id(value: str) -> str:
-    chat_id = value.strip()
-    if not chat_id:
-        raise argparse.ArgumentTypeError("--chat-id must not be empty")
-    return chat_id
+from agentsdock_cli_common import (
+    CLIError,
+    authority_server_origin,
+    bounded_identity_value,
+    nonempty_chat_id,
+    provider_authority,
+    request_json,
+    selected_authority_path,
+    validated_server_url,
+)
 
 
 def chat_route_selection(value: str) -> dict[str, str]:
@@ -93,146 +40,15 @@ def chat_route_selection(value: str) -> dict[str, str]:
     return {"route_id": route_id, "action": selected_action}
 
 
-def bounded_identity_value(value: str | None, label: str) -> str:
-    clean = str(value or "").strip()
-    try:
-        size = len(clean.encode("utf-8"))
-    except UnicodeEncodeError as exc:
-        raise JobsCLIError(f"{label} is not valid UTF-8") from exc
-    if size > PROVIDER_RUNTIME_VALUE_MAX_BYTES:
-        raise JobsCLIError(f"{label} exceeds the provider runtime limit")
-    return clean
-
-
-def selected_authority_path(authority_file: str | None = None) -> Path:
-    explicit = bounded_identity_value(authority_file, "--authority-file")
-    ambient = bounded_identity_value(
-        os.environ.get("AGENTSDOCK_PROVIDER_AUTHORITY_FILE"),
-        "AGENTSDOCK_PROVIDER_AUTHORITY_FILE",
-    )
-    if explicit and ambient:
-        explicit_key = os.path.abspath(os.path.expanduser(explicit))
-        ambient_key = os.path.abspath(os.path.expanduser(ambient))
-        if explicit_key != ambient_key:
-            raise JobsCLIError(
-                "--authority-file conflicts with the live provider authority"
-            )
-    selected = explicit or ambient
-    if not selected:
-        raise JobsCLIError("--authority-file is required")
-    return Path(selected).expanduser()
-
-
-def provider_authority(authority_file: str | None = None) -> tuple[str, str]:
-    path = selected_authority_path(authority_file)
-    try:
-        if path.stat().st_mode & 0o077:
-            raise JobsCLIError("authority file permissions are unsafe")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise JobsCLIError(f"could not read authority file: {exc}") from exc
-    capability = str(payload.get("provider_capability") or payload.get("capability") or "")
-    source_session_id = str(payload.get("source_session_id") or "").strip()
-    if not capability or not source_session_id:
-        raise JobsCLIError("authority file is invalid")
-    return capability, source_session_id
-
-
-def authority_server_origin(authority_file: str | None = None) -> str:
-    path = selected_authority_path(authority_file)
-    try:
-        if path.stat().st_mode & 0o077:
-            raise JobsCLIError("authority file permissions are unsafe")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise JobsCLIError(f"could not read authority file: {exc}") from exc
-    return bounded_identity_value(
-        payload.get("provider_server_origin"),
-        "authority provider_server_origin",
-    )
-
-
-def validated_server_url(authority_origin: str) -> str:
-    raw_server_url = os.environ.get("AGENTSDOCK_SERVER_URL", "").strip()
-    if not raw_server_url:
-        raise JobsCLIError("missing agent environment: AGENTSDOCK_SERVER_URL")
-    server_origin, loopback = canonical_http_origin(
-        raw_server_url,
-        "AGENTSDOCK_SERVER_URL",
-    )
-    runtime_origin = bounded_identity_value(
-        os.environ.get("AGENTSDOCK_PROVIDER_SERVER_ORIGIN"),
-        "AGENTSDOCK_PROVIDER_SERVER_ORIGIN",
-    )
-    if runtime_origin:
-        canonical_runtime, _runtime_loopback = canonical_http_origin(
-            runtime_origin,
-            "AGENTSDOCK_PROVIDER_SERVER_ORIGIN",
-        )
-        if canonical_runtime != server_origin:
-            raise JobsCLIError(
-                "AGENTSDOCK_SERVER_URL conflicts with the live provider origin"
-            )
-    if loopback:
-        return raw_server_url.rstrip("/")
-    if not authority_origin:
-        raise JobsCLIError(
-            "non-loopback AGENTSDOCK_SERVER_URL must match the authority origin"
-        )
-    canonical_authority, _authority_loopback = canonical_http_origin(
-        authority_origin,
-        "authority provider_server_origin",
-    )
-    if canonical_authority != server_origin:
-        raise JobsCLIError(
-            "non-loopback AGENTSDOCK_SERVER_URL must match the authority origin"
-        )
-    return server_origin
-
-
 def required_environment() -> tuple[str, str, str]:
-    explicit_chat_id = bounded_identity_value(
-        os.environ.get("AGENTSDOCK_CHAT_ID"),
-        "AGENTSDOCK_CHAT_ID",
-    )
-    token, authority_chat_id = provider_authority()
+    token, chat_id = provider_authority()
     server_url = validated_server_url(authority_server_origin())
-    if explicit_chat_id and explicit_chat_id != authority_chat_id:
-        raise JobsCLIError("--chat-id does not match the authority file")
-    chat_id = explicit_chat_id or authority_chat_id
     return server_url, chat_id, token
 
 
 def api_request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     server_url, _chat_id, token = required_environment()
-    body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    headers = {"Accept": "application/json"}
-    if body is not None:
-        headers["Content-Type"] = "application/json"
-    headers["X-AgentsDock-Provider-Capability"] = token
-    request = urllib.request.Request(f"{server_url}{path}", data=body, headers=headers, method=method)
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        NoRedirectHandler(),
-    )
-    try:
-        with opener.open(request, timeout=30) as response:
-            decoded = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        try:
-            detail = json.loads(raw).get("detail") or raw
-        except json.JSONDecodeError:
-            detail = raw
-        raise JobsCLIError(f"server rejected request ({exc.code}): {detail or exc.reason}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        reason = getattr(exc, "reason", exc)
-        raise JobsCLIError(f"could not reach AgentsServer: {reason}") from exc
-    except json.JSONDecodeError as exc:
-        raise JobsCLIError("AgentsServer returned invalid JSON") from exc
-    if not isinstance(decoded, dict):
-        raise JobsCLIError("AgentsServer returned an invalid response")
-    return decoded
+    return request_json(method, f"{server_url}{path}", payload, token=token)
 
 
 def safe_job_projection(job: dict[str, Any]) -> dict[str, Any]:
@@ -297,10 +113,10 @@ def scoped_jobs() -> list[dict[str, Any]]:
     response = api_request("GET", f"/api/agent/sessions/{encoded_chat_id}/jobs")
     jobs = response.get("jobs")
     if not isinstance(jobs, list) or not all(isinstance(job, dict) for job in jobs):
-        raise JobsCLIError("AgentsServer returned an invalid jobs list")
+        raise CLIError("AgentsServer returned an invalid jobs list")
     foreign = [str(job.get("id") or "unknown") for job in jobs if job.get("session_id") != chat_id]
     if foreign:
-        raise JobsCLIError("AgentsServer returned jobs outside the active chat scope")
+        raise CLIError("AgentsServer returned jobs outside the active chat scope")
     return [safe_job_projection(job) for job in jobs]
 
 
@@ -308,16 +124,16 @@ def owned_job(job_id: str) -> dict[str, Any]:
     for job in scoped_jobs():
         if job.get("id") == job_id:
             return job
-    raise JobsCLIError(f"job {job_id!r} does not exist in the active chat")
+    raise CLIError(f"job {job_id!r} does not exist in the active chat")
 
 
 def checked_job(response: dict[str, Any]) -> dict[str, Any]:
     _server_url, chat_id, _token = required_environment()
     job = response.get("job")
     if not isinstance(job, dict):
-        raise JobsCLIError("AgentsServer returned an invalid job")
+        raise CLIError("AgentsServer returned an invalid job")
     if job.get("session_id") != chat_id:
-        raise JobsCLIError("AgentsServer returned a job outside the active chat scope")
+        raise CLIError("AgentsServer returned a job outside the active chat scope")
     return safe_job_projection(job)
 
 
@@ -350,24 +166,24 @@ def command_runs(args: argparse.Namespace) -> Any:
     if not isinstance(runs, list) or not all(
         isinstance(run, dict) for run in runs
     ):
-        raise JobsCLIError("AgentsServer returned invalid job history")
+        raise CLIError("AgentsServer returned invalid job history")
     if (
         response.get("session_id") != chat_id
         or response.get("job_id") != args.job_id
     ):
-        raise JobsCLIError("AgentsServer returned history outside the active chat scope")
+        raise CLIError("AgentsServer returned history outside the active chat scope")
     if contains_private_chat_target_fields(response):
-        raise JobsCLIError("AgentsServer returned private chat target data in job history")
+        raise CLIError("AgentsServer returned private chat target data in job history")
     return response
 
 
 def command_create(args: argparse.Namespace) -> Any:
     _server_url, chat_id, _token = required_environment()
     if args.interval_seconds is None and args.cron is None and args.rrule is None and args.first_run_at is None:
-        raise JobsCLIError("create requires --interval-seconds, --cron, --rrule, or --first-run-at")
+        raise CLIError("create requires --interval-seconds, --cron, --rrule, or --first-run-at")
     if args.interval_seconds is None and args.cron is None and args.rrule is None:
         if args.loop or (args.max_runs is not None and args.max_runs != 1):
-            raise JobsCLIError("a one-time --first-run-at job cannot loop or run more than once without a schedule")
+            raise CLIError("a one-time --first-run-at job cannot loop or run more than once without a schedule")
     schedule_kind = "cron" if args.cron is not None else "rrule" if args.rrule is not None else "interval"
     payload: dict[str, Any] = {
         "title": args.title,
@@ -437,7 +253,7 @@ def command_update(args: argparse.Namespace) -> Any:
     elif args.clear_chat_routes:
         patch["chat_routes"] = []
     if not patch:
-        raise JobsCLIError("update requires at least one changed field")
+        raise CLIError("update requires at least one changed field")
     encoded_chat_id = urllib.parse.quote(chat_id, safe="")
     job_id = urllib.parse.quote(args.job_id, safe="")
     return {
@@ -454,7 +270,7 @@ def command_delete(args: argparse.Namespace) -> Any:
     job_id = urllib.parse.quote(args.job_id, safe="")
     response = api_request("DELETE", f"/api/agent/sessions/{encoded_chat_id}/jobs/{job_id}")
     if response.get("deleted") is not True:
-        raise JobsCLIError(f"job {args.job_id!r} was not deleted")
+        raise CLIError(f"job {args.job_id!r} was not deleted")
     return {"ok": True, "deleted": True, "job_id": args.job_id}
 
 
@@ -596,29 +412,14 @@ def main(argv: list[str] | None = None) -> int:
             authority_path = selected_authority_path(args.authority_file)
             _token, authority_chat_id = provider_authority(args.authority_file)
             explicit_chat_id = bounded_identity_value(args.chat_id, "--chat-id")
-            environment_chat_id = bounded_identity_value(
-                previous_chat_id,
-                "AGENTSDOCK_CHAT_ID",
-            )
-            if (
-                explicit_chat_id
-                and environment_chat_id
-                and explicit_chat_id != environment_chat_id
-            ):
-                raise JobsCLIError(
-                    "--chat-id conflicts with AGENTSDOCK_CHAT_ID"
-                )
-            for candidate in (explicit_chat_id, environment_chat_id):
-                if candidate and candidate != authority_chat_id:
-                    raise JobsCLIError(
-                        "--chat-id does not match the authority file"
-                    )
+            if explicit_chat_id and explicit_chat_id != authority_chat_id:
+                raise CLIError("--chat-id does not match the authority file")
             os.environ["AGENTSDOCK_PROVIDER_AUTHORITY_FILE"] = str(
                 authority_path
             )
             os.environ["AGENTSDOCK_CHAT_ID"] = authority_chat_id
             result = args.handler(args)
-        except JobsCLIError as exc:
+        except CLIError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
     finally:

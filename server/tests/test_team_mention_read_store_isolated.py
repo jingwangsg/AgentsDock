@@ -35,7 +35,7 @@ class TeamMentionReadStoreTests(unittest.TestCase):
              "target_id": "all", "display_name_snapshot": "bulletin"},
         ]}
         self.endpoints = self.extracted_endpoints()
-        self.enterContext(mock.patch.object(helper, "_provider_authority", return_value=("test-capability", "test-chat")))
+        self.enterContext(mock.patch.object(helper, "provider_authority", return_value=("test-capability", "test-chat")))
         self.transport = self.enterContext(mock.patch.object(helper, "_request_json", side_effect=self.request))
 
     def extracted_endpoints(self):

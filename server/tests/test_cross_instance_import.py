@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import agent_server
 import httpx
 import local_session_ownership as instances
+import server_instances
 from tests.test_import_main_sessions import write_claude_transcript, write_codex_transcript
 
 
@@ -19,9 +20,9 @@ class ImportFixtures:
         self.addCleanup(temporary.cleanup)
         self.home = Path(temporary.name).resolve()
         self.registry = instances.Registry(self.home)
-        self.current = instances.Instance("new-server", self.home)
-        self.default = instances.Instance("default", self.home)
-        self.other = instances.Instance("work", self.home)
+        self.current = server_instances.Instance("new-server", self.home)
+        self.default = server_instances.Instance("default", self.home)
+        self.other = server_instances.Instance("work", self.home)
         self.addCleanup(patch.stopall)
         patch.object(instances, "Registry", return_value=self.registry).start()
 

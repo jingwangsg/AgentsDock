@@ -483,13 +483,13 @@ class AsyncRouteHelperTests(unittest.TestCase):
 
     def test_explicit_async_mode_requires_supported_route_before_post(self):
         self.get.return_value = {"routes": [{"route_id": ROUTE, "available": True}]}
-        with self.assertRaises(cli.ChatsCLIError):
+        with self.assertRaises(cli.CLIError):
             self.execute("ask", "--route", ROUTE, "--mode", "async_route_v1", "--message", "Hello")
         self.post.assert_not_called()
 
     def test_unavailable_or_mismatched_receipt_never_opens_a_wait(self):
         self.post.return_value = {"ok": True, "route_id": ROUTE, "action": "instruction", "accepted": True}
-        with self.assertRaises(cli.ChatsCLIError):
+        with self.assertRaises(cli.CLIError):
             self.execute("ask", "--route", ROUTE, "--message", "Hello")
         self.wait.assert_not_called()
 

@@ -142,7 +142,7 @@ class BulletinEditEndpointTests(unittest.TestCase):
                 endpoint_helpers.ROUTE, request, self.fixture.request))
 
         args = cli.parser().parse_args(["edit", original["id"], "--route", endpoint_helpers.ROUTE, "--expected-version", "1"])
-        with mock.patch.object(cli, "_provider_authority", return_value=("synthetic", "chat")), \
+        with mock.patch.object(cli, "provider_authority", return_value=("synthetic", "chat")), \
                 mock.patch.object(cli, "_read_body", return_value="One revised post, not two"), \
                 mock.patch.object(cli, "_request_json", side_effect=forward):
             receipt = args.handler(args)

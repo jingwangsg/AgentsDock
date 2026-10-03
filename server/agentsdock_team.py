@@ -15,175 +15,33 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import ipaddress
 import json
 import os
 import re
 import sys
 import time
 import unicodedata
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
+
+from agentsdock_cli_common import (
+    CLIError,
+    provider_authority,
+    request_json,
+    selected_authority_path,
+    validated_server_url,
+)
 
 
 BODY_MAX_BYTES = 49_152
 ATTACHMENT_MAX_COUNT = 16
-PROVIDER_RUNTIME_VALUE_MAX_BYTES = 4096
 SENDER_SCAN_PAGE_SIZE = 50
 SENDER_SCAN_MAX_RESULTS = 50
 SENDER_SCAN_MAX_PAGES = 20
 SENDER_SCAN_MAX_SECONDS = 45.0
 # Keep complete, pretty-printed responses below the provider's 128 KiB stdout cap.
 SENDER_SCAN_OUTPUT_MAX_BYTES = 96 * 1024
-
-
-class TeamCLIError(RuntimeError):
-    pass
-
-
-class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
-
-
-def _canonical_http_origin(value: str, label: str) -> tuple[str, bool]:
-    raw = value.strip()
-    try:
-        parsed = urllib.parse.urlsplit(raw)
-        port = parsed.port or 80
-    except ValueError as exc:
-        raise TeamCLIError(f"{label} must be an HTTP origin") from exc
-    if (
-        parsed.scheme.lower() != "http"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise TeamCLIError(f"{label} must be an HTTP origin")
-    host = parsed.hostname.lower()
-    try:
-        address = ipaddress.ip_address(host)
-        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-            address = address.ipv4_mapped
-        loopback = address.is_loopback
-        host = address.compressed
-        url_host = f"[{host}]" if isinstance(address, ipaddress.IPv6Address) else host
-    except ValueError:
-        loopback = host == "localhost"
-        url_host = host
-    return f"http://{url_host}:{port}", loopback
-
-
-def _authority_server_origin(authority_file: str | None) -> str:
-    path = _selected_authority_path(authority_file)
-    try:
-        if path.stat().st_mode & 0o077:
-            raise TeamCLIError("authority file permissions are unsafe")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise TeamCLIError(f"could not read authority file: {exc}") from exc
-    return _bounded_identity_value(
-        payload.get("provider_server_origin"),
-        "authority provider_server_origin",
-    )
-
-
-def _loopback_server_url() -> str:
-    raw_server_url = os.environ.get("AGENTSDOCK_SERVER_URL", "").strip()
-    if not raw_server_url:
-        raise TeamCLIError("missing AgentsDock agent environment")
-    server_origin, loopback = _canonical_http_origin(
-        raw_server_url,
-        "AGENTSDOCK_SERVER_URL",
-    )
-    runtime_origin = _bounded_identity_value(
-        os.environ.get("AGENTSDOCK_PROVIDER_SERVER_ORIGIN"),
-        "AGENTSDOCK_PROVIDER_SERVER_ORIGIN",
-    )
-    if runtime_origin:
-        canonical_runtime, _runtime_loopback = _canonical_http_origin(
-            runtime_origin,
-            "AGENTSDOCK_PROVIDER_SERVER_ORIGIN",
-        )
-        if canonical_runtime != server_origin:
-            raise TeamCLIError(
-                "AGENTSDOCK_SERVER_URL conflicts with the live provider origin"
-            )
-    if loopback:
-        return raw_server_url.rstrip("/")
-    authority_origin = _authority_server_origin(None)
-    if not authority_origin:
-        raise TeamCLIError(
-            "non-loopback AGENTSDOCK_SERVER_URL must match the authority origin"
-        )
-    canonical_authority, _authority_loopback = _canonical_http_origin(
-        authority_origin,
-        "authority provider_server_origin",
-    )
-    if canonical_authority != server_origin:
-        raise TeamCLIError(
-            "non-loopback AGENTSDOCK_SERVER_URL must match the authority origin"
-        )
-    return server_origin
-
-
-def _bounded_identity_value(value: str | None, label: str) -> str:
-    clean = str(value or "").strip()
-    try:
-        size = len(clean.encode("utf-8"))
-    except UnicodeEncodeError as exc:
-        raise TeamCLIError(f"{label} is not valid UTF-8") from exc
-    if size > PROVIDER_RUNTIME_VALUE_MAX_BYTES:
-        raise TeamCLIError(f"{label} exceeds the provider runtime limit")
-    return clean
-
-
-def _selected_authority_path(authority_file: str | None) -> Path:
-    explicit = _bounded_identity_value(authority_file, "--authority-file")
-    ambient = _bounded_identity_value(
-        os.environ.get("AGENTSDOCK_PROVIDER_AUTHORITY_FILE"),
-        "AGENTSDOCK_PROVIDER_AUTHORITY_FILE",
-    )
-    if explicit and ambient:
-        explicit_key = os.path.abspath(os.path.expanduser(explicit))
-        ambient_key = os.path.abspath(os.path.expanduser(ambient))
-        if explicit_key != ambient_key:
-            raise TeamCLIError(
-                "--authority-file conflicts with the live provider authority"
-            )
-    selected = explicit or ambient
-    if not selected:
-        raise TeamCLIError("--authority-file is required")
-    return Path(selected).expanduser()
-
-
-def _provider_authority(authority_file: str | None) -> tuple[str, str]:
-    path = _selected_authority_path(authority_file)
-    try:
-        if path.stat().st_mode & 0o077:
-            raise TeamCLIError("authority file permissions are unsafe")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise TeamCLIError(f"could not read authority file: {exc}") from exc
-    capability = str(payload.get("provider_capability") or payload.get("capability") or "")
-    source_session_id = str(payload.get("source_session_id") or "").strip()
-    if not capability or not source_session_id:
-        raise TeamCLIError("authority file is invalid")
-    environment_chat_id = _bounded_identity_value(
-        os.environ.get("AGENTSDOCK_CHAT_ID"),
-        "AGENTSDOCK_CHAT_ID",
-    )
-    if environment_chat_id and environment_chat_id != source_session_id:
-        raise TeamCLIError(
-            "AGENTSDOCK_CHAT_ID does not match the authority file"
-        )
-    return capability, source_session_id
 
 
 def _request_json(
@@ -194,40 +52,10 @@ def _request_json(
     *,
     timeout: float = 60.0,
 ) -> dict[str, Any]:
-    body = None if payload is None else json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        f"{_loopback_server_url()}{path}",
-        data=body,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "X-AgentsDock-Provider-Capability": capability,
-        },
-        method=method,
+    return request_json(
+        method, f"{validated_server_url()}{path}", payload,
+        token=capability, timeout=timeout,
     )
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        NoRedirectHandler(),
-    )
-    try:
-        with opener.open(request, timeout=timeout) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        try:
-            detail = json.loads(raw).get("detail") or raw
-        except (json.JSONDecodeError, AttributeError):
-            detail = raw
-        raise TeamCLIError(
-            f"server rejected Team Network request ({exc.code}): {detail or exc.reason}"
-        ) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise TeamCLIError(
-            f"could not reach AgentsServer: {getattr(exc, 'reason', exc)}"
-        ) from exc
-    if not isinstance(result, dict):
-        raise TeamCLIError("AgentsServer returned an invalid response")
-    return result
 
 
 def _query(params: dict[str, Any]) -> str:
@@ -244,7 +72,7 @@ def _sender_name(value: str) -> str:
     if name.startswith("@@"):
         name = name[2:].strip()
     if not name:
-        raise TeamCLIError("--from requires a sender display name")
+        raise CLIError("--from requires a sender display name")
     return name
 
 
@@ -258,7 +86,7 @@ def _list_by_sender(
 ) -> dict[str, Any]:
     """Scan existing ascending pages on demand, retaining a lossless cursor."""
     if limit < 1:
-        raise TeamCLIError("--limit must be positive")
+        raise CLIError("--limit must be positive")
     limit = min(limit, SENDER_SCAN_MAX_RESULTS)
     needle = name.casefold()
     cursor = max(0, params.get("after_sequence") or 0)
@@ -305,7 +133,7 @@ def _list_by_sender(
             or type(has_more) is not bool
             or type(next_cursor) is not int
         ):
-            raise TeamCLIError("AgentsServer returned an invalid message page")
+            raise CLIError("AgentsServer returned an invalid message page")
         previous = cursor
         for item in messages:
             if (
@@ -314,14 +142,14 @@ def _list_by_sender(
                 or item["sequence"] <= previous
                 or not isinstance(item.get("sender"), dict)
             ):
-                raise TeamCLIError("AgentsServer returned an invalid message page cursor or sender")
+                raise CLIError("AgentsServer returned an invalid message page cursor or sender")
             previous = item["sequence"]
         if next_cursor != previous or (has_more and next_cursor <= cursor):
-            raise TeamCLIError("AgentsServer returned an invalid or nonadvancing message page cursor")
+            raise CLIError("AgentsServer returned an invalid or nonadvancing message page cursor")
         page_team = result.get("team_id")
         if page_team:
             if params.get("team") and params["team"] != page_team:
-                raise TeamCLIError("AgentsServer changed teams during a sender read")
+                raise CLIError("AgentsServer changed teams during a sender read")
             params["team"] = page_team
         pages += 1
         for index, item in enumerate(messages):
@@ -330,7 +158,7 @@ def _list_by_sender(
                 candidate = response(candidate=item)
                 if _sender_output_size(candidate) > SENDER_SCAN_OUTPUT_MAX_BYTES:
                     if _sender_output_size({**candidate, "messages": [item]}) > SENDER_SCAN_OUTPUT_MAX_BYTES:
-                        raise TeamCLIError("A matching message exceeds the sender read output limit")
+                        raise CLIError("A matching message exceeds the sender read output limit")
                     # Do not consume this match: the next explicit read must see it.
                     has_more = True
                     stop_reason = "output_limit"
@@ -352,18 +180,18 @@ def _list_by_sender(
             stop_reason = "result_limit"
             break
     if result is None:
-        raise TeamCLIError("Sender read time budget expired before a page was received")
+        raise CLIError("Sender read time budget expired before a page was received")
     output = response()
     if _sender_output_size(output) > SENDER_SCAN_OUTPUT_MAX_BYTES:
-        raise TeamCLIError("Sender read response metadata exceeds the output limit")
+        raise CLIError("Sender read response metadata exceeds the output limit")
     return output
 
 
 def list_box(args: argparse.Namespace, box: str) -> dict[str, Any]:
-    capability, _session_id = _provider_authority(args.authority_file)
+    capability, _session_id = provider_authority(args.authority_file)
     mention = getattr(args, "mention", None)
     if mention is not None and mention < 1:
-        raise TeamCLIError("--mention must be a positive mention index from `mentions`")
+        raise CLIError("--mention must be a positive mention index from `mentions`")
     params = {
         "box": box,
         "unread": getattr(args, "unread", False),
@@ -384,7 +212,7 @@ def list_box(args: argparse.Namespace, box: str) -> dict[str, Any]:
     )
     messages = result.get("messages")
     if not isinstance(messages, list):
-        raise TeamCLIError("AgentsServer returned an invalid message list")
+        raise CLIError("AgentsServer returned an invalid message list")
     return result
 
 
@@ -401,18 +229,18 @@ def sent(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def mentions(args: argparse.Namespace) -> dict[str, Any]:
-    capability, _session_id = _provider_authority(args.authority_file)
+    capability, _session_id = provider_authority(args.authority_file)
     result = _request_json("GET", "/api/agent/team/mentions", capability)
     if not isinstance(result.get("mentions"), list):
-        raise TeamCLIError("AgentsServer returned an invalid Team Network mention list")
+        raise CLIError("AgentsServer returned an invalid Team Network mention list")
     return result
 
 
 def read(args: argparse.Namespace) -> dict[str, Any]:
-    capability, _session_id = _provider_authority(args.authority_file)
+    capability, _session_id = provider_authority(args.authority_file)
     message_id = str(args.message_id or "").strip()
     if not message_id:
-        raise TeamCLIError("MESSAGE_ID is required")
+        raise CLIError("MESSAGE_ID is required")
     return _request_json(
         "GET",
         f"/api/agent/team/messages/{urllib.parse.quote(message_id, safe='')}"
@@ -427,7 +255,7 @@ def read(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def skills(args: argparse.Namespace) -> dict[str, Any]:
-    capability, _session_id = _provider_authority(args.authority_file)
+    capability, _session_id = provider_authority(args.authority_file)
     return _request_json(
         "GET",
         "/api/agent/team/skills"
@@ -442,10 +270,10 @@ def skills(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def skill_get(args: argparse.Namespace) -> dict[str, Any]:
-    capability, _session_id = _provider_authority(args.authority_file)
+    capability, _session_id = provider_authority(args.authority_file)
     slug = str(args.slug or "").strip().lower()
     if not slug:
-        raise TeamCLIError("SLUG is required")
+        raise CLIError("SLUG is required")
     return _request_json(
         "GET",
         f"/api/agent/team/skills/{urllib.parse.quote(slug, safe='')}"
@@ -462,28 +290,28 @@ def skill_get(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def routes(args: argparse.Namespace) -> dict[str, Any]:
-    capability, _session_id = _provider_authority(args.authority_file)
+    capability, _session_id = provider_authority(args.authority_file)
     result = _request_json("GET", "/api/agent/team/routes", capability)
     if not isinstance(result.get("routes"), list):
-        raise TeamCLIError("AgentsServer returned an invalid route list")
+        raise CLIError("AgentsServer returned an invalid route list")
     return result
 
 
 def _read_body() -> str:
     if sys.stdin.isatty():
-        raise TeamCLIError("the message body must be provided on stdin")
+        raise CLIError("the message body must be provided on stdin")
     stream = getattr(sys.stdin, "buffer", sys.stdin)
     raw = stream.read(BODY_MAX_BYTES + 1)
     if isinstance(raw, str):
         raw = raw.encode("utf-8")
     if len(raw) > BODY_MAX_BYTES:
-        raise TeamCLIError(f"the message body exceeds {BODY_MAX_BYTES} bytes")
+        raise CLIError(f"the message body exceeds {BODY_MAX_BYTES} bytes")
     try:
         body = raw.decode("utf-8").strip()
     except UnicodeDecodeError as exc:
-        raise TeamCLIError("the message body must be valid UTF-8") from exc
+        raise CLIError("the message body must be valid UTF-8") from exc
     if not body:
-        raise TeamCLIError("the message body on stdin must not be empty")
+        raise CLIError("the message body on stdin must not be empty")
     return body
 
 
@@ -492,40 +320,40 @@ def _attachment_paths(values: list[str]) -> list[str]:
     for value in values:
         path = Path(value).expanduser()
         if not path.is_absolute():
-            raise TeamCLIError(f"attachment paths must be absolute: {value}")
+            raise CLIError(f"attachment paths must be absolute: {value}")
         if not path.is_file():
-            raise TeamCLIError(f"attachment is not a regular file: {value}")
+            raise CLIError(f"attachment is not a regular file: {value}")
         resolved = str(path.resolve())
         if resolved not in paths:
             paths.append(resolved)
     if len(paths) > ATTACHMENT_MAX_COUNT:
-        raise TeamCLIError(f"at most {ATTACHMENT_MAX_COUNT} attachments per message")
+        raise CLIError(f"at most {ATTACHMENT_MAX_COUNT} attachments per message")
     return paths
 
 
 def _mail_subject(value: str) -> str:
     if any(unicodedata.category(char) in {"Cc", "Cs", "Zl", "Zp"} for char in value):
-        raise TeamCLIError("--title must be a single line without control characters")
+        raise CLIError("--title must be a single line without control characters")
     subject = value.strip()
     if not 1 <= len(subject) <= 160:
-        raise TeamCLIError("--title must be between 1 and 160 characters")
+        raise CLIError("--title must be between 1 and 160 characters")
     return subject
 
 
 def send(args: argparse.Namespace) -> dict[str, Any]:
-    capability, _session_id = _provider_authority(args.authority_file)
+    capability, _session_id = provider_authority(args.authority_file)
     route_id = str(args.route or "").strip()
     if not route_id:
-        raise TeamCLIError("--route is required; run `routes` first")
+        raise CLIError("--route is required; run `routes` first")
     kind = str(args.kind or "message")
     if kind not in {"message", "skill"}:
-        raise TeamCLIError("--kind must be message or skill")
+        raise CLIError("--kind must be message or skill")
     reply_id = getattr(args, "in_reply_to", None)
     if reply_id is not None:
         if kind != "message":
-            raise TeamCLIError("--in-reply-to requires --kind message")
+            raise CLIError("--in-reply-to requires --kind message")
         if not isinstance(reply_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{8,240}", reply_id) is None:
-            raise TeamCLIError("reply MESSAGE_ID must contain 8 to 240 ASCII letters, digits, underscores, or hyphens")
+            raise CLIError("reply MESSAGE_ID must contain 8 to 240 ASCII letters, digits, underscores, or hyphens")
     title = (
         _mail_subject(args.title) if kind == "message" and args.title is not None
         else str(args.title).strip() if args.title else None
@@ -544,9 +372,9 @@ def send(args: argparse.Namespace) -> dict[str, Any]:
         payload["in_reply_to_message_id"] = reply_id
     if kind == "skill":
         if not args.skill_slug:
-            raise TeamCLIError("--skill-slug is required for --kind skill")
+            raise CLIError("--skill-slug is required for --kind skill")
         if not args.title:
-            raise TeamCLIError("--title is required for --kind skill")
+            raise CLIError("--title is required for --kind skill")
         skill: dict[str, Any] = {"slug": str(args.skill_slug).strip().lower()}
         if args.summary:
             skill["summary"] = str(args.summary).strip()
@@ -558,7 +386,7 @@ def send(args: argparse.Namespace) -> dict[str, Any]:
             skill["expected_version"] = int(args.expected_version)
         payload["skill"] = skill
     elif args.skill_slug or args.expected_version is not None:
-        raise TeamCLIError("skill options require --kind skill")
+        raise CLIError("skill options require --kind skill")
     stable_key = "team_cli_" + hashlib.sha256(
         json.dumps(
             [capability, route_id, payload],
@@ -584,22 +412,22 @@ def send(args: argparse.Namespace) -> dict[str, Any]:
         or result.get("accepted") is not True
         or type(result.get("duplicate")) is not bool
     ):
-        raise TeamCLIError("AgentsServer returned an invalid Team Network send receipt")
+        raise CLIError("AgentsServer returned an invalid Team Network send receipt")
     return result
 
 
 def edit(args: argparse.Namespace) -> dict[str, Any]:
     """Revise one exact Bulletin message; never fall back to creating a post."""
-    capability, _session_id = _provider_authority(args.authority_file)
+    capability, _session_id = provider_authority(args.authority_file)
     route_id = str(args.route or "").strip()
     if not route_id:
-        raise TeamCLIError("--route is required; run `routes` first")
+        raise CLIError("--route is required; run `routes` first")
     message_id = args.message_id
     if not isinstance(message_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{8,240}", message_id) is None:
-        raise TeamCLIError("MESSAGE_ID must contain 8 to 240 ASCII letters, digits, underscores, or hyphens")
+        raise CLIError("MESSAGE_ID must contain 8 to 240 ASCII letters, digits, underscores, or hyphens")
     expected_version = args.expected_version
     if type(expected_version) is not int or expected_version < 1:
-        raise TeamCLIError("--expected-version must be a positive integer; read --include-revision first")
+        raise CLIError("--expected-version must be a positive integer; read --include-revision first")
     payload: dict[str, Any] = {
         "kind": "bulletin_edit",
         "message_id": message_id,
@@ -628,7 +456,7 @@ def edit(args: argparse.Namespace) -> dict[str, Any]:
         or type(result.get("version")) is not int
         or result["version"] != expected_version + 1
     ):
-        raise TeamCLIError("AgentsServer returned an invalid Team Network edit receipt")
+        raise CLIError("AgentsServer returned an invalid Team Network edit receipt")
     return result
 
 
@@ -770,14 +598,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         args = parser().parse_args(argv)
-        selected_authority = _selected_authority_path(args.authority_file)
+        selected_authority = selected_authority_path(args.authority_file)
         os.environ["AGENTSDOCK_PROVIDER_AUTHORITY_FILE"] = str(
             selected_authority
         )
         result = args.handler(args)
         print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
         return 0
-    except TeamCLIError as exc:
+    except CLIError as exc:
         print(f"agentsdock-team: {exc}", file=sys.stderr)
         return 2
     finally:

@@ -27,6 +27,7 @@ NEW_MODULES = {
     "claude_background_reconciliation.py",
     "claude_model_catalog.py", "codex_model_catalog.py",
     "agentsdock_canvas.py", "remote_servers.py",
+    "agentsdock_cli_common.py",
     "claude_goals.py",
     "opencode_agent_client.py",
     "team_mail_runtime.py", "team_mail_websocket.py",
