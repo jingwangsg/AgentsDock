@@ -1,5 +1,29 @@
 # Public development log
 
+## 2026-10-04 — Android tabs drag like chats; a hub deploy keeps a remote's id (build 34)
+
+- Terminal and browser tab rows in the Android sidebar can be dragged: a
+  long press lifts a tab as it lifts a chat (letting go in place opens its
+  menu), a drop reorders it among the tabs and moves it to the folder whose
+  header is above the drop. The server gained `PUT /api/surfaces/order`; the
+  listed tabs take their current slots in the requested order, so one folder's
+  reorder cannot disturb another's, and the surfaces revision advances only
+  when the order changed. Chat and tab rows also show a grip at their
+  trailing edge that lifts the row immediately, for phones where the
+  350 ms long press was hard to turn into a drag.
+- A hub deploy that names a host and directory the hub already manages now
+  updates that entry. It used to register a second entry with a new id and
+  token and retire the first, which stranded every saved profile on the old
+  `/api/remote/<id>` path; this happened to three remotes earlier today and
+  showed on the phone as a terminal tab that never left "Connecting". The
+  hub registry is being restored to the original ids with its restart.
+- Verified with the new server route tests, the surfaces store test
+  (optimistic reorder, server copy wins, unknown id ignored), the sidebar
+  contract pins, type checks and the native project check. Android build 34
+  (`AgentsDock-0.1.1-34-sideload.apk`, project debug key) was attached to the
+  working chat and installs over the previous builds; dragging was not
+  exercised on a device. Availability: local package.
+
 ## 2026-10-04 — Android terminal tabs accept typing again and gain a key row (build 33)
 
 - Typing into an Android terminal tab reached nothing: the web view terminal
