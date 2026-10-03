@@ -77044,9 +77044,10 @@ def provider_host_boot_identity() -> str:
         if value:
             return f"linux:{value[:200]}"
     if sys.platform == "darwin":
+        sysctl = shutil.which("sysctl") or "/usr/sbin/sysctl"  # macOS keeps it in sbin, off a service's PATH
         try:
             completed = subprocess.run(
-                ["sysctl", "-n", "kern.boottime"],
+                [sysctl, "-n", "kern.boottime"],
                 capture_output=True,
                 text=True,
                 timeout=PROVIDER_CHILD_PROBE_TIMEOUT_SECONDS,
