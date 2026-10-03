@@ -472,21 +472,35 @@ class ClaudeInterruptionRepairTests(unittest.TestCase):
         self.assertTrue(self.prepare())
         self.assertEqual(self.correction()["type"], "provider_interruption")
 
-    def test_native_goal_attachment_proves_command_rewrite_without_hiding_quoted_xml(self):
-        goal = self.raw(1, type="attachment", message=None,
-            attachment={"type": "goal_status", "sentinel": True, "met": False, "condition": "Finish"})
-        wrapper = "<command-name>/goal</command-name>\n <command-message>goal</command-message>\n <command-args>Finish</command-args>"
-        command = self.raw(2, parentUuid=goal["uuid"], message={"role": "user", "content": wrapper})
-        self.fixture([goal, command], start=1)
-        self.target["prompt"] = wrapper
-        self.target["provider_origin"] = {"provider": "claude", "event_id": command["uuid"],
-            "session_id": self.PROVIDER, "timestamp": self.TIME}
-        self.events.write_bytes(encode(self.rows))
-        self.assertTrue(self.prepare())
-        self.assertEqual(self.cache.project_event("chat-1", self.target)["prompt"], "/goal Finish")
-        self.assertFalse(self.cache.is_hidden("chat-1", self.target))
-        quoted = {**self.target, "provider_origin": {**self.target["provider_origin"], "event_id": self.raw(99)["uuid"]}, "seq": 55}
-        self.assertIsNone(self.cache.project_event("chat-1", quoted))
+    def test_old_slash_command_rows_read_as_the_command_and_are_hidden_behind_their_own_turn(self):
+        wrapper = ("<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n"
+                   "            <command-args></command-args>")
+        output = "<local-command-stdout>Compacted </local-command-stdout>"
+        common = {"session_id": "chat-1", "backend": "claude", "run_id": "native-one",
+                  "provider_session_id": self.PROVIDER, "ts": self.TIME}
+        own_turn = [{**common, "type": "turn_started", "seq": 1, "prompt": "/compact"},
+                    {**common, "type": "turn_finished", "seq": 2, "exit_code": 0, "result_text": ""}]
+        for native, hidden in ((own_turn, True), ((), False)):
+            with self.subTest(own_turn=bool(native)):
+                self.cache = repair.ClaudeMetadataRepairCache()
+                question = self.raw(1)
+                command = self.raw(2, parentUuid=question["uuid"], message={"role": "user", "content": wrapper})
+                printed = self.raw(3, parentUuid=command["uuid"], message={"role": "user", "content": output})
+                self.fixture([question, command, printed], start=1, native=native)
+                def origin(row):
+                    return {"provider": "claude", "event_id": row["uuid"], "session_id": self.PROVIDER, "timestamp": self.TIME}
+                self.target.update(prompt=wrapper, provider_origin=origin(command))
+                imported_output = {**self.target, "seq": 18527, "prompt": output, "provider_origin": origin(printed)}
+                self.rows[-1]["seq"] = 18528
+                self.rows.insert(-1, imported_output)
+                self.events.write_bytes(encode(self.rows))
+                self.assertTrue(self.prepare())
+                self.assertEqual(self.cache.is_hidden("chat-1", self.target), hidden)
+                if not hidden:
+                    self.assertEqual(self.cache.project_event("chat-1", self.target)["prompt"], "/compact")
+                    quoted = {**self.target, "seq": 55, "provider_origin": origin(self.raw(99))}
+                    self.assertIsNone(self.cache.project_event("chat-1", quoted), "a copy with another source id is not a command")
+                self.assertTrue(self.cache.is_hidden("chat-1", imported_output), "the local output has no imported form")
 
     def owned_followup_fixture(self, *, linked=True, same_uuid=True,
                                native_prompt="Real question", source_prompt=None,

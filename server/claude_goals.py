@@ -5,11 +5,10 @@ no watcher, timer, provider command, or transcript mutation.
 """
 from __future__ import annotations
 
-from collections import deque, OrderedDict
+from collections import deque
 from datetime import datetime
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -28,73 +27,6 @@ def is_claude_synthetic_no_response(event: Any) -> bool:
                 and message.get("content") == [{"type": "text", "text": "No response requested."}]
                 and isinstance(message.get("usage"), dict)
                 and message["usage"].get("output_tokens") == 0)
-
-
-class ClaudeGoalHistoryNormalizer:
-    """Normalize only commands linked to native goal attachments, never quotes."""
-    _command = re.compile(r"\A<command-name>/goal</command-name>\s*<command-message>goal</command-message>\s*<command-args>(.*)</command-args>\Z", re.DOTALL)
-
-    def __init__(self):
-        self._parents: OrderedDict[str, dict] = OrderedDict()
-
-    def seed(self, path: Path, offset: int) -> None:
-        if offset <= 0:
-            return
-        try:
-            with path.open("rb") as stream:
-                start = max(0, offset - 65536)
-                stream.seek(start)
-                region = stream.read(offset - start)
-        except OSError:
-            return
-        if start:
-            region = region.partition(b"\n")[2]
-        for line in region.splitlines():
-            try:
-                self.consume(json.loads(line))
-            except (ValueError, RecursionError):
-                continue
-
-    def consume(self, event: Any) -> Any:
-        if not isinstance(event, dict) or event.get("isSidechain") is True:
-            return event
-        parent = self._parents.get(event.get("parentUuid"))
-        same_session = bool(parent and parent.get("sessionId") == event.get("sessionId"))
-        message = event.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        attachment = event.get("attachment")
-        if (isinstance(attachment, dict) and attachment.get("type") == "goal_status"
-                and attachment.get("sentinel") is True and type(attachment.get("met")) is bool):
-            self._remember(event)
-        elif (same_session and event.get("type") == "user" and event.get("isMeta") is True
-              and isinstance(content, str) and content.startswith("<local-command-caveat>")
-              and parent.get("attachment", {}).get("met") is True):
-            self._remember({**event, "attachment": parent["attachment"]})
-        elif (same_session and event.get("type") == "user" and isinstance(message, dict)
-              and message.get("role") == "user" and isinstance(content, str)):
-            match = self._command.fullmatch(content)
-            native = parent.get("attachment", {})
-            if match and ((native.get("met") is False and match[1] == native.get("condition"))
-                          or (native.get("met") is True and match[1] == "clear"
-                              and parent.get("isMeta") is True
-                              and parent.get("promptId") == event.get("promptId"))):
-                return {**event, "message": {**message, "content": "/goal " + match[1]}}
-        return event
-
-    def _remember(self, event: dict) -> None:
-        identity = event.get("uuid")
-        if not isinstance(identity, str) or not isinstance(event.get("sessionId"), str):
-            return
-        native = event.get("attachment", {})
-        condition = native.get("condition")
-        if not isinstance(condition, str) or len(condition) > 16_384:
-            return
-        self._parents[identity] = {key: event.get(key) for key in ("sessionId", "promptId", "isMeta")}
-        self._parents[identity]["attachment"] = {
-            "met": native.get("met"), "condition": condition,
-        }
-        while len(self._parents) > 32:
-            self._parents.popitem(last=False)
 
 
 def _timestamp_ms(value: Any) -> int | None:

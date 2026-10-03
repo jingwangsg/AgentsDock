@@ -6,7 +6,10 @@ Only source identifiers are carried between byte-cursor reads; never chat text.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from datetime import datetime
+import json
+from pathlib import Path
 import re
 
 
@@ -135,3 +138,74 @@ class ClaudeInterruptionTracker:
         else:
             self._context = {"version": 1}
         return origin
+
+
+# Built-in commands are stored name-first with an args element; custom
+# commands and skills message-first, sometimes without args.
+_COMMAND_WRAPPER = re.compile(
+    r"(?:<command-message>[^<]*</command-message>\s*)?"
+    r"<command-name>/([A-Za-z0-9_][A-Za-z0-9_.:-]{0,127})</command-name>\s*"
+    r"(?:<command-message>[^<]*</command-message>\s*)?"
+    r"(?:<command-args>([\s\S]*)</command-args>)?")
+_LOCAL_COMMAND_OUTPUT = re.compile(r"<local-command-std(out|err)>[\s\S]*</local-command-std\1>")
+_MAX_COMMAND_WRAPPERS = 32
+
+
+class ClaudeCommandHistoryNormalizer:
+    """Read a typed slash command as the command text; omit its local output.
+
+    Claude Code stores a typed slash command as a user row holding a
+    ``<command-name>`` wrapper and, when the command ran locally, its output
+    as a second user row holding ``<local-command-stdout>`` (or ``stderr``)
+    whose parent is that wrapper. Its UI prints the first as the command
+    (``/compact``) and the second as command output, never as a message the
+    person typed. The wrapper becomes that command text, so a command this
+    chat ran itself also matches its own native turn and is not imported a
+    second time. The output row has no place in the timeline, which has no
+    item kind for command output and already omits every ``system`` row; it
+    is omitted only behind a wrapper parent from the same session, so an
+    output quotation with any other parent stays as submitted.
+    """
+
+    def __init__(self) -> None:
+        self._wrappers: OrderedDict[str, str] = OrderedDict()
+
+    def seed(self, path: Path, offset: int) -> None:
+        """Replay the bytes just before a cursor so an output row finds its wrapper."""
+        if offset <= 0:
+            return
+        try:
+            with path.open("rb") as stream:
+                start = max(0, offset - 65536)
+                stream.seek(start)
+                region = stream.read(offset - start)
+        except OSError:
+            return
+        if start:
+            region = region.partition(b"\n")[2]
+        for line in region.splitlines():
+            try:
+                self.consume(json.loads(line))
+            except (ValueError, RecursionError):
+                continue
+
+    def consume(self, event) -> dict | None:
+        if not isinstance(event, dict) or event.get("type") != "user" or event.get("isSidechain") is True:
+            return event
+        message = event.get("message")
+        if not isinstance(message, dict) or message.get("role") != "user" or not isinstance(message.get("content"), str):
+            return event
+        text = message["content"].strip()
+        command = _COMMAND_WRAPPER.fullmatch(text)
+        if command is not None:
+            if isinstance(event.get("uuid"), str) and isinstance(event.get("sessionId"), str):
+                self._wrappers[event["uuid"]] = event["sessionId"]
+                while len(self._wrappers) > _MAX_COMMAND_WRAPPERS:
+                    self._wrappers.popitem(last=False)
+            args = (command[2] or "").strip()
+            return {**event, "message": {**message, "content": "/" + command[1] + (" " + args if args else "")}}
+        parent = event.get("parentUuid")
+        if (_LOCAL_COMMAND_OUTPUT.fullmatch(text) and parent in self._wrappers
+                and self._wrappers[parent] == event.get("sessionId")):
+            return None
+        return event
