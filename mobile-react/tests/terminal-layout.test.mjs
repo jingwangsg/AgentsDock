@@ -55,3 +55,11 @@ test('android terminal sends typed input as binary frames and has a key row', ()
   for (const label of ['Esc', 'Tab', 'Ctrl', 'Alt', 'Home', 'End']) assert.match(source, new RegExp(`label: '${label}'`))
   assert.match(source, /testID="terminal-platform-viewport"[\s\S]*testID="terminal-key-row"/)
 })
+
+test('android terminal inline script keeps control escapes double-escaped for the template literal', () => {
+  // A single-backslash \x00 in the template becomes a raw NUL in the generated HTML and
+  // truncates it, so the script never runs and the tab sits on "Connecting" (build 33/34).
+  const inline = androidTerminal.slice(androidTerminal.indexOf('<script>\n  (() => {'), androidTerminal.indexOf('</script></body></html>'))
+  assert.doesNotMatch(inline, /(?<!\\)\\x[0-9a-fA-F]{2}/)
+  assert.doesNotMatch(inline, /'(?<!\\)\\t'/)
+})

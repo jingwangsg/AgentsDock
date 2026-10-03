@@ -210,19 +210,19 @@ export function androidTerminalHTML(config: AndroidTerminalConfig): string {
       if (ctrl) {
         const code = text.toUpperCase().charCodeAt(0);
         if (code >= 0x40 && code <= 0x5f) out = String.fromCharCode(code & 0x1f);
-        else if (text === ' ') out = '\x00';
+        else if (text === ' ') out = '\\x00';
       }
-      return alt ? '\x1b' + out : out;
+      return alt ? '\\x1b' + out : out;
     };
     const cursorKey = letter => {
       if (modifiers.ctrl || modifiers.alt) {
         const parameter = modifiers.ctrl && modifiers.alt ? '7' : modifiers.ctrl ? '5' : '3';
         releaseModifiers();
-        return '\x1b[1;' + parameter + letter;
+        return '\\x1b[1;' + parameter + letter;
       }
-      return (term.modes.applicationCursorKeysMode ? '\x1bO' : '\x1b[') + letter;
+      return (term.modes.applicationCursorKeysMode ? '\\x1bO' : '\\x1b[') + letter;
     };
-    const KEY_TEXT = { escape: '\x1b', tab: '\t', home: '\x1b[H', end: '\x1b[F', pageup: '\x1b[5~', pagedown: '\x1b[6~', dash: '-', slash: '/', pipe: '|', tilde: '~' };
+    const KEY_TEXT = { escape: '\\x1b', tab: '\\t', home: '\\x1b[H', end: '\\x1b[F', pageup: '\\x1b[5~', pagedown: '\\x1b[6~', dash: '-', slash: '/', pipe: '|', tilde: '~' };
     const ARROWS = { up: 'A', down: 'B', right: 'C', left: 'D' };
     const key = name => {
       focus();
