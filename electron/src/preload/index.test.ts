@@ -218,13 +218,13 @@ describe('preload session IPC bridge', () => {
 
     await electronHarness.exposed?.ports.list('profile-a', 7)
     await electronHarness.exposed?.ports.start('profile-a', 7, 'chat /?', 7007, 17007)
-    await electronHarness.exposed?.ports.stop('profile-a', 7, 7007)
-    await electronHarness.exposed?.ports.open('profile-a', 7, 7007)
+    await electronHarness.exposed?.ports.stop('profile-a', 7, 'chat /?', 7007)
+    await electronHarness.exposed?.ports.open('profile-a', 7, 'chat /?', 7007)
 
     expect(electronHarness.invoke).toHaveBeenNthCalledWith(1, 'ports:list', 'profile-a', 7)
     expect(electronHarness.invoke).toHaveBeenNthCalledWith(2, 'ports:start', 'profile-a', 7, 'chat /?', 7007, 17007)
-    expect(electronHarness.invoke).toHaveBeenNthCalledWith(3, 'ports:stop', 'profile-a', 7, 7007)
-    expect(electronHarness.invoke).toHaveBeenNthCalledWith(4, 'ports:open', 'profile-a', 7, 7007)
+    expect(electronHarness.invoke).toHaveBeenNthCalledWith(3, 'ports:stop', 'profile-a', 7, 'chat /?', 7007)
+    expect(electronHarness.invoke).toHaveBeenNthCalledWith(4, 'ports:open', 'profile-a', 7, 'chat /?', 7007)
   })
 
   it('forwards the exact emergency acknowledgement identifiers on the dedicated channel', async () => {

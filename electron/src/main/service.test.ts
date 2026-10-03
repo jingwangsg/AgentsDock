@@ -10572,7 +10572,7 @@ describe('rapid profile resource teardown', () => {
     expect(a.portTunnelSocket).not.toHaveBeenCalled()
   })
 
-  it('shares one remote-port listener across chats and emits profile-wide snapshots', async () => {
+  it('keeps one listener per chat for the same remote port and emits profile-wide snapshots', async () => {
     const manager = new PortTunnelManager()
     const a = fakeClient({
       health: async () => portForwardingHealth(),
@@ -10593,18 +10593,20 @@ describe('rapid profile resource teardown', () => {
     const fromA = await service.startForwardedPort('a', initial.profileGeneration, 'chat-a', 7007)
     const fromB = await service.startForwardedPort('a', initial.profileGeneration, 'chat-b', 7007)
 
-    expect(fromB).toEqual(fromA)
-    expect(fromB.sessionId).toBe('chat-a')
-    expect(service.listForwardedPorts('a', initial.profileGeneration)).toEqual([fromA])
+    expect(fromB.sessionId).toBe('chat-b')
+    expect(fromB.localPort).not.toBe(fromA.localPort)
+    expect(service.listForwardedPorts('a', initial.profileGeneration)).toEqual([fromA, fromB])
     expect(send).toHaveBeenCalledWith('ports:changed', {
       profileId: 'a',
       profileGeneration: initial.profileGeneration,
-      ports: [fromA]
+      ports: [fromA, fromB]
     })
 
-    await service.openForwardedPort('a', initial.profileGeneration, 7007)
-    expect(electronHarness.shellOpenExternal).toHaveBeenCalledWith(fromA.localUrl)
-    await service.stopForwardedPort('a', initial.profileGeneration, 7007)
+    await service.openForwardedPort('a', initial.profileGeneration, 'chat-b', 7007)
+    expect(electronHarness.shellOpenExternal).toHaveBeenCalledWith(fromB.localUrl)
+    await service.stopForwardedPort('a', initial.profileGeneration, 'chat-a', 7007)
+    expect(service.listForwardedPorts('a', initial.profileGeneration)).toEqual([fromB])
+    await service.stopForwardedPort('a', initial.profileGeneration, 'chat-b', 7007)
     expect(service.listForwardedPorts('a', initial.profileGeneration)).toEqual([])
     expect(send).toHaveBeenLastCalledWith('ports:changed', {
       profileId: 'a',
@@ -10685,7 +10687,7 @@ describe('rapid profile resource teardown', () => {
     await expect(service.startForwardedPort('a', initial.profileGeneration, 'chat-a', 7007, 17007))
       .resolves.toMatchObject({ remotePort: 7007, localPort: 17007, state: 'open' })
     expect(a.portTunnelSocket).toHaveBeenCalledWith('chat-a', 7007)
-    await service.openForwardedPort('a', initial.profileGeneration, 7007)
+    await service.openForwardedPort('a', initial.profileGeneration, 'chat-a', 7007)
     expect(electronHarness.shellOpenExternal).toHaveBeenCalledWith('http://127.0.0.1:17007')
 
     await service.switchServer('b')

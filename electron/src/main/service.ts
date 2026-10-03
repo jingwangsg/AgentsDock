@@ -5233,19 +5233,21 @@ export class AppService {
   async stopForwardedPort(
     profileId: string,
     profileGeneration: number,
+    sessionId: string,
     remotePort: number
   ): Promise<void> {
     const scope = this.requireProfileScope(profileId, profileGeneration)
-    await this.portTunnels.stop(remotePort)
+    await this.portTunnels.stop(sessionId, remotePort)
     this.assertCurrentScope(scope)
   }
   async openForwardedPort(
     profileId: string,
     profileGeneration: number,
+    sessionId: string,
     remotePort: number
   ): Promise<void> {
     const scope = this.requireProfileScope(profileId, profileGeneration)
-    const url = this.portTunnels.url(remotePort)
+    const url = this.portTunnels.url(sessionId, remotePort)
     this.assertCurrentScope(scope)
     await shell.openExternal(url)
     this.assertCurrentScope(scope)

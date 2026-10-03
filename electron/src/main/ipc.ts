@@ -481,11 +481,11 @@ export function registerIpc(
   handle('ports:start', (profileId, profileGeneration, sessionId, remotePort, preferredLocalPort) => (
     service.startForwardedPort(profileId, profileGeneration, sessionId, remotePort, preferredLocalPort)
   ))
-  handle('ports:stop', (profileId, profileGeneration, remotePort) => (
-    service.stopForwardedPort(profileId, profileGeneration, remotePort)
+  handle('ports:stop', (profileId, profileGeneration, sessionId, remotePort) => (
+    service.stopForwardedPort(profileId, profileGeneration, sessionId, remotePort)
   ))
-  handle('ports:open', (profileId, profileGeneration, remotePort) => (
-    service.openForwardedPort(profileId, profileGeneration, remotePort)
+  handle('ports:open', (profileId, profileGeneration, sessionId, remotePort) => (
+    service.openForwardedPort(profileId, profileGeneration, sessionId, remotePort)
   ))
   ipcMain.removeAllListeners('terminal:write')
   ipcMain.on('terminal:write', (event, profileId, profileGeneration, sessionId, data) => {

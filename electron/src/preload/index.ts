@@ -443,11 +443,11 @@ const api: AgentsDockAPI = {
     start: (profileId, profileGeneration, sessionId, remotePort, preferredLocalPort) => (
       ipcRenderer.invoke('ports:start', profileId, profileGeneration, sessionId, remotePort, preferredLocalPort)
     ),
-    stop: (profileId, profileGeneration, remotePort) => (
-      ipcRenderer.invoke('ports:stop', profileId, profileGeneration, remotePort)
+    stop: (profileId, profileGeneration, sessionId, remotePort) => (
+      ipcRenderer.invoke('ports:stop', profileId, profileGeneration, sessionId, remotePort)
     ),
-    open: (profileId, profileGeneration, remotePort) => (
-      ipcRenderer.invoke('ports:open', profileId, profileGeneration, remotePort)
+    open: (profileId, profileGeneration, sessionId, remotePort) => (
+      ipcRenderer.invoke('ports:open', profileId, profileGeneration, sessionId, remotePort)
     )
   },
   pins: {

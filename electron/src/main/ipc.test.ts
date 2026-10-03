@@ -414,13 +414,13 @@ describe('Team Hub IPC registration', () => {
 
     await harness.handlers.get('ports:list')?.(trustedEvent, 'profile-a', 7)
     await harness.handlers.get('ports:start')?.(trustedEvent, 'profile-a', 7, 'chat /?', 7007, 17007)
-    await harness.handlers.get('ports:stop')?.(trustedEvent, 'profile-a', 7, 7007)
-    await harness.handlers.get('ports:open')?.(trustedEvent, 'profile-a', 7, 7007)
+    await harness.handlers.get('ports:stop')?.(trustedEvent, 'profile-a', 7, 'chat /?', 7007)
+    await harness.handlers.get('ports:open')?.(trustedEvent, 'profile-a', 7, 'chat /?', 7007)
 
     expect(service.listForwardedPorts).toHaveBeenCalledWith('profile-a', 7)
     expect(service.startForwardedPort).toHaveBeenCalledWith('profile-a', 7, 'chat /?', 7007, 17007)
-    expect(service.stopForwardedPort).toHaveBeenCalledWith('profile-a', 7, 7007)
-    expect(service.openForwardedPort).toHaveBeenCalledWith('profile-a', 7, 7007)
+    expect(service.stopForwardedPort).toHaveBeenCalledWith('profile-a', 7, 'chat /?', 7007)
+    expect(service.openForwardedPort).toHaveBeenCalledWith('profile-a', 7, 'chat /?', 7007)
   })
 
   it('acknowledges secure-peer invite readiness only through trusted renderer IPC', async () => {
