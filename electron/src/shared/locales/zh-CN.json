@@ -3181,9 +3181,9 @@
   "inferenceHub.copyProxyToken": "复制代理令牌",
   "inferenceHub.upstream": "上游",
   "inferenceHub.remoteServers": "远程服务器",
-  "inferenceHub.remoteForwarded": "每个远程服务器的隧道都把其 127.0.0.1:{port} 转发到此代理。",
+  "inferenceHub.remoteForwarded": "本地服务端已设置为把每个远程服务器的 127.0.0.1:{port} 转发到此代理，重启本地服务端后生效。",
   "inferenceHub.remoteNotForwarded": "尚未转发：本地服务端还没有配置 Inference Hub 代理端口。",
-  "inferenceHub.remoteMismatch": "本地服务端转发的是端口 {port}；重新保存端口即可更新。",
+  "inferenceHub.remoteMismatch": "本地服务端设置的是端口 {port}；重新保存端口即可更新。",
   "inferenceHub.enableRemote": "启用",
   "inferenceHub.keys": "API 密钥",
   "inferenceHub.keysHelp": "代理轮换使用的上游密钥，只保存在本机配置文件中。",
@@ -3196,5 +3196,6 @@
   "inferenceHub.enableKey": "启用 {name}",
   "inferenceHub.configFile": "配置文件",
   "inferenceHub.keyEnabled": "已启用",
-  "inferenceHub.remoteNoHub": "本机没有安装本地服务端，因此没有需要转发的远程服务器。"
+  "inferenceHub.remoteNoHub": "本机没有安装本地服务端，因此没有需要转发的远程服务器。",
+  "inferenceHub.portSavedLocal": "端口已保存。"
 }

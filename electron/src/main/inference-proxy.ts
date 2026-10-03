@@ -43,6 +43,7 @@ interface ProxyConfig {
 export interface CommandResult { ok: boolean; output: string }
 export type RunCommand = (file: string, args: string[]) => Promise<CommandResult>
 
+/** Every option is a test seam; ipc.ts constructs the manager with none. */
 export interface InferenceProxyManagerOptions {
   paths?: InferenceProxyPaths
   run?: RunCommand
@@ -76,7 +77,9 @@ export class InferenceProxyManager {
 
   async status(): Promise<InferenceProxyStatus> {
     const config = this.readConfig()
-    const service = await this.serviceState()
+    const { service } = await this.launchdState()
+    const hubEnv = this.readHubEnv()
+    const forwardPort = Number(parseConfigEnv(hubEnv ?? '')[INFERENCE_PROXY_PORT_ENV])
     return {
       port: config.port,
       upstreamBaseUrl: config.upstream_base_url,
@@ -85,8 +88,8 @@ export class InferenceProxyManager {
       keys: config.keys.map(key => ({ name: key.name, enabled: key.enabled !== false, hint: key.api_key.slice(-4) })),
       service,
       healthy: service === 'running' && await this.probeHealth(config.port),
-      localHubInstalled: existsSync(this.paths.hubEnvFile),
-      hubForwardPort: this.hubForwardPort(),
+      localHubInstalled: hubEnv !== null,
+      hubForwardPort: Number.isInteger(forwardPort) && forwardPort > 0 ? forwardPort : null,
       configFile: this.paths.configFile,
       plistFile: this.paths.plistFile
     }
@@ -125,13 +128,19 @@ export class InferenceProxyManager {
   async start(): Promise<InferenceProxyStatus> {
     if (!existsSync(this.paths.plistFile)) throw new Error(`No LaunchAgent at ${this.paths.plistFile}. Install the inference proxy service first.`)
     const target = `${this.domain}/${INFERENCE_PROXY_LABEL}`
+    // Same kickstart, bootstrap, kickstart sequence as startLocalServerAgent in local-hub.ts; kept apart
+    // because this one is injectable for tests and waits on /healthz rather than a TCP connect.
     // Without -k, kickstart leaves a running proxy alone; it fails when launchd has not loaded the plist.
-    if (!(await this.run('/bin/launchctl', ['kickstart', target])).ok) {
-      const bootstrap = await this.run('/bin/launchctl', ['bootstrap', this.domain, this.paths.plistFile])
-      const failure = bootstrap.ok ? await this.run('/bin/launchctl', ['kickstart', target]) : bootstrap
-      if (!failure.ok) throw new Error(`launchd could not start ${INFERENCE_PROXY_LABEL}: ${failure.output}`)
+    let result = await this.run('/bin/launchctl', ['kickstart', target])
+    if (!result.ok) {
+      result = await this.run('/bin/launchctl', ['bootstrap', this.domain, this.paths.plistFile])
+      if (result.ok) result = await this.run('/bin/launchctl', ['kickstart', target])
     }
-    await this.waitForHealth(this.readConfig().port, true)
+    if (!result.ok) throw new Error(`launchd could not start ${INFERENCE_PROXY_LABEL}: ${result.output}`)
+    const port = this.readConfig().port
+    if (!await this.waitUntil(() => this.probeHealth(port))) {
+      throw new Error(`launchd started ${INFERENCE_PROXY_LABEL}, but nothing answered on 127.0.0.1:${port}/healthz within ${this.startTimeoutMs / 1000} s. Check the service's log.`)
+    }
     return this.status()
   }
 
@@ -151,18 +160,25 @@ export class InferenceProxyManager {
   /** Applies a config change and restarts a running proxy, which reads its config only at start. */
   private async mutate(change: (config: ProxyConfig) => void): Promise<void> {
     const config = this.readConfig()
+    const before = JSON.stringify(config)
     change(config)
     if (!config.proxy_token) config.proxy_token = randomBytes(32).toString('base64url')
+    // The page's Enable button re-saves the current port; that must not rewrite the proxy's file or restart it.
+    if (JSON.stringify(config) === before) return
     // Private, atomic write: the file holds every upstream key and the proxy token.
     mkdirSync(dirname(this.paths.configFile), { recursive: true, mode: 0o700 })
     const tmp = `${this.paths.configFile}.${process.pid}.tmp`
     writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
     renameSync(tmp, this.paths.configFile)
-    if (await this.serviceState() === 'running') {
+    const running = await this.launchdState()
+    if (running.service === 'running') {
       // Silently ignoring a failed restart would leave the old config serving while the page shows the new one.
       const restart = await this.run('/bin/launchctl', ['kickstart', '-k', `${this.domain}/${INFERENCE_PROXY_LABEL}`])
       if (!restart.ok) throw new Error(`Saved, but launchd could not restart ${INFERENCE_PROXY_LABEL}: ${restart.output}`)
-      await this.waitForHealth(config.port, false)
+      // kickstart -k returns before the old instance has exited, so an immediate /healthz probe could be
+      // answered by the old process. Wait for launchd to show a new pid, then for that instance to answer.
+      await this.waitUntil(async () => (await this.launchdState()).pid !== running.pid)
+      await this.waitUntil(() => this.probeHealth(config.port))
     }
   }
 
@@ -181,34 +197,33 @@ export class InferenceProxyManager {
     }
   }
 
-  private async serviceState(): Promise<InferenceProxyStatus['service']> {
-    if (!existsSync(this.paths.plistFile)) return 'not-installed'
+  /** launchd's view of the service; the pid identifies the running instance across a restart. */
+  private async launchdState(): Promise<{ service: InferenceProxyStatus['service']; pid: number | null }> {
+    if (!existsSync(this.paths.plistFile)) return { service: 'not-installed', pid: null }
     const result = await this.run('/bin/launchctl', ['print', `${this.domain}/${INFERENCE_PROXY_LABEL}`])
-    return result.ok && /\bstate = running\b/.test(result.output) ? 'running' : 'stopped'
+    if (!result.ok || !/\bstate = running\b/.test(result.output)) return { service: 'stopped', pid: null }
+    const pid = Number(result.output.match(/\bpid = (\d+)/)?.[1])
+    return { service: 'running', pid: Number.isInteger(pid) ? pid : null }
   }
 
-  private async waitForHealth(port: number, required: boolean): Promise<void> {
+  /** Polls `ready` until it holds or the start timeout passes; false on timeout. */
+  private async waitUntil(ready: () => Promise<boolean>): Promise<boolean> {
     const deadline = Date.now() + this.startTimeoutMs
-    while (!await this.probeHealth(port)) {
-      if (Date.now() >= deadline) {
-        if (required) throw new Error(`launchd started ${INFERENCE_PROXY_LABEL}, but nothing answered on 127.0.0.1:${port}/healthz within ${this.startTimeoutMs / 1000} s. Check the service's log.`)
-        return
-      }
+    while (!await ready()) {
+      if (Date.now() >= deadline) return false
       await new Promise(resolve => setTimeout(resolve, 250))
     }
+    return true
   }
 
-  private hubForwardPort(): number | null {
-    let text: string
-    try { text = readFileSync(this.paths.hubEnvFile, 'utf8') } catch { return null }
-    const value = Number(parseConfigEnv(text)[INFERENCE_PROXY_PORT_ENV])
-    return Number.isInteger(value) && value > 0 ? value : null
+  /** null when no local hub is installed: install.sh writes this file, and without a hub there are no remote servers to forward to. */
+  private readHubEnv(): string | null {
+    try { return readFileSync(this.paths.hubEnvFile, 'utf8') } catch { return null }
   }
 
-  /** Edits only an existing hub env file: without a local hub there are no remote servers to forward to. */
   private writeHubForwardPort(port: number): void {
-    let text: string
-    try { text = readFileSync(this.paths.hubEnvFile, 'utf8') } catch { return }
+    const text = this.readHubEnv()
+    if (text === null) return
     const line = `export ${INFERENCE_PROXY_PORT_ENV}=${port}`
     const existing = new RegExp(`^(?:export\\s+)?${INFERENCE_PROXY_PORT_ENV}=.*$`, 'm')
     const next = existing.test(text)

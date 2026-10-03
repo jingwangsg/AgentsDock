@@ -810,9 +810,43 @@ if "-N" in sys.argv:
         for argv in mains:
             assert ("-R", "20001:127.0.0.1:20001") in zip(argv, argv[1:])
         assert all("-R" not in argv for argv in uploads)
-        # The git rewrite reads the site forwards only; the proxy port is not a git server.
+        # The git rewrite reads the site forwards only, since the proxy port is not a git server,
+        # and its own short connection carries no proxy forward.
         [rewrite] = [argv for argv in records if "-N" not in argv]
-        assert "ssh://git@git.example:12051/" in rewrite[-1] and "20001" not in rewrite[-1]
+        assert "ssh://git@git.example:12051/" in rewrite[-1] and all("20001" not in arg for arg in rewrite)
+
+    def test_a_non_port_inference_proxy_value_is_ignored_instead_of_breaking_the_tunnels(self) -> None:
+        script = self.tmp_path / "ssh"
+        calls = self.tmp_path / "tunnel-calls.jsonl"
+        script.write_text(f"""#!{sys.executable}
+import json, sys, time
+with open({str(calls)!r}, "a") as out:
+    out.write(json.dumps(sys.argv[1:]) + "\\n")
+time.sleep(30)
+""")
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_INFERENCE_PROXY_PORT": "twenty"}))
+        os.environ.pop("AGENTSDOCK_OCI_TUNNEL_SSH_ARGS", None)
+        self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
+        rs.save_registry(manager.path, [make_server(id="bbbbbbbbbbbb", ssh_host="plain-host", local_port=free_port())])
+
+        async def main() -> None:
+            await manager.start()
+            try:
+                for _ in range(200):
+                    if calls.exists() and len(calls.read_text().splitlines()) == 2:
+                        return
+                    await asyncio.sleep(0.05)
+                self.fail("tunnels did not start")
+            finally:
+                await manager.stop()
+
+        with self.assertLogs(rs.logger, level="WARNING") as logs:
+            asyncio.run(main())
+        assert any("AGENTSDOCK_INFERENCE_PROXY_PORT='twenty'" in line for line in logs.output)
+        assert all("-R" not in argv for argv in (json.loads(line) for line in calls.read_text().splitlines()))
 
     def test_osmo_tunnel_forwards_through_the_workflow_and_reports_an_ended_one(self) -> None:
         self.fake_osmo()

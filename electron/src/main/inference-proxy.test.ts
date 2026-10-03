@@ -15,12 +15,16 @@ describe('InferenceProxyManager', () => {
   let root: string
   let calls: string[][]
   let launchdRunning: boolean
+  let launchdPid: number
   let healthy: boolean
   const copy = vi.fn()
   const run = vi.fn<(file: string, args: string[]) => Promise<CommandResult>>()
+  // launchd as the module sees it: `print` reports the running pid, `kickstart -k` replaces the instance.
   const defaultRun = async (file: string, args: string[]): Promise<CommandResult> => {
     calls.push([file, ...args])
-    if (args[0] === 'print') return launchdRunning ? { ok: true, output: '\tstate = running\n\tpid = 42' } : { ok: false, output: 'Could not find service' }
+    if (args[0] === 'print') return launchdRunning ? { ok: true, output: `\tstate = running\n\tpid = ${launchdPid}` } : { ok: false, output: 'Could not find service' }
+    if (args[0] === 'kickstart' && args[1] === '-k') launchdPid += 1
+    if (args[0] === 'bootout') launchdRunning = false
     return { ok: true, output: '' }
   }
   const paths = () => ({
@@ -37,6 +41,7 @@ describe('InferenceProxyManager', () => {
     root = mkdtempSync(join(tmpdir(), 'inference-proxy-test-'))
     calls = []
     launchdRunning = false
+    launchdPid = 42
     healthy = false
     copy.mockClear()
     run.mockReset()
@@ -95,18 +100,62 @@ describe('InferenceProxyManager', () => {
     healthy = true
     const proxy = manager()
     await proxy.addKey('a', 'k-0001')
-    expect(calls).toContainEqual(['/bin/launchctl', 'kickstart', '-k', TARGET])
     await proxy.setKeyEnabled('a', false)
     expect(config().keys[0].enabled).toBe(false)
     await expect(proxy.setKeyEnabled('zzz', true)).rejects.toThrow('No key named zzz.')
     await expect(proxy.addKey('a', 'k-0002')).rejects.toThrow('A key named a already exists.')
     await proxy.removeKey('a')
     expect(config().keys).toEqual([])
+    // Three saved changes, three restarts; the two rejected calls above saved nothing and restarted nothing.
+    expect(calls.filter(call => call[1] === 'kickstart')).toEqual(Array(3).fill(['/bin/launchctl', 'kickstart', '-k', TARGET]))
     expect(await proxy.status()).toMatchObject({ service: 'running', healthy: true })
 
     calls = []
-    await proxy.stop()
+    const stopped = await proxy.stop()
     expect(calls).toEqual([['/bin/launchctl', 'bootout', TARGET], ['/bin/launchctl', 'print', TARGET]])
+    // healthy stays false for a stopped service even though the probe would answer.
+    expect(stopped).toMatchObject({ service: 'stopped', healthy: false })
+  })
+
+  it('does not probe /healthz after a restart until launchd reports a new pid', async () => {
+    installPlist()
+    launchdRunning = true
+    const order: string[] = []
+    let printsAfterRestart = 0
+    run.mockImplementation(async (file, args) => {
+      order.push(args.join(' '))
+      // The old instance lingers for one poll: the first print after kickstart -k still shows pid 42.
+      if (args[0] === 'print') return { ok: true, output: `state = running\npid = ${printsAfterRestart === 1 ? 42 : launchdPid}` }
+      if (args[0] === 'kickstart' && args[1] === '-k') { launchdPid = 43; printsAfterRestart = 0 }
+      return { ok: true, output: '' }
+    })
+    run.mockImplementation(async (file, args) => {
+      order.push(args.join(' '))
+      if (args[0] === 'print') { if (launchdPid === 43) printsAfterRestart += 1; return { ok: true, output: `state = running\npid = ${launchdPid === 43 && printsAfterRestart === 1 ? 42 : launchdPid}` } }
+      if (args[0] === 'kickstart' && args[1] === '-k') launchdPid = 43
+      return { ok: true, output: '' }
+    })
+    const proxy = new InferenceProxyManager({ paths: paths(), run, probeHealth: async () => { order.push('probe'); return true }, copyText: copy, uid: 501, startTimeoutMs: 2_000 })
+    await proxy.addKey('a', 'k-0001')
+    const restart = order.indexOf(`kickstart -k ${TARGET}`)
+    expect(restart).toBeGreaterThan(0)
+    // Two launchd polls (old pid, then the new one) before the first health probe.
+    expect(order.slice(restart + 1, restart + 4)).toEqual([`print ${TARGET}`, `print ${TARGET}`, 'probe'])
+  })
+
+  it('re-saving the current port points the local hub at it without rewriting or restarting the proxy', async () => {
+    installPlist()
+    launchdRunning = true
+    healthy = true
+    const existing = JSON.stringify({ port: 20001, proxy_token: 't'.repeat(43), keys: [] })
+    mkdirSync(join(root, 'config'), { recursive: true })
+    writeFileSync(paths().configFile, existing)
+    writeHubEnv('export AGENTSDOCK_AGENT_TOKEN=secret\n')
+
+    const status = await manager().setPort(20001)
+    expect(calls.map(call => call[1])).not.toContain('kickstart')
+    expect(readFileSync(paths().configFile, 'utf8')).toBe(existing)
+    expect(status).toMatchObject({ port: 20001, hubForwardPort: 20001, service: 'running', healthy: true })
   })
 
   it('bootstraps the LaunchAgent when kickstart cannot find it, then waits for /healthz', async () => {

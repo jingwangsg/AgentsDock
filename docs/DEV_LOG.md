@@ -28,11 +28,11 @@
   where the only failures are the two pre-existing `node:sqlite` bundling
   errors also seen on main. Exercised in an isolated dev instance of the
   desktop app against the real local hub, driven through Electron's remote
-  debugging port: saved the port, started the LaunchAgent (service running,
-  `/healthz` 200), added and removed a scratch key (proxy restarted each
-  time, raw key absent from the DOM), and the hub env line was written. Not
-  exercised: a remote server reaching the forward after a hub restart, light
-  theme and narrow widths.
+  debugging port: saved the port; started the LaunchAgent, with the service
+  running and `/healthz` answering 200; added and removed a scratch key, with
+  the proxy restarting each time and the raw key absent from the DOM; and saw
+  the hub env line written. Not exercised: a remote server reaching the
+  forward after a hub restart, light theme and narrow widths.
 
 ## 2026-10-03 — Context compaction works the same way for Claude and Codex
 

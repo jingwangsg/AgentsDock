@@ -3181,9 +3181,9 @@
   "inferenceHub.copyProxyToken": "Copy proxy token",
   "inferenceHub.upstream": "Upstream",
   "inferenceHub.remoteServers": "Remote servers",
-  "inferenceHub.remoteForwarded": "Each remote server’s tunnel forwards its 127.0.0.1:{port} to this proxy.",
+  "inferenceHub.remoteForwarded": "The local server is set to forward each remote server’s 127.0.0.1:{port} to this proxy. It applies after the local server restarts.",
   "inferenceHub.remoteNotForwarded": "Not forwarded yet: the local server has no inference proxy port configured.",
-  "inferenceHub.remoteMismatch": "The local server forwards port {port}; save the port again to update it.",
+  "inferenceHub.remoteMismatch": "The local server is set to port {port}; save the port again to update it.",
   "inferenceHub.enableRemote": "Enable",
   "inferenceHub.keys": "API keys",
   "inferenceHub.keysHelp": "Upstream keys the proxy rotates through. They are stored only in the config file on this machine.",
@@ -3196,5 +3196,6 @@
   "inferenceHub.enableKey": "Enable {name}",
   "inferenceHub.configFile": "Config file",
   "inferenceHub.keyEnabled": "Enabled",
-  "inferenceHub.remoteNoHub": "No local server is installed on this machine, so there are no remote servers to forward to."
+  "inferenceHub.remoteNoHub": "No local server is installed on this machine, so there are no remote servers to forward to.",
+  "inferenceHub.portSavedLocal": "Port saved."
 }

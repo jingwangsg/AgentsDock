@@ -2697,13 +2697,13 @@ export interface InferenceProxyStatus {
   baseUrl: string
   hasProxyToken: boolean
   keys: InferenceProxyKey[]
-  /** LaunchAgent state: no plist installed, loaded but not running, or running. */
+  /** LaunchAgent state: no plist installed, installed but not running (loaded or booted out), or running. */
   service: 'not-installed' | 'stopped' | 'running'
   /** `GET /healthz` answered on the configured port. */
   healthy: boolean
   /** The local hub's env file exists (install.sh wrote it); without a local hub there are no remote servers to forward to. */
   localHubInstalled: boolean
-  /** Port the local hub reverse-forwards to every remote server (its env file), or null when unset. */
+  /** Port in the local hub's env file, which the hub reverse-forwards to every remote server from its next start; null when unset. */
   hubForwardPort: number | null
   configFile: string
   plistFile: string
