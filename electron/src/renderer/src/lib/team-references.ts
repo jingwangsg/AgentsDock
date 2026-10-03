@@ -127,6 +127,19 @@ export function reconcileTeamReferences(
   nextText: string,
   references: readonly TeamReference[]
 ): TeamReference[] {
+  return reconcileReferenceSpans(previousText, nextText, references, teamReferenceTokenMatches)
+}
+
+/**
+ * Shared span arithmetic for chat and Team chips: shift spans after the edit,
+ * drop spans the edit touched, then let each chip kind re-check its token text.
+ */
+export function reconcileReferenceSpans<T extends ComposerReferenceSpan>(
+  previousText: string,
+  nextText: string,
+  references: readonly T[],
+  tokenMatches: (text: string, reference: T) => boolean
+): T[] {
   if (!references.length || previousText === nextText) return [...references]
   let prefix = 0
   const maxPrefix = Math.min(previousText.length, nextText.length)
@@ -154,7 +167,7 @@ export function reconcileTeamReferences(
       }]
     }
     return []
-  }).filter(reference => teamReferenceTokenMatches(nextText, reference))
+  }).filter(reference => tokenMatches(nextText, reference))
 }
 
 export function validTeamReferences(

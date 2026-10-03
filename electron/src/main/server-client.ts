@@ -2687,20 +2687,7 @@ export class AgentServerClient {
         AbortSignal.timeout(timeoutMs)
       )
     })
-    if (!response.ok) {
-      let detail = `${response.status} ${response.statusText}`
-      let rawDetail: unknown
-      try {
-        const payload = await response.json() as { detail?: unknown; error?: unknown }
-        // Secure-peer controls use the Hub-style `{ error: { code, message } }`
-        // envelope while the rest of AgentsServer generally uses `detail`.
-        // Preserve that authenticated structured error so callers can make a
-        // narrowly typed recovery decision without matching public prose.
-        rawDetail = payload.detail !== undefined ? payload.detail : payload.error
-        detail = formatServerDetail(rawDetail, detail)
-      } catch { /* keep HTTP status */ }
-      throw new ServerError(response.status, detail, rawDetail)
-    }
+    if (!response.ok) await throwServerError(response, { hubErrorEnvelope: true })
     if (response.status === 204) return undefined as T
     return response.json() as Promise<T>
   }
@@ -2735,16 +2722,7 @@ export class AgentServerClient {
         timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs)
       )
     })
-    if (!response.ok || expectedStatus !== undefined && response.status !== expectedStatus) {
-      let detail = `${response.status} ${response.statusText}`
-      let rawDetail: unknown
-      try {
-        const payload = await response.json() as { detail?: unknown }
-        rawDetail = payload.detail
-        detail = formatServerDetail(payload.detail, detail)
-      } catch { /* keep HTTP status */ }
-      throw new ServerError(response.status, detail, rawDetail)
-    }
+    if (!response.ok || expectedStatus !== undefined && response.status !== expectedStatus) await throwServerError(response)
     if (response.status === 204) return undefined as T
     return response.json() as Promise<T>
   }
@@ -2758,16 +2736,7 @@ export class AgentServerClient {
       redirect: 'error',
       signal: combineAbortSignals(configuration.abortController.signal, AbortSignal.timeout(30_000))
     })
-    if (!response.ok) {
-      let detail = `${response.status} ${response.statusText}`
-      let rawDetail: unknown
-      try {
-        const body = await response.json() as { detail?: unknown }
-        rawDetail = body.detail
-        detail = formatServerDetail(body.detail, detail)
-      } catch { /* keep HTTP status */ }
-      throw new ServerError(response.status, detail, rawDetail)
-    }
+    if (!response.ok) await throwServerError(response)
     return response.text()
   }
 
@@ -2836,18 +2805,7 @@ export class AgentServerClient {
       }
       throw error
     }
-    if (!response.ok) {
-      let detail = `${response.status} ${response.statusText}`
-      let rawDetail: unknown
-      try {
-        const body = (maxResponseBytes == null
-          ? await response.json()
-          : await boundedJSONResponse(response, maxResponseBytes)) as { detail?: unknown }
-        rawDetail = body.detail
-        detail = formatServerDetail(body.detail, detail)
-      } catch { /* keep HTTP status */ }
-      throw new ServerError(response.status, detail, rawDetail)
-    }
+    if (!response.ok) await throwServerError(response, { maxResponseBytes })
     if (response.status === 204) return undefined as T
     if (maxResponseBytes != null) return await boundedJSONResponse(response, maxResponseBytes) as T
     return response.json() as Promise<T>
@@ -3647,6 +3605,27 @@ function teamHubBootstrapErrorDetail(
 function isJSONContentType(value: string | null): boolean {
   if (!value) return false
   return value.split(';', 1)[0].trim().toLowerCase() === 'application/json'
+}
+
+/** Falls back to the HTTP status line when the error body is not JSON or has no detail. */
+async function throwServerError(
+  response: Response,
+  options: { maxResponseBytes?: number; hubErrorEnvelope?: boolean } = {}
+): Promise<never> {
+  let detail = `${response.status} ${response.statusText}`
+  let rawDetail: unknown
+  try {
+    const payload = (options.maxResponseBytes == null
+      ? await response.json()
+      : await boundedJSONResponse(response, options.maxResponseBytes)) as { detail?: unknown; error?: unknown }
+    // Secure-peer controls use the Hub-style `{ error: { code, message } }`
+    // envelope while the rest of AgentsServer generally uses `detail`.
+    // Preserve that authenticated structured error so callers can make a
+    // narrowly typed recovery decision without matching public prose.
+    rawDetail = options.hubErrorEnvelope && payload.detail === undefined ? payload.error : payload.detail
+    detail = formatServerDetail(rawDetail, detail)
+  } catch { /* keep HTTP status */ }
+  throw new ServerError(response.status, detail, rawDetail)
 }
 
 function formatServerDetail(detail: unknown, fallback: string): string {

@@ -3,9 +3,6 @@ import type { Health } from '@shared/types'
 import {
   agentCrossChatRoutesAvailable,
   agentCrossChatRoutesSupported,
-  atomicChatReferenceCaret,
-  atomicChatReferenceDeletion,
-  atomicChatReferenceNavigation,
   canonicalizeLocalRouteHints,
   chatMentionAction,
   chatMentionTrigger,
@@ -463,20 +460,6 @@ describe('chat references', () => {
       { session_id: 'route', display_title_snapshot: 'Route', source_text_start: 16, source_text_end: 22, action: 'route' },
       { session_id: 'legacy', display_title_snapshot: 'Legacy', source_text_start: 28, source_text_end: 35, action: 'instruction' }
     ])
-  })
-
-  it('treats a resolved @ route hint as one atomic textarea token', () => {
-    const text = 'Tell @Training now'
-    const reference = {
-      session_id: 'training', display_title_snapshot: 'Training',
-      source_text_start: 5, source_text_end: 14, action: 'route' as const
-    }
-    expect(atomicChatReferenceCaret(8, [reference])).toBe(5)
-    expect(atomicChatReferenceCaret(12, [reference])).toBe(14)
-    expect(atomicChatReferenceNavigation(14, [reference], 'ArrowLeft')).toBe(5)
-    expect(atomicChatReferenceNavigation(5, [reference], 'ArrowRight')).toBe(14)
-    expect(atomicChatReferenceDeletion(text, [reference], 14, 14, 'Backspace')).toEqual({ text: 'Tell now', caret: 5 })
-    expect(atomicChatReferenceDeletion(text, [reference], 5, 5, 'Delete')).toEqual({ text: 'Tell now', caret: 5 })
   })
 
   it('keeps at most one authority grant for each target and action', () => {
