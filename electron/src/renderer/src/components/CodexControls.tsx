@@ -46,6 +46,7 @@ import {
 } from './CodexRuntimeContext'
 import { useTransientClose } from '../lib/transient-close'
 import { CodexInteractionCard } from './CodexInteractionShelf'
+import { ContextUsageMeter, ContextUsageRing } from './ContextUsageRing'
 import { GoalConditionField, GoalDialogContent, GoalProgress, GoalSummaryBar } from './GoalDialog'
 import { ProviderStatusTrigger } from './ProviderStatusTrigger'
 import { ProviderUsagePanel } from './ProviderUsagePanel'
@@ -159,18 +160,7 @@ export function CodexContextIndicator() {
               aria-describedby={meterId}
               data-context-percent={percent ?? undefined}
             >
-              <svg viewBox="0 0 18 18" aria-hidden="true">
-                <circle className="codex-context-track" cx="9" cy="9" r="7" />
-                <circle
-                  className="codex-context-value"
-                  cx="9"
-                  cy="9"
-                  r="7"
-                  pathLength="100"
-                  strokeDasharray="100"
-                  strokeDashoffset={100 - (percent ?? 0)}
-                />
-              </svg>
+              <ContextUsageRing percent={percent} />
             </button>
           </Dialog.Trigger>
         </Tooltip.Trigger>
@@ -187,16 +177,7 @@ export function CodexContextIndicator() {
         </Tooltip.Portal>
       </Tooltip.Root>
     </Tooltip.Provider>
-    <span
-      id={meterId}
-      className="sr-only"
-      role="progressbar"
-      aria-label={t("ui.CodexControls.CodexContextIndicator.codex_context_usage_4e369de")}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={percent ?? undefined}
-      aria-valuetext={tooltip}
-    >{tooltip}</span>
+    <ContextUsageMeter id={meterId} label={t("ui.CodexControls.CodexContextIndicator.codex_context_usage_4e369de")} percent={percent} text={tooltip} />
     <CodexControlsDialog focusGoal={focusGoal} onOpenGoal={() => setFocusGoal(true)} />
   </Dialog.Root>
 }
@@ -537,6 +518,30 @@ function GoalSettings({ onNotice, notice }: { onNotice(value: string): void; not
     draftDirty.current = false
     return true
   }
+  const runGoalAction = (
+    pending: 'saving' | 'clearing',
+    failed: 'save-failed' | 'clear-failed',
+    request: () => Promise<CodexGoalSnapshot>,
+    settle: (appliedToForm: boolean) => void
+  ) => {
+    const epoch = actionEpoch.current
+    const submittedRevision = draftRevision.current
+    actionInFlight.current = true
+    setGoalAction(pending)
+    setGoalActionError(null)
+    void run(async () => {
+      const snapshot = await request()
+      if (epoch !== actionEpoch.current) return
+      settle(applyGoalFormSnapshot(snapshot, submittedRevision))
+    }).catch(cause => {
+      if (epoch !== actionEpoch.current) return
+      setGoalAction(failed)
+      setGoalActionError(controlErrorMessage(cause))
+    }).finally(() => {
+      if (epoch !== actionEpoch.current) return
+      actionInFlight.current = false
+    })
+  }
   const save = (event: FormEvent) => {
     event.preventDefault()
     if (blocked || actionInFlight.current) return
@@ -550,55 +555,25 @@ function GoalSettings({ onNotice, notice }: { onNotice(value: string): void; not
       setGoalActionError(validationError)
       return
     }
-    const epoch = actionEpoch.current
-    const submittedRevision = draftRevision.current
-    actionInFlight.current = true
-    setGoalAction('saving')
-    setGoalActionError(null)
-    void run(async () => {
-      const snapshot = await requiredBridge().setGoal(session.id, {
-        objective: trimmedObjective,
-        status,
-        token_budget: tokenBudgetResult.value,
-        time_budget_seconds: timeBudgetResult.value
-      })
-      if (epoch !== actionEpoch.current) return
-      const appliedToForm = applyGoalFormSnapshot(snapshot, submittedRevision)
+    runGoalAction('saving', 'save-failed', () => requiredBridge().setGoal(session.id, {
+      objective: trimmedObjective,
+      status,
+      token_budget: tokenBudgetResult.value,
+      time_budget_seconds: timeBudgetResult.value
+    }), appliedToForm => {
       setGoalAction(appliedToForm ? 'saved' : 'idle')
       onNotice(appliedToForm
         ? 'Persistent goal updated.'
         : 'Persistent goal updated. Save again to apply your newer edits.')
-    }).catch(cause => {
-      if (epoch !== actionEpoch.current) return
-      setGoalAction('save-failed')
-      setGoalActionError(controlErrorMessage(cause))
-    }).finally(() => {
-      if (epoch !== actionEpoch.current) return
-      actionInFlight.current = false
     })
   }
   const clear = () => {
     if (blocked || actionInFlight.current) return
-    const epoch = actionEpoch.current
-    const submittedRevision = draftRevision.current
-    actionInFlight.current = true
-    setGoalAction('clearing')
-    setGoalActionError(null)
-    void run(async () => {
-      const snapshot = await requiredBridge().clearGoal(session.id)
-      if (epoch !== actionEpoch.current) return
-      const appliedToForm = applyGoalFormSnapshot(snapshot, submittedRevision)
+    runGoalAction('clearing', 'clear-failed', () => requiredBridge().clearGoal(session.id), appliedToForm => {
       setGoalAction('idle')
       onNotice(appliedToForm
         ? 'Persistent goal cleared.'
         : 'Persistent goal cleared. Your newer draft is still unsaved.')
-    }).catch(cause => {
-      if (epoch !== actionEpoch.current) return
-      setGoalAction('clear-failed')
-      setGoalActionError(controlErrorMessage(cause))
-    }).finally(() => {
-      if (epoch !== actionEpoch.current) return
-      actionInFlight.current = false
     })
   }
   const goalActionPending = goalAction === 'saving' || goalAction === 'clearing'

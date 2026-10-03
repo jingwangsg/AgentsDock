@@ -22,18 +22,42 @@ import {
 import './CodexControls.css'
 
 export function CodexInteractionShelf() {
-  useLocale()
   const { supported, loading, mutating, error, runtime, session, run } = useCodexRuntime()
-  const [collapsed, setCollapsed] = useState(false)
   const interactions = runtime?.pending_interactions ?? []
+
+  if (!supported || loading || !session || interactions.length === 0) return null
+
+  return <ProviderInteractionShelf
+    providerName="Codex"
+    sessionId={session.id}
+    interactions={interactions}
+    error={error}
+    busy={mutating}
+    onRespond={(interaction, response) => run(async () => {
+      const bridge = codexBridge()
+      if (!bridge) throw new Error('This AgentsDock build does not expose Codex controls.')
+      await bridge.resolveInteraction(session.id, interaction.id, response)
+    })}
+  />
+}
+
+/** Collapsible pending-interaction list; each provider wrapper supplies its own runtime and bridge. */
+export function ProviderInteractionShelf({ providerName, sessionId, interactions, error, busy, onRespond }: {
+  providerName: string
+  sessionId: string
+  interactions: ProviderPendingInteraction[]
+  error: string | null
+  busy: boolean
+  onRespond(interaction: ProviderPendingInteraction, response: Record<string, JsonValue>): Promise<unknown>
+}) {
+  useLocale()
+  const [collapsed, setCollapsed] = useState(false)
   const interactionIdentity = interactions.map(interaction => interaction.id).join('\u0000')
-  const shelfLabel = providerInteractionShelfLabel('Codex', interactions)
+  const shelfLabel = providerInteractionShelfLabel(providerName, interactions)
 
   useEffect(() => {
     if (interactions.length) setCollapsed(false)
-  }, [interactionIdentity, interactions.length, session?.id])
-
-  if (!supported || loading || !session || interactions.length === 0) return null
+  }, [interactionIdentity, interactions.length, sessionId])
 
   return (
     <section className="codex-interaction-shelf" aria-label={shelfLabel}>
@@ -54,15 +78,12 @@ export function CodexInteractionShelf() {
       </header>
       {!collapsed && <div className="codex-interaction-list">
         {error && <div className="codex-interaction-error" role="alert">{error}</div>}
-        {interactions.map(interaction => <CodexInteractionCard
+        {interactions.map(interaction => <ProviderInteractionCard
           key={interaction.id}
           interaction={interaction}
-          busy={mutating}
-          onRespond={response => run(async () => {
-            const bridge = codexBridge()
-            if (!bridge) throw new Error('This AgentsDock build does not expose Codex controls.')
-            await bridge.resolveInteraction(session.id, interaction.id, response)
-          })}
+          providerName={providerName}
+          busy={busy}
+          onRespond={response => onRespond(interaction, response)}
         />)}
       </div>}
     </section>

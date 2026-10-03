@@ -27,6 +27,7 @@ import {
   type CodexGoalsConfigurationChangedDetail
 } from '../lib/codex-goals'
 import { useAppStore } from '../store/app-store'
+import { booleanField, errorMessage, numberField } from '../lib/provider-runtime'
 
 export type CodexInteraction = CodexPendingInteraction
 export type { CodexBackgroundTerminal, CodexGoalStatus, CodexPermissionProfile, CodexRuntimeSnapshot }
@@ -494,24 +495,6 @@ async function loadPersistedThread(
   }
 }
 
-function errorMessage(cause: unknown): string {
-  return (cause instanceof Error ? cause.message : String(cause))
-    .replace(/^Error invoking remote method '[^']+':\s*/i, '')
-    .replace(/^Error:\s*/i, '')
-    .trim()
-}
-
 function sentenceCase(value: string): string {
   return value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').replace(/^./, match => match.toUpperCase())
-}
-
-function numberField(value: unknown, key: string): number {
-  if (!value || typeof value !== 'object') return 0
-  const candidate = (value as Record<string, unknown>)[key]
-  return typeof candidate === 'number' ? candidate : 0
-}
-
-function booleanField(value: unknown, key: string): boolean {
-  if (!value || typeof value !== 'object') return false
-  return (value as Record<string, unknown>)[key] === true
 }

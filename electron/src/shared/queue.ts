@@ -5,7 +5,9 @@ import { isSharedChatCollaborator } from './chat-shares'
 
 export function updateQueuedTurns(current: QueuedTurn[], event: Event): QueuedTurn[] {
   if (isImportedProviderControlMetadata(event)) return current
-  if (event.type === 'turn_queued' && event.queued_id) {
+  if ((event.type === 'turn_queued' || event.type === 'turn_queue_delivery_fenced') && event.queued_id) {
+    // Both events carry the full queued item; a delivery fence additionally parks it.
+    const fenced = event.type === 'turn_queue_delivery_fenced'
     const next: QueuedTurn = {
       queued_id: event.queued_id,
       session_id: event.session_id,
@@ -32,37 +34,8 @@ export function updateQueuedTurns(current: QueuedTurn[], event: Event): QueuedTu
       conversation_mode: event.conversation_mode,
       source_title: event.source_title,
       created_at: event.ts,
-      paused: false,
-      pause_reason: null,
-      promoted: event.promoted === true,
-      ...asyncQueuedMessageProjection(event, current.find(turn => turn.queued_id === event.queued_id))
-    }
-    return [...current.filter(turn => turn.queued_id !== next.queued_id), next].sort(queueSort)
-  }
-  if (event.type === 'turn_queue_delivery_fenced' && event.queued_id) {
-    const next: QueuedTurn = {
-      queued_id: event.queued_id,
-      session_id: event.session_id,
-      prompt: event.prompt || '',
-      display_prompt: event.prompt,
-      file_ids: event.file_ids || [],
-      backend: event.backend,
-      position: event.position,
-      purpose: event.purpose,
-      source_session_id: event.source_session_id,
-      target_session_id: event.target_session_id,
-      chat_references: event.chat_references,
-      team_references: event.team_references,
-      cross_chat_envelope_id: event.cross_chat_envelope_id,
-      secure_peer_envelope_id: event.secure_peer_envelope_id,
-      cross_chat_exchange_id: event.cross_chat_exchange_id,
-      cross_chat_exchange_leg_id: event.cross_chat_exchange_leg_id,
-      cross_chat_exchange_status: event.cross_chat_exchange_status,
-      conversation_mode: event.conversation_mode,
-      source_title: event.source_title,
-      created_at: event.ts,
-      paused: true,
-      pause_reason: 'delivery_uncertain',
+      paused: fenced,
+      pause_reason: fenced ? 'delivery_uncertain' : null,
       promoted: event.promoted === true,
       ...asyncQueuedMessageProjection(event, current.find(turn => turn.queued_id === event.queued_id))
     }

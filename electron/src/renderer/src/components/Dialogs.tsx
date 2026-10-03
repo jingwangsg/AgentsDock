@@ -15,7 +15,8 @@ import { trackEvent } from '../lib/analytics'
 import { colorThemeOptions, readAppearance, readColorThemes, setAppearanceMode, setColorTheme, type AppearanceMode, type ColorThemeChoice, type ResolvedAppearance } from '../lib/appearance'
 import { t, useLanguagePreference, type LanguagePreference } from '../lib/i18n'
 import { canonicalizeLocalRouteHints, chatMentionTrigger, chatReferenceDisplayText, currentRouteHintReference, insertChatReference, parseStoredChatReferences, reconcileChatReferences, routeHintMentionsAvailable, supportedCrossChatTargetBackends, validChatReferences, type ChatMentionTrigger } from '../lib/chat-references'
-import { atomicComposerReferenceCaret, atomicComposerReferenceDeletion, atomicComposerReferenceNavigation, insertTeamReference, orderedComposerReferenceSpans, parseStoredTeamReferences, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceText, validComposerReferences, validTeamReferences, type TeamMentionTrigger } from '../lib/team-references'
+import { atomicReferenceKeyAction } from '../lib/composer-reference-keys'
+import { atomicComposerReferenceCaret, insertTeamReference, orderedComposerReferenceSpans, parseStoredTeamReferences, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceText, validComposerReferences, validTeamReferences, type TeamMentionTrigger } from '../lib/team-references'
 import { backendLabel, formatTime, runtimeLabel } from '../lib/format'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 import { useProfileSearch } from '../lib/profile-search'
@@ -33,6 +34,7 @@ import { ReasoningDisplaySettings } from './ReasoningDisplaySettings'
 import { CoordinatedServerUpdateRow } from './CoordinatedServerUpdateRow'
 import { CodexServerSettings } from './CodexServerSettings'
 import { CodexSubagentSettings } from './CodexSubagentSettings'
+import { DialogShell } from './DialogShell'
 import { RuntimeHealthPanel } from './RuntimeHealth'
 import { ServerManagement } from './ServerManagement'
 import { InferenceHubSettings } from './InferenceHubSettings'
@@ -962,78 +964,74 @@ export function ServerOnboardingDialog() {
       ? t('ui.Dialogs.ServerOnboardingDialog.retry_setup_8e08720')
       : betaUpdate ? t('ui.Dialogs.ServerOnboardingDialog.update_this_computer_3f5f0b1') : t('ui.Dialogs.ServerOnboardingDialog.install_here_6066729')
 
-  if (hostSetup) return <Shell open={open} onOpenChange={value => { if (!installing) setOpen(value) }} title={dialogTitle} description={dialogDescription} className="server-onboarding-dialog" closeDisabled={installing}>
+  return <DialogShell open={open} onOpenChange={value => { if (!installing) setOpen(value) }} title={dialogTitle} description={dialogDescription} className="server-onboarding-dialog" closeDisabled={installing}>
     <div className="server-setup-body">
       <div className="server-setup-flow">
-        <section className="server-setup-intro">
-          <span><Server size={13} /> {t('teamNetwork.setup.selectedServer')}</span>
-          <h3>{hostOrigin?.serverName || t('teamNetwork.setup.unavailable')}</h3>
-          <p>{t('teamNetwork.setup.liveRole')}</p>
-        </section>
-        <div className="server-setup-fields server-role-fields">
-          <label><span>{t('teamNetwork.setup.serverName')}</span><input autoFocus required value={teamNetworkServerName} disabled={installing} onChange={event => setTeamNetworkServerName(event.target.value)} aria-invalid={teamNetworkServerName.length > 0 && !validTeamNetworkServerName} /></label>
-        </div>
-        <p className="server-setup-help">{t('teamNetwork.setup.hostHint')}</p>
-        {setupError && <div className="server-setup-error" role="alert">
-          <CircleAlert size={17} />
-          <div><strong>{t('teamNetwork.setup.failed')}</strong><p>{setupError}</p></div>
-        </div>}
-        <footer>
-          <button type="button" className="quiet-button" disabled={installing} onClick={() => setOpen(false)}>{t('teamNetwork.cancel')}</button>
-          <button type="button" className="primary-button" disabled={installing || !hostOrigin || !validTeamNetworkServerName} onClick={() => void configureTeamNetworkServer()}>
-            {installing ? <LoaderCircle className="spin" size={14} /> : setupError ? <RefreshCw size={14} /> : <Server size={14} />}
-            {installing ? t('teamNetwork.setup.creating') : setupError ? t('teamNetwork.retry') : t('teamNetwork.setup.create')}
-          </button>
-        </footer>
-      </div>
-    </div>
-  </Shell>
-
-  return <Shell open={open} onOpenChange={value => { if (!installing) setOpen(value) }} title={dialogTitle} description={dialogDescription} className="server-onboarding-dialog" closeDisabled={installing}>
-    <div className="server-setup-body">
-      <div className="server-setup-flow">
-        <section className="server-setup-intro">
-          {betaUpdate
-            ? <><span><Sparkles size={13} /> {t("ui.Dialogs.ServerOnboardingDialog.signed_beta_update_0664ad0")}</span><p>{t("ui.Dialogs.ServerOnboardingDialog.agentsdock_installs_the_verified_beta_pinn_d42fc02")}</p></>
-            : <><h3>{t('hub.onboarding.title')}</h3><p>{t('hub.onboarding.body')}</p></>}
-        </section>
-        {!capabilities?.available && capabilities?.reason && <div className="server-setup-note"><Server size={15} /><span>{capabilities.reason}</span></div>}
-        {TEAM_NETWORK_UI_ENABLED && <label className="server-setup-team-hub"><input type="checkbox" checked={teamHubHost} disabled={installing} onChange={event => setTeamHubHost(event.target.checked)} /><span><strong>{t('teamNetwork.setup.start')}</strong><small>{betaUpdate ? t('teamNetwork.setup.preserveRole') : t('teamNetwork.setup.privateHost')}</small></span></label>}
-        {installStartedAt !== null && <div className={`server-setup-status ${setupError ? 'failed' : installing ? 'running' : 'stopped'}`} role="status" aria-live="polite">
-          <span className="server-setup-status-icon">{setupError ? <CircleAlert size={15} /> : installing ? <LoaderCircle className="spin" size={15} /> : <Clock3 size={15} />}</span>
-          <span><strong>{setupError ? t("ui.Dialogs.ServerOnboardingDialog.setup_needs_attention_39d845b") : installing ? setupPhaseLabel(currentProgress?.phase) : t("ui.Dialogs.ServerOnboardingDialog.setup_stopped_2b28514")}</strong><small>{currentProgress?.message || t("ui.Dialogs.ServerOnboardingDialog.preparing_setup_305121e")}</small></span>
-          <time>{formatElapsed(elapsedSeconds)}</time>
-        </div>}
-        {progress.length > 0 && <div className="server-setup-progress" aria-label={t("ui.Dialogs.ServerOnboardingDialog.setup_progress_e9b4495")}>
-          {progress.slice(-12).map((item, index, visible) => <div key={`${item.phase}-${progress.length - visible.length + index}`} className={item.phase === 'complete' ? 'complete' : ''}>{item.phase === 'complete' || index < visible.length - 1 ? <Check size={13} /> : installing ? <LoaderCircle className="spin" size={13} /> : <Clock3 size={13} />}<span>{item.message}</span></div>)}
-        </div>}
-        {installStartedAt !== null && !setupError && <div className="server-setup-live-actions">
-          <button type="button" className="quiet-button" onClick={() => void copySetupDiagnostics()}><Copy size={12} />{" "}{t("ui.Dialogs.ServerOnboardingDialog.copy_diagnostics_46fa69e")}</button>
-          <button type="button" className="quiet-button" onClick={() => void openSetupLog()}><FileText size={12} />{" "}{t("ui.Dialogs.ServerOnboardingDialog.open_log_7230e6f")}</button>
-          {diagnosticNotice && <small aria-live="polite">{diagnosticNotice}</small>}
-        </div>}
-        {setupError && <div className="server-setup-error" role="alert">
-          <CircleAlert size={17} />
-          <div><strong>{t("ui.Dialogs.ServerOnboardingDialog.setup_did_not_finish_0aa2be2")}</strong><p>{setupError}</p>
-            <div className="server-setup-diagnostic-actions">
-              <button type="button" className="quiet-button" onClick={() => void copySetupDiagnostics()}><Copy size={12} />{" "}{t("ui.Dialogs.ServerOnboardingDialog.copy_diagnostics_46fa69e")}</button>
-              <button type="button" className="quiet-button" onClick={() => void openSetupLog()}><FileText size={12} />{" "}{t("ui.Dialogs.ServerOnboardingDialog.open_log_7230e6f")}</button>
-            </div>
+        {hostSetup ? <>
+          <section className="server-setup-intro">
+            <span><Server size={13} /> {t('teamNetwork.setup.selectedServer')}</span>
+            <h3>{hostOrigin?.serverName || t('teamNetwork.setup.unavailable')}</h3>
+            <p>{t('teamNetwork.setup.liveRole')}</p>
+          </section>
+          <div className="server-setup-fields server-role-fields">
+            <label><span>{t('teamNetwork.setup.serverName')}</span><input autoFocus required value={teamNetworkServerName} disabled={installing} onChange={event => setTeamNetworkServerName(event.target.value)} aria-invalid={teamNetworkServerName.length > 0 && !validTeamNetworkServerName} /></label>
+          </div>
+          <p className="server-setup-help">{t('teamNetwork.setup.hostHint')}</p>
+          {setupError && <div className="server-setup-error" role="alert">
+            <CircleAlert size={17} />
+            <div><strong>{t('teamNetwork.setup.failed')}</strong><p>{setupError}</p></div>
+          </div>}
+          <footer>
+            <button type="button" className="quiet-button" disabled={installing} onClick={() => setOpen(false)}>{t('teamNetwork.cancel')}</button>
+            <button type="button" className="primary-button" disabled={installing || !hostOrigin || !validTeamNetworkServerName} onClick={() => void configureTeamNetworkServer()}>
+              {installing ? <LoaderCircle className="spin" size={14} /> : setupError ? <RefreshCw size={14} /> : <Server size={14} />}
+              {installing ? t('teamNetwork.setup.creating') : setupError ? t('teamNetwork.retry') : t('teamNetwork.setup.create')}
+            </button>
+          </footer>
+        </> : <>
+          <section className="server-setup-intro">
+            {betaUpdate
+              ? <><span><Sparkles size={13} /> {t("ui.Dialogs.ServerOnboardingDialog.signed_beta_update_0664ad0")}</span><p>{t("ui.Dialogs.ServerOnboardingDialog.agentsdock_installs_the_verified_beta_pinn_d42fc02")}</p></>
+              : <><h3>{t('hub.onboarding.title')}</h3><p>{t('hub.onboarding.body')}</p></>}
+          </section>
+          {!capabilities?.available && capabilities?.reason && <div className="server-setup-note"><Server size={15} /><span>{capabilities.reason}</span></div>}
+          {TEAM_NETWORK_UI_ENABLED && <label className="server-setup-team-hub"><input type="checkbox" checked={teamHubHost} disabled={installing} onChange={event => setTeamHubHost(event.target.checked)} /><span><strong>{t('teamNetwork.setup.start')}</strong><small>{betaUpdate ? t('teamNetwork.setup.preserveRole') : t('teamNetwork.setup.privateHost')}</small></span></label>}
+          {installStartedAt !== null && <div className={`server-setup-status ${setupError ? 'failed' : installing ? 'running' : 'stopped'}`} role="status" aria-live="polite">
+            <span className="server-setup-status-icon">{setupError ? <CircleAlert size={15} /> : installing ? <LoaderCircle className="spin" size={15} /> : <Clock3 size={15} />}</span>
+            <span><strong>{setupError ? t("ui.Dialogs.ServerOnboardingDialog.setup_needs_attention_39d845b") : installing ? setupPhaseLabel(currentProgress?.phase) : t("ui.Dialogs.ServerOnboardingDialog.setup_stopped_2b28514")}</strong><small>{currentProgress?.message || t("ui.Dialogs.ServerOnboardingDialog.preparing_setup_305121e")}</small></span>
+            <time>{formatElapsed(elapsedSeconds)}</time>
+          </div>}
+          {progress.length > 0 && <div className="server-setup-progress" aria-label={t("ui.Dialogs.ServerOnboardingDialog.setup_progress_e9b4495")}>
+            {progress.slice(-12).map((item, index, visible) => <div key={`${item.phase}-${progress.length - visible.length + index}`} className={item.phase === 'complete' ? 'complete' : ''}>{item.phase === 'complete' || index < visible.length - 1 ? <Check size={13} /> : installing ? <LoaderCircle className="spin" size={13} /> : <Clock3 size={13} />}<span>{item.message}</span></div>)}
+          </div>}
+          {installStartedAt !== null && !setupError && <div className="server-setup-live-actions">
+            <button type="button" className="quiet-button" onClick={() => void copySetupDiagnostics()}><Copy size={12} />{" "}{t("ui.Dialogs.ServerOnboardingDialog.copy_diagnostics_46fa69e")}</button>
+            <button type="button" className="quiet-button" onClick={() => void openSetupLog()}><FileText size={12} />{" "}{t("ui.Dialogs.ServerOnboardingDialog.open_log_7230e6f")}</button>
             {diagnosticNotice && <small aria-live="polite">{diagnosticNotice}</small>}
-          </div>
-        </div>}
-        <div className="server-setup-note"><Server size={16} /><span>{t('ui.setup.historyBefore')}<code>~/.agentsdock</code>{t('ui.setup.historyAfter')}</span></div>
-        <footer>
-          <button type="button" className="quiet-button" disabled={installing} onClick={() => setOpen(false)}>{t("ui.Dialogs.ServerOnboardingDialog.not_now_a0e63d7")}</button>
-          <div className="server-setup-footer-actions">
-            {installing && <button type="button" className="quiet-button danger" disabled={cancelling} onClick={() => void cancelInstall()}>{cancelling ? <LoaderCircle className="spin" size={13} /> : <X size={13} />} {cancelling ? t("ui.Dialogs.ServerOnboardingDialog.cancelling_91b104d") : t("ui.Dialogs.ServerOnboardingDialog.cancel_setup_c17bac1")}</button>}
-            {!betaUpdate && <button type="button" className="quiet-button" disabled={installing} onClick={() => void retry()}><RefreshCw size={13} /> {t('hub.onboarding.retry')}</button>}
-            <button type="button" className="primary-button" disabled={installing || !capabilities?.available} onClick={() => void install()}>{installing ? <LoaderCircle className="spin" size={14} /> : setupError ? <RefreshCw size={14} /> : <Download size={14} />} {primaryActionLabel}</button>
-          </div>
-        </footer>
+          </div>}
+          {setupError && <div className="server-setup-error" role="alert">
+            <CircleAlert size={17} />
+            <div><strong>{t("ui.Dialogs.ServerOnboardingDialog.setup_did_not_finish_0aa2be2")}</strong><p>{setupError}</p>
+              <div className="server-setup-diagnostic-actions">
+                <button type="button" className="quiet-button" onClick={() => void copySetupDiagnostics()}><Copy size={12} />{" "}{t("ui.Dialogs.ServerOnboardingDialog.copy_diagnostics_46fa69e")}</button>
+                <button type="button" className="quiet-button" onClick={() => void openSetupLog()}><FileText size={12} />{" "}{t("ui.Dialogs.ServerOnboardingDialog.open_log_7230e6f")}</button>
+              </div>
+              {diagnosticNotice && <small aria-live="polite">{diagnosticNotice}</small>}
+            </div>
+          </div>}
+          <div className="server-setup-note"><Server size={16} /><span>{t('ui.setup.historyBefore')}<code>~/.agentsdock</code>{t('ui.setup.historyAfter')}</span></div>
+          <footer>
+            <button type="button" className="quiet-button" disabled={installing} onClick={() => setOpen(false)}>{t("ui.Dialogs.ServerOnboardingDialog.not_now_a0e63d7")}</button>
+            <div className="server-setup-footer-actions">
+              {installing && <button type="button" className="quiet-button danger" disabled={cancelling} onClick={() => void cancelInstall()}>{cancelling ? <LoaderCircle className="spin" size={13} /> : <X size={13} />} {cancelling ? t("ui.Dialogs.ServerOnboardingDialog.cancelling_91b104d") : t("ui.Dialogs.ServerOnboardingDialog.cancel_setup_c17bac1")}</button>}
+              {!betaUpdate && <button type="button" className="quiet-button" disabled={installing} onClick={() => void retry()}><RefreshCw size={13} /> {t('hub.onboarding.retry')}</button>}
+              <button type="button" className="primary-button" disabled={installing || !capabilities?.available} onClick={() => void install()}>{installing ? <LoaderCircle className="spin" size={14} /> : setupError ? <RefreshCw size={14} /> : <Download size={14} />} {primaryActionLabel}</button>
+            </div>
+          </footer>
+        </>}
       </div>
     </div>
-  </Shell>
+  </DialogShell>
 }
 
 function FolderDialog() {
@@ -1056,12 +1054,12 @@ function FolderDialog() {
     trackEvent('folder_created')
     useAppStore.getState().setModal('folder', false)
   }
-  return <Shell open={open} onOpenChange={value => useAppStore.getState().setModal('folder', value)} title={t("ui.Dialogs.FolderDialog.new_folder_cf28f49")} description={t("ui.Dialogs.FolderDialog.create_an_empty_chat_folder_then_drag_or_m_b438439")}>
+  return <DialogShell open={open} onOpenChange={value => useAppStore.getState().setModal('folder', value)} title={t("ui.Dialogs.FolderDialog.new_folder_cf28f49")} description={t("ui.Dialogs.FolderDialog.create_an_empty_chat_folder_then_drag_or_m_b438439")}>
     <form onSubmit={submit} className="dialog-form">
       <label><span>{t("ui.Dialogs.FolderDialog.folder_name_14d34ed")}</span><input autoFocus value={name} onChange={event => setName(event.target.value)} /></label>
       <footer><button type="button" className="quiet-button" onClick={() => useAppStore.getState().setModal('folder', false)}>{t("ui.Dialogs.FolderDialog.cancel_19766ed")}</button><button className="primary-button" disabled={!name.trim()}>{t("ui.Dialogs.FolderDialog.create_folder_82b9e1e")}</button></footer>
     </form>
-  </Shell>
+  </DialogShell>
 }
 
 /** A confirmation opened by a window event carrying its subject; the confirm button has focus so Enter confirms, like a macOS default button. */
@@ -1083,7 +1081,7 @@ function ConfirmActionDialog<T>({ eventName, titleKey, description, cancelKey, c
     setBusy(false)
     if (done) setDetail(null)
   }
-  return <Shell open={detail !== null} onOpenChange={open => { if (!open) setDetail(null) }} title={t(titleKey)} description={detail === null ? '' : description(detail)} className="confirm-dialog" initialFocusRef={confirmButtonRef}><div className="confirm-actions"><button type="button" className="quiet-button" onClick={() => setDetail(null)}>{t(cancelKey)}</button><button ref={confirmButtonRef} type="button" className="danger-button" disabled={busy} onClick={() => void confirm()}>{busy && <LoaderCircle className="spin" size={13} />}{" "}{t(confirmKey)}</button></div></Shell>
+  return <DialogShell open={detail !== null} onOpenChange={open => { if (!open) setDetail(null) }} title={t(titleKey)} description={detail === null ? '' : description(detail)} className="confirm-dialog" initialFocusRef={confirmButtonRef}><div className="confirm-actions"><button type="button" className="quiet-button" onClick={() => setDetail(null)}>{t(cancelKey)}</button><button ref={confirmButtonRef} type="button" className="danger-button" disabled={busy} onClick={() => void confirm()}>{busy && <LoaderCircle className="spin" size={13} />}{" "}{t(confirmKey)}</button></div></DialogShell>
 }
 
 export function RenameChatDialog() {
@@ -1125,12 +1123,12 @@ export function RenameChatDialog() {
     setSaving(false)
     if (updated?.title === clean) setSession(null)
   }
-  return <Shell open={Boolean(session)} onOpenChange={open => { if (!open) close() }} title={t("ui.Dialogs.RenameChatDialog.rename_chat_2607624")} description={t("ui.Dialogs.RenameChatDialog.choose_a_clear_name_for_this_conversation_a448152")} closeDisabled={saving}>
+  return <DialogShell open={Boolean(session)} onOpenChange={open => { if (!open) close() }} title={t("ui.Dialogs.RenameChatDialog.rename_chat_2607624")} description={t("ui.Dialogs.RenameChatDialog.choose_a_clear_name_for_this_conversation_a448152")} closeDisabled={saving}>
     <form onSubmit={event => void submit(event)} className="dialog-form">
       <label><span>{t("ui.Dialogs.RenameChatDialog.chat_name_09c3e4c")}</span><input autoFocus disabled={saving} value={title} onChange={event => setTitle(event.target.value)} onFocus={event => event.currentTarget.select()} /></label>
       <footer><button type="button" className="quiet-button" disabled={saving} onClick={close}>{t("ui.Dialogs.RenameChatDialog.cancel_19766ed")}</button><button className="primary-button" disabled={saving || !title.trim()}>{saving && <LoaderCircle className="spin" size={14} />}{" "}{t("ui.Dialogs.RenameChatDialog.rename_3064d79")}</button></footer>
     </form>
-  </Shell>
+  </DialogShell>
 }
 
 export function RenameFolderDialog() {
@@ -1171,25 +1169,12 @@ export function RenameFolderDialog() {
     setSaving(false)
     if (renamed) setFolder(null)
   }
-  return <Shell open={folder !== null} onOpenChange={open => { if (!open) close() }} title={t('ui.Dialogs.RenameFolderDialog.title')} description={t('ui.Dialogs.RenameFolderDialog.description')} closeDisabled={saving}>
+  return <DialogShell open={folder !== null} onOpenChange={open => { if (!open) close() }} title={t('ui.Dialogs.RenameFolderDialog.title')} description={t('ui.Dialogs.RenameFolderDialog.description')} closeDisabled={saving}>
     <form onSubmit={event => void submit(event)} className="dialog-form">
       <label><span>{t('ui.Dialogs.RenameFolderDialog.folderName')}</span><input autoFocus disabled={saving} value={name} onChange={event => setName(event.target.value)} onFocus={event => event.currentTarget.select()} /></label>
       <footer><button type="button" className="quiet-button" disabled={saving} onClick={close}>{t('ui.Dialogs.RenameFolderDialog.cancel')}</button><button className="primary-button" disabled={saving || !name.trim()}>{saving && <LoaderCircle className="spin" size={14} />}{" "}{t('ui.Dialogs.RenameFolderDialog.rename')}</button></footer>
     </form>
-  </Shell>
-}
-
-function Shell({ open, onOpenChange, onEscapeKeyDown, title, description, children, className = '', closeDisabled = false, initialFocusRef, localizeChrome = true }: {
-  open: boolean; onOpenChange: (open: boolean) => void; onEscapeKeyDown?: (event: globalThis.KeyboardEvent) => void; title: string; description?: string; children: React.ReactNode; className?: string; closeDisabled?: boolean; initialFocusRef?: { current: HTMLElement | null }; localizeChrome?: boolean
-}) {
-  useLocale()
-  const switchingProfileId = useAppStore(state => state.switchingProfileId)
-  useTransientClose(open, () => onOpenChange(false))
-  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className={`form-dialog ${className}`} aria-busy={Boolean(switchingProfileId)} onEscapeKeyDown={onEscapeKeyDown} onOpenAutoFocus={event => {
-    if (!initialFocusRef?.current) return
-    event.preventDefault()
-    initialFocusRef.current.focus()
-  }}><header><div><Dialog.Title>{title}</Dialog.Title>{description && <Dialog.Description>{description}</Dialog.Description>}</div><button type="button" className="icon-button" aria-label={localizeChrome ? t("ui.Dialogs.Shell.close_31a8910", { "name": String(title) }) : `Close ${title}`} disabled={closeDisabled} title={closeDisabled ? localizeChrome ? t("ui.Dialogs.Shell.wait_for_setup_to_finish_before_closing_848c88c") : 'Wait for setup to finish before closing' : undefined} onClick={() => onOpenChange(false)}><X size={16} /></button></header><div className="form-dialog-body" inert={switchingProfileId ? true : undefined}>{children}</div></Dialog.Content></Dialog.Portal></Dialog.Root>
+  </DialogShell>
 }
 
 export function SettingsDialog() {
@@ -2835,7 +2820,7 @@ export function SettingsDialog() {
   </div>
   return <>
   <AppSettingsDialog serverSettings={serverSettingsContent} serverUpdates={serverUpdatesContent} onServerUpdatesVisible={setLegacyServerUpdatesVisible} onServerReleaseChecksVisible={setLegacyServerReleaseChecksVisible} onCoordinatedServerUpdate={setCoordinatedServerUpdate} />
-  <Shell
+  <DialogShell
     open={updateNowConfirmationOpen}
     onOpenChange={value => { if (!value && !restartingServer) closeUpdateNowConfirmation() }}
     title={t("ui.Dialogs.SettingsDialog.update_agentsserver_now_caba87a")}
@@ -2862,8 +2847,8 @@ export function SettingsDialog() {
         <button type="button" className="danger-button" title={updateNowForceDisabledReason || t("ui.Dialogs.SettingsDialog.interrupt_work_and_install_1ba2a06", { "version": String(updateNowReservation?.targetVersion || 'the queued update') })} disabled={Boolean(updateNowForceDisabledReason) || restartingServer} onClick={() => void confirmPendingUpdateNow()}>{restartingServer ? <LoaderCircle className="spin" size={13} /> : <CircleAlert size={13} />} {restartingServer ? t("ui.Dialogs.SettingsDialog.restarting_for_update_fba3b52") : t("ui.Dialogs.SettingsDialog.interrupt_work_and_update_now_4a6311b")}</button>
       </div>
     </div>
-  </Shell>
-  <Shell
+  </DialogShell>
+  <DialogShell
     open={restartConfirmationOpen}
     onOpenChange={value => { if (!value && !restartingServer) closeRestartConfirmation() }}
     title={restartConfirmationMode === 'force' ? t("ui.Dialogs.SettingsDialog.force_restart_agentsserver_d12d70b") : t("ui.Dialogs.SettingsDialog.restart_agentsserver_19f4139")}
@@ -2905,7 +2890,7 @@ export function SettingsDialog() {
           </div>
         </>}
     </div>
-  </Shell>
+  </DialogShell>
   </>
 }
 
@@ -2979,7 +2964,7 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
   const resumeDescription = backend === 'cursor'
     ? 'Continue an existing Cursor provider session. Earlier provider messages stay in Cursor and are not imported into this timeline.'
     : 'Import a rough transcript and continue from an existing Claude or Codex provider session.'
-  return <Shell open={open} onOpenChange={value => useAppStore.getState().setModal(mode, value)} title={mode === 'newChat' ? t("ui.Dialogs.SessionDialog.new_chat_db18382") : t("ui.Dialogs.SessionDialog.resume_a_provider_session_424066b")} description={mode === 'resume' ? resumeDescription : t("ui.Dialogs.SessionDialog.choose_the_workspace_and_runtime_for_this__0b9283f")}>
+  return <DialogShell open={open} onOpenChange={value => useAppStore.getState().setModal(mode, value)} title={mode === 'newChat' ? t("ui.Dialogs.SessionDialog.new_chat_db18382") : t("ui.Dialogs.SessionDialog.resume_a_provider_session_424066b")} description={mode === 'resume' ? resumeDescription : t("ui.Dialogs.SessionDialog.choose_the_workspace_and_runtime_for_this__0b9283f")}>
     <form onSubmit={submit} className="dialog-form two-column-form">
       {importSupported && <button type="button" className="import-chats-entry span-two" onClick={() => { const store = useAppStore.getState(); store.setModal(mode, false); store.setModal('importChats', true) }}>
         <Import size={16} aria-hidden="true" />
@@ -3018,7 +3003,7 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
       <label className="span-two"><span>{t("ui.Dialogs.SessionDialog.system_prompt_561257c")}</span><textarea rows={4} value={systemPrompt} onChange={event => setSystemPrompt(event.target.value)} placeholder={t("ui.Dialogs.SessionDialog.optional_per_chat_instructions_454671b")} /></label>
       <footer className="span-two"><button type="button" className="quiet-button" onClick={() => useAppStore.getState().setModal(mode, false)}>{t("ui.Dialogs.SessionDialog.cancel_19766ed")}</button><button className="primary-button" disabled={saving || Boolean(runtimeError) || mode === 'resume' && !providerId.trim()}>{saving && <LoaderCircle className="spin" size={14} />}{mode === 'newChat' ? t("ui.Dialogs.SessionDialog.create_chat_35e51d6") : t("ui.Dialogs.SessionDialog.resume_chat_790e1b9")}</button></footer>
     </form>
-  </Shell>
+  </DialogShell>
 }
 
 interface ImportDialogScope {
@@ -3400,7 +3385,7 @@ export function ImportChatsDialog() {
 
   const operationBusy = importing || resumingById
 
-  return <Shell open={open} onOpenChange={value => useAppStore.getState().setModal('importChats', value)} initialFocusRef={searchRef} title={t("ui.Dialogs.ImportChatsDialog.import_chat_ed32942")} description={cursorLocalSessionImportSupported(health) ? t('ui.Dialogs.ImportChatsDialog.cursor_snapshot_history') : t("ui.Dialogs.ImportChatsDialog.bring_in_your_local_claude_code_and_codex__0ffcba9")}>
+  return <DialogShell open={open} onOpenChange={value => useAppStore.getState().setModal('importChats', value)} initialFocusRef={searchRef} title={t("ui.Dialogs.ImportChatsDialog.import_chat_ed32942")} description={cursorLocalSessionImportSupported(health) ? t('ui.Dialogs.ImportChatsDialog.cursor_snapshot_history') : t("ui.Dialogs.ImportChatsDialog.bring_in_your_local_claude_code_and_codex__0ffcba9")}>
     <div className="dialog-form import-chats-dialog">
       <form className="import-chats-resume" onSubmit={event => void submitResumeById(event)}>
         <div className="import-chats-resume-heading">
@@ -3521,7 +3506,7 @@ export function ImportChatsDialog() {
         </button>
       </footer>
     </div>
-  </Shell>
+  </DialogShell>
 }
 
 export function SearchDialog() {
@@ -3615,7 +3600,7 @@ export function SearchDialog() {
       }
     })()
   }
-  return <Shell open={open} onOpenChange={value => useAppStore.getState().setModal('search', value)} title={t("ui.Dialogs.SearchDialog.search_chats_02a39c4")} className="command-dialog">
+  return <DialogShell open={open} onOpenChange={value => useAppStore.getState().setModal('search', value)} title={t("ui.Dialogs.SearchDialog.search_chats_02a39c4")} className="command-dialog">
     <label className="command-search">{historySearch.loading || profileSearch.loading ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}<input ref={searchInputRef} autoFocus role="combobox" aria-autocomplete="list" aria-controls="command-search-results" aria-activedescendant={filtered.length ? `command-search-option-${selectedIndex}` : undefined} aria-expanded={open} value={query} onChange={event => { setQuery(event.target.value); setSelectedResultKey(null) }} onKeyDown={event => {
       if (!filtered.length) return
       if (event.key === 'ArrowDown') { event.preventDefault(); setSelectedResultKey(filtered[(selectedIndex + 1) % filtered.length].key) }
@@ -3629,7 +3614,7 @@ export function SearchDialog() {
       return <button ref={element => { resultRefs.current[index] = element }} id={`command-search-option-${index}`} role="option" aria-selected={index === selectedIndex} className={index === selectedIndex ? 'selected' : ''} key={result.key} onMouseEnter={() => setSelectedResultKey(result.key)} onPointerDown={event => { if (event.button === 0) { setSelectedResultKey(result.key); event.currentTarget.setPointerCapture?.(event.pointerId) } }} onClick={() => openSession(result)}><BackendMark backend={result.session.backend} size={18} /><span><strong>{result.session.title}{otherProfile && <em>{result.profileName}</em>}</strong><small>{result.session.folder || 'General'}{otherProfile ? ` · ${result.profileName}` : ` · ${runtimeLabel(result.session, useAppStore.getState().runtimeCatalog)}`}</small>{result.match && <small className="history-match">{result.match.snippet}</small>}</span></button>
     })}{!filtered.length && <p>{historySearch.loading || profileSearch.loading ? t("ui.Dialogs.SearchDialog.searching_cached_servers_8073967") : t("ui.Dialogs.SearchDialog.no_matching_chats_5e89d87")}</p>}</div>
     <div className="command-hint"><ShortcutKey shortcut="findChat" />{" "}{t("ui.Dialogs.SearchDialog.searches_selects_return_opens_control_tab__d5cdf92")}</div>
-  </Shell>
+  </DialogShell>
 }
 
 export function DigestDialog() {
@@ -3702,7 +3687,7 @@ export function DigestDialog() {
       setPhase('idle')
     }
   }
-  return <Shell open={open} onOpenChange={value => useAppStore.getState().setModal('digest', value)} title={t("ui.Dialogs.DigestDialog.create_context_digest_b30ae4d")} description={t("ui.Dialogs.DigestDialog.the_source_chat_agent_creates_one_focused__22208de")} className="digest-dialog">
+  return <DialogShell open={open} onOpenChange={value => useAppStore.getState().setModal('digest', value)} title={t("ui.Dialogs.DigestDialog.create_context_digest_b30ae4d")} description={t("ui.Dialogs.DigestDialog.the_source_chat_agent_creates_one_focused__22208de")} className="digest-dialog">
     <form onSubmit={submit} className="dialog-form digest-form">
       <section className="digest-route" aria-label={t("ui.Dialogs.DigestDialog.digest_route_1d434d4")}>
         <div className="digest-route-chat source"><small>{t("ui.Dialogs.DigestDialog.source_0e570ca")}</small><span><BackendMark backend={source?.backend || 'codex'} size={18} /><strong>{source?.title || t("ui.Dialogs.DigestDialog.no_source_chat_988609d")}</strong></span><em>{source ? runtimeLabel(source, useAppStore.getState().runtimeCatalog) : t("ui.Dialogs.DigestDialog.select_a_chat_first_780f37f")}</em></div>
@@ -3740,7 +3725,7 @@ export function DigestDialog() {
         <button className="primary-button" disabled={!sourceId || !resolvedTarget || busy}>{phase === 'send' && <LoaderCircle className="spin" size={14} />}{" "}{t("ui.Dialogs.DigestDialog.send_to_chat_6798b9b")}</button>
       </footer>
     </form>
-  </Shell>
+  </DialogShell>
 }
 
 function scheduledJobChatReferencesAvailable(health: Health | null | undefined): boolean {
@@ -3998,36 +3983,22 @@ function JobPromptEditor({
   }
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return
-    if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === 'Backspace' || event.key === 'Delete')) {
-      const edit = atomicComposerReferenceDeletion(
-        value,
-        orderedComposerReferenceSpans(chatReferences, teamReferences),
-        event.currentTarget.selectionStart ?? 0,
-        event.currentTarget.selectionEnd ?? 0,
-        event.key
-      )
-      if (edit) {
-        event.preventDefault()
-        updateText(edit.text, edit.caret)
-        window.requestAnimationFrame(() => textareaRef.current?.setSelectionRange(edit.caret, edit.caret))
-        return
+    const atomicEdit = atomicReferenceKeyAction(
+      event,
+      value,
+      orderedComposerReferenceSpans(chatReferences, teamReferences),
+      event.currentTarget.selectionStart ?? 0,
+      event.currentTarget.selectionEnd ?? 0
+    )
+    if (atomicEdit) {
+      event.preventDefault()
+      if ('text' in atomicEdit) {
+        updateText(atomicEdit.text, atomicEdit.caret)
+        window.requestAnimationFrame(() => textareaRef.current?.setSelectionRange(atomicEdit.caret, atomicEdit.caret))
+      } else {
+        event.currentTarget.setSelectionRange(atomicEdit.caret, atomicEdit.caret)
       }
-    }
-    if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-      const start = event.currentTarget.selectionStart ?? 0
-      const end = event.currentTarget.selectionEnd ?? start
-      if (start === end) {
-        const caret = atomicComposerReferenceNavigation(
-          start,
-          orderedComposerReferenceSpans(chatReferences, teamReferences),
-          event.key
-        )
-        if (caret !== null) {
-          event.preventDefault()
-          event.currentTarget.setSelectionRange(caret, caret)
-          return
-        }
-      }
+      return
     }
     if (teamMention) {
       if (event.key === 'Escape') {
@@ -4502,7 +4473,7 @@ export function JobDialog() {
     }
     catch (error) { useAppStore.getState().setError(message(error)) } finally { setSaving(false) }
   }
-  return <Shell open={open} onOpenChange={value => { if (!value) close() }} onEscapeKeyDown={event => {
+  return <DialogShell open={open} onOpenChange={value => { if (!value) close() }} onEscapeKeyDown={event => {
     if (promptPaletteOpen) event.preventDefault()
   }} title={editing ? t("ui.Dialogs.JobDialog.edit_scheduled_job_457a92b") : t("ui.Dialogs.JobDialog.schedule_a_job_53f5ca4")} description={t("ui.Dialogs.JobDialog.run_a_prompt_in_this_chat_on_your_schedule_f34b88d")}>
     <form onSubmit={submit} className="dialog-form job-form">
@@ -4548,7 +4519,7 @@ export function JobDialog() {
       />}
       <footer><button type="button" className="quiet-button" onClick={close}>{t("ui.Dialogs.JobDialog.cancel_19766ed")}</button><button className="primary-button" disabled={saving || !title.trim() || !prompt.trim() || Boolean(scheduleError) || Boolean(nextRunError) || Boolean(enabled && runtimeError)}>{saving && <LoaderCircle className="spin" size={14} />}{" "}{t("ui.Dialogs.JobDialog.save_job_f4b557c")}</button></footer>
     </form>
-  </Shell>
+  </DialogShell>
 }
 
 function message(error: unknown): string {

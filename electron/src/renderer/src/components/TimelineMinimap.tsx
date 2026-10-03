@@ -68,17 +68,8 @@ export const TimelineMinimap = memo(forwardRef<TimelineMinimapHandle, TimelineMi
     const canvas = backgroundCanvasRef.current
     if (!canvas) return
     const { width, height } = sizeRef.current
-    const ratio = window.devicePixelRatio || 1
-    const pixelWidth = Math.max(1, Math.round(width * ratio))
-    const pixelHeight = Math.max(1, Math.round(height * ratio))
-    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
-      canvas.width = pixelWidth
-      canvas.height = pixelHeight
-    }
-    const context = canvas.getContext('2d')
+    const context = prepareCanvas(canvas, sizeRef.current)
     if (!context) return
-    context.setTransform(ratio, 0, 0, ratio, 0, 0)
-    context.clearRect(0, 0, width, height)
 
     const palette = minimapPalette()
     // Preserve the full-chat coordinate system without turning long chats into
@@ -107,17 +98,8 @@ export const TimelineMinimap = memo(forwardRef<TimelineMinimapHandle, TimelineMi
     const canvas = overlayCanvasRef.current
     if (!canvas) return
     const { width, height } = sizeRef.current
-    const ratio = window.devicePixelRatio || 1
-    const pixelWidth = Math.max(1, Math.round(width * ratio))
-    const pixelHeight = Math.max(1, Math.round(height * ratio))
-    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
-      canvas.width = pixelWidth
-      canvas.height = pixelHeight
-    }
-    const context = canvas.getContext('2d')
+    const context = prepareCanvas(canvas, sizeRef.current)
     if (!context) return
-    context.setTransform(ratio, 0, 0, ratio, 0, 0)
-    context.clearRect(0, 0, width, height)
 
     const palette = minimapPalette()
     // A single horizontal current-position tick is enough. The old vertical
@@ -266,6 +248,22 @@ export function positionForY(y: number, count: number, height: number): number {
   const trackHeight = Math.max(1, height - TRACK_TOP - TRACK_BOTTOM)
   const ratio = (clamp(y, TRACK_TOP, Math.max(TRACK_TOP, height - TRACK_BOTTOM)) - TRACK_TOP) / trackHeight
   return clamp(Math.round(ratio * (count - 1)), 0, count - 1)
+}
+
+/** Sizes the backing store for the device pixel ratio and returns a cleared context in CSS pixels. */
+function prepareCanvas(canvas: HTMLCanvasElement, { width, height }: { width: number; height: number }): CanvasRenderingContext2D | null {
+  const ratio = window.devicePixelRatio || 1
+  const pixelWidth = Math.max(1, Math.round(width * ratio))
+  const pixelHeight = Math.max(1, Math.round(height * ratio))
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth
+    canvas.height = pixelHeight
+  }
+  const context = canvas.getContext('2d')
+  if (!context) return null
+  context.setTransform(ratio, 0, 0, ratio, 0, 0)
+  context.clearRect(0, 0, width, height)
+  return context
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

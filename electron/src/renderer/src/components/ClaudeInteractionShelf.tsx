@@ -1,9 +1,8 @@
 // Localized display strings use semantic catalog keys.
 import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
-import { useEffect, useState } from 'react'
-import { AlertTriangle, ChevronDown, ChevronUp, LoaderCircle, RefreshCw } from 'lucide-react'
-import { ProviderInteractionCard, providerInteractionShelfLabel } from './CodexInteractionShelf'
+import { AlertTriangle, LoaderCircle, RefreshCw } from 'lucide-react'
+import { ProviderInteractionShelf } from './CodexInteractionShelf'
 import { claudeBridge, useClaudeRuntime } from './ClaudeRuntimeContext'
 import './CodexControls.css'
 
@@ -21,10 +20,7 @@ export function ClaudeInteractionShelf() {
     refresh,
     run
   } = useClaudeRuntime()
-  const [collapsed, setCollapsed] = useState(false)
   const interactions = runtime?.pending_interactions ?? []
-  const interactionIdentity = interactions.map(interaction => interaction.id).join('\u0000')
-  const shelfLabel = providerInteractionShelfLabel('Claude', interactions)
   const summaryNeedsAction = Boolean(
     session?.claude_needs_user_action
     || (session?.claude_pending_interaction_count ?? 0) > 0
@@ -36,10 +32,6 @@ export function ClaudeInteractionShelf() {
     && interactions.length === 0
     && (loading || runtimeError)
   )
-
-  useEffect(() => {
-    if (interactions.length) setCollapsed(false)
-  }, [interactionIdentity, interactions.length, session?.id])
 
   if (showRecovery) {
     return (
@@ -81,37 +73,16 @@ export function ClaudeInteractionShelf() {
 
   if (!supported || loading || !session || interactions.length === 0) return null
 
-  return (
-    <section className="codex-interaction-shelf" aria-label={shelfLabel}>
-      <header>
-        <div>
-          <span className="codex-attention-dot" aria-hidden="true" />
-          <strong>{shelfLabel}</strong>
-        </div>
-        <button
-          type="button"
-          className="icon-button"
-          aria-expanded={!collapsed}
-          aria-label={collapsed ? t("ui.ClaudeInteractionShelf.ClaudeInteractionShelf.show_requests_238b52a") : t("ui.ClaudeInteractionShelf.ClaudeInteractionShelf.hide_requests_87789d0")}
-          onClick={() => setCollapsed(value => !value)}
-        >
-          {collapsed ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-        </button>
-      </header>
-      {!collapsed && <div className="codex-interaction-list">
-        {interactionError && <div className="codex-interaction-error" role="alert">{interactionError}</div>}
-        {interactions.map(interaction => <ProviderInteractionCard
-          key={interaction.id}
-          interaction={interaction}
-          providerName="Claude"
-          busy={mutating}
-          onRespond={response => run(async () => {
-            const bridge = claudeBridge()
-            if (!bridge) throw new Error('This AgentsDock build does not expose Claude controls.')
-            await bridge.resolveInteraction(session.id, interaction.id, response)
-          })}
-        />)}
-      </div>}
-    </section>
-  )
+  return <ProviderInteractionShelf
+    providerName="Claude"
+    sessionId={session.id}
+    interactions={interactions}
+    error={interactionError}
+    busy={mutating}
+    onRespond={(interaction, response) => run(async () => {
+      const bridge = claudeBridge()
+      if (!bridge) throw new Error('This AgentsDock build does not expose Claude controls.')
+      await bridge.resolveInteraction(session.id, interaction.id, response)
+    })}
+  />
 }

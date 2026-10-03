@@ -84,7 +84,7 @@ describe('analytics privacy configuration', () => {
     vi.stubGlobal('fetch', request)
     const analytics = await loadAnalytics()
 
-    analytics.trackEvent('connection_tested', {
+    analytics.trackEvent('server_added', {
       success: false,
       path: '/private/workspace',
       url: 'file:///private/workspace',
@@ -103,7 +103,7 @@ describe('analytics privacy configuration', () => {
     expect(init.referrerPolicy).toBe('no-referrer')
     const payload = JSON.parse(String(init.body)) as Array<{ event: string; properties: Record<string, unknown> }>
     expect(payload).toHaveLength(1)
-    expect(payload[0].event).toBe('connection_tested')
+    expect(payload[0].event).toBe('server_added')
     expect(payload[0].properties).toEqual({
       token: TOKEN,
       distinct_id: expect.any(String),
