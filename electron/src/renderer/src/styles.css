@@ -1925,6 +1925,18 @@ button.tool-event-toggle:hover { background: #242424; }
 .app-settings-select { width: auto; min-width: 112px; height: var(--control-height-md); padding: 0 28px 0 9px; color: var(--text); background-color: transparent; border: 1px solid var(--border); border-radius: var(--radius-control); font-family: inherit; font-size: var(--text-size-label); font-weight: var(--font-weight-medium); }
 .app-settings-select:hover:not(:disabled), .app-settings-select:focus-visible { border-color: color-mix(in srgb, var(--text) 30%, var(--border)); }
 .app-settings-select:disabled { color: var(--faint); opacity: .65; }
+.inference-hub-input { height: var(--control-height-md); padding: 0 9px; color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: var(--radius-control); font-family: inherit; font-size: var(--text-size-label); }
+.inference-hub-input:hover:not(:disabled), .inference-hub-input:focus-visible { border-color: color-mix(in srgb, var(--text) 30%, var(--border)); }
+.inference-hub-input:disabled { color: var(--faint); opacity: .65; }
+.inference-hub-port { width: 96px; }
+.inference-hub-settings h3 { margin: 24px 0 4px; color: var(--text); font-size: var(--text-size-ui); font-weight: var(--font-weight-strong); }
+.inference-hub-help { margin: 0 0 8px; color: var(--muted); font-size: var(--text-size-meta); line-height: var(--line-height-body); }
+.inference-hub-settings code { font-size: var(--font-size-sm); white-space: normal; overflow-wrap: anywhere; user-select: text; }
+.inference-hub-keys { list-style: none; margin: 0; padding: 0; }
+.inference-hub-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-size-label); }
+.inference-hub-add-key { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+.inference-hub-add-key .inference-hub-input { flex: 1; min-width: 0; }
+.inference-hub-settings > .app-settings-server-notice { margin-top: 12px; }
 .app-settings-shortcut-groups { display: grid; gap: 24px; }
 .app-settings-shortcut-group { display: grid; gap: 8px; }
 .app-settings-shortcut-group h3 { margin: 0; color: var(--muted); font-size: var(--text-size-meta); font-weight: var(--text-weight-label); }

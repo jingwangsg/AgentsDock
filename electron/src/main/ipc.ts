@@ -4,6 +4,7 @@ import { appLog } from './logger'
 import type { AppUpdateManager } from './updater'
 import { ServerSetupManager } from './server-setup'
 import { localHubPairingUrl } from './local-hub'
+import { InferenceProxyManager } from './inference-proxy'
 import { acknowledgeWindowCloseFlush, closeWindowAfterRendererFlush } from './window-close'
 import { openInZed } from './open-in-zed'
 import type { LazyTeamHubService } from './team-hub-lazy-service'
@@ -260,6 +261,16 @@ export function registerIpc(
   handle('hub:pairing-url', () => localHubPairingUrl())
   handle('hub:start-local-server', () => service.startLocalHub())
   handle('hub:copy-token', () => service.copyHubToken())
+
+  const inferenceProxy = new InferenceProxyManager()
+  handle('inference-proxy:status', () => inferenceProxy.status())
+  handle('inference-proxy:set-port', port => inferenceProxy.setPort(port))
+  handle('inference-proxy:add-key', (name, apiKey) => inferenceProxy.addKey(name, apiKey))
+  handle('inference-proxy:remove-key', name => inferenceProxy.removeKey(name))
+  handle('inference-proxy:set-key-enabled', (name, enabled) => inferenceProxy.setKeyEnabled(name, enabled))
+  handle('inference-proxy:start', () => inferenceProxy.start())
+  handle('inference-proxy:stop', () => inferenceProxy.stop())
+  handle('inference-proxy:copy-proxy-token', () => inferenceProxy.copyProxyToken())
 
   handle('sessions:list', () => service.listSessions())
   handle('sessions:create', input => service.createSession(input))

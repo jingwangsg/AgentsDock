@@ -195,6 +195,16 @@ const api: AgentsDockAPI = {
     remove: profileId => ipcRenderer.invoke('remote-servers:remove', profileId),
     redeploy: (profileId, force) => ipcRenderer.invoke('remote-servers:redeploy', profileId, force)
   },
+  inferenceProxy: {
+    status: () => ipcRenderer.invoke('inference-proxy:status'),
+    setPort: port => ipcRenderer.invoke('inference-proxy:set-port', port),
+    addKey: (name, apiKey) => ipcRenderer.invoke('inference-proxy:add-key', name, apiKey),
+    removeKey: name => ipcRenderer.invoke('inference-proxy:remove-key', name),
+    setKeyEnabled: (name, enabled) => ipcRenderer.invoke('inference-proxy:set-key-enabled', name, enabled),
+    start: () => ipcRenderer.invoke('inference-proxy:start'),
+    stop: () => ipcRenderer.invoke('inference-proxy:stop'),
+    copyProxyToken: () => ipcRenderer.invoke('inference-proxy:copy-proxy-token')
+  },
   hub: {
     adoptLocalToken: () => ipcRenderer.invoke('hub:adopt-local-token'),
     pairingUrl: () => ipcRenderer.invoke('hub:pairing-url'),

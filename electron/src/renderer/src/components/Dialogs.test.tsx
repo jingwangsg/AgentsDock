@@ -183,6 +183,10 @@ describe('AppSettingsDialog', () => {
           install,
           setTrack
         },
+        inferenceProxy: {
+          status: vi.fn().mockResolvedValue({ port: 20001, upstreamBaseUrl: 'https://inference-api.nvidia.com/v1/', baseUrl: 'http://127.0.0.1:20001/v1', hasProxyToken: true,
+            keys: [], service: 'running', healthy: true, localHubInstalled: true, hubForwardPort: 20001, configFile: '/tmp/config.json', plistFile: '/tmp/proxy.plist' })
+        },
         events: { on: vi.fn().mockReturnValue(() => undefined) }
       } as unknown as AgentsDockAPI
     })
@@ -224,6 +228,12 @@ describe('AppSettingsDialog', () => {
     expect(within(dialog).getByText('Toggle chat list')).toBeInTheDocument()
     expect(within(dialog).getByText('Stop response')).toBeInTheDocument()
     expect(within(dialog).getByText('Switch to server 1-9')).toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'NV Inference Hub' }))
+    expect(within(dialog).getByRole('button', { name: 'NV Inference Hub' })).toHaveAttribute('aria-current', 'page')
+    expect(within(dialog).getByRole('heading', { name: 'NV Inference Hub' })).toBeInTheDocument()
+    expect(await within(dialog).findByText('Running on 127.0.0.1:20001')).toBeInTheDocument()
+    expect(within(dialog).getByText('http://127.0.0.1:20001/v1')).toBeInTheDocument()
 
     act(() => window.dispatchEvent(new CustomEvent('agentsdock:app-settings-section', { detail: 'appearance' })))
     expect(within(dialog).getByRole('button', { name: 'General' })).toHaveAttribute('aria-current', 'page')
