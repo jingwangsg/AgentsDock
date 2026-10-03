@@ -45,7 +45,7 @@ def storage_source():
               STORE=SimpleNamespace(sessions={"chat": {"active_run": {"run_id": "finished-run"}}}),
               append_event=AsyncMock(), revoke_cross_chat_capability=AsyncMock(),
               refresh_native_session_title=AsyncMock(),
-              schedule_generated_session_title=Mock(),
+              schedule_generated_session_title=Mock(), schedule_model_capacity_resend=Mock(),
               finalize_cross_chat_terminal=AsyncMock(), finalize_handoff_digest_turn=AsyncMock(),
               finish_handoff_digest_delivery=AsyncMock(), concise_error_message=str)
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), "<isolated-storage>", "exec"), ns)
