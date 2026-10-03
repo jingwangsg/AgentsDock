@@ -1,5 +1,25 @@
 # Public development log
 
+## 2026-10-04 — Android terminal tabs accept typing again and gain a key row (build 33)
+
+- Typing into an Android terminal tab reached nothing: the web view terminal
+  sent keystrokes as WebSocket text frames, and the server reads input only
+  from binary frames (text frames are JSON control messages, anything else is
+  dropped). xterm's answer to the shell's Primary Device Attributes query was
+  lost the same way, which is why fish printed its 10-second warning on every
+  tab. Input now travels as binary frames, as on the desktop.
+- A key row under the terminal offers Esc, Tab, Ctrl, Alt, the arrows,
+  Home/End, PgUp/PgDn and -, /, |, ~. Ctrl and Alt stay pressed for the next
+  key and show as selected until used; arrows follow application cursor mode
+  and send the modified CSI forms while a modifier is held. iOS keeps its
+  native terminal without the row for now.
+- Verified with the terminal layout tests (now pinning the binary input
+  path and the key row), the Android contract tests, type checks and the
+  native project check. Android build 33 (`AgentsDock-0.1.1-33-sideload.apk`,
+  debug-signed) was attached to the working chat; it was installed and
+  launched on the local emulator but typing into a live terminal was not
+  exercised on a device. Availability: local package.
+
 ## 2026-10-04 — Outputs panel row actions; stale tests follow the source; local package 94 and Android build 32
 
 - The chat Outputs panel's artifact rows now offer Copy path, Download and Show
