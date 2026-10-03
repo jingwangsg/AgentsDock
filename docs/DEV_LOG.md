@@ -1,5 +1,29 @@
 # Public development log
 
+## 2026-10-04 — Android terminal tabs connect; the key row stays above the keyboard and gains Enter (builds 35–37)
+
+- Builds 33 and 34 still showed "Connecting" on every Android terminal tab,
+  with or without the id repair below it. The cause was in the generated
+  terminal page, not the connection: the page's script is built from a
+  TypeScript template string, and the control sequences written as `'\x1b'`
+  and `'\x00'` were resolved by TypeScript into raw bytes before reaching the
+  web view. The raw NUL cut the HTML short, the script never ran, and the
+  socket was never opened. The sequences are now escaped once more so the
+  page receives the literal text; a layout test fails on any single-backslash
+  escape inside the inline script.
+- The key row was hidden under the soft keyboard: the terminal opens in a
+  full-screen modal that Android's pan adjustment does not resize. The view
+  now measures its own bottom edge against the keyboard's top edge on each
+  show event and pads itself by the overlap, so the row sits directly above
+  the keyboard. Enter joins the row after Tab, sending a carriage return.
+- Verified on the local emulator against a live remote shell: the tab
+  reaches "Connected" within a second, typed text echoes back, and the
+  on-screen Enter runs the line. Also the terminal layout tests, the Android
+  contract pins, type checks and the native project check. Android build 37
+  (`AgentsDock-0.1.1-37-sideload.apk`, project debug key) was attached to the
+  working chat and supersedes builds 32 through 36. Not exercised on a
+  physical device. Availability: local package.
+
 ## 2026-10-04 — Android tabs drag like chats; a hub deploy keeps a remote's id (build 34)
 
 - Terminal and browser tab rows in the Android sidebar can be dragged: a
