@@ -64,9 +64,9 @@ backported alongside naming rather than inferred from the release version:
   imports; unreadable/unsafe ownership indexes fail closed with a retryable error.
   Fresh chats without an existing provider ID do not need that scan or lock.
 
-`local_session_ownership.py` contains the compatible registry/index reader and
-import lock extracted from main's `server_instances.py`, without backporting
-service-install/remove commands. It is included in all runtime packaging lists.
+`local_session_ownership.py` holds the ownership index reader and import lock on
+top of the registry and path primitives it imports from `server_instances.py`.
+It is included in all runtime packaging lists.
 No service, registry or other instance's history is modified during discovery.
 Older servers do not participate in the import lock until upgraded; this is not
 a global provider lock or a cross-machine ownership service.
