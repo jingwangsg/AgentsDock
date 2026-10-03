@@ -1,5 +1,5 @@
 import { Pressable, StyleSheet, View } from 'react-native'
-import { ChevronLeft, Globe, Terminal, X } from 'lucide-react-native'
+import { ChevronLeft, Globe, PanelLeftClose, PanelLeftOpen, Terminal, X } from 'lucide-react-native'
 import { promptSurfaceRename, surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
@@ -11,7 +11,13 @@ import { useTextPrompt } from './TextPromptDialog'
 import { IconButton } from './ui'
 
 /** A terminal or browser tab in the chat's place: header with rename and close, then the tab itself. */
-export function SurfaceScreen({ surface, compact, onBack }: { surface: Surface; compact: boolean; onBack: () => void }) {
+export function SurfaceScreen({ surface, compact, sidebarCollapsed, onToggleSidebar, onBack }: {
+  surface: Surface
+  compact: boolean
+  sidebarCollapsed: boolean
+  onToggleSidebar: () => void
+  onBack: () => void
+}) {
   const colors = usePalette()
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const updateSurface = useAppStore(state => state.updateSurface)
@@ -26,7 +32,9 @@ export function SurfaceScreen({ surface, compact, onBack }: { surface: Surface; 
   const Icon = surface.kind === 'terminal' ? Terminal : Globe
   return <View style={[styles.root, { backgroundColor: colors.background }]}>
     <View style={[styles.header, { borderColor: colors.border }]}>
-      {compact ? <IconButton icon={ChevronLeft} size={18} label="Back to chat list" testID="tab-back" onPress={onBack} /> : null}
+      {compact
+        ? <IconButton icon={ChevronLeft} size={18} label="Back to chat list" testID="tab-back" onPress={onBack} />
+        : <IconButton icon={sidebarCollapsed ? PanelLeftOpen : PanelLeftClose} onPress={onToggleSidebar} label={sidebarCollapsed ? 'Show chat list' : 'Hide chat list'} testID="chat-sidebar-toggle" />}
       <Icon size={15} color={colors.muted} />
       <Pressable accessibilityRole="button" accessibilityLabel={`Rename ${title}`} accessibilityHint="Opens a rename prompt." onPress={rename} style={styles.titleBlock}>
         <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{title}</Text>

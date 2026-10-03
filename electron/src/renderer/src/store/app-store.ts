@@ -5258,6 +5258,8 @@ export function handleMenuCommand(command: string, get: () => AppState, set: (va
     void window.agentsDock.updates.check()
   }
   else if (command === 'settings') get().setModal('appSettings', true)
+  // Relayed by the main process when the chord is typed into a browser tab's page.
+  else if (command === 'toggle-sidebar') window.dispatchEvent(new Event('agentsdock:toggle-sidebar'))
   else if (command === 'chat-font-increase') nudgeChatFontSize(1)
   else if (command === 'chat-font-decrease') nudgeChatFontSize(-1)
   else if (command.startsWith('chat-font-size:')) setChatFontSize(Number(command.slice('chat-font-size:'.length)))

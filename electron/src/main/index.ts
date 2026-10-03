@@ -18,7 +18,7 @@ import { CoordinatedUpdateManager, fileCoordinatedUpdateStore, type SignedServer
 import { installWindowCloseFlush } from './window-close'
 import { parseMediaURL } from '../shared/media-url'
 import { CANVAS_SCHEME, canvasErrorPage, canvasNotFoundResponse, parseCanvasURL } from './canvas-protocol'
-import { shortcutAccelerator } from '../shared/shortcuts'
+import { isToggleSidebarChord, shortcutAccelerator } from '../shared/shortcuts'
 import { workspacePathFromInternalLink } from '../shared/workspace-link-url'
 import { LazyTeamHubService } from './team-hub-lazy-service'
 import { TeamHubService } from './team-hub-service'
@@ -356,6 +356,15 @@ function createWindow(): BrowserWindow {
     guest.setWindowOpenHandler(({ url }) => {
       if (isWebPageURL(url)) void guest.loadURL(url)
       return { action: 'deny' }
+    })
+    // Keys typed into the page stay in its guest process. Menu accelerators still fire, but the
+    // sidebar toggle is not one, so relay that chord to the renderer like a menu command.
+    guest.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return
+      const chord = { key: input.key, metaKey: input.meta, ctrlKey: input.control, altKey: input.alt, shiftKey: input.shift }
+      if (!isToggleSidebarChord(chord, process.platform === 'darwin' ? 'mac' : 'other')) return
+      event.preventDefault()
+      window.webContents.send('native:menu', { command: 'toggle-sidebar' })
     })
   })
   installWindowCloseFlush(window, {

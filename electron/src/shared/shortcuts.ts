@@ -70,3 +70,18 @@ export function shortcutAccelerator(id: AppShortcutId): string {
   if (!shortcut.accelerator) throw new Error(`${id} is not registered as a native menu accelerator.`)
   return shortcut.accelerator
 }
+
+/**
+ * The sidebar toggle is not a menu accelerator: ⌘B on macOS, Ctrl+/ elsewhere, and never Ctrl+B,
+ * which is the terminal's tmux prefix. The renderer checks it on keydown; the main process checks
+ * the same chord for keys typed into a browser tab's page, which never reach the renderer.
+ */
+export function isToggleSidebarChord(
+  event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean },
+  platform: ShortcutPlatform
+): boolean {
+  if (event.altKey || event.shiftKey) return false
+  return platform === 'mac'
+    ? event.metaKey && !event.ctrlKey && event.key.toLowerCase() === 'b'
+    : event.ctrlKey && !event.metaKey && event.key === '/'
+}

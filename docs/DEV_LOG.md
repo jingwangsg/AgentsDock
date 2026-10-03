@@ -17,8 +17,19 @@
   other page loads from the phone. Other destinations are refused, never
   dialed. The listener runs while a browser tab is on screen. On a WebView
   without proxy override, localhost stays the phone and the tab says so.
+- Build 31 also removed Chromium's implicit loopback bypass (`<-loopback>`)
+  from that override. Chromium evaluates bypass rules last-added first, that
+  rule reports "exclude" for loopback URLs, and in reverse-bypass mode an
+  exclude means a direct connection, so a localhost page on the phone reached
+  the phone itself (`ERR_CONNECTION_REFUSED`) while the tab believed routing
+  was in place. The rule is gone; the explicit loopback rules alone select
+  what is proxied, and explicit matches are checked before the implicit ones.
+  The module compiles; the corrected override has not yet been exercised on a
+  device.
   While a browser tab is open, another app on the same phone that finds the
   listener's port can reach the same server loopback ports through it.
+- In the wide layout, terminal and browser tab screens carry the same hide
+  and show chat list button as a chat header.
 - A browser tab takes its title from the page after a successful load and
   when the page retitles itself, so the web view's own error page
   ("网页无法打开") no longer names the tab on every device.
@@ -93,6 +104,12 @@
   on every account whose login shell hands off to fish. The tab list is also
   read from the cached health at launch, so tabs no longer wait for the next
   connection report before they appear in the sidebar.
+- ⌘B (Ctrl+/ elsewhere) hides and shows the sidebar from a terminal or
+  browser tab as it does from a chat. Keys typed into a browser tab's page
+  never reach the app, so the main process relays that chord to the renderer
+  as a menu command. Exercised in the isolated Electron app with real key
+  presses: ⌘B hid and showed the sidebar from a focused shell and from inside
+  a browser tab's page.
 - Validated with server tests for the standalone shell route (UTF-8 round
   trip, resize, unknown chat ids still rejected), main-process tests for the
   non-reconnecting shell connection, renderer tests for the store, sidebar,

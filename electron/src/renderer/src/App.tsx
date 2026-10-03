@@ -31,6 +31,7 @@ import { InspectorDock } from './components/InspectorDock'
 import { InspectorWorkspace, type InspectorWorkspaceTab } from './components/InspectorWorkspace'
 import { SideChatPopover } from './components/SideChatPopover'
 import { currentShortcutPlatform } from './components/ShortcutTooltip'
+import { isToggleSidebarChord } from '@shared/shortcuts'
 import { SideChatController } from './lib/side-chat'
 import { Sidebar } from './components/Sidebar'
 import { SurfaceStack } from './components/SurfacePane'
@@ -499,12 +500,9 @@ export function App() {
     return () => window.removeEventListener('keydown', focusSplitPane, true)
   }, [dismissSplitWorkspace])
   useEffect(() => {
-    // ⌘B on macOS, never Ctrl+B there or elsewhere: that is the terminal's tmux prefix.
-    const sidebarKey = currentShortcutPlatform() === 'mac'
-      ? (event: KeyboardEvent) => event.metaKey && !event.ctrlKey && event.key.toLowerCase() === 'b'
-      : (event: KeyboardEvent) => event.ctrlKey && event.key === '/'
+    const platform = currentShortcutPlatform()
     const handleWorkspaceShortcut = (event: KeyboardEvent) => {
-      if (!event.defaultPrevented && !event.repeat && !event.altKey && !event.shiftKey && sidebarKey(event)) {
+      if (!event.defaultPrevented && !event.repeat && isToggleSidebarChord(event, platform)) {
         event.preventDefault()
         event.stopImmediatePropagation()
         toggleSidebar()

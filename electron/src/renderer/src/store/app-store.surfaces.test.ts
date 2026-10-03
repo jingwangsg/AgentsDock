@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import type { PublicServerProfile, Session, Surface } from '@shared/types'
-import { useAppStore } from './app-store'
+import { handleMenuCommand, useAppStore } from './app-store'
 
 const profile: PublicServerProfile = {
   id: 'profile-a',
@@ -88,6 +88,14 @@ describe('terminal and browser tabs', () => {
     await vi.waitFor(() => expect(useAppStore.getState().surfaces).toEqual(stored))
     expect(api.list).toHaveBeenCalledTimes(1)
     expect(useAppStore.getState().surfacesRevision).toBe(7)
+  })
+
+  it('toggles the sidebar when the main process relays the chord typed into a browser tab\'s page', () => {
+    const toggled = vi.fn()
+    window.addEventListener('agentsdock:toggle-sidebar', toggled)
+    handleMenuCommand('toggle-sidebar', useAppStore.getState, useAppStore.setState)
+    window.removeEventListener('agentsdock:toggle-sidebar', toggled)
+    expect(toggled).toHaveBeenCalledOnce()
   })
 
   it('drops a list that arrives after the profile changed', async () => {

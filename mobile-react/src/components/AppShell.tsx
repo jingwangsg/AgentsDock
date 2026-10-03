@@ -391,7 +391,7 @@ function AppShellContent() {
     : <NoChat connecting={connecting} onSettings={() => openServers('manage')} onShowChatList={!compact && sidebarCollapsed ? toggleSidebar : undefined} />
   // A selected terminal or browser tab takes the chat's place until a chat is opened again.
   const content = selectedSurface
-    ? <SurfaceScreen key={`${connectionKey}:${selectedSurface.id}`} surface={selectedSurface} compact={compact} onBack={closeMobileChat} />
+    ? <SurfaceScreen key={`${connectionKey}:${selectedSurface.id}`} surface={selectedSurface} compact={compact} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} onBack={closeMobileChat} />
     : chat
 
   return <View style={[styles.fill, { backgroundColor: colors.background }]}>
