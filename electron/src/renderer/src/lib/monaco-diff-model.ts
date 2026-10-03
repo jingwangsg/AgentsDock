@@ -1,5 +1,5 @@
 import type { languages } from 'monaco-editor/editor/editor.api'
-import type { DiffConflictMarker, DiffConflictSide, DiffFile } from './timeline'
+import type { DiffConflictMarker, DiffConflictSide, DiffFile } from './unified-diff'
 
 export interface MonacoDiffModel {
   original: string
