@@ -69,5 +69,5 @@ test('a rewind carries the reverted-output counts and refreshes the files list',
   assert.match(rewind, /void get\(\)\.refreshSessions\(scope\.generation\)\s+void get\(\)\.refreshFiles\(sessionId, false, scope\.generation\)/)
   const rewindSnapshot = store.slice(store.indexOf('function rewindSnapshot('), store.indexOf('function sessionBusyForRewind('))
   assert.match(rewindSnapshot, /const files = snapshot\.files\.filter\(file => \{\s+const seq = file\.seq \?\? file\.event_seq\s+return seq == null \|\| seq < fromSeq! \|\| seq > throughSeq!/)
-  assert.match(store, /return get\(\)\.rewindSession\(sessionId, runId, scope\.generation\)/, 'restoreCheckpoint funnels through rewindSession and inherits the refresh')
+  assert.match(store, /get\(\)\.rewindSession\(sessionId, runId, scope\.generation\)/, 'restoreCheckpoint funnels through rewindSession and inherits the refresh')
 })

@@ -229,7 +229,7 @@ test('profile generation participates in UI identity and direct-client guards', 
   assert.match(mediaGrid, /capturedConnectionIsCurrent\(connection\.client, connection\.profileId, connection\.generation\)/)
 
   assert.match(terminalView, /const connectionKey = `\$\{activeProfileId \?\? 'none'\}:\$\{profileGeneration\}`/)
-  assert.match(terminalView, /key=\{`\$\{connectionKey\}:\$\{session\.id\}`\}/)
+  assert.match(terminalView, /key=\{`\$\{connectionKey\}:\$\{terminal\.id\}`\}/)
   assert.match(terminalView, /capturedConnectionIsCurrent\(connection, activeProfileId, profileGeneration\)/)
 })
 
