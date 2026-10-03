@@ -22,7 +22,7 @@ from tests import test_goal_native_steer_isolated as native_goal_fixture
 
 SOURCE = (Path(__file__).resolve().parents[1] / "agent_server.py")
 NAMES = {
-    "run_codex_app_server", "retain_codex_goal_run_owner", "bind_active_turn",
+    "run_codex_app_server", "native_steer_fence_failure", "retain_codex_goal_run_owner", "bind_active_turn",
     "turn_slot_is_owned", "codex_goal_followup_requires_native",
     "_run_queued_turn_now_once", "queue_insert_index", "NonNativeForceSendRequiresLifecycleLock",
     "async_route_queue_fields", "await_native_steer_result",

@@ -66806,13 +66806,7 @@ async def run_claude_sdk(
                 except BaseException as exc:
                     if isinstance(exc, asyncio.CancelledError):
                         raise
-                    raise NativeSteerHandoffError(
-                        (
-                            "Claude steering was not sent because its durable "
-                            f"delivery fence failed: {concise_error_message(exc)}"
-                        ),
-                        safe_to_requeue=True,
-                    ) from exc
+                    raise native_steer_fence_failure("Claude", exc) from exc
                 try:
                     candidate_user_prompt = str(
                         steer_state["request_prompt"]
@@ -71130,6 +71124,20 @@ class NativeSteerHandoffError(CodexAppServerError):
         self.delivery_uncertain = delivery_uncertain
 
 
+def native_steer_fence_failure(
+    provider_label: str, exc: BaseException,
+) -> NativeSteerHandoffError:
+    """The durable fence failed before the steer left this server, so requeue is safe."""
+
+    return NativeSteerHandoffError(
+        (
+            f"{provider_label} steering was not sent because its durable "
+            f"delivery fence failed: {concise_error_message(exc)}"
+        ),
+        safe_to_requeue=True,
+    )
+
+
 async def retain_codex_goal_run_owner(
     session_id: str, run_id: str, manager: CodexAppServerManager,
     thread_id: str,
@@ -72150,13 +72158,7 @@ async def run_codex_app_server(
                 await release_transition_boundary()
                 if isinstance(exc, asyncio.CancelledError):
                     raise
-                raise NativeSteerHandoffError(
-                    (
-                        "Codex steering was not sent because its durable "
-                        f"delivery fence failed: {concise_error_message(exc)}"
-                    ),
-                    safe_to_requeue=True,
-                ) from exc
+                raise native_steer_fence_failure("Codex", exc) from exc
             async with ACTIVE_LOCK:
                 active = ACTIVE.get(session_id)
                 delivery_still_allowed = bool(
