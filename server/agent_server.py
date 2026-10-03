@@ -95965,6 +95965,40 @@ async def send_provider_team_message(
     return receipt
 
 
+async def finish_cross_chat_acceptance(
+    accept: Coroutine[Any, Any, dict[str, Any]],
+) -> dict[str, Any]:
+    """Shield the whole acceptance pipeline, including the worker-thread SQLite
+    commit, from caller cancellation; cancellation must not return while a late
+    commit creates a ready envelope with registration/submission still running.
+    Then settle any live waiter the accepted receipt carries."""
+
+    completion = asyncio.create_task(accept)
+    accepted: dict[str, Any] | None = None
+    try:
+        accepted = await asyncio.shield(completion)
+    except asyncio.CancelledError:
+        with suppress(BaseException):
+            accepted = await join_task_despite_caller_cancellation(completion)
+        if accepted is not None and accepted.get("_live_waiter") is not None:
+            with suppress(BaseException):
+                await join_task_despite_caller_cancellation(
+                    asyncio.create_task(
+                        preserve_cancelled_cross_chat_live_acceptance(accepted)
+                    )
+                )
+        raise
+    live_exchange = accepted.pop("_live_exchange", None)
+    live_waiter = accepted.pop("_live_waiter", None)
+    if live_exchange is not None and live_waiter is not None:
+        return await finalized_cross_chat_live_receipt(
+            accepted,
+            live_exchange,
+            live_waiter,
+        )
+    return accepted
+
+
 async def submit_provider_route_handoff(
     route_id: str,
     req: AgentRouteHandoffRequest,
@@ -96255,32 +96289,7 @@ async def submit_provider_route_handoff(
             ))
         return receipt
 
-    completion = asyncio.create_task(accept_and_finish())
-    accepted: dict[str, Any] | None = None
-    try:
-        accepted = await asyncio.shield(completion)
-    except asyncio.CancelledError:
-        # Acceptance may be inside a worker-thread SQLite commit. Do not let
-        # the HTTP mutation lease finish while this child still owns it.
-        with suppress(BaseException):
-            accepted = await join_task_despite_caller_cancellation(completion)
-        if accepted is not None and accepted.get("_live_waiter") is not None:
-            with suppress(BaseException):
-                await join_task_despite_caller_cancellation(
-                    asyncio.create_task(
-                        preserve_cancelled_cross_chat_live_acceptance(accepted)
-                    )
-                )
-        raise
-    live_exchange = accepted.pop("_live_exchange", None)
-    live_waiter = accepted.pop("_live_waiter", None)
-    if live_exchange is not None and live_waiter is not None:
-        return await finalized_cross_chat_live_receipt(
-            accepted,
-            live_exchange,
-            live_waiter,
-        )
-    return accepted
+    return await finish_cross_chat_acceptance(accept_and_finish())
 
 
 @app.post("/api/agent/cross-chat/routes/{route_id}/handoffs")
@@ -96430,33 +96439,7 @@ async def submit_authorized_cross_chat_handoff(
             "accepted": True,
         }
 
-    # Shield the entire acceptance pipeline, including the worker-thread
-    # SQLite create. Cancellation cannot return while a late commit creates a
-    # ready envelope without also leaving registration/submission running.
-    completion = asyncio.create_task(accept_and_finish_handoff())
-    accepted: dict[str, Any] | None = None
-    try:
-        accepted = await asyncio.shield(completion)
-    except asyncio.CancelledError:
-        with suppress(BaseException):
-            accepted = await join_task_despite_caller_cancellation(completion)
-        if accepted is not None and accepted.get("_live_waiter") is not None:
-            with suppress(BaseException):
-                await join_task_despite_caller_cancellation(
-                    asyncio.create_task(
-                        preserve_cancelled_cross_chat_live_acceptance(accepted)
-                    )
-                )
-        raise
-    live_exchange = accepted.pop("_live_exchange", None)
-    live_waiter = accepted.pop("_live_waiter", None)
-    if live_exchange is not None and live_waiter is not None:
-        return await finalized_cross_chat_live_receipt(
-            accepted,
-            live_exchange,
-            live_waiter,
-        )
-    return accepted
+    return await finish_cross_chat_acceptance(accept_and_finish_handoff())
 
 
 @app.post("/api/cross-chat/handoffs")
@@ -96856,30 +96839,7 @@ async def submit_authorized_cross_chat_exchange_response(
             ))
         return receipt
 
-    completion = asyncio.create_task(accept_and_finish_response())
-    accepted: dict[str, Any] | None = None
-    try:
-        accepted = await asyncio.shield(completion)
-    except asyncio.CancelledError:
-        with suppress(BaseException):
-            accepted = await join_task_despite_caller_cancellation(completion)
-        if accepted is not None and accepted.get("_live_waiter") is not None:
-            with suppress(BaseException):
-                await join_task_despite_caller_cancellation(
-                    asyncio.create_task(
-                        preserve_cancelled_cross_chat_live_acceptance(accepted)
-                    )
-                )
-        raise
-    live_exchange = accepted.pop("_live_exchange", None)
-    live_waiter = accepted.pop("_live_waiter", None)
-    if live_exchange is not None and live_waiter is not None:
-        return await finalized_cross_chat_live_receipt(
-            accepted,
-            live_exchange,
-            live_waiter,
-        )
-    return accepted
+    return await finish_cross_chat_acceptance(accept_and_finish_response())
 
 
 @app.post("/api/cross-chat/exchanges/{exchange_id}/responses")
