@@ -24,7 +24,7 @@ FUNCTIONS = {
     "public_chat_share_session_exists", "interactive_chat_session_available",
     "interactive_chat_reader", "interactive_chat_public_state",
     "submit_interactive_chat_prompt", "save_interactive_chat_upload",
-    "session_dir", "events_path",
+    "session_dir", "events_path", "require_session",
 }
 
 

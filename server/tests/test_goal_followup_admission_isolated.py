@@ -23,6 +23,8 @@ FUNCTIONS = {
     "codex_goal_followup_requires_native",
     "codex_goal_steer_selection_is_plain",
     "_run_queued_turn_now_once",
+    "queue_insert_index",
+    "require_session",
     "async_route_queue_fields",
     "active_snapshot_input",
     "stop_turn",

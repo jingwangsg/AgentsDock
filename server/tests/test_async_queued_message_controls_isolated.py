@@ -31,7 +31,7 @@ NAMES = {
     "queued_turns_snapshot", "cross_chat_lifecycle_fields", "public_cross_chat_envelope",
     "prepare_steered_turn", "cross_chat_delivery_prompt", "cross_chat_delivery_header",
     "cross_chat_delivery_origin", "cross_chat_provider_prompt_kind", "cross_chat_relay_content_prompt",
-    "_run_queued_turn_now_once", "queued_turn_run_metadata",
+    "_run_queued_turn_now_once", "queue_insert_index", "require_session", "queued_turn_run_metadata",
     "join_task_despite_caller_cancellation",
 }
 

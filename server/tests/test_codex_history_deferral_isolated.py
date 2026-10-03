@@ -20,6 +20,7 @@ SOURCE = (Path(__file__).resolve().parents[1] / "agent_server.py")
 PROVIDER = "11111111-2222-3333-4444-555555555555"
 FUNCTIONS = {
     "sync_provider_history", "import_session_history", "append_imported_history",
+    "commit_history_sync", "recover_committed_history_checkpoint",
     "append_staged_imported_history", "filter_codex_history_for_import",
     "normalized_history_sync_cursor", "history_sync_checkpoint", "persist_history_sync_cursor",
     "history_cursor_matches_source_stamp", "imported_history_terminal_event",

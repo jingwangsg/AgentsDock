@@ -8584,9 +8584,7 @@ async def persist_durable_provider_cross_chat_reference_grants(
     if not target_session_ids:
         return None
     async with STORE._lock:
-        source = STORE.sessions.get(source_session_id)
-        if source is None:
-            raise HTTPException(status_code=404, detail="session not found")
+        source = require_session(source_session_id)
         if source.get("archived"):
             raise HTTPException(
                 status_code=409,
@@ -11719,6 +11717,13 @@ class SessionStore:
 STORE = SessionStore()
 
 
+def require_session(session_id: str) -> dict[str, Any]:
+    session = STORE.sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return session
+
+
 def requested_job_schedule_kind(
     schedule_kind: Any,
     interval_seconds: Any,
@@ -12180,9 +12185,7 @@ class JobStore:
         redact_chat_reference_errors: bool = False,
     ) -> dict[str, Any]:
         validate_job_text_bounds(req.title, req.prompt)
-        parent_session = STORE.sessions.get(req.session_id)
-        if not parent_session:
-            raise HTTPException(status_code=404, detail="session not found")
+        parent_session = require_session(req.session_id)
         if parent_session.get("archived"):
             raise HTTPException(
                 status_code=409,
@@ -12281,9 +12284,7 @@ class JobStore:
             # Recheck inside the job lock. If archive won the race, its durable
             # session state is already visible; if create won, archive waits
             # for this lock and pauses the newly inserted job immediately.
-            current_parent = STORE.sessions.get(req.session_id)
-            if not current_parent:
-                raise HTTPException(status_code=404, detail="session not found")
+            current_parent = require_session(req.session_id)
             if current_parent.get("archived"):
                 raise HTTPException(
                     status_code=409,
@@ -18392,8 +18393,7 @@ async def enqueue_turn(
 
 async def unqueue_turn(session_id: str, queued_id: str) -> dict[str, Any]:
     await wait_for_queue_recovery_admission()
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
 
     removed: dict[str, Any] | None = None
     async with QUEUE_LOCK:
@@ -22987,8 +22987,7 @@ def reject_promoted_queue_mutation(session_id: str, queued_id: str) -> None:
 
 async def update_queued_turn(session_id: str, queued_id: str, req: UpdateQueuedTurnRequest) -> dict[str, Any]:
     await wait_for_queue_recovery_admission()
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     async_result = await update_async_queued_message(session_id, queued_id, req)
     if async_result is not None:
         return async_result
@@ -23434,8 +23433,7 @@ async def update_queued_turn(session_id: str, queued_id: str, req: UpdateQueuedT
 
 async def move_queued_turn(session_id: str, queued_id: str, req: MoveQueuedTurnRequest) -> dict[str, Any]:
     await wait_for_queue_recovery_admission()
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     direction = req.direction.strip().lower()
     if direction not in {"up", "down"}:
         raise HTTPException(status_code=400, detail="direction must be up or down")
@@ -24291,6 +24289,24 @@ def native_steer_requeue_event_payload(
     }
 
 
+def queue_insert_index(
+    items: list[dict[str, Any]],
+    successor_id: str | None,
+    predecessor_id: str | None,
+) -> int | None:
+    """Slot before the recorded successor, else after the predecessor, else None."""
+
+    if successor_id is not None:
+        for idx, item in enumerate(items):
+            if item.get("queued_id") == successor_id:
+                return idx
+    if predecessor_id is not None:
+        for idx, item in enumerate(items):
+            if item.get("queued_id") == predecessor_id:
+                return idx + 1
+    return None
+
+
 async def requeue_native_steer_after_safe_rejection(
     session_id: str,
     selected: dict[str, Any],
@@ -24313,35 +24329,10 @@ async def requeue_native_steer_after_safe_rejection(
     rollback_error: BaseException | None = None
     async with QUEUE_LOCK:
         items = list(QUEUED_TURNS.get(session_id) or [])
-        successor_index = (
-            next(
-                (
-                    idx
-                    for idx, item in enumerate(items)
-                    if item.get("queued_id") == selected_successor_id
-                ),
-                None,
-            )
-            if selected_successor_id is not None
-            else None
+        insert_at = queue_insert_index(
+            items, selected_successor_id, selected_predecessor_id
         )
-        predecessor_index = (
-            next(
-                (
-                    idx
-                    for idx, item in enumerate(items)
-                    if item.get("queued_id") == selected_predecessor_id
-                ),
-                None,
-            )
-            if selected_predecessor_id is not None
-            else None
-        )
-        if successor_index is not None:
-            insert_at = successor_index
-        elif predecessor_index is not None:
-            insert_at = predecessor_index + 1
-        else:
+        if insert_at is None:
             insert_at = min(selected_index, len(items))
         items.insert(insert_at, selected)
 
@@ -24576,8 +24567,7 @@ async def _run_queued_turn_now_once(
     *,
     require_native: bool = False,
 ) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     if stop_cleanup_in_progress(session_id):
         raise HTTPException(
             status_code=409,
@@ -25163,35 +25153,10 @@ async def _run_queued_turn_now_once(
                         item.get("queued_id") == queued_id
                         for item in items
                     ):
-                        successor_index = (
-                            next(
-                                (
-                                    idx
-                                    for idx, item in enumerate(items)
-                                    if item.get("queued_id") == selected_successor_id
-                                ),
-                                None,
-                            )
-                            if selected_successor_id is not None
-                            else None
+                        insert_at = queue_insert_index(
+                            items, selected_successor_id, selected_predecessor_id
                         )
-                        predecessor_index = (
-                            next(
-                                (
-                                    idx
-                                    for idx, item in enumerate(items)
-                                    if item.get("queued_id") == selected_predecessor_id
-                                ),
-                                None,
-                            )
-                            if selected_predecessor_id is not None
-                            else None
-                        )
-                        if successor_index is not None:
-                            insert_at = successor_index
-                        elif predecessor_index is not None:
-                            insert_at = predecessor_index + 1
-                        else:
+                        if insert_at is None:
                             insert_at = min(int(selected_index or 0), len(items))
                         items.insert(insert_at, selected)
                         QUEUED_TURNS[session_id] = deque(items)
@@ -27653,36 +27618,7 @@ def ps_process_rows() -> list[dict[str, Any]]:
     except subprocess.TimeoutExpired:
         logger.warning("process snapshot ps scan timed out")
         return []
-    rows: list[dict[str, Any]] = []
-    for line in result.stdout.splitlines():
-        parts = line.strip().split(None, 10)
-        if len(parts) < 10:
-            continue
-        try:
-            pid = int(parts[0])
-            ppid = int(parts[1])
-            pgid = int(parts[2])
-            sid = int(parts[3])
-            etimes = int(float(parts[5]))
-            cpu = float(parts[6])
-            mem = float(parts[7])
-            rss = int(float(parts[8]))
-        except ValueError:
-            continue
-        rows.append({
-            "pid": pid,
-            "ppid": ppid,
-            "pgid": pgid,
-            "sid": sid,
-            "stat": parts[4],
-            "elapsed_seconds": etimes,
-            "cpu_percent": cpu,
-            "mem_percent": mem,
-            "rss_kb": rss,
-            "command": parts[9],
-            "args": parts[10] if len(parts) > 10 else parts[9],
-        })
-    return rows
+    return parse_ps_rows(result.stdout)
 
 
 def parse_ps_rows(stdout: str) -> list[dict[str, Any]]:
@@ -28787,9 +28723,7 @@ def _ensure_terminal_session_locked(
     columns: int | None = None,
     rows: int | None = None,
 ) -> dict[str, Any]:
-    sess = STORE.sessions.get(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="session not found")
+    sess = require_session(session_id)
     ensure_session_not_deleting(session_id)
     if bool(sess.get("archived")):
         raise HTTPException(status_code=409, detail="unarchive this chat before opening its terminal")
@@ -29391,8 +29325,7 @@ TERMINAL_ATTACHMENTS = TerminalAttachmentRegistry()
 
 
 def terminal_snapshot(session_id: str, *, lines: int = 240, created: bool = False) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     name = terminal_session_name(session_id)
     exists = tmux_session_exists(name)
     line_count = max(20, min(int(lines or 240), TMUX_CAPTURE_MAX_LINES))
@@ -29441,9 +29374,7 @@ def terminal_snapshot(session_id: str, *, lines: int = 240, created: bool = Fals
 
 
 def require_existing_terminal_session(session_id: str) -> str:
-    session = STORE.sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     ensure_session_not_deleting(session_id)
     if bool(session.get("archived")):
         raise HTTPException(status_code=409, detail="archived chats do not have an active terminal")
@@ -29515,8 +29446,7 @@ def exit_terminal_auto_scroll(session_id: str) -> None:
 
 
 def _kill_terminal_session_locked(session_id: str) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     name = terminal_session_name(session_id)
     existed = False
     if shutil.which("tmux") is not None:
@@ -29539,8 +29469,7 @@ def kill_terminal_session(session_id: str) -> dict[str, Any]:
 
 
 def terminal_windows_snapshot(session_id: str) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     name = terminal_session_name(session_id)
     if not tmux_session_exists(name):
         return {"session_id": session_id, "name": name, "exists": False, "mouse_enabled": False, "windows": []}
@@ -29767,9 +29696,7 @@ def best_process_label(processes: list[dict[str, Any]], fallback: str | None) ->
 
 
 def tmux_panes_snapshot(session_id: str, *, include_all: bool = False) -> dict[str, Any]:
-    sess = STORE.sessions.get(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="session not found")
+    sess = require_session(session_id)
     result = run_tmux([
         "list-panes",
         "-a",
@@ -29859,8 +29786,7 @@ def tmux_panes_snapshot(session_id: str, *, include_all: bool = False) -> dict[s
 
 
 def capture_tmux_pane(session_id: str, pane_id: str, *, lines: int = 500) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     clean = str(pane_id or "").strip()
     if not clean:
         raise HTTPException(status_code=400, detail="pane_id is required")
@@ -38095,9 +38021,7 @@ async def start_turn_durably(session_id: str, req: TurnRequest) -> dict[str, Any
         except ManagedServerUpdatePendingError:
             async with session_lifecycle_lock(session_id):
                 ensure_session_not_deleting(session_id)
-                sess = STORE.sessions.get(session_id)
-                if not sess:
-                    raise HTTPException(status_code=404, detail="session not found")
+                sess = require_session(session_id)
                 if sess.get("archived"):
                     raise HTTPException(
                         status_code=409,
@@ -44846,9 +44770,7 @@ async def authorize_provider_jobs_operation(
         action="jobs",
         session_id=session_id,
     )
-    session = STORE.sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     issued_access = effective_provider_jobs_access({
         "provider_jobs_access": capability.get("provider_jobs_access"),
     })
@@ -45707,8 +45629,7 @@ async def skip_queued_cross_chat_delivery(
 ) -> dict[str, Any]:
     """Skip one exact local delivery without admitting or reordering work."""
 
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
 
     envelope_id = str(req.cross_chat_envelope_id or "")
     exchange_id = str(req.cross_chat_exchange_id or "")
@@ -51011,74 +50932,46 @@ def unsynced_history_items(
     return items[last_matched + 1:]
 
 
-async def sync_provider_history(
+async def recover_committed_history_checkpoint(
     sess: dict[str, Any],
-    *,
-    limit: int | None = None,
-) -> dict[str, Any]:
-    """Append provider messages added outside this chat since the last sync.
+    previous_cursor: dict[str, Any] | None,
+    source_path: Any,
+) -> dict[str, Any] | None:
+    """Re-persist a cursor whose import batch committed but whose registry save did not."""
 
-    AgentsDock drives the real provider CLI, so anything sent from here is
-    already in the provider transcript - but the reverse was not true. A
-    conversation continued in the provider's own CLI (or on another machine
-    sharing that transcript) grew silently: the next AgentsDock turn resumed
-    the thread and the model answered with full context the timeline never
-    showed, which reads as the assistant knowing things the user never said.
-    """
-
-    session_id = str(sess["id"])
-    if not session_provider_id(sess):
-        return {
-            "imported": 0,
-            "source_path": None,
-            "message": "No provider session ID set.",
-        }
-    live_session = STORE.sessions.get(session_id) or {}
-    previous_cursor = normalized_history_sync_cursor(live_session)
-    # A durable cursor makes the unchanged fast path survive process restart;
-    # all five stat/identity fields must still describe the fully-consumed
-    # source before parsing can be skipped.
-    stamp = await asyncio.to_thread(provider_history_source_stamp, sess)
-    if history_cursor_matches_source_stamp(previous_cursor, stamp):
-        return {
-            "imported": 0,
-            "source_path": stamp[0],
-            "message": "Provider transcript unchanged since the last sync.",
-        }
-    source_path, items, next_cursor, continued = await asyncio.to_thread(
-        load_provider_history_with_cursor,
+    recovered = await asyncio.to_thread(
+        committed_history_sync_checkpoint,
         sess,
-        limit,
         previous_cursor,
     )
-    if not source_path:
-        return {
-            "imported": 0,
-            "source_path": None,
-            "message": "No provider transcript found.",
-        }
-    if next_cursor is not None and previous_cursor is not None:
-        recovered = await asyncio.to_thread(
-            committed_history_sync_checkpoint,
-            sess,
-            previous_cursor,
-        )
-        if recovered is not None:
-            recovered_cursor, _terminal_seq = recovered
-            await persist_history_sync_cursor(
-                sess,
-                recovered_cursor,
-                timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
-            )
-            return {
-                "imported": 0,
-                "source_path": str(source_path),
-                "message": "Recovered a committed provider history checkpoint.",
-            }
-    timeline_latest_seq = await asyncio.to_thread(
-        last_event_seq_from_file,
-        events_path(session_id),
+    if recovered is None:
+        return None
+    recovered_cursor, _terminal_seq = recovered
+    await persist_history_sync_cursor(
+        sess,
+        recovered_cursor,
+        timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
     )
+    return {
+        "imported": 0,
+        "source_path": str(source_path),
+        "message": "Recovered a committed provider history checkpoint.",
+    }
+
+
+async def commit_history_sync(
+    sess: dict[str, Any],
+    session_id: Any,
+    source_path: Any,
+    items: list[dict[str, Any]],
+    *,
+    previous_cursor: dict[str, Any] | None,
+    next_cursor: dict[str, Any] | None,
+    continued: bool,
+    timeline_latest_seq: int,
+) -> dict[str, Any]:
+    """Reconcile parsed items with the timeline, append the unseen tail, then move the cursor."""
+
     if continued and previous_cursor is not None:
         timeline_scan_through_seq = timeline_latest_seq
         fresh, consumed_timeline_seq = await asyncio.to_thread(
@@ -51100,23 +50993,13 @@ async def sync_provider_history(
         )
         consumed_timeline_seq = timeline_latest_seq
     if fresh and next_cursor is not None and previous_cursor is None:
-        recovered = await asyncio.to_thread(
-            committed_history_sync_checkpoint,
+        recovered = await recover_committed_history_checkpoint(
             sess,
             previous_cursor,
+            source_path,
         )
         if recovered is not None:
-            recovered_cursor, _terminal_seq = recovered
-            await persist_history_sync_cursor(
-                sess,
-                recovered_cursor,
-                timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
-            )
-            return {
-                "imported": 0,
-                "source_path": str(source_path),
-                "message": "Recovered a committed provider history checkpoint.",
-            }
+            return recovered
     caught_up = True
     checkpoint: dict[str, Any] | None = None
     timeline_seq = timeline_latest_seq
@@ -51181,6 +51064,76 @@ async def sync_provider_history(
             timeline_seq=timeline_seq,
         )
     return result
+
+
+async def sync_provider_history(
+    sess: dict[str, Any],
+    *,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Append provider messages added outside this chat since the last sync.
+
+    AgentsDock drives the real provider CLI, so anything sent from here is
+    already in the provider transcript - but the reverse was not true. A
+    conversation continued in the provider's own CLI (or on another machine
+    sharing that transcript) grew silently: the next AgentsDock turn resumed
+    the thread and the model answered with full context the timeline never
+    showed, which reads as the assistant knowing things the user never said.
+    """
+
+    session_id = str(sess["id"])
+    if not session_provider_id(sess):
+        return {
+            "imported": 0,
+            "source_path": None,
+            "message": "No provider session ID set.",
+        }
+    live_session = STORE.sessions.get(session_id) or {}
+    previous_cursor = normalized_history_sync_cursor(live_session)
+    # A durable cursor makes the unchanged fast path survive process restart;
+    # all five stat/identity fields must still describe the fully-consumed
+    # source before parsing can be skipped.
+    stamp = await asyncio.to_thread(provider_history_source_stamp, sess)
+    if history_cursor_matches_source_stamp(previous_cursor, stamp):
+        return {
+            "imported": 0,
+            "source_path": stamp[0],
+            "message": "Provider transcript unchanged since the last sync.",
+        }
+    source_path, items, next_cursor, continued = await asyncio.to_thread(
+        load_provider_history_with_cursor,
+        sess,
+        limit,
+        previous_cursor,
+    )
+    if not source_path:
+        return {
+            "imported": 0,
+            "source_path": None,
+            "message": "No provider transcript found.",
+        }
+    if next_cursor is not None and previous_cursor is not None:
+        recovered = await recover_committed_history_checkpoint(
+            sess,
+            previous_cursor,
+            source_path,
+        )
+        if recovered is not None:
+            return recovered
+    timeline_latest_seq = await asyncio.to_thread(
+        last_event_seq_from_file,
+        events_path(session_id),
+    )
+    return await commit_history_sync(
+        sess,
+        session_id,
+        source_path,
+        items,
+        previous_cursor=previous_cursor,
+        next_cursor=next_cursor,
+        continued=continued,
+        timeline_latest_seq=timeline_latest_seq,
+    )
 
 
 def provider_history_source_stamp(sess: dict[str, Any]) -> list[Any] | None:
@@ -51703,23 +51656,13 @@ async def import_session_history(sess: dict[str, Any], *, force: bool = False, l
         return {"imported": 0, "source_path": None, "message": message}
 
     if next_cursor is not None and previous_cursor is not None:
-        recovered = await asyncio.to_thread(
-            committed_history_sync_checkpoint,
+        recovered = await recover_committed_history_checkpoint(
             sess,
             previous_cursor,
+            source_path,
         )
         if recovered is not None:
-            recovered_cursor, _terminal_seq = recovered
-            await persist_history_sync_cursor(
-                sess,
-                recovered_cursor,
-                timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
-            )
-            return {
-                "imported": 0,
-                "source_path": str(source_path),
-                "message": "Recovered a committed provider history checkpoint.",
-            }
+            return recovered
 
     timeline_latest_seq = await asyncio.to_thread(
         last_event_seq_from_file,
@@ -51749,99 +51692,16 @@ async def import_session_history(sess: dict[str, Any], *, force: bool = False, l
     # ``force`` means bypass the one-time import marker, not append the same
     # provider transcript again. Anchor against the durable timeline exactly
     # like automatic catch-up and import only the unseen suffix.
-    if continued and previous_cursor is not None:
-        timeline_scan_through_seq = timeline_latest_seq
-        fresh, consumed_timeline_seq = await asyncio.to_thread(
-            reconcile_cursor_history_items,
-            session_id,
-            items,
-            timeline_after_seq=int(previous_cursor.get("timeline_seq") or 0),
-            timeline_through_seq=timeline_scan_through_seq,
-        )
-    else:
-        fresh = await asyncio.to_thread(
-            unsynced_history_items,
-            session_id,
-            items,
-            timeline_through_seq=timeline_latest_seq,
-        )
-        consumed_timeline_seq = timeline_latest_seq
-    if fresh and next_cursor is not None and previous_cursor is None:
-        recovered = await asyncio.to_thread(
-            committed_history_sync_checkpoint,
-            sess,
-            previous_cursor,
-        )
-        if recovered is not None:
-            recovered_cursor, _terminal_seq = recovered
-            await persist_history_sync_cursor(
-                sess,
-                recovered_cursor,
-                timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
-            )
-            return {
-                "imported": 0,
-                "source_path": str(source_path),
-                "message": "Recovered a committed provider history checkpoint.",
-            }
-    caught_up = True
-    checkpoint: dict[str, Any] | None = None
-    timeline_seq = timeline_latest_seq
-    if next_cursor is not None:
-        caught_up = bool(next_cursor.pop("source_caught_up", True))
-        next_cursor["timeline_pending_through_seq"] = 0
-        next_cursor["timeline_pending_active"] = False
-        if not caught_up:
-            timeline_seq = consumed_timeline_seq
-        next_cursor["timeline_seq"] = timeline_seq
-        next_cursor["checkpoint_seq"] = max(
-            int(next_cursor.get("checkpoint_seq") or 0),
-            timeline_latest_seq,
-        )
-        checkpoint = history_sync_checkpoint(
-            previous_cursor,
-            next_cursor,
-            caught_up=caught_up,
-        )
-    if not fresh:
-        result = {
-            "imported": 0,
-            "source_path": str(source_path),
-            "message": "Already up to date with the provider transcript.",
-        }
-    else:
-        try:
-            result = await append_imported_history(
-                sess,
-                source_path,
-                fresh,
-                sync_checkpoint=checkpoint,
-            )
-        except CodexNativeHistoryProofUnavailable:
-            # Do not persist next_cursor: these source bytes have not yet been
-            # proven against native history. A later explicit sync can retry.
-            return {
-                "imported": 0, "source_path": str(source_path), "deferred": True,
-                "reason": "native_history_proof_unavailable",
-                "message": "History reconciliation deferred; no messages were imported.",
-            }
-    if next_cursor is not None:
-        if caught_up:
-            timeline_seq = max(
-                timeline_latest_seq,
-                int(result.get("timeline_seq") or 0),
-            )
-        next_cursor["checkpoint_seq"] = max(
-            int(next_cursor.get("checkpoint_seq") or 0),
-            timeline_latest_seq,
-            int(result.get("timeline_seq") or 0),
-        )
-        await persist_history_sync_cursor(
-            sess,
-            next_cursor,
-            timeline_seq=timeline_seq,
-        )
-    return result
+    return await commit_history_sync(
+        sess,
+        session_id,
+        source_path,
+        items,
+        previous_cursor=previous_cursor,
+        next_cursor=next_cursor,
+        continued=continued,
+        timeline_latest_seq=timeline_latest_seq,
+    )
 
 
 FORK_HISTORY_EVENT_TYPES = {
@@ -54030,9 +53890,7 @@ async def refresh_idle_claude_context_usage(session_id: str) -> bool:
 
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        session = STORE.sessions.get(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="session not found")
+        session = require_session(session_id)
         if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CLAUDE:
             raise HTTPException(
                 status_code=409,
@@ -54094,9 +53952,7 @@ async def refresh_idle_claude_context_usage(session_id: str) -> bool:
                 )
 
         async with STORE._lock:
-            current = STORE.sessions.get(session_id)
-            if not current:
-                raise HTTPException(status_code=404, detail="session not found")
+            current = require_session(session_id)
             provider_session_id = str(
                 claude_provider_id_for_session(current) or ""
             ).strip()
@@ -57647,9 +57503,7 @@ async def acquire_codex_control_thread(
             reservation_task,
         )
     ensure_session_not_deleting(session_id)
-    session = STORE.sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CODEX:
         raise HTTPException(status_code=409, detail="Codex controls require a Codex chat")
     if CODEX_TRANSPORT == CODEX_TRANSPORT_EXEC:
@@ -66928,13 +66782,7 @@ async def run_claude_sdk(
                 except BaseException as exc:
                     if isinstance(exc, asyncio.CancelledError):
                         raise
-                    raise NativeSteerHandoffError(
-                        (
-                            "Claude steering was not sent because its durable "
-                            f"delivery fence failed: {concise_error_message(exc)}"
-                        ),
-                        safe_to_requeue=True,
-                    ) from exc
+                    raise native_steer_fence_failure("Claude", exc) from exc
                 try:
                     candidate_user_prompt = str(
                         steer_state["request_prompt"]
@@ -71252,6 +71100,20 @@ class NativeSteerHandoffError(CodexAppServerError):
         self.delivery_uncertain = delivery_uncertain
 
 
+def native_steer_fence_failure(
+    provider_label: str, exc: BaseException,
+) -> NativeSteerHandoffError:
+    """The durable fence failed before the steer left this server, so requeue is safe."""
+
+    return NativeSteerHandoffError(
+        (
+            f"{provider_label} steering was not sent because its durable "
+            f"delivery fence failed: {concise_error_message(exc)}"
+        ),
+        safe_to_requeue=True,
+    )
+
+
 async def retain_codex_goal_run_owner(
     session_id: str, run_id: str, manager: CodexAppServerManager,
     thread_id: str,
@@ -72226,6 +72088,28 @@ async def run_codex_app_server(
                     active.pop("logical_transition_predecessor_run_id", None)
                     active.pop("logical_transition_authority_nonce", None)
 
+        async def abandon_uncertain_delivery(message: str) -> None:
+            """Delivery may have succeeded: never replay, interrupt the turn so
+            uncertain output is not attributed to the preceding logical request."""
+
+            nonlocal candidate_authority_path, delivery_unknown
+            delivery_unknown = True
+            with suppress(Exception):
+                await turn.interrupt()
+            if candidate_authority_path is not None:
+                await revoke_cross_chat_capability(candidate_run_id)
+                candidate_authority_path = None
+            await revoke_cross_chat_capability(current_run_id)
+            with suppress(Exception):
+                await append_event(session_id, "error", {
+                    "run_id": current_run_id,
+                    "backend": BACKEND_CODEX,
+                    "transport": CODEX_TRANSPORT_APP_SERVER,
+                    "message": message,
+                    "delivery_unknown": True,
+                })
+            await release_transition_boundary()
+
         async with ACTIVE_LOCK:
             active = ACTIVE.get(session_id)
             if not active or active.get("stop_requested"):
@@ -72250,13 +72134,7 @@ async def run_codex_app_server(
                 await release_transition_boundary()
                 if isinstance(exc, asyncio.CancelledError):
                     raise
-                raise NativeSteerHandoffError(
-                    (
-                        "Codex steering was not sent because its durable "
-                        f"delivery fence failed: {concise_error_message(exc)}"
-                    ),
-                    safe_to_requeue=True,
-                ) from exc
+                raise native_steer_fence_failure("Codex", exc) from exc
             async with ACTIVE_LOCK:
                 active = ACTIVE.get(session_id)
                 delivery_still_allowed = bool(
@@ -72378,25 +72256,10 @@ async def run_codex_app_server(
             # Delivery may have succeeded. Never put this message back in the
             # queue, and interrupt the provider turn so uncertain output cannot
             # be attributed to the preceding logical request.
-            delivery_unknown = True
-            with suppress(Exception):
-                await turn.interrupt()
-            if candidate_authority_path is not None:
-                await revoke_cross_chat_capability(candidate_run_id)
-                candidate_authority_path = None
-            await revoke_cross_chat_capability(current_run_id)
-            with suppress(Exception):
-                await append_event(session_id, "error", {
-                    "run_id": current_run_id,
-                    "backend": BACKEND_CODEX,
-                    "transport": CODEX_TRANSPORT_APP_SERVER,
-                    "message": (
-                        "Force Send delivery could not be confirmed. The message "
-                        "was not replayed; retry it manually if it does not appear."
-                    ),
-                    "delivery_unknown": True,
-                })
-            await release_transition_boundary()
+            await abandon_uncertain_delivery(
+                "Force Send delivery could not be confirmed. The message "
+                "was not replayed; retry it manually if it does not appear."
+            )
             raise NativeSteerHandoffError(
                 concise_error_message(exc),
                 safe_to_requeue=False,
@@ -72416,25 +72279,10 @@ async def run_codex_app_server(
             await release_transition_boundary()
             raise
         except Exception as exc:
-            delivery_unknown = True
-            with suppress(Exception):
-                await turn.interrupt()
-            if candidate_authority_path is not None:
-                await revoke_cross_chat_capability(candidate_run_id)
-                candidate_authority_path = None
-            await revoke_cross_chat_capability(current_run_id)
-            with suppress(Exception):
-                await append_event(session_id, "error", {
-                    "run_id": current_run_id,
-                    "backend": BACKEND_CODEX,
-                    "transport": CODEX_TRANSPORT_APP_SERVER,
-                    "message": (
-                        "Force Send was accepted, but the provider output boundary "
-                        "could not be reconciled. The message was not replayed."
-                    ),
-                    "delivery_unknown": True,
-                })
-            await release_transition_boundary()
+            await abandon_uncertain_delivery(
+                "Force Send was accepted, but the provider output boundary "
+                "could not be reconciled. The message was not replayed."
+            )
             raise NativeSteerHandoffError(
                 concise_error_message(exc),
                 safe_to_requeue=False,
@@ -74281,9 +74129,7 @@ async def _start_turn_locked(
             status_code=410,
             detail=SECURE_PEER_AGENT_RELAY_UNAVAILABLE,
         )
-    sess = STORE.sessions.get(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="session not found")
+    sess = require_session(session_id)
     if sess.get("archived"):
         raise HTTPException(status_code=409, detail="archived chats cannot start turns")
     if req.purpose == "chat_mailbox_wake" or mailbox_wake_claim is not None:
@@ -80532,9 +80378,15 @@ def request_exact_secure_peer_control_authorized(request: Request) -> bool:
     return bool(candidate) and token_matches(candidate)
 
 
-def team_hub_bootstrap_post_transport_error(
+def bounded_json_post_error(
     request: Request,
+    *,
+    max_bytes: int,
+    min_bytes: int,
+    label: str,
 ) -> tuple[int, str] | None:
+    """Validate exact bounded JSON framing before any body is read."""
+
     raw_headers = request.scope.get("headers", [])
     content_types = [
         value
@@ -80542,12 +80394,12 @@ def team_hub_bootstrap_post_transport_error(
         if bytes(name).lower() == b"content-type"
     ]
     if content_types != [b"application/json"]:
-        return 415, "bootstrap proof requests require application/json"
+        return 415, f"{label} requests require application/json"
     if any(
         bytes(name).lower() == b"transfer-encoding"
         for name, _value in raw_headers
     ):
-        return 400, "bootstrap proof requests do not accept transfer encoding"
+        return 400, f"{label} requests do not accept transfer encoding"
     content_lengths = [
         value
         for name, value in raw_headers
@@ -80556,18 +80408,29 @@ def team_hub_bootstrap_post_transport_error(
     if len(content_lengths) != 1:
         return (
             411 if not content_lengths else 400,
-            "bootstrap proof request content length is invalid",
+            f"{label} request content length is invalid",
         )
     try:
         raw_length = content_lengths[0].decode("ascii")
         size = int(raw_length, 10)
     except (UnicodeDecodeError, ValueError):
-        return 400, "bootstrap proof request content length is invalid"
-    if raw_length != str(size) or size <= 0:
-        return 400, "bootstrap proof request content length is invalid"
-    if size > TEAM_HUB_BOOTSTRAP_MAX_BODY_BYTES:
-        return 413, "bootstrap proof request body is too large"
+        return 400, f"{label} request content length is invalid"
+    if raw_length != str(size) or size < min_bytes:
+        return 400, f"{label} request content length is invalid"
+    if size > max_bytes:
+        return 413, f"{label} request body is too large"
     return None
+
+
+def team_hub_bootstrap_post_transport_error(
+    request: Request,
+) -> tuple[int, str] | None:
+    return bounded_json_post_error(
+        request,
+        max_bytes=TEAM_HUB_BOOTSTRAP_MAX_BODY_BYTES,
+        min_bytes=1,
+        label="bootstrap proof",
+    )
 
 
 def server_restart_post_transport_error(request: Request) -> tuple[int, str] | None:
@@ -80648,40 +80511,12 @@ def privileged_native_json_transport(
 def secure_peer_post_transport_error(request: Request) -> tuple[int, str] | None:
     """Validate the exact bounded JSON framing before secret-bearing parsing."""
 
-    raw_headers = request.scope.get("headers", [])
-    content_types = [
-        value
-        for name, value in raw_headers
-        if bytes(name).lower() == b"content-type"
-    ]
-    if content_types != [b"application/json"]:
-        return 415, "secure peer requests require application/json"
-    if any(
-        bytes(name).lower() == b"transfer-encoding"
-        for name, _value in raw_headers
-    ):
-        return 400, "secure peer requests do not accept transfer encoding"
-    content_lengths = [
-        value
-        for name, value in raw_headers
-        if bytes(name).lower() == b"content-length"
-    ]
-    if len(content_lengths) != 1:
-        return (
-            411 if not content_lengths else 400,
-            "secure peer request content length is invalid",
-        )
-    try:
-        raw_length = content_lengths[0].decode("ascii")
-        size = int(raw_length, 10)
-    except (UnicodeDecodeError, ValueError):
-        return 400, "secure peer request content length is invalid"
-    if raw_length != str(size) or not 2 <= size <= SECURE_PEER_MAX_BODY_BYTES:
-        return (
-            413 if size > SECURE_PEER_MAX_BODY_BYTES else 400,
-            "secure peer request content length is invalid",
-        )
-    return None
+    return bounded_json_post_error(
+        request,
+        max_bytes=SECURE_PEER_MAX_BODY_BYTES,
+        min_bytes=2,
+        label="secure peer",
+    )
 
 
 def secure_peer_attachment_put_transport_error(
@@ -81980,6 +81815,30 @@ async def bootstrap_requested_team_network(body: TeamHubHostEnableRequest) -> No
         ) from exc
 
 
+def ensure_team_hub_role_change_allowed() -> None:
+    """A role change must not race a managed restart or a pending/active update."""
+
+    if managed_server_restart_blocks_work():
+        raise TeamHubHostControlFailure(
+            "team_hub_host_restart_active",
+            "AgentsServer is restarting and cannot change its Team Network role.",
+            status_code=409,
+            action="Retry after the server reconnects.",
+            retryable=True,
+        )
+    update = read_server_update_status()
+    if str(update.get("phase") or "") in (
+        SERVER_UPDATE_ACTIVE_PHASES | {SERVER_UPDATE_PENDING_PHASE}
+    ):
+        raise TeamHubHostControlFailure(
+            "team_hub_host_update_active",
+            "AgentsServer cannot change its Team Network role during an update.",
+            status_code=409,
+            action="Finish or cancel the server update, then retry.",
+            retryable=True,
+        )
+
+
 async def enable_team_hub_host(
     body: TeamHubHostEnableRequest,
 ) -> dict[str, Any]:
@@ -82073,25 +81932,7 @@ async def enable_team_hub_host(
                 retryable=None,
             )
             return public_team_hub_host_control_status(completed)
-        if managed_server_restart_blocks_work():
-            raise TeamHubHostControlFailure(
-                "team_hub_host_restart_active",
-                "AgentsServer is restarting and cannot change its Team Network role.",
-                status_code=409,
-                action="Retry after the server reconnects.",
-                retryable=True,
-            )
-        update = read_server_update_status()
-        if str(update.get("phase") or "") in (
-            SERVER_UPDATE_ACTIVE_PHASES | {SERVER_UPDATE_PENDING_PHASE}
-        ):
-            raise TeamHubHostControlFailure(
-                "team_hub_host_update_active",
-                "AgentsServer cannot change its Team Network role during an update.",
-                status_code=409,
-                action="Finish or cancel the server update, then retry.",
-                retryable=True,
-            )
+        ensure_team_hub_role_change_allowed()
         write_team_hub_host_control_status(
             phase="starting",
             request_id=request_id,
@@ -82229,25 +82070,7 @@ async def disable_team_hub_host(
                 _live_reactivation=None,
             )
             return public_team_hub_host_control_status(completed)
-        if managed_server_restart_blocks_work():
-            raise TeamHubHostControlFailure(
-                "team_hub_host_restart_active",
-                "AgentsServer is restarting and cannot change its Team Network role.",
-                status_code=409,
-                action="Retry after the server reconnects.",
-                retryable=True,
-            )
-        update = read_server_update_status()
-        if str(update.get("phase") or "") in (
-            SERVER_UPDATE_ACTIVE_PHASES | {SERVER_UPDATE_PENDING_PHASE}
-        ):
-            raise TeamHubHostControlFailure(
-                "team_hub_host_update_active",
-                "AgentsServer cannot change its Team Network role during an update.",
-                status_code=409,
-                action="Finish or cancel the server update, then retry.",
-                retryable=True,
-            )
+        ensure_team_hub_role_change_allowed()
         try:
             config_snapshot = await asyncio.to_thread(
                 persist_team_hub_host_settings,
@@ -86663,6 +86486,30 @@ async def server_update_status(
         return public_status
 
 
+async def finalize_abandoned_update_or_409(status: dict[str, Any]) -> dict[str, Any]:
+    """Pass a settled status through; finalize an abandoned active-phase one first."""
+
+    if str(status.get("phase") or "") not in SERVER_UPDATE_ACTIVE_PHASES:
+        return status
+    updater_active = await asyncio.to_thread(server_update_is_active, status)
+    if (
+        updater_active
+        or server_update_status_age_seconds(status)
+        < SERVER_UPDATE_START_GRACE_SECONDS
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="a server update is already running",
+        )
+    try:
+        return await asyncio.to_thread(finalize_abandoned_server_update, status)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="the previous server update could not be safely finalized",
+        ) from exc
+
+
 async def check_server_update(
     body: ServerUpdateCheckRequest | None = None,
 ) -> dict[str, Any]:
@@ -86682,27 +86529,7 @@ async def check_server_update(
             return public_server_update_status(status)
         if managed_server_update_is_pending(status):
             return public_server_update_status(status)
-        if str(status.get("phase") or "") in SERVER_UPDATE_ACTIVE_PHASES:
-            updater_active = await asyncio.to_thread(server_update_is_active, status)
-            if (
-                updater_active
-                or server_update_status_age_seconds(status)
-                < SERVER_UPDATE_START_GRACE_SECONDS
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail="a server update is already running",
-                )
-            try:
-                status = await asyncio.to_thread(
-                    finalize_abandoned_server_update,
-                    status,
-                )
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail="the previous server update could not be safely finalized",
-                ) from exc
+        status = await finalize_abandoned_update_or_409(status)
         track: Literal["stable", "beta"] = (
             body.track
             if body is not None and body.track is not None
@@ -87038,27 +86865,7 @@ async def _start_server_update(
                 status_code=503,
                 detail=managed_update_provider_quiesce_failure_detail(),
             )
-        if str(status.get("phase") or "") in SERVER_UPDATE_ACTIVE_PHASES:
-            updater_active = await asyncio.to_thread(server_update_is_active, status)
-            if (
-                updater_active
-                or server_update_status_age_seconds(status)
-                < SERVER_UPDATE_START_GRACE_SECONDS
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail="a server update is already running",
-                )
-            try:
-                status = await asyncio.to_thread(
-                    finalize_abandoned_server_update,
-                    status,
-                )
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail="the previous server update could not be safely finalized",
-                ) from exc
+        status = await finalize_abandoned_update_or_409(status)
         pending_schedule_id = (
             str(status.get("schedule_id") or "").strip()
             if managed_server_update_is_pending(status)
@@ -87378,8 +87185,7 @@ async def _start_server_update(
                             hub_capability.get("startup_failure_reason") or ""
                         ).strip()
                     )
-                    if hub_snapshot is not None:
-                        expected_hub_id = str(hub_capability.get("hub_id") or "")
+                    if hub_snapshot is not None or failed_hub_repair:
                         expected_hub_transport = str(
                             hub_capability.get("transport") or ""
                         )
@@ -87403,6 +87209,8 @@ async def _start_server_update(
                                 ),
                                 "",
                             )
+                    if hub_snapshot is not None:
+                        expected_hub_id = str(hub_capability.get("hub_id") or "")
                         if (
                             hub_capability.get("available") is not True
                             or hub_capability.get("designated_host") is not True
@@ -87452,29 +87260,6 @@ async def _start_server_update(
                             ]
                         )
                     elif failed_hub_repair:
-                        expected_hub_transport = str(
-                            hub_capability.get("transport") or ""
-                        )
-                        raw_hub_url = hub_capability.get("hub_url")
-                        expected_hub_url = (
-                            str(raw_hub_url) if raw_hub_url is not None else None
-                        )
-                        raw_hub_routes = hub_capability.get("routes")
-                        expected_hub_routes = (
-                            [dict(route) for route in raw_hub_routes]
-                            if isinstance(raw_hub_routes, list)
-                            and all(isinstance(route, dict) for route in raw_hub_routes)
-                            else None
-                        )
-                        if expected_hub_routes is not None:
-                            expected_hub_direct_ip_url = next(
-                                (
-                                    str(route.get("hub_url") or "")
-                                    for route in expected_hub_routes
-                                    if route.get("transport") == "direct_ip"
-                                ),
-                                "",
-                            )
                         if (
                             expected_hub_transport
                             not in {"loopback", "tailscale_serve", "direct_ip"}
@@ -88280,8 +88065,7 @@ async def capture_session_tmux_pane(session_id: str, pane_id: str, lines: int = 
 
 @app.get("/api/sessions/{session_id}/processes")
 async def get_session_processes(session_id: str) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     async with ACTIVE_LOCK:
         active = ACTIVE.get(session_id)
         snapshot_input = active_snapshot_input(active) if active else None
@@ -88297,8 +88081,7 @@ async def get_session_processes(session_id: str) -> dict[str, Any]:
 
 @app.get("/api/sessions/{session_id}/processes/log")
 async def tail_session_process_log(session_id: str, path: str, lines: int = 200) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     async with ACTIVE_LOCK:
         active = ACTIVE.get(session_id)
         snapshot_input = active_snapshot_input(active) if active else None
@@ -88606,8 +88389,7 @@ async def bulk_import_sessions_guarded(
 
 @app.get("/api/sessions/{session_id}/timeline-index")
 async def get_timeline_index(session_id: str) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     return await scan_transcript(build_timeline_index, session_id)
 
 
@@ -88616,9 +88398,7 @@ async def get_session_subagents(
     session_id: str,
     limit: int = Query(default=64, ge=1, le=SUBAGENT_SNAPSHOT_STATE_LIMIT),
 ) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
-    session = STORE.sessions[session_id]
+    session = require_session(session_id)
     if str(session.get("backend") or "") == BACKEND_CODEX and session_provider_id(session):
         try:
             manager = await codex_app_server_manager(session)
@@ -88638,16 +88418,14 @@ async def search_session_timeline(
     q: str = Query(min_length=2, max_length=500),
     limit: int = Query(default=40, ge=1, le=100),
 ) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     ensure_session_not_initializing(session_id)
     return await asyncio.to_thread(search_timeline_index, session_id, q, limit)
 
 
 def require_timeline_pin_session(session_id: str) -> None:
     ensure_session_not_deleting(session_id)
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
 
 
 def timeline_pin_storage_http_error(exc: TimelinePinStorageError) -> HTTPException:
@@ -88806,9 +88584,7 @@ async def export_session(session_id: str, format: Literal["markdown", "html", "j
     """Download a chat: readable Markdown or HTML, or its client-safe event log."""
 
     ensure_session_not_initializing(session_id)
-    sess = STORE.sessions.get(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="session not found")
+    sess = require_session(session_id)
     title = str(sess.get("title") or "Conversation")
     extension = {"markdown": "md", "html": "html", "jsonl": "jsonl"}[format]
     stem = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]+', " ", title).split())
@@ -88921,9 +88697,7 @@ async def get_session(
     semantic_before: int | None = None,
 ) -> dict[str, Any]:
     ensure_session_not_initializing(session_id)
-    sess = STORE.sessions.get(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="session not found")
+    sess = require_session(session_id)
     # Opening a chat is the moment to notice that its provider transcript grew
     # somewhere else (the provider's own CLI, or another machine sharing it).
     # Scheduled rather than awaited so the open stays fast; the client's event
@@ -89003,9 +88777,7 @@ async def get_session(
 async def import_history(session_id: str, req: ImportHistoryRequest) -> dict[str, Any]:
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        sess = STORE.sessions.get(session_id)
-        if not sess:
-            raise HTTPException(status_code=404, detail="session not found")
+        sess = require_session(session_id)
         async with ACTIVE_LOCK:
             provider_starting = any(
                 task is not asyncio.current_task() and not task.done()
@@ -89051,9 +88823,7 @@ async def prune_imported_history(
 
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        sess = STORE.sessions.get(session_id)
-        if not sess:
-            raise HTTPException(status_code=404, detail="session not found")
+        sess = require_session(session_id)
         async with ACTIVE_LOCK:
             provider_starting = any(
                 task is not asyncio.current_task() and not task.done()
@@ -89298,9 +89068,7 @@ async def update_session(session_id: str, req: UpdateSessionRequest) -> dict[str
     patch = req.model_dump(exclude_unset=True)
     if SESSION_LIFECYCLE_UPDATE_FIELDS.intersection(patch):
         async with session_lifecycle_lock(session_id):
-            current = STORE.sessions.get(session_id)
-            if not current:
-                raise HTTPException(status_code=404, detail="session not found")
+            current = require_session(session_id)
             if req.archived is False and current.get("archived"):
                 try:
                     # An earlier archive may have failed to save jobs.json
@@ -89448,9 +89216,7 @@ async def update_session(session_id: str, req: UpdateSessionRequest) -> dict[str
 
 
 async def codex_runtime_snapshot(session_id: str) -> dict[str, Any]:
-    session = STORE.sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     is_codex = str(session.get("backend") or DEFAULT_BACKEND) == BACKEND_CODEX
     available = is_codex and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC
     thread_id = str(session_provider_id(session) or "")
@@ -89677,9 +89443,7 @@ async def reload_session_provider(session_id: str) -> dict[str, Any]:
 
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        session = STORE.sessions.get(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="session not found")
+        session = require_session(session_id)
         backend = str(
             session.get("backend") or DEFAULT_BACKEND
         ).strip().lower()
@@ -89906,9 +89670,7 @@ async def get_session_provider_commands(
 ) -> dict[str, Any]:
     """Return one sanitized, session-scoped native command inventory."""
 
-    session = STORE.sessions.get(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     snapshot, _inventory = await discover_session_provider_commands(
         session_id,
         dict(session),
@@ -89928,9 +89690,7 @@ async def load_codex_runtime(session_id: str) -> dict[str, Any]:
 
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        session = STORE.sessions.get(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="session not found")
+        session = require_session(session_id)
         if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CODEX:
             raise HTTPException(
                 status_code=409,
@@ -90154,9 +89914,7 @@ async def kill_codex_writers(session_id: str) -> dict[str, Any]:
     process writing the thread's rollout, a `codex resume` left open included.
     The next turn resumes the same thread; AgentsDock history is untouched.
     """
-    session = STORE.sessions.get(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     if str(session.get("backend") or DEFAULT_BACKEND).strip().lower() != BACKEND_CODEX:
         raise HTTPException(status_code=409, detail="Only Codex chats have a provider thread to release.")
     provider_id = str(session_provider_id(session) or "")
@@ -90214,9 +89972,7 @@ async def rotate_codex_thread(
     req = req or CodexRotateRequest()
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        session = STORE.sessions.get(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="session not found")
+        session = require_session(session_id)
         if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CODEX:
             raise HTTPException(
                 status_code=409,
@@ -90677,9 +90433,7 @@ async def manage_claude_mcp(
     mutating = request is not None
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        session = STORE.sessions.get(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="session not found")
+        session = require_session(session_id)
         if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CLAUDE:
             raise HTTPException(
                 status_code=409,
@@ -90888,9 +90642,7 @@ async def refresh_claude_goal(
 
 
 def require_claude_goal_session(session_id: str) -> dict[str, Any]:
-    session = STORE.sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CLAUDE:
         raise HTTPException(status_code=400, detail="Goals here require a Claude chat")
     if CLAUDE_TRANSPORT == CLAUDE_TRANSPORT_PRINT or not claude_sdk_dependency_available():
@@ -90920,9 +90672,7 @@ async def post_claude_compact(session_id: str) -> dict[str, Any]:
     ``compact_boundary`` into ``claude_compaction_started``/``_completed``
     rows, mirroring the Codex compaction lifecycle in the timeline.
     """
-    session = STORE.sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CLAUDE:
         raise HTTPException(status_code=400, detail="Context compaction here requires a Claude chat")
     if CLAUDE_TRANSPORT == CLAUDE_TRANSPORT_PRINT or not claude_sdk_dependency_available():
@@ -90988,9 +90738,7 @@ async def delete_claude_goal(session_id: str) -> dict[str, Any]:
 
 
 async def claude_runtime_snapshot(session_id: str) -> dict[str, Any]:
-    session = STORE.sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     is_claude = str(session.get("backend") or DEFAULT_BACKEND) == BACKEND_CLAUDE
     sdk_available = claude_sdk_dependency_available()
     configured = CLAUDE_TRANSPORT != CLAUDE_TRANSPORT_PRINT
@@ -91129,9 +90877,7 @@ async def get_codex_permission_profiles(session_id: str) -> dict[str, Any]:
 async def _get_codex_permission_profiles_locked(
     session_id: str,
 ) -> dict[str, Any]:
-    session = STORE.sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     if str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CODEX:
         raise HTTPException(
             status_code=409,
@@ -91186,9 +90932,7 @@ async def _get_codex_permission_profiles_locked(
 
 @app.get("/api/sessions/{session_id}/codex/goal")
 async def get_codex_goal(session_id: str) -> dict[str, Any]:
-    session = STORE.sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     return {
         "enabled": CODEX_GOALS_ENABLED,
         "goal": session.get("codex_goal"),
@@ -92153,9 +91897,7 @@ async def acknowledge_session_emergency(
 ) -> dict[str, Any]:
     async with session_lifecycle_lock(session_id):
         ensure_session_not_initializing(session_id)
-        sess = STORE.sessions.get(session_id)
-        if not sess:
-            raise HTTPException(status_code=404, detail="session not found")
+        sess = require_session(session_id)
         alert_id = req.expected_alert_id
         acknowledged_event = await asyncio.to_thread(
             find_emergency_acknowledgement_event,
@@ -93358,9 +93100,7 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
         })
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        sess = STORE.sessions.get(session_id)
-        if not sess:
-            raise HTTPException(status_code=404, detail="session not found")
+        sess = require_session(session_id)
         backend = str(sess.get("backend") or DEFAULT_BACKEND).lower()
         if backend not in {BACKEND_CLAUDE, BACKEND_CODEX}:
             raise HTTPException(status_code=409, detail={
@@ -93812,9 +93552,7 @@ async def reload_session_history(session_id: str) -> dict[str, Any]:
     """
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        sess = STORE.sessions.get(session_id)
-        if not sess:
-            raise HTTPException(status_code=404, detail="session not found")
+        sess = require_session(session_id)
         if str(sess.get("backend") or DEFAULT_BACKEND).lower() not in {BACKEND_CLAUDE, BACKEND_CODEX}:
             raise HTTPException(status_code=409, detail={
                 "code": "history_reload_unsupported_backend",
@@ -94079,9 +93817,7 @@ async def list_agent_handoff_routes(
 ) -> dict[str, Any]:
     async with session_lifecycle_lock(source_session_id):
         ensure_session_not_deleting(source_session_id)
-        source = STORE.sessions.get(source_session_id)
-        if source is None:
-            raise HTTPException(status_code=404, detail="session not found")
+        source = require_session(source_session_id)
         routes = [
             admin_provider_cross_chat_route(source_session_id, route)
             for route in provider_cross_chat_routes(source)
@@ -94110,9 +93846,7 @@ async def create_agent_handoff_route(
     async with session_lifecycle_lock(source_session_id):
         ensure_session_not_deleting(source_session_id)
         async with STORE._lock:
-            source = STORE.sessions.get(source_session_id)
-            if source is None:
-                raise HTTPException(status_code=404, detail="session not found")
+            source = require_session(source_session_id)
             if source.get(PENDING_PROVIDER_CROSS_CHAT_GRANT_KEY) is not None:
                 raise HTTPException(status_code=503, detail="a cross-chat route grant is still reconciling")
             routes = provider_cross_chat_routes(source)
@@ -94214,9 +93948,7 @@ async def update_agent_handoff_route(
     async with session_lifecycle_lock(source_session_id):
         ensure_session_not_deleting(source_session_id)
         async with STORE._lock:
-            source = STORE.sessions.get(source_session_id)
-            if source is None:
-                raise HTTPException(status_code=404, detail="session not found")
+            source = require_session(source_session_id)
             if source.get(PENDING_PROVIDER_CROSS_CHAT_GRANT_KEY) is not None:
                 raise HTTPException(status_code=503, detail="a cross-chat route grant is still reconciling")
             routes = provider_cross_chat_routes(source)
@@ -94313,9 +94045,7 @@ async def delete_agent_handoff_route(
     async with session_lifecycle_lock(source_session_id):
         ensure_session_not_deleting(source_session_id)
         async with STORE._lock:
-            source = STORE.sessions.get(source_session_id)
-            if source is None:
-                raise HTTPException(status_code=404, detail="session not found")
+            source = require_session(source_session_id)
             if source.get(PENDING_PROVIDER_CROSS_CHAT_GRANT_KEY) is not None:
                 raise HTTPException(status_code=503, detail="a cross-chat route grant is still reconciling")
             routes = provider_cross_chat_routes(source)
@@ -96066,6 +95796,40 @@ async def send_provider_team_message(
     return receipt
 
 
+async def finish_cross_chat_acceptance(
+    accept: Coroutine[Any, Any, dict[str, Any]],
+) -> dict[str, Any]:
+    """Shield the whole acceptance pipeline, including the worker-thread SQLite
+    commit, from caller cancellation; cancellation must not return while a late
+    commit creates a ready envelope with registration/submission still running.
+    Then settle any live waiter the accepted receipt carries."""
+
+    completion = asyncio.create_task(accept)
+    accepted: dict[str, Any] | None = None
+    try:
+        accepted = await asyncio.shield(completion)
+    except asyncio.CancelledError:
+        with suppress(BaseException):
+            accepted = await join_task_despite_caller_cancellation(completion)
+        if accepted is not None and accepted.get("_live_waiter") is not None:
+            with suppress(BaseException):
+                await join_task_despite_caller_cancellation(
+                    asyncio.create_task(
+                        preserve_cancelled_cross_chat_live_acceptance(accepted)
+                    )
+                )
+        raise
+    live_exchange = accepted.pop("_live_exchange", None)
+    live_waiter = accepted.pop("_live_waiter", None)
+    if live_exchange is not None and live_waiter is not None:
+        return await finalized_cross_chat_live_receipt(
+            accepted,
+            live_exchange,
+            live_waiter,
+        )
+    return accepted
+
+
 async def submit_provider_route_handoff(
     route_id: str,
     req: AgentRouteHandoffRequest,
@@ -96356,32 +96120,7 @@ async def submit_provider_route_handoff(
             ))
         return receipt
 
-    completion = asyncio.create_task(accept_and_finish())
-    accepted: dict[str, Any] | None = None
-    try:
-        accepted = await asyncio.shield(completion)
-    except asyncio.CancelledError:
-        # Acceptance may be inside a worker-thread SQLite commit. Do not let
-        # the HTTP mutation lease finish while this child still owns it.
-        with suppress(BaseException):
-            accepted = await join_task_despite_caller_cancellation(completion)
-        if accepted is not None and accepted.get("_live_waiter") is not None:
-            with suppress(BaseException):
-                await join_task_despite_caller_cancellation(
-                    asyncio.create_task(
-                        preserve_cancelled_cross_chat_live_acceptance(accepted)
-                    )
-                )
-        raise
-    live_exchange = accepted.pop("_live_exchange", None)
-    live_waiter = accepted.pop("_live_waiter", None)
-    if live_exchange is not None and live_waiter is not None:
-        return await finalized_cross_chat_live_receipt(
-            accepted,
-            live_exchange,
-            live_waiter,
-        )
-    return accepted
+    return await finish_cross_chat_acceptance(accept_and_finish())
 
 
 @app.post("/api/agent/cross-chat/routes/{route_id}/handoffs")
@@ -96531,33 +96270,7 @@ async def submit_authorized_cross_chat_handoff(
             "accepted": True,
         }
 
-    # Shield the entire acceptance pipeline, including the worker-thread
-    # SQLite create. Cancellation cannot return while a late commit creates a
-    # ready envelope without also leaving registration/submission running.
-    completion = asyncio.create_task(accept_and_finish_handoff())
-    accepted: dict[str, Any] | None = None
-    try:
-        accepted = await asyncio.shield(completion)
-    except asyncio.CancelledError:
-        with suppress(BaseException):
-            accepted = await join_task_despite_caller_cancellation(completion)
-        if accepted is not None and accepted.get("_live_waiter") is not None:
-            with suppress(BaseException):
-                await join_task_despite_caller_cancellation(
-                    asyncio.create_task(
-                        preserve_cancelled_cross_chat_live_acceptance(accepted)
-                    )
-                )
-        raise
-    live_exchange = accepted.pop("_live_exchange", None)
-    live_waiter = accepted.pop("_live_waiter", None)
-    if live_exchange is not None and live_waiter is not None:
-        return await finalized_cross_chat_live_receipt(
-            accepted,
-            live_exchange,
-            live_waiter,
-        )
-    return accepted
+    return await finish_cross_chat_acceptance(accept_and_finish_handoff())
 
 
 @app.post("/api/cross-chat/handoffs")
@@ -96957,30 +96670,7 @@ async def submit_authorized_cross_chat_exchange_response(
             ))
         return receipt
 
-    completion = asyncio.create_task(accept_and_finish_response())
-    accepted: dict[str, Any] | None = None
-    try:
-        accepted = await asyncio.shield(completion)
-    except asyncio.CancelledError:
-        with suppress(BaseException):
-            accepted = await join_task_despite_caller_cancellation(completion)
-        if accepted is not None and accepted.get("_live_waiter") is not None:
-            with suppress(BaseException):
-                await join_task_despite_caller_cancellation(
-                    asyncio.create_task(
-                        preserve_cancelled_cross_chat_live_acceptance(accepted)
-                    )
-                )
-        raise
-    live_exchange = accepted.pop("_live_exchange", None)
-    live_waiter = accepted.pop("_live_waiter", None)
-    if live_exchange is not None and live_waiter is not None:
-        return await finalized_cross_chat_live_receipt(
-            accepted,
-            live_exchange,
-            live_waiter,
-        )
-    return accepted
+    return await finish_cross_chat_acceptance(accept_and_finish_response())
 
 
 @app.post("/api/cross-chat/exchanges/{exchange_id}/responses")
@@ -98541,8 +98231,7 @@ async def list_jobs(session_id: str | None = None) -> dict[str, Any]:
 
 @app.get("/api/sessions/{session_id}/jobs")
 async def list_session_jobs(session_id: str) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     jobs = sorted(
         (public_job(job) for job in JOBS.jobs.values() if job.get("session_id") == session_id),
         key=lambda job: job.get("updated_at") or "",
@@ -98582,8 +98271,7 @@ async def get_session_job_runs(
     before_seq: int | None = Query(default=None, ge=1),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     try:
         return await asyncio.to_thread(
             read_scheduled_job_runs,
@@ -98641,8 +98329,7 @@ async def get_session_run_trace(
     after_seq: int = Query(default=0, ge=0),
     limit: int = Query(default=160, ge=1, le=1_000),
 ) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     try:
         return await asyncio.to_thread(
             read_indexed_run_trace,
@@ -99422,8 +99109,7 @@ async def emergency_alert_events(ws: WebSocket) -> None:
 
 @app.get("/api/sessions/{session_id}/diffs/{run_id}")
 async def get_turn_code_diff(session_id: str, run_id: str) -> FileResponse:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     if not re.fullmatch(r"[A-Za-z0-9._-]+", run_id or ""):
         raise HTTPException(status_code=404, detail="code diff not found")
     patch_path = code_diffs_dir(session_id) / f"{run_id}.patch"
@@ -99707,8 +99393,7 @@ async def publish_agent_artifacts(
     req: PublishArtifactsRequest,
 ) -> dict[str, Any]:
     await authorize_provider_action(request, action="publish", session_id=session_id)
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     ensure_session_not_deleting(session_id)
 
     try:
@@ -99821,9 +99506,7 @@ async def raise_agent_emergency_alert(
         raise HTTPException(status_code=422, detail="emergency message is empty")
     request_digest = emergency_request_digest(message)
     async with session_lifecycle_lock(session_id):
-        sess = STORE.sessions.get(session_id)
-        if not sess:
-            raise HTTPException(status_code=404, detail="session not found")
+        sess = require_session(session_id)
         ensure_session_not_deleting(session_id)
         if sess.get("archived"):
             raise HTTPException(
@@ -99976,9 +99659,7 @@ async def commit_staged_upload(
     """Atomically expose file+metadata and commit their owning event."""
 
     async with session_lifecycle_lock(session_id):
-        session = STORE.sessions.get(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="session not found")
+        session = require_session(session_id)
         ensure_session_not_deleting(session_id)
         if bool(session.get("archived")):
             raise HTTPException(status_code=409, detail="archived chats cannot accept uploads")
@@ -100021,9 +99702,7 @@ def upload_filename(file: UploadFile) -> str:
 
 @app.post("/api/sessions/{session_id}/files")
 async def upload_file(session_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
-    session = STORE.sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="session not found")
+    session = require_session(session_id)
     ensure_session_not_deleting(session_id)
     if bool(session.get("archived")):
         raise HTTPException(status_code=409, detail="archived chats cannot accept uploads")
@@ -100208,8 +99887,7 @@ async def list_session_files(
     offset: int = Query(default=0, ge=0),
     content_prefix: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     records = await asyncio.to_thread(list_session_file_records, session_id)
     if content_prefix:
         prefix = content_prefix.strip().lower()
@@ -100238,8 +99916,7 @@ async def list_session_files(
 
 @app.get("/api/sessions/{session_id}/files/{file_id}/event")
 async def get_session_file_event(session_id: str, file_id: str) -> dict[str, Any]:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     event = await asyncio.to_thread(
         resolve_session_file_event,
         session_id,
@@ -100251,8 +99928,7 @@ async def get_session_file_event(session_id: str, file_id: str) -> dict[str, Any
 @app.get("/api/sessions/{session_id}/links/file")
 @app.head("/api/sessions/{session_id}/links/file")
 async def get_session_linked_file(session_id: str, target: str) -> FileResponse:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     meta = await asyncio.to_thread(session_file_for_link, session_id, target)
     return FileResponse(
         meta["path"],
@@ -100265,8 +99941,7 @@ async def get_session_linked_file(session_id: str, target: str) -> FileResponse:
 @app.get("/api/sessions/{session_id}/files/{file_id}")
 @app.head("/api/sessions/{session_id}/files/{file_id}")
 async def get_session_file(session_id: str, file_id: str) -> FileResponse:
-    if session_id not in STORE.sessions:
-        raise HTTPException(status_code=404, detail="session not found")
+    require_session(session_id)
     meta = await asyncio.to_thread(
         require_session_file_meta,
         session_id,
@@ -100293,8 +99968,7 @@ async def get_file(
     break already-installed desktop and mobile clients.
     """
     if session_id is not None:
-        if session_id not in STORE.sessions:
-            raise HTTPException(status_code=404, detail="session not found")
+        require_session(session_id)
         meta = await asyncio.to_thread(
             require_session_file_meta,
             session_id,

@@ -35,7 +35,7 @@ class ServerUpdateEnsureTests(unittest.IsolatedAsyncioTestCase):
             "ServerUpdateTargetExpectation", "ServerUpdateRequest", "ServerUpdateEnsureRequest",
             "require_server_update_target", "require_exact_server_update_target",
             "server_update_error_detail", "public_server_update_status",
-            "_start_server_update", "ensure_server_update", "ensure_server_update_endpoint",
+            "_start_server_update", "finalize_abandoned_update_or_409", "ensure_server_update", "ensure_server_update_endpoint",
             "advance_pending_server_update_once", "reconcile_pending_server_update_after_startup",
             "server_update_health_projection",
         }

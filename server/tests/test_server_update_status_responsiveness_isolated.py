@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, Mock
 
 SOURCE = (Path(__file__).resolve().parents[1] / "agent_server.py")
 FUNCTIONS = {
-    "server_update_status", "check_server_update", "require_server_update_target",
+    "server_update_status", "check_server_update", "finalize_abandoned_update_or_409", "require_server_update_target",
     "server_update_error_detail", "public_server_update_status",
     "bounded_lock",
 }
