@@ -389,7 +389,16 @@ export class AgentServerClient {
       'team-network',
     )
   }
-  async sessions(): Promise<Session[]> { return (await this.get<{ sessions: Session[] }>('/api/sessions')).sessions }
+  async sessions(): Promise<Session[]> {
+    const { sessions } = await this.get<{ sessions: Session[] }>('/api/sessions?summary=true')
+    // The summary list omits the emergency pair when there is nothing to report,
+    // while the full session object sends an explicit null/0 tombstone. The store
+    // merges list rows over the retained session by spreading, so an omitted key
+    // would keep an alert another client already acknowledged.
+    return sessions.map(session => 'emergency_alert' in session
+      ? session
+      : { ...session, emergency_alert: null, unacknowledged_emergency_count: 0 })
+  }
   async jobs(): Promise<Job[]> { return (await this.get<{ jobs: Job[] }>('/api/jobs')).jobs }
 
   workspaceInfo(sessionId: string): Promise<WorkspaceInfo> {

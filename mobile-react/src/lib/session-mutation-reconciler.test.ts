@@ -174,3 +174,17 @@ const session = (patch: Partial<Session> = {}): Session => ({
   )
   assert.equal(current.title, 'New profile saved', 'the active generation must still reconcile normally')
 }
+
+{
+  // The chat list is fetched with ?summary=true, which omits per-chat detail
+  // fields (system_prompt, provider ids, codex_goal). Those arrive only from the
+  // selected chat's timeline page and must survive every later list refresh.
+  const reconciler = new SessionMutationReconciler()
+  const detailed = session({ title: 'Original', system_prompt: 'Be brief', claude_session_id: 'claude-abc', codex_goal: null })
+  const summaryRow = session({ title: 'Renamed elsewhere', updated_at: 'later' })
+  const merged = reconciler.reconcileIncoming(detailed, summaryRow, reconciler.captureRead())
+  assert.equal(merged.title, 'Renamed elsewhere', 'summary fields present in the row must win')
+  assert.equal(merged.system_prompt, 'Be brief', 'a detail field missing from the summary row must be retained')
+  assert.equal(merged.claude_session_id, 'claude-abc', 'provider ids missing from the summary row must be retained')
+  assert.equal(reconciler.reconcileIncoming(merged, session({ title: 'Renamed elsewhere', updated_at: 'later' }), reconciler.captureRead()), merged, 'an unchanged summary row must keep the session identity')
+}

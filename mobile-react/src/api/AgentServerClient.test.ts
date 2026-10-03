@@ -71,8 +71,11 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (url === 'https://validation.example/api/health') {
     return Promise.resolve(new Response(JSON.stringify({ ok: true, server_identity: 'validated-server', api_contract_version: 7 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }
-  if (url === 'https://validation.example/api/sessions') {
-    return Promise.resolve(new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  if (url === 'https://validation.example/api/sessions?summary=true') {
+    return Promise.resolve(new Response(JSON.stringify({ sessions: [
+      { id: 'quiet', title: 'Quiet', backend: 'codex' },
+      { id: 'alerting', title: 'Alerting', backend: 'codex', emergency_alert: { id: 'alert-1', status: 'active' }, unacknowledged_emergency_count: 1 },
+    ] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }
   if (url === 'https://revoke.example/api/health') {
     return Promise.resolve(new Response(JSON.stringify({ ok: true, server_identity: 'revoke-server', api_contract_version: 7 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
@@ -458,7 +461,7 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (url.startsWith('https://auth-reject.example/api/')) {
     return Promise.resolve(new Response(JSON.stringify({ detail: 'Access token rejected' }), { status: 401, headers: { 'Content-Type': 'application/json' } }))
   }
-  if (url === 'https://validation-detail.example/api/sessions') {
+  if (url === 'https://validation-detail.example/api/sessions?summary=true') {
     return Promise.resolve(new Response(JSON.stringify({
       detail: [{
         type: 'string_too_short',
@@ -1193,7 +1196,11 @@ try {
   assert(validationClient.isValidated, 'markValidated should unlock a validation-required client')
   assert(validationClient.fileURL('chat', 'file') === 'https://validation.example/api/sessions/chat/files/file', 'Validated clients should expose scoped file URLs')
   assert(validationClient.authHeaders()['X-ZenithDock-Token'] === 'validation-token', 'Validated clients should expose their auth header')
-  assert((await validationClient.sessions()).length === 0, 'Validated clients should allow non-health HTTP requests')
+  const summarySessions = await validationClient.sessions()
+  assert(fetchRecords.at(-1)?.url === 'https://validation.example/api/sessions?summary=true', 'The chat list must request the summary projection like the desktop client')
+  assert(summarySessions.length === 2, 'Validated clients should allow non-health HTTP requests')
+  assert(summarySessions[0]?.emergency_alert === null && summarySessions[0]?.unacknowledged_emergency_count === 0, 'A summary row without emergency keys must carry the explicit cleared tombstone')
+  assert(summarySessions[1]?.emergency_alert?.id === 'alert-1' && summarySessions[1]?.unacknowledged_emergency_count === 1, 'A summary row with an active alert must keep it')
   validationClient.configure('https://revoke.example', 'revoke-token')
   validationClient.markValidated()
   const pendingRevocationRequest = validationClient.sessions()
