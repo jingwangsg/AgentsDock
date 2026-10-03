@@ -5488,6 +5488,38 @@ describe('emergency alert store integration', () => {
     expect(useAppStore.getState().archivedCollapsed).toBe(false)
   })
 
+  it('keeps the collapsedFolders reference when a session event removes nothing from it', async () => {
+    const profile = profileFor('profile-collapsed-stable')
+    const handlers = new Map<string, (payload: any) => void>()
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        bootstrap: vi.fn().mockResolvedValue(profileBootstrap(profile, [profile], 4)),
+        native: {
+          log: vi.fn().mockResolvedValue(undefined),
+          setBadge: vi.fn().mockResolvedValue(undefined),
+          notify: vi.fn().mockResolvedValue(undefined)
+        },
+        events: { on: vi.fn((channel: string, handler: (payload: any) => void) => { handlers.set(channel, handler); return () => {} }) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      initialized: false, profiles: [], activeProfileId: null, profileGeneration: 0,
+      sessions: [], selectedSessionId: null, chatPanes: { primary: null, secondary: null },
+      focusedChatPane: 'primary', snapshots: {}
+    })
+    await useAppStore.getState().initialize()
+    const collapsedFolders = new Set(['Research'])
+    useAppStore.setState({ sessions: [sessionFor('quiet-chat')], collapsedFolders })
+
+    const payload = { profileId: profile.id, profileGeneration: 4, sessions: [{ ...sessionFor('quiet-chat'), title: 'Renamed' }] }
+    handlers.get('server:sessions')?.(payload)
+    handlers.get('server:sessions')?.(payload)
+
+    expect(useAppStore.getState().sessions[0]?.title).toBe('Renamed')
+    expect(useAppStore.getState().collapsedFolders).toBe(collapsedFolders)
+  })
+
   it('expands emergency sections while restoring the bootstrap cache', async () => {
     const operations = emergencySessionFor('bootstrap-operations', { folder: 'Operations' })
     const archived = emergencySessionFor('bootstrap-archived', { archived: true })

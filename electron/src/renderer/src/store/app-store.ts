@@ -810,10 +810,13 @@ export const useAppStore = create<AppState>((set, get) => ({
               .filter(session => activeEmergencyAlert(session) && !session.archived && !session.pinned)
               .map(session => session.folder || 'General')
           )
+          // Filtering only removes, so an unchanged size means unchanged members; keep the
+          // reference so the sidebar selector does not re-render on every session poll.
+          const collapsedFolders = [...state.collapsedFolders].filter(folder => !emergencyFolders.has(folder))
           return {
             sessions,
             snapshots,
-            collapsedFolders: new Set([...state.collapsedFolders].filter(folder => !emergencyFolders.has(folder))),
+            collapsedFolders: collapsedFolders.length === state.collapsedFolders.size ? state.collapsedFolders : new Set(collapsedFolders),
             archivedCollapsed: sessions.some(session => session.archived && activeEmergencyAlert(session)) ? false : state.archivedCollapsed,
             ...focusedPaneAliases(state, layout)
           }
