@@ -14,6 +14,7 @@ import type {
   Session
 } from '@shared/types'
 import { useAppStore } from '../store/app-store'
+import { booleanField, errorMessage, numberField } from '../lib/provider-runtime'
 
 export const CLAUDE_RUNTIME_REFRESH_TIMEOUT_MS = 10_000
 
@@ -434,13 +435,6 @@ function isClaudeControlEvent(type: string): boolean {
     || type === 'error'
 }
 
-function errorMessage(cause: unknown): string {
-  return (cause instanceof Error ? cause.message : String(cause))
-    .replace(/^Error invoking remote method '[^']+':\s*/i, '')
-    .replace(/^Error:\s*/i, '')
-    .trim()
-}
-
 async function boundedClaudeRefresh<T>(request: Promise<T>, timeoutMessage: string): Promise<T> {
   let timeoutId: number | null = null
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -451,17 +445,6 @@ async function boundedClaudeRefresh<T>(request: Promise<T>, timeoutMessage: stri
   } finally {
     if (timeoutId !== null) window.clearTimeout(timeoutId)
   }
-}
-
-function numberField(value: unknown, key: string): number {
-  if (!value || typeof value !== 'object') return 0
-  const candidate = (value as Record<string, unknown>)[key]
-  return typeof candidate === 'number' ? candidate : 0
-}
-
-function booleanField(value: unknown, key: string): boolean {
-  if (!value || typeof value !== 'object') return false
-  return (value as Record<string, unknown>)[key] === true
 }
 
 function claudeUsageGeneration(snapshot: ClaudeRuntimeSnapshot): number | null {

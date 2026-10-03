@@ -9,6 +9,7 @@ import {
   parseClaudeContextUsage
 } from '../lib/claude-context-usage'
 import { useClaudeRuntime } from './ClaudeRuntimeContext'
+import { ContextUsageMeter, ContextUsageRing } from './ContextUsageRing'
 import './CodexControls.css'
 
 export function ClaudeContextIndicator() {
@@ -62,18 +63,7 @@ export function ClaudeContextIndicator() {
             if (!refreshing && canRefresh) void refreshContextUsage()
           }}
         >
-          <svg viewBox="0 0 18 18" aria-hidden="true">
-            <circle className="codex-context-track" cx="9" cy="9" r="7" />
-            <circle
-              className="codex-context-value"
-              cx="9"
-              cy="9"
-              r="7"
-              pathLength="100"
-              strokeDasharray="100"
-              strokeDashoffset={100 - (percent ?? 0)}
-            />
-          </svg>
+          <ContextUsageRing percent={percent} />
         </button>
       </Tooltip.Trigger>
       <Tooltip.Portal>
@@ -85,15 +75,6 @@ export function ClaudeContextIndicator() {
         </Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
-    <span
-      id={meterId}
-      className="sr-only"
-      role="progressbar"
-      aria-label={t("ui.ClaudeContextIndicator.ClaudeContextIndicator.claude_context_usage_627df5b")}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={percent ?? undefined}
-      aria-valuetext={tooltip}
-    >{tooltip}</span>
+    <ContextUsageMeter id={meterId} label={t("ui.ClaudeContextIndicator.ClaudeContextIndicator.claude_context_usage_627df5b")} percent={percent} text={tooltip} />
   </Tooltip.Provider>
 }

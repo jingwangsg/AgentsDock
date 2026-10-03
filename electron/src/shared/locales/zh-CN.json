@@ -1235,8 +1235,6 @@
   "ui.ClaudeContextIndicator.ClaudeContextIndicator.context_used_5d5dd91": "上下文已使用 {percent}",
   "ui.ClaudeContextIndicator.ClaudeContextIndicator.refresh_claude_context_usage_ff7e7c5": "刷新 Claude 上下文用量",
   "ui.ClaudeContextIndicator.ClaudeContextIndicator.unavailable_ca18449": "不可用",
-  "ui.ClaudeInteractionShelf.ClaudeInteractionShelf.hide_requests_87789d0": "显示请求 / 隐藏请求",
-  "ui.ClaudeInteractionShelf.ClaudeInteractionShelf.show_requests_238b52a": "显示请求 / 隐藏请求",
   "ui.ClaudeMcpDialog.ClaudeMcpDialog.claude_is_using_print_mode_3ca909f": "Claude 正在使用打印模式",
   "ui.ClaudeMcpDialog.ClaudeMcpDialog.claude_mcp_servers_ffe29ca": "Claude MCP 服务端",
   "ui.ClaudeMcpDialog.ClaudeMcpDialog.claude_turn_in_progress_8c7f27d": "Claude 轮次正在进行",

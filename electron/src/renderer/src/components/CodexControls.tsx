@@ -46,6 +46,7 @@ import {
 } from './CodexRuntimeContext'
 import { useTransientClose } from '../lib/transient-close'
 import { CodexInteractionCard } from './CodexInteractionShelf'
+import { ContextUsageMeter, ContextUsageRing } from './ContextUsageRing'
 import { GoalConditionField, GoalDialogContent, GoalProgress, GoalSummaryBar } from './GoalDialog'
 import { ProviderStatusTrigger } from './ProviderStatusTrigger'
 import { ProviderUsagePanel } from './ProviderUsagePanel'
@@ -159,18 +160,7 @@ export function CodexContextIndicator() {
               aria-describedby={meterId}
               data-context-percent={percent ?? undefined}
             >
-              <svg viewBox="0 0 18 18" aria-hidden="true">
-                <circle className="codex-context-track" cx="9" cy="9" r="7" />
-                <circle
-                  className="codex-context-value"
-                  cx="9"
-                  cy="9"
-                  r="7"
-                  pathLength="100"
-                  strokeDasharray="100"
-                  strokeDashoffset={100 - (percent ?? 0)}
-                />
-              </svg>
+              <ContextUsageRing percent={percent} />
             </button>
           </Dialog.Trigger>
         </Tooltip.Trigger>
@@ -187,16 +177,7 @@ export function CodexContextIndicator() {
         </Tooltip.Portal>
       </Tooltip.Root>
     </Tooltip.Provider>
-    <span
-      id={meterId}
-      className="sr-only"
-      role="progressbar"
-      aria-label={t("ui.CodexControls.CodexContextIndicator.codex_context_usage_4e369de")}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={percent ?? undefined}
-      aria-valuetext={tooltip}
-    >{tooltip}</span>
+    <ContextUsageMeter id={meterId} label={t("ui.CodexControls.CodexContextIndicator.codex_context_usage_4e369de")} percent={percent} text={tooltip} />
     <CodexControlsDialog focusGoal={focusGoal} onOpenGoal={() => setFocusGoal(true)} />
   </Dialog.Root>
 }

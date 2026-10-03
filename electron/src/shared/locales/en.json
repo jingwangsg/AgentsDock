@@ -1235,8 +1235,6 @@
   "ui.ClaudeContextIndicator.ClaudeContextIndicator.context_used_5d5dd91": "{percent} context used",
   "ui.ClaudeContextIndicator.ClaudeContextIndicator.refresh_claude_context_usage_ff7e7c5": "Refresh Claude context usage",
   "ui.ClaudeContextIndicator.ClaudeContextIndicator.unavailable_ca18449": "Unavailable",
-  "ui.ClaudeInteractionShelf.ClaudeInteractionShelf.hide_requests_87789d0": "Hide requests",
-  "ui.ClaudeInteractionShelf.ClaudeInteractionShelf.show_requests_238b52a": "Show requests",
   "ui.ClaudeMcpDialog.ClaudeMcpDialog.claude_is_using_print_mode_3ca909f": "Claude is using print mode",
   "ui.ClaudeMcpDialog.ClaudeMcpDialog.claude_mcp_servers_ffe29ca": "Claude MCP servers",
   "ui.ClaudeMcpDialog.ClaudeMcpDialog.claude_turn_in_progress_8c7f27d": "Claude turn in progress",
