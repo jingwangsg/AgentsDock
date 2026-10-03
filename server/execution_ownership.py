@@ -72,12 +72,3 @@ def acquire_state_ownership(state_directory: Path) -> StateOwnership:
         except BaseException:
             os.close(descriptor)
             raise
-
-
-def _release_state_ownership_for_tests(owner: StateOwnership) -> None:
-    """Isolated unit-test cleanup only; production must retain its descriptor."""
-    with _LOCK:
-        if owner.pid != os.getpid() or _OWNERS.get(owner.path) is not owner:
-            raise RuntimeError("Test cannot release another process's state ownership")
-        del _OWNERS[owner.path]
-        os.close(owner.descriptor)

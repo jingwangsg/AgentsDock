@@ -14,10 +14,19 @@ import unittest
 import urllib.error
 import urllib.request
 
-from execution_ownership import acquire_state_ownership, _release_state_ownership_for_tests
+import execution_ownership as ownership
+from execution_ownership import acquire_state_ownership
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def release(owner):
+    # Production holds the descriptor for the process lifetime; the test drops the
+    # registry entry and closes it so the flock is free for the next acquisition.
+    with ownership._LOCK:
+        del ownership._OWNERS[owner.path]
+    os.close(owner.descriptor)
 
 
 class StateOwnershipTests(unittest.TestCase):
@@ -26,7 +35,7 @@ class StateOwnershipTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.owners = []
-        self.addCleanup(lambda: [_release_state_ownership_for_tests(owner) for owner in reversed(self.owners)])
+        self.addCleanup(lambda: [release(owner) for owner in reversed(self.owners)])
 
     def acquire(self):
         owner = acquire_state_ownership(self.root)
@@ -48,7 +57,7 @@ class StateOwnershipTests(unittest.TestCase):
         self.assertNotEqual(denied.returncode, 0)
         self.assertIn("already owns this state directory", denied.stderr)
         inode = owner.path.stat().st_ino
-        _release_state_ownership_for_tests(self.owners.pop())
+        release(self.owners.pop())
         accepted = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=10)
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
         self.assertEqual(owner.path.stat().st_ino, inode)
