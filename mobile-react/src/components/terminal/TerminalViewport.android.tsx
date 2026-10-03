@@ -4,7 +4,7 @@ import * as Clipboard from 'expo-clipboard'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { FIT_JS, XTERM_CSS, XTERM_JS } from '../../terminal/xtermAssets'
 import { PROMPT_GLYPH_FONT_FAMILY, PROMPT_GLYPH_FONT_TTF_BASE64 } from '../../terminal/promptGlyphFont'
-import type { TerminalConnectionStatus, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
+import type { TerminalConnectionStatus, TerminalModifierState, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
 
 export type { TerminalConnectionStatus, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
 
@@ -22,6 +22,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   selectionHex,
   fontSize = 13,
   onStatus,
+  onModifiers,
   ...viewProps
 }, ref) {
   const webView = useRef<WebView>(null)
@@ -47,6 +48,8 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
       if (!text) return false
       return inject(`window.__agentsDockTerminal?.paste(${safeInlineJSON(text)})`)
     },
+    sendKey: async name => inject(`window.__agentsDockTerminal?.key(${safeInlineJSON(name)})`),
+    setModifier: async (name, active) => inject(`window.__agentsDockTerminal?.modifier(${safeInlineJSON(name)}, ${active ? 'true' : 'false'})`),
     copy: () => new Promise(resolve => {
       if (pendingCopy.current) {
         clearTimeout(pendingCopy.current.timer)
@@ -78,7 +81,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
     onStatus?.({ nativeEvent: status } as NativeSyntheticEvent<TerminalConnectionStatus>)
   }
   const handleMessage = (event: WebViewMessageEvent) => {
-    let value: { type?: string; status?: TerminalConnectionStatus['status']; name?: string; message?: string; text?: string; requestId?: number }
+    let value: { type?: string; status?: TerminalConnectionStatus['status']; name?: string; message?: string; text?: string; requestId?: number; ctrl?: boolean; alt?: boolean }
     try {
       value = JSON.parse(event.nativeEvent.data) as typeof value
     } catch {
@@ -86,6 +89,10 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
     }
     if (value.type === 'status' && value.status) {
       emitStatus({ status: value.status, name: value.name, message: value.message })
+      return
+    }
+    if (value.type === 'modifiers') {
+      onModifiers?.({ ctrl: value.ctrl === true, alt: value.alt === true } satisfies TerminalModifierState)
       return
     }
     const pending = pendingCopy.current
@@ -186,6 +193,43 @@ export function androidTerminalHTML(config: AndroidTerminalConfig): string {
     const sendSize = () => {
       if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', columns: term.cols, rows: term.rows }));
     };
+    // The server reads typed input only from binary frames; a text frame is a JSON
+    // control message and anything else is dropped (so was every keystroke, and
+    // xterm's own answer to the shell's Primary Device Attributes query).
+    const encoder = new TextEncoder();
+    const sendInput = text => { if (text && socket?.readyState === WebSocket.OPEN) socket.send(encoder.encode(text)); };
+    const modifiers = { ctrl: false, alt: false };
+    const reportModifiers = () => post({ type: 'modifiers', ctrl: modifiers.ctrl, alt: modifiers.alt });
+    const releaseModifiers = () => { modifiers.ctrl = false; modifiers.alt = false; reportModifiers(); };
+    // A sticky Ctrl/Alt from the key row applies to the next single character, then releases.
+    const withModifiers = text => {
+      if (text.length !== 1 || (!modifiers.ctrl && !modifiers.alt)) return text;
+      const ctrl = modifiers.ctrl, alt = modifiers.alt;
+      releaseModifiers();
+      let out = text;
+      if (ctrl) {
+        const code = text.toUpperCase().charCodeAt(0);
+        if (code >= 0x40 && code <= 0x5f) out = String.fromCharCode(code & 0x1f);
+        else if (text === ' ') out = '\x00';
+      }
+      return alt ? '\x1b' + out : out;
+    };
+    const cursorKey = letter => {
+      if (modifiers.ctrl || modifiers.alt) {
+        const parameter = modifiers.ctrl && modifiers.alt ? '7' : modifiers.ctrl ? '5' : '3';
+        releaseModifiers();
+        return '\x1b[1;' + parameter + letter;
+      }
+      return (term.modes.applicationCursorKeysMode ? '\x1bO' : '\x1b[') + letter;
+    };
+    const KEY_TEXT = { escape: '\x1b', tab: '\t', home: '\x1b[H', end: '\x1b[F', pageup: '\x1b[5~', pagedown: '\x1b[6~', dash: '-', slash: '/', pipe: '|', tilde: '~' };
+    const ARROWS = { up: 'A', down: 'B', right: 'C', left: 'D' };
+    const key = name => {
+      focus();
+      if (ARROWS[name]) return sendInput(cursorKey(ARROWS[name]));
+      const text = KEY_TEXT[name];
+      if (text != null) sendInput(withModifiers(text));
+    };
     const connect = () => {
       if (disposed) return;
       post({ type: 'status', status: opened ? 'Reconnecting' : 'Connecting' });
@@ -213,13 +257,15 @@ export function androidTerminalHTML(config: AndroidTerminalConfig): string {
         reconnectTimer = setTimeout(connect, 800);
       };
     };
-    term.onData(data => { if (socket?.readyState === WebSocket.OPEN) socket.send(data); });
+    term.onData(data => sendInput(withModifiers(data)));
     term.onResize(sendSize);
     window.__agentsDockTerminal = {
       focus,
       blur: () => term.blur(),
       paste: text => { focus(); term.paste(String(text ?? '')); },
-      copy: requestId => post({ type: 'copy', requestId, text: term.getSelection() || visibleText() })
+      copy: requestId => post({ type: 'copy', requestId, text: term.getSelection() || visibleText() }),
+      key,
+      modifier: (name, active) => { if (name in modifiers) { modifiers[name] = !!active; reportModifiers(); } }
     };
     host.addEventListener('pointerdown', focus);
     host.addEventListener('touchstart', () => requestAnimationFrame(focus), { passive: true });

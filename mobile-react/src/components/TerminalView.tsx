@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { ChevronLeft, ChevronRight, ClipboardCopy, ClipboardPaste, Columns2, Keyboard as KeyboardIcon, Plus, Rows2, Trash2, X } from 'lucide-react-native'
 import { AgentServerClientDisposedError, type AgentServerClient } from '../api/AgentServerClient'
 import { scaleAppFont } from '../lib/typography'
@@ -8,7 +8,16 @@ import { usePalette } from '../theme'
 import type { TerminalWindow } from '../types'
 import { Text } from './AppText'
 import { TerminalViewport, type TerminalViewportHandle } from './terminal/TerminalViewport'
+import type { TerminalKeyName, TerminalModifierState } from './terminal/TerminalViewport.types'
 import { IconButton } from './ui'
+
+/** Keys a soft keyboard lacks; Ctrl and Alt stay pressed for the next key. Android only: the web view terminal sends them. */
+const TERMINAL_KEYS: { name: TerminalKeyName | 'ctrl' | 'alt'; label: string }[] = [
+  { name: 'escape', label: 'Esc' }, { name: 'tab', label: 'Tab' }, { name: 'ctrl', label: 'Ctrl' }, { name: 'alt', label: 'Alt' },
+  { name: 'left', label: '←' }, { name: 'down', label: '↓' }, { name: 'up', label: '↑' }, { name: 'right', label: '→' },
+  { name: 'home', label: 'Home' }, { name: 'end', label: 'End' }, { name: 'pageup', label: 'PgUp' }, { name: 'pagedown', label: 'PgDn' },
+  { name: 'dash', label: '-' }, { name: 'slash', label: '/' }, { name: 'pipe', label: '|' }, { name: 'tilde', label: '~' },
+]
 
 /** What a terminal shows: a chat's tmux session or a terminal tab's shell on the server. */
 type TerminalTarget = { id: string; cwd?: string | null }
@@ -67,6 +76,7 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
   const [windows, setWindows] = useState<TerminalWindow[]>([])
   const [status, setStatus] = useState('Connecting')
   const [notice, setNotice] = useState('')
+  const [modifiers, setModifiers] = useState<TerminalModifierState>({ ctrl: false, alt: false })
   const refresh = useCallback(async () => {
     try {
       const next = await connection.terminalWindows(terminal.id)
@@ -120,6 +130,17 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
     const pasted = await viewport.current?.paste()
     if (capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) flash(pasted ? 'Pasted' : 'Clipboard empty')
   }
+  const pressKey = (name: TerminalKeyName | 'ctrl' | 'alt') => {
+    const handle = viewport.current
+    if (!handle?.sendKey || !handle.setModifier) return
+    if (name === 'ctrl' || name === 'alt') {
+      const next = !modifiers[name]
+      setModifiers(current => ({ ...current, [name]: next }))
+      void handle.setModifier(name, next)
+      return
+    }
+    void handle.sendKey(name)
+  }
   const close = () => {
     const nativeTerminal = viewport.current
     if (nativeTerminal) void nativeTerminal.blur().catch(() => undefined)
@@ -166,8 +187,27 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
           if (value.message) setNotice(value.message)
           if (value.status === 'Connected' && tmux) void refresh()
         }}
+        onModifiers={setModifiers}
       />
     </View>
+    {Platform.OS === 'android' ? <View collapsable={false} testID="terminal-key-row" style={[styles.keyRow, { backgroundColor: colors.background, borderColor: colors.border }]}>
+      <ScrollView horizontal keyboardShouldPersistTaps="always" showsHorizontalScrollIndicator={false} contentContainerStyle={styles.keyRowContent}>
+        {TERMINAL_KEYS.map(key => {
+          const active = key.name === 'ctrl' ? modifiers.ctrl : key.name === 'alt' ? modifiers.alt : false
+          return <Pressable
+            key={key.name}
+            accessibilityRole="button"
+            accessibilityLabel={`${key.label} key`}
+            accessibilityState={{ selected: active }}
+            testID={`terminal-key-${key.name}`}
+            onPress={() => pressKey(key.name)}
+            style={[styles.key, { borderColor: colors.border, backgroundColor: active ? colors.blue : colors.surface }]}
+          >
+            <Text style={[styles.keyLabel, { color: active ? colors.background : colors.text }]}>{key.label}</Text>
+          </Pressable>
+        })}
+      </ScrollView>
+    </View> : null}
   </View>
 }
 
@@ -193,6 +233,10 @@ const styles = StyleSheet.create({
   tab: { maxWidth: 120, minHeight: 44, borderRadius: 5, paddingHorizontal: 10, paddingVertical: 3, justifyContent: 'center' },
   terminalViewport: { position: 'relative', zIndex: 0, flex: 1, minHeight: 0, overflow: 'hidden' },
   terminal: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
+  keyRow: { flexShrink: 0, borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: 4 },
+  keyRowContent: { alignItems: 'center', gap: 6, paddingHorizontal: 8 },
+  key: { minWidth: 40, minHeight: 36, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
+  keyLabel: { fontSize: 13, fontWeight: '600' },
   unavailable: { flex: 1, minHeight: 0, alignItems: 'center', justifyContent: 'center', padding: 24 },
   unavailableTitle: { fontSize: 11, fontWeight: '700' },
   unavailableText: { maxWidth: 320, textAlign: 'center', fontSize: 12, lineHeight: 18 },

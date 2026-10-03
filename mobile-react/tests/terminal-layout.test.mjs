@@ -44,3 +44,14 @@ test('terminal uses a full-screen modal without a sheet dismissal recognizer', (
   assert.match(terminalModal, /paddingTop:\s*fullscreenModalTopPadding\(insets, Platform\.OS\)/)
   assert.match(terminalModal, /edges=\{\['right', 'bottom', 'left'\]\}/)
 })
+
+test('android terminal sends typed input as binary frames and has a key row', () => {
+  // The server reads input only from binary frames; a text frame is a JSON control
+  // message and everything else is dropped, which silently ate every keystroke.
+  assert.match(androidTerminal, /socket\.send\(encoder\.encode\(text\)\)/)
+  assert.doesNotMatch(androidTerminal, /socket\.send\(data\)/)
+  assert.match(androidTerminal, /term\.onData\(data => sendInput\(withModifiers\(data\)\)\)/)
+  assert.match(source, /testID="terminal-key-row"/)
+  for (const label of ['Esc', 'Tab', 'Ctrl', 'Alt', 'Home', 'End']) assert.match(source, new RegExp(`label: '${label}'`))
+  assert.match(source, /testID="terminal-platform-viewport"[\s\S]*testID="terminal-key-row"/)
+})
