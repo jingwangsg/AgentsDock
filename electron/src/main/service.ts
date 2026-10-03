@@ -247,6 +247,8 @@ const BACKGROUND_REFRESH_INTERVAL_MS = 30_000
 const FOREGROUND_INTERACTION_QUIET_MS = 3_000
 const INACTIVE_PROFILE_HEALTH_INTERVAL_MS = 30_000
 const INACTIVE_PROFILE_HEALTH_TIMEOUT_MS = 5_000
+// A hub remote answers through the hub's ssh relay; one request measured 3-8 s over a Sky-proxied link.
+const INACTIVE_HUB_REMOTE_HEALTH_TIMEOUT_MS = 20_000
 const INACTIVE_PROFILE_HEALTH_MAX_CONCURRENCY = 2
 const INACTIVE_PROFILE_HEALTH_FRESH_MS = 75_000
 const MAX_REMEMBERED_EMERGENCY_ALERT_IDS = 4_096
@@ -7148,12 +7150,15 @@ export class AppService {
   }
 
   private async profileHealthWithTimeout(profileId: string, client: AgentServerClient): Promise<Health> {
+    const timeoutMs = this.isHubRemoteProfile(this.settings.serverUrl(profileId))
+      ? INACTIVE_HUB_REMOTE_HEALTH_TIMEOUT_MS
+      : INACTIVE_PROFILE_HEALTH_TIMEOUT_MS
     let timer: NodeJS.Timeout | null = null
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         this.disposeProfileHealthProbeClient(profileId, client)
-        reject(new Error(`Server health check timed out after ${INACTIVE_PROFILE_HEALTH_TIMEOUT_MS / 1000} seconds.`))
-      }, INACTIVE_PROFILE_HEALTH_TIMEOUT_MS)
+        reject(new Error(`Server health check timed out after ${timeoutMs / 1000} seconds.`))
+      }, timeoutMs)
     })
     try {
       return await Promise.race([client.health(), timeout])

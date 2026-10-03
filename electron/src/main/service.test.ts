@@ -8142,6 +8142,35 @@ describe('credential-free profile metadata and asynchronous authentication', () 
     expect(service.listServers().find(profile => profile.id === 'b')).toMatchObject({ connectionState: 'cached', lastConnectionError: null })
   })
 
+  it('gives an inactive hub remote a longer health budget than a direct server', async () => {
+    vi.useFakeTimers()
+    try {
+      const { service, settings, clientFactory } = prepare(3)
+      settings.updateProfile('a', { serverUrl: DEFAULT_SERVER_URL, accessToken: 'hub' })
+      settings.updateProfile('b', { serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1`, accessToken: 'hub' })
+      settings.setProfileServerIdentity('b', 'server-b')
+      settings.setProfileServerIdentity('c', 'server-c')
+      // Both answer in 8 s: measured for one request over a Sky-proxied hub remote.
+      clientFactory.mockImplementation(url => fakeClient({
+        health: () => new Promise<Health>(resolve => setTimeout(() => resolve({
+          ok: true, server_identity: url.endsWith('/api/remote/r1') ? 'server-b' : 'server-c'
+        }), 8_000))
+      }) as unknown as AgentServerClient)
+
+      const probing = (service as unknown as { refreshInactiveProfileHealth(): Promise<void> }).refreshInactiveProfileHealth()
+      await vi.advanceTimersByTimeAsync(8_000)
+      await probing
+
+      const profiles = (await service.bootstrap()).profiles
+      expect(profiles.find(profile => profile.id === 'b')).toMatchObject({ connectionState: 'online', lastConnectionError: null })
+      expect(profiles.find(profile => profile.id === 'c')).toMatchObject({
+        connectionState: 'offline', lastConnectionError: 'Server health check timed out after 5 seconds.'
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('switches to the hub with a new token while a hub remote is active, and the remote gets the token', async () => {
     const { service, settings } = prepare(3)
     settings.updateProfile('a', { serverUrl: DEFAULT_SERVER_URL, accessToken: 'hub-old' })
