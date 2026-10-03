@@ -93,7 +93,7 @@ class RecentScheduledRepairTests(unittest.TestCase):
         self.assertTrue(self.cache.is_hidden("chat-one", self.imported[0]))
         self.assertTrue(self.cache.project_event("chat-one", self.rows[26])["metadata_only"])
         self.assertTrue(self.cache.project_event("chat-one", self.terminal)["metadata_only"])
-        with patch.object(repair, "_regular_stamp", side_effect=AssertionError("Unexpected reread")):
+        with patch.object(repair, "regular_stamp", side_effect=AssertionError("Unexpected reread")):
             self.assertFalse(self.prepare())
             self.assertTrue(self.cache.is_hidden("chat-one", self.imported[0]))
 
@@ -230,7 +230,7 @@ class RecentScheduledRepairTests(unittest.TestCase):
         self.assertEqual(self.cache.signature("chat-one"), signature)
         with patch.object(repair, "_bounded_records", side_effect=AssertionError("Repeated page scan")):
             self.assertIs(self.prepare_window(end), window)
-        with patch.object(repair, "_regular_stamp", side_effect=AssertionError("Per-event I/O")):
+        with patch.object(repair, "regular_stamp", side_effect=AssertionError("Per-event I/O")):
             self.assertTrue(window.is_hidden(self.imported[0]))
             self.assertIsNone(window.project_event(self.terminal))
 

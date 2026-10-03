@@ -165,7 +165,7 @@ class MailboxWakeRepairTests(unittest.TestCase):
                     self.assertIsNone(self.cache.project_event("chat-one", event))
                 self.assertEqual(self.input["prompt"], self.prompt)
                 self.assertEqual(self.native["text"], "Full public report ending.")
-                with patch.object(repair, "_regular_stamp", side_effect=AssertionError("Unexpected repeat I/O")):
+                with patch.object(repair, "regular_stamp", side_effect=AssertionError("Unexpected repeat I/O")):
                     self.assertTrue(self.cache.is_hidden("chat-one", self.input))
                     self.assertFalse(self.cache.prepare("chat-one", "provider-one", self.events, self.root, lambda row: None))
 
