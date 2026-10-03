@@ -51011,74 +51011,46 @@ def unsynced_history_items(
     return items[last_matched + 1:]
 
 
-async def sync_provider_history(
+async def recover_committed_history_checkpoint(
     sess: dict[str, Any],
-    *,
-    limit: int | None = None,
-) -> dict[str, Any]:
-    """Append provider messages added outside this chat since the last sync.
+    previous_cursor: dict[str, Any] | None,
+    source_path: Any,
+) -> dict[str, Any] | None:
+    """Re-persist a cursor whose import batch committed but whose registry save did not."""
 
-    AgentsDock drives the real provider CLI, so anything sent from here is
-    already in the provider transcript - but the reverse was not true. A
-    conversation continued in the provider's own CLI (or on another machine
-    sharing that transcript) grew silently: the next AgentsDock turn resumed
-    the thread and the model answered with full context the timeline never
-    showed, which reads as the assistant knowing things the user never said.
-    """
-
-    session_id = str(sess["id"])
-    if not session_provider_id(sess):
-        return {
-            "imported": 0,
-            "source_path": None,
-            "message": "No provider session ID set.",
-        }
-    live_session = STORE.sessions.get(session_id) or {}
-    previous_cursor = normalized_history_sync_cursor(live_session)
-    # A durable cursor makes the unchanged fast path survive process restart;
-    # all five stat/identity fields must still describe the fully-consumed
-    # source before parsing can be skipped.
-    stamp = await asyncio.to_thread(provider_history_source_stamp, sess)
-    if history_cursor_matches_source_stamp(previous_cursor, stamp):
-        return {
-            "imported": 0,
-            "source_path": stamp[0],
-            "message": "Provider transcript unchanged since the last sync.",
-        }
-    source_path, items, next_cursor, continued = await asyncio.to_thread(
-        load_provider_history_with_cursor,
+    recovered = await asyncio.to_thread(
+        committed_history_sync_checkpoint,
         sess,
-        limit,
         previous_cursor,
     )
-    if not source_path:
-        return {
-            "imported": 0,
-            "source_path": None,
-            "message": "No provider transcript found.",
-        }
-    if next_cursor is not None and previous_cursor is not None:
-        recovered = await asyncio.to_thread(
-            committed_history_sync_checkpoint,
-            sess,
-            previous_cursor,
-        )
-        if recovered is not None:
-            recovered_cursor, _terminal_seq = recovered
-            await persist_history_sync_cursor(
-                sess,
-                recovered_cursor,
-                timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
-            )
-            return {
-                "imported": 0,
-                "source_path": str(source_path),
-                "message": "Recovered a committed provider history checkpoint.",
-            }
-    timeline_latest_seq = await asyncio.to_thread(
-        last_event_seq_from_file,
-        events_path(session_id),
+    if recovered is None:
+        return None
+    recovered_cursor, _terminal_seq = recovered
+    await persist_history_sync_cursor(
+        sess,
+        recovered_cursor,
+        timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
     )
+    return {
+        "imported": 0,
+        "source_path": str(source_path),
+        "message": "Recovered a committed provider history checkpoint.",
+    }
+
+
+async def commit_history_sync(
+    sess: dict[str, Any],
+    session_id: Any,
+    source_path: Any,
+    items: list[dict[str, Any]],
+    *,
+    previous_cursor: dict[str, Any] | None,
+    next_cursor: dict[str, Any] | None,
+    continued: bool,
+    timeline_latest_seq: int,
+) -> dict[str, Any]:
+    """Reconcile parsed items with the timeline, append the unseen tail, then move the cursor."""
+
     if continued and previous_cursor is not None:
         timeline_scan_through_seq = timeline_latest_seq
         fresh, consumed_timeline_seq = await asyncio.to_thread(
@@ -51100,23 +51072,13 @@ async def sync_provider_history(
         )
         consumed_timeline_seq = timeline_latest_seq
     if fresh and next_cursor is not None and previous_cursor is None:
-        recovered = await asyncio.to_thread(
-            committed_history_sync_checkpoint,
+        recovered = await recover_committed_history_checkpoint(
             sess,
             previous_cursor,
+            source_path,
         )
         if recovered is not None:
-            recovered_cursor, _terminal_seq = recovered
-            await persist_history_sync_cursor(
-                sess,
-                recovered_cursor,
-                timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
-            )
-            return {
-                "imported": 0,
-                "source_path": str(source_path),
-                "message": "Recovered a committed provider history checkpoint.",
-            }
+            return recovered
     caught_up = True
     checkpoint: dict[str, Any] | None = None
     timeline_seq = timeline_latest_seq
@@ -51181,6 +51143,76 @@ async def sync_provider_history(
             timeline_seq=timeline_seq,
         )
     return result
+
+
+async def sync_provider_history(
+    sess: dict[str, Any],
+    *,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Append provider messages added outside this chat since the last sync.
+
+    AgentsDock drives the real provider CLI, so anything sent from here is
+    already in the provider transcript - but the reverse was not true. A
+    conversation continued in the provider's own CLI (or on another machine
+    sharing that transcript) grew silently: the next AgentsDock turn resumed
+    the thread and the model answered with full context the timeline never
+    showed, which reads as the assistant knowing things the user never said.
+    """
+
+    session_id = str(sess["id"])
+    if not session_provider_id(sess):
+        return {
+            "imported": 0,
+            "source_path": None,
+            "message": "No provider session ID set.",
+        }
+    live_session = STORE.sessions.get(session_id) or {}
+    previous_cursor = normalized_history_sync_cursor(live_session)
+    # A durable cursor makes the unchanged fast path survive process restart;
+    # all five stat/identity fields must still describe the fully-consumed
+    # source before parsing can be skipped.
+    stamp = await asyncio.to_thread(provider_history_source_stamp, sess)
+    if history_cursor_matches_source_stamp(previous_cursor, stamp):
+        return {
+            "imported": 0,
+            "source_path": stamp[0],
+            "message": "Provider transcript unchanged since the last sync.",
+        }
+    source_path, items, next_cursor, continued = await asyncio.to_thread(
+        load_provider_history_with_cursor,
+        sess,
+        limit,
+        previous_cursor,
+    )
+    if not source_path:
+        return {
+            "imported": 0,
+            "source_path": None,
+            "message": "No provider transcript found.",
+        }
+    if next_cursor is not None and previous_cursor is not None:
+        recovered = await recover_committed_history_checkpoint(
+            sess,
+            previous_cursor,
+            source_path,
+        )
+        if recovered is not None:
+            return recovered
+    timeline_latest_seq = await asyncio.to_thread(
+        last_event_seq_from_file,
+        events_path(session_id),
+    )
+    return await commit_history_sync(
+        sess,
+        session_id,
+        source_path,
+        items,
+        previous_cursor=previous_cursor,
+        next_cursor=next_cursor,
+        continued=continued,
+        timeline_latest_seq=timeline_latest_seq,
+    )
 
 
 def provider_history_source_stamp(sess: dict[str, Any]) -> list[Any] | None:
@@ -51703,23 +51735,13 @@ async def import_session_history(sess: dict[str, Any], *, force: bool = False, l
         return {"imported": 0, "source_path": None, "message": message}
 
     if next_cursor is not None and previous_cursor is not None:
-        recovered = await asyncio.to_thread(
-            committed_history_sync_checkpoint,
+        recovered = await recover_committed_history_checkpoint(
             sess,
             previous_cursor,
+            source_path,
         )
         if recovered is not None:
-            recovered_cursor, _terminal_seq = recovered
-            await persist_history_sync_cursor(
-                sess,
-                recovered_cursor,
-                timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
-            )
-            return {
-                "imported": 0,
-                "source_path": str(source_path),
-                "message": "Recovered a committed provider history checkpoint.",
-            }
+            return recovered
 
     timeline_latest_seq = await asyncio.to_thread(
         last_event_seq_from_file,
@@ -51749,99 +51771,16 @@ async def import_session_history(sess: dict[str, Any], *, force: bool = False, l
     # ``force`` means bypass the one-time import marker, not append the same
     # provider transcript again. Anchor against the durable timeline exactly
     # like automatic catch-up and import only the unseen suffix.
-    if continued and previous_cursor is not None:
-        timeline_scan_through_seq = timeline_latest_seq
-        fresh, consumed_timeline_seq = await asyncio.to_thread(
-            reconcile_cursor_history_items,
-            session_id,
-            items,
-            timeline_after_seq=int(previous_cursor.get("timeline_seq") or 0),
-            timeline_through_seq=timeline_scan_through_seq,
-        )
-    else:
-        fresh = await asyncio.to_thread(
-            unsynced_history_items,
-            session_id,
-            items,
-            timeline_through_seq=timeline_latest_seq,
-        )
-        consumed_timeline_seq = timeline_latest_seq
-    if fresh and next_cursor is not None and previous_cursor is None:
-        recovered = await asyncio.to_thread(
-            committed_history_sync_checkpoint,
-            sess,
-            previous_cursor,
-        )
-        if recovered is not None:
-            recovered_cursor, _terminal_seq = recovered
-            await persist_history_sync_cursor(
-                sess,
-                recovered_cursor,
-                timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
-            )
-            return {
-                "imported": 0,
-                "source_path": str(source_path),
-                "message": "Recovered a committed provider history checkpoint.",
-            }
-    caught_up = True
-    checkpoint: dict[str, Any] | None = None
-    timeline_seq = timeline_latest_seq
-    if next_cursor is not None:
-        caught_up = bool(next_cursor.pop("source_caught_up", True))
-        next_cursor["timeline_pending_through_seq"] = 0
-        next_cursor["timeline_pending_active"] = False
-        if not caught_up:
-            timeline_seq = consumed_timeline_seq
-        next_cursor["timeline_seq"] = timeline_seq
-        next_cursor["checkpoint_seq"] = max(
-            int(next_cursor.get("checkpoint_seq") or 0),
-            timeline_latest_seq,
-        )
-        checkpoint = history_sync_checkpoint(
-            previous_cursor,
-            next_cursor,
-            caught_up=caught_up,
-        )
-    if not fresh:
-        result = {
-            "imported": 0,
-            "source_path": str(source_path),
-            "message": "Already up to date with the provider transcript.",
-        }
-    else:
-        try:
-            result = await append_imported_history(
-                sess,
-                source_path,
-                fresh,
-                sync_checkpoint=checkpoint,
-            )
-        except CodexNativeHistoryProofUnavailable:
-            # Do not persist next_cursor: these source bytes have not yet been
-            # proven against native history. A later explicit sync can retry.
-            return {
-                "imported": 0, "source_path": str(source_path), "deferred": True,
-                "reason": "native_history_proof_unavailable",
-                "message": "History reconciliation deferred; no messages were imported.",
-            }
-    if next_cursor is not None:
-        if caught_up:
-            timeline_seq = max(
-                timeline_latest_seq,
-                int(result.get("timeline_seq") or 0),
-            )
-        next_cursor["checkpoint_seq"] = max(
-            int(next_cursor.get("checkpoint_seq") or 0),
-            timeline_latest_seq,
-            int(result.get("timeline_seq") or 0),
-        )
-        await persist_history_sync_cursor(
-            sess,
-            next_cursor,
-            timeline_seq=timeline_seq,
-        )
-    return result
+    return await commit_history_sync(
+        sess,
+        session_id,
+        source_path,
+        items,
+        previous_cursor=previous_cursor,
+        next_cursor=next_cursor,
+        continued=continued,
+        timeline_latest_seq=timeline_latest_seq,
+    )
 
 
 FORK_HISTORY_EVENT_TYPES = {
