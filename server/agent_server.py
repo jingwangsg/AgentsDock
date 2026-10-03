@@ -72104,6 +72104,28 @@ async def run_codex_app_server(
                     active.pop("logical_transition_predecessor_run_id", None)
                     active.pop("logical_transition_authority_nonce", None)
 
+        async def abandon_uncertain_delivery(message: str) -> None:
+            """Delivery may have succeeded: never replay, interrupt the turn so
+            uncertain output is not attributed to the preceding logical request."""
+
+            nonlocal candidate_authority_path, delivery_unknown
+            delivery_unknown = True
+            with suppress(Exception):
+                await turn.interrupt()
+            if candidate_authority_path is not None:
+                await revoke_cross_chat_capability(candidate_run_id)
+                candidate_authority_path = None
+            await revoke_cross_chat_capability(current_run_id)
+            with suppress(Exception):
+                await append_event(session_id, "error", {
+                    "run_id": current_run_id,
+                    "backend": BACKEND_CODEX,
+                    "transport": CODEX_TRANSPORT_APP_SERVER,
+                    "message": message,
+                    "delivery_unknown": True,
+                })
+            await release_transition_boundary()
+
         async with ACTIVE_LOCK:
             active = ACTIVE.get(session_id)
             if not active or active.get("stop_requested"):
@@ -72256,25 +72278,10 @@ async def run_codex_app_server(
             # Delivery may have succeeded. Never put this message back in the
             # queue, and interrupt the provider turn so uncertain output cannot
             # be attributed to the preceding logical request.
-            delivery_unknown = True
-            with suppress(Exception):
-                await turn.interrupt()
-            if candidate_authority_path is not None:
-                await revoke_cross_chat_capability(candidate_run_id)
-                candidate_authority_path = None
-            await revoke_cross_chat_capability(current_run_id)
-            with suppress(Exception):
-                await append_event(session_id, "error", {
-                    "run_id": current_run_id,
-                    "backend": BACKEND_CODEX,
-                    "transport": CODEX_TRANSPORT_APP_SERVER,
-                    "message": (
-                        "Force Send delivery could not be confirmed. The message "
-                        "was not replayed; retry it manually if it does not appear."
-                    ),
-                    "delivery_unknown": True,
-                })
-            await release_transition_boundary()
+            await abandon_uncertain_delivery(
+                "Force Send delivery could not be confirmed. The message "
+                "was not replayed; retry it manually if it does not appear."
+            )
             raise NativeSteerHandoffError(
                 concise_error_message(exc),
                 safe_to_requeue=False,
@@ -72294,25 +72301,10 @@ async def run_codex_app_server(
             await release_transition_boundary()
             raise
         except Exception as exc:
-            delivery_unknown = True
-            with suppress(Exception):
-                await turn.interrupt()
-            if candidate_authority_path is not None:
-                await revoke_cross_chat_capability(candidate_run_id)
-                candidate_authority_path = None
-            await revoke_cross_chat_capability(current_run_id)
-            with suppress(Exception):
-                await append_event(session_id, "error", {
-                    "run_id": current_run_id,
-                    "backend": BACKEND_CODEX,
-                    "transport": CODEX_TRANSPORT_APP_SERVER,
-                    "message": (
-                        "Force Send was accepted, but the provider output boundary "
-                        "could not be reconciled. The message was not replayed."
-                    ),
-                    "delivery_unknown": True,
-                })
-            await release_transition_boundary()
+            await abandon_uncertain_delivery(
+                "Force Send was accepted, but the provider output boundary "
+                "could not be reconciled. The message was not replayed."
+            )
             raise NativeSteerHandoffError(
                 concise_error_message(exc),
                 safe_to_requeue=False,
