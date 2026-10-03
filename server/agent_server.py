@@ -27653,36 +27653,7 @@ def ps_process_rows() -> list[dict[str, Any]]:
     except subprocess.TimeoutExpired:
         logger.warning("process snapshot ps scan timed out")
         return []
-    rows: list[dict[str, Any]] = []
-    for line in result.stdout.splitlines():
-        parts = line.strip().split(None, 10)
-        if len(parts) < 10:
-            continue
-        try:
-            pid = int(parts[0])
-            ppid = int(parts[1])
-            pgid = int(parts[2])
-            sid = int(parts[3])
-            etimes = int(float(parts[5]))
-            cpu = float(parts[6])
-            mem = float(parts[7])
-            rss = int(float(parts[8]))
-        except ValueError:
-            continue
-        rows.append({
-            "pid": pid,
-            "ppid": ppid,
-            "pgid": pgid,
-            "sid": sid,
-            "stat": parts[4],
-            "elapsed_seconds": etimes,
-            "cpu_percent": cpu,
-            "mem_percent": mem,
-            "rss_kb": rss,
-            "command": parts[9],
-            "args": parts[10] if len(parts) > 10 else parts[9],
-        })
-    return rows
+    return parse_ps_rows(result.stdout)
 
 
 def parse_ps_rows(stdout: str) -> list[dict[str, Any]]:
