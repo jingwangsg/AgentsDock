@@ -583,6 +583,7 @@ interface AppState {
   createSurface(kind: SurfaceKind, folder: string, expectedGeneration?: number): Promise<boolean>
   selectSurface(surfaceId: string | null): void
   updateSurface(surfaceId: string, patch: UpdateSurfaceInput, expectedGeneration?: number): Promise<void>
+  reorderSurfaces(ids: string[], expectedGeneration?: number): Promise<void>
   removeSurface(surfaceId: string, expectedGeneration?: number): Promise<void>
   selectSession(sessionId: string, expectedGeneration?: number): Promise<void>
   syncSelectedSession(reason?: SyncReason): Promise<void>
@@ -1452,6 +1453,29 @@ export const useAppStore = create<AppState>((set, get) => ({
       const updated = await scope.client.updateSurface(surfaceId, patch)
       if (!connectionIsCurrent(scope)) return
       set(state => ({ surfaces: state.surfaces.map(surface => surface.id === surfaceId ? updated : surface) }))
+    } catch (error) {
+      if (isStaleConnectionError(error, scope)) return
+      set({ error: errorMessage(error) })
+      void get().refreshSurfaces(scope.generation)
+    }
+  },
+
+  async reorderSurfaces(ids, expectedGeneration) {
+    const scope = validatedConnectionOrReport(get, set, expectedGeneration)
+    if (!scope) return
+    const known = new Set(get().surfaces.map(surface => surface.id))
+    if (!ids.length || !ids.every(id => known.has(id))) return
+    // The listed tabs take their current slots in the new order, as the server does.
+    const slots = (surfaces: Surface[]) => {
+      const chosen = new Set(ids)
+      const listed = ids.map(id => surfaces.find(surface => surface.id === id) as Surface)[Symbol.iterator]()
+      return surfaces.map(surface => chosen.has(surface.id) ? listed.next().value as Surface : surface)
+    }
+    set(state => ({ surfaces: slots(state.surfaces) }))
+    try {
+      const surfaces = await scope.client.reorderSurfaces(ids)
+      if (!connectionIsCurrent(scope)) return
+      set({ surfaces })
     } catch (error) {
       if (isStaleConnectionError(error, scope)) return
       set({ error: errorMessage(error) })

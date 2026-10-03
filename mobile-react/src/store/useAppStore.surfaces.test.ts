@@ -40,6 +40,13 @@ client.updateSurface = async (id, patch) => {
   return { ...stored.find(item => item.id === id)!, ...patch, updated_at: '2026-10-04T00:00:00Z' }
 }
 client.deleteSurface = async id => { calls.push(['delete', id]) }
+client.reorderSurfaces = async ids => {
+  calls.push(['reorder', ids])
+  const chosen = new Set(ids); const listed = ids[Symbol.iterator]()
+  const previous = stored
+  stored = previous.map(item => { if (!chosen.has(item.id)) return item; const next = listed.next().value; return previous.find(candidate => candidate.id === next)! })
+  return stored
+}
 client.sessionPage = async () => { throw new Error('not needed') }
 globalThis.fetch = async () => { throw new Error('Unexpected network request in surfaces regression') }
 
@@ -120,6 +127,19 @@ await useAppStore.getState().removeSurface('term_1')
 assert.deepEqual(calls.at(-1), ['delete', 'term_1'])
 assert.equal(useAppStore.getState().surfaces.some(item => item.id === 'term_1'), false)
 assert.equal(useAppStore.getState().selectedSurfaceId, null)
+
+// Reordering tabs: the listed tabs take their current slots in the new order, first locally, then from the server.
+stored = [surface({ id: 'term_a', folder: 'Research' }), surface({ id: 'browser_g', kind: 'browser', folder: 'General', cwd: null }), surface({ id: 'term_b', folder: 'Research' })]
+useAppStore.setState({ surfaces: stored, selectedSurfaceId: null })
+const reordering = useAppStore.getState().reorderSurfaces(['term_b', 'term_a'])
+assert.deepEqual(useAppStore.getState().surfaces.map(item => item.id), ['term_b', 'browser_g', 'term_a'], 'the reorder shows before the server answers')
+await reordering
+assert.deepEqual(calls.at(-1), ['reorder', ['term_b', 'term_a']])
+assert.deepEqual(useAppStore.getState().surfaces.map(item => item.id), ['term_b', 'browser_g', 'term_a'])
+// An id the store does not know is ignored without a request.
+const before = calls.length
+await useAppStore.getState().reorderSurfaces(['term_b', 'term_unknown'])
+assert.equal(calls.length, before)
 
 // A server without the tabs route leaves the list alone and raises no error.
 stored = useAppStore.getState().surfaces

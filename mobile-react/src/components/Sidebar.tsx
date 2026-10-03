@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActionSheetIOS, Alert, Image, Platform, Pressable, StyleSheet, View } from 'react-native'
 import DraggableFlatList, { ScaleDecorator, type DragEndParams } from 'react-native-draggable-flatlist'
 import { MenuView, type MenuAction, type MenuComponentRef } from '@expo/ui/community/menu'
-import { ChevronDown, ChevronRight, FolderPlus, Globe, Network, Plus, RefreshCw, Search, Server, Settings, Terminal } from 'lucide-react-native'
+import { ChevronDown, ChevronRight, FolderPlus, Globe, Network, Plus, RefreshCw, Search, Server, Settings, Terminal, GripVertical } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAppStore } from '../store/useAppStore'
 import { radius, usePalette } from '../theme'
@@ -91,6 +91,8 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   const select = useAppStore(state => state.selectSession)
   const seekTimelineResult = useAppStore(state => state.seekTimelineResult)
   const reorder = useAppStore(state => state.reorderSession)
+  const reorderSurfaces = useAppStore(state => state.reorderSurfaces)
+  const updateSurface = useAppStore(state => state.updateSurface)
   const updateSession = useAppStore(state => state.updateSession)
   const refreshSessions = useAppStore(state => state.refreshSessions)
   const setFolderOrder = useAppStore(state => state.setFolderOrder)
@@ -366,11 +368,30 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     const openMenu = liftedMenu.current
     liftedMenu.current = null
     if (from === to) { openMenu?.(); return }
-    // Tabs keep the server's order; only chats and folders reorder, so a drop is judged without tab rows.
     const moved = data[to]
+    if (moved.kind === 'surface') {
+      // A tab reorders among the tabs (the server keeps their order) and moves to the folder
+      // whose header is above its drop; the chat rows between only decide that folder.
+      let index = to - 1
+      while (index >= 0 && data[index].kind !== 'header') index -= 1
+      const header = data[index]
+      const folder = header?.kind === 'header' && !['Pinned', 'Archived'].includes(header.folder) ? header.folder : null
+      const ids = data.flatMap(row => row.kind === 'surface' ? [row.surface.id] : [])
+      const orderChanged = ids.join('\n') !== surfaces.map(surface => surface.id).join('\n')
+      const folderChanged = folder !== null && folder !== moved.surface.folder
+      const accepted = profileScopeIsCurrent(profileScope) && folder !== null && (orderChanged || folderChanged)
+      setDropped({ base: rows, data, refused: !accepted })
+      if (!accepted) return
+      void Promise.all([
+        orderChanged ? reorderSurfaces(ids, profileScope.profileGeneration) : Promise.resolve(),
+        folderChanged ? updateSurface(moved.surface.id, { folder }, profileScope.profileGeneration) : Promise.resolve(),
+      ]).finally(() => setDropped(current => current?.data === data ? null : current))
+      return
+    }
+    // Chat and folder drops are judged without the tab rows, which sit after the chats of a folder.
     const chatRows = data.filter((row): row is Exclude<Row, { kind: 'surface' }> => row.kind !== 'surface')
     // A drop made while the server changed is refused (and drawn back) like any other.
-    const drop = profileScopeIsCurrent(profileScope) && moved.kind !== 'surface' ? resolveSidebarDrop(chatRows, chatRows.indexOf(moved), sessions, folders) : null
+    const drop = profileScopeIsCurrent(profileScope) ? resolveSidebarDrop(chatRows, chatRows.indexOf(moved), sessions, folders) : null
     if (drop?.kind === 'folder-order') { setFolderOrder(drop.order, profileScope.profileGeneration); return }
     setDropped({ base: rows, data, refused: !drop })
     if (!drop) return
@@ -490,6 +511,8 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           onDelete={() => deleteFolder(item.folder)}
         /> : item.kind === 'surface' ? <SurfaceRow
           surface={item.surface}
+          onLift={openMenu => lift(openMenu, drag)}
+          onDragStart={drag}
           profileScope={profileScope}
           selected={selectedSurfaceId === item.surface.id}
           onDismissKeyboard={dismissSearchKeyboard}
@@ -515,6 +538,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
             onMoveDown={() => { if (nextId && sessionScopeIsCurrent(profileScope, item.session.id)) void reorder(item.session.id, nextId, 'after', profileScope.profileGeneration) }}
             onDismissKeyboard={dismissSearchKeyboard}
             onLift={openMenu => lift(openMenu, drag)}
+            onDragStart={drag}
             onPress={() => {
               openSessionRow(item.session, item.searchResult)
             }}
@@ -609,7 +633,7 @@ function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canM
   return <View style={styles.folderHeaderShell}>{header}<MenuView ref={menu} testID={`folder-actions-${item.folder}`} title={item.title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>
 }
 
-function SessionRow({ session, profileScope, selected, running, searchSnippet, opening, folders, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onDismissKeyboard, onLift, onPress, promptText }: {
+function SessionRow({ session, profileScope, selected, running, searchSnippet, opening, folders, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onDismissKeyboard, onLift, onDragStart, onPress, promptText }: {
   session: Session
   profileScope: ProfileScope
   selected: boolean
@@ -621,6 +645,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   canMoveDown: boolean
   onMoveUp: () => void
   onMoveDown: () => void
+  onDragStart: () => void
   onDismissKeyboard: () => void
   onLift: (openMenu: () => void) => void
   onPress: () => void
@@ -814,6 +839,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
         accessibilityLabel={running ? 'Agent running' : 'Unread messages'}
         style={[styles.trailingStatusDot, { backgroundColor: running ? colors.green : colors.blue }]}
       /> : null}
+      {welcome ? null : <DragHandle onDragStart={onDragStart} />}
     </Pressable>
   )
   // The chat identity is always a plain native Pressable. Wrapping the entire
@@ -825,11 +851,13 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   return <View style={styles.sessionShell}>{pressableRow}<MenuView ref={menu} testID={`chat-actions-${session.id}`} title={session.title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>
 }
 
-function SurfaceRow({ surface, profileScope, selected, onDismissKeyboard, onPress, promptText }: {
+function SurfaceRow({ surface, profileScope, selected, onDismissKeyboard, onLift, onDragStart, onPress, promptText }: {
   surface: Surface
   profileScope: ProfileScope
   selected: boolean
   onDismissKeyboard: () => void
+  onLift: (openMenu: () => void) => void
+  onDragStart: () => void
   onPress: () => void
   promptText: (options: TextPromptOptions) => Promise<string | null>
 }) {
@@ -876,7 +904,7 @@ function SurfaceRow({ surface, profileScope, selected, onDismissKeyboard, onPres
     accessibilityHint="Tap to open. Long press for tab actions."
     accessibilityState={{ selected }}
     delayLongPress={350}
-    onLongPress={() => { if (Platform.OS === 'ios') openActionSheet(); else menu.current?.show() }}
+    onLongPress={() => onLift(Platform.OS === 'ios' ? openActionSheet : () => menu.current?.show())}
     onPress={() => { if (profileScopeIsCurrent(profileScope)) onPress() }}
     style={({ pressed }) => [styles.session, Platform.OS !== 'ios' && styles.sessionInShell, {
       backgroundColor: selected ? colors.selected : pressed ? colors.raised : colors.background,
@@ -889,9 +917,22 @@ function SurfaceRow({ surface, profileScope, selected, onDismissKeyboard, onPres
       <Text style={[styles.sessionTitle, { color: colors.text }]} numberOfLines={1}>{title}</Text>
       <Text style={[styles.sessionMeta, styles.tabMeta, { color: colors.muted }]} numberOfLines={1}>{surfaceSubline(surface)}</Text>
     </View>
+    <DragHandle onDragStart={onDragStart} />
   </Pressable>
   if (Platform.OS === 'ios') return row
   return <View style={styles.sessionShell}>{row}<MenuView ref={menu} testID={`tab-actions-${surface.id}`} title={title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>
+}
+
+/** Pressing the grip lifts the row at once; a long press elsewhere on the row still lifts it and opens its menu when let go. */
+function DragHandle({ onDragStart }: { onDragStart: () => void }) {
+  const colors = usePalette()
+  return <Pressable
+    accessibilityRole="button"
+    accessibilityLabel="Drag to reorder"
+    hitSlop={{ top: 12, bottom: 12, left: 6, right: 6 }}
+    onPressIn={onDragStart}
+    style={styles.dragHandle}
+  ><GripVertical size={16} color={colors.muted} /></Pressable>
 }
 
 const styles = StyleSheet.create({
@@ -917,6 +958,7 @@ const styles = StyleSheet.create({
   headerText: { flex: 1, fontSize: 11, fontWeight: '700' },
   count: { fontSize: 10 },
   sessionShell: { minHeight: 51, flexDirection: 'row', alignItems: 'stretch' },
+  dragHandle: { width: 24, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center', marginLeft: 2 },
   session: { minHeight: 51, borderRadius: radius.compact, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 9, overflow: 'hidden' },
   sessionInShell: { flex: 1 },
   selectedIndicator: { position: 'absolute', top: 7, bottom: 7, left: 0, width: 3, borderRadius: 2 },

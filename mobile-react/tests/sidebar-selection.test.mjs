@@ -116,7 +116,11 @@ test('Archived starts collapsed on every launch and its expansion is not persist
 })
 
 test('a long press lifts a chat or folder for dragging and still opens its menu when let go in place', () => {
-  assert.equal(source.match(/onLift=\{openMenu => lift\(openMenu, drag\)\}/g)?.length, 2)
+  assert.equal(source.match(/onLift=\{openMenu => lift\(openMenu, drag\)\}/g)?.length, 3)
+  // Tab rows lift like chats, and every row offers a grip that lifts it at once.
+  assert.match(source, /onLongPress=\{\(\) => onLift\(Platform\.OS === 'ios' \? openActionSheet : \(\) => menu\.current\?\.show\(\)\)\}/)
+  assert.equal(source.match(/<DragHandle onDragStart=\{onDragStart\} \/>/g)?.length, 2)
+  assert.match(source, /onPressIn=\{onDragStart\}/)
   assert.match(source, /if \(from === to\) \{ openMenu\?\.\(\); return \}/)
   assert.match(source, /onPlaceholderIndexChange=\{\(\) => \{ liftedMenu\.current = null \}\}/)
 })
@@ -126,4 +130,11 @@ test('a refused drop is drawn once, then undone, and a held order lasts only for
   assert.match(source, /setDropped\(\{ base: rows, data, refused: !drop \}\)\s*if \(!drop\) return/)
   assert.match(source, /if \(!dropped\?\.refused\) return\s*const undo = setImmediate\(\(\) => setDropped\(null\)\)/)
   assert.match(source, /const listData = dropped\?\.base === rows \? dropped\.data : rows/)
+})
+
+test('a dropped tab reorders among tabs and moves to the folder above it', () => {
+  assert.match(source, /if \(moved\.kind === 'surface'\) \{/)
+  assert.match(source, /const ids = data\.flatMap\(row => row\.kind === 'surface' \? \[row\.surface\.id\] : \[\]\)/)
+  assert.match(source, /orderChanged \? reorderSurfaces\(ids, profileScope\.profileGeneration\)/)
+  assert.match(source, /folderChanged \? updateSurface\(moved\.surface\.id, \{ folder \}, profileScope\.profileGeneration\)/)
 })

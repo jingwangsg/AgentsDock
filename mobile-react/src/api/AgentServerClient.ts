@@ -504,6 +504,7 @@ export class AgentServerClient {
     return (await this.patch<{ surface: Surface }>(`/api/surfaces/${encodeURIComponent(surfaceId)}`, patch)).surface
   }
   async deleteSurface(surfaceId: string): Promise<void> { await this.delete(`/api/surfaces/${encodeURIComponent(surfaceId)}`) }
+  async reorderSurfaces(ids: string[]): Promise<Surface[]> { return (await this.put<{ surfaces: Surface[] }>('/api/surfaces/order', { ids })).surfaces }
   forkSession(sessionId: string): Promise<{ session: Session; sessions?: Session[] }> {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {})
   }
