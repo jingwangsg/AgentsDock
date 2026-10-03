@@ -44,7 +44,7 @@ test('the sheet uses the Review chrome and the same connection scoping', () => {
   assert.match(sheet, /header: \{ minHeight: 64/)
   assert.match(sheet, /<SheetCloseButton onPress=\{onClose\} label="Close changes" testID="changes-close" \/>/)
   assert.match(sheet, /const connectionReady = connected && !connecting && !switchingProfileId && connection\.isValidated/)
-  assert.match(sheet, /import \{ connectionIsCurrent \} from '\.\/CodeReview'/)
+  assert.match(sheet, /import \{ capturedConnectionIsCurrent, client, useAppStore \} from '\.\.\/store\/useAppStore'/)
   assert.match(sheet, /key=\{`\$\{connectionKey\}:\$\{props\.sessionId\}`\}/, 'a server or chat switch remounts the scoped sheet')
   assert.match(sheet, /if \(epoch !== statusEpoch\.current \|\| !isCurrent\(\)\) return/)
   assert.match(sheet, /\.then\(next => \{ if \(!cancelled && isCurrent\(\)\) setDetail\(next\) \}\)/)

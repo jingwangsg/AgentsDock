@@ -226,11 +226,32 @@ test('profile generation participates in UI identity and direct-client guards', 
 
   assert.match(mediaGrid, /const connectionKey = `\$\{activeProfileId \?\? 'none'\}:\$\{profileGeneration\}`/)
   assert.match(mediaGrid, /key=\{`\$\{connectionKey\}:\$\{sessionId\}:\$\{ownerKey\}:\$\{compact \? 'compact' : 'timeline'\}`\}/)
-  assert.match(mediaGrid, /!connection\.client\.isDisposed[\s\S]*?client === connection\.client[\s\S]*?state\.activeProfileId === connection\.profileId[\s\S]*?state\.profileGeneration === connection\.generation/)
+  assert.match(mediaGrid, /capturedConnectionIsCurrent\(connection\.client, connection\.profileId, connection\.generation\)/)
 
   assert.match(terminalView, /const connectionKey = `\$\{activeProfileId \?\? 'none'\}:\$\{profileGeneration\}`/)
   assert.match(terminalView, /key=\{`\$\{connectionKey\}:\$\{session\.id\}`\}/)
-  assert.match(terminalView, /!connection\.isDisposed[\s\S]*?client === connection[\s\S]*?state\.activeProfileId === profileId[\s\S]*?state\.profileGeneration === generation/)
+  assert.match(terminalView, /capturedConnectionIsCurrent\(connection, activeProfileId, profileGeneration\)/)
+})
+
+test('components share one connection fence instead of re-declaring it', () => {
+  // The fence lives in the store once; a component may only narrow it.
+  assert.match(store, /export function capturedConnectionIsCurrent\(connection: AgentServerClient, profileId: string \| null, generation: number\): boolean \{\n  const state = useAppStore\.getState\(\)\n  return client === connection\n    && connection\.isValidated\n    && state\.activeProfileId === profileId\n    && state\.profileGeneration === generation\n    && state\.connected\n    && !state\.connecting\n    && !state\.switchingProfileId\n\}/)
+  const componentFiles = []
+  const walk = directory => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name)
+      if (entry.isDirectory()) walk(entryPath)
+      else if (entry.name.endsWith('.tsx') && !entry.name.includes('.test.')) componentFiles.push(entryPath)
+    }
+  }
+  walk(path.resolve('src/components'))
+  assert.ok(componentFiles.length > 20)
+  for (const file of componentFiles) {
+    const text = fs.readFileSync(file, 'utf8')
+    // A captured-connection comparison followed by the connecting flag inside one
+    // expression is the fence's own body; components must call the store export.
+    assert.doesNotMatch(text, /client === \w+(?:\.client)?[^;{}]*?&& !state\.connecting/s, `${path.relative(process.cwd(), file)} re-declares the connection fence`)
+  }
 })
 
 test('legacy singleton reconfigure and unscoped settings/token APIs stay removed', () => {

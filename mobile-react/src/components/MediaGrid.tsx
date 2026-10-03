@@ -4,7 +4,7 @@ import { Image } from 'expo-image'
 import type { VideoThumbnail } from 'expo-video'
 import { Download, File, Images, Maximize2, Pin, Play } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
-import { client, useAppStore } from '../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { Text } from './AppText'
 import { DeferredLoadBoundary } from './DeferredLoadBoundary'
@@ -437,16 +437,8 @@ function notifyAutomaticVideoThumbnailScope(scope: AutomaticVideoThumbnailScope)
 }
 
 function connectionIsCurrent(connection: MediaConnectionScope): boolean {
-  const state = useAppStore.getState()
-  return !connection.client.isDisposed
-    && connection.client.isValidated
-    && client === connection.client
-    && state.activeProfileId === connection.profileId
-    && state.profileGeneration === connection.generation
-    && state.selectedSessionId === connection.sessionId
-    && state.connected
-    && !state.connecting
-    && !state.switchingProfileId
+  return capturedConnectionIsCurrent(connection.client, connection.profileId, connection.generation)
+    && useAppStore.getState().selectedSessionId === connection.sessionId
 }
 
 const styles = StyleSheet.create({

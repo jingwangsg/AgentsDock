@@ -18,7 +18,7 @@ import { dismissAppKeyboard } from '../../lib/app-keyboard'
 import { formatBytes } from '../../lib/format'
 import { fullscreenModalPadding, type FullscreenSafeAreaInsets } from '../../lib/fullscreen-modal-layout'
 import { workspaceFileDepartureDecision } from '../../lib/workspace-file-editing'
-import { client, useAppStore } from '../../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../../store/useAppStore'
 import { usePalette } from '../../theme'
 import type { WorkspaceEntry, WorkspaceFile, WorkspaceInfo } from '../../types'
 import { Text, TextInput } from '../AppText'
@@ -908,12 +908,8 @@ function workspaceMutationStatus(kind: 'create' | 'rename' | 'delete' | null): s
 }
 
 function workspaceConnectionIsCurrent(connection: WorkspaceConnectionScope): boolean {
-  const state = useAppStore.getState()
-  return workspaceConnectionIdentityIsCurrent(connection)
-    && connection.client.isValidated
-    && state.connected
-    && !state.connecting
-    && !state.switchingProfileId
+  return capturedConnectionIsCurrent(connection.client, connection.profileId, connection.generation)
+    && useAppStore.getState().selectedSessionId === connection.sessionId
 }
 
 function workspaceConnectionIdentityIsCurrent(connection: WorkspaceConnectionScope): boolean {

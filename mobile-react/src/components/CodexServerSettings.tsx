@@ -4,7 +4,7 @@ import { Goal, RefreshCw } from 'lucide-react-native'
 import { ServerError, type AgentServerClient } from '../api/AgentServerClient'
 import { announceCodexGoalsConfigurationChanged } from '../lib/codex-goals-configuration'
 import { codexControlsCapability } from '../lib/codex-controls'
-import { client, useAppStore } from '../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { CodexGoalsConfiguration } from '../types'
 import { Text } from './AppText'
@@ -37,9 +37,8 @@ function ScopedGoalSettings({ connection, profileId, generation, ready }: {
   const confirmingRef = useRef(false)
   const current = () => {
     const state = useAppStore.getState()
-    return mounted.current && client === connection && connection.isValidated
-      && state.activeProfileId === profileId && state.profileGeneration === generation
-      && state.connected && !state.connecting && !state.workspaceAdopting && !state.switchingProfileId
+    return mounted.current && capturedConnectionIsCurrent(connection, profileId, generation)
+      && !state.workspaceAdopting
   }
 
   useEffect(() => {

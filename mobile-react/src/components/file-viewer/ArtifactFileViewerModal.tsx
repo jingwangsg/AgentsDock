@@ -32,7 +32,7 @@ import { dismissAppKeyboard } from '../../lib/app-keyboard'
 import { inferredMobileFileContentType, mobileFileViewerKind, mobileFileViewerLayout, workspaceRelativeSourcePath, type MobileFileViewerKind, type MobileFileViewerLayout } from '../../lib/file-viewer'
 import { fullscreenModalPadding, type FullscreenSafeAreaInsets } from '../../lib/fullscreen-modal-layout'
 import { filesNewestFirst, formatBytes } from '../../lib/format'
-import { client, useAppStore } from '../../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../../store/useAppStore'
 import { usePalette } from '../../theme'
 import type { AgentFile, WorkspaceInfo } from '../../types'
 import { Text } from '../AppText'
@@ -648,16 +648,8 @@ async function downloadArtifactToCache(file: AgentFile, connection: ArtifactConn
 }
 
 function artifactConnectionIsCurrent(connection: ArtifactConnectionScope): boolean {
-  const state = useAppStore.getState()
-  return !connection.client.isDisposed
-    && connection.client.isValidated
-    && client === connection.client
-    && state.activeProfileId === connection.profileId
-    && state.profileGeneration === connection.generation
-    && state.selectedSessionId === connection.sessionId
-    && state.connected
-    && !state.connecting
-    && !state.switchingProfileId
+  return capturedConnectionIsCurrent(connection.client, connection.profileId, connection.generation)
+    && useAppStore.getState().selectedSessionId === connection.sessionId
 }
 
 function assertArtifactFileScope(file: AgentFile, connection: ArtifactConnectionScope): void {

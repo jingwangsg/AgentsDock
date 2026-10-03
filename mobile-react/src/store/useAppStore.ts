@@ -296,14 +296,30 @@ function emptyAgentRouteState() {
   }
 }
 
+/**
+ * The request fence shared by every component that holds a connection for a
+ * request: that connection is still the one the user is on and requests are
+ * allowed. Callers add narrower checks (selected chat, workspace adoption).
+ * `isValidated` is already false once the client is disposed.
+ */
+export function capturedConnectionIsCurrent(connection: AgentServerClient, profileId: string | null, generation: number): boolean {
+  const state = useAppStore.getState()
+  return client === connection
+    && connection.isValidated
+    && state.activeProfileId === profileId
+    && state.profileGeneration === generation
+    && state.connected
+    && !state.connecting
+    && !state.switchingProfileId
+}
+
 function captureAgentRouteGuard(scope: ConnectionScope, get: () => AppState): () => boolean {
   const validationRevision = scope.client.validationRevision
   const identity = get().health?.server_identity
   const instance = get().health?.server_instance_id
-  return () => validatedRevisionIsCurrent(scope, validationRevision)
-    && get().profileGeneration === scope.generation
-    && get().activeProfileId === scope.profileId
-    && get().connected && !get().connecting && !get().switchingProfileId && !get().workspaceAdopting
+  return () => capturedConnectionIsCurrent(scope.client, scope.profileId, scope.generation)
+    && scope.client.validationRevision === validationRevision
+    && !get().workspaceAdopting
     && get().health?.server_identity === identity
     && get().health?.server_instance_id === instance
 }

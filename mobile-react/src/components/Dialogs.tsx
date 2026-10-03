@@ -16,7 +16,7 @@ import { orderedSessionSections } from '../lib/session-order'
 import { runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeSelectionError, selectableChatBackends } from '../lib/runtime-catalog'
 import { chatMentionTrigger, insertChatReference, parseStoredChatReferences, reconcileChatReferences, supportedCrossChatTargetBackends, type ChatMentionTrigger } from '../lib/chat-references'
 import { MAX_SCHEDULED_CHAT_REFERENCES, normalizeScheduledJobChatReferences, scheduledJobChatReferencesForWrite, scheduledJobRouteHintsAvailable } from '../lib/scheduled-job-chat-references'
-import { client, useAppStore } from '../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { AppearanceMode, Backend, ChatReference, CreateJobInput, JobContextMode, JobScheduleKind, RuntimeOption, Session, TimelineSearchResult, UpdateJobInput } from '../types'
 import { Text, TextInput } from './AppText'
@@ -226,13 +226,13 @@ function ScopedSearchDialog({ visible, sessionId, onClose, connection, connectio
     setResults([])
     setSearchError(null)
     const timer = setTimeout(() => {
-      if (!connectionIsCurrent(connection, activeProfileId, profileGeneration)) return
+      if (!capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) return
       setBusy(true)
       const request = sessionId ? connection.searchTimeline(sessionId, clean) : connection.searchSessions(clean)
       void request
-        .then(value => { if (!cancelled && connectionIsCurrent(connection, activeProfileId, profileGeneration)) { setResults(value); setSearchError(null) } })
-        .catch(error => { if (!cancelled && connectionIsCurrent(connection, activeProfileId, profileGeneration)) { setResults([]); setSearchError(dialogError(error)) } })
-        .finally(() => { if (!cancelled && connectionIsCurrent(connection, activeProfileId, profileGeneration)) setBusy(false) })
+        .then(value => { if (!cancelled && capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) { setResults(value); setSearchError(null) } })
+        .catch(error => { if (!cancelled && capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) { setResults([]); setSearchError(dialogError(error)) } })
+        .finally(() => { if (!cancelled && capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) setBusy(false) })
     }, 230)
     return () => { cancelled = true; clearTimeout(timer) }
   }, [activeProfileId, cancelTimelineSeek, connection, connectionReady, profileGeneration, query, searchRevision, sessionId, visible])
@@ -249,19 +249,19 @@ function ScopedSearchDialog({ visible, sessionId, onClose, connection, connectio
     onClose()
   }
   const openSession = (id: string) => {
-    if (!connectionIsCurrent(connection, activeProfileId, profileGeneration)) return
+    if (!capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) return
     dismissAppKeyboard()
     void select(id)
     onClose()
   }
   const openTimelineResult = async (result: TimelineSearchResult) => {
-    if (openingResult.current || !connectionIsCurrent(connection, activeProfileId, profileGeneration)) return
+    if (openingResult.current || !capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) return
     openingResult.current = true
     dismissAppKeyboard()
     setOpeningResultId(result.event_id)
     try {
       const opened = await seekTimelineResult(result, profileGeneration)
-      if (opened && connectionIsCurrent(connection, activeProfileId, profileGeneration)) {
+      if (opened && capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) {
         openingResult.current = false
         setOpeningResultId(null)
         onClose()
@@ -271,7 +271,7 @@ function ScopedSearchDialog({ visible, sessionId, onClose, connection, connectio
       // The store normally reports failures in the global error slot. Keep the
       // sheet usable if an unexpected storage or selection failure escapes.
     }
-    if (connectionIsCurrent(connection, activeProfileId, profileGeneration)) {
+    if (capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) {
       openingResult.current = false
       setOpeningResultId(null)
     }
@@ -359,7 +359,7 @@ function ScopedDigestDialog({ visible, source, onClose, connection, connectionKe
     const operation = ++operationRef.current
     const isCurrent = () => operationRef.current === operation
       && visible
-      && connectionIsCurrent(connection, activeProfileId, profileGeneration)
+      && capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)
     setPhase('preview'); setStatus('Summarizing the source chat with its agent…')
     try {
       const value = await connection.previewDigest(source.id, target, detail, prompt)
@@ -378,7 +378,7 @@ function ScopedDigestDialog({ visible, source, onClose, connection, connectionKe
     const operation = ++operationRef.current
     const isCurrent = () => operationRef.current === operation
       && visible
-      && connectionIsCurrent(connection, activeProfileId, profileGeneration)
+      && capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)
     setPhase('send'); setStatus('Starting the digest turn in the source chat…')
     try {
       await connection.sendDigest(source.id, target, detail, prompt)
@@ -828,7 +828,7 @@ function ScopedTmuxDialog({ visible, sessionId, onClose, connection, connectionK
     const operation = ++captureRef.current
     const isCurrent = () => captureRef.current === operation
       && visible
-      && connectionIsCurrent(connection, activeProfileId, profileGeneration)
+      && capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)
     setSelectedPane(paneId); setBusy(true)
     try {
       const next = await connection.captureTmux(sessionId, paneId, 500)
@@ -921,17 +921,6 @@ function Select({ title = 'Choose option', value, options, onChange, testID }: {
 }
 
 function dialogError(error: unknown): string { return error instanceof Error ? error.message : String(error) }
-function connectionIsCurrent(connection: AgentServerClient, profileId: string | null, generation: number): boolean {
-  const state = useAppStore.getState()
-  return !connection.isDisposed
-    && connection.isValidated
-    && client === connection
-    && state.activeProfileId === profileId
-    && state.profileGeneration === generation
-    && state.connected
-    && !state.connecting
-    && !state.switchingProfileId
-}
 function intervalLabel(seconds: number): string { if (seconds % 604800 === 0) return `${seconds / 604800}w`; if (seconds % 86400 === 0) return `${seconds / 86400}d`; if (seconds % 3600 === 0) return `${seconds / 3600}h`; return `${seconds / 60}m` }
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: '#00000088', alignItems: 'center', justifyContent: 'center', padding: 18 }, sheetPage: { flex: 1 }, sheetSafeArea: { flex: 1 }, sheet: { width: '100%', maxWidth: 520, maxHeight: '88%', borderRadius: 9, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' }, sheetWide: { maxWidth: 760 }, sheetGrabber: { alignSelf: 'center', width: 36, height: 5, marginTop: 7, marginBottom: 1, borderRadius: 3 },

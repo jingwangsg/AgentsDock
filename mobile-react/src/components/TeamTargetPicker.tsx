@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, FlatList, Modal, Platform, Pressable, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Mail, Search } from 'lucide-react-native'
-import { client, useAppStore } from '../store/useAppStore'
+import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { loadTeamMentionCandidates, teamAllServersAliasAvailable, teamBulletinAliasAvailable, teamMessagesAvailable, type TeamMentionCandidate } from '../lib/team-references'
 import { teamNetworkProxyRoute } from '../lib/team-network'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
@@ -64,11 +64,10 @@ export function TeamTargetPicker({ visible, width, query, sourceSessionId, refer
     const current = () => {
       const state = useAppStore.getState()
       const currentRoute = teamNetworkProxyRoute(state.health)
-      return live && client === connection && connection.isValidated && !connection.isDisposed
+      return live && capturedConnectionIsCurrent(connection, profileId, generation)
         && connection.validationRevision === validationRevision
-        && state.activeProfileId === profileId && state.profileGeneration === generation
-        && state.selectedSessionId === sourceSessionId && state.connected && !state.connecting
-        && !state.switchingProfileId && !state.workspaceAdopting && teamMessagesAvailable(state.health)
+        && state.selectedSessionId === sourceSessionId
+        && !state.workspaceAdopting && teamMessagesAvailable(state.health)
         && teamBulletinAliasAvailable(state.health) === bulletinAvailable
         && teamAllServersAliasAvailable(state.health) === allServersAvailable
         && state.health?.server_identity === health.server_identity
