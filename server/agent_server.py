@@ -11004,7 +11004,7 @@ class SessionStore:
         try:
             async with self._lock:
                 self.sessions[sid] = sess
-                await self.save()
+            await self.save()
             await append_event(sid, "session_created", {"session": public_session(sess)})
         except BaseException:
             # The session may enter memory (and even reach disk) before save or
@@ -11268,27 +11268,37 @@ class SessionStore:
             if new_section != old_section:
                 sess["sort_order"] = self.top_order_for_section(new_section, excluding_id=sid)
             sess["updated_at"] = now_iso()
-            try:
-                await self.save(flush=flush)
-            except BaseException:
-                if previous_provider_runtime is not None:
-                    sess.clear()
-                    sess.update(previous_provider_runtime)
-                    await self.persist_restored_state(durable=True)
-                # This field is an agent authorization boundary. Never leave
-                # a failed durable PATCH applied only in memory—especially a
-                # failed expansion from blocked/read-only to full.
-                if "provider_jobs_access" in patch:
-                    if previous_provider_jobs_access is missing_policy:
-                        sess.pop("provider_jobs_access", None)
-                    else:
-                        sess["provider_jobs_access"] = (
-                            previous_provider_jobs_access
-                        )
-                    await self.persist_restored_state(durable=True)
-                raise
-            HISTORY_SEARCH_DIRTY.add(sid)
-            return sess
+            # load-bearing: these rollbacks restore a snapshot of the session,
+            # so their write must finish before any other mutation can
+            # interleave. Every other patch waits for the disk after the lock.
+            rollback_on_failure = (
+                previous_provider_runtime is not None
+                or "provider_jobs_access" in patch
+            )
+            if rollback_on_failure:
+                try:
+                    await self.save(flush=flush)
+                except BaseException:
+                    if previous_provider_runtime is not None:
+                        sess.clear()
+                        sess.update(previous_provider_runtime)
+                        await self.persist_restored_state(durable=True)
+                    # This field is an agent authorization boundary. Never leave
+                    # a failed durable PATCH applied only in memory—especially a
+                    # failed expansion from blocked/read-only to full.
+                    if "provider_jobs_access" in patch:
+                        if previous_provider_jobs_access is missing_policy:
+                            sess.pop("provider_jobs_access", None)
+                        else:
+                            sess["provider_jobs_access"] = (
+                                previous_provider_jobs_access
+                            )
+                        await self.persist_restored_state(durable=True)
+                    raise
+        if not rollback_on_failure:
+            await self.save(flush=flush)
+        HISTORY_SEARCH_DIRTY.add(sid)
+        return sess
 
     async def adopt_auto_title(
         self,
@@ -11416,29 +11426,28 @@ class SessionStore:
                 for index, peer in enumerate(reordered):
                     peer["sort_order"] = (index + 1) * SESSION_ORDER_STEP
                 sess["updated_at"] = now_iso()
-                await self.save()
-                return sorted_sessions(list(self.sessions.values()))
-
-            normalized = (direction or "").strip().lower()
-            if normalized not in {"up", "down"}:
-                raise HTTPException(status_code=400, detail="direction must be up or down")
-            peers = [
-                peer for peer in sorted_sessions(list(self.sessions.values()))
-                if session_section_key(peer) == section
-            ]
-            index = next((idx for idx, peer in enumerate(peers) if peer.get("id") == sid), None)
-            if index is None:
-                raise HTTPException(status_code=404, detail="session not found")
-            target_index = index - 1 if normalized == "up" else index + 1
-            if 0 <= target_index < len(peers):
+            else:
+                normalized = (direction or "").strip().lower()
+                if normalized not in {"up", "down"}:
+                    raise HTTPException(status_code=400, detail="direction must be up or down")
+                peers = [
+                    peer for peer in sorted_sessions(list(self.sessions.values()))
+                    if session_section_key(peer) == section
+                ]
+                index = next((idx for idx, peer in enumerate(peers) if peer.get("id") == sid), None)
+                if index is None:
+                    raise HTTPException(status_code=404, detail="session not found")
+                target_index = index - 1 if normalized == "up" else index + 1
+                if not (0 <= target_index < len(peers)):
+                    return sorted_sessions(list(self.sessions.values()))
                 other = peers[target_index]
                 current_order = session_order_value(sess)
                 other_order = session_order_value(other)
                 sess["sort_order"] = other_order
                 other["sort_order"] = current_order
                 sess["updated_at"] = now_iso()
-                await self.save()
-            return sorted_sessions(list(self.sessions.values()))
+        await self.save()
+        return sorted_sessions(list(self.sessions.values()))
 
     async def mark_read(self, sid: str, last_read_agent_event_seq: int | None) -> dict[str, Any]:
         async with self._lock:
@@ -11454,7 +11463,9 @@ class SessionStore:
             sess["last_read_agent_event_seq"] = max(current, requested)
             sess["last_read_agent_event_at"] = now_iso()
             sess["manual_unread"] = False
-            await self.save()
+            # Read markers are rewritten on every chat switch and nothing
+            # downstream needs them on disk; let the writer coalesce them.
+            await self.save(flush=False)
             return sess
 
     async def mark_unread(self, sid: str) -> dict[str, Any]:
@@ -11466,7 +11477,7 @@ class SessionStore:
             sess["last_read_agent_event_seq"] = max(0, latest - 1)
             sess["last_read_agent_event_at"] = now_iso()
             sess["manual_unread"] = True
-            await self.save()
+            await self.save(flush=False)
             return sess
 
     async def apply_emergency_event(
@@ -11591,11 +11602,12 @@ class SessionStore:
                         "accepted; retry the message"
                     ),
                 )
-            if not bool(sess.get("backend_locked")):
-                sess["backend_locked"] = True
-                sess["updated_at"] = now_iso()
-                await self.save()
-            return sess
+            if bool(sess.get("backend_locked")):
+                return sess
+            sess["backend_locked"] = True
+            sess["updated_at"] = now_iso()
+        await self.save()
+        return sess
 
     async def save_provider_session(
         self,
@@ -11607,6 +11619,7 @@ class SessionStore:
         codex_instruction_hash: str | None = None,
         cursor_instruction_hash: str | None = None,
         defer_runtime_broadcast: bool = False,
+        flush: bool = True,
     ) -> dict[str, Any] | None:
         if backend == BACKEND_CODEX:
             ensure_codex_thread_not_pending_fork_cleanup(provider_id)
@@ -11688,7 +11701,7 @@ class SessionStore:
                 sess["fork_from"] = None
                 sess.pop("fork_resume_session_at", None)
             sess["updated_at"] = now_iso()
-            await self.save()
+        await self.save(flush=flush)
         if usage_signal is not None and not defer_runtime_broadcast:
             await broadcast_provider_runtime_changed(sid, usage_signal)
         if backend == BACKEND_CODEX:
@@ -14529,6 +14542,11 @@ CODEX_PERMISSION_PROFILES_CACHE: dict[
 ] = {}
 HANDOFF_DIGEST_JOBS: dict[str, dict[str, Any]] = {}
 HANDOFF_DIGEST_JOBS_LOCK = asyncio.Lock()
+# SQLite admits one writer and the ledger's RLock already serialized every
+# call, so a single dedicated thread loses no concurrency; it keeps a connect()
+# parked on SQLite's busy timeout from occupying a shared default-executor
+# thread that the ~650 other to_thread call sites depend on.
+CROSS_CHAT_STORE_EXECUTOR = ThreadPoolExecutor(1, thread_name_prefix="cross-chat-store")
 
 
 class CrossChatStore:
@@ -14553,7 +14571,9 @@ class CrossChatStore:
             return callback()
 
     async def _call(self, callback: Callable[[], Any]) -> Any:
-        return await asyncio.to_thread(self._locked_call, callback)
+        # asyncio.to_thread's contract (context propagated), on the ledger pool.
+        call = functools.partial(contextvars.copy_context().run, self._locked_call, callback)
+        return await asyncio.get_running_loop().run_in_executor(CROSS_CHAT_STORE_EXECUTOR, call)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
@@ -17218,7 +17238,6 @@ async def append_event(
             or session_id in DELETED_SESSION_TOMBSTONES
         ):
             return discarded_event()
-        ensure_dirs(session_id)
         path = events_path(session_id)
         seq = await next_event_seq(session_id, path)
         ts = now_iso()
@@ -17238,19 +17257,29 @@ async def append_event(
             "ts": ts,
             **stored_payload,
         }
+        write_task = asyncio.create_task(asyncio.to_thread(
+            append_event_line_sync,
+            session_id,
+            path,
+            event,
+        ))
         try:
-            with path.open("ab") as f:
-                line_offset = f.tell()
-                f.write((json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8"))
+            line_offset = await asyncio.shield(write_task)
         except BaseException:
-            # A short/failed write may have left a non-newline fragment. Force
-            # the next append through the repair path while keeping the
-            # already-consumed sequence as a high-water mark.
-            await reconcile_event_seq_after_failed_write(
-                session_id,
-                path,
-                consumed_high_water=seq,
-            )
+            # asyncio.to_thread cannot be cancelled once the append has begun.
+            # Join it before releasing the per-chat event lock so a caller
+            # cancellation cannot race deletion or a later event seq.
+            try:
+                await join_task_despite_caller_cancellation(write_task)
+            except BaseException:
+                # A short/failed write may have left a non-newline fragment.
+                # Force the next append through the repair path while keeping
+                # the already-consumed sequence as a high-water mark.
+                await reconcile_event_seq_after_failed_write(
+                    session_id,
+                    path,
+                    consumed_high_water=seq,
+                )
             raise
         if seq % EVENT_INDEX_STRIDE == 0:
             # Sparse catch-up checkpoint; a failure only costs a full scan.
@@ -17276,6 +17305,15 @@ async def append_event(
                 concise_error_message(exc),
             )
     return event
+
+
+def append_event_line_sync(session_id: str, path: Path, event: dict[str, Any]) -> int:
+    """Append one JSONL record off the event loop and return its byte offset."""
+    ensure_dirs(session_id)
+    with path.open("ab") as f:
+        line_offset = f.tell()
+        f.write((json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8"))
+    return line_offset
 
 
 def append_imported_events_sync(
@@ -54241,7 +54279,9 @@ async def record_claude_context_usage(
             session["context_usage_state"] = "available"
             session["context_usage_snapshot"] = stored
             session["claude_context_usage_snapshot"] = stored
-            await STORE.save()
+            # Telemetry sample: the coalesced write lands within the debounce
+            # window, so this hot path never waits on sessions.json.
+            await STORE.save(flush=False)
             signal = provider_context_usage_signal(
                 BACKEND_CLAUDE,
                 state="available",
@@ -54640,8 +54680,9 @@ async def record_codex_token_usage(
                 "saved_at_epoch": now_epoch,
             }
             # The latest bounded checkpoint remains available after restart;
-            # routine telemetry never changes chat ordering.
-            await STORE.save()
+            # routine telemetry never changes chat ordering, and a checkpoint
+            # landing within the debounce window is as good as one landing now.
+            await STORE.save(flush=False)
     if signal is not None:
         await broadcast_provider_runtime_changed(session_id, signal)
     return should_checkpoint
@@ -64803,8 +64844,13 @@ async def persist_run_provider_session(
             provider_id,
             backend,
             defer_runtime_broadcast=True,
+            flush=False,
             **save_kwargs,
         )
+    # The binding is already in memory; wait for its sessions.json write out
+    # here so other chats' runtime bookkeeping is not queued behind this disk
+    # replacement.
+    await STORE.save()
     # Do not hold the global ACTIVE lock through event disk I/O/broadcast. A
     # second exact-owner check prevents a delayed old trace from appearing
     # after a replacement has bound.
@@ -88037,7 +88083,7 @@ async def server_update_pending_waiter_loop() -> None:
     while True:
         schedule_id = ""
         try:
-            pending_status = read_server_update_status()
+            pending_status = await asyncio.to_thread(read_server_update_status)
             if managed_server_update_is_pending(pending_status):
                 schedule_id = str(
                     pending_status.get("schedule_id") or ""

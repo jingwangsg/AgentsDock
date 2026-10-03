@@ -10,6 +10,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import suppress
 from pathlib import Path
@@ -1293,6 +1294,92 @@ class EventCatchupIndexTests(unittest.IsolatedAsyncioTestCase):
                     agent_server.event_index_resume_offset(self.path, 1024),
                     expected_offset,
                 )
+
+    async def test_append_event_runs_the_file_append_off_the_event_loop(self) -> None:
+        session_id = "offloop-chat"
+        agent_server.EVENT_SEQ_CACHE.pop(session_id, None)
+        agent_server.EVENT_DELIVERY_LOCKS.pop(session_id, None)
+        self.addCleanup(agent_server.EVENT_SEQ_CACHE.pop, session_id, None)
+        self.addCleanup(agent_server.EVENT_DELIVERY_LOCKS.pop, session_id, None)
+        threads: list[str] = []
+
+        def stalled_ensure_dirs(sid: str | None = None) -> None:
+            # Stands in for a directory/append syscall stalled on a slow volume.
+            threads.append(threading.current_thread().name)
+            time.sleep(0.5)
+
+        gaps: list[float] = []
+
+        async def ticker() -> None:
+            last = time.monotonic()
+            while True:
+                await asyncio.sleep(0.01)
+                now = time.monotonic()
+                gaps.append(now - last)
+                last = now
+
+        with (
+            patch.dict(agent_server.STORE.sessions, {session_id: {"id": session_id}}),
+            patch.object(agent_server, "ensure_dirs", stalled_ensure_dirs),
+            patch.object(agent_server, "events_path", return_value=self.path),
+            patch.object(agent_server, "update_session_event_metadata", new=AsyncMock()),
+            patch.object(agent_server.HUB, "broadcast", new=AsyncMock()),
+        ):
+            tick = asyncio.create_task(ticker())
+            try:
+                event = await agent_server.append_event(session_id, "assistant_text", {"text": "x"})
+            finally:
+                tick.cancel()
+        self.assertEqual(event["seq"], 1)
+        self.assertEqual(len(threads), 1)
+        self.assertNotEqual(threads[0], threading.main_thread().name)
+        self.assertLess(max(gaps), 0.25)
+        last_line = self.path.read_bytes().splitlines()[-1]
+        self.assertEqual(json.loads(last_line)["seq"], 1)
+        self.assertEqual(last_line, json.dumps(event, separators=(",", ":")).encode())
+
+
+class OffLoopDiskIoTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_update_waiter_reads_the_status_file_off_the_event_loop(self) -> None:
+        threads: list[str] = []
+
+        def stalled_read() -> dict[str, object]:
+            threads.append(threading.current_thread().name)
+            time.sleep(0.5)
+            return {"phase": "idle"}
+
+        gaps: list[float] = []
+
+        async def ticker() -> None:
+            last = time.monotonic()
+            while True:
+                await asyncio.sleep(0.01)
+                now = time.monotonic()
+                gaps.append(now - last)
+                last = now
+
+        with (
+            patch.object(agent_server, "read_server_update_status", stalled_read),
+            patch.object(agent_server, "managed_server_update_is_pending", return_value=False),
+            patch.object(agent_server, "SERVER_UPDATE_PENDING_POLL_SECONDS", 0.01),
+        ):
+            tick = asyncio.create_task(ticker())
+            waiter = asyncio.create_task(agent_server.server_update_pending_waiter_loop())
+            await asyncio.sleep(0.7)
+            waiter.cancel()
+            tick.cancel()
+            with suppress(asyncio.CancelledError):
+                await waiter
+        self.assertTrue(threads)
+        self.assertNotEqual(threads[0], threading.main_thread().name)
+        self.assertLess(max(gaps), 0.25)
+
+    async def test_cross_chat_ledger_calls_run_on_their_own_worker(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        store = agent_server.CrossChatStore(Path(temp.name) / "ledger.sqlite3")
+        name = await store._call(lambda: threading.current_thread().name)
+        self.assertTrue(name.startswith("cross-chat-store"), name)
 
 
 if __name__ == "__main__":

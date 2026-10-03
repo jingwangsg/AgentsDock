@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 from collections import OrderedDict, deque
@@ -1313,16 +1314,22 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 idempotency_key="same-key",
             )
 
+        threads: list[str] = []
+        real_locked_call = agent_server.CROSS_CHAT._locked_call
+
+        def recording_locked_call(callback):
+            threads.append(threading.current_thread().name)
+            return real_locked_call(callback)
+
         with patch.object(
-            agent_server.asyncio,
-            "to_thread",
-            wraps=agent_server.asyncio.to_thread,
-        ) as to_thread:
+            agent_server.CROSS_CHAT, "_locked_call", recording_locked_call,
+        ):
             first, second = await agent_server.asyncio.gather(
                 create("handoff_concurrent_a"),
                 create("handoff_concurrent_b"),
             )
-        self.assertGreaterEqual(to_thread.await_count, 2)
+        self.assertGreaterEqual(len(threads), 2)
+        self.assertNotIn(threading.main_thread().name, threads)
         self.assertEqual(first[0]["id"], second[0]["id"])
         self.assertEqual(sorted((first[1], second[1])), [False, True])
 
