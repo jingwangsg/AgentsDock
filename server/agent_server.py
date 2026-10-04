@@ -93298,6 +93298,17 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
             })
         before_seq = int(events[target_index]["seq"])
         prefix = events[:target_index]
+        # A queued message is pending until a later row consumes it (the turn it
+        # became, or its removal). When that row is about to be truncated while
+        # its turn_queued row stays, the next restart would rebuild it as pending
+        # and auto-run it; record its removal after the tombstone instead.
+        kept_queued_ids = {str(event.get("queued_id") or "") for event in prefix if event.get("type") == "turn_queued"}
+        orphaned_queued_ids = list(dict.fromkeys(
+            str(event.get("queued_id"))
+            for event in events[target_index:]
+            if str(event.get("queued_id") or "") in kept_queued_ids
+            and (event.get("type") in {"turn_started", "turn_unqueued"} or is_native_goal_steer_event(event))
+        ))
         removed = events[target_index:]
         if any(
             str(event.get(key) or "").strip()
@@ -93633,6 +93644,11 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
             "provider_rewind": provider_rewind,
             "outputs_reverted": outputs_reverted,
         })
+        for queued_id in orphaned_queued_ids:
+            await append_durable_event(session_id, "turn_unqueued", {
+                "queued_id": queued_id,
+                "message": "Queued message removed together with the rewound turn it had become.",
+            })
         if usage_signal is not None:
             await broadcast_provider_runtime_changed(session_id, usage_signal)
         return {

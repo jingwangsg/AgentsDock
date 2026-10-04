@@ -1,6 +1,6 @@
 # Public development log
 
-## 2026-10-04 — A Claude rewind no longer strands the chat behind a compaction
+## 2026-10-04 — A Claude rewind no longer strands the chat behind a compaction, nor revives consumed queued messages
 
 - Rewinding a Claude chat forks its native session at the last completed
   reply. When Claude had auto-compacted the session after that reply (which
@@ -17,8 +17,14 @@
   starts and forks the full session instead, with a warning in the server
   log; the model then still remembers the turns the rewind removed from the
   timeline.
-- Verified with two new rewind tests and the existing rewind, fork and
-  Claude runner suites. Reproduced on a remote chat whose auto-compaction sat
+- A rewind also removed the rows saying a queued message had been consumed
+  (the turn it became) or deleted, while its `turn_queued` row before the
+  rewind point stayed. The next server restart rebuilt such messages as
+  pending, auto-ran one of them and let a deleted one block further rewinds
+  with "Remove queued turns before rewinding". The rewind now records a
+  `turn_unqueued` row for each of them after the tombstone.
+- Verified with three new rewind tests and the existing rewind, fork, queue
+  recovery and Claude runner suites. Reproduced on a remote chat whose auto-compaction sat
   between the last completed reply and the rewind; not exercised against a
   live rewind after the fix. Availability: local package and the hub's remote
   installs.

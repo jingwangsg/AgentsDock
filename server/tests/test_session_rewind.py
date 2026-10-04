@@ -654,6 +654,26 @@ class RewindEditTests(RewindFixture):
         self.assertEqual(sess["fork_from"], "claude-parent")
         self.assertNotIn("fork_resume_session_at", sess)
 
+    async def test_rewind_records_the_removal_of_a_queued_message_the_removed_turn_had_become(self) -> None:
+        sess = self.chat(latest_event_seq=11)
+        events = self.events()
+        third_started, third_text, third_finished = events[7:]
+        events[7:] = [
+            {"seq": 8, "id": "e8q", "type": "turn_queued", "queued_id": "queued-1", "ts": "2026-09-08T10:03:30Z",
+             "prompt": "Third question", "file_ids": [], "backend": "claude"},
+            {**third_started, "seq": 9, "queued_id": "queued-1"},
+            {**third_text, "seq": 10},
+            {**third_finished, "seq": 11},
+        ]
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        with self.claude_transcript():
+            await server.rewind_session("chat", rewind_request(expected_latest_seq=11))
+        stored = self.stored_events()
+        self.assertEqual([event["type"] for event in stored[-2:]], ["history_rewound", "turn_unqueued"])
+        self.assertEqual(stored[-1]["queued_id"], "queued-1")
+        # The restart scan must not rebuild it as pending.
+        self.assertEqual(server.scan_queued_turns_from_events([("chat", sess)]), {})
+
     async def test_claude_rewind_refuses_a_cutoff_behind_a_compaction(self) -> None:
         sess = self.chat()
         with self.claude_transcript(COMPACTION_BOUNDARY):
