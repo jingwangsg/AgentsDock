@@ -1,5 +1,5 @@
 import { Pressable, StyleSheet, View } from 'react-native'
-import { ChevronLeft, Globe, PanelLeftClose, PanelLeftOpen, Terminal, X } from 'lucide-react-native'
+import { ChevronLeft, Globe, PanelLeftClose, PanelLeftOpen, Terminal } from 'lucide-react-native'
 import { promptSurfaceRename, surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
@@ -10,7 +10,7 @@ import { TerminalView } from './TerminalView'
 import { useTextPrompt } from './TextPromptDialog'
 import { IconButton } from './ui'
 
-/** A terminal or browser tab in the chat's place: header with rename and close, then the tab itself. */
+/** A terminal or browser tab in the chat's place: header with rename, then the tab itself. Closing lives in the tab row's long-press menu. */
 export function SurfaceScreen({ surface, compact, sidebarCollapsed, onToggleSidebar, onBack }: {
   surface: Surface
   compact: boolean
@@ -21,7 +21,6 @@ export function SurfaceScreen({ surface, compact, sidebarCollapsed, onToggleSide
   const colors = usePalette()
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const updateSurface = useAppStore(state => state.updateSurface)
-  const removeSurface = useAppStore(state => state.removeSurface)
   const { promptText, textPromptDialog } = useTextPrompt()
   const title = surfaceTitle(surface)
   const rename = () => {
@@ -40,7 +39,6 @@ export function SurfaceScreen({ surface, compact, sidebarCollapsed, onToggleSide
         <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{title}</Text>
         <Text style={[styles.subline, { color: colors.muted }]} numberOfLines={1}>{surfaceSubline(surface)}</Text>
       </Pressable>
-      <IconButton icon={X} size={17} touchSize={44} label="Close tab" testID="tab-close" onPress={() => void removeSurface(surface.id, profileGeneration)} />
     </View>
     {surface.kind === 'terminal' ? <TerminalView terminal={surface} /> : <BrowserView surface={surface} />}
     {textPromptDialog}

@@ -1,5 +1,19 @@
 # Public development log
 
+## 2026-10-04 — Browser and terminal tabs lose their header close button (desktop and Android, build 44)
+
+- The tab header's X sat next to the rename title and was easy to hit by
+  accident; both sidebars already close a tab from the row's menu. The
+  desktop header keeps the sidebar toggle and the inline rename; the Android
+  header keeps back/sidebar and rename. Closing is now the sidebar row's
+  right-click "Close tab" on the desktop (and ⌘W, unchanged) and the row's
+  long-press "Close Tab" on Android.
+- Verified with the desktop sidebar and surface pane tests, the Android
+  button-wiring and build contracts, and both type checks; build 44 launches
+  on the emulator. Android build 44 (`AgentsDock-0.1.1-44-sideload.apk`) was
+  attached to the working chat. Not exercised in the running desktop app.
+  Availability: local package.
+
 ## 2026-10-04 — Android edits a running Claude goal in place (build 43)
 
 - Replacing a Claude goal starts a new `/goal` turn, which the server

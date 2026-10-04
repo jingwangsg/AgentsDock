@@ -2,7 +2,7 @@
 import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useEffect, useRef, useState } from 'react'
-import { Globe, PanelLeft, SquareTerminal, X } from 'lucide-react'
+import { Globe, PanelLeft, SquareTerminal } from 'lucide-react'
 import type { Surface } from '@shared/types'
 import { surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { useAppStore } from '../store/app-store'
@@ -71,7 +71,6 @@ function SurfacePane({ surface, active, sidebarVisible, onSidebarToggle }: {
       </div>
       <div className="header-actions">
         {!sidebarVisible && <ShortcutTooltip shortcut="toggleSidebar" label={t('ui.sidebar.showChatList')}><button className="icon-button" aria-label={t('ui.sidebar.showChatList')} onClick={onSidebarToggle}><PanelLeft size={16} /></button></ShortcutTooltip>}
-        <ShortcutTooltip shortcut="closeSurface" label={t('surface.close')}><button className="icon-button" aria-label={t('surface.close')} onClick={() => void useAppStore.getState().removeSurface(surface.id)}><X size={16} /></button></ShortcutTooltip>
       </div>
     </header>
     {surface.kind === 'terminal'
