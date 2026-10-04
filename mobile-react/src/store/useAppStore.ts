@@ -505,6 +505,8 @@ interface AppState {
   runtime: RuntimeCatalog | null
   sessions: Session[]
   selectedSessionId: string | null
+  /** The chat whose timeline is visible right now (AppShell keeps it current); null on the chat list. */
+  onScreenSessionId: string | null
   /** The server's terminal and browser tabs for the active profile; refreshed with the chat list. */
   surfaces: Surface[]
   /** The server's `surfaces_revision` that `surfaces` was read at; null until the first read. */
@@ -690,6 +692,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadingOlder: {},
   filePaging: {},
   activeSessionIds: new Set(),
+  onScreenSessionId: null,
   subagentsBySession: {},
   turnAdmissionTokens: {},
   sendingSessionIds: new Set(),
@@ -4570,7 +4573,7 @@ useAppStore.subscribe((state, previous) => {
   const wasWaiting = new Map(previous.sessions.map(session => [session.id, sessionNeedsProviderInteraction(session)]))
   for (const session of state.sessions) {
     if (session.archived || wasWaiting.get(session.id) !== false || !sessionNeedsProviderInteraction(session)) continue
-    if (NativeAppState.currentState === 'active' && state.selectedSessionId === session.id) continue
+    if (NativeAppState.currentState === 'active' && state.onScreenSessionId === session.id) continue
     const scope = captureConnection()
     requestNotificationPermissionOnce()
     Notifications.scheduleNotificationAsync({
@@ -5187,9 +5190,9 @@ function applyPushedSessionSummary(scope: ConnectionScope, incoming: Session): v
     return { sessions, activeSessionIds, profiles: updateProfileRuntime(state.profiles, scope.profileId, { cachedUnreadCount: unreadCount(sessions) }) }
   })
   if (!changed) return
-  // The selected chat notifies from its own streamed terminal event.
+  // The chat on screen shows its reply; it notifies only from its own stream, in the background.
   const after = get().sessions.find(session => session.id === incoming.id)
-  if (after && terminal && incoming.id !== get().selectedSessionId
+  if (after && terminal && incoming.id !== get().onScreenSessionId
     && (incoming.latest_agent_event_seq ?? 0) > (before?.latest_agent_event_seq ?? 0)) {
     void notifyOnce(scope, after, `poll:${after.latest_event_seq ?? 0}`)
   }

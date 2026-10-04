@@ -24,7 +24,9 @@ test('a chat whose agent starts waiting posts one local notification unless it i
   const subscriber = store.slice(store.indexOf('// One local notification when a chat'), store.indexOf('function saveCurrentWorkspace'))
   assert.match(subscriber, /useAppStore\.subscribe\(\(state, previous\)/)
   assert.match(subscriber, /wasWaiting\.get\(session\.id\) !== false/)
-  assert.match(subscriber, /NativeAppState\.currentState === 'active' && state\.selectedSessionId === session\.id/)
+  assert.match(subscriber, /NativeAppState\.currentState === 'active' && state\.onScreenSessionId === session\.id/)
+  // AppShell owns the one definition of "on screen" the banner and both notifications share.
+  assert.match(read('src/components/AppShell.tsx'), /useAppStore\.setState\(\{ onScreenSessionId \}\)/)
   assert.match(subscriber, /is waiting for you/)
   assert.match(subscriber, /data: \{ profileId: scope\.profileId, serverIdentity: scope\.namespace, sessionId: session\.id \}/)
 })
@@ -39,7 +41,7 @@ test('pushed chat rows reach the list, the running set and the turn-end notifica
   // Rows merge like polled rows and keep the running set in step so the poll does not notify twice.
   assert.match(store, /sessionMutations\.reconcileIncoming\(value, incoming, sessionRead\)/)
   assert.match(store, /activeSessionIds\.delete\(incoming\.id\)/)
-  assert.match(store, /incoming\.id !== get\(\)\.selectedSessionId[\s\S]{0,200}notifyOnce\(scope, after, `poll:/)
+  assert.match(store, /incoming\.id !== get\(\)\.onScreenSessionId[\s\S]{0,200}notifyOnce\(scope, after, `poll:/)
   // The stream follows the foreground connection: started with the refresh timer, stopped on background.
   assert.match(store, /startForegroundRefreshTimer\(get, set\)\n    startSessionSummaryStream\(\)/)
   assert.match(store, /stopSelectedStream\(\)\n      stopSessionSummaryStream\(\)/)

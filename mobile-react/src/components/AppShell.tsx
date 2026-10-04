@@ -116,6 +116,8 @@ function AppShellContent() {
   const modalScopeCurrent = modalGeneration === profileGeneration
   const chatLayout = chatWorkspaceLayout(width, height)
   const compact = chatLayout.compact
+  const onScreenSessionId = compact && !mobileChatOpen ? null : (selectedSurface ? null : selected?.id ?? null)
+  useEffect(() => { useAppStore.setState({ onScreenSessionId }) }, [onScreenSessionId])
   const showInspector = chatLayout.inlineInspectorAvailable && inspectorVisible
   const serverProfileItems = useMemo<ServerProfileListItem[]>(() => profiles.map(profile => ({
     id: profile.id,
@@ -398,7 +400,7 @@ function AppShellContent() {
   return <View style={[styles.fill, { backgroundColor: colors.background }]}>
     <AndroidUpdateCoordinator />
     {error && !showServerSetup ? <View testID="global-error-slot" style={styles.errorSlot}><View style={[styles.error, { backgroundColor: colors.surface, borderColor: colors.red }]}><AlertCircle size={17} color={colors.red} /><View style={styles.errorContent}><Text style={[styles.errorText, { color: colors.text }]} numberOfLines={canCancelPendingServerUpdate ? 4 : 3}>{error}</Text>{canCancelPendingServerUpdate ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel scheduled server update" accessibilityHint="Cancels the pending update so messages can be sent again" accessibilityState={{ disabled: cancelingServerUpdate, busy: cancelingServerUpdate }} testID="error-cancel-server-update" disabled={cancelingServerUpdate} onPress={() => { void cancelCurrentServerUpdate() }} style={({ pressed }) => [styles.errorAction, { backgroundColor: colors.raised, borderColor: colors.border, opacity: cancelingServerUpdate ? 0.45 : pressed ? 0.68 : 1 }]}>{cancelingServerUpdate ? <ActivityIndicator size="small" color={colors.blue} /> : <Text style={[styles.errorActionText, { color: colors.blue }]}>Cancel update</Text>}</Pressable> : null}</View>{!canCancelPendingServerUpdate ? <IconButton icon={Settings} size={15} onPress={openSettings} label="Settings" testID="error-settings" /> : null}<IconButton icon={X} size={15} onPress={clearError} disabled={cancelingServerUpdate} label="Dismiss" testID="error-dismiss" /></View></View> : null}
-    {!showServerSetup ? <WaitingForYouBanner onScreenSessionId={compact && !mobileChatOpen ? null : (selectedSurface ? null : selected?.id ?? null)} onOpen={sessionId => { void useAppStore.getState().selectSession(sessionId); openMobileChat() }} /> : null}
+    {!showServerSetup ? <WaitingForYouBanner onScreenSessionId={onScreenSessionId} onOpen={sessionId => { void useAppStore.getState().selectSession(sessionId); openMobileChat() }} /> : null}
     {compact ? <View style={styles.fill}>{sidebar}{modalScopeCurrent && mobileChatOpen && (selectedSurface || selected) ? <MobileChatPane width={width} backgroundColor={colors.background} onClose={closeMobileChat}>{content}</MobileChatPane> : null}</View> : <View style={styles.workspace}>{sidebarRail}<View style={styles.chat}>{content}</View>{showInspector && selected && !selectedSurface && !isWelcomeSession(selected.id) ? <View style={{ width: Math.min(350, width * 0.29) }}><Inspector key={`inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => openInspectorAction('digest')} onJob={jobId => openInspectorAction('job', jobId)} onTerminal={() => openInspectorAction('terminal')} onProcesses={() => openInspectorAction('processes')} onTmux={() => openInspectorAction('tmux')} onChanges={() => openInspectorAction('changes')} /></View> : null}</View>}
 
     <ServerSetupDialog

@@ -1,6 +1,6 @@
 # Public development log
 
-## 2026-10-04 — Background chats notify within a second: a live chat-row stream (desktop and Android, build 39)
+## 2026-10-04 — Background chats notify within a second: a live chat-row stream (desktop and Android, build 40)
 
 - Both apps streamed events only for the chat on screen, so another chat's
   turn end, Claude question or Codex approval reached the sidebar, the
@@ -25,10 +25,17 @@
 - Verified with four server tests (route, protocol rejection, pushes on
   turn boundaries and on question changes), desktop main-process and client
   tests, the Android contract test, and all three type checks. Android build
-  39 (`AgentsDock-0.1.1-39-sideload.apk`) was attached to the working chat.
-  Emulator check against a live remote chat: see the note below. Not
-  exercised in the running desktop app. Availability: local package and the
-  hub's remote installs.
+  40 (`AgentsDock-0.1.1-40-sideload.apk`) was attached to the working chat;
+  build 39 crashed at start because the shell's new effect sat after an early
+  return, and AppShell now also publishes the one "chat on screen" value the
+  banner and both notifications share. Emulator check against a live remote
+  chat while a different chat was open: the question notification arrived
+  1.7 s after the prompt was sent and the "Response finished" notification
+  1.1 s after a short turn was sent, each matching the server's event time
+  to within clock skew; the banner and the sidebar row updated with them.
+  Not exercised in the running desktop app. Background delivery on Android
+  still depends on the app being in the foreground. Availability: local
+  package and the hub's remote installs.
 
 ## 2026-10-04 — A banner names the chats whose agent is waiting for you (desktop and Android, build 38)
 
