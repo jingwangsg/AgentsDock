@@ -3818,27 +3818,6 @@ describe('background connection event publication', () => {
     expect(send.mock.calls.filter(([channel]) => channel === 'server:event').at(-1)?.[1]).not.toHaveProperty('activeSession')
   })
 
-  it('refreshes the session list once shortly after a provider asks the user something', () => {
-    vi.useFakeTimers()
-    try {
-      const client = fakeClient()
-      const { service } = createProfileService({ 'http://a.test:7850': [client] })
-      const listSessions = vi.spyOn(service, 'listSessions').mockResolvedValue([])
-      const internals = service as unknown as { scope: unknown; emitAgentEvent(scope: unknown, event: Event): void }
-      internals.emitAgentEvent(internals.scope, { id: 'q1', session_id: 'chat-a', seq: 1, type: 'claude_interaction_requested', ts: 'now' })
-      internals.emitAgentEvent(internals.scope, { id: 'q2', session_id: 'chat-b', seq: 2, type: 'codex_interaction_requested', ts: 'now' })
-      internals.emitAgentEvent(internals.scope, { id: 'r1', session_id: 'chat-a', seq: 3, type: 'turn_started', ts: 'now' })
-      expect(listSessions).not.toHaveBeenCalled()
-      vi.advanceTimersByTime(400)
-      expect(listSessions).toHaveBeenCalledTimes(1)
-      internals.emitAgentEvent(internals.scope, { id: 'q3', session_id: 'chat-a', seq: 4, type: 'claude_interaction_resolved', ts: 'now' })
-      vi.advanceTimersByTime(400)
-      expect(listSessions).toHaveBeenCalledTimes(2)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
   it('rejects stale profile health capture before altering the new scope activity projection', async () => {
     const client = fakeClient()
     const { service } = createProfileService({ 'http://a.test:7850': [client] })

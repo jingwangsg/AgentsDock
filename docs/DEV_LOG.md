@@ -12,15 +12,18 @@
   such chat; Hide keeps it away until a different set of chats is waiting.
 - Android posts a local notification when a chat's agent starts waiting,
   unless that chat is open in the foreground; tapping it opens the chat, as
-  the "Response finished" notification does. The desktop learns about a
-  request within half a second instead of on the 30 s session poll: a
-  streamed interaction event schedules one session-list fetch.
-- Verified with three desktop banner tests, a main-process test for the
-  refresh, the Android contract test, and both type checks. Android build 38
-  (`AgentsDock-0.1.1-38-sideload.apk`, project debug key) was attached to the
-  working chat. Not exercised in the running desktop app; the Android banner
-  was checked on the emulator against a live remote chat (see below).
-  Availability: local package.
+  the "Response finished" notification does.
+- Both apps stream live events only for the open chat, so another chat's
+  request reaches the banner and the notification with the session-list
+  poll: within 60 s on Android and 30 s on the desktop. A server-pushed
+  attention signal would close that gap and is not part of this change.
+- Verified with three desktop banner tests, the Android contract test and
+  both type checks. On the emulator, against a live remote chat whose Claude
+  called AskUserQuestion while another chat was open: the banner named the
+  chat and opened it, the sidebar row switched to "waiting for you", and
+  the notification arrived with the next poll. Not exercised in the running
+  desktop app. Android build 38 (`AgentsDock-0.1.1-38-sideload.apk`, project
+  debug key) was attached to the working chat. Availability: local package.
 
 ## 2026-10-04 — A Claude rewind no longer strands the chat behind a compaction, nor revives consumed queued messages
 
