@@ -2,12 +2,9 @@ import type { AgentFile, Event } from '../types'
 import { messageText } from './format'
 import { timelineEventLabel } from './timeline-labels'
 import {
-  ACTIVE_TRACE_PROGRESS_CHARACTER_LIMIT,
-  ACTIVE_TRACE_PROGRESS_LINE_LIMIT,
   ACTIVE_TRACE_PROGRESS_VISIBLE_LIMIT,
   activeTraceProgress,
   activeTraceProgressEvents,
-  activeTraceProgressPreview,
   activityEventSequence,
   codexLifecycleSemanticKey,
   crossChatSemanticKey,
@@ -1040,44 +1037,6 @@ assert(
   && boundedLiveProgress.events[0].text === 'Progress 8',
   'mobile live progress should show twenty recent updates and keep older updates in the trace',
 )
-
-const shortProgressPreview = activeTraceProgressPreview(event(38, 'reasoning_summary', {
-  text: '  Rendering $x^2$ safely.  ',
-}))
-assert(shortProgressPreview === 'Rendering $x^2$ safely.', 'short progress previews should remain complete and trim outer whitespace')
-
-const longFormulaPreview = activeTraceProgressPreview(event(39, 'reasoning_summary', {
-  text: `${'a'.repeat(1_188)} before $${'x'.repeat(100)}$ after`,
-}))
-assert(
-  longFormulaPreview.length <= ACTIVE_TRACE_PROGRESS_CHARACTER_LIMIT,
-  'character-bounded progress must include its ellipsis within the limit',
-)
-assert(longFormulaPreview.endsWith('…'), 'folded character-bounded progress should end with an ellipsis')
-assert(!longFormulaPreview.includes('$'), 'progress folding must not cut through or partially expose a formula')
-
-const longCodePreview = activeTraceProgressPreview(event(40, 'reasoning_summary', {
-  text: `${'b'.repeat(1_188)} before \`${'z'.repeat(100)}\` after`,
-}))
-assert(!longCodePreview.includes('`'), 'progress folding must not cut through or partially expose inline code')
-
-const emojiPreview = activeTraceProgressPreview(event(41, 'reasoning_summary', {
-  text: `${'c'.repeat(1_198)}😀after`,
-}))
-const emojiBeforeEllipsis = emojiPreview.charCodeAt(emojiPreview.length - 2)
-assert(
-  emojiBeforeEllipsis < 0xD800 || emojiBeforeEllipsis > 0xDBFF,
-  'progress folding must not leave an unmatched high surrogate before the ellipsis',
-)
-
-const multilinePreview = activeTraceProgressPreview(event(42, 'reasoning_summary', {
-  text: Array.from({ length: 12 }, (_, index) => `Progress line ${index + 1}`).join('\n'),
-}))
-assert(
-  multilinePreview.split('\n').length <= ACTIVE_TRACE_PROGRESS_LINE_LIMIT,
-  'progress previews must remain within the visual line limit',
-)
-assert(multilinePreview.endsWith('…'), 'line-bounded progress should end with an ellipsis')
 
 const postCompactionRows = projectTimeline([
   event(50, 'turn_started', { run_id: 'run-after-compaction', prompt: 'Keep working' }),

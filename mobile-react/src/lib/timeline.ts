@@ -1,6 +1,5 @@
 import type { AgentFile, Event } from '../types'
 import { hasInjectedProviderAuthority, messageText } from './format'
-import { foldMarkdownSource } from './math'
 import { importedCrossChatDelivery, type ImportedCrossChatDelivery } from './imported-cross-chat-delivery'
 import {
   hasProviderUserProvenance,
@@ -983,8 +982,6 @@ export function projectPresentableHistory(events: Event[], knownFiles: AgentFile
   return rows.length ? rows : null
 }
 
-export const ACTIVE_TRACE_PROGRESS_CHARACTER_LIMIT = 1_200
-export const ACTIVE_TRACE_PROGRESS_LINE_LIMIT = 8
 export const ACTIVE_TRACE_PROGRESS_VISIBLE_LIMIT = 20
 
 /**
@@ -1000,33 +997,6 @@ export function activeTraceProgressEvents(
     && event.phase === 'commentary'
     && Boolean(event.text?.trim())
   ))
-}
-
-/**
- * Bound inline progress without cutting a formula or code span. The complete
- * event remains available in the expanded trace.
- */
-export function activeTraceProgressPreview(event: Pick<Event, 'text'>): string {
-  const source = event.text?.trim() || ''
-  if (!source) return ''
-
-  let lineCutIndex = source.length
-  let lineBreaks = 0
-  for (let index = 0; index < source.length; index += 1) {
-    if (source[index] !== '\n') continue
-    lineBreaks += 1
-    if (lineBreaks === ACTIVE_TRACE_PROGRESS_LINE_LIMIT) {
-      lineCutIndex = index
-      break
-    }
-  }
-
-  const visibleCharacterLimit = ACTIVE_TRACE_PROGRESS_CHARACTER_LIMIT - 1
-  const requestedCutIndex = Math.min(lineCutIndex, visibleCharacterLimit)
-  if (requestedCutIndex >= source.length) return source
-
-  const fold = foldMarkdownSource(source, requestedCutIndex)
-  return `${fold.visible.trimEnd()}…`
 }
 
 export function activeTraceProgress(row: TraceRow): Event | null {

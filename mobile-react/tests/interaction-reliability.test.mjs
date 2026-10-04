@@ -280,7 +280,9 @@ test('active Codex progress renders at the live edge with Mac-style trace detail
   assert.match(timelineRows, /row\.kind === 'progress'[\s\S]*?<ProgressRowView/)
   assert.match(timelineRows, /function ProgressRowView/)
   assert.match(timelineRows, /const commentary = row\.events\.filter\(event => event\.phase === 'commentary'\)[\s\S]*?commentary\.map\(\(event, index\)/)
-  assert.match(timelineRows, /activeTraceProgressPreview\(event\)/)
+  // Live updates render complete, like the desktop; the old preview clipper is gone.
+  assert.match(timelineRows, /<MarkdownContent value=\{event\.text\?\.trim\(\) \|\| ''\} fontScale=\{fontScale\} \/>/)
+  assert.doesNotMatch(timelineRows, /activeTraceProgressPreview/)
   assert.match(timelineRows, /testID="trace-live-updates"/)
   assert.match(timelineRows, /event\.type === 'reasoning_summary'[\s\S]*?<MarkdownContent value=\{text\}/)
   assert.match(timelineRows, /toolCount: Math\.ceil\(toolEventCount \/ 2\)/)

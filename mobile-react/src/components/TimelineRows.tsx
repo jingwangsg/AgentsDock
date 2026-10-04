@@ -7,7 +7,6 @@ import { AlertTriangle, Check, ChevronDown, ChevronRight, Clock3, Code2, Copy, F
 import type { ChatReference, Event } from '../types'
 import type { TimelineRow } from '../lib/timeline'
 import {
-  activeTraceProgressPreview,
   codexLifecycleSemanticKey,
   isCompactionCompletedEvent,
   isCompactionStartedEvent,
@@ -529,7 +528,7 @@ function ProgressRowView({ row, fontScale }: { row: Extract<TimelineRow, { kind:
   const commentary = row.events.filter(event => event.phase === 'commentary')
   const latest = commentary.at(-1)
   const latestAnnouncement = latest
-    ? reasoningTraceHeadline(activeTraceProgressPreview(latest))
+    ? reasoningTraceHeadline(latest.text?.trim() || '')
     : 'Working'
   return <View
     testID="trace-live-updates"
@@ -557,7 +556,8 @@ const ProgressLineView = memo(function ProgressLineView({ event, first, fontScal
     testID={`trace-live-update-${event.id}`}
     style={[styles.progressItem, !first && { borderTopColor: colors.border, borderTopWidth: StyleSheet.hairlineWidth }]}
   >
-    <MarkdownContent value={activeTraceProgressPreview(event)} fontScale={fontScale} />
+    {/* Complete, like the desktop's live commentary: a reader follows the turn here, not in the trace. */}
+    <MarkdownContent value={event.text?.trim() || ''} fontScale={fontScale} />
   </View>
 })
 

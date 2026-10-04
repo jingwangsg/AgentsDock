@@ -1,5 +1,21 @@
 # Public development log
 
+## 2026-10-04 — Android live agent updates render in full (build 41)
+
+- While a turn ran, Android showed each live "agent update" (the model's
+  commentary between tool calls) through a preview clipper: eight lines or
+  1,200 characters, then "…", with the complete text available only later
+  in the collapsed reasoning trace. The desktop renders live commentary in
+  full. A reader following a long update on the phone saw it cut mid-list.
+- The clipper is gone: live updates render the complete Markdown, as on the
+  desktop. The twenty-update window for the live edge is unchanged.
+- Verified with the timeline projection tests, the interaction contract
+  test and the type check, and on the emulator against a live remote turn:
+  a twelve-bullet update of about 1,800 characters stayed complete while
+  the turn kept running. Android build 41
+  (`AgentsDock-0.1.1-41-sideload.apk`) was attached to the working chat.
+  Availability: local package.
+
 ## 2026-10-04 — Background chats notify within a second: a live chat-row stream (desktop and Android, build 40)
 
 - Both apps streamed events only for the chat on screen, so another chat's
