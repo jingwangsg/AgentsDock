@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { rememberedFolderOrder } from '../lib/session-order'
+import { sessionNeedsProviderInteraction } from '../lib/claude-controls'
 import { newIdempotencyKey } from '../lib/team-network'
 import { AppState as NativeAppState } from 'react-native'
 import * as Notifications from 'expo-notifications'
@@ -4552,6 +4553,29 @@ useAppStore.subscribe((state, previous) => {
   if (state.sessions === previous.sessions || state.workspaceAdopting || state.switchingProfileId) return
   const remembered = rememberedFolderOrder(state.folderOrder, state.sessions)
   if (remembered !== state.folderOrder) state.setFolderOrder(remembered, state.profileGeneration)
+})
+
+// One local notification when a chat's agent starts waiting for the user (a question
+// or an approval), unless that chat is open in the foreground; the desktop posts the
+// same native notice. The first list after a connect or a profile switch is not a change.
+useAppStore.subscribe((state, previous) => {
+  if (state.sessions === previous.sessions || !previous.sessions.length || state.switchingProfileId
+    || state.activeProfileId !== previous.activeProfileId) return
+  const wasWaiting = new Map(previous.sessions.map(session => [session.id, sessionNeedsProviderInteraction(session)]))
+  for (const session of state.sessions) {
+    if (session.archived || wasWaiting.get(session.id) !== false || !sessionNeedsProviderInteraction(session)) continue
+    if (NativeAppState.currentState === 'active' && state.selectedSessionId === session.id) continue
+    const scope = captureConnection()
+    requestNotificationPermissionOnce()
+    Notifications.scheduleNotificationAsync({
+      content: {
+        title: session.title,
+        body: `${session.backend === 'codex' ? 'Codex' : 'Claude'} is waiting for you`,
+        data: { profileId: scope.profileId, serverIdentity: scope.namespace, sessionId: session.id },
+      },
+      trigger: null,
+    }).catch(() => { /* permissions can be denied */ })
+  }
 })
 
 function saveCurrentWorkspace(get: () => AppState): Promise<void> {

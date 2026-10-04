@@ -1,5 +1,27 @@
 # Public development log
 
+## 2026-10-04 — A banner names the chats whose agent is waiting for you (desktop and Android, build 38)
+
+- Until now a Claude question or permission request, or a Codex approval,
+  showed only inside that chat (the interaction shelf) and in its sidebar
+  row; the desktop also posted one native notification, the phone none. A
+  chat you were not looking at could wait unnoticed.
+- Both apps now show one line at the top, "Claude is waiting for you in
+  “Title”" or "3 chats are waiting for you: …", for every chat with a
+  pending request except the one on screen. Tapping it opens the first
+  such chat; Hide keeps it away until a different set of chats is waiting.
+- Android posts a local notification when a chat's agent starts waiting,
+  unless that chat is open in the foreground; tapping it opens the chat, as
+  the "Response finished" notification does. The desktop learns about a
+  request within half a second instead of on the 30 s session poll: a
+  streamed interaction event schedules one session-list fetch.
+- Verified with three desktop banner tests, a main-process test for the
+  refresh, the Android contract test, and both type checks. Android build 38
+  (`AgentsDock-0.1.1-38-sideload.apk`, project debug key) was attached to the
+  working chat. Not exercised in the running desktop app; the Android banner
+  was checked on the emulator against a live remote chat (see below).
+  Availability: local package.
+
 ## 2026-10-04 — A Claude rewind no longer strands the chat behind a compaction, nor revives consumed queued messages
 
 - Rewinding a Claude chat forks its native session at the last completed

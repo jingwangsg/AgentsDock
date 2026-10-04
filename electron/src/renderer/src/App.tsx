@@ -34,6 +34,7 @@ import { currentShortcutPlatform } from './components/ShortcutTooltip'
 import { isToggleSidebarChord } from '@shared/shortcuts'
 import { SideChatController } from './lib/side-chat'
 import { Sidebar } from './components/Sidebar'
+import { WaitingForYouBanner } from './components/WaitingForYouBanner'
 import { SurfaceStack } from './components/SurfacePane'
 import { TeamNetwork, type PendingSecurePeerInvite, type TeamNetworkMailboxTarget, type TeamNetworkMessageTarget, type TeamNetworkSection } from './components/TeamNetwork'
 import { CanvasPane, canvasNameFromPath, type CanvasTarget } from './components/CanvasPane'
@@ -915,6 +916,7 @@ export function App() {
         inspectorOpen={visibleDockOpen}
         inspectorMode={reviewVisible ? 'review' : 'inspector'}
       />}
+      {!storageFull && <WaitingForYouBanner />}
       {!storageFull && error && <div className="error-toast" role="alert"><span>{error}</span><button type="button" className="icon-button" aria-label={t("ui.App.App.dismiss_error_2db0466")} title={t("ui.App.App.dismiss_error_2db0466")} onClick={() => useAppStore.getState().setError(null)}><X size={16} /></button></div>}
       <div className="top-right-notice-stack">
         <EmergencyNotice />

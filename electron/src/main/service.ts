@@ -462,6 +462,7 @@ export class AppService {
   private readonly onServerUnavailable?: AppServiceOptions['onServerUnavailable']
   private readonly notificationPopups: NotificationPopupController | null
   private sessions: Session[] = []
+  private interactionRefreshTimer: ReturnType<typeof setTimeout> | null = null
   private jobs: Job[] = []
   private runtimeCatalog: RuntimeCatalog | null = null
   private runtimeRefreshInFlight = new Map<number, { task: Promise<void>; forceProbe: boolean; handoff: boolean }>()
@@ -7388,6 +7389,15 @@ export class AppService {
     if ((event.type === 'turn_finished' || event.type === 'turn_stopped') && Number.isSafeInteger(event.seq)
       && !isImportedHistoryRecord(event) && !isImportedProviderControlMetadata(event) && !isNativeSteerTransitionStop(event)) {
       this.decideTurnEndNotification(scope, event.session_id, event.seq, 'stream')
+    }
+    if (event.type.endsWith('_interaction_requested') || event.type.endsWith('_interaction_resolved')) {
+      // The waiting-for-you banner and notification read the session list, which
+      // otherwise refreshes on the 30 s poll: fetch it once shortly after the event.
+      if (this.interactionRefreshTimer) clearTimeout(this.interactionRefreshTimer)
+      this.interactionRefreshTimer = setTimeout(() => {
+        this.interactionRefreshTimer = null
+        void this.listSessions().catch(() => undefined)
+      }, 400)
     }
     const previousHealth = this.health
     const projectedHealth = this.activityHealth.observe(this.activityScope(scope), event)

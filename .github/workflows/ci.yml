@@ -90,6 +90,7 @@ jobs:
           tests/imported-cross-chat-rendering.test.mjs
           tests/cross-chat-composer-ui-contract.test.mjs
           tests/cross-chat-store-contract.test.mjs
+          tests/waiting-banner-ui-contract.test.mjs
           tests/cross-chat-timeline-ui-contract.test.mjs
         working-directory: mobile-react
       - run: node --test tests/ios-release-metadata.test.mjs
