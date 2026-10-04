@@ -1,16 +1,24 @@
 # Public development log
 
-## 2026-10-04 — The Android goal bar's pencil explains why a running goal cannot be replaced (build 42)
+## 2026-10-04 — Android edits a running Claude goal in place (build 43)
 
 - Replacing a Claude goal starts a new `/goal` turn, which the server
   refuses while a turn is running. The desktop still opens its goal dialog
   and says "Clear & stop before replacing this goal"; Android disabled the
   pencil with no feedback, so it looked broken for the hours a goal ran.
-- The pencil now stays tappable. While Claude is working it shows that
-  explanation with a Clear & stop action; otherwise it opens the editor as
-  before. Verified with the goal-bar component test, the build contracts and
-  the type check; build 42 launches on the emulator. Android build 42
-  (`AgentsDock-0.1.1-42-sideload.apk`) was attached to the working chat.
+- The pencil now always opens the editor, prefilled with the current
+  condition (the desktop dialog already prefilled it; the phone's prompt
+  started empty). While Claude is working the editor says that saving stops
+  the current work first, and its button reads "Stop & set goal": the app
+  clears the goal (the same interrupt as Clear & stop), waits until the server
+  reports the chat idle, then starts the edited condition as the new goal.
+  If the chat is still stopping after fifteen seconds it says so instead of
+  failing silently. Build 42, an intermediate step that only explained the
+  refusal, is superseded.
+- Verified with the goal-bar component test, a new contract test for the
+  editor flow, the build contracts and the type check; build 43 launches on
+  the emulator. Not exercised against a live running goal. Android build 43
+  (`AgentsDock-0.1.1-43-sideload.apk`) was attached to the working chat.
   Availability: local package.
 
 ## 2026-10-04 — Android live agent updates render in full (build 41)

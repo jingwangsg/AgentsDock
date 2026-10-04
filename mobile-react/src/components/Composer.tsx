@@ -620,7 +620,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     discoverMention(trigger)
   }, [discoverMention])
 
-  const setGoalFromCommand = async (argument: string) => {
+  const setGoalFromCommand = async (argument: string, { stopFirst = false } = {}) => {
     if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
     try {
       if (backend === 'codex') {
@@ -628,7 +628,20 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       } else if (backend === 'claude') {
         // Same server path as desktop: AgentsServer turns the condition into a native `/goal` turn.
         // Through run(), so the goal bar's controls are disabled while the request is in flight.
-        await claudeRuntime.run((connection, id) => argument.toLocaleLowerCase() === 'clear' ? connection.clearClaudeGoal(id) : connection.setClaudeGoal(id, argument))
+        const clearing = argument.toLocaleLowerCase() === 'clear'
+        if (stopFirst && !clearing) {
+          // A `/goal` turn is refused while one runs. Clearing interrupts the running work (the
+          // bar's "Clear & stop"); the new condition starts once the server reports the chat idle.
+          await claudeRuntime.run((connection, id) => connection.clearClaudeGoal(id))
+          let idle = false
+          for (let attempt = 0; attempt < 30 && !idle; attempt += 1) {
+            if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+            idle = (await claudeRuntime.refresh())?.status?.type !== 'active'
+            if (!idle) await new Promise(resolve => setTimeout(resolve, 500))
+          }
+          if (!idle) throw new Error('Claude is still stopping. Set the goal again in a moment.')
+        }
+        await claudeRuntime.run((connection, id) => clearing ? connection.clearClaudeGoal(id) : connection.setClaudeGoal(id, argument))
       }
     } catch (error) {
       if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Could not update goal', errorText(error))
@@ -637,12 +650,18 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const openRuntimeSheet = (section: 'model' | 'reasoning') => { setRuntimeSheetSection(section); requestAnimationFrame(dismissAppKeyboard) }
   const openGoalCommand = () => {
     if (backend === 'codex') { setGoalEditorOpen(true); requestAnimationFrame(dismissAppKeyboard); return }
+    // Edit the current condition in place, as the desktop dialog prefills it.
+    const goal = claudeRuntime.runtime?.goal
+    const busy = claudeRuntime.runtime?.status?.type === 'active'
     void promptText({
       title: 'Claude goal',
-      message: 'Claude keeps working until this condition is met. Enter "clear" to remove the current goal.',
-      confirmLabel: 'Set goal',
+      initialValue: goal?.status === 'active' ? goal.condition : '',
+      message: busy
+        ? 'Claude is still working on the current goal. Saving stops that work, then starts this goal.'
+        : 'Claude keeps working until this condition is met. Enter "clear" to remove the current goal.',
+      confirmLabel: busy ? 'Stop & set goal' : 'Set goal',
       placeholder: 'Completion condition',
-    }).then(value => { if (value?.trim()) void setGoalFromCommand(value.trim()) })
+    }).then(value => { if (value?.trim()) void setGoalFromCommand(value.trim(), { stopFirst: busy }) })
   }
   const send = async (steer = false, promptOverride?: string, consumeComposer = true, skillSelection?: ProviderCommandSelection) => {
     if (welcome) {

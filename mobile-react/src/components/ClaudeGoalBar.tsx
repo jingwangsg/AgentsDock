@@ -31,16 +31,9 @@ export function ClaudeGoalBar({ onEdit, onClear }: { onEdit: () => void; onClear
       { text: busy ? 'Clear & stop' : 'Clear goal', style: 'destructive', onPress: onClear },
     ])
   }
-  // Replacing needs a new /goal turn, which the server refuses while one is running. The
-  // desktop opens its dialog and says so; a silently disabled pencil only looked broken here.
-  const explainBusy = () => {
-    Alert.alert('Claude is still working', 'Clear & stop before replacing this goal.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Clear & stop', style: 'destructive', onPress: onClear },
-    ])
-  }
   return <View testID="claude-goal-bar" accessibilityLabel="Claude goal" style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.blue }]}>
-    <Pressable testID="claude-goal-edit" accessibilityRole="button" accessibilityLabel="Edit Claude goal" accessibilityHint={busy ? 'Explains why the goal cannot be replaced yet' : undefined} disabled={mutating} onPress={busy ? explainBusy : onEdit} style={styles.summary}>
+    {/* Editing while Claude works stops the running goal first; the editor (Composer.openGoalCommand) says so. */}
+    <Pressable testID="claude-goal-edit" accessibilityRole="button" accessibilityLabel="Edit Claude goal" disabled={mutating} onPress={onEdit} style={styles.summary}>
       <Goal size={18} color={colors.blue} />
       <View style={styles.grow}>
         <Text testID="claude-goal-condition" style={[styles.condition, { color: colors.text }]} numberOfLines={2}>{goal.condition}</Text>
