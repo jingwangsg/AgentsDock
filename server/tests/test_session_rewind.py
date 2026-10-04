@@ -9,6 +9,11 @@ from unittest.mock import AsyncMock, Mock, patch
 import agent_server as server
 
 
+# A Claude auto-compaction row: it has no parent, so the resumed chain stops here.
+COMPACTION_BOUNDARY = {"type": "system", "subtype": "compact_boundary", "uuid": "boundary-uuid", "parentUuid": None,
+                       "timestamp": "2026-09-08T10:03:30Z"}
+
+
 def rewind_request(**overrides):
     payload = {"to_run_id": "third", "expected_latest_seq": 10, "confirmed": True}
     payload.update(overrides)
@@ -636,6 +641,26 @@ class RewindEditTests(RewindFixture):
         path.write_text(path.read_text(encoding="utf-8") + json.dumps({"session_id": "chat", **ran}) + "\n", encoding="utf-8")
         server.drop_stale_claude_fork_binding("chat", sess)
         self.assertIsNone(sess["fork_from"])
+        self.assertNotIn("fork_resume_session_at", sess)
+
+    def test_a_fork_cutoff_is_dropped_once_the_source_session_was_compacted_behind_it(self) -> None:
+        sess = self.chat(fork_from="claude-parent", fork_resume_session_at="second-uuid")
+        with self.claude_transcript():
+            server.drop_stale_claude_fork_binding("chat", sess)
+        self.assertEqual((sess["fork_from"], sess["fork_resume_session_at"]), ("claude-parent", "second-uuid"))
+        # Claude compacted after the cutoff: the CLI cannot resume there, so the fork takes the full history.
+        with self.claude_transcript(COMPACTION_BOUNDARY):
+            server.drop_stale_claude_fork_binding("chat", sess)
+        self.assertEqual(sess["fork_from"], "claude-parent")
+        self.assertNotIn("fork_resume_session_at", sess)
+
+    async def test_claude_rewind_refuses_a_cutoff_behind_a_compaction(self) -> None:
+        sess = self.chat()
+        with self.claude_transcript(COMPACTION_BOUNDARY):
+            raised = await self.assertRewindRejected(rewind_request(), 409, "rewind_boundary_ambiguous")
+        self.assertIn("compacted", raised.detail["message"])
+        self.assertEqual([event["seq"] for event in self.stored_events()], list(range(1, 11)))
+        self.assertIsNone(sess.get("fork_from"))
         self.assertNotIn("fork_resume_session_at", sess)
 
 

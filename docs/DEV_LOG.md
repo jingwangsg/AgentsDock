@@ -1,5 +1,28 @@
 # Public development log
 
+## 2026-10-04 — A Claude rewind no longer strands the chat behind a compaction
+
+- Rewinding a Claude chat forks its native session at the last completed
+  reply. When Claude had auto-compacted the session after that reply (which
+  happens during a long turn that was later stopped), the CLI could not find
+  the fork point: it resumes a session as the parent chain from the newest
+  row, and the compaction boundary has no parent, so every row before it is
+  unreachable. The next turn then failed with "Claude SDK could not connect
+  ... exit code 1", and so did every turn after it, while the rewind itself
+  had reported success and truncated the local history.
+- The rewind now reads the transcript past the matched reply and refuses with
+  "Claude compacted this session's context after its last completed reply"
+  when a compaction boundary follows it; the chat is left unchanged. A chat
+  that already carries such a fork point drops the cutoff when its next turn
+  starts and forks the full session instead, with a warning in the server
+  log; the model then still remembers the turns the rewind removed from the
+  timeline.
+- Verified with two new rewind tests and the existing rewind, fork and
+  Claude runner suites. Reproduced on a remote chat whose auto-compaction sat
+  between the last completed reply and the rewind; not exercised against a
+  live rewind after the fix. Availability: local package and the hub's remote
+  installs.
+
 ## 2026-10-04 — Android terminal tabs connect; the key row stays above the keyboard and gains Enter (builds 35–37)
 
 - Builds 33 and 34 still showed "Connecting" on every Android terminal tab,

@@ -61862,11 +61862,29 @@ def session_system_prompt(
     )
 
 
+def claude_cutoff_behind_compaction(path: Path, cutoff: str) -> bool:
+    """Whether a Claude compaction boundary follows the cutoff row in the transcript.
+
+    Claude Code resumes a session as the parent chain from its newest row, and a
+    compaction boundary row has no parent: rows before it are unreachable, so
+    ``--resume-session-at`` with such a uuid exits 1 ("No message found").
+    """
+    seen = False
+    for record in bounded_jsonl_events(path):
+        if str(record.get("uuid") or "") == cutoff:
+            seen = True
+        elif seen and record.get("type") == "system" and record.get("subtype") == "compact_boundary":
+            return True
+    return False
+
+
 def drop_stale_claude_fork_binding(session_id: str, sess: dict[str, Any]) -> None:
     """A rewind's fork binding applies to the next turn only.
 
     If a turn has since run in the source session itself (the fork did not
     happen), honoring the binding now would drop that turn from the model.
+    A cutoff that a later compaction made unreachable is dropped too: the
+    fork then carries the session's full history instead of failing every turn.
     """
     fork_from = str(sess.get("fork_from") or "")
     if not fork_from:
@@ -61884,6 +61902,19 @@ def drop_stale_claude_fork_binding(session_id: str, sess: dict[str, Any]) -> Non
         logger.warning("claude fork binding dropped: session %s ran a turn after the rewind chat=%s",
                        fork_from, session_id)
         sess["fork_from"] = None
+        sess.pop("fork_resume_session_at", None)
+        return
+    cutoff = str(sess.get("fork_resume_session_at") or "")
+    if not cutoff:
+        return
+    transcript = claude_resume_file_for_cwd(fork_from, str(sess.get("cwd") or ""))
+    try:
+        compacted = transcript.is_file() and claude_cutoff_behind_compaction(transcript, cutoff)
+    except (OSError, ValueError):
+        return
+    if compacted:
+        logger.warning("claude fork cutoff dropped: session %s was compacted after the rewind point, "
+                       "forking its full history chat=%s", fork_from, session_id)
         sess.pop("fork_resume_session_at", None)
 
 
@@ -92669,7 +92700,13 @@ def claude_completed_fork_boundary(
             "The last completed Claude turn could not be matched to an exact provider "
             "snapshot. The running chat was left unchanged; retry after it finishes."
         ))
-    return next(iter(matches))
+    cutoff = next(iter(matches))
+    if any(claude_cutoff_behind_compaction(path, cutoff) for path in paths):
+        raise HTTPException(status_code=409, detail=(
+            "Claude compacted this session's context after its last completed reply, "
+            "so it cannot resume from that point. The chat was left unchanged."
+        ))
+    return cutoff
 
 
 @app.post("/api/sessions/{session_id}/fork")
