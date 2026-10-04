@@ -1219,6 +1219,52 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         print_runner.assert_not_awaited()
         terminal_failure.assert_awaited_once()
 
+    async def test_a_resume_cutoff_claude_rejects_is_dropped_and_the_turn_retried_once(self) -> None:
+        session = dict(self.session, fork_from="claude-parent", fork_resume_session_at="cut-uuid")
+        attempts: list[dict] = []
+
+        async def sdk(session_id, run_id, prompt, sess, manifest_path, **_kwargs):
+            attempts.append(dict(sess))
+            if len(attempts) == 1:
+                # What the stderr hook records when the CLI prints "No message found with message.uuid of: cut-uuid".
+                sess["_claude_rejected_resume_cutoff"] = "cut-uuid"
+                raise ClaudeSDKUnavailable("Command failed with exit code 1")
+
+        evict = AsyncMock(return_value=True)
+        terminal_failure = AsyncMock()
+        with patch.object(agent_server, "CLAUDE_TRANSPORT", agent_server.CLAUDE_TRANSPORT_AUTO), patch.object(
+            agent_server, "run_claude_sdk", sdk,
+        ), patch.object(agent_server, "evict_claude_sdk_chat", evict), patch.object(
+            agent_server, "finish_claude_sdk_start_failure", terminal_failure,
+        ):
+            await agent_server.run_claude(
+                "chat-claude", "run-claude", "Prompt", session, Path(self.cwd) / ".manifest.json",
+                interactive_agent_sdk=True,
+            )
+
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[1].get("fork_from"), "claude-parent")
+        self.assertNotIn("fork_resume_session_at", attempts[1])
+        evict.assert_awaited_once_with("chat-claude", force=True)
+        terminal_failure.assert_not_awaited()
+        # A rejection naming some other point is not this chat's cutoff: no retry.
+        attempts.clear()
+
+        async def unrelated(session_id, run_id, prompt, sess, manifest_path, **_kwargs):
+            attempts.append(dict(sess))
+            sess["_claude_rejected_resume_cutoff"] = "other-uuid"
+            raise ClaudeSDKUnavailable("Command failed with exit code 1")
+
+        with patch.object(agent_server, "CLAUDE_TRANSPORT", agent_server.CLAUDE_TRANSPORT_AUTO), patch.object(
+            agent_server, "run_claude_sdk", unrelated,
+        ), patch.object(agent_server, "finish_claude_sdk_start_failure", terminal_failure):
+            await agent_server.run_claude(
+                "chat-claude", "run-claude", "Prompt", dict(session), Path(self.cwd) / ".manifest.json",
+                interactive_agent_sdk=True,
+            )
+        self.assertEqual(len(attempts), 1)
+        terminal_failure.assert_awaited_once()
+
     async def test_terminal_context_usage_is_normalized_persisted_and_broadcast(self) -> None:
         manager = FakeClaudeManager()
         manager.context_usage_response = ({

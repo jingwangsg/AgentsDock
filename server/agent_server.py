@@ -61862,6 +61862,12 @@ def session_system_prompt(
     )
 
 
+CLAUDE_CUTOFF_COMPACTED_DETAIL = (
+    "Claude compacted this session's context after its last completed reply, "
+    "so it cannot resume from that point. The chat was left unchanged."
+)
+
+
 def claude_cutoff_behind_compaction(path: Path, cutoff: str) -> bool:
     """Whether a Claude compaction boundary follows the cutoff row in the transcript.
 
@@ -62172,6 +62178,14 @@ def build_claude_sdk_options(
         extra_args["name"] = sess.get("title") or sess["id"]
         if sess.get("fork_resume_session_at"):
             extra_args["resume-session-at"] = str(sess["fork_resume_session_at"])
+    def on_stderr(line: str) -> None:
+        logger.warning("Claude SDK stderr session=%s: %s", session_id, compact_memory_text(line, 2_000))
+        rejected = line.partition("No message found with message.uuid of:")
+        if rejected[1]:
+            # The CLI exits right after this line; run_claude drops the rewind
+            # cutoff it names and retries the turn once.
+            sess["_claude_rejected_resume_cutoff"] = rejected[2].strip()
+
     options = create_claude_agent_options(
         system_prompt={
             "type": "preset",
@@ -62204,11 +62218,7 @@ def build_claude_sdk_options(
         max_buffer_size=PROCESS_STREAM_LIMIT,
         extra_args=extra_args,
         **subagent_settings,
-        stderr=lambda line: logger.warning(
-            "Claude SDK stderr session=%s: %s",
-            session_id,
-            compact_memory_text(line, 2_000),
-        ),
+        stderr=on_stderr,
     )
     def bind_provider_tool_owner(ownership_token: str, run_id: str) -> None:
         provider_tool_owner["ownership_token"] = str(ownership_token)
@@ -67604,21 +67614,27 @@ async def run_claude(
             provider_runtime_env=provider_runtime_env,
         )
         return
+    sdk_kwargs: dict[str, Any] = {"provider_runtime_env": provider_runtime_env}
+    if provider_command is not None:
+        sdk_kwargs["provider_command"] = provider_command
     try:
-        await run_claude_sdk(
-            session_id,
-            run_id,
-            prompt,
-            sess,
-            manifest_path,
-            provider_runtime_env=provider_runtime_env,
-            **(
-                {"provider_command": provider_command}
-                if provider_command is not None
-                else {}
-            ),
-        )
+        await run_claude_sdk(session_id, run_id, prompt, sess, manifest_path, **sdk_kwargs)
     except ClaudeSDKUnavailable as exc:
+        failure = exc
+        rejected = sess.pop("_claude_rejected_resume_cutoff", None)
+        if rejected and rejected == sess.get("fork_resume_session_at"):
+            # Claude could not load the rewind's fork point (build_claude_sdk_options
+            # recorded its stderr). A chat must not fail every turn over a cutoff
+            # the CLI cannot honor: fork the session's full history instead.
+            logger.warning("claude fork cutoff dropped: Claude rejected resume point %s, forking the full history chat=%s",
+                           rejected, session_id)
+            sess.pop("fork_resume_session_at", None)
+            await evict_claude_sdk_chat(session_id, force=True)
+            try:
+                await run_claude_sdk(session_id, run_id, prompt, sess, manifest_path, **sdk_kwargs)
+                return
+            except ClaudeSDKUnavailable as retry_exc:
+                failure = retry_exc
         # Interactive desktop clients opted into approval/question semantics.
         # The legacy print path deliberately skips permissions, so silently
         # downgrading an opted-in turn would execute with weaker safety than
@@ -67627,7 +67643,7 @@ async def run_claude(
         await finish_claude_sdk_start_failure(
             session_id,
             run_id,
-            f"Claude Agent SDK is unavailable: {concise_error_message(exc)}",
+            f"Claude Agent SDK is unavailable: {concise_error_message(failure)}",
         )
 
 
@@ -92619,6 +92635,8 @@ def claude_imported_fork_boundary(
         or native_item.get("text") != str(visible[-1].get("text") or "")
     ):
         raise ValueError("imported visible history does not match the native completed boundary")
+    if claude_cutoff_behind_compaction(path, cutoff):
+        raise HTTPException(status_code=409, detail=CLAUDE_CUTOFF_COMPACTED_DETAIL)
     return cutoff
 
 
@@ -92702,10 +92720,7 @@ def claude_completed_fork_boundary(
         ))
     cutoff = next(iter(matches))
     if any(claude_cutoff_behind_compaction(path, cutoff) for path in paths):
-        raise HTTPException(status_code=409, detail=(
-            "Claude compacted this session's context after its last completed reply, "
-            "so it cannot resume from that point. The chat was left unchanged."
-        ))
+        raise HTTPException(status_code=409, detail=CLAUDE_CUTOFF_COMPACTED_DETAIL)
     return cutoff
 
 

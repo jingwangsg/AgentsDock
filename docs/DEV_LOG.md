@@ -23,7 +23,13 @@
   pending, auto-ran one of them and let a deleted one block further rewinds
   with "Remove queued turns before rewinding". The rewind now records a
   `turn_unqueued` row for each of them after the tombstone.
-- Verified with three new rewind tests and the existing rewind, fork, queue
+- Two more guards for causes not yet seen: the compaction check also covers
+  chats resumed from imported Claude history, and when Claude's CLI itself
+  rejects a bound resume point at start ("No message found with
+  message.uuid"), the turn drops that cutoff, forks the full history and
+  retries once instead of failing, so no chat can keep failing every turn
+  over a fork point the CLI will not load.
+- Verified with four new tests and the existing rewind, fork, queue
   recovery and Claude runner suites. Reproduced on a remote chat whose auto-compaction sat
   between the last completed reply and the rewind; not exercised against a
   live rewind after the fix. Availability: local package and the hub's remote
