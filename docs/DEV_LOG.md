@@ -12,6 +12,9 @@
   button-wiring and build contracts, and both type checks; build 44 launches
   on the emulator. Android build 44 (`AgentsDock-0.1.1-44-sideload.apk`) was
   attached to the working chat. Not exercised in the running desktop app.
+  Local macOS package 96 (`AgentsDock-0.2.0-96-mac-arm64.pkg`, unsigned)
+  carries every desktop change of this day up to here and was attached to
+  the working chat; package 95 predates the banner and the chat-row stream.
   Availability: local package.
 
 ## 2026-10-04 — Android edits a running Claude goal in place (build 43)
