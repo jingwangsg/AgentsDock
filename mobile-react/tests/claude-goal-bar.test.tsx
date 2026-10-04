@@ -55,13 +55,20 @@ test('an active Claude goal stays visible with its condition, and Clear asks fir
   assert.equal(calls.clear, 1)
 })
 
-test('while Claude is working, clearing is offered as Clear & stop and editing waits', async () => {
+test('while Claude is working, clearing is offered as Clear & stop and the pencil explains instead of editing', async () => {
   const tree = await mount(runtime(goal, 'active'))
   assert.equal(nodes(tree, 'claude-goal-clear')[0].props.accessibilityLabel, 'Clear the goal and stop current work')
   assert.match(texts(tree), /Clear & stop/)
-  assert.equal(nodes(tree, 'claude-goal-edit')[0].props.disabled, true)
+  // The pencil stays tappable: the server refuses a replacement mid-turn, so it says why and offers the way out.
+  assert.equal(nodes(tree, 'claude-goal-edit')[0].props.disabled, false)
+  await act(async () => { nodes(tree, 'claude-goal-edit')[0].props.onPress() })
+  assert.equal(calls.edit, 0)
+  assert.equal(Alert.__calls[0].title, 'Claude is still working')
+  assert.equal(Alert.__calls[0].message, 'Clear & stop before replacing this goal.')
+  await act(async () => Alert.__calls[0].buttons?.find(button => button.style === 'destructive')?.onPress?.())
+  assert.equal(calls.clear, 1)
   await act(async () => { nodes(tree, 'claude-goal-clear')[0].props.onPress() })
-  assert.equal(Alert.__calls[0].title, 'Clear the goal and stop current work?')
+  assert.equal(Alert.__calls[1].title, 'Clear the goal and stop current work?')
 })
 
 test('an achieved or cleared goal shows no bar', async () => {
