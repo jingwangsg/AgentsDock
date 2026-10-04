@@ -2684,6 +2684,49 @@ describe('emergency contact service fencing', () => {
     expect(upsertSession).not.toHaveBeenCalled()
   })
 
+  it('merges a pushed chat row like a polled one and notices its turn end at once', () => {
+    let onSession!: (session: Session) => void
+    const stop = vi.fn()
+    const sessionSummaryStream = vi.fn((_expectedServerIdentity: string, listener: typeof onSession) => {
+      onSession = listener
+      return stop
+    })
+    const scope = { profileId: 'profile-a', generation: 7, namespace: 'server-a', client: { sessionSummaryStream } }
+    const putSessions = vi.fn()
+    const emitSessions = vi.fn()
+    const refreshProfileUnread = vi.fn()
+    const noticePolledTurnEnds = vi.fn()
+    const service = Object.create(AppService.prototype) as AppService
+    const background: Session = { id: 'bg', title: 'Background', backend: 'claude', system_prompt: 'Preserve me', latest_agent_event_seq: 3, latest_agent_event_type: 'tool_finished' }
+    Object.assign(service, {
+      scope, activeProfileId: scope.profileId, profileGeneration: scope.generation, validatedGeneration: scope.generation,
+      sessions: [background],
+      sessionSummaryStreamStop: null, sessionSummaryStreamGeneration: null, sessionSummaryStreamServerIdentity: null,
+      cache: { putSessions }, emitSessions, refreshProfileUnread, noticePolledTurnEnds
+    })
+    const internals = service as unknown as {
+      ensureSessionSummaryStream(capturedScope: unknown, health: Health): void
+      sessions: Session[]
+    }
+    internals.ensureSessionSummaryStream(scope, { ok: true, server_identity: 'server-a', capabilities: { session_summary_events_v1: { available: true, required: false, message: 'Live chat rows.', action: null } } })
+    expect(sessionSummaryStream.mock.calls[0][0]).toBe('server-a')
+    // The same health again keeps the one stream.
+    internals.ensureSessionSummaryStream(scope, { ok: true, server_identity: 'server-a', capabilities: { session_summary_events_v1: { available: true, required: false, message: 'Live chat rows.', action: null } } })
+    expect(sessionSummaryStream).toHaveBeenCalledTimes(1)
+
+    onSession({ id: 'bg', title: 'Background', backend: 'claude', latest_agent_event_seq: 9, latest_agent_event_type: 'turn_finished' })
+    expect(internals.sessions).toEqual([expect.objectContaining({ id: 'bg', system_prompt: 'Preserve me', latest_agent_event_seq: 9, latest_agent_event_type: 'turn_finished' })])
+    expect(noticePolledTurnEnds).toHaveBeenCalledWith(scope, internals.sessions)
+    expect(emitSessions).toHaveBeenCalledWith(scope, internals.sessions)
+    expect(putSessions).toHaveBeenCalledWith('server-a', internals.sessions)
+    // A chat this list has not seen yet is added rather than dropped.
+    onSession({ id: 'new', title: 'New chat', backend: 'codex', codex_needs_user_action: true })
+    expect(internals.sessions.map(session => session.id)).toEqual(['bg', 'new'])
+    // Without the capability the stream is stopped.
+    internals.ensureSessionSummaryStream(scope, { ok: true, server_identity: 'server-a', capabilities: {} })
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
   it('merges snapshot and change packets only while their authenticated profile generation remains current', () => {
     let onSessions!: (sessions: Session[], snapshot: boolean, removedSessionId?: string) => void
     const stop = vi.fn()

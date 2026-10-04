@@ -432,6 +432,9 @@ export class AppService {
   private emergencyStreamStop: (() => void) | null = null
   private emergencyStreamGeneration: number | null = null
   private emergencyStreamServerIdentity: string | null = null
+  private sessionSummaryStreamStop: (() => void) | null = null
+  private sessionSummaryStreamGeneration: number | null = null
+  private sessionSummaryStreamServerIdentity: string | null = null
   private rendererReadyWindows = new WeakSet<BrowserWindow>()
   private rendererGrantEpochs = new Map<number, number>()
   private rendererFileOperations = new Map<number, Set<AbortController>>()
@@ -685,6 +688,7 @@ export class AppService {
     this.searchBackfillTimer = null
     cleanup(() => this.closeAllTimelineSubscriptions())
     cleanup(() => this.stopEmergencyStream())
+    cleanup(() => this.stopSessionSummaryStream())
     cleanup(() => this.mailHints.retire())
     this.pendingNotificationRoutes = []
     this.rendererReadyWindows = new WeakSet<BrowserWindow>()
@@ -3408,6 +3412,67 @@ export class AppService {
     stop?.()
   }
 
+  /** One live chat row per turn boundary or provider question, for every chat of
+   *  the active profile; the 30 s poll stays as the fallback. A row merges like a
+   *  polled list so the turn-end notification and the renderer's waiting notice
+   *  follow at once instead of on the next poll. */
+  private ensureSessionSummaryStream(scope: ConnectionScope, health: Health): void {
+    const capability = health.capabilities?.session_summary_events_v1
+    const serverIdentity = health.server_identity?.trim() || null
+    const supported = Boolean(
+      capability
+      && typeof capability === 'object'
+      && !Array.isArray(capability)
+      && (capability as { available?: unknown }).available === true
+      && serverIdentity
+    )
+    if (!supported) {
+      this.stopSessionSummaryStream()
+      return
+    }
+    if (
+      this.sessionSummaryStreamStop
+      && this.sessionSummaryStreamGeneration === scope.generation
+      && this.sessionSummaryStreamServerIdentity === serverIdentity
+    ) return
+    this.stopSessionSummaryStream()
+    const stop = scope.client.sessionSummaryStream(serverIdentity!, incoming => {
+      if (!this.isCurrentScope(scope) || !this.isValidatedScope(scope)) return
+      const existing = this.sessions.find(session => session.id === incoming.id)
+      const merged = mergeSessionSummaries(existing ? [existing] : [], [incoming])[0]
+      const sessions = existing
+        ? this.sessions.map(session => session.id === merged.id ? merged : session)
+        : [...this.sessions, merged]
+      if (jsonEqual(this.sessions, sessions)) return
+      this.sessions = sessions
+      this.cache.putSessions(scope.namespace, sessions)
+      this.noticePolledTurnEnds(scope, sessions)
+      this.emitSessions(scope, sessions)
+      this.refreshProfileUnread(scope)
+    }, (connected, error) => {
+      if (!this.isCurrentScope(scope)) return
+      if (!connected && error) appLog('session-summaries', 'live chat row stream reconnecting', {
+        profileId: scope.profileId,
+        error
+      })
+    })
+    if (!this.isCurrentScope(scope)) {
+      stop()
+      return
+    }
+    this.sessionSummaryStreamStop = stop
+    this.sessionSummaryStreamGeneration = scope.generation
+    this.sessionSummaryStreamServerIdentity = serverIdentity
+  }
+
+  private stopSessionSummaryStream(): void {
+    const stop = this.sessionSummaryStreamStop
+    this.sessionSummaryStreamStop = null
+    this.sessionSummaryStreamGeneration = null
+    this.sessionSummaryStreamServerIdentity = null
+    stop?.()
+  }
+
   private ensureInactiveEmergencyStream(
     profileId: string,
     revision: number,
@@ -5489,6 +5554,7 @@ export class AppService {
         this.healthFailureCount = 0
         activeScope = this.adoptHealth(scope, health.value)
         this.ensureEmergencyStream(activeScope, health.value)
+        this.ensureSessionSummaryStream(activeScope, health.value)
         this.setProfileRuntime(activeScope.profileId, {
           connectionState: connectionStateForHealth(health.value),
           lastConnectionError: connectionWarningForHealth(health.value),

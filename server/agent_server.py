@@ -833,6 +833,7 @@ EMERGENCY_MESSAGE_MAX_CHARS = 500
 EMERGENCY_REQUESTS_PER_RUN = 3
 EMERGENCY_ACTIVE_ALERT_LIMIT = 32
 EMERGENCY_WEBSOCKET_PROTOCOL = "agentsdock-emergency-v1"
+SESSION_SUMMARY_WEBSOCKET_PROTOCOL = "agentsdock-session-summaries-v1"
 EVENTS_WEBSOCKET_PROTOCOL = "agentsdock-events-v1"
 TERMINAL_WEBSOCKET_PROTOCOL = "agentsdock-terminal-v1"
 EMERGENCY_AUTHORITY_DENIED_PURPOSES = {
@@ -14095,6 +14096,7 @@ async def close_event_websocket_after_delivery_failure(ws: WebSocket) -> bool:
 
 HUB = SubscriberHub()
 EMERGENCY_HUB_KEY = "__agentsdock_emergency_alerts__"
+SESSION_SUMMARY_HUB_KEY = "__agentsdock_session_summaries__"
 
 
 async def close_port_tunnel_websocket(
@@ -14299,6 +14301,24 @@ async def broadcast_emergency_session_removed(session_id: str) -> None:
         "type": "emergency_removed",
         "server_identity": server_identity(),
         "session_id": session_id,
+    })
+
+
+SESSION_SUMMARY_PUSH_EVENT_TYPES = frozenset({"turn_started", "turn_finished", "turn_stopped"})
+
+
+async def broadcast_session_summary(sess: dict[str, Any]) -> None:
+    """Push one chat's list row to /api/session-summaries/events subscribers.
+
+    Clients stream events only for the chat on screen; without this, another
+    chat's turn end or provider question reached them with the list poll.
+    """
+    if sess.get("_fork_initializing"):
+        return
+    await HUB.broadcast(SESSION_SUMMARY_HUB_KEY, {
+        "type": "session_summary",
+        "server_identity": server_identity(),
+        "session": public_session(sess, summary=True),
     })
 
 
@@ -17800,6 +17820,8 @@ async def update_session_event_metadata(session_id: str, event: dict[str, Any]) 
         # Called under the per-chat event delivery lock for nearly every
         # event; coalesce instead of rewriting sessions.json per event.
         await STORE.save(flush=False)
+    if event_type in SESSION_SUMMARY_PUSH_EVENT_TYPES:
+        await broadcast_session_summary(sess)
 
 
 async def wait_for_queue_recovery_admission() -> None:
@@ -54652,6 +54674,8 @@ async def update_codex_pending_session_metadata(session_id: str) -> None:
         if changed:
             session["updated_at"] = now_iso()
             await STORE.save()
+    if changed:
+        await broadcast_session_summary(session)
 
 
 def codex_permission_value_is_subset(granted: Any, requested: Any) -> bool:
@@ -55115,6 +55139,8 @@ async def update_claude_pending_session_metadata(session_id: str) -> None:
         if changed:
             session["updated_at"] = now_iso()
             await STORE.save()
+    if changed:
+        await broadcast_session_summary(session)
 
 
 def validate_claude_interaction_response(
@@ -83297,6 +83323,12 @@ async def health() -> dict[str, Any]:
                 "event_protocol": EVENTS_WEBSOCKET_PROTOCOL,
                 "terminal_protocol": TERMINAL_WEBSOCKET_PROTOCOL,
             },
+            "session_summary_events_v1": {
+                "available": True,
+                "version": 1,
+                "protocol": SESSION_SUMMARY_WEBSOCKET_PROTOCOL,
+                "stream_path": "/api/session-summaries/events",
+            },
             "team_hub_v1": team_hub_capability,
             "team_hub_host_control_v1": team_hub_host_control_capability(),
             "agent_team_mail_routes_v1": {
@@ -99287,6 +99319,42 @@ async def emergency_alert_events(ws: WebSocket) -> None:
         pass
     finally:
         await HUB.unsubscribe(EMERGENCY_HUB_KEY, ws)
+
+
+@app.websocket("/api/session-summaries/events")
+async def session_summary_events(ws: WebSocket) -> None:
+    """Live chat list rows: a turn starting or ending, or a provider waiting for the user.
+
+    No snapshot: a client refreshes its list when the socket opens and merges
+    each row as it merges a polled row, so background chats notify within a
+    second instead of on the poll.
+    """
+    selected_subprotocol = websocket_endpoint_subprotocol(
+        ws,
+        SESSION_SUMMARY_WEBSOCKET_PROTOCOL,
+    )
+    if not websocket_authorized(ws):
+        await ws.accept(subprotocol=selected_subprotocol)
+        await ws.close(code=4401)
+        return
+    if SESSION_SUMMARY_WEBSOCKET_PROTOCOL not in websocket_requested_protocols(ws):
+        await ws.accept(subprotocol=selected_subprotocol)
+        await ws.close(code=4406)
+        return
+    await ws.accept(subprotocol=SESSION_SUMMARY_WEBSOCKET_PROTOCOL)
+    try:
+        if not await HUB.reserve(SESSION_SUMMARY_HUB_KEY, ws):
+            await close_event_websocket_over_capacity(ws)
+            return
+        if not await HUB.register_accepted(SESSION_SUMMARY_HUB_KEY, ws):
+            await close_event_websocket_over_capacity(ws)
+            return
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await HUB.unsubscribe(SESSION_SUMMARY_HUB_KEY, ws)
 
 
 @app.get("/api/sessions/{session_id}/diffs/{run_id}")

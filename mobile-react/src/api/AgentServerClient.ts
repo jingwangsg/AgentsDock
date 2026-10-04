@@ -128,6 +128,7 @@ const UPLOAD_RESPONSE_TIMEOUT_MS = 5 * 60_000
 const UPLOAD_TIMEOUT_CAP_MS = 8 * 60 * 60_000
 const FATAL_WEBSOCKET_CLOSE_CODES = new Set([4401, 4404, 4409])
 const EVENTS_STREAM_PROTOCOL = 'agentsdock-events-v1'
+const SESSION_SUMMARY_STREAM_PROTOCOL = 'agentsdock-session-summaries-v1'
 
 export interface ServerErrorDetail {
   code?: string
@@ -197,6 +198,7 @@ interface ClientConfiguration {
   readonly token: string
   /** Learned from /api/health; a reconfigured client starts over at false. */
   websocketSubprotocolAuth: boolean
+  sessionSummaryEvents: boolean
 }
 
 interface ClientScope {
@@ -307,6 +309,7 @@ export class AgentServerClient {
     // so only the configuration that made this request learns it.
     if (this.configuration === configuration) {
       configuration.websocketSubprotocolAuth = health.capabilities?.websocket_auth_v1?.available === true
+      configuration.sessionSummaryEvents = health.capabilities?.session_summary_events_v1?.available === true
     }
     return health
   }
@@ -1229,6 +1232,99 @@ export class AgentServerClient {
     return stop
   }
 
+  /**
+   * Live chat list rows for chats without an open timeline: a turn starting or
+   * ending, a provider waiting for the user. Only servers advertising
+   * session_summary_events_v1; the list poll stays as the fallback. Same
+   * backoff rules as stream(): a socket that is accepted and dropped must not
+   * reconnect twice a second.
+   */
+  sessionSummaryStream(handlers: { onSession: (session: Session) => void; onOpen: () => void }): () => void {
+    const scope = this.captureScope()
+    if (!scope.configuration.sessionSummaryEvents) return () => undefined
+    const endpoint = new URL(buildURL(scope.configuration.baseURL, '/api/session-summaries/events'))
+    endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
+    const token = scope.configuration.token
+    let socket: WebSocket | null = null
+    let stopped = false
+    let retryDelay = STREAM_RETRY_INITIAL_MS
+    let retry: ReturnType<typeof setTimeout> | null = null
+    let connectTimeout: ReturnType<typeof setTimeout> | null = null
+    const clearConnectTimeout = () => {
+      if (connectTimeout) clearTimeout(connectTimeout)
+      connectTimeout = null
+    }
+    const unregister = () => { this.transportStops.delete(stop) }
+    const scheduleRetry = () => {
+      if (stopped || retry) return
+      const delay = retryDelay
+      retryDelay = Math.min(STREAM_RETRY_MAX_MS, retryDelay * 2)
+      retry = setTimeout(() => {
+        retry = null
+        connect()
+      }, delay)
+    }
+    const connect = () => {
+      if (stopped) return
+      clearConnectTimeout()
+      const url = new URL(endpoint)
+      const protocols = [SESSION_SUMMARY_STREAM_PROTOCOL]
+      if (scope.configuration.websocketSubprotocolAuth && token) {
+        protocols.push(`agentsdock-token.${base64(token).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`)
+      } else if (token) url.searchParams.set('token', token)
+      try {
+        socket = new WebSocket(url.toString(), protocols)
+      } catch {
+        scheduleRetry()
+        return
+      }
+      const connectingSocket = socket
+      connectTimeout = setTimeout(() => {
+        if (stopped || socket !== connectingSocket || connectingSocket.readyState !== WebSocket.CONNECTING) return
+        connectingSocket.close()
+      }, STREAM_CONNECT_TIMEOUT_MS)
+      connectingSocket.onopen = () => {
+        if (stopped || socket !== connectingSocket) return
+        clearConnectTimeout()
+        setTimeout(() => {
+          if (!stopped && socket === connectingSocket && connectingSocket.readyState === WebSocket.OPEN) retryDelay = STREAM_RETRY_INITIAL_MS
+        }, STREAM_STABLE_CONNECTION_MS)
+        handlers.onOpen()
+      }
+      connectingSocket.onmessage = message => {
+        if (stopped || socket !== connectingSocket) return
+        try {
+          const packet = JSON.parse(String(message.data)) as { type?: unknown; session?: Session }
+          if (packet.type === 'session_summary' && packet.session && typeof packet.session.id === 'string') handlers.onSession(packet.session)
+        } catch { /* malformed packets are ignored */ }
+      }
+      connectingSocket.onclose = event => {
+        clearConnectTimeout()
+        if (socket === connectingSocket) socket = null
+        if (stopped) return
+        if (FATAL_WEBSOCKET_CLOSE_CODES.has(event.code)) {
+          stopped = true
+          unregister()
+          return
+        }
+        scheduleRetry()
+      }
+    }
+    const stop = () => {
+      stopped = true
+      clearConnectTimeout()
+      if (retry) clearTimeout(retry)
+      retry = null
+      const activeSocket = socket
+      socket = null
+      unregister()
+      activeSocket?.close()
+    }
+    this.transportStops.add(stop)
+    connect()
+    return stop
+  }
+
   private get<T>(path: string, timeoutMs?: number): Promise<T> { return this.request(path, {}, timeoutMs) }
   private post<T>(path: string, body: unknown): Promise<T> { return this.request(path, { method: 'POST', body: JSON.stringify(body) }) }
   private put<T>(path: string, body: unknown): Promise<T> { return this.request(path, { method: 'PUT', body: JSON.stringify(body) }) }
@@ -1416,7 +1512,7 @@ export class AgentServerClient {
 }
 
 function createConfiguration(baseURL: string, token: string): ClientConfiguration {
-  return { baseURL: normalizeServerURL(baseURL), token, websocketSubprotocolAuth: false }
+  return { baseURL: normalizeServerURL(baseURL), token, websocketSubprotocolAuth: false, sessionSummaryEvents: false }
 }
 
 function buildURL(baseURL: string, path: string): string {

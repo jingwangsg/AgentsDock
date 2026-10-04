@@ -4043,6 +4043,47 @@ describe('AgentServerClient emergency contact bridge', () => {
     stop()
   })
 
+  it('delivers pushed chat rows and rejects a changed server identity', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const received: Session[] = []
+    const states: Array<{ connected: boolean; error?: string }> = []
+    const client = new AgentServerClient('https://example.test:7850', 'stream-secret')
+    const stop = client.sessionSummaryStream(
+      'server-expected',
+      session => received.push(session),
+      (connected, error) => states.push({ connected, error })
+    )
+    const socket = FakeWebSocket.instances[0]
+    expect(socket.url.pathname).toBe('/api/session-summaries/events')
+    expect(socket.url.searchParams.get('token')).toBeNull()
+    expect(socket.protocols).toEqual([
+      'agentsdock-session-summaries-v1',
+      `agentsdock-token.${Buffer.from('stream-secret', 'utf8').toString('base64url')}`
+    ])
+    const row: Session = { id: 'bg', title: 'Background', backend: 'claude', latest_agent_event_type: 'turn_finished', latest_agent_event_seq: 9 }
+    socket.emit('open')
+    socket.emit('message', JSON.stringify({ type: 'session_summary', server_identity: 'server-expected', session: row }))
+    socket.emit('message', JSON.stringify({ type: 'session_summary', server_identity: 'server-expected', session: { id: 'x' } }))
+    expect(received).toEqual([row])
+    expect(states).toEqual([
+      { connected: true, error: undefined },
+      { connected: false, error: 'Session summary stream sent an invalid update' }
+    ])
+    expect(socket.closed).toBe(true)
+    stop()
+
+    const other = new AgentServerClient('https://example.test:7850', 'stream-secret')
+    const otherStates: Array<{ connected: boolean; error?: string }> = []
+    const otherReceived = vi.fn()
+    const stopOther = other.sessionSummaryStream('server-expected', otherReceived, (connected, error) => otherStates.push({ connected, error }))
+    const otherSocket = FakeWebSocket.instances[1]
+    otherSocket.emit('open')
+    otherSocket.emit('message', JSON.stringify({ type: 'session_summary', server_identity: 'server-replacement', session: row }))
+    expect(otherReceived).not.toHaveBeenCalled()
+    expect(otherStates.at(-1)).toEqual({ connected: false, error: 'Session summary stream server identity changed' })
+    stopOther()
+  })
+
   it('rejects packets from a replacement server before exposing any session state', () => {
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const received = vi.fn()

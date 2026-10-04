@@ -28,3 +28,19 @@ test('a chat whose agent starts waiting posts one local notification unless it i
   assert.match(subscriber, /is waiting for you/)
   assert.match(subscriber, /data: \{ profileId: scope\.profileId, serverIdentity: scope\.namespace, sessionId: session\.id \}/)
 })
+
+test('pushed chat rows reach the list, the running set and the turn-end notification within a second', () => {
+  const client = read('src/api/AgentServerClient.ts')
+  assert.match(client, /sessionSummaryStream\(handlers/)
+  assert.match(client, /\/api\/session-summaries\/events/)
+  assert.match(client, /sessionSummaryEvents = health\.capabilities\?\.session_summary_events_v1\?\.available === true/)
+  const store = read('src/store/useAppStore.ts')
+  assert.match(store, /function applyPushedSessionSummary\(scope: ConnectionScope, incoming: Session\)/)
+  // Rows merge like polled rows and keep the running set in step so the poll does not notify twice.
+  assert.match(store, /sessionMutations\.reconcileIncoming\(value, incoming, sessionRead\)/)
+  assert.match(store, /activeSessionIds\.delete\(incoming\.id\)/)
+  assert.match(store, /incoming\.id !== get\(\)\.selectedSessionId[\s\S]{0,200}notifyOnce\(scope, after, `poll:/)
+  // The stream follows the foreground connection: started with the refresh timer, stopped on background.
+  assert.match(store, /startForegroundRefreshTimer\(get, set\)\n    startSessionSummaryStream\(\)/)
+  assert.match(store, /stopSelectedStream\(\)\n      stopSessionSummaryStream\(\)/)
+})

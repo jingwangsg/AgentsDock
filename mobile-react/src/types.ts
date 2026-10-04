@@ -1500,6 +1500,7 @@ export interface HealthCapabilities {
   agent_team_mail_v1?: AgentTeamMailCapability
   /** The server accepts the access token as a WebSocket subprotocol instead of a query parameter. */
   websocket_auth_v1?: { available: boolean }
+  session_summary_events_v1?: { available: boolean }
   agent_team_messages_v1?: ServerCapability & {
     version: number
     mention_sigil?: string

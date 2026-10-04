@@ -4555,6 +4555,12 @@ useAppStore.subscribe((state, previous) => {
   if (remembered !== state.folderOrder) state.setFolderOrder(remembered, state.profileGeneration)
 })
 
+useAppStore.subscribe((state, previous) => {
+  if (state.connected === previous.connected && state.profileGeneration === previous.profileGeneration) return
+  if (state.connected) startSessionSummaryStream()
+  else stopSessionSummaryStream()
+})
+
 // One local notification when a chat's agent starts waiting for the user (a question
 // or an approval), unless that chat is open in the foreground; the desktop posts the
 // same native notice. The first list after a connect or a profile switch is not a change.
@@ -4841,9 +4847,12 @@ function installAppLifecycle(
   set: (value: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
 ): void {
   stopForegroundRefreshTimer()
-  if (NativeAppState.currentState === 'active') startForegroundRefreshTimer(get, set)
-  else {
+  if (NativeAppState.currentState === 'active') {
+    startForegroundRefreshTimer(get, set)
+    startSessionSummaryStream()
+  } else {
     stopSelectedStream()
+    stopSessionSummaryStream()
     set(state => ({
       connecting: false,
       liveConnected: false,
@@ -4856,6 +4865,7 @@ function installAppLifecycle(
       cancelSyncRecovery(set)
       stopForegroundRefreshTimer()
       stopSelectedStream()
+      stopSessionSummaryStream()
       if (readReceiptTimer) clearTimeout(readReceiptTimer)
       readReceiptTimer = null
       set(state => ({
@@ -4867,6 +4877,7 @@ function installAppLifecycle(
       return
     }
     startForegroundRefreshTimer(get, set)
+    startSessionSummaryStream()
     if (!shouldAutoConnectServer(get())) return
     void (async () => {
       await repairSelectedSnapshotFromCache(get, set)
@@ -5124,6 +5135,66 @@ function scheduleReadReceipt(scope: ConnectionScope, sessionId: string, get: () 
     readReceiptTimer = null
     if (connectionIsCurrent(scope) && NativeAppState.currentState === 'active' && get().selectedSessionId === sessionId) void get().markRead(sessionId)
   }, READ_RECEIPT_DEBOUNCE_MS)
+}
+
+let summaryStreamStop: (() => void) | null = null
+
+/**
+ * Chats without an open timeline learn turn boundaries and provider questions
+ * from the server's chat-row stream instead of the 60 s list poll. Each row
+ * merges exactly like a polled row, so the sidebar, the waiting banner and both
+ * notifications follow within a second.
+ */
+function startSessionSummaryStream(): void {
+  stopSessionSummaryStream()
+  const get = useAppStore.getState
+  if (NativeAppState.currentState !== 'active' || !get().connected) return
+  const scope = captureConnection()
+  let opened = false
+  summaryStreamStop = scope.client.sessionSummaryStream({
+    onOpen: () => {
+      // A reconnect may have missed rows: one list refresh reconciles them.
+      if (opened && connectionIsCurrent(scope) && get().connected) void get().refreshSessions()
+      opened = true
+    },
+    onSession: incoming => applyPushedSessionSummary(scope, incoming),
+  })
+}
+
+function stopSessionSummaryStream(): void {
+  const stop = summaryStreamStop
+  summaryStreamStop = null
+  stop?.()
+}
+
+function applyPushedSessionSummary(scope: ConnectionScope, incoming: Session): void {
+  const get = useAppStore.getState
+  if (!connectionIsCurrent(scope) || !get().connected || NativeAppState.currentState !== 'active') return
+  const before = get().sessions.find(session => session.id === incoming.id)
+  const sessionRead = sessionMutations.captureRead()
+  const terminal = incoming.latest_agent_event_type === 'turn_finished' || incoming.latest_agent_event_type === 'turn_stopped'
+  let changed = false
+  useAppStore.setState(state => {
+    const sessions = before
+      ? state.sessions.map(value => value.id === incoming.id ? sessionMutations.reconcileIncoming(value, incoming, sessionRead) : value)
+      : [...state.sessions, incoming]
+    changed = !before || sessions.some((value, index) => value !== state.sessions[index])
+    if (!changed) return {}
+    // The running set follows the row so the health poll does not notify this turn end again.
+    let activeSessionIds = state.activeSessionIds
+    if (incoming.latest_agent_event_type === 'turn_started' && !activeSessionIds.has(incoming.id)) activeSessionIds = new Set([...activeSessionIds, incoming.id])
+    else if (terminal && activeSessionIds.has(incoming.id)) { activeSessionIds = new Set(activeSessionIds); activeSessionIds.delete(incoming.id) }
+    return { sessions, activeSessionIds, profiles: updateProfileRuntime(state.profiles, scope.profileId, { cachedUnreadCount: unreadCount(sessions) }) }
+  })
+  if (!changed) return
+  // The selected chat notifies from its own streamed terminal event.
+  const after = get().sessions.find(session => session.id === incoming.id)
+  if (after && terminal && incoming.id !== get().selectedSessionId
+    && (incoming.latest_agent_event_seq ?? 0) > (before?.latest_agent_event_seq ?? 0)) {
+    void notifyOnce(scope, after, `poll:${after.latest_event_seq ?? 0}`)
+  }
+  void saveCachedSessions(scope.namespace, get().sessions)
+  void updateBadge(get())
 }
 
 function stopSelectedStream(): void {

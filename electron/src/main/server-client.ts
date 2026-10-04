@@ -203,6 +203,8 @@ const TEAM_ATTACHMENT_TRANSFER_TIMEOUT_MS = 120_000
 const EMERGENCY_STREAM_MAX_PACKET_CHARS = 8 * 1024 * 1024
 const EMERGENCY_STREAM_MAX_SESSIONS = 10_000
 const EMERGENCY_STREAM_PROTOCOL = 'agentsdock-emergency-v1'
+const SESSION_SUMMARY_STREAM_PROTOCOL = 'agentsdock-session-summaries-v1'
+const SESSION_SUMMARY_STREAM_MAX_PACKET_CHARS = 256 * 1024
 const EVENTS_STREAM_PROTOCOL = 'agentsdock-events-v1'
 const TERMINAL_STREAM_PROTOCOL = 'agentsdock-terminal-v1'
 
@@ -2408,6 +2410,72 @@ export class AgentServerClient {
     }).stop
   }
 
+  /** Live chat list rows for chats without an open timeline: a turn starting or
+   *  ending, a provider waiting for the user. The list poll stays as the fallback. */
+  sessionSummaryStream(
+    expectedServerIdentity: string,
+    onSession: (session: Session) => void,
+    onState: (connected: boolean, error?: string) => void
+  ): () => void {
+    const expectedIdentity = expectedServerIdentity.trim()
+    if (!expectedIdentity || expectedIdentity.length > 240) {
+      throw new Error('Session summary stream requires a verified server identity')
+    }
+    const configuration = this.configuration
+    const endpoint = new URL(configurationURL(configuration, '/api/session-summaries/events'))
+    endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
+    return reconnectingSocket(configuration, {
+      connectTimeoutMs: 10_000,
+      timedOutError: 'Session summary stream timed out',
+      interruptedError: 'Session summary stream disconnected',
+      open: () => new WebSocket(endpoint, [
+        SESSION_SUMMARY_STREAM_PROTOCOL,
+        ...agentTokenWebSocketProtocols(configuration.token)
+      ]),
+      onOpen: (_socket, link) => {
+        link.established()
+        link.resetBackoff()
+        onState(true)
+      },
+      onMessage: (message, socket, link) => {
+        const rejectPacket = (reason: string): void => {
+          socket.close(1008, 'Invalid session summary packet')
+          link.disconnect(reason)
+        }
+        try {
+          const raw = String(message.data)
+          if (raw.length > SESSION_SUMMARY_STREAM_MAX_PACKET_CHARS) {
+            rejectPacket('Session summary stream sent an oversized packet')
+            return
+          }
+          const packet = JSON.parse(raw) as Record<string, unknown>
+          if (packet.server_identity !== expectedIdentity) {
+            rejectPacket('Session summary stream server identity changed')
+            return
+          }
+          if (packet.type === 'session_summary' && isSessionSummaryPacket(packet.session)) onSession(packet.session)
+          else rejectPacket('Session summary stream sent an invalid update')
+        } catch {
+          rejectPacket('Session summary stream sent malformed JSON')
+        }
+      },
+      onClose: (event, link) => {
+        const fatalError = event.code === 4401
+          ? 'Session summary authorization failed'
+          : event.code === 4406
+            ? 'Session summary protocol was rejected'
+            : null
+        if (fatalError) {
+          link.stop()
+          onState(false, fatalError)
+          return
+        }
+        link.disconnect(event.reason || undefined)
+      },
+      onDisconnect: error => onState(false, error)
+    }).stop
+  }
+
   /** One metadata-only stream. Retries only follow transport failure, never idle polling. */
   mailHintStream(
     expectedServerIdentity: string,
@@ -2683,6 +2751,14 @@ function isExactSecurePeerListQuery(query: URLSearchParams): boolean {
     && new Set(keys).size === 3
     && keys.every(key => ['expected_server_identity', 'expected_server_instance_id', 'team_id'].includes(key))
     && [...query.values()].every(value => Boolean(value) && value.length <= 240 && !/[\u0000-\u001f\u007f]/.test(value))
+}
+
+function isSessionSummaryPacket(value: unknown): value is Session {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const session = value as Record<string, unknown>
+  return typeof session.id === 'string' && session.id.length > 0 && session.id.length <= 128
+    && typeof session.title === 'string' && session.title.length <= 240
+    && (session.backend === 'codex' || session.backend === 'claude' || session.backend === 'cursor' || session.backend === 'opencode')
 }
 
 function isEmergencySessionPacket(value: unknown): value is Session {

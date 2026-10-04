@@ -1,5 +1,35 @@
 # Public development log
 
+## 2026-10-04 — Background chats notify within a second: a live chat-row stream (desktop and Android, build 39)
+
+- Both apps streamed events only for the chat on screen, so another chat's
+  turn end, Claude question or Codex approval reached the sidebar, the
+  waiting banner and the notifications with the list poll: up to 60 s on
+  Android, 30 s on the desktop.
+- The server gained `/api/session-summaries/events` (protocol
+  `agentsdock-session-summaries-v1`, advertised as
+  `session_summary_events_v1`): one chat list row is pushed when a turn
+  starts, finishes or is stopped, and when a provider starts or stops
+  waiting for the user. No snapshot; a client refreshes its list when the
+  socket opens and merges each row exactly as it merges a polled row. Hub
+  proxies forward it like the other sockets.
+- Desktop: the main process keeps one such stream per active profile next
+  to the emergency-alert stream; a pushed row runs the same turn-end
+  notification decision as a polled list, and the renderer's "agent is
+  waiting" notice and the banner follow the emitted list. Android: the
+  store opens the stream while the app is in the foreground and connected,
+  merges rows, keeps the running set in step so the health poll cannot
+  notify the same turn end twice, and posts "Response finished" for a
+  background chat from the pushed row. The poll remains the fallback for
+  servers without the capability.
+- Verified with four server tests (route, protocol rejection, pushes on
+  turn boundaries and on question changes), desktop main-process and client
+  tests, the Android contract test, and all three type checks. Android build
+  39 (`AgentsDock-0.1.1-39-sideload.apk`) was attached to the working chat.
+  Emulator check against a live remote chat: see the note below. Not
+  exercised in the running desktop app. Availability: local package and the
+  hub's remote installs.
+
 ## 2026-10-04 — A banner names the chats whose agent is waiting for you (desktop and Android, build 38)
 
 - Until now a Claude question or permission request, or a Codex approval,
