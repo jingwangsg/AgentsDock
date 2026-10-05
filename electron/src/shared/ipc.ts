@@ -224,6 +224,9 @@ export interface AgentsDockAPI {
     status(scope: WorkspaceProfileScope, sessionId: string): Promise<import('./workspace-git').WorkspaceGitStatus>
     diff(scope: WorkspaceProfileScope, sessionId: string, path: string, view: import('./workspace-git').WorkspaceGitView): Promise<import('./workspace-git').WorkspaceGitDiff>
     conflict(scope: WorkspaceProfileScope, sessionId: string, path: string): Promise<import('./workspace-git').WorkspaceGitConflict>
+    refs(scope: WorkspaceProfileScope, sessionId: string): Promise<import('./workspace-git').WorkspaceGitRefs>
+    compare(scope: WorkspaceProfileScope, sessionId: string, base: string, target: string): Promise<import('./workspace-git').WorkspaceGitCompare>
+    compareDiff(scope: WorkspaceProfileScope, sessionId: string, base: string, target: string, path: string): Promise<import('./workspace-git').WorkspaceGitCompareDiff>
     action(scope: WorkspaceProfileScope, sessionId: string, input: import('./workspace-git').WorkspaceGitAction): Promise<import('./workspace-git').WorkspaceGitStatus>
   }
   backgroundActivity?: {

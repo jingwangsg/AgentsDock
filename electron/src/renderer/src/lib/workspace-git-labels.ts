@@ -28,7 +28,11 @@ const en = {
   update: 'Update AgentsServer to use workspace Changes.', unavailable: 'Changes are unavailable.', noRepository: 'This workspace is not inside a Git repository.',
   readOnly: 'This chat is read-only.', markers: 'Remove all conflict markers before saving.',
   changed: 'changed files', changedOne: 'changed file', stagedFiles: 'staged files', stagedFile: 'staged file', conflict: 'conflict', operation: 'in progress',
-  merge: 'Merge', rebase: 'Rebase', 'cherry-pick': 'Cherry-pick', revert: 'Revert'
+  merge: 'Merge', rebase: 'Rebase', 'cherry-pick': 'Cherry-pick', revert: 'Revert',
+  compare: 'Compare', compareExit: 'Exit compare', compareBase: 'Base', compareTarget: 'Compare with', swap: 'Swap sides',
+  worktree: 'Working tree', index: 'Staged (index)', headRef: 'HEAD', recentCommits: 'Recent commits', branches: 'Branches', tags: 'Tags',
+  pickRef: 'Commit, branch or tag…', useRef: 'Use', loadingRefs: 'Loading commits…', compareEmpty: 'These two points are identical.',
+  compareTruncated: 'The file list was cut short; narrow the comparison.', filesCount: 'files', fileCount: 'file'
 }
 
 const zh: typeof en = {
@@ -59,7 +63,11 @@ const zh: typeof en = {
   update: '请更新 AgentsServer 以使用工作区更改。', unavailable: '更改暂不可用。', noRepository: '此工作区不在 Git 仓库中。',
   readOnly: '此聊天为只读。', markers: '请在保存前移除所有冲突标记。',
   changed: '个更改文件', changedOne: '个更改文件', stagedFiles: '个已暂存文件', stagedFile: '个已暂存文件', conflict: '个冲突', operation: '进行中',
-  merge: '合并', rebase: '变基', 'cherry-pick': '拣选', revert: '还原'
+  merge: '合并', rebase: '变基', 'cherry-pick': '拣选', revert: '还原',
+  compare: '比较', compareExit: '退出比较', compareBase: '基准', compareTarget: '比较对象', swap: '交换两侧',
+  worktree: '工作区', index: '已暂存（索引）', headRef: 'HEAD', recentCommits: '最近提交', branches: '分支', tags: '标签',
+  pickRef: '提交、分支或标签…', useRef: '使用', loadingRefs: '正在加载提交…', compareEmpty: '两个位置没有差异。',
+  compareTruncated: '文件列表被截断；请缩小比较范围。', filesCount: '个文件', fileCount: '个文件'
 }
 
 export function useWorkspaceGitLabels(): typeof en {

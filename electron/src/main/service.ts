@@ -4569,6 +4569,18 @@ export class AppService {
     return this.withWorkspaceScope(expected, client => client.workspaceGitDiff(sessionId, path, view))
   }
 
+  async workspaceGitRefs(expected: WorkspaceProfileScope, sessionId: string) {
+    return this.withWorkspaceScope(expected, client => client.workspaceGitRefs(sessionId))
+  }
+
+  async workspaceGitCompare(expected: WorkspaceProfileScope, sessionId: string, base: string, target: string) {
+    return this.withWorkspaceScope(expected, client => client.workspaceGitCompare(sessionId, base, target))
+  }
+
+  async workspaceGitCompareDiff(expected: WorkspaceProfileScope, sessionId: string, base: string, target: string, path: string) {
+    return this.withWorkspaceScope(expected, client => client.workspaceGitCompareDiff(sessionId, base, target, path))
+  }
+
   async workspaceGitConflict(expected: WorkspaceProfileScope, sessionId: string, path: string) {
     return this.withWorkspaceScope(expected, client => client.workspaceGitConflict(sessionId, path))
   }

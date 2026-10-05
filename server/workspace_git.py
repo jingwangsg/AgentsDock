@@ -23,6 +23,12 @@ from pydantic import BaseModel, Field
 MAX_OUTPUT = 2 * 1024 * 1024
 MAX_TEXT = 2 * 1024 * 1024
 DEADLINE_SECONDS = 30
+# Comparison endpoints besides a revision: the working tree (with untracked files) and the index.
+POINT_WORKTREE = "WORKTREE"
+POINT_INDEX = "INDEX"
+MAX_COMPARE_FILES = 5000
+# A revision the user names (commit, branch, tag, HEAD~2, main@{1}); never an option or a range.
+_REVISION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@{}^~-]{0,255}$")
 _LOCKS = [threading.Lock() for _ in range(64)]
 
 
@@ -303,6 +309,98 @@ class Repository:
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12 * 1024 * 1024:
             fail("git_conflict_too_large", "This conflict is too large for the editor. Resolve it in the terminal.", 413)
         return result
+
+    def refs(self, limit: int = 60) -> dict[str, Any]:
+        """HEAD, the recent commits, branches and tags a comparison can name."""
+        head_raw, head_code, _ = self.git("rev-parse", "--verify", "HEAD", check=False)
+        branch_raw, _, _ = self.git("symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+        commits: list[dict[str, Any]] = []
+        if not head_code:
+            raw, _, _ = self.git("log", f"--max-count={limit}", "--format=%H%x1f%h%x1f%an%x1f%aI%x1f%s")
+            for line in raw.decode("utf-8", "replace").splitlines():
+                parts = line.split("\x1f")
+                if len(parts) == 5:
+                    commits.append({"hash": parts[0], "short": parts[1], "author": parts[2], "date": parts[3], "subject": parts[4]})
+        names, _, _ = self.git("for-each-ref", "--format=%(refname)", "--sort=-committerdate", "--count=400",
+                               "refs/heads", "refs/tags")
+        branches: list[str] = []
+        tags: list[str] = []
+        for ref in names.decode("utf-8", "replace").splitlines():
+            if ref.startswith("refs/heads/"):
+                branches.append(ref[len("refs/heads/"):])
+            elif ref.startswith("refs/tags/"):
+                tags.append(ref[len("refs/tags/"):])
+        return {"head": None if head_code else head_raw.decode().strip(),
+                "branch": branch_raw.decode("utf-8", "replace").strip() or None,
+                "commits": commits, "branches": branches, "tags": tags}
+
+    def point(self, value: str) -> dict[str, Any]:
+        """One end of a comparison: the working tree, the index, or a revision resolved to a commit."""
+        if value in (POINT_WORKTREE, POINT_INDEX):
+            return {"ref": value, "resolved": None}
+        if not isinstance(value, str) or not _REVISION_PATTERN.fullmatch(value) or ".." in value:
+            fail("git_invalid_revision", "Name a commit, branch or tag; ranges and options are not accepted.", 400)
+        output, code, _ = self.git("rev-parse", "--verify", "--quiet", "--end-of-options", value + "^{commit}", check=False)
+        if code or not output.strip():
+            fail("git_unknown_revision", f"{value} is not a commit in this repository.", 404)
+        return {"ref": value, "resolved": output.decode().strip()}
+
+    def compare_points(self, base: str, target: str) -> tuple[dict[str, Any], dict[str, Any], list[str], bool]:
+        """Resolve both ends and the `git diff` selector between them; the flag says the target is the working tree."""
+        base_point, target_point = self.point(base), self.point(target)
+        if base_point["ref"] == POINT_WORKTREE:
+            fail("git_invalid_compare", "The working tree can only be the newer side of a comparison.", 400)
+        if base == target:
+            fail("git_invalid_compare", "Choose two different points to compare.", 400)
+        if target_point["ref"] == POINT_WORKTREE:
+            selector = [] if base_point["ref"] == POINT_INDEX else [base_point["resolved"]]
+        elif target_point["ref"] == POINT_INDEX:
+            selector = ["--cached", base_point["resolved"]]
+        elif base_point["ref"] == POINT_INDEX:
+            selector = ["--cached", "-R", target_point["resolved"]]
+        else:
+            selector = [base_point["resolved"], target_point["resolved"]]
+        return base_point, target_point, selector, target_point["ref"] == POINT_WORKTREE
+
+    def compare(self, base: str, target: str) -> dict[str, Any]:
+        """The files that differ between two points, untracked files included when the newer side is the working tree."""
+        base_point, target_point, selector, worktree = self.compare_points(base, target)
+        raw, _, clipped = self.git("diff", "--name-status", "-z", "--no-renames", "--no-ext-diff",
+                                   "--ignore-submodules=none", *selector, "--", truncate=True)
+        files: list[dict[str, Any]] = []
+        entries = iter(raw.split(b"\0"))
+        for entry in entries:
+            if not entry:
+                continue
+            path = next(entries, b"")
+            if path:
+                files.append({"path": os.fsdecode(path), "status": entry[:1].decode("ascii", "replace"), "untracked": False})
+        if worktree:
+            others, _, _ = self.git("ls-files", "--others", "--exclude-standard", "-z")
+            files.extend({"path": os.fsdecode(entry), "status": "A", "untracked": True} for entry in others.split(b"\0") if entry)
+        files.sort(key=lambda item: item["path"])
+        return {"base": base_point, "target": target_point, "files": files[:MAX_COMPARE_FILES],
+                "truncated": clipped or len(files) > MAX_COMPARE_FILES}
+
+    def compare_diff(self, base: str, target: str, path: str) -> dict[str, Any]:
+        path = self.path(path)
+        _, _, selector, worktree = self.compare_points(base, target)
+        output, _, truncated = self.git("diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames",
+                                        *selector, "--", path, truncate=True)
+        result = output.decode("utf-8", "replace")
+        binary = b"Binary files " in output or b"GIT binary patch" in output
+        if not output and worktree:
+            # Git has no diff for an untracked file; the working tree shows it as wholly added.
+            _, code, _ = self.git("ls-files", "--error-unmatch", "--", path, check=False)
+            content, is_binary = (self.text(self.read_worktree(path)) if code else (None, False))
+            if content is not None:
+                binary = is_binary
+                result = "" if binary else "".join(difflib.unified_diff([], content.splitlines(keepends=True),
+                                                                           fromfile="/dev/null", tofile="b/" + path))
+                encoded = result.encode("utf-8")
+                truncated = len(encoded) > MAX_OUTPUT
+                result = encoded[:MAX_OUTPUT].decode("utf-8", "replace")
+        return {"path": path, "base": base, "target": target, "diff": result, "binary": binary, "truncated": truncated}
 
     def safe_git_configuration(self, action: str, paths: list[str]) -> None:
         # Ordinary hooks and filters may execute arbitrary code or alter reviewed
@@ -604,6 +702,27 @@ def register_workspace_git_routes(app: Any, *, authorize: Callable, workspace_ro
                                      path: str = Query(min_length=1, max_length=4096)) -> dict[str, Any]:
         authorize(request)
         return await asyncio.to_thread(lambda: repository(session_id).conflict(path))
+
+    @app.get("/api/sessions/{session_id}/workspace/git/refs")
+    async def workspace_git_refs(request: Request, session_id: str,
+                                 limit: int = Query(default=60, ge=1, le=500)) -> dict[str, Any]:
+        authorize(request)
+        return await asyncio.to_thread(lambda: repository(session_id).refs(limit))
+
+    @app.get("/api/sessions/{session_id}/workspace/git/compare")
+    async def workspace_git_compare(request: Request, session_id: str,
+                                    base: str = Query(min_length=1, max_length=256),
+                                    target: str = Query(min_length=1, max_length=256)) -> dict[str, Any]:
+        authorize(request)
+        return await asyncio.to_thread(lambda: repository(session_id).compare(base, target))
+
+    @app.get("/api/sessions/{session_id}/workspace/git/compare/diff")
+    async def workspace_git_compare_diff(request: Request, session_id: str,
+                                         base: str = Query(min_length=1, max_length=256),
+                                         target: str = Query(min_length=1, max_length=256),
+                                         path: str = Query(min_length=1, max_length=4096)) -> dict[str, Any]:
+        authorize(request)
+        return await asyncio.to_thread(lambda: repository(session_id).compare_diff(base, target, path))
 
     @app.post("/api/sessions/{session_id}/workspace/git/action")
     async def workspace_git_action(request: Request, session_id: str, req: GitAction) -> dict[str, Any]:

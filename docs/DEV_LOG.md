@@ -1,5 +1,33 @@
 # Public development log
 
+## 2026-10-05 — The Changes tab compares any two points of the repository (desktop package 102, server)
+
+- The Changes tab only showed the working tree against HEAD, with staging
+  controls. A new Compare mode, modelled on GitLens Inspect, lets the base
+  and the newer side each be chosen from the working tree, the staged index,
+  HEAD, a branch, a tag or one of the recent commits, or typed as any
+  revision (`HEAD~3`, a hash). The file list and the per-file diff follow the
+  chosen pair; swapping sides is one click; leaving Compare returns to the
+  working-tree view with its staging controls. Staging, discarding and
+  committing stay out of Compare mode: a historical pair has nothing to
+  stage.
+- The server gained three read-only Git routes for it: the recent commits,
+  branches and tags; the files differing between two points (untracked files
+  included when the newer side is the working tree); and one file's unified
+  diff between two points. Revision names are validated (no options, no
+  ranges) and resolved before any `git diff`, and the desktop's privileged
+  route allowlist admits exactly these three reads.
+- Verified with the server's workspace Git tests (real repositories), the
+  desktop Changes and editor component tests, and a real-transport run: an
+  isolated authenticated server over a repository with two commits and
+  uncommitted work, the built app driven over CDP through HEAD against the
+  working tree, the first commit against the working tree (three files, the
+  untracked one included), the first commit against HEAD (two files, the
+  diff rendered), and back to the working-tree view. Package 102
+  (`AgentsDock-0.2.0-102-mac-arm64.pkg`) was attached to the working chat.
+  The server part is committed but not deployed; Compare on a remote reports
+  the update until that server runs it. Availability: local package.
+
 ## 2026-10-05 — Terminal tabs on remote servers open at the account's home with the shell's rc files applied (desktop package 101, Android build 48, server)
 
 - A terminal tab on a hub-proxied remote used to open wherever the folder's

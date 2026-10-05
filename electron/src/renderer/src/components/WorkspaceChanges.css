@@ -115,3 +115,21 @@
   .workspace-changes-groups, .workspace-changes-bulk { padding-bottom: var(--space-3); }
   .workspace-changes-header .primary-button { margin-left: auto; }
 }
+
+/* Comparison mode: two repository points chosen in the bar under the header. */
+.workspace-changes-compare { display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-6) var(--space-5); border-bottom: 1px solid var(--border); color: var(--muted); font-size: var(--text-size-meta); }
+.workspace-changes-compare > svg { flex-shrink: 0; }
+.workspace-changes-ref { min-width: 0; max-width: 40%; gap: var(--space-3); }
+.workspace-changes-ref > span { color: var(--muted); }
+.workspace-changes-ref > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--text-weight-label); }
+.workspace-changes-ref-menu { width: min(28rem, 90vw); padding: var(--space-3); }
+.workspace-changes-ref-search { display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-3); margin-bottom: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-compact); }
+.workspace-changes-ref-search input { flex: 1; min-width: 0; min-height: var(--control-height-sm); border: 0; background: transparent; color: var(--text); font: inherit; }
+.workspace-changes-ref-list { display: flex; flex-direction: column; max-height: 50vh; overflow: auto; }
+.workspace-changes-ref-list h4 { margin: var(--space-3) var(--space-3) var(--space-2); color: var(--muted); font-size: var(--text-size-caption); text-transform: uppercase; letter-spacing: .04em; }
+.workspace-changes-ref-list p { padding: var(--space-3); color: var(--muted); }
+.workspace-changes-ref-list button { display: flex; align-items: center; gap: var(--space-3); width: 100%; min-height: var(--control-height-sm); padding: 0 var(--space-3); border-radius: var(--radius-compact); color: var(--text); background: transparent; text-align: left; font-size: var(--text-size-meta); }
+.workspace-changes-ref-list button:hover { background: var(--interaction-hover); }
+.workspace-changes-ref-list button[aria-pressed="true"] { background: var(--surface-3); }
+.workspace-changes-ref-list button > code { flex-shrink: 0; color: var(--muted); font-size: var(--text-size-caption); }
+.workspace-changes-ref-list button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }

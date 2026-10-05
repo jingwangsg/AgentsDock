@@ -67,6 +67,52 @@ class WorkspaceGitTests(unittest.TestCase):
         self.assertEqual((self.root / "file.txt").read_text(), "later unstaged work\n")
         self.assertEqual(self.status()["staged_count"], 0)
 
+    def test_compare_between_commits_the_index_and_the_working_tree(self):
+        self.initial(**{"file.txt": "base\n", "gone.txt": "old\n"})
+        first = self.git("rev-parse", "HEAD").strip()
+        self.write("file.txt", "second\n")
+        (self.root / "gone.txt").unlink()
+        self.write("born.txt", "new\n")
+        self.git("add", "-A")
+        self.git("commit", "-m", "second")
+        self.git("tag", "v1")
+        self.write("file.txt", "staged\n")
+        self.git("add", "file.txt")
+        self.write("file.txt", "worktree\n")
+        self.write("loose.txt", "untracked\n")
+        repo = Repository(self.root)
+
+        refs = repo.refs()
+        self.assertEqual([commit["subject"] for commit in refs["commits"]], ["second", "initial"])
+        self.assertEqual((refs["branch"], refs["branches"], refs["tags"]), ("main", ["main"], ["v1"]))
+        self.assertEqual(refs["head"], refs["commits"][0]["hash"])
+
+        between = repo.compare(first, "v1")
+        self.assertEqual([(item["path"], item["status"]) for item in between["files"]],
+                         [("born.txt", "A"), ("file.txt", "M"), ("gone.txt", "D")])
+        self.assertEqual((between["base"]["resolved"], between["target"]["resolved"]), (first, refs["head"]))
+        self.assertIn("+second", repo.compare_diff(first, "v1", "file.txt")["diff"])
+        # The index against HEAD shows the staged edit; the working tree against HEAD shows the latest edit and untracked files.
+        self.assertIn("+staged", repo.compare_diff("HEAD", "INDEX", "file.txt")["diff"])
+        worktree = repo.compare("HEAD", "WORKTREE")
+        self.assertEqual([(item["path"], item["status"], item["untracked"]) for item in worktree["files"]],
+                         [("file.txt", "M", False), ("loose.txt", "A", True)])
+        self.assertIn("+worktree", repo.compare_diff("HEAD", "WORKTREE", "file.txt")["diff"])
+        self.assertIn("+untracked", repo.compare_diff("HEAD", "WORKTREE", "loose.txt")["diff"])
+        self.assertIn("+worktree", repo.compare_diff("INDEX", "WORKTREE", "file.txt")["diff"])
+        # Reversed: the index as the newer side of a revision shows the removal of the staged line.
+        self.assertIn("-staged", repo.compare_diff("INDEX", "HEAD", "file.txt")["diff"])
+
+    def test_compare_rejects_options_ranges_unknown_revisions_and_a_working_tree_base(self):
+        self.initial()
+        repo = Repository(self.root)
+        for base, target, code in (("--output=/tmp/x", "HEAD", "git_invalid_revision"), ("HEAD~1..HEAD", "HEAD", "git_invalid_revision"),
+                                   ("nope", "HEAD", "git_unknown_revision"), ("WORKTREE", "HEAD", "git_invalid_compare"),
+                                   ("HEAD", "HEAD", "git_invalid_compare")):
+            with self.assertRaises(HTTPException) as error:
+                repo.compare(base, target)
+            self.assertEqual(error.exception.detail["code"], code, (base, target))
+
     def test_unborn_unstage_and_literal_filename(self):
         self.write(":(glob)*.txt", "literal\n")
         self.action("stage", paths=[":(glob)*.txt"])

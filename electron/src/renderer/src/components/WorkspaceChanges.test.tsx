@@ -43,7 +43,7 @@ const shownModels = () => fake.diffEditor.setModel.mock.calls.map(call => call[0
 const scope = { profileId: 'server-a', profileGeneration: 1, serverIdentity: 'identity-a' }
 const modified = { path: 'app.ts', index_status: ' ', worktree_status: 'M', staged: false, unstaged: true, untracked: false, conflicted: false }
 const initial: WorkspaceGitStatus = { root: '/workspace/project', branch: 'main', head: 'abc', revision: 'rev-1', operation: null, files: [modified], staged_count: 0, conflict_count: 0 }
-const git = { status: vi.fn(), diff: vi.fn(), conflict: vi.fn(), action: vi.fn() }
+const git = { status: vi.fn(), diff: vi.fn(), conflict: vi.fn(), action: vi.fn(), refs: vi.fn(), compare: vi.fn(), compareDiff: vi.fn() }
 
 beforeEach(() => {
   setLocale('en')
@@ -179,6 +179,34 @@ describe('Workspace changes', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
     await waitFor(() => expect(shownModels()?.modified.value).toBe('arrived'))
     expect(shownModels()?.original.value).toBe('')
+  })
+
+  it('compares HEAD with the working tree by default, then with a chosen commit, and shows that file diff without staging controls', async () => {
+    git.refs.mockResolvedValue({ head: 'abc', branch: 'main', commits: [{ hash: 'c1c1c1c1c1c1c1c1', short: 'c1c1c1c', author: 'Ada', date: '2026-10-05T00:00:00Z', subject: 'first change' }], branches: ['main'], tags: ['v1'] })
+    git.compare.mockImplementation((_scope, _session, base, target) => Promise.resolve({ base: { ref: base, resolved: null }, target: { ref: target, resolved: null }, files: [{ path: 'lib/x.ts', status: 'M', untracked: false }], truncated: false }))
+    git.compareDiff.mockImplementation((_scope, _session, base, target, path) => Promise.resolve({ path, base, target, diff: '--- a/lib/x.ts\n+++ b/lib/x.ts\n@@ -1 +1 @@\n-one\n+two', binary: false, truncated: false }))
+    render(<WorkspaceChanges scope={scope} sessionId="chat" />)
+    await waitFor(() => expect(git.status).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Compare' }))
+    await waitFor(() => expect(git.compare).toHaveBeenCalledWith(scope, 'chat', 'HEAD', 'WORKTREE'))
+    await waitFor(() => expect(git.refs).toHaveBeenCalledTimes(1))
+    // The first compared file is selected and its diff requested for the same two points.
+    await waitFor(() => expect(git.compareDiff).toHaveBeenCalledWith(scope, 'chat', 'HEAD', 'WORKTREE', 'lib/x.ts'))
+    expect(screen.queryByRole('button', { name: 'Stage all' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Review commit' })).toBeNull()
+    // Picking a commit as the newer side re-runs the comparison against it.
+    fireEvent.click(screen.getByRole('button', { name: 'Compare with: Working tree' }))
+    fireEvent.click(await screen.findByRole('button', { name: /first change/ }))
+    await waitFor(() => expect(git.compare).toHaveBeenCalledWith(scope, 'chat', 'HEAD', 'c1c1c1c1c1c1c1c1'))
+    await waitFor(() => expect(git.compareDiff).toHaveBeenCalledWith(scope, 'chat', 'HEAD', 'c1c1c1c1c1c1c1c1', 'lib/x.ts'))
+    await waitFor(() => expect(shownModels()?.modified.value).toContain('two'))
+    // A typed revision is accepted from the picker's search box.
+    fireEvent.click(screen.getByRole('button', { name: 'Base: HEAD' }))
+    fireEvent.change(await screen.findByLabelText('Commit, branch or tag…'), { target: { value: 'v1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use' }))
+    await waitFor(() => expect(git.compare).toHaveBeenCalledWith(scope, 'chat', 'v1', 'c1c1c1c1c1c1c1c1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Exit compare' }))
+    expect(screen.getByRole('button', { name: 'Stage all' })).toBeInTheDocument()
   })
 
   it('ignores a late snapshot after changing profile ownership', async () => {

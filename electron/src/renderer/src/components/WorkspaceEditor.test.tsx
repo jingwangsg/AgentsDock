@@ -2920,7 +2920,7 @@ describe('WorkspaceEditor', () => {
   it('includes Changes in workspace tab navigation without acting on a hidden editor', async () => {
     window.agentsDock.workspaceGit = {
       status: vi.fn().mockResolvedValue({ root: '/work/project', branch: 'main', head: 'head', revision: 'rev', operation: null, files: [], staged_count: 0, conflict_count: 0 }),
-      diff: vi.fn(), conflict: vi.fn(), action: vi.fn()
+      diff: vi.fn(), conflict: vi.fn(), action: vi.fn(), refs: vi.fn(), compare: vi.fn(), compareDiff: vi.fn()
     }
     renderEditor()
     act(() => window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', { detail: { sessionId: 'chat-a', path: 'src/App.tsx' } })))

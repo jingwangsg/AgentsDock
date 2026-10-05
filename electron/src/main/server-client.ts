@@ -12,7 +12,7 @@ import { compactTimelineEvent, compactTimelineEvents } from '../shared/event-com
 import { parseSyncedSideChat, type SyncedSideChat, parseSideQuestionAnswer, validateSideQuestionInput, type SideQuestionAnswer, type SideQuestionCancellation, type SideQuestionInput } from '../shared/side-questions'
 import { parseChatInboxDelete, parseChatInboxPage } from '../shared/chat-inbox'
 import { parseWorkspaceGitStatus, validateWorkspaceGitAction, workspaceGitPath, workspaceGitSessionId,
-  type WorkspaceGitAction, type WorkspaceGitDiff, type WorkspaceGitConflict, type WorkspaceGitView } from '../shared/workspace-git'
+  type WorkspaceGitAction, type WorkspaceGitDiff, type WorkspaceGitConflict, type WorkspaceGitView, WorkspaceGitRefs, WorkspaceGitCompare, WorkspaceGitCompareDiff, workspaceGitPointRef} from '../shared/workspace-git'
 import { chatShareCreateBody, chatShareId, chatShareMode, parseChatShareList, parseChatSharePreview, parseCreatedChatShare,
   type ChatShareMode, type CreateChatShareInput } from '../shared/chat-shares'
 import { inferredFileContentType } from '../shared/file-content-type'
@@ -1790,6 +1790,27 @@ export class AgentServerClient {
     return result
   }
 
+  async workspaceGitRefs(sessionId: string): Promise<WorkspaceGitRefs> {
+    const result = await this.privilegedNativeRequest<WorkspaceGitRefs>(`/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/git/refs`, {}, 40_000, 200, 16 * 1024 * 1024)
+    if (!Array.isArray(result.commits) || !Array.isArray(result.branches) || !Array.isArray(result.tags)) throw new Error('Invalid Git refs response.')
+    return result
+  }
+
+  async workspaceGitCompare(sessionId: string, base: string, target: string): Promise<WorkspaceGitCompare> {
+    const query = new URLSearchParams({ base: workspaceGitPointRef(base), target: workspaceGitPointRef(target) })
+    const result = await this.privilegedNativeRequest<WorkspaceGitCompare>(`/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/git/compare?${query}`, {}, 40_000, 200, 16 * 1024 * 1024)
+    if (!Array.isArray(result.files) || typeof result.truncated !== 'boolean' || result.base?.ref !== base || result.target?.ref !== target) throw new Error('Invalid Git compare response.')
+    return result
+  }
+
+  async workspaceGitCompareDiff(sessionId: string, base: string, target: string, path: string): Promise<WorkspaceGitCompareDiff> {
+    const query = new URLSearchParams({ base: workspaceGitPointRef(base), target: workspaceGitPointRef(target), path: workspaceGitPath(path) })
+    const result = await this.privilegedNativeRequest<WorkspaceGitCompareDiff>(`/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/git/compare/diff?${query}`, {}, 40_000, 200, 16 * 1024 * 1024)
+    if (result.path !== path || result.base !== base || result.target !== target || typeof result.diff !== 'string'
+      || typeof result.binary !== 'boolean' || typeof result.truncated !== 'boolean') throw new Error('Invalid Git compare diff response.')
+    return result
+  }
+
   async workspaceGitConflict(sessionId: string, path: string): Promise<WorkspaceGitConflict> {
     const query = new URLSearchParams({ path: workspaceGitPath(path) })
     const result = await this.privilegedNativeRequest<WorkspaceGitConflict>(`/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/git/conflict?${query}`, {}, 40_000, 200, 16 * 1024 * 1024)
@@ -3293,13 +3314,16 @@ function isPrivilegedNativeControlTarget(
   if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/claude\/goal$/.test(path)) {
     return !target.search && (method === 'PUT' || method === 'DELETE')
   }
-  const workspaceGit = /^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/workspace\/git(?:\/(diff|conflict|action|checkpoint\/restore))?$/.exec(path)
+  const workspaceGit = /^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/workspace\/git(?:\/(diff|conflict|action|checkpoint\/restore|refs|compare|compare\/diff))?$/.exec(path)
   if (workspaceGit) {
     const operation = workspaceGit[1]
-    if (!operation || operation === 'action' || operation === 'checkpoint/restore') return !target.search && method === (operation ? 'POST' : 'GET')
-    const keys = [...target.searchParams.keys()]
-    return method === 'GET' && keys.length === (operation === 'diff' ? 2 : 1)
-      && keys.includes('path') && (operation !== 'diff' || keys.includes('view'))
+    if (!operation || operation === 'action' || operation === 'checkpoint/restore' || operation === 'refs') return !target.search && method === (operation && operation !== 'refs' ? 'POST' : 'GET')
+    const keys = [...target.searchParams.keys()].sort()
+    // Each read names exactly its own query keys: diff (path, view), conflict (path),
+    // compare (base, target), compare/diff (base, path, target).
+    const expected = operation === 'diff' ? ['path', 'view'] : operation === 'conflict' ? ['path']
+      : operation === 'compare' ? ['base', 'target'] : ['base', 'path', 'target']
+    return method === 'GET' && keys.join(' ') === expected.join(' ')
   }
   const syncedSideChat = /^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/side-chat(?:\/(?:requests\/)?[A-Za-z0-9_-]{1,128})?$/.exec(path)
   if (syncedSideChat) return !target.search && (path.endsWith('/side-chat') ? method === 'GET' || method === 'POST' : method === 'DELETE')

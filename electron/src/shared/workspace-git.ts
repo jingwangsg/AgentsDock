@@ -37,6 +37,23 @@ export interface WorkspaceGitConflict {
   revision: string
   binary: boolean
 }
+/** One end of a comparison: the working tree (`WORKTREE`), the index (`INDEX`), or a revision (commit, branch, tag). */
+export const WORKSPACE_GIT_WORKTREE = 'WORKTREE'
+export const WORKSPACE_GIT_INDEX = 'INDEX'
+export interface WorkspaceGitCommit { hash: string; short: string; author: string; date: string; subject: string }
+export interface WorkspaceGitRefs { head: string | null; branch: string | null; commits: WorkspaceGitCommit[]; branches: string[]; tags: string[] }
+export interface WorkspaceGitPoint { ref: string; resolved: string | null }
+export interface WorkspaceGitCompareFile { path: string; status: string; untracked: boolean }
+export interface WorkspaceGitCompare { base: WorkspaceGitPoint; target: WorkspaceGitPoint; files: WorkspaceGitCompareFile[]; truncated: boolean }
+export interface WorkspaceGitCompareDiff { path: string; base: string; target: string; diff: string; binary: boolean; truncated: boolean }
+/** A comparison end the server accepts: `WORKTREE`, `INDEX`, or a revision name that is neither an option nor a range. */
+export function workspaceGitPointRef(value: string): string {
+  if (value === WORKSPACE_GIT_WORKTREE || value === WORKSPACE_GIT_INDEX) return value
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._/@{}^~-]{0,255}$/.test(value) || value.includes('..')) {
+    throw new Error('Name a commit, branch or tag to compare.')
+  }
+  return value
+}
 export interface WorkspaceGitAction {
   action: 'stage' | 'unstage' | 'discard' | 'commit' | 'resolve' | 'continue' | 'abort'
   expected_revision: string

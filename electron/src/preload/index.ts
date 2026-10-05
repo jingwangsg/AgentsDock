@@ -32,6 +32,9 @@ const api: AgentsDockAPI = {
     status: (scope, sessionId) => ipcRenderer.invoke('workspace-git:status', scope, sessionId),
     diff: (scope, sessionId, path, view) => ipcRenderer.invoke('workspace-git:diff', scope, sessionId, path, view),
     conflict: (scope, sessionId, path) => ipcRenderer.invoke('workspace-git:conflict', scope, sessionId, path),
+    refs: (scope, sessionId) => ipcRenderer.invoke('workspace-git:refs', scope, sessionId),
+    compare: (scope, sessionId, base, target) => ipcRenderer.invoke('workspace-git:compare', scope, sessionId, base, target),
+    compareDiff: (scope, sessionId, base, target, path) => ipcRenderer.invoke('workspace-git:compare-diff', scope, sessionId, base, target, path),
     action: (scope, sessionId, input) => ipcRenderer.invoke('workspace-git:action', scope, sessionId, input)
   },
   backgroundActivity: {

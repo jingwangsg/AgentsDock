@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { AlertTriangle, Check, ChevronRight, Columns2, FileDiff, Folder, GitBranch, GitCommitHorizontal, LoaderCircle, Minus, Plus, RefreshCw, Rows3, Search, TextWrap, Undo2, X } from 'lucide-react'
+import * as Popover from '@radix-ui/react-popover'
+import { AlertTriangle, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Columns2, FileDiff, Folder, GitBranch, GitCommitHorizontal, GitCompareArrows, LoaderCircle, Minus, Plus, RefreshCw, Rows3, Search, TextWrap, Undo2, X } from 'lucide-react'
 import { Virtuoso } from 'react-virtuoso'
 import { t } from '@shared/i18n'
 import { buildFileTree, type FileTreeDirectory, type FileTreeNode } from '@shared/file-tree'
 import type { WorkspaceProfileScope } from '@shared/types'
-import type { WorkspaceGitAction, WorkspaceGitConflict, WorkspaceGitDiff, WorkspaceGitStatus } from '@shared/workspace-git'
+import { WORKSPACE_GIT_INDEX, WORKSPACE_GIT_WORKTREE, type WorkspaceGitAction, type WorkspaceGitCompare, type WorkspaceGitCompareDiff, type WorkspaceGitConflict, type WorkspaceGitDiff, type WorkspaceGitRefs, type WorkspaceGitStatus } from '@shared/workspace-git'
 import { useLocale } from '../lib/i18n'
 import { buildMonacoDiffModel } from '../lib/monaco-diff-model'
 import { parseReviewableDiff } from '../lib/unified-diff'
@@ -17,7 +18,9 @@ type Selection = { path: string; view: 'staged' | 'unstaged' | 'conflict' }
 type Filter = 'all' | 'staged' | 'unstaged' | 'untracked' | 'conflicts'
 type Detail = { kind: 'diff'; value: WorkspaceGitDiff } | { kind: 'conflict'; value: WorkspaceGitConflict }
 type FileEntry = WorkspaceGitStatus['files'][number]
-type FileRow = { kind: 'file'; file: FileEntry; name: string; depth: number } | { kind: 'directory'; node: FileTreeDirectory; depth: number }
+type FileRow = { kind: 'file'; index: number; name: string; depth: number } | { kind: 'directory'; node: FileTreeDirectory; depth: number }
+// Two points of the repository to compare; null means the working tree against HEAD with staging controls.
+type Compare = { base: string; target: string }
 
 const TREE_VIEW_KEY = 'agentsdock:changes-tree-view'
 // Shared with the per-turn review pane so both diff views agree on layout.
@@ -61,6 +64,18 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [sideBySide, setSideBySide] = useState(() => localStorage.getItem(SIDE_BY_SIDE_KEY) !== '0')
   const [wordWrap, setWordWrap] = useState(() => localStorage.getItem(WORD_WRAP_KEY) === '1')
+  const [compare, setCompare] = useState<Compare | null>(null)
+  const [refs, setRefs] = useState<WorkspaceGitRefs | null>(null)
+  const [refsLoading, setRefsLoading] = useState(false)
+  const [compared, setCompared] = useState<WorkspaceGitCompare | null>(null)
+  const [compareLoading, setCompareLoading] = useState(false)
+  const [compareError, setCompareError] = useState<string | null>(null)
+  const [comparePath, setComparePath] = useState<string | null>(null)
+  const [compareDetail, setCompareDetail] = useState<WorkspaceGitCompareDiff | null>(null)
+  const [compareDetailLoading, setCompareDetailLoading] = useState(false)
+  const [compareDetailError, setCompareDetailError] = useState<string | null>(null)
+  const compareEpoch = useRef(0)
+  const compareDetailEpoch = useRef(0)
   const mounted = useRef(true)
   const statusEpoch = useRef(0)
   const detailEpoch = useRef(0)
@@ -122,6 +137,54 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
     return () => { detailEpoch.current++ }
   }, [active, selection, status?.revision, owner, detailVersion])
 
+  // Comparison mode: the file list between the two points, refreshed with the repository.
+  useEffect(() => {
+    const git = window.agentsDock.workspaceGit
+    if (!active || !compare || !git?.compare) return
+    const epoch = ++compareEpoch.current
+    setCompareLoading(true); setCompareError(null)
+    void git.compare(owner.scope, owner.sessionId, compare.base, compare.target).then(next => {
+      if (!mounted.current || epoch !== compareEpoch.current) return
+      setCompared(next)
+      setComparePath(current => current && next.files.some(file => file.path === current) ? current : next.files[0]?.path ?? null)
+    }).catch(cause => {
+      if (mounted.current && epoch === compareEpoch.current) setCompareError(errorText(cause))
+    }).finally(() => {
+      if (mounted.current && epoch === compareEpoch.current) setCompareLoading(false)
+    })
+    return () => { compareEpoch.current++ }
+  }, [active, compare, status?.revision, owner])
+
+  useEffect(() => {
+    const git = window.agentsDock.workspaceGit
+    if (!active || !compare || !comparePath || !git?.compareDiff) { setCompareDetail(null); return }
+    const epoch = ++compareDetailEpoch.current
+    setCompareDetail(null); setCompareDetailError(null); setCompareDetailLoading(true)
+    void git.compareDiff(owner.scope, owner.sessionId, compare.base, compare.target, comparePath).then(next => {
+      if (mounted.current && epoch === compareDetailEpoch.current) setCompareDetail(next)
+    }).catch(cause => {
+      if (mounted.current && epoch === compareDetailEpoch.current) setCompareDetailError(errorText(cause))
+    }).finally(() => {
+      if (mounted.current && epoch === compareDetailEpoch.current) setCompareDetailLoading(false)
+    })
+    return () => { compareDetailEpoch.current++ }
+  }, [active, compare, comparePath, compared, owner])
+
+  // The pickers list HEAD, branches, tags and recent commits; loaded once per panel, refreshed on demand.
+  const loadRefs = useCallback(async () => {
+    const git = window.agentsDock.workspaceGit
+    if (!git?.refs) return
+    setRefsLoading(true)
+    try {
+      const next = await git.refs(owner.scope, owner.sessionId)
+      if (mounted.current) setRefs(next)
+    } catch (cause) {
+      if (mounted.current) setCompareError(errorText(cause))
+    } finally {
+      if (mounted.current) setRefsLoading(false)
+    }
+  }, [owner])
+
   const run = async (input: Omit<WorkspaceGitAction, 'expected_revision'>, revision = status?.revision): Promise<void> => {
     if (mutation.current || readOnly || !revision) return
     const git = window.agentsDock.workspaceGit
@@ -168,6 +231,13 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
     const first = status.files.find(file => file.staged && !file.conflicted)
     setSelection(first ? { path: first.path, view: 'staged' } : null)
   })
+  const startCompare = () => protectDraft(() => {
+    dirtyRef.current = false; setDetail(null); setSelection(null); setReviewRevision(null); setNotice(null); setQuery('')
+    setCompare({ base: 'HEAD', target: WORKSPACE_GIT_WORKTREE })
+    if (!refs) void loadRefs()
+  })
+  const exitCompare = () => { compareEpoch.current++; compareDetailEpoch.current++; setCompare(null); setCompared(null); setComparePath(null); setCompareDetail(null); setCompareError(null); setQuery('') }
+  const setPoint = (side: keyof Compare, ref: string) => setCompare(current => current ? { ...current, [side]: ref } : current)
   const allFiles = status?.files ?? []
   const counts = useMemo(() => ({ all: allFiles.length, staged: allFiles.filter(file => file.staged && !file.conflicted).length,
     unstaged: allFiles.filter(file => file.unstaged && !file.conflicted && !file.untracked).length,
@@ -178,14 +248,17 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
       : filter === 'unstaged' ? file.unstaged && !file.conflicted && !file.untracked : file.untracked)
     return inGroup && file.path.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
   }), [allFiles, filter, query])
-  // Both views feed one virtualized list: the tree is flattened to its visible rows.
+  const comparedFiles = useMemo(() => (compare && compared ? compared.files : []).filter(file => file.path.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())), [compare, compared, query])
+  // Both views feed one virtualized list: the tree is flattened to its visible rows. In
+  // comparison mode the rows index the compared files instead of the working tree's.
+  const listPaths = useMemo(() => (compare ? comparedFiles : files).map(file => file.path), [compare, comparedFiles, files])
   const rows = useMemo<FileRow[]>(() => {
-    if (!treeView) return files.map(file => ({ kind: 'file', file, name: file.path, depth: 0 }))
+    if (!treeView) return listPaths.map((path, index) => ({ kind: 'file', index, name: path, depth: 0 }))
     const flatten = (nodes: FileTreeNode[], depth: number): FileRow[] => nodes.flatMap<FileRow>(node => node.kind === 'file'
-      ? [{ kind: 'file', file: files[node.index], name: node.name, depth }]
+      ? [{ kind: 'file', index: node.index, name: node.name, depth }]
       : [{ kind: 'directory', node, depth }, ...(collapsed.has(node.path) ? [] : flatten(node.children, depth + 1))])
-    return flatten(buildFileTree(files.map(file => file.path)), 0)
-  }, [files, treeView, collapsed])
+    return flatten(buildFileTree(listPaths), 0)
+  }, [listPaths, treeView, collapsed])
   const chooseView = (tree: boolean) => { setTreeView(tree); localStorage.setItem(TREE_VIEW_KEY, tree ? '1' : '0') }
   const toggleDirectory = (path: string) => setCollapsed(current => {
     const next = new Set(current)
@@ -207,10 +280,23 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
       <h2><FileDiff size={17} />{labels.changes}</h2>
       {status && <span className="workspace-changes-branch" title={`${status.root}\n${status.head ?? ''}`}><GitBranch size={14} />{status.branch || labels.detached}</span>}
       <span className="workspace-changes-spacer" />
-      <button type="button" className="icon-button" disabled={busy || loading} title={labels.refresh} aria-label={labels.refresh} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'spin' : undefined} /></button>
-      <button type="button" className="primary-button" disabled={blocked || !counts.staged || Boolean(counts.conflicts) || Boolean(operation)} onClick={review}><GitCommitHorizontal size={15} />{labels.review}</button>
+      <button type="button" className="icon-button" disabled={busy || loading} title={labels.refresh} aria-label={labels.refresh} onClick={() => { void refresh(); if (compare) void loadRefs() }}><RefreshCw size={15} className={loading ? 'spin' : undefined} /></button>
+      {compare
+        ? <button type="button" className="quiet-button" onClick={exitCompare}><X size={15} />{labels.compareExit}</button>
+        : <button type="button" className="quiet-button" disabled={!status} onClick={startCompare}><GitCompareArrows size={15} />{labels.compare}</button>}
+      {!compare && <button type="button" className="primary-button" disabled={blocked || !counts.staged || Boolean(counts.conflicts) || Boolean(operation)} onClick={review}><GitCommitHorizontal size={15} />{labels.review}</button>}
     </header>
-    {status && <div className="workspace-changes-summary"><span title={status.root}>{status.root.split(/[\\/]/).filter(Boolean).at(-1) || status.root}</span><span>{counts.all} {counts.all === 1 ? labels.changedOne : labels.changed} · {counts.staged} {counts.staged === 1 ? labels.stagedFile : labels.stagedFiles}</span></div>}
+    {compare && <div className="workspace-changes-compare" role="group" aria-label={labels.compare}>
+      <RefPicker label={labels.compareBase} value={compare.base} refs={refs} loading={refsLoading} allowWorktree={false} onPick={ref => setPoint('base', ref)} />
+      <ArrowRight size={14} aria-hidden="true" />
+      <RefPicker label={labels.compareTarget} value={compare.target} refs={refs} loading={refsLoading} allowWorktree onPick={ref => setPoint('target', ref)} />
+      <button type="button" className="icon-button" title={labels.swap} aria-label={labels.swap} disabled={compare.target === WORKSPACE_GIT_WORKTREE} onClick={() => setCompare({ base: compare.target, target: compare.base })}><ArrowLeftRight size={14} /></button>
+      <span className="workspace-changes-spacer" />
+      {compareLoading ? <LoaderCircle size={14} className="spin" /> : compared && <span>{compared.files.length} {compared.files.length === 1 ? labels.fileCount : labels.filesCount}</span>}
+    </div>}
+    {status && !compare && <div className="workspace-changes-summary"><span title={status.root}>{status.root.split(/[\\/]/).filter(Boolean).at(-1) || status.root}</span><span>{counts.all} {counts.all === 1 ? labels.changedOne : labels.changed} · {counts.staged} {counts.staged === 1 ? labels.stagedFile : labels.stagedFiles}</span></div>}
+    {compareError && <div className="workspace-changes-error" role="alert"><AlertTriangle size={15} /><span>{compareError}</span></div>}
+    {compared?.truncated && <p className="workspace-changes-notice">{labels.compareTruncated}</p>}
     {operation && <div className="workspace-changes-operation" role="status">
       <AlertTriangle size={16} /><span>{labels[operation]} {labels.operation}{counts.conflicts > 0 ? ` · ${counts.conflicts} ${counts.conflicts === 1 ? labels.conflict : labels.conflicts.toLocaleLowerCase()}` : ''}</span>
       <button type="button" className="quiet-button" disabled={blocked || counts.conflicts > 0 || conflictDirty} onClick={() => void run({ action: 'continue' })}>{labels.continue} {labels[operation].toLocaleLowerCase()}</button>
@@ -222,19 +308,21 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
     <div className="workspace-changes-body">
       <aside className="workspace-changes-sidebar" aria-label={labels.all}>
         <label className="workspace-changes-filter"><Search size={14} /><input aria-label={labels.filter} placeholder={labels.filter} value={query} onChange={event => setQuery(event.target.value)} /></label>
-        <div className="workspace-changes-groups" aria-label={labels.all}>
+        {!compare && <div className="workspace-changes-groups" aria-label={labels.all}>
           {(['all', 'staged', 'unstaged', 'untracked', 'conflicts'] as const).map(group => <button type="button" key={group} aria-pressed={filter === group} onClick={() => setFilter(group)}>{labels[group]}<span>{counts[group]}</span></button>)}
-        </div>
+        </div>}
         <div className="workspace-changes-bulk">
-          <button type="button" className="quiet-button" disabled={blocked || conflictDirty || !unstagedPaths.length} onClick={() => void run({ action: 'stage', paths: unstagedPaths })}><Plus size={13} />{labels.stageAll}</button>
-          <button type="button" className="quiet-button" disabled={blocked || conflictDirty || !counts.staged} onClick={() => void run({ action: 'unstage', paths: allFiles.filter(file => file.staged && !file.conflicted).map(file => file.path) })}><Minus size={13} />{labels.unstageAll}</button>
-          <button type="button" className="quiet-button workspace-changes-danger" disabled={blocked || conflictDirty || !unstagedPaths.length} onClick={() => setGitDiscardPaths(unstagedPaths)}><Undo2 size={13} />{labels.discardAll}</button>
+          {!compare && <>
+            <button type="button" className="quiet-button" disabled={blocked || conflictDirty || !unstagedPaths.length} onClick={() => void run({ action: 'stage', paths: unstagedPaths })}><Plus size={13} />{labels.stageAll}</button>
+            <button type="button" className="quiet-button" disabled={blocked || conflictDirty || !counts.staged} onClick={() => void run({ action: 'unstage', paths: allFiles.filter(file => file.staged && !file.conflicted).map(file => file.path) })}><Minus size={13} />{labels.unstageAll}</button>
+            <button type="button" className="quiet-button workspace-changes-danger" disabled={blocked || conflictDirty || !unstagedPaths.length} onClick={() => setGitDiscardPaths(unstagedPaths)}><Undo2 size={13} />{labels.discardAll}</button>
+          </>}
           <div className="segmented review-view-toggle">
             <button type="button" className={treeView ? 'active' : ''} aria-pressed={treeView} onClick={() => chooseView(true)}>{t('review.viewTree')}</button>
             <button type="button" className={treeView ? '' : 'active'} aria-pressed={!treeView} onClick={() => chooseView(false)}>{t('review.viewFlat')}</button>
           </div>
         </div>
-        {rows.length > 0 ? <Virtuoso className="workspace-changes-file-list" data={rows} computeItemKey={(_index, row) => row.kind === 'directory' ? `dir:${row.node.path}` : row.file.path} itemContent={(_index, row) => {
+        {rows.length > 0 ? <Virtuoso className="workspace-changes-file-list" data={rows} computeItemKey={(_index, row) => row.kind === 'directory' ? `dir:${row.node.path}` : listPaths[row.index]} itemContent={(_index, row) => {
           const depth = { '--tree-depth': row.depth } as CSSProperties
           if (row.kind === 'directory') {
             const count = fileCount(row.node)
@@ -242,7 +330,15 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
               <ChevronRight size={12} aria-hidden="true" /><Folder size={14} aria-hidden="true" /><span>{row.node.name}</span><span>{count}</span>
             </button>
           }
-          const { file } = row
+          if (compare) {
+            const file = comparedFiles[row.index]
+            return <div className={`workspace-changes-file${comparePath === file.path ? ' selected' : ''}`} style={depth}>
+              <button type="button" className="workspace-changes-file-name" title={file.path} aria-label={file.path} onClick={() => setComparePath(file.path)}>
+                <span><FileDiff size={14} /></span><span>{row.name}</span><code>{file.untracked ? '?' : file.status}</code>
+              </button>
+            </div>
+          }
+          const file = files[row.index]
           return <div className={`workspace-changes-file${selection?.path === file.path ? ' selected' : ''}`} style={depth}>
             <button type="button" className="workspace-changes-file-name" disabled={busy} title={file.original_path ? `${file.original_path} → ${file.path}` : file.path} aria-label={file.path} onClick={() => select({ path: file.path, view: file.conflicted ? 'conflict' : filter === 'staged' || (!file.unstaged && !file.untracked && file.staged) ? 'staged' : 'unstaged' })}>
               <span className={file.conflicted ? 'workspace-changes-danger' : ''}>{file.conflicted ? <AlertTriangle size={14} /> : <FileDiff size={14} />}</span><span>{row.name}</span><code>{file.conflicted ? '!' : `${file.index_status}${file.worktree_status}`}</code>
@@ -253,9 +349,26 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
               {file.staged && <button type="button" className="icon-button" disabled={blocked || conflictDirty} title={labels.unstage} aria-label={`${labels.unstage} ${file.path}`} onClick={() => void run({ action: 'unstage', paths: [file.path] })}><Minus size={14} /></button>}
             </div>}
           </div>
-        }} /> : <div className="workspace-changes-empty">{loading && !status ? <LoaderCircle size={18} className="spin" /> : counts.all ? labels.noMatches : status ? labels.clean : labels.unavailable}</div>}
+        }} /> : <div className="workspace-changes-empty">{compare
+          ? compareLoading && !compared ? <LoaderCircle size={18} className="spin" /> : compared?.files.length ? labels.noMatches : compared ? labels.compareEmpty : labels.unavailable
+          : loading && !status ? <LoaderCircle size={18} className="spin" /> : counts.all ? labels.noMatches : status ? labels.clean : labels.unavailable}</div>}
       </aside>
       <main className="workspace-changes-main">
+        {compare ? <>
+          {comparePath && <div className="workspace-changes-detail-header"><strong title={comparePath}>{comparePath}</strong><span className="workspace-changes-spacer" />
+            <div className="segmented review-layout-toggle">
+              <button type="button" className={sideBySide ? 'active' : ''} aria-pressed={sideBySide} onClick={() => chooseLayout(true)}><Columns2 size={13} aria-hidden="true" />{t('review.layoutSideBySide')}</button>
+              <button type="button" className={sideBySide ? '' : 'active'} aria-pressed={!sideBySide} onClick={() => chooseLayout(false)}><Rows3 size={13} aria-hidden="true" />{t('review.layoutInline')}</button>
+            </div>
+            <div className="segmented review-layout-toggle">
+              <button type="button" className={wordWrap ? 'active' : ''} aria-pressed={wordWrap} onClick={toggleWordWrap}><TextWrap size={13} aria-hidden="true" />{t('review.wordWrap')}</button>
+            </div>
+          </div>}
+          {compareDetailLoading ? <div className="workspace-changes-empty" role="status"><LoaderCircle className="spin" size={18} />{labels.loading}</div>
+            : compareDetailError ? <div className="workspace-changes-empty" role="alert">{compareDetailError}</div>
+            : compareDetail ? <DiffPreview diff={compareDetail} sideBySide={sideBySide} wordWrap={wordWrap} />
+            : <div className="workspace-changes-empty"><FileDiff size={28} /><span>{compared?.files.length ? labels.select : compared ? labels.compareEmpty : labels.loading}</span></div>}
+        </> : <>
         {reviewRevision && <section className="workspace-changes-commit" aria-label={labels.reviewTitle}>
           <div><h3>{labels.reviewTitle}</h3><button type="button" className="icon-button" aria-label={labels.close} onClick={() => setReviewRevision(null)}><X size={15} /></button></div>
           <p>{labels.commitHint}</p>
@@ -297,6 +410,7 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
               <div className="workspace-changes-resolution-footer">{hasMarkers && <span>{labels.markers}</span>}<button type="button" className="primary-button" disabled={blocked || staleConflict || hasMarkers} onClick={() => void run({ action: 'resolve', path: conflict.path, content: result }, conflict.revision)}><Check size={14} />{labels.saveResolution}</button></div>
             </>}
           </div> : detail?.kind === 'diff' ? <DiffPreview diff={detail.value} sideBySide={sideBySide} wordWrap={wordWrap} /> : <div className="workspace-changes-empty"><FileDiff size={28} /><span>{status?.files.length ? labels.select : status ? labels.empty : labels.unavailable}</span></div>}
+        </>}
       </main>
     </div>
     <ConfirmDialog open={active && abortOpen} title={labels.abortTitle} description={labels.abortHint} confirm={labels.abortConfirm} disabled={busy} onCancel={() => setAbortOpen(false)} onConfirm={() => void run({ action: 'abort', confirmed: true })} />
@@ -308,7 +422,42 @@ function WorkspaceChangesPanel({ scope, sessionId, active = true, readOnly = fal
   </section>
 }
 
-function DiffPreview({ diff, sideBySide, wordWrap }: { diff: WorkspaceGitDiff; sideBySide: boolean; wordWrap: boolean }) {
+function RefPicker({ label, value, refs, loading, allowWorktree, onPick }: { label: string; value: string; refs: WorkspaceGitRefs | null; loading: boolean; allowWorktree: boolean; onPick: (ref: string) => void }) {
+  const labels = useWorkspaceGitLabels()
+  const locale = useLocale()
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const display = value === WORKSPACE_GIT_WORKTREE ? labels.worktree : value === WORKSPACE_GIT_INDEX ? labels.index : value
+  const needle = query.trim().toLocaleLowerCase()
+  const matches = (text: string) => !needle || text.toLocaleLowerCase().includes(needle)
+  const pick = (ref: string) => { onPick(ref); setOpen(false); setQuery('') }
+  const branches = (refs?.branches ?? []).filter(matches).slice(0, 50)
+  const tags = (refs?.tags ?? []).filter(matches).slice(0, 50)
+  const commits = (refs?.commits ?? []).filter(commit => matches(commit.subject) || matches(commit.hash) || matches(commit.author)).slice(0, 60)
+  return <Popover.Root open={open} onOpenChange={next => { setOpen(next); if (!next) setQuery('') }}>
+    <Popover.Trigger asChild>
+      <button type="button" className="quiet-button workspace-changes-ref" aria-label={`${label}: ${display}`} title={display}><span>{label}</span><strong>{display}</strong><ChevronDown size={13} aria-hidden="true" /></button>
+    </Popover.Trigger>
+    <Popover.Portal>
+      <Popover.Content className="menu-content workspace-changes-ref-menu" side="bottom" align="start" sideOffset={6} collisionPadding={12}>
+        <form className="workspace-changes-ref-search" onSubmit={event => { event.preventDefault(); if (query.trim()) pick(query.trim()) }}>
+          <Search size={13} aria-hidden="true" /><input autoFocus aria-label={labels.pickRef} placeholder={labels.pickRef} value={query} onChange={event => setQuery(event.target.value)} />
+          {query.trim() && <button type="submit" className="quiet-button">{labels.useRef}</button>}
+        </form>
+        <div className="workspace-changes-ref-list">
+          {allowWorktree && matches(labels.worktree) && <button type="button" aria-pressed={value === WORKSPACE_GIT_WORKTREE} onClick={() => pick(WORKSPACE_GIT_WORKTREE)}>{labels.worktree}</button>}
+          {matches(labels.index) && <button type="button" aria-pressed={value === WORKSPACE_GIT_INDEX} onClick={() => pick(WORKSPACE_GIT_INDEX)}>{labels.index}</button>}
+          {matches('HEAD') && <button type="button" aria-pressed={value === 'HEAD'} onClick={() => pick('HEAD')}>{labels.headRef}{refs?.branch ? <span>{refs.branch}</span> : null}</button>}
+          {branches.length > 0 && <><h4>{labels.branches}</h4>{branches.map(branch => <button type="button" key={`branch:${branch}`} aria-pressed={value === branch} onClick={() => pick(branch)}>{branch}</button>)}</>}
+          {tags.length > 0 && <><h4>{labels.tags}</h4>{tags.map(tag => <button type="button" key={`tag:${tag}`} aria-pressed={value === tag} onClick={() => pick(tag)}>{tag}</button>)}</>}
+          {loading && !refs ? <p>{labels.loadingRefs}</p> : commits.length > 0 && <><h4>{labels.recentCommits}</h4>{commits.map(commit => <button type="button" key={commit.hash} aria-pressed={value === commit.hash} title={`${commit.hash}\n${commit.author} · ${new Date(commit.date).toLocaleString(locale)}`} onClick={() => pick(commit.hash)}><code>{commit.short}</code><span>{commit.subject}</span></button>)}</>}
+        </div>
+      </Popover.Content>
+    </Popover.Portal>
+  </Popover.Root>
+}
+
+function DiffPreview({ diff, sideBySide, wordWrap }: { diff: Pick<WorkspaceGitDiff, 'path' | 'diff' | 'binary' | 'truncated'>; sideBySide: boolean; wordWrap: boolean }) {
   const labels = useWorkspaceGitLabels()
   const locale = useLocale()
   // Set when Monaco fails to load; a notice then stands in for the editor.
