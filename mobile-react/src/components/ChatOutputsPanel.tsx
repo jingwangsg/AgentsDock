@@ -1,6 +1,7 @@
 // "Outputs & sources" page sheet for one chat: port of the Electron ChatOutputsPanel.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AccessibilityInfo, ActionSheetIOS, Alert, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { AccessibilityInfo, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { showActionMenu } from '../lib/action-menu'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
@@ -89,15 +90,6 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
     // The timeline's only jump mechanism is the search-result seek; it reads session_id, event_id and seq.
     closeThen(() => void seekTimelineResult({ session_id: sessionId, event_id: event.id, seq: event.seq, role: 'trace', snippet: '' }, profileGeneration))
   }
-  // Long-press actions keep this sheet open. MenuView does not open inside a Modal on Android,
-  // whose alerts hold at most three buttons.
-  const showActions = (title: string, actions: { text: string; onPress: () => void }[]) => {
-    if (Platform.OS !== 'ios') {
-      Alert.alert(title, undefined, [{ text: 'Cancel', style: 'cancel' }, ...actions])
-      return
-    }
-    ActionSheetIOS.showActionSheetWithOptions({ title, options: [...actions.map(action => action.text), 'Cancel'], cancelButtonIndex: actions.length }, index => actions[index]?.onPress())
-  }
   const copyPath = (path: string) => void Clipboard.setStringAsync(path).then(() => {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined)
     AccessibilityInfo.announceForAccessibility('Path copied')
@@ -125,7 +117,7 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
           switch (item.kind) {
             case 'canvas':
               return <Row key={`canvas:${item.path}`} icon={Frame} label={item.label} secondary="Canvas" onPress={() => closeThen(() => onOpenCanvas(item.name))}
-                onLongPress={() => showActions(item.label, [{ text: 'Copy path', onPress: () => copyPath(item.path) }])} />
+                onLongPress={() => showActionMenu(item.label, [{ text: 'Copy path', onPress: () => copyPath(item.path) }])} />
             case 'artifact': {
               const kind = mobileFileViewerKind(item.filename, item.contentType)
               const media = kind === 'image' || kind === 'video'
@@ -135,7 +127,7 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
               return <Row key={`artifact:${item.eventId}:${item.filename}`} icon={media ? Image : FileText} label={item.label}
                 secondary={media ? 'Generated image' : extension ? `${extension.toUpperCase()} file` : 'File'}
                 onPress={file ? () => closeThen(() => openArtifacts({ sessionId, files: [file], initialId: file.id, ownerKey: `chat-outputs:${file.id}` })) : undefined}
-                onLongPress={file ? () => showActions(item.label, [
+                onLongPress={file ? () => showActionMenu(item.label, [
                   ...(path ? [{ text: 'Copy path', onPress: () => copyPath(path) }] : []),
                   { text: 'Download', onPress: () => download(file) },
                 ]) : undefined} />

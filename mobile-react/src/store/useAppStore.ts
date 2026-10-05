@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { rememberedFolderOrder } from '../lib/session-order'
 import { sessionNeedsProviderInteraction } from '../lib/claude-controls'
 import { newIdempotencyKey } from '../lib/team-network'
-import { AppState as NativeAppState } from 'react-native'
+import { AppState as NativeAppState, Linking } from 'react-native'
 import * as Notifications from 'expo-notifications'
 import type {
   AgentFile,
@@ -583,7 +583,9 @@ interface AppState {
   refreshRuntime(): Promise<void>
   refreshSessions(expectedGeneration?: number): Promise<void>
   refreshSurfaces(expectedGeneration?: number): Promise<void>
-  createSurface(kind: SurfaceKind, folder: string, expectedGeneration?: number): Promise<boolean>
+  createSurface(kind: SurfaceKind, folder: string, expectedGeneration?: number, url?: string | null): Promise<boolean>
+  /** A web link from a chat opens in the app's browser tab: the tab already showing it, else a new one in the chat's folder. */
+  openLinkInBrowser(url: string, sourceSessionId: string | null): Promise<void>
   selectSurface(surfaceId: string | null): void
   updateSurface(surfaceId: string, patch: UpdateSurfaceInput, expectedGeneration?: number): Promise<void>
   reorderSurfaces(ids: string[], expectedGeneration?: number): Promise<void>
@@ -655,6 +657,13 @@ interface AppState {
   inspectProcesses(sessionId?: string): Promise<void>
   inspectTmux(sessionId?: string, includeAll?: boolean): Promise<void>
   clearError(): void
+}
+
+/** Browser tabs record the page they navigated to: compare origin, path without its trailing slash, and query; the fragment is ignored. */
+function sameWebAddress(stored: string | null, link: string): boolean {
+  if (!stored) return false
+  const key = (value: string) => { const parsed = new URL(value); return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}${parsed.search}` }
+  try { return key(stored) === key(link) } catch { return stored === link }
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -1424,7 +1433,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set(state => ({ surfaces, surfacesRevision: revision, selectedSurfaceId: surfaces.some(surface => surface.id === state.selectedSurfaceId) ? state.selectedSurfaceId : null }))
   },
 
-  async createSurface(kind, folder, expectedGeneration) {
+  async createSurface(kind, folder, expectedGeneration, url = null) {
     const scope = validatedConnectionOrReport(get, set, expectedGeneration)
     if (!scope) return false
     const state = get()
@@ -1435,6 +1444,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         kind,
         folder,
         cwd: kind === 'terminal' ? newest?.cwd?.trim() || state.health?.default_cwd?.trim() || null : null,
+        ...(kind === 'browser' && url ? { url } : {}),
       })
       if (!connectionIsCurrent(scope)) return false
       set(current => ({ surfaces: [...current.surfaces.filter(item => item.id !== surface.id), surface], selectedSurfaceId: surface.id }))
@@ -1447,6 +1457,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   selectSurface(surfaceId) {
     set(state => ({ selectedSurfaceId: surfaceId && state.surfaces.some(surface => surface.id === surfaceId) ? surfaceId : null }))
+  },
+
+  async openLinkInBrowser(url, sourceSessionId) {
+    const state = get()
+    const existing = state.surfaces.find(surface => surface.kind === 'browser' && sameWebAddress(surface.url, url))
+    if (existing) {
+      state.selectSurface(existing.id)
+      return
+    }
+    const source = sourceSessionId ? state.sessions.find(session => session.id === sourceSessionId) : null
+    const created = await state.createSurface('browser', source?.folder?.trim() || 'General', undefined, url)
+    // Offline, a stale profile or a refusing server: the link still has to open somewhere.
+    if (!created) void Linking.openURL(url).catch(() => undefined)
   },
 
   async updateSurface(surfaceId, patch, expectedGeneration) {

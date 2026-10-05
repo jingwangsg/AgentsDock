@@ -149,6 +149,14 @@ function AppShellContent() {
     setMobileChatOpen(false)
     requestAnimationFrame(dismissAppKeyboard)
   }, [])
+  // A browser tab selected from a chat link (not the sidebar) must come forward on a phone; only a
+  // change of tab opens the pane, so closing it with a tab still selected stays closed.
+  const shownSurfaceId = useRef<string | null>(null)
+  useEffect(() => {
+    const id = selectedSurface?.id ?? null
+    if (id && id !== shownSurfaceId.current && compact && !mobileChatOpen) openMobileChat()
+    shownSurfaceId.current = id
+  }, [compact, mobileChatOpen, openMobileChat, selectedSurface])
   const toggleSidebar = useCallback(() => {
     const next = !sidebarCollapsed
     setSidebarCollapsed(next)
@@ -175,10 +183,10 @@ function AppShellContent() {
     requestAnimationFrame(dismissAppKeyboard)
   }, [])
   const quickNewSurface = useCallback(async (folder: string, kind: SurfaceKind) => {
-    const created = await useAppStore.getState().createSurface(kind, folder, profileGeneration)
-    if (created && compact) setMobileChatOpen(true)
+    // Selecting the new tab brings the pane forward on a phone (the selectedSurface effect above).
+    await useAppStore.getState().createSurface(kind, folder, profileGeneration)
     requestAnimationFrame(dismissAppKeyboard)
-  }, [compact, profileGeneration])
+  }, [profileGeneration])
   const quickNewChat = useCallback(async (preset?: { folder: string; backend: Backend }) => {
     if (quickChatInFlight.current) return
     quickChatInFlight.current = true

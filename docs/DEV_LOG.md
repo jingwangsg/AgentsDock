@@ -1,5 +1,31 @@
 # Public development log
 
+## 2026-10-05 — Web links in a chat open in the app's browser tab (desktop package 97, Android build 45)
+
+- A web link in a reply used to leave the app for the system browser. Now
+  it opens in the app's browser tab: the tab already showing that page
+  (addresses compared without a trailing slash or fragment) is selected,
+  else a new tab opens in the chat's folder. On Android a bare URL in prose
+  is now a link too, like the desktop's autolinks; only addresses with a
+  scheme qualify, so `setup.py` in a sentence stays text.
+- The system browser and Copy link stay one gesture away: the desktop's
+  right-click menu on a link (unchanged) and a new long-press menu on
+  Android, which shares the Outputs panel's action-menu helper. Text shown
+  in a sheet over the tab area (side chats, team messages) keeps sending web
+  links to the system browser.
+- When the tab cannot be created (offline, stale profile, server refusal)
+  the link falls back to the system browser; the desktop closes the
+  teamspace only once a tab is there to show; on a phone a tab selected
+  from a link comes forward like one tapped in the sidebar.
+- Two review passes drove the fallbacks, the address comparison and a test
+  mock gap. Verified with desktop store and Markdown tests, Android store
+  and contract tests, both type checks, and on the emulator against a live
+  remote chat: a bare URL opened an in-app tab showing the page, and a long
+  press showed Copy link and Open in browser. Not exercised in the running
+  desktop app. Package 97 (`AgentsDock-0.2.0-97-mac-arm64.pkg`) and build 45
+  (`AgentsDock-0.1.1-45-sideload.apk`) were attached to the working chat.
+  Availability: local package.
+
 ## 2026-10-04 — Browser and terminal tabs lose their header close button (desktop and Android, build 44)
 
 - The tab header's X sat next to the rename title and was easy to hit by

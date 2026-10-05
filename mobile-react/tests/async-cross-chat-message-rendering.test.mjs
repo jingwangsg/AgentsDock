@@ -27,7 +27,8 @@ const mocks = {
     export const Linking = { openURL: async url => { globalThis.__asyncChatMessageFixture.links.push(url); } };
     export const useColorScheme = () => globalThis.__asyncChatMessageFixture.theme;
     export const AccessibilityInfo = { announceForAccessibility() {} };
-    export const Alert = { alert() {} };`,
+    export const Alert = { alert() {} };
+    export const ActionSheetIOS = { showActionSheetWithOptions() {} };`,
   '@shopify/flash-list': `import { useEffect, useState } from 'react'; export function useRecyclingState(initial, deps) { const [value, setValue] = useState(initial); useEffect(() => setValue(initial), deps); return [value, setValue]; }`,
   'lucide-react-native': `export const AlertTriangle='AlertTriangle', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', Clock3='Clock3', Code2='Code2', Copy='Copy', FileText='FileText', History='History', Pencil='Pencil', Pin='Pin', RotateCcw='RotateCcw', Siren='Siren', Sparkles='Sparkles', Wrench='Wrench', MessageSquareShare='MessageSquareShare', X='X', Maximize2='Maximize2';`,
   'react-native-svg': `export default 'Svg'; export const SvgXml='SvgXml', Defs='Defs', LinearGradient='LinearGradient', Rect='Rect', Stop='Stop';`,
@@ -82,7 +83,7 @@ const handoff = (patch = {}) => ({
 })
 function reset() {
   calls.length = 0; fixture.links.length = 0; fixture.theme = 'dark'; client.validationRevision = 1
-  fixture.state = {
+  fixture.state = { openLinkInBrowser: async url => { fixture.links.push(url) },
     activeProfileId: 'profile-a', profileGeneration: 1, selectedSessionId: 'recipient',
     connected: true, connecting: false, health: { ok: true, server_instance_id: 'instance-a' },
     profiles: [{ id: 'profile-a', serverIdentity: 'server-a' }],

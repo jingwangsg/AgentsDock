@@ -110,7 +110,9 @@ export const MarkdownContent = memo(function MarkdownContent({
       return
     }
     if (openTeamMessageLink(href)) return
-    if (/^(?:https?:\/\/|mailto:)/i.test(href)) { void window.agentsDock.native.openExternal(href); return }
+    // Web links open in the app's browser tab; the right-click menu still offers the system browser and Copy link.
+    if (/^https?:\/\//i.test(href)) { void useAppStore.getState().openLinkInBrowser(href, sessionId ?? null); return }
+    if (/^mailto:/i.test(href)) { void window.agentsDock.native.openExternal(href); return }
     if (/\.canvas\.tsx(?:[?#].*)?$/i.test(href)) {
       window.dispatchEvent(new CustomEvent('agentsdock:open-canvas', { detail: { sessionId: sessionId ?? null, path: href } }))
       return

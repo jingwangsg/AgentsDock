@@ -305,7 +305,10 @@ interface AppState {
   setFolderOrder(order: string[]): void
   /** Reads the server's terminal and browser tabs; runs on every health revision change and sidebar refresh. */
   refreshSurfaces(): Promise<void>
-  createSurface(kind: SurfaceKind, folder: string): Promise<void>
+  /** Resolves true once the server's tab is listed and selected; false when the request failed or the profile changed. */
+  createSurface(kind: SurfaceKind, folder: string, url?: string | null): Promise<boolean>
+  /** A web link from a chat opens in the app's browser tab: the tab already showing it, else a new one in the chat's folder. */
+  openLinkInBrowser(url: string, sourceSessionId: string | null): Promise<void>
   selectSurface(surfaceId: string): void
   updateSurface(surfaceId: string, patch: UpdateSurfaceInput): Promise<void>
   removeSurface(surfaceId: string): Promise<void>
@@ -515,6 +518,13 @@ function beginProfileSwitch(profileId: string): void {
       importChats: false
     }
   }))
+}
+
+/** Browser tabs record the page they navigated to: compare origin, path without its trailing slash, and query; the fragment is ignored. */
+function sameWebAddress(stored: string | null, link: string): boolean {
+  if (!stored) return false
+  const key = (value: string) => { const parsed = new URL(value); return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}${parsed.search}` }
+  try { return key(stored) === key(link) } catch { return stored === link }
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -2730,7 +2740,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set(state => ({ surfaces, selectedSurfaceId: surfaces.some(surface => surface.id === state.selectedSurfaceId) ? state.selectedSurfaceId : null }))
     } catch (error) { if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) }) }
   },
-  async createSurface(kind, folder) {
+  async createSurface(kind, folder, url = null) {
     const scope = captureProfileScope(get())
     const state = get()
     const folderSeed = newestAvailableSession(state.sessions.filter(session => (session.folder?.trim() || 'General') === folder))
@@ -2738,15 +2748,38 @@ export const useAppStore = create<AppState>((set, get) => ({
       const surface = await window.agentsDock.surfaces.create({
         kind,
         folder,
-        cwd: kind === 'terminal' ? folderSeed?.cwd?.trim() || state.health?.default_cwd?.trim() || null : null
+        cwd: kind === 'terminal' ? folderSeed?.cwd?.trim() || state.health?.default_cwd?.trim() || null : null,
+        ...(kind === 'browser' && url ? { url } : {})
       })
-      if (!profileScopeMatches(scope, get())) return
+      if (!profileScopeMatches(scope, get())) return false
       // Creating moved the server's revision, so a health-triggered refresh may already have listed it.
       set(current => ({ surfaces: [...current.surfaces.filter(item => item.id !== surface.id), surface], selectedSurfaceId: surface.id }))
-    } catch (error) { if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) }) }
+      return true
+    } catch (error) {
+      if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) })
+      return false
+    }
   },
   selectSurface(surfaceId) {
     set({ selectedSurfaceId: get().surfaces.some(surface => surface.id === surfaceId) ? surfaceId : null })
+  },
+  async openLinkInBrowser(url, sourceSessionId) {
+    const state = get()
+    // The teamspace covers the tab area; the sidebar's tab row closes it the same way before selecting.
+    const showTabs = () => window.dispatchEvent(new Event('agentsdock:close-teamspace'))
+    const existing = state.surfaces.find(surface => surface.kind === 'browser' && sameWebAddress(surface.url, url))
+    if (existing) {
+      showTabs()
+      state.selectSurface(existing.id)
+      return
+    }
+    const source = sourceSessionId ? state.sessions.find(session => session.id === sourceSessionId) : null
+    if (await state.createSurface('browser', source?.folder?.trim() || 'General', url)) {
+      showTabs()
+      return
+    }
+    // A refused tab only shows the error banner; the link still has to open somewhere.
+    void window.agentsDock.native.openExternal(url)
   },
   async updateSurface(surfaceId, patch) {
     const scope = captureProfileScope(get())

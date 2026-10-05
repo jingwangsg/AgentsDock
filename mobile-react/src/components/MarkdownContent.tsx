@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { UITextView as SelectableText } from '@bsky.app/react-native-uitextview'
+import * as Clipboard from 'expo-clipboard'
 import { Linking, Platform, ScrollView, StyleSheet, Text as NativeText, View, type TextStyle } from 'react-native'
 import { Maximize2 } from 'lucide-react-native'
 import markdownItCjkFriendly from 'markdown-it-cjk-friendly'
@@ -7,6 +8,7 @@ import Markdown, { MarkdownIt, renderRules, type ASTNode, type RenderRules } fro
 import { SvgXml } from 'react-native-svg'
 
 import type { ChatReference } from '../types'
+import { showActionMenu } from '../lib/action-menu'
 import { createMarkdownStyle, installMarkdownTableSource, markdownTableColumnWidths, markdownTableSource } from '../lib/markdown'
 import { installMathMarkdown } from '../lib/math-markdown'
 import {
@@ -32,7 +34,11 @@ import { IconButton } from './ui'
 // markdownItCjkFriendly: CommonMark refuses `**…。**他` as bold because the
 // closing `**` sits between CJK punctuation and a letter; models write this
 // constantly. Same fix as the desktop's remark-cjk-friendly.
-const chatMarkdown = installMarkdownTableSource(installMathMarkdown(new MarkdownIt({ typographer: true }).use(markdownItCjkFriendly)))
+// linkify: a bare URL in a reply is tappable like a Markdown link. Only addresses with a scheme,
+// like the desktop's autolinks: fuzzy matching would turn `setup.py` in prose into a web link.
+const chatMarkdown = installMarkdownTableSource(installMathMarkdown(new MarkdownIt({ typographer: true, linkify: true }).use(markdownItCjkFriendly)))
+chatMarkdown.linkify.set({ fuzzyLink: false, fuzzyEmail: false })
+const isWebLink = (href: string) => /^https?:\/\//i.test(href)
 const EMPTY_CHAT_REFERENCES: readonly ChatReference[] = []
 const inlineReferenceStyles = StyleSheet.create({ marker: { borderRadius: 4, fontWeight: '800' } })
 
@@ -43,6 +49,7 @@ export function MarkdownContent({
   color,
   inlineChatReferences = EMPTY_CHAT_REFERENCES,
   sourceSessionId,
+  webLinks = 'tab',
   onChatReferencePress,
   expandableTables = true,
 }: {
@@ -51,6 +58,8 @@ export function MarkdownContent({
   compact?: boolean
   color?: string
   inlineChatReferences?: readonly ChatReference[]
+  /** Where a web link opens: the app's browser tab, or the system browser when this text sits in a sheet that would hide the tab. */
+  webLinks?: 'tab' | 'system'
   sourceSessionId?: string
   onChatReferencePress?: (reference: ChatReference) => void
   expandableTables?: boolean
@@ -83,9 +92,18 @@ export function MarkdownContent({
     }
     if (openCanvasLink(url, sourceSessionId ?? null)) return false
     if (openWorkspacePathLink(url, sourceSessionId ?? null)) return false
+    if (isWebLink(url) && webLinks === 'tab') {
+      // Web links open in the app's browser tab; the long-press menu offers the system browser.
+      void useAppStore.getState().openLinkInBrowser(url, sourceSessionId ?? null)
+      return false
+    }
     void Linking.openURL(url).catch(() => undefined)
     return false
-  }, [sourceSessionId])
+  }, [sourceSessionId, webLinks])
+  const linkMenu = useCallback((url: string) => showActionMenu(url, [
+    { text: 'Copy link', onPress: () => { void Clipboard.setStringAsync(url).catch(() => undefined) } },
+    { text: 'Open in browser', onPress: () => { void Linking.openURL(url).catch(() => undefined) } },
+  ]), [])
   // Cells render before their table, so cell and table rules share one lookup
   // instead of re-walking the table for every cell.
   const tableColumnWidths = useMemo(() => {
@@ -125,15 +143,17 @@ export function MarkdownContent({
     s: (node, children, _parents, styles) => (
       <SelectableText key={node.key} style={styles.s}>{children}</SelectableText>
     ),
-    link: (node, children, _parents, styles) => (
-      <SelectableText
+    link: (node, children, _parents, styles) => {
+      const href = String(node.attributes.href ?? '')
+      return <SelectableText
         key={node.key}
         style={styles.link}
-        onPress={() => openLink(node.attributes.href)}
+        onPress={() => openLink(href)}
+        onLongPress={isWebLink(href) ? () => linkMenu(href) : undefined}
       >
         {children}
       </SelectableText>
-    ),
+    },
     // A server-local image cannot load (the library would fetch `https://<path>`). Inside a link
     // (a blocklink, since images are block tokens) the tap follows that link.
     image: (node, children, parents, styles, allowedImageHandlers, defaultImageHandler) => {

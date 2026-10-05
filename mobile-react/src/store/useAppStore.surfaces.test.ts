@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { AppState as NativeAppState } from 'react-native'
+import { AppState as NativeAppState, Linking } from 'react-native'
 import type { Health, PublicServerProfile, Session, Surface } from '../types'
 import { client, useAppStore } from './useAppStore'
 
@@ -105,6 +105,27 @@ assert.equal(await useAppStore.getState().createSurface('browser', 'Ideas'), tru
 assert.deepEqual(calls.at(-1), ['create', { kind: 'browser', folder: 'Ideas', cwd: null }])
 assert.equal(await useAppStore.getState().createSurface('terminal', 'Ideas'), true)
 assert.deepEqual(calls.at(-1), ['create', { kind: 'terminal', folder: 'Ideas', cwd: '/home/default' }])
+
+// A web link opens the browser tab already showing it (addresses compare parsed), else a new tab in the chat's folder.
+useAppStore.setState({ surfaces: stored, selectedSurfaceId: null })
+const createsBefore = calls.length
+await useAppStore.getState().openLinkInBrowser('https://docs.example/', 'chat-new')
+assert.equal(calls.length, createsBefore, 'the tab already showing the page is reused')
+assert.equal(useAppStore.getState().selectedSurfaceId, 'browser_1')
+await useAppStore.getState().openLinkInBrowser('https://example.com/page', 'chat-new')
+assert.deepEqual(calls.at(-1), ['create', { kind: 'browser', folder: 'Research', cwd: null, url: 'https://example.com/page' }])
+assert.equal(useAppStore.getState().selectedSurfaceId, 'browser_new')
+await useAppStore.getState().openLinkInBrowser('https://example.com/other', null)
+assert.deepEqual(calls.at(-1), ['create', { kind: 'browser', folder: 'General', cwd: null, url: 'https://example.com/other' }])
+// When the tab cannot be created the link still opens, in the system browser.
+const opened: string[] = []
+Linking.openURL = async (url: string) => { opened.push(url) }
+const createSurfaceBefore = client.createSurface
+client.createSurface = async () => { throw new Error('refused') }
+await useAppStore.getState().openLinkInBrowser('https://example.com/refused', null)
+assert.deepEqual(opened, ['https://example.com/refused'])
+client.createSurface = createSurfaceBefore
+useAppStore.setState({ error: null })
 
 // Renames and page records go through the server; the server's copy wins.
 await useAppStore.getState().updateSurface('browser_1', { name: 'GitHub' })

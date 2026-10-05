@@ -14,3 +14,5 @@ export const AppState = {
     for (const listener of appStateListeners) listener(state)
   },
 }
+
+export const Linking = { async openURL(_url: string) {} }

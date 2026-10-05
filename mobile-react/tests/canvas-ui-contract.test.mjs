@@ -82,7 +82,8 @@ test('markdown .canvas.tsx links open the sheet instead of Linking', () => {
   assert.match(markdown, /import \{ openCanvasLink \} from '\.\.\/lib\/canvas-links'/)
   // A Codex follow-up link fills the composer first; canvas and path links follow, Linking last.
   assert.match(markdown, /const openLink = useCallback\(\(url: string\) => \{\n    const followup = codexFollowupPrompt\(url\)/)
-  assert.match(markdown, /if \(openCanvasLink\(url, sourceSessionId \?\? null\)\) return false\n    if \(openWorkspacePathLink\(url, sourceSessionId \?\? null\)\) return false\n    void Linking\.openURL\(url\)/)
+  // Web links take the app browser tab between the path check and the Linking fallback.
+  assert.match(markdown, /if \(openCanvasLink\(url, sourceSessionId \?\? null\)\) return false\n    if \(openWorkspacePathLink\(url, sourceSessionId \?\? null\)\) return false\n    if \(isWebLink\(url\)[\s\S]{0,300}?void Linking\.openURL\(url\)/)
   assert.match(links, /export const OPEN_CANVAS_EVENT = 'agentsdock:open-canvas'/)
   assert.match(links, /const name = canvasNameFromPath\(href\)\n  if \(!name\) return false\n  DeviceEventEmitter\.emit\(OPEN_CANVAS_EVENT, \{ sessionId, name \}/)
   assert.match(page, /if \(!clean\.endsWith\(CANVAS_SUFFIX\)\) return null/)
@@ -115,7 +116,7 @@ test('the sheet searches the rendered canvas by injecting a find script and rend
 test('the Outputs panel lists the chat canvases as Canvas rows that open the sheet', () => {
   assert.match(panel, /client\.listCanvases\(sessionId\)\.then\(list => \{ if \(!stale\) setCanvases\(list\.canvases\) \}\)/)
   assert.match(panel, /\}, \[sessionId, visible\]\)/, 'canvases are listed when the panel opens')
-  assert.match(panel, /case 'canvas':\n\s+return <Row key=\{`canvas:\$\{item\.path\}`\} icon=\{Frame\} label=\{item\.label\} secondary="Canvas" onPress=\{\(\) => closeThen\(\(\) => onOpenCanvas\(item\.name\)\)\} \/>/)
+  assert.match(panel, /case 'canvas':\n\s+return <Row key=\{`canvas:\$\{item\.path\}`\} icon=\{Frame\} label=\{item\.label\} secondary="Canvas" onPress=\{\(\) => closeThen\(\(\) => onOpenCanvas\(item\.name\)\)\}\n\s+onLongPress=/)
   assert.match(collector, /const outputs: ChatOutputItem\[\] = canvases\.map\(canvas => \(\{\n\s+kind: 'canvas', label: canvasLinkText\.get\(canvas\.name\) \?\? canvas\.name, name: canvas\.name, path: canvas\.path,/)
   assert.match(chatScreen, /onOpenCanvas=\{setCanvasName\}/)
 })

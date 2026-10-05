@@ -92,6 +92,7 @@ jobs:
           tests/cross-chat-store-contract.test.mjs
           tests/waiting-banner-ui-contract.test.mjs
           tests/claude-goal-edit-contract.test.mjs
+          tests/chat-links-contract.test.mjs
           tests/cross-chat-timeline-ui-contract.test.mjs
         working-directory: mobile-react
       - run: node --test tests/ios-release-metadata.test.mjs

@@ -140,7 +140,7 @@ export function SideChatSheet({ sessionId, onClose }: { sessionId: string; onClo
           {chat?.exchanges.map(exchange => <View key={exchange.request_id} style={styles.exchange}>
             {questionBubble(exchange.question)}
             {exchange.steps?.length ? <SideChatSteps steps={exchange.steps} live={exchange.status === 'running'} /> : null}
-            {exchange.answer ? <MarkdownContent value={exchange.answer} fontScale={fontScale} sourceSessionId={sessionId} /> : null}
+            {exchange.answer ? <MarkdownContent webLinks="system" value={exchange.answer} fontScale={fontScale} sourceSessionId={sessionId} /> : null}
             {exchange.status === 'running' ? status('Answering…')
               : exchange.status === 'cancelled' ? status('Response cancelled.')
                 : exchange.status === 'failed' || exchange.status === 'interrupted'

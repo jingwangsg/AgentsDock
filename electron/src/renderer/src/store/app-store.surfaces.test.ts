@@ -27,7 +27,7 @@ let api: { list: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; upd
 beforeEach(() => {
   api = {
     list: vi.fn().mockResolvedValue(stored),
-    create: vi.fn(async (input: { kind: Surface['kind']; folder: string; cwd?: string | null }) => surface({ id: `${input.kind === 'terminal' ? 'term' : 'browser'}_new`, kind: input.kind, folder: input.folder, cwd: input.cwd ?? null })),
+    create: vi.fn(async (input: { kind: Surface['kind']; folder: string; cwd?: string | null; url?: string | null }) => surface({ id: `${input.kind === 'terminal' ? 'term' : 'browser'}_new`, kind: input.kind, folder: input.folder, cwd: input.cwd ?? null, url: input.url ?? null })),
     update: vi.fn(async (id: string, patch: Partial<Surface>) => ({ ...stored.find(item => item.id === id)!, ...patch, updated_at: '2026-10-02T00:00:00Z' })),
     remove: vi.fn().mockResolvedValue(undefined)
   }
@@ -118,6 +118,43 @@ describe('terminal and browser tabs', () => {
     await useAppStore.getState().createSurface('terminal', 'Ideas')
     expect(api.create).toHaveBeenNthCalledWith(1, { kind: 'browser', folder: 'Ideas', cwd: null })
     expect(api.create).toHaveBeenNthCalledWith(2, { kind: 'terminal', folder: 'Ideas', cwd: '/home/default' })
+  })
+
+  it('opens a web link in the browser tab already showing it, else in a new tab in the chat\'s folder', async () => {
+    const closeTeamspace = vi.fn()
+    window.addEventListener('agentsdock:close-teamspace', closeTeamspace)
+    useAppStore.setState({ surfaces: stored, selectedSurfaceId: null })
+    // Addresses compare parsed: the tab recorded the navigated page with its trailing slash.
+    await useAppStore.getState().openLinkInBrowser('https://docs.example/', 'chat-new')
+    expect(api.create).not.toHaveBeenCalled()
+    expect(useAppStore.getState().selectedSurfaceId).toBe('browser_1')
+    // A path recorded with its redirect slash still matches the link without it; the fragment does not count.
+    useAppStore.setState({ surfaces: [...stored, surface({ id: 'browser_guide', kind: 'browser', cwd: null, url: 'https://docs.example/guide/' })], selectedSurfaceId: null })
+    await useAppStore.getState().openLinkInBrowser('https://docs.example/guide#top', 'chat-new')
+    expect(api.create).not.toHaveBeenCalled()
+    expect(useAppStore.getState().selectedSurfaceId).toBe('browser_guide')
+    await useAppStore.getState().openLinkInBrowser('https://example.com/page', 'chat-new')
+    expect(api.create).toHaveBeenLastCalledWith({ kind: 'browser', folder: 'Research', cwd: null, url: 'https://example.com/page' })
+    expect(useAppStore.getState().selectedSurfaceId).toBe('browser_new')
+    await useAppStore.getState().openLinkInBrowser('https://example.com/other', null)
+    expect(api.create).toHaveBeenLastCalledWith({ kind: 'browser', folder: 'General', cwd: null, url: 'https://example.com/other' })
+    // Two reuses and two creations each brought the tab area forward.
+    expect(closeTeamspace).toHaveBeenCalledTimes(4)
+    window.removeEventListener('agentsdock:close-teamspace', closeTeamspace)
+  })
+
+  it('falls back to the system browser when the server refuses the tab', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { surfaces: api, native: { openExternal } } as unknown as AgentsDockAPI })
+    const closeTeamspace = vi.fn()
+    window.addEventListener('agentsdock:close-teamspace', closeTeamspace)
+    api.create.mockRejectedValueOnce(new Error('refused'))
+    await useAppStore.getState().openLinkInBrowser('https://example.com/refused', null)
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/refused')
+    expect(useAppStore.getState().error).toBe('refused')
+    // The teamspace is only closed once there is a tab to show.
+    expect(closeTeamspace).not.toHaveBeenCalled()
+    window.removeEventListener('agentsdock:close-teamspace', closeTeamspace)
   })
 
   it('renames and records a browser tab\'s page through the server, keeping the server\'s copy', async () => {

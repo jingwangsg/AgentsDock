@@ -140,6 +140,9 @@ describe('MarkdownContent', () => {
 
   it('keeps registered artifacts and web links ahead of local path handling', () => {
     activateProfile(DEFAULT_SERVER_URL)
+    const openLinkInBrowser = vi.fn().mockResolvedValue(undefined)
+    const original = useAppStore.getState().openLinkInBrowser
+    useAppStore.setState({ openLinkInBrowser })
     const file = { id: 'artifact-2', filename: 'summary.pdf', source_path: '/Users/dev/project/out/summary.pdf', content_type: 'application/pdf' }
     render(<MarkdownContent
       text="[summary](/Users/dev/project/out/summary.pdf) and [site](https://example.com/docs)"
@@ -151,8 +154,11 @@ describe('MarkdownContent', () => {
     fireEvent.click(screen.getByRole('link', { name: 'site' }))
 
     expect(window.agentsDock.files.open).toHaveBeenCalledExactlyOnceWith('chat-7', file)
-    expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://example.com/docs')
+    // A web link opens in the app's browser tab, not the system browser.
+    expect(openLinkInBrowser).toHaveBeenCalledExactlyOnceWith('https://example.com/docs', 'chat-7')
+    expect(openExternal).not.toHaveBeenCalled()
     expect(openLocalPath).not.toHaveBeenCalled()
+    useAppStore.setState({ openLinkInBrowser: original })
   })
 
   it('never loads a file:// image even though file:// links are accepted', () => {
@@ -219,14 +225,18 @@ describe('MarkdownContent', () => {
     useAppStore.setState({ drafts: {} })
   })
 
-  it('opens a web link that merely ends in .canvas.tsx externally, not as a Canvas', () => {
+  it('opens a web link that merely ends in .canvas.tsx in the app browser, not as a Canvas', () => {
     const open = vi.fn()
+    const openLinkInBrowser = vi.fn().mockResolvedValue(undefined)
+    const original = useAppStore.getState().openLinkInBrowser
+    useAppStore.setState({ openLinkInBrowser })
     window.addEventListener('agentsdock:open-canvas', open)
     render(<MarkdownContent text="[demo](https://github.com/x/y/blob/main/demo.canvas.tsx)" sessionId="chat-7" />)
     fireEvent.click(screen.getByRole('link', { name: 'demo' }))
-    expect(openExternal).toHaveBeenCalledWith('https://github.com/x/y/blob/main/demo.canvas.tsx')
+    expect(openLinkInBrowser).toHaveBeenCalledWith('https://github.com/x/y/blob/main/demo.canvas.tsx', 'chat-7')
     expect(open).not.toHaveBeenCalled()
     window.removeEventListener('agentsdock:open-canvas', open)
+    useAppStore.setState({ openLinkInBrowser: original })
   })
 
   it('renders only a validated structured chat reference as an inline route chip', () => {
