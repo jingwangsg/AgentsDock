@@ -1,5 +1,26 @@
 # Public development log
 
+## 2026-10-05 — Open in Zed reaches a Sky cluster from the Dock-launched Zed (desktop package 103)
+
+- Opening a remote chat's directory in Zed failed with "Connection failed,
+  retrying" for the OCI clusters. Zed connects with the Sky-generated ssh
+  entry, whose proxy verifies the SkyPilot API server's certificate against
+  the bundle `sky` points at through SSL_CERT_FILE and REQUESTS_CA_BUNDLE in
+  a shell; Zed, launched from the Dock, inherits no such environment, so the
+  proxy was refused before the SSH banner (`ssh` from a clean environment
+  reproduced it; the same command with the two variables connected).
+- The Forward SSH alias AgentsDock writes now carries those two variables
+  inline in its ProxyCommand whenever the resolved command is Sky's
+  websocket proxy and the bundle is installed, and Open in Zed always names
+  a remote through that alias (written right before Zed connects) rather
+  than the raw cluster entry, so it works whether or not Forward SSH is
+  switched on for the server.
+- Verified with the ssh-hosts, Open in Zed and chat header tests and the type
+  check, and by connecting through an alias with the inline variables from a
+  process with an empty environment. Package 103
+  (`AgentsDock-0.2.0-103-mac-arm64.pkg`) was attached to the working chat.
+  Availability: local package.
+
 ## 2026-10-05 — Forward SSH names a remote server for `ssh` and Zed, and every chat header opens its directory in Zed (desktop package 102)
 
 - Settings → Server gains a Forward SSH control on every hub-registered

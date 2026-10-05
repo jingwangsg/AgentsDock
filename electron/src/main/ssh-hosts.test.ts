@@ -53,6 +53,22 @@ describe('sshHostFileContent', () => {
     ])
   })
 
+  it('gives a Sky websocket proxy command the certificate environment inline, so the alias connects without a shell', async () => {
+    const sky = RESOLVED.replace(
+      "proxycommand ssh -tt -W '[%h]:%p' root@127.0.0.1",
+      "proxycommand exec ssh -tt -i '~/.sky/generated/ssh-keys/jing-debug-a236.key' -W '[10.244.141.135]:22' root@127.0.0.1 -o ProxyCommand=\"/opt/venv/bin/python3 /opt/venv/lib/python3.12/site-packages/sky/templates/websocket_proxy.py https://skypilot.example jing-debug-a236 kubernetes-pod-ssh-proxy\""
+    )
+    const options = await resolvedSshOptions('jing-debug-a236', async () => sky)
+    const withBundle = sshHostFileContent('oci_dev', 'oci@jing-debug-a236', options, '/Users/me/.sky/certs/requests-ca-bundle.pem')
+    expect(withBundle).toContain(
+      "  ProxyCommand env SSL_CERT_FILE='/Users/me/.sky/certs/requests-ca-bundle.pem' REQUESTS_CA_BUNDLE='/Users/me/.sky/certs/requests-ca-bundle.pem' ssh -tt -i '~/.sky/generated/ssh-keys/jing-debug-a236.key' -W '[10.244.141.135]:22' root@127.0.0.1 -o ProxyCommand=\"/opt/venv/bin/python3"
+    )
+    // No bundle installed, or a proxy that is not Sky's: the command is copied as resolved.
+    expect(sshHostFileContent('oci_dev', 'oci@jing-debug-a236', options, null)).toContain('  ProxyCommand exec ssh -tt -i')
+    const plain = await resolvedSshOptions('jing-debug-a236', async () => RESOLVED)
+    expect(sshHostFileContent('oci_dev', 'oci@jing-debug-a236', plain, '/Users/me/.sky/certs/requests-ca-bundle.pem')).toContain("  ProxyCommand ssh -tt -W '[%h]:%p' root@127.0.0.1")
+  })
+
   it('refuses an alias that is not a plain host name', () => {
     expect(() => sshHostFileContent('my server', 'host', new Map())).toThrow('alias')
     expect(() => sshHostFileContent('-x', 'host', new Map())).toThrow('alias')

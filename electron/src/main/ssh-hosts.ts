@@ -5,6 +5,16 @@ import { dirname, join } from 'node:path'
 import { SSH_HOST_ALIAS_PATTERN } from '../shared/ssh-host-alias'
 
 /**
+ * SkyPilot's websocket ssh proxy verifies the API server's certificate against this bundle, which
+ * `sky` points at through SSL_CERT_FILE / REQUESTS_CA_BUNDLE in a shell; a process without that
+ * environment (Zed, anything launched from the Dock) is refused. Null when no bundle is installed.
+ */
+export function skyCaBundle(): string | null {
+  const bundle = join(homedir(), '.sky', 'certs', 'requests-ca-bundle.pem')
+  return existsSync(bundle) ? bundle : null
+}
+
+/**
  * Local SSH host aliases for remote servers, kept the way SkyPilot keeps its clusters: one file
  * per alias under a directory the user's SSH config includes. `ssh oci_dev` and Zed's
  * `ssh://oci_dev/…` then reach the server behind the hub's `oci@<cluster>` notation.
@@ -54,8 +64,12 @@ const COPIED_OPTIONS: ReadonlyArray<readonly [key: string, name: string]> = [
   ['serveraliveinterval', 'ServerAliveInterval'], ['proxyjump', 'ProxyJump'], ['proxycommand', 'ProxyCommand']
 ]
 
-/** The host block for `alias`, resolved from `sshHost` so the alias works even when that host is a Sky cluster name. */
-export function sshHostFileContent(alias: string, sshHost: string, options: ReadonlyMap<string, string[]>): string {
+/**
+ * The host block for `alias`, resolved from `sshHost` so the alias works even when that host is
+ * a Sky cluster name. A Sky websocket proxy command gets the certificate environment inline, so
+ * the alias connects from any process.
+ */
+export function sshHostFileContent(alias: string, sshHost: string, options: ReadonlyMap<string, string[]>, caBundle: string | null = skyCaBundle()): string {
   if (!SSH_HOST_ALIAS_PATTERN.test(alias)) throw new Error(`"${alias}" cannot be an SSH host alias: use letters, digits, "_", "-" or "." only.`)
   const lines = [
     `# Added by AgentsDock for the server "${alias}" (SSH host ${sshHost.trim()}). Rewritten when that server is opened or changes; turning off Forward SSH removes it.`,
@@ -64,7 +78,12 @@ export function sshHostFileContent(alias: string, sshHost: string, options: Read
   for (const [key, name] of COPIED_OPTIONS) {
     for (const raw of options.get(key) ?? []) {
       // ssh -G prints booleans as true/false; the config file wants yes/no.
-      const value = key === 'stricthostkeychecking' ? raw === 'false' ? 'no' : raw === 'true' ? 'yes' : raw : raw
+      let value = key === 'stricthostkeychecking' ? raw === 'false' ? 'no' : raw === 'true' ? 'yes' : raw : raw
+      if (key === 'proxycommand' && caBundle && value.includes('websocket_proxy.py')) {
+        // `env` must run the ssh itself, not a leading `exec`; the inner ssh hands the variables to the proxy.
+        const quoted = `'${caBundle.replace(/'/g, `'\\''`)}'`
+        value = `env SSL_CERT_FILE=${quoted} REQUESTS_CA_BUNDLE=${quoted} ${value.replace(/^exec\s+/, '')}`
+      }
       if (!value || value === 'none' || (key === 'serveraliveinterval' && value === '0')) continue
       lines.push(`  ${name} ${value}`)
     }

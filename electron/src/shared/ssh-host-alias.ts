@@ -8,9 +8,15 @@ export function sshHostAlias(profile: Pick<PublicServerProfile, 'name' | 'sshHos
   return profile.sshForward && profile.sshHost && SSH_HOST_ALIAS_PATTERN.test(profile.name) ? profile.name : null
 }
 
-/** What Open in Zed needs for a chat: its directory on the server, and how this Mac reaches that server. */
+/**
+ * What Open in Zed needs for a chat: its directory on the server, and how this Mac reaches that
+ * server. A remote is always named by its alias (written right before Zed connects): Zed runs
+ * without the shell environment a Sky cluster's own ssh entry relies on, and the alias carries it.
+ */
 export function openInZedInput(session: Pick<Session, 'cwd'>, profile: PublicServerProfile | undefined): { path: string; sshHost: string | null; hostAlias: string | null } | null {
   const path = session.cwd?.trim()
   if (!path) return null
-  return { path, sshHost: profile?.sshHost ?? null, hostAlias: profile ? sshHostAlias(profile) : null }
+  const sshHost = profile?.sshHost ?? null
+  const hostAlias = profile && sshHost && SSH_HOST_ALIAS_PATTERN.test(profile.name) ? profile.name : null
+  return { path, sshHost, hostAlias }
 }
