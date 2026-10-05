@@ -1,5 +1,33 @@
 # Public development log
 
+## 2026-10-05 — Terminal tabs on remote servers open at the account's home with the shell's rc files applied (desktop package 101, Android build 48, server)
+
+- A terminal tab on a hub-proxied remote used to open wherever the folder's
+  newest chat worked, a workspace path the remote host often lacks, and
+  then fell back to the agents' default directory. On the OCI containers
+  the login profile also re-exports PWD, so the prompt claimed
+  `/workspace/groot` while the shell actually sat elsewhere.
+- Desktop and Android now create a terminal tab on a hub-proxied remote
+  without a directory; the server starts such a shell in its account's
+  home (its own HOME, on the lustre home directory for the OCI remotes),
+  and uses home as well whenever a tab's directory does not exist on that
+  host. Local servers keep opening terminals in the folder's directory.
+- Terminal shells on every server now launch as a login shell that enters
+  its directory itself and then execs the interactive shell (bash, zsh, sh,
+  dash, fish; others keep the plain login launch), so the login profiles run,
+  the interactive shell reads `.bashrc` or `.zshrc` as usual, and a profile
+  that rewrites PWD can no longer leave the prompt lying.
+- Verified with the server terminal tests, the desktop and Android surface
+  tests and type checks, the desktop terminal acceptance (typing before and
+  after a server restart) against an isolated server, and on the redeployed
+  oci_dev and oci_herorun: a tab with no or a missing directory now reports
+  the lustre home as both its prompt and its real directory with the
+  `.bashrc` aliases present, and `/tmp` is honoured. Package 101
+  (`AgentsDock-0.2.0-101-mac-arm64.pkg`) and build 48
+  (`AgentsDock-0.1.1-48-sideload.apk`) were attached to the working chat;
+  the four remotes run the new server, the hub awaits its next restart.
+  Availability: local package.
+
 ## 2026-10-05 — Terminal tabs accept typing again (desktop package 100)
 
 - Since terminal and browser tabs replaced the docked chat terminal on

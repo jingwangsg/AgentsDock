@@ -40,6 +40,36 @@ class Utf8TerminalEnvironmentTests(unittest.TestCase):
         self.assertIn("UTF-8", env["LANG"])
 
 
+class TerminalShellWorkdirTests(unittest.TestCase):
+    """A terminal tab's shell starts where the tab says when that directory exists here, else at home."""
+
+    def _spawned(self, requested: str | None, shell: str = "/bin/bash") -> tuple[str, list[str]]:
+        with mock.patch.object(agent_server.subprocess, "Popen") as popen, \
+             mock.patch.object(agent_server, "resolve_terminal_login_shell", return_value=shell):
+            popen.return_value = mock.Mock(pid=4242)
+            process, master_fd, name = agent_server.spawn_terminal_shell(requested, 80, 24)
+            os.close(master_fd)
+        self.assertEqual(name, os.path.basename(shell))
+        return popen.call_args.kwargs["cwd"], popen.call_args.args[0]
+
+    def test_an_existing_directory_is_honoured_and_the_shell_enters_it_itself(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsdock-terminal-cwd-") as workdir:
+            cwd, argv = self._spawned(workdir)
+            self.assertEqual(cwd, workdir)
+            # The login phase runs the profiles; the exec'd interactive shell then owns the directory,
+            # so a profile that re-exports PWD cannot leave the prompt lying.
+            self.assertEqual(argv, ["/bin/bash", "-l", "-c", f"cd {workdir} && exec /bin/bash"])
+
+    def test_no_directory_or_a_missing_one_lands_at_home_not_agent_cwd(self) -> None:
+        home = os.path.expanduser("~")
+        with mock.patch.object(agent_server, "DEFAULT_CWD", "/tmp"):
+            self.assertEqual(self._spawned(None)[0], home)
+            self.assertEqual(self._spawned("/definitely/not/here/on/this/host")[0], home)
+
+    def test_shells_that_reject_extra_login_arguments_run_plain(self) -> None:
+        self.assertEqual(self._spawned(None, "/bin/tcsh")[1], ["/bin/tcsh", "-l"])
+
+
 class SurfaceApiTests(unittest.TestCase):
     """Terminal and browser tabs live on the server so every client sees the same list."""
 

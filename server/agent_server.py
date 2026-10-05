@@ -28463,6 +28463,9 @@ def scrub_tmux_global_secret_environment() -> None:
 
 TERMINAL_FALLBACK_SHELLS = ("/bin/bash", "/bin/zsh", "/bin/sh")
 TERMINAL_DISABLED_SHELL_NAMES = {"false", "nologin"}
+# Shells launched as `-l -c "cd … && exec <shell>"`: the login phase runs the profiles, then the
+# interactive shell starts in its directory. Other shells (tcsh rejects -l with other arguments) run plain `-l`.
+TERMINAL_CD_EXEC_SHELL_NAMES = frozenset({"bash", "zsh", "sh", "dash", "fish"})
 TERMINAL_SESSION_LOCK_STRIPES = tuple(threading.Lock() for _ in range(64))
 # Terminal and browser tabs ("surfaces") are shared by every client of this server, so a
 # tab opened on the desktop shows up on the phone. A terminal tab's shell is owned by the
@@ -28838,7 +28841,16 @@ def ensure_terminal_session(
 def spawn_terminal_shell(cwd: str | None, columns: int, rows: int) -> tuple[subprocess.Popen[bytes], int, str]:
     """Start a login shell on a fresh pty for a terminal tab; TerminalShell owns it from here."""
     shell = resolve_terminal_login_shell()
-    workdir = existing_cwd(cwd or DEFAULT_CWD)
+    # A person's shell starts at home when the tab names no directory this host has. AGENT_CWD
+    # is where agents work by default, not where a shell should land.
+    requested = Path(cwd).expanduser() if cwd else None
+    workdir = str(requested) if requested is not None and requested.is_dir() else existing_cwd(str(Path.home()))
+    # The shell changes into its directory itself before becoming interactive: a login profile
+    # that re-exports PWD (container images do) would otherwise leave the prompt lying about
+    # where the shell is, and the exec'd interactive shell reads ~/.bashrc / ~/.zshrc as usual.
+    launch = [shell, "-l"]
+    if Path(shell).name in TERMINAL_CD_EXEC_SHELL_NAMES:
+        launch = [shell, "-l", "-c", f"cd {shlex.quote(workdir)} && exec {shlex.quote(shell)}"]
     master_fd, slave_fd = pty.openpty()
     env = os.environ.copy()
     for secret_name in PROVIDER_SECRET_ENV_NAMES:
@@ -28853,7 +28865,7 @@ def spawn_terminal_shell(cwd: str | None, columns: int, rows: int) -> tuple[subp
     try:
         set_pty_dimensions(slave_fd, columns, rows)
         process = subprocess.Popen(
-            [shell, "-l"],
+            launch,
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,

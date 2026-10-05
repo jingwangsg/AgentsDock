@@ -2727,11 +2727,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const scope = captureProfileScope(get())
     const state = get()
     const folderSeed = newestAvailableSession(state.sessions.filter(session => (session.folder?.trim() || 'General') === folder))
+    // On a hub-proxied remote the folder's chat directory is a workspace path, often absent on
+    // that host; its terminal opens in the account's home directory instead (the server default).
+    const remote = /\/api\/remote\/[^/]+\/?$/.test(state.profiles.find(profile => profile.id === state.activeProfileId)?.serverUrl ?? '')
     try {
       const surface = await window.agentsDock.surfaces.create({
         kind,
         folder,
-        cwd: kind === 'terminal' ? folderSeed?.cwd?.trim() || state.health?.default_cwd?.trim() || null : null,
+        cwd: kind === 'terminal' && !remote ? folderSeed?.cwd?.trim() || state.health?.default_cwd?.trim() || null : null,
         ...(kind === 'browser' && url ? { url } : {})
       })
       if (!profileScopeMatches(scope, get())) return false

@@ -106,6 +106,13 @@ assert.deepEqual(calls.at(-1), ['create', { kind: 'browser', folder: 'Ideas', cw
 assert.equal(await useAppStore.getState().createSurface('terminal', 'Ideas'), true)
 assert.deepEqual(calls.at(-1), ['create', { kind: 'terminal', folder: 'Ideas', cwd: '/home/default' }])
 
+// On a hub-proxied remote the terminal names no directory, so the shell opens at that account's home.
+const directServerURL = useAppStore.getState().serverURL
+useAppStore.setState({ serverURL: 'http://127.0.0.1:7850/api/remote/7a727afff743' })
+assert.equal(await useAppStore.getState().createSurface('terminal', 'Research'), true)
+assert.deepEqual(calls.at(-1), ['create', { kind: 'terminal', folder: 'Research', cwd: null }])
+useAppStore.setState({ serverURL: directServerURL })
+
 // A web link opens the browser tab already showing it (addresses compare parsed), else a new tab in the chat's folder.
 useAppStore.setState({ surfaces: stored, selectedSurfaceId: null })
 const createsBefore = calls.length

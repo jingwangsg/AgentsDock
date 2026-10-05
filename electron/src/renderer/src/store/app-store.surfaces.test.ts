@@ -113,6 +113,12 @@ describe('terminal and browser tabs', () => {
     expect(state.selectedSurfaceId).toBe('term_new')
   })
 
+  it('creates a terminal tab on a hub-proxied remote without a directory, so the shell opens at that account\'s home', async () => {
+    useAppStore.setState({ profiles: [{ ...profile, serverUrl: 'https://alpha.example:7850/api/remote/7a727afff743' }] })
+    await useAppStore.getState().createSurface('terminal', 'Research')
+    expect(api.create).toHaveBeenCalledWith({ kind: 'terminal', folder: 'Research', cwd: null })
+  })
+
   it('creates a browser tab without a directory and falls back to the server default directory for terminals', async () => {
     await useAppStore.getState().createSurface('browser', 'Ideas')
     await useAppStore.getState().createSurface('terminal', 'Ideas')

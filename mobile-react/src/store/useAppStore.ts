@@ -1438,12 +1438,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!scope) return false
     const state = get()
     // A terminal starts where the folder's newest chat works, else where the server works by default.
+    // On a hub-proxied remote that chat directory is a workspace path, often absent on that host;
+    // the terminal opens in the account's home directory instead (the server default).
     const newest = newestChatInFolder(state.sessions, folder)
+    const remote = hubProxyRemoteId(state.serverURL) !== null
     try {
       const surface = await scope.client.createSurface({
         kind,
         folder,
-        cwd: kind === 'terminal' ? newest?.cwd?.trim() || state.health?.default_cwd?.trim() || null : null,
+        cwd: kind === 'terminal' && !remote ? newest?.cwd?.trim() || state.health?.default_cwd?.trim() || null : null,
         ...(kind === 'browser' && url ? { url } : {}),
       })
       if (!connectionIsCurrent(scope)) return false
