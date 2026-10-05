@@ -3522,6 +3522,18 @@ describe('WorkspaceEditor', () => {
     expect(resolveWorkspacePathInput('/work/project', '~/.claude/../settings.json')).toEqual({
       kind: 'outside-workspace'
     })
+    // A relative reference that climbs out of the working directory names a file elsewhere on the
+    // server; one that climbs and comes back is still a workspace file.
+    expect(resolveWorkspacePathInput('/work/project', '../project-other/REVIEW.md')).toEqual({
+      kind: 'absolute-file',
+      path: '/work/project-other/REVIEW.md'
+    })
+    expect(resolveWorkspacePathInput('/work/project', 'src/../README.md')).toEqual({
+      kind: 'workspace-file',
+      path: 'README.md'
+    })
+    expect(resolveWorkspacePathInput('/work/project', '../../../README.md')).toEqual({ kind: 'outside-workspace' })
+    expect(resolveWorkspacePathInput('', '../README.md')).toEqual({ kind: 'outside-workspace' })
     expect(resolveWorkspacePathInput('/work/project', '/home/dev/../secrets.txt')).toEqual({
       kind: 'outside-workspace'
     })

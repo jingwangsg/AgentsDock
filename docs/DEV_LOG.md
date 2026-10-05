@@ -1,5 +1,20 @@
 # Public development log
 
+## 2026-10-05 — A chat link that climbs out of the working directory opens its file (desktop package 104)
+
+- A relative link such as `../sibling-worktree/REVIEW.md` in a reply was
+  refused with "That file is outside this chat’s working directory", although
+  the same file written as an absolute path already opened read-only through
+  the server's absolute-file route. The editor now resolves a relative
+  reference with dot segments against the chat's working directory: a result
+  inside it opens as a workspace file, one outside it opens through the
+  absolute route, and only a path that climbs above the root is still
+  refused. Absolute paths and `~/` references keep their existing rules.
+- Verified with the workspace editor tests (138, four new cases) and the type
+  check. Package 104 (`AgentsDock-0.2.0-104-mac-arm64.pkg`) was attached to
+  the working chat. Android still opens only files inside the working
+  directory. Availability: local package.
+
 ## 2026-10-05 — Open in Zed reaches a Sky cluster from the Dock-launched Zed (desktop package 103)
 
 - Opening a remote chat's directory in Zed failed with "Connection failed,

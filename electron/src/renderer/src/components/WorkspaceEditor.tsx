@@ -5772,18 +5772,21 @@ export function resolveWorkspacePathInput(cwd: string, input: string): Workspace
       ? { kind: 'absolute-file', path: homePath }
       : { kind: 'outside-workspace' }
   }
+  const normalizedCwd = normalizeAbsolutePath(cwd)
+  let normalizedCandidate: ReturnType<typeof normalizeAbsolutePath>
   if (!isAbsolutePath(candidate)) {
     // A path-shaped relative query can be opened directly through the
     // workspace file endpoint. Do not make exact paths depend on the
     // workspace search scan/result limits.
     if (!candidate.includes('/') && !candidate.includes('\\')) return { kind: 'search' }
     const relativePath = normalizeWorkspaceReference(candidate)
-    return relativePath
-      ? { kind: 'workspace-file', path: relativePath }
-      : { kind: 'outside-workspace' }
+    if (relativePath) return { kind: 'workspace-file', path: relativePath }
+    // A reference with dot segments (../sibling/REVIEW.md) still names one file on the server:
+    // resolve it against the working directory and judge the result like an absolute path.
+    normalizedCandidate = normalizedCwd ? resolveAgainstDirectory(normalizedCwd, candidate) : null
+  } else {
+    normalizedCandidate = normalizeAbsolutePath(candidate)
   }
-  const normalizedCwd = normalizeAbsolutePath(cwd)
-  const normalizedCandidate = normalizeAbsolutePath(candidate)
   if (!normalizedCandidate) {
     return { kind: 'outside-workspace' }
   }
@@ -5809,10 +5812,28 @@ export function resolveWorkspacePathInput(cwd: string, input: string): Workspace
       }
     }
   }
-  if (absolutePathContainsDotSegment(candidate, normalizedCandidate.flavor) || normalizedCandidate.parts.length === 0) {
+  if ((isAbsolutePath(candidate) && absolutePathContainsDotSegment(candidate, normalizedCandidate.flavor)) || normalizedCandidate.parts.length === 0) {
     return { kind: 'outside-workspace' }
   }
   return { kind: 'absolute-file', path: formattedAbsolutePath(normalizedCandidate) }
+}
+
+/** `relative` applied to `directory` segment by segment; null when it climbs above the root. */
+function resolveAgainstDirectory(
+  directory: { flavor: 'posix' | 'windows'; root: string; parts: string[] },
+  relative: string
+): { flavor: 'posix' | 'windows'; root: string; parts: string[] } | null {
+  const parts = [...directory.parts]
+  for (const segment of relative.split(/[\\/]/)) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') {
+      if (!parts.length) return null
+      parts.pop()
+      continue
+    }
+    parts.push(segment)
+  }
+  return { flavor: directory.flavor, root: directory.root, parts }
 }
 
 export function resolveWorkspaceReference(
