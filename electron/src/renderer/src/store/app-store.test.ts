@@ -1558,6 +1558,31 @@ describe('live queue state', () => {
     }])
   })
 
+  it('does not resurrect a queued turn from a send receipt the live stream has already passed', async () => {
+    const receipt = eventFor('chat-a', 2, { type: 'turn_queued', queued_id: 'queued-from-send', prompt: 'Queue this', position: 1 })
+    const send = vi.fn().mockResolvedValue({ session: sessionFor('chat-a'), queued: true, event: receipt })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { turns: { send } } as unknown as AgentsDockAPI
+    })
+    // Before the HTTP receipt landed, the socket delivered the queue row and the turn that consumed it.
+    useAppStore.setState({
+      activeProfileId: null, profileGeneration: 0, switchingProfileId: null,
+      selectedSessionId: 'chat-a', chatPanes: { primary: 'chat-a', secondary: null },
+      sessions: [sessionFor('chat-a')], health: null, runtimeCatalog: null,
+      snapshots: { 'chat-a': snapshot('chat-a', [
+        eventFor('chat-a', 1),
+        receipt,
+        eventFor('chat-a', 3, { type: 'turn_started', queued_id: 'queued-from-send', run_id: 'run-3', prompt: 'Queue this' })
+      ]) },
+      drafts: {}, uploadsBySession: {}, uploadPathsBySession: {}, turnAdmissionTokens: {}
+    })
+
+    await expect(useAppStore.getState().sendPromptForSession('chat-a', 'Queue this')).resolves.toBe(true)
+
+    expect(useAppStore.getState().snapshots['chat-a'].queuedTurns).toEqual([])
+  })
+
   it('resends a message whose send failed with the same request id, and a new message with a new one', async () => {
     // The first send can still reach the server after the app gave up on it.
     const send = vi.fn()
@@ -4545,6 +4570,31 @@ describe('event merging', () => {
       eventFor('chat-a', 4),
     ]))
     expect(correctedAndAppended.generation).toBe(8)
+  })
+
+  it('prunes the retained range a delta tombstone names, including rows and files outside the delta', () => {
+    const previous = {
+      ...snapshot('chat-a', [1, 2, 3, 4, 5].map(seq => eventFor('chat-a', seq))),
+      files: [
+        { id: 'file-4', session_id: 'chat-a', filename: 'two.png', seq: 4 },
+        { id: 'file-1', session_id: 'chat-a', filename: 'one.png', seq: 1 }
+      ],
+      filesTotal: 2,
+      generation: 3,
+      timelineListGeneration: 1
+    }
+
+    const merged = mergeSnapshots(previous, snapshot('chat-a', [
+      eventFor('chat-a', 6, { type: 'history_rewound', from_seq: 3, through_seq: 5 }),
+      eventFor('chat-a', 7)
+    ]))
+
+    expect(merged.events.map(event => event.seq)).toEqual([1, 2, 6, 7])
+    expect(merged.files.map(file => file.id)).toEqual(['file-1'])
+    expect(merged.filesTotal).toBe(1)
+    // Removing interior turns invalidates the projection cache and the list's measured coordinates.
+    expect(merged.generation).toBe(4)
+    expect(merged.timelineListGeneration).toBe(2)
   })
 
   it('keeps a compacted renderer cursor ahead of a stale main-process merge cursor', () => {

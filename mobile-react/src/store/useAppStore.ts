@@ -86,6 +86,7 @@ import { timelineTargetIsRepresented } from '../lib/timeline-history-navigation'
 import {
   boundHistoricalTimelineEvents,
   boundLiveTimelineEvents,
+  dropRewoundEvents,
   historicalTimelineEvents,
   liveTimelineEventsWereTrimmed,
   mergeEvents,
@@ -1642,9 +1643,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         const concurrentEvents = replaceEvents
           ? (current?.events ?? []).filter(event => !eventIdsAtStart.has(event.id) && !incomingIds.has(event.id))
           : []
+        // A rewind done elsewhere while this chat was not streaming arrives as a tombstone in
+        // the catch-up page; its range leaves the cached snapshot (events, files, total) too. A
+        // cached tombstone whose files survived (older builds kept them) heals the same way.
+        const tombstones = [...(current?.events ?? []), ...incomingEvents].filter(event => (
+          event.type === 'history_rewound' && Number.isSafeInteger(event.from_seq) && Number.isSafeInteger(event.through_seq)
+        ))
+        const healedCurrent = current && !replaceEvents
+          ? tombstones.reduce((snapshot, tombstone) => rewindSnapshot(snapshot, tombstone.from_seq, tombstone.through_seq), current)
+          : current
+        // Rewound rows leave before bounding so a pruned range is not mistaken for tail eviction.
         const reconciledEvents = replaceEvents
           ? mergeEvents(incomingEvents, concurrentEvents)
-          : mergeEvents(current?.events ?? [], incomingEvents)
+          : dropRewoundEvents(mergeEvents(healedCurrent?.events ?? [], incomingEvents))
         const mergedEvents = boundLiveTimelineEvents(reconciledEvents)
         const eventsWereTrimmed = liveTimelineEventsWereTrimmed(reconciledEvents, mergedEvents)
         const latestSeq = replaceEvents
@@ -1659,10 +1670,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           session: reconciledSession,
           events: mergedEvents,
           queuedTurns: page.queued_turns,
-          files: mergeFiles(current?.files ?? [], filesFromEvents(incomingEvents)),
-          filesTotal: current?.filesTotal ?? 0,
+          files: mergeFiles(healedCurrent?.files ?? [], filesFromEvents(dropRewoundEvents(incomingEvents))),
+          filesTotal: healedCurrent?.filesTotal ?? 0,
           hasMore: (fetchedFullTail ? page.has_more : current?.hasMore ?? page.has_more) || eventsWereTrimmed,
-          total: fetchedFullTail ? page.total : current?.total ?? null,
+          total: fetchedFullTail ? page.total : healedCurrent?.total ?? null,
           latestSeq,
           nextBefore: fetchedFullTail
             ? (page.has_more

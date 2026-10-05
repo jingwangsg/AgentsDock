@@ -54,6 +54,7 @@ export const CACHED_TIMELINE_MAX_RAW_EVENT_LIMIT = 2_000
 // an older server response omitted even after the server is upgraded.
 export const TIMELINE_PAGING_SCHEMA_VERSION = 3
 const FILE_OWNERSHIP_CACHE_SCHEMA_VERSION = '1'
+const REWIND_TOMBSTONES_SETTLED_KEY = 'rewind-tombstones-settled'
 const REBUILDABLE_PREFERENCES = new Set(['runtimeCatalog:v1', 'serverVersion:v1', 'semanticTimelineCapability:v1'])
 
 export class CacheNamespaceCollisionError extends Error {
@@ -242,6 +243,7 @@ export class LocalCache {
     if (!timelineColumns.some(column => column.name === 'paging_schema_version')) this.db.exec('ALTER TABLE timeline_state ADD COLUMN paging_schema_version INTEGER')
     if (!timelineColumns.some(column => column.name === 'semantic_paging')) this.db.exec('ALTER TABLE timeline_state ADD COLUMN semantic_paging INTEGER')
     this.migrateFileOwnershipCache()
+    this.settleRewindTombstones()
     } catch (error) {
       if (cachePath === ':memory:' || !reportStartupStorageError(error, dirname(cachePath))) throw error
       try { this.db!.close() } catch { /* It may not have opened successfully. */ }
@@ -306,6 +308,7 @@ export class LocalCache {
     try {
       const version = this.db.prepare('SELECT value FROM cache_meta WHERE key = ?').get('file-ownership-schema') as { value?: string } | undefined
       if (version?.value !== FILE_OWNERSHIP_CACHE_SCHEMA_VERSION) return false
+      if (!this.db.prepare('SELECT value FROM cache_meta WHERE key = ?').get(REWIND_TOMBSTONES_SETTLED_KEY)) return false
       const columns = this.db.prepare('PRAGMA table_info(timeline_state)').all() as Array<{ name: string }>
       return ['verified_latest_seq', 'known_total', 'next_timeline_before', 'paging_schema_version', 'semantic_paging']
         .every(name => columns.some(column => column.name === name))
@@ -386,6 +389,28 @@ export class LocalCache {
       DROP TABLE agentsdock_foreign_file_events;
       COMMIT;
     `)
+  }
+
+  /**
+   * Desktop builds before 98 stored a `history_rewound` tombstone that arrived in a catch-up
+   * page without deleting the rows it names, so a rewind done while the chat was closed left
+   * its turns in the cache. Settle every cached tombstone once.
+   */
+  private settleRewindTombstones(): void {
+    if (this.statement('SELECT value FROM cache_meta WHERE key = ?').get(REWIND_TOMBSTONES_SETTLED_KEY)) return
+    const tombstones = this.statement(`
+      SELECT server_id, session_id,
+             json_extract(json, '$.from_seq') AS from_seq, json_extract(json, '$.through_seq') AS through_seq
+      FROM events
+      WHERE json_valid(json) AND json_extract(json, '$.type') = 'history_rewound'
+    `).all() as Array<{ server_id: string; session_id: string; from_seq: unknown; through_seq: unknown }>
+    for (const { server_id, session_id, from_seq, through_seq } of tombstones) {
+      if (Number.isSafeInteger(from_seq) && Number.isSafeInteger(through_seq)) {
+        this.removeEventRange(server_id, session_id, from_seq as number, through_seq as number)
+      }
+    }
+    this.statement(`INSERT INTO cache_meta(key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+      .run(REWIND_TOMBSTONES_SETTLED_KEY)
   }
 
   cachedServerIds(): string[] {

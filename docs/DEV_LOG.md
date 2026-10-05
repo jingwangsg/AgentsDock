@@ -1,5 +1,39 @@
 # Public development log
 
+## 2026-10-05 — A rewind done elsewhere no longer leaves ghost turns, and a send receipt no longer resurrects a queued message (desktop package 98, Android build 46)
+
+- A turn rewound from another device while a chat was closed here came
+  back as ghost rows when the chat reopened: a broken image in the timeline
+  and in Files & media on the Mac, and a toast saying the turn is no longer
+  in the chat when it was clicked. The catch-up page carries the server's
+  `history_rewound` tombstone, and both apps stored the tombstone but kept
+  the cached rows it named. Live rewinds were already pruned; only the
+  not-streaming path missed it.
+- The desktop main process now deletes the tombstoned range from the
+  SQLite cache when the tombstone arrives in a catch-up page, and the
+  renderer prunes its whole retained window (rows older than the cache
+  window included) and the file list from the same tombstone when it
+  merges the delta. A one-time cache migration settles the tombstones
+  earlier builds stored without applying them. Android prunes events,
+  files and the known total the same way, and a pruned range no longer
+  counts as tail eviction, which used to set "more history" spuriously.
+- A message queued while a turn was running sometimes stayed as a queued
+  row that Remove rejected with "queued turn not found". The send receipt
+  (`turn_queued`) arrived after the live stream had already delivered that
+  event and the `turn_started` that consumed it, and re-applying the stale
+  receipt re-added the row. The desktop now ignores a receipt the stream
+  has already passed; Android already did. Reloading the chat cleared the
+  row in earlier builds.
+- A review pass moved the desktop fix from a cache-window replacement
+  (which missed rows outside the window) to the renderer's merge path, and
+  added the cache migration and the reconcile-level test. Verified with the
+  desktop service, persistence and store tests, the Android store rewind
+  test and contract tests, and both type checks; build 46 launches on the
+  emulator. Not exercised in the running desktop app against a live remote
+  rewind. Package 98 (`AgentsDock-0.2.0-98-mac-arm64.pkg`) and build 46
+  (`AgentsDock-0.1.1-46-sideload.apk`) were attached to the working chat.
+  Availability: local package.
+
 ## 2026-10-05 — Web links in a chat open in the app's browser tab (desktop package 97, Android build 45)
 
 - A web link in a reply used to leave the app for the system browser. Now

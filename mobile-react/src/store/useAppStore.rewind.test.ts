@@ -210,6 +210,21 @@ try {
   assert.equal(await useAppStore.getState().reloadHistory(sessionA.id), true)
   assert.deepEqual(useAppStore.getState().snapshots[sessionA.id]!.events.map(value => value.seq), [1, 3], 'each removed range is pruned locally')
 
+  // A rewind done elsewhere while this chat was not streaming arrives as a tombstone in the
+  // catch-up page: the cached range it names leaves the snapshot instead of lingering as ghosts.
+  useAppStore.setState(state => ({ snapshots: { ...state.snapshots, [sessionA.id]: {
+    ...state.snapshots[sessionA.id]!, events: initialEvents, latestSeq: 5, total: 5, hasMore: false,
+    files: [{ id: 'file-4', session_id: sessionA.id, filename: 'two.png', seq: 4 }], filesTotal: 1,
+  } } }))
+  client.sessionPage = async (sessionId, options) => sessionId === sessionA.id && (options as { after?: number } | undefined)?.after === 5
+    ? { ...page(sessionA), events: [event(6, 'history_rewound', { from_seq: 3, through_seq: 5 }), event(7, 'turn_started', { run_id: 'run-3', prompt: 'Third' })], latest_seq: 7, total: 4 }
+    : page(sessionId === sessionB.id ? sessionB : sessionA)
+  await useAppStore.getState().selectSession(sessionB.id)
+  await useAppStore.getState().selectSession(sessionA.id)
+  assert.deepEqual(useAppStore.getState().snapshots[sessionA.id]!.events.map(value => value.seq), [1, 2, 6, 7], 'a tombstone fetched while catching up prunes the cached range')
+  assert.deepEqual(useAppStore.getState().snapshots[sessionA.id]!.files, [], 'the artifact of a rewound turn leaves the file list')
+  assert.equal(useAppStore.getState().snapshots[sessionA.id]!.hasMore, false, 'the pruned range is not mistaken for tail eviction')
+
   console.log('store rewind and notification regressions passed')
 } finally {
   appState.__emitAppState('background')

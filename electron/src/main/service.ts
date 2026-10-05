@@ -5991,6 +5991,16 @@ export class AppService {
       this.rememberSessionDetail(scope, page.session)
       if (mode === 'replace') this.cache.replaceEvents(scope.namespace, sessionId, page.events)
       else this.cache.putEvents(scope.namespace, sessionId, page.events, cachedLast)
+      // A rewind performed elsewhere while this chat was not streaming arrives as a tombstone
+      // in the catch-up page: the cached rows it removed go as well, and the renderer prunes
+      // its retained window from the same tombstone when it merges the delta. One the socket
+      // delivered during this reconcile was already applied by the stream handler.
+      if (mode === 'merge') {
+        for (const tombstone of page.events) {
+          if (tombstone.type !== 'history_rewound' || liveDuringReconcile?.some(event => event.id === tombstone.id)) continue
+          this.applyHistoryRewind(scope, sessionId, tombstone.from_seq, tombstone.through_seq)
+        }
+      }
       this.cache.putQueuedTurns(scope.namespace, sessionId, page.queued_turns ?? [])
       const hasMoreEvents = mode === 'replace'
         ? Boolean(page.has_more)

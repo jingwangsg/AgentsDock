@@ -1927,6 +1927,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           && snapshot?.queuedTurns.some(turn => turn.queued_id === response.queued_id)
         )
         const nextEvents = response.event && snapshot ? upsertEvent(snapshot.events, response.event) : null
+        // The live stream may already have delivered this receipt and the turn_started that
+        // consumed its queued row; reducing the stale receipt again would resurrect the row
+        // as a queued turn the server no longer knows.
+        const streamIsAhead = Boolean(response.event && snapshot && (snapshot.events.at(-1)?.seq ?? 0) >= response.event.seq)
         const nextSnapshot = response.event && snapshot && nextEvents
           ? {
               ...snapshot,
@@ -1936,7 +1940,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                 nextEvents,
                 nextEvents.length === snapshot.events.length + 1 && nextEvents.at(-1) === response.event
               ),
-              queuedTurns: reduceQueuedTurns(snapshot.queuedTurns, response.event)
+              queuedTurns: streamIsAhead ? snapshot.queuedTurns : reduceQueuedTurns(snapshot.queuedTurns, response.event)
             }
           : null
         const [reconciledSession] = applyPendingSessionPatches([response.session])
@@ -3921,16 +3925,25 @@ export function mergeSnapshots(previous: SessionSnapshot | undefined, next: Sess
       historyDiscontinuity: true
     }
   }
-  const events = mergeEvents(previous.events, next.events)
-  const eventPrefixStable = events === previous.events || isStrictTimelineTailAppend(previous.events, next.events)
-  const files = mergeFiles(previous.files, next.files)
-  const queuedTurns = stableArray(previous.queuedTurns, next.queuedTurns)
-  const session = jsonEquivalent(previous.session, next.session) ? previous.session : next.session
-  const eventsTotal = next.eventsTotal ?? previous.eventsTotal
-  const historyVerified = next.historyVerified ?? previous.historyVerified
-  const nextTimelineBefore = mergedTimelineBefore(previous, next)
-  const semanticPaging = next.semanticPaging ?? previous.semanticPaging
-  if (events === previous.events
+  // A history_rewound tombstone in the delta removes its closed range from the whole retained
+  // window, including rows and files older than the main-process cache window.
+  const rewoundRanges = next.events.flatMap(event => (
+    event.type === 'history_rewound' && Number.isSafeInteger(event.from_seq) && Number.isSafeInteger(event.through_seq)
+      ? [[event.from_seq!, event.through_seq!] as const]
+      : []
+  ))
+  const retained = rewindSnapshot(previous, rewoundRanges)
+  const events = mergeEvents(retained.events, withoutRewoundEvents(next.events, rewoundRanges))
+  const eventPrefixStable = events === retained.events || isStrictTimelineTailAppend(retained.events, next.events)
+  const files = mergeFiles(retained.files, next.files)
+  const queuedTurns = stableArray(retained.queuedTurns, next.queuedTurns)
+  const session = jsonEquivalent(retained.session, next.session) ? retained.session : next.session
+  const eventsTotal = next.eventsTotal ?? retained.eventsTotal
+  const historyVerified = next.historyVerified ?? retained.historyVerified
+  const nextTimelineBefore = mergedTimelineBefore(retained, next)
+  const semanticPaging = next.semanticPaging ?? retained.semanticPaging
+  if (retained === previous
+    && events === previous.events
     && files === previous.files
     && session === previous.session
     && queuedTurns === previous.queuedTurns
@@ -3943,16 +3956,17 @@ export function mergeSnapshots(previous: SessionSnapshot | undefined, next: Sess
     ...next,
     session,
     queuedTurns,
-    viewState: next.viewState ?? previous.viewState,
+    viewState: next.viewState ?? retained.viewState,
     events,
     files,
+    filesTotal: Math.max(retained.filesTotal, files.length),
     historyVerified,
     eventsTotal,
     nextTimelineBefore,
     semanticPaging,
-    generation: nextTimelineGeneration(previous, events, eventPrefixStable),
-    timelineListGeneration: previous.timelineListGeneration ?? 0,
-    reasoningStream: previous.reasoningStream
+    generation: nextTimelineGeneration(retained, events, eventPrefixStable),
+    timelineListGeneration: retained.timelineListGeneration ?? 0,
+    reasoningStream: retained.reasoningStream
   }
 }
 
@@ -5148,10 +5162,17 @@ function withoutRewoundEvents(events: Event[], ranges: ReadonlyArray<readonly [n
 /** Renderer mirror of a server history rewind; returns `snapshot` itself when no retained event is in range. */
 function rewindSnapshot(snapshot: SessionSnapshot, ranges: ReadonlyArray<readonly [number, number]>): SessionSnapshot {
   const events = withoutRewoundEvents(snapshot.events, ranges)
-  if (events === snapshot.events) return snapshot
+  // The server deletes the artifacts of rewound turns; the file list merges pages rather than
+  // replacing them, so they leave here.
+  const files = ranges.length
+    ? snapshot.files.filter(file => file.seq == null || !ranges.some(([from, through]) => file.seq! >= from && file.seq! <= through))
+    : snapshot.files
+  if (events === snapshot.events && files.length === snapshot.files.length) return snapshot
   return {
     ...snapshot,
     events,
+    files,
+    filesTotal: Math.max(files.length, snapshot.filesTotal - (snapshot.files.length - files.length)),
     // Removing interior turns invalidates both the projection cache and
     // Virtuoso's measured coordinate space.
     generation: (snapshot.generation ?? 0) + 1,

@@ -10995,6 +10995,37 @@ describe('history rewind cache surgery', () => {
     expect(files).toHaveBeenCalledExactlyOnceWith('chat', 0, expect.any(Number))
   })
 
+  it('prunes the cached range a catch-up page tombstone names and hands the renderer the delta to merge', async () => {
+    const { client, service, cache, internals } = rewindHarness()
+    const files = vi.fn(async () => ({ files: [], total: 0 }))
+    const sessionPage = vi.fn(async (_sessionId: string, options?: { after?: number }) => options?.after === 5
+      ? {
+          ...emptyTimelinePage('chat'),
+          events: [chatEvent(6, { type: 'history_rewound', text: undefined, from_seq: 3, through_seq: 5 }), chatEvent(7)],
+          latest_seq: 7, total: 4
+        }
+      : emptyTimelinePage('chat'))
+    Object.assign(client, { files, sessionPage })
+    const send = vi.fn()
+    service.addWindow({ isDestroyed: () => false, on: vi.fn(), webContents: { send } } as never)
+    // The rewind happened while this chat was closed: the cache still holds the rows it removed.
+    cache.putSession(internals.scope.namespace, { id: 'chat', title: 'chat', backend: 'codex' })
+    cache.putEvents(internals.scope.namespace, 'chat', [1, 2, 3, 4, 5].map(seq => chatEvent(seq)))
+    // A current paging schema keeps the reconcile on the delta page instead of a semantic audit.
+    cache.putTimelineState(internals.scope.namespace, 'chat', false, 5, 5, null, true)
+
+    await service.subscribeTimeline('chat', 5)
+    await settleBackgroundWork()
+
+    expect(cache.events(internals.scope.namespace, 'chat').map(event => event.seq)).toEqual([1, 2, 6, 7])
+    expect(send).toHaveBeenCalledWith('server:timeline', expect.objectContaining({
+      mode: 'merge',
+      snapshot: expect.objectContaining({ events: [expect.objectContaining({ seq: 6 }), expect.objectContaining({ seq: 7 })] })
+    }))
+    await settleBackgroundWork()
+    expect(files).toHaveBeenCalledWith('chat', 0, expect.any(Number))
+  })
+
   it('applies the same local surgery right after a successful rewind request', async () => {
     const { streams, client, service, cache, internals } = rewindHarness()
     const session: Session = { id: 'chat', title: 'chat', backend: 'codex', latest_event_seq: 2 }

@@ -283,6 +283,21 @@ describe('cached timeline event compaction', () => {
     expect(value.files('server', 'child')).toEqual([])
   })
 
+  it('settles once the rewind tombstones older builds cached without deleting their rows', () => {
+    const value = cache()
+    value.putSession('server', session('chat'))
+    const row = (seq: number, patch: Partial<Event> = {}): Event => ({ id: `e${seq}`, session_id: 'chat', seq, type: 'assistant_text', ts: 'now', text: `event ${seq}`, ...patch })
+    value.putEvents('server', 'chat', [row(1), row(2), row(3), row(4), row(5)])
+    value.putEvents('server', 'chat', [row(6, { type: 'history_rewound', text: undefined, from_seq: 3, through_seq: 5 })])
+    const database = cacheDatabase(value)
+    database.prepare('DELETE FROM cache_meta WHERE key = ?').run('rewind-tombstones-settled')
+
+    ;(value as unknown as { settleRewindTombstones(): void }).settleRewindTombstones()
+
+    expect(value.events('server', 'chat').map(event => event.seq)).toEqual([1, 2, 6])
+    expect(database.prepare('SELECT value FROM cache_meta WHERE key = ?').get('rewind-tombstones-settled')).toEqual({ value: '1' })
+  })
+
   it('keeps current and legacy files while rejecting explicitly foreign cache writes', () => {
     const value = cache()
     value.putFiles('server', 'child', [
