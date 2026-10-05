@@ -3,9 +3,10 @@ import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useEffect, useMemo, useState } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { Archive, ArchiveRestore, ArrowLeftRight, Check, ChevronRight, Columns2, Copy, Download, Folder, GitFork, History, Layers, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pin, RefreshCw, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowLeftRight, Check, ChevronRight, Code, Columns2, Copy, Download, Folder, GitFork, History, Layers, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pin, RefreshCw, Trash2, X } from 'lucide-react'
 import type { Session } from '@shared/types'
 import { completedPrefixForkAvailable } from '@shared/session-fork'
+import { openInZedInput, sshHostAlias } from '@shared/ssh-host-alias'
 import { backendLabel, shortId } from '../lib/format'
 import { useTransientClose } from '../lib/transient-close'
 import { useAppStore } from '../store/app-store'
@@ -44,6 +45,7 @@ export function ChatHeader({
   const inspector = useAppStore(state => state.inspectorVisible)
   const profileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
+  const profile = useAppStore(state => state.profiles.find(candidate => candidate.id === state.activeProfileId))
   const sessions = useAppStore(state => state.sessions)
   const folderOrder = useAppStore(state => state.folderOrder)
   const chatPanes = useAppStore(state => state.chatPanes)
@@ -174,6 +176,17 @@ export function ChatHeader({
           <DropdownMenu.Item className="menu-item danger" onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-delete', { detail: session }))}><Trash2 size={14} />{t("ui.ChatHeader.ChatHeader.delete_chat_93291d9")}</DropdownMenu.Item>
         </DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>
         {sidebarButton}
+        {(() => {
+          // Open this chat's directory in Zed: on this Mac directly, on a remote through its SSH host
+          // (the Forward SSH alias when the server has one).
+          const zed = openInZedInput(session, profile)
+          const host = profile ? sshHostAlias(profile) ?? profile.sshHost : null
+          const title = zed ? host ? t('openInZed.headerTitleRemote', { path: zed.path, host }) : t('openInZed.headerTitle', { path: zed.path }) : t('openInZed.action')
+          return <button type="button" className="icon-button" title={title} aria-label={t('openInZed.action')} disabled={!zed} onClick={() => {
+            if (!zed) return
+            void window.agentsDock.native.openInZed(zed).catch((error: unknown) => useAppStore.getState().setError(error instanceof Error ? error.message : String(error)))
+          }}><Code size={15} /></button>
+        })()}
         <ScheduledJobsPopover session={session} />
         {onSwapPanes && <button className="icon-button" title={t("ui.ChatHeader.ChatHeader.swap_chat_panes_7129f59")} aria-label={t("ui.ChatHeader.ChatHeader.swap_chat_panes_7129f59")} onClick={onSwapPanes}><ArrowLeftRight size={15} /></button>}
         {onOutputsToggle && <button

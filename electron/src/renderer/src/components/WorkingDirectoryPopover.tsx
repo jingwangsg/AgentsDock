@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Session, WorkingDirectoryCompletion } from '@shared/types'
 import { parentDirectory } from '../lib/working-directory-path'
 import { useAppStore } from '../store/app-store'
+import { openInZedInput } from '@shared/ssh-host-alias'
 
 const TYPED_PATH_LOOKUP_DELAY_MS = 120
 
@@ -138,8 +139,8 @@ export function WorkingDirectoryPopover({ session }: { session: Session }) {
                 disabled={!session.cwd?.trim()}
                 onClick={() => {
                   const state = useAppStore.getState()
-                  const profile = state.profiles.find(candidate => candidate.id === state.activeProfileId)
-                  window.agentsDock.native.openInZed({ path: session.cwd!.trim(), sshHost: profile?.sshHost ?? null })
+                  const input = openInZedInput(session, state.profiles.find(candidate => candidate.id === state.activeProfileId))
+                  if (input) window.agentsDock.native.openInZed(input)
                     .catch((error: unknown) => state.setError(error instanceof Error ? error.message : String(error)))
                 }}
               ><ExternalLink size={13} aria-hidden="true" /></button>

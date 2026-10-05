@@ -1961,6 +1961,8 @@ export interface PublicServerProfile {
   serverVersion?: string | null
   /** SSH destination (alias or user@host) used to open this server's paths in Zed. */
   sshHost?: string | null
+  /** This Mac keeps an SSH host alias named after the profile for that server (Forward SSH). */
+  sshForward?: boolean
 }
 
 export interface AddServerProfileInput {
@@ -1978,6 +1980,7 @@ export interface UpdateServerProfilePatch {
   serverUrl?: string
   /** Undefined preserves the stored SSH host; null or an empty string removes it. */
   sshHost?: string | null
+  sshForward?: boolean
   /** Undefined preserves the stored credential; null or an empty string removes it. */
   accessToken?: string | null
   /** Explicit user confirmation that this endpoint may establish a new canonical identity. */

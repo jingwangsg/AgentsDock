@@ -58,6 +58,32 @@ describe('ChatHeader', () => {
     })
   })
 
+  it('opens the chat directory in Zed through the server\'s Forward SSH alias, and is disabled without a directory', async () => {
+    const openInZed = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockImplementation((_key: string, fallback: unknown) => Promise.resolve(fallback)), set: vi.fn().mockResolvedValue(undefined) },
+        native: { openInZed }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ id: 'chat', title: 'Chat', backend: 'claude', cwd: '/mnt/oci-lustre/jingwang/PROJECTS/N2' }, { id: 'bare', title: 'Bare', backend: 'claude' }],
+      selectedSessionId: 'chat',
+      activeProfileId: 'oci',
+      profiles: [{ id: 'oci', name: 'oci_dev', serverUrl: 'http://127.0.0.1:7850/api/remote/a7c9aedde414', sshHost: 'oci@jing-debug-a236', sshForward: true, serverIdentity: 'x', hasAccessToken: true, serverSetupComplete: true, connectionState: 'online', cachedUnreadCount: 0 }]
+    })
+    const view = render(<ChatHeader />)
+    const button = screen.getByRole('button', { name: 'Open in Zed' })
+    expect(button).toHaveAttribute('title', 'Open /mnt/oci-lustre/jingwang/PROJECTS/N2 on oci_dev in Zed')
+    await userEvent.setup().click(button)
+    expect(openInZed).toHaveBeenCalledWith({ path: '/mnt/oci-lustre/jingwang/PROJECTS/N2', sshHost: 'oci@jing-debug-a236', hostAlias: 'oci_dev' })
+
+    useAppStore.setState({ selectedSessionId: 'bare' })
+    view.rerender(<ChatHeader />)
+    expect(screen.getByRole('button', { name: 'Open in Zed' })).toBeDisabled()
+  })
+
   it('toggles the outputs panel from the header and reflects its open state', async () => {
     const toggle = vi.fn()
     useAppStore.setState({

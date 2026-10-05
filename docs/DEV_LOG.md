@@ -1,5 +1,35 @@
 # Public development log
 
+## 2026-10-05 — Forward SSH names a remote server for `ssh` and Zed, and every chat header opens its directory in Zed (desktop package 102)
+
+- Settings → Server gains a Forward SSH control on every hub-registered
+  remote. Turning it on keeps a local SSH host alias named after the server
+  (`oci_dev`, `nv_l40`, …) the way SkyPilot keeps its cluster aliases: one
+  file under `~/.agentsdock/ssh/`, included first from `~/.ssh/config`
+  (the Include is added once, the file is created 0600 if missing). The
+  alias block holds the options `ssh -G` resolves for the server's host, so
+  a hub notation such as `oci@<cluster>` becomes a plain `ssh oci_dev`. The
+  file is rewritten when the server is opened in Zed or the hub changes its
+  host, renamed when the server is renamed, and removed when forwarding is
+  turned off or the server is removed. A server whose name cannot be a host
+  alias (spaces, odd characters) is refused with the reason.
+- Every chat header now has an Open in Zed button next to the chat list
+  toggle: a chat on this Mac opens its directory directly; a chat on a remote
+  opens `ssh://<alias or host>/<directory>` in Zed, using the Forward SSH
+  alias when the server has one. The working-directory popover's button uses
+  the same rule. Zed is a desktop editor, so Android has no counterpart.
+- Verified with the new alias-file tests (block contents, 0600 modes, Include
+  placement and idempotence, removal), the Open in Zed target tests, the
+  settings and server-list tests, the chat header test, and the whole desktop
+  suite (3973 tests). On this Mac the alias generated for `oci_dev` from the
+  real Sky cluster resolves to the same host-specific options as Sky's own
+  alias (the differences are the user's global `Host *` settings, which apply
+  once the Include lives in `~/.ssh/config`). A live `ssh oci_dev` could not
+  be exercised: the Sky cluster refused new SSH connections at the time
+  through Sky's own alias too. Package 102
+  (`AgentsDock-0.2.0-102-mac-arm64.pkg`) was attached to the working chat.
+  Availability: local package.
+
 ## 2026-10-05 — The Changes tab compares any two points of the repository (desktop package 102, server)
 
 - The Changes tab only showed the working tree against HEAD, with staging

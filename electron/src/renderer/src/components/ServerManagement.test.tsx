@@ -183,6 +183,24 @@ describe('ServerManagement', () => {
     expect(switchServer).not.toHaveBeenCalled()
   })
 
+  it('forwards SSH for a remote under its server name and turns it off again', async () => {
+    list.mockResolvedValue([hub, osmo])
+    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })
+    const user = userEvent.setup()
+    const view = render(<ServerManagement />)
+
+    expect(screen.queryByRole('button', { name: /Forward SSH as This Mac/ })).toBeNull() // a direct server has no SSH host
+    await user.click(screen.getByRole('button', { name: 'Forward SSH as OSMO' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('osmo', { sshForward: true }))
+
+    useAppStore.setState({ profiles: [hub, { ...osmo, sshForward: true }] })
+    view.rerender(<ServerManagement />)
+    const on = screen.getByRole('button', { name: 'Stop forwarding SSH as OSMO' })
+    expect(on).toHaveAttribute('aria-pressed', 'true')
+    await user.click(on)
+    await waitFor(() => expect(update).toHaveBeenCalledWith('osmo', { sshForward: false }))
+  })
+
   it('removes a hub-managed remote through the hub and refreshes the list', async () => {
     list.mockResolvedValue([hub])
     useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })

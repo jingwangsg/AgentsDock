@@ -59,6 +59,8 @@ export interface StoredServerProfile {
   keychainAccessToken?: boolean
   serverSetupComplete: boolean
   sshHost?: string
+  /** This Mac keeps an SSH host alias named after the profile for that server. */
+  sshForward?: boolean
   createdAt: string
   updatedAt: string
   /** Durable cleanup work left after an explicit server-authority reset. */
@@ -302,6 +304,7 @@ export class SettingsStore {
       serverIdentity: patch.serverIdentity === undefined ? current.serverIdentity : cleanIdentity(patch.serverIdentity),
       serverSetupComplete: patch.serverSetupComplete ?? current.serverSetupComplete,
       ...optionalSshHost(patch.sshHost === undefined ? current.sshHost ?? null : cleanSshHost(patch.sshHost)),
+      sshForward: (patch.sshForward === undefined ? current.sshForward === true : patch.sshForward === true) || undefined,
       retiredServerNamespaces: patch.retiredServerNamespaces === undefined
         ? current.retiredServerNamespaces
         : normalizeRetiredNamespaces(patch.retiredServerNamespaces),
@@ -731,6 +734,7 @@ function publicProfile(profile: StoredServerProfile, hasAccessToken: boolean, ru
     hasAccessToken,
     serverSetupComplete: profile.serverSetupComplete,
     sshHost: profile.sshHost ?? null,
+    sshForward: profile.sshForward === true,
     connectionState: runtime?.connectionState ?? 'cached',
     cachedUnreadCount: Math.max(0, Math.trunc(runtime?.cachedUnreadCount ?? 0)),
     lastConnectionError: runtime?.lastConnectionError ?? null,
@@ -845,6 +849,7 @@ function normalizeProfile(value: unknown, timestamp: string, index: number): Sto
     keychainAccessToken: Boolean(value.keychainAccessToken),
     serverSetupComplete: Boolean(value.serverSetupComplete),
     ...optionalSshHost(sshHost && !sshHost.startsWith('-') && SSH_HOST_PATTERN.test(sshHost) ? sshHost : null),
+    ...(value.sshForward === true ? { sshForward: true } : {}),
     retiredServerNamespaces: normalizeRetiredNamespaces(value.retiredServerNamespaces),
     createdAt,
     updatedAt

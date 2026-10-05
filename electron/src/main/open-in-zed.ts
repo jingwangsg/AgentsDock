@@ -1,15 +1,17 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { SSH_HOST_ALIAS_PATTERN } from '../shared/ssh-host-alias'
+import { sshDestination, writeSshHost } from './ssh-hosts'
 
 export interface OpenInZedInput {
   /** Absolute path on the server that owns the chat. */
   path: string
   /** SSH destination of that server; omitted for a server on this machine. */
   sshHost?: string | null
+  /** The local SSH alias this Mac keeps for that server (Forward SSH); the URL names it instead of the raw host. */
+  hostAlias?: string | null
 }
-
-const SSH_HOST_PATTERN = /^[A-Za-z0-9_.@%+:[\]-]+$/
 
 const ZED_CLI_CANDIDATES = [
   '/usr/local/bin/zed',
@@ -25,11 +27,9 @@ export function zedTarget(input: OpenInZedInput): string {
   if (!path.startsWith('/')) throw new Error('Open in Zed needs an absolute path.')
   const sshHost = input.sshHost?.trim() || ''
   if (!sshHost) return path
-  if (sshHost.startsWith('-') || !SSH_HOST_PATTERN.test(sshHost)) throw new Error('The SSH host for this server is invalid.')
-  // Only the hub resolves its cluster notations: oci@<cluster> is the Sky alias itself, and an
-  // osmo@ workflow is reached through `osmo workflow exec`, which a URL cannot express.
-  if (sshHost.startsWith('osmo@')) throw new Error('Open in Zed cannot reach an osmo@ workflow: it has no plain SSH host.')
-  const destination = sshHost.startsWith('oci@') ? sshHost.slice('oci@'.length) : sshHost
+  const alias = input.hostAlias?.trim() || ''
+  if (alias && !SSH_HOST_ALIAS_PATTERN.test(alias)) throw new Error('The SSH host alias for this server is invalid.')
+  const destination = alias || sshDestination(sshHost)
   // Zed parses this with url::Url and percent-decodes the path, so `#`, `?` and `%` in a directory name must be encoded.
   return `ssh://${destination}${path.split('/').map(encodeURIComponent).join('/')}`
 }
@@ -42,6 +42,9 @@ export async function openInZed(input: OpenInZedInput): Promise<void> {
   const target = zedTarget(input)
   const cli = findZedCli()
   if (!cli) throw new Error('Zed CLI not found. Install Zed and run "Install CLI" from its Zed menu.')
+  // The alias file carries the host's resolved address and keys; a Sky cluster's change between
+  // opens must not strand Zed, so the file is rewritten right before Zed connects.
+  if (input.hostAlias?.trim() && input.sshHost?.trim()) await writeSshHost(input.hostAlias.trim(), input.sshHost.trim())
   await new Promise<void>((resolve, reject) => {
     execFile(cli, [target], { timeout: 15_000 }, error => (error ? reject(error) : resolve()))
   })

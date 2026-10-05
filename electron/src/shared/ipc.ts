@@ -685,7 +685,7 @@ export interface AgentsDockAPI {
     openExternal(url: string): Promise<void>
     showItemInFolder(path: string): Promise<void>
     /** Opens a server path in Zed; remote servers go through their configured SSH host. */
-    openInZed(input: { path: string; sshHost?: string | null }): Promise<void>
+    openInZed(input: { path: string; sshHost?: string | null; hostAlias?: string | null }): Promise<void>
     setBadge(count: number): Promise<void>
     notify(payload: ProfileNotificationPayload): Promise<void>
     log(scope: string, message: string, data?: unknown): Promise<void>

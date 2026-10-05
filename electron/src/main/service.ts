@@ -176,6 +176,8 @@ import { FileUploadGrantRegistry } from './file-upload-grants'
 import { SettingsStore, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
 import { hubRemoteId, hubRemoteProfileOrder, isHubRemoteUrl, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
+import { removeSshHost, writeSshHost } from './ssh-hosts'
+import { sshHostAlias } from '../shared/ssh-host-alias'
 import { clearStorageError, localStorageWasFull, observeStorageErrors, reportStorageError } from './storage-health'
 import { SubagentEventProjector } from './subagent-projection'
 import { mergeTimelineSearchResults } from './search'
@@ -1583,7 +1585,12 @@ export class AppService {
       // The active profile cannot be removed (`removeServer` throws); leave the count unset so the next pass retries.
       const removable = plan.remove.filter(id => id !== this.activeProfileId)
       for (const id of removable) await this.removeServer(id)
-      for (const { id, sshHost } of plan.update) this.settings.updateProfile(id, { sshHost })
+      for (const { id, sshHost } of plan.update) {
+        const before = this.settings.getProfile(id)
+        this.settings.updateProfile(id, { sshHost })
+        // The hub moved or redeployed the remote: an alias this Mac keeps for it must follow.
+        void this.syncSshHostAlias(before, this.settings.getProfile(id)).catch(error => appLog('ssh-hosts', 'alias could not follow the remote', { id, error: errorText(error) }))
+      }
       if (plan.add.length) {
         const accessToken = await this.settings.accessTokenForConnectionAsync(hub.profileId)
         if (!stillValid()) throw staleProfileError()
@@ -1762,6 +1769,13 @@ export class AppService {
     // old identity after a partial purge would recreate trust with missing data.
     const profile = this.persistServerUpdate(profileId, patch)
     if (patch.accessToken && patch.accessToken !== '__KEEP__' && profile.serverUrl === DEFAULT_SERVER_URL) this.copyHubTokenToRemotes(patch.accessToken)
+    try {
+      await this.syncSshHostAlias(before, this.settings.getProfile(profileId))
+    } catch (error) {
+      // Forward SSH could not resolve the host: leave it off rather than claim an alias that does not work.
+      if (patch.sshForward) { this.settings.updateProfile(profileId, { sshForward: false }); this.emitProfiles() }
+      throw error
+    }
     if (before && profileConnectionChanged(before, patch)) {
       this.invalidateProfileHealthProbe(profileId)
       this.setProfileRuntime(profileId, {
@@ -1786,6 +1800,14 @@ export class AppService {
     }
     this.emitProfiles()
     return this.settings.getProfile(profileId, this.runtimeForProfile(profileId)) ?? profile
+  }
+
+  /** Keeps this Mac's SSH alias file in step with a profile: renamed, retargeted, turned off or removed. */
+  private async syncSshHostAlias(before: PublicServerProfile | null | undefined, after: PublicServerProfile | null | undefined): Promise<void> {
+    const was = before ? sshHostAlias(before) : null
+    const now = after ? sshHostAlias(after) : null
+    if (was && was !== now) removeSshHost(was)
+    if (now && after?.sshHost) await writeSshHost(now, after.sshHost)
   }
 
   async updateServerAndSwitch(profileId: string, patch: UpdateServerProfilePatch): Promise<ProfileBootstrapPayload> {
@@ -1953,6 +1975,8 @@ export class AppService {
       }
       const profile = this.settings.getProfile(profileId)
       if (!profile) throw new Error(`Unknown server profile: ${profileId}`)
+      const alias = sshHostAlias(profile)
+      if (alias) removeSshHost(alias)
       const cacheNamespaces = [
         ...(this.pendingProfileAuthorityNamespaces.get(profileId) ?? []),
         fallbackNamespace(profileId),

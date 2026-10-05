@@ -6,9 +6,10 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Check, Clock3, Download, GripVertical, LoaderCircle, Pencil, Plus, RotateCw, Server, Trash2, Wifi } from 'lucide-react'
+import { Cable, Check, Clock3, Download, GripVertical, LoaderCircle, Pencil, Plus, RotateCw, Server, Trash2, Wifi } from 'lucide-react'
 import type { PublicServerProfile, ServerSetupProgress } from '@shared/types'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
+import { SSH_HOST_ALIAS_PATTERN } from '@shared/ssh-host-alias'
 import { trackEvent } from '../lib/analytics'
 import { useAppStore } from '../store/app-store'
 import { cleanIPCError } from '../lib/file-actions'
@@ -31,7 +32,7 @@ const emptyDraft = (): ServerDraft => ({
   resetServerIdentity: false
 })
 
-interface RowWork { kind: 'redeploy' | 'cli'; text: string; working?: boolean; failed?: boolean; confirm?: boolean }
+interface RowWork { kind: 'redeploy' | 'cli' | 'ssh'; text: string; working?: boolean; failed?: boolean; confirm?: boolean }
 
 /** Remote profiles are proxied through the local hub as `${DEFAULT_SERVER_URL}/api/remote/<id>`; that path on another host is a plain saved server. */
 const isHubRemote = (url: string) => url.startsWith(`${DEFAULT_SERVER_URL}/api/remote/`)
@@ -267,6 +268,22 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
 
   // Works whichever server is active: the main process talks to the hub (redeploy) or to that server (CLI).
   const noteRow = (profileId: string, work: RowWork | null) => setRowWork(({ [profileId]: _previous, ...rest }) => work ? { ...rest, [profileId]: work } : rest)
+  // Forward SSH keeps a local SSH host named after the server (like SkyPilot's cluster aliases), so
+  // `ssh <name>` and Zed reach it; the main process writes the alias from the host's resolved options.
+  const toggleSshForward = async (profile: PublicServerProfile) => {
+    if (!profile.sshForward && !SSH_HOST_ALIAS_PATTERN.test(profile.name)) {
+      noteRow(profile.id, { kind: 'ssh', failed: true, text: t('sshForward.invalidName', { host: profile.name }) })
+      return
+    }
+    noteRow(profile.id, { kind: 'ssh', working: true, text: profile.sshForward ? t('sshForward.disable', { host: profile.name }) : t('sshForward.enable', { host: profile.name }) })
+    try {
+      await window.agentsDock.servers.update(profile.id, { sshForward: !profile.sshForward })
+      await refreshProfiles()
+      noteRow(profile.id, null)
+    } catch (error) {
+      noteRow(profile.id, { kind: 'ssh', failed: true, text: cleanIPCError(errorMessage(error)) })
+    }
+  }
   const redeploying = Object.values(rowWork).some(work => work.kind === 'redeploy' && work.working)
   const redeploy = async (profile: PublicServerProfile, force: boolean) => {
     noteRow(profile.id, { kind: 'redeploy', working: true, text: t('hub.redeploying') })
@@ -368,6 +385,15 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
               disabled={Boolean(busy) || redeploying || work?.working}
               onClick={() => void redeploy(profile, false)}
             >{work?.kind === 'redeploy' && work.working ? <LoaderCircle className="spin" size={12} /> : <RotateCw size={13} />}</button>}
+            {profile.sshHost && <button
+              type="button"
+              className={`icon-button${profile.sshForward ? ' active' : ''}`}
+              aria-pressed={Boolean(profile.sshForward)}
+              aria-label={profile.sshForward ? t('sshForward.disable', { host: profile.name }) : t('sshForward.enable', { host: profile.name })}
+              title={t('sshForward.title', { host: profile.name, target: profile.sshHost })}
+              disabled={Boolean(busy) || work?.working}
+              onClick={() => void toggleSshForward(profile)}
+            >{work?.kind === 'ssh' && work.working ? <LoaderCircle className="spin" size={12} /> : <Cable size={13} />}</button>}
             {profile.id !== hub?.id && <button
               type="button"
               className={confirmRemoveId === profile.id ? 'danger-button compact' : 'icon-button'}
