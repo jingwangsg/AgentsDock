@@ -1,5 +1,23 @@
 # Public development log
 
+## 2026-10-05 — Terminal tabs accept typing again (desktop package 100)
+
+- Since terminal and browser tabs replaced the docked chat terminal on
+  2026-10-04 (packages 94 to 99), nothing typed into a desktop terminal tab
+  reached the shell: output and the replayed scrollback showed, pasting
+  worked, keystrokes vanished. The terminal library's custom key handler
+  treats a true return as "handled, drop the key", the reverse of the
+  xterm.js contract the handler was written against, and it returned true
+  for every ordinary key. It now returns true only for the shortcuts it
+  claims (copy, select all, clear, rename) and false for everything else.
+- Found by reproducing against an isolated server with the built app
+  driven over CDP: a second viewer attached to the same shell showed that
+  key events never arrived while inserted text did. Verified the same way
+  after the fix: typed lines reach the shell before and after the server
+  restarts underneath the running app, and the component test now pins the
+  handler contract. Package 100 (`AgentsDock-0.2.0-100-mac-arm64.pkg`) was
+  attached to the working chat. Availability: local package.
+
 ## 2026-10-05 — One event path per client, and a server history revision that proves a cache saw every rewind (desktop package 99, Android build 47, server)
 
 - The two fixes in package 98 (ghost rows after a rewind done while the chat

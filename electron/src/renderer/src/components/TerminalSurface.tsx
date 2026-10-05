@@ -57,22 +57,25 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
       terminal.loadAddon(fit)
       terminal.open(host)
       const current = terminal
+      // ghostty-web's contract is the reverse of xterm.js: a truthy return means "handled here",
+      // and the terminal then drops the key. Every key this handler does not claim must return
+      // false, or nothing typed ever reaches the shell.
       terminal.attachCustomKeyEventHandler(event => {
-        if (event.type !== 'keydown') return true
+        if (event.type !== 'keydown') return false
         const shortcut = terminalClipboardShortcut(event)
         if (shortcut === 'copy') {
           if (current.hasSelection()) void window.agentsDock.native.writeClipboard(current.getSelection())
-          return false
+          return true
         }
         if (shortcut === 'select-all') {
           current.selectAll()
-          return false
+          return true
         }
         // Electron's Edit menu turns ⌘V into a native paste event, which ghostty-web already handles.
-        if (shortcut === 'native-paste') return true
+        if (shortcut === 'native-paste') return false
         if (event.metaKey && event.key.toLowerCase() === 'k') {
           current.clear()
-          return false
+          return true
         }
         // ⌘R is the app's rename shortcut (renameChat in shared/shortcuts.ts). ghostty-web prevents the
         // default of every modified letter key, so the native menu accelerator never fires; run it here.
@@ -80,7 +83,7 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
           handleMenuCommand('rename-chat', useAppStore.getState, value => useAppStore.setState(value))
           return true
         }
-        return true
+        return false
       })
       // ghostty-web cancels every beforeinput on its host and reads IME text only from
       // compositionend, so text that arrives without a composition (emoji picker, dictation,

@@ -155,26 +155,29 @@ describe('TerminalSurface', () => {
     const [terminal] = ghostty.instances
     const key = (patch: Partial<KeyboardEvent>) => ({ type: 'keydown', metaKey: true, key: 'c', ...patch }) as KeyboardEvent
 
-    expect(terminal.keyHandler(key({}))).toBe(false)
+    // ghostty-web drops a key when the handler returns true, so only the shortcuts handled
+    // here return true; every ordinary key must return false to reach the shell.
+    expect(terminal.keyHandler(key({}))).toBe(true)
     expect(writeClipboard).not.toHaveBeenCalled()
     terminal.hasSelection.mockReturnValue(true)
     terminal.getSelection.mockReturnValue('selected text')
-    expect(terminal.keyHandler(key({}))).toBe(false)
+    expect(terminal.keyHandler(key({}))).toBe(true)
     expect(writeClipboard).toHaveBeenCalledWith('selected text')
-    expect(terminal.keyHandler(key({ key: 'v' }))).toBe(true)
-    expect(terminal.keyHandler(key({ key: 'k' }))).toBe(false)
+    expect(terminal.keyHandler(key({ key: 'v' }))).toBe(false)
+    expect(terminal.keyHandler(key({ key: 'k' }))).toBe(true)
     expect(terminal.clear).toHaveBeenCalledOnce()
     // ⌘R is swallowed from the shell and runs the app's rename command for this tab.
     const renameSurface = vi.fn()
     window.addEventListener('agentsdock:rename-surface', renameSurface)
     useAppStore.setState({ surfaces: [surface], selectedSurfaceId: surface.id })
     expect(terminal.keyHandler(key({ key: 'r' }))).toBe(true)
-    expect(terminal.keyHandler(key({ key: 'r', metaKey: false }))).toBe(true)
+    expect(terminal.keyHandler(key({ key: 'r', metaKey: false }))).toBe(false)
     useAppStore.setState({ surfaces: [], selectedSurfaceId: null })
     window.removeEventListener('agentsdock:rename-surface', renameSurface)
     expect(renameSurface).toHaveBeenCalledOnce()
     expect((renameSurface.mock.calls[0][0] as CustomEvent).detail).toEqual({ surfaceId: 'term_abc' })
-    expect(terminal.keyHandler(key({ key: 'c', metaKey: false }))).toBe(true)
+    expect(terminal.keyHandler(key({ key: 'c', metaKey: false }))).toBe(false)
+    expect(terminal.keyHandler(key({ key: 'a', metaKey: false, type: 'keyup' }))).toBe(false)
   })
 
   it('sends text inserted without an IME composition to the shell, and leaves composed text to ghostty-web', async () => {
