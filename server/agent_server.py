@@ -28845,12 +28845,14 @@ def spawn_terminal_shell(cwd: str | None, columns: int, rows: int) -> tuple[subp
     # is where agents work by default, not where a shell should land.
     requested = Path(cwd).expanduser() if cwd else None
     workdir = str(requested) if requested is not None and requested.is_dir() else existing_cwd(str(Path.home()))
-    # The shell changes into its directory itself before becoming interactive: a login profile
-    # that re-exports PWD (container images do) would otherwise leave the prompt lying about
-    # where the shell is, and the exec'd interactive shell reads ~/.bashrc / ~/.zshrc as usual.
+    # The login phase runs the profiles; the interactive shell then starts in its directory with
+    # the server account's HOME. A container profile that re-exports PWD and HOME (the OCI images
+    # do) would otherwise leave the prompt lying and point ~ and ~/.bashrc at the image's /root
+    # instead of the home this server was installed with.
     launch = [shell, "-l"]
     if Path(shell).name in TERMINAL_CD_EXEC_SHELL_NAMES:
-        launch = [shell, "-l", "-c", f"cd {shlex.quote(workdir)} && exec {shlex.quote(shell)}"]
+        home = str(Path.home())
+        launch = [shell, "-l", "-c", f"cd {shlex.quote(workdir)} && exec env HOME={shlex.quote(home)} {shlex.quote(shell)}"]
     master_fd, slave_fd = pty.openpty()
     env = os.environ.copy()
     for secret_name in PROVIDER_SECRET_ENV_NAMES:

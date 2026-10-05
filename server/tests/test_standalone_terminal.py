@@ -56,9 +56,10 @@ class TerminalShellWorkdirTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="agentsdock-terminal-cwd-") as workdir:
             cwd, argv = self._spawned(workdir)
             self.assertEqual(cwd, workdir)
-            # The login phase runs the profiles; the exec'd interactive shell then owns the directory,
-            # so a profile that re-exports PWD cannot leave the prompt lying.
-            self.assertEqual(argv, ["/bin/bash", "-l", "-c", f"cd {workdir} && exec /bin/bash"])
+            # The login phase runs the profiles; the exec'd interactive shell then owns the directory and
+            # keeps the server account's HOME, so a profile that re-exports PWD or HOME cannot leave the
+            # prompt lying or point ~/.bashrc at another home.
+            self.assertEqual(argv, ["/bin/bash", "-l", "-c", f"cd {workdir} && exec env HOME={os.path.expanduser('~')} /bin/bash"])
 
     def test_no_directory_or_a_missing_one_lands_at_home_not_agent_cwd(self) -> None:
         home = os.path.expanduser("~")

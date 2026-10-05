@@ -13,10 +13,14 @@
   and uses home as well whenever a tab's directory does not exist on that
   host. Local servers keep opening terminals in the folder's directory.
 - Terminal shells on every server now launch as a login shell that enters
-  its directory itself and then execs the interactive shell (bash, zsh, sh,
-  dash, fish; others keep the plain login launch), so the login profiles run,
-  the interactive shell reads `.bashrc` or `.zshrc` as usual, and a profile
-  that rewrites PWD can no longer leave the prompt lying.
+  its directory itself and then execs the interactive shell with the server
+  account's HOME (bash, zsh, sh, dash, fish; others keep the plain login
+  launch). The login profiles still run, but a container profile that
+  rewrites PWD and HOME (the OCI images set HOME back to `/root`) can no
+  longer leave the prompt lying or point `~` and `~/.bashrc` at the image's
+  home instead of the one the server was installed with. On the OCI remotes
+  the lustre home's `.bashrc` now applies, which hands the terminal to fish
+  with its configuration.
 - Verified with the server terminal tests, the desktop and Android surface
   tests and type checks, the desktop terminal acceptance (typing before and
   after a server restart) against an isolated server, and on the redeployed
