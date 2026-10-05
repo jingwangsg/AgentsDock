@@ -69,7 +69,7 @@
   "notifications.turnFinished": "回复完成",
   "notifications.agentWaiting": "Agent 在等你确认",
   "waitingBanner.one": "{provider} 在「{title}」等你回答",
-  "waitingBanner.many": "{count} 个聊天在等你回答：{titles}",
+  "waitingBanner.many": "{count} 个对话在等你回答：{titles}",
   "waitingBanner.hide": "隐藏",
   "notifications.open": "打开",
   "notifications.dismiss": "忽略",

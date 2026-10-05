@@ -8,7 +8,7 @@ import { RUNNING_FORK_UNAVAILABLE } from '@shared/session-fork'
 import { isImportedProviderInterruption } from '@shared/provider-origin'
 import { CHAT_FONT_SIZES } from '../lib/chat-font'
 import { cancelPendingSteering, isSteeringPending, steerQueuedTurn, type SteeringScope } from '../lib/queue-actions'
-import { boundedDeferredTimelineEvents, cacheSnapshot, compactSnapshotEvents, crossChatQueueRefreshSessionId, handleMenuCommand, interactiveClientCapabilities, mergeEvents, mergeSnapshots, reconcileSessions, replaceSnapshot, snapshotNeedsAuthoritativeTail, syncSnapshotSessions, timelineReplacementIsDiscontinuous, updateActiveSessions, updateQueuedTurns, useAppStore } from './app-store'
+import { boundedDeferredTimelineEvents, cacheSnapshot, compactSnapshotEvents, crossChatQueueRefreshSessionId, handleMenuCommand, interactiveClientCapabilities, mergeEvents, mergeSnapshots, ingestTimeline, reconcileSessions, replaceSnapshot, snapshotNeedsAuthoritativeTail, syncSnapshotSessions, timelineReplacementIsDiscontinuous, updateActiveSessions, updateQueuedTurns, useAppStore } from './app-store'
 
 const analytics = vi.hoisted(() => ({ trackEvent: vi.fn() }))
 vi.mock('../lib/analytics', () => analytics)
@@ -27,6 +27,51 @@ const providerInterruption = (patch: Partial<Event> = {}): Event => event('provi
 })
 const providerControlCompanion = (patch: Partial<Event> = {}): Event => event('turn_finished', {
   imported: true, metadata_only: true, backend: 'claude', run_id: 'import_control-only', ...patch
+})
+
+describe('ingestTimeline', () => {
+  const base = () => snapshot('chat-a', [eventFor('chat-a', 1), eventFor('chat-a', 2)])
+  const queued = eventFor('chat-a', 3, { type: 'turn_queued', queued_id: 'q1', prompt: 'Later', position: 1 })
+  const started = eventFor('chat-a', 4, { type: 'turn_started', queued_id: 'q1', run_id: 'run-4', prompt: 'Later' })
+
+  it('folds only rows newer than the sequence the queue is current for, so a receipt the socket passed changes nothing', () => {
+    const live = ingestTimeline(base(), { events: [queued, started] })
+    expect(live.queuedTurns).toEqual([])
+    expect(live.queuedAsOfSeq).toBe(4)
+    expect(ingestTimeline(live, { events: [queued] })).toBe(live)
+    // The receipt arriving first queues the row; the socket's rows then consume it exactly once.
+    const receiptFirst = ingestTimeline(base(), { events: [queued] })
+    expect(receiptFirst.queuedTurns.map(turn => turn.queued_id)).toEqual(['q1'])
+    expect(ingestTimeline(receiptFirst, { events: [queued, started] }).queuedTurns).toEqual([])
+  })
+
+  it('starts from a page queue current as of its latest sequence and folds retained newer rows on top', () => {
+    const live = ingestTimeline(base(), { events: [eventFor('chat-a', 5, { type: 'turn_queued', queued_id: 'q5', prompt: 'Five', position: 1 })] })
+    expect(ingestTimeline(live, { events: [eventFor('chat-a', 3)], queue: { turns: [], asOfSeq: 4 } }).queuedTurns.map(turn => turn.queued_id)).toEqual(['q5'])
+    expect(ingestTimeline(live, { events: [], queue: { turns: [], asOfSeq: 5 } }).queuedTurns).toEqual([])
+  })
+
+  it('prunes rows and files inside a tombstone range from any source and advances the generations once', () => {
+    const previous = {
+      ...snapshot('chat-a', [1, 2, 3, 4, 5].map(seq => eventFor('chat-a', seq))),
+      files: [{ id: 'f4', session_id: 'chat-a', filename: 'four.png', seq: 4 }], filesTotal: 1, eventsTotal: 5, generation: 2, timelineListGeneration: 1
+    }
+    const tombstone = eventFor('chat-a', 6, { type: 'history_rewound', from_seq: 3, through_seq: 5 })
+    const viaRow = ingestTimeline(previous, { events: [tombstone] })
+    expect(viaRow.events.map(event => event.seq)).toEqual([1, 2, 6])
+    expect(viaRow.files).toEqual([])
+    expect([viaRow.eventsTotal, viaRow.filesTotal, viaRow.generation, viaRow.timelineListGeneration]).toEqual([2, 0, 3, 2])
+    expect(ingestTimeline(previous, { rewound: [[3, 5]] }).events.map(event => event.seq)).toEqual([1, 2])
+    // Replaying the tombstone changes nothing.
+    expect(ingestTimeline(viaRow, { events: [tombstone] })).toBe(viaRow)
+  })
+
+  it('adds files only from rows newer than the shown tail', () => {
+    const artifact = (seq: number) => eventFor('chat-a', seq, { type: 'artifact_created', artifact: { id: `a${seq}`, session_id: 'chat-a', filename: `${seq}.png`, seq } })
+    const previous = snapshot('chat-a', [eventFor('chat-a', 5)])
+    expect(ingestTimeline(previous, { events: [artifact(6)] }).files.map(file => file.id)).toEqual(['a6'])
+    expect(ingestTimeline(previous, { events: [artifact(2)] }).files).toEqual([])
+  })
 })
 
 describe('cross-chat queue refresh signals', () => {
@@ -4595,6 +4640,17 @@ describe('event merging', () => {
     // Removing interior turns invalidates the projection cache and the list's measured coordinates.
     expect(merged.generation).toBe(4)
     expect(merged.timelineListGeneration).toBe(2)
+  })
+
+  it('prunes the retained prefix a replacement keeps from a tombstone in the window, and older rows from a retained tombstone', () => {
+    const tombstone = eventFor('chat-a', 6, { type: 'history_rewound', from_seq: 3, through_seq: 5 })
+    // An older page arriving below the tail is checked against the tombstones already retained.
+    const retained = snapshot('chat-a', [eventFor('chat-a', 2), tombstone, eventFor('chat-a', 7)])
+    expect(mergeSnapshots(retained, snapshot('chat-a', [eventFor('chat-a', 1), eventFor('chat-a', 4)])).events.map(event => event.seq)).toEqual([1, 2, 6, 7])
+    // A replacement window that starts after the rewound range prunes the prefix it retains.
+    const paged = snapshot('chat-a', [1, 2, 3, 4, 5, 8].map(seq => eventFor('chat-a', seq)))
+    const replaced = replaceSnapshot(paged, snapshot('chat-a', [tombstone, eventFor('chat-a', 7), eventFor('chat-a', 8)]))
+    expect(replaced.events.map(event => event.seq)).toEqual([1, 2, 6, 7, 8])
   })
 
   it('keeps a compacted renderer cursor ahead of a stale main-process merge cursor', () => {

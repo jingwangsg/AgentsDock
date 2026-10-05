@@ -54,6 +54,8 @@ class HistoryReloadTests(RewindFixture):
             [(event["from_seq"], event["through_seq"], event["removed_events"], event["reason"]) for event in stored if event["type"] == "history_rewound"],
             [(7, 9, 3, "history_reload"), (12, 14, 3, "history_reload")],
         )
+        self.assertEqual([event["history_revision"] for event in stored if event["type"] == "history_rewound"], [1, 2])
+        self.assertEqual(result["session"]["history_revision"], 2)
         self.assertNotIn("_history_sync_cursor", sess)
         self.assertEqual(sess["latest_event_seq"], 16)
         sync.assert_awaited_once()

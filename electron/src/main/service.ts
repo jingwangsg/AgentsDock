@@ -2894,7 +2894,8 @@ export class AppService {
     const page = await scope.client.importHistory(sessionId, force)
     this.assertCurrentScope(scope)
     this.cache.putSession(scope.namespace, page.session)
-    this.cache.putEvents(scope.namespace, sessionId, page.events)
+    this.ingestEventsIntoCache(scope, sessionId, page.events)
+    this.cache.putQueuedTurns(scope.namespace, sessionId, page.queued_turns ?? [])
     this.cache.putTimelineState(
       scope.namespace,
       sessionId,
@@ -3048,7 +3049,7 @@ export class AppService {
       const nextBefore = timelinePageNextBefore(page)
       if (persistLiveCache) {
         this.cache.putSession(scope.namespace, page.session)
-        this.cache.putEvents(scope.namespace, sessionId, page.events)
+        this.ingestEventsIntoCache(scope, sessionId, page.events)
         this.cache.putTimelineState(
           scope.namespace,
           sessionId,
@@ -3668,9 +3669,10 @@ export class AppService {
         return
       }
       if (acceptReconcileEvent && !acceptReconcileEvent(event)) return
-      if (event.type === 'history_rewound') this.applyHistoryRewind(scope, sessionId, event.from_seq, event.through_seq)
       this.emitAgentEvent(scope, event)
       this.enqueueEventCache(scope, event)
+      // A rewind reaches the cache now rather than at the next flush, through the same ingestion path.
+      if (event.type === 'history_rewound') this.flushEventCache()
       if (JOB_REFRESH_EVENT_TYPES.has(event.type) && !isImportedProviderControlMetadata(event)) void this.refreshJobs(scope)
       if (event.type === 'turn_started' || event.type === 'turn_finished' || event.type === 'turn_stopped') {
         this.syncSubagentPolling(scope, sessionId, lease)
@@ -3861,8 +3863,7 @@ export class AppService {
     this.assertCurrentScope(scope)
     this.upsertSession(scope, response.session)
     if (response.event) {
-      this.cache.putEvents(scope.namespace, input.sessionId, [response.event])
-      this.applyEventToCaches(scope, response.event)
+      this.ingestEventsIntoCache(scope, input.sessionId, [response.event])
     }
     return response
   }
@@ -5942,6 +5943,7 @@ export class AppService {
       if (!this.isCurrentTimeline(scope, sessionId, lease)) return
 
       let mode: 'merge' | 'replace' = initialRequestIsSemantic ? 'replace' : 'merge'
+      let historyDiverged = false
       if (auditPage) {
         pageWasSemanticAttempt = true
         const auditSucceeded = semanticAttemptSucceeded(auditPage)
@@ -5960,13 +5962,26 @@ export class AppService {
           semanticItems: auditPage.semantic_item_count,
           tailEvents: auditPage.events.length
         })
-      } else if ((page.events_omitted_after ?? 0) > 0 || (page.latest_seq ?? cachedLast) < cachedLast) {
-        page = await this.semanticTimelinePage(scope, sessionId, {
-          limit: INITIAL_SEMANTIC_ITEM_LIMIT, tail: true, visible: true
+      } else {
+        // Every rewind bumps the server's history revision and stamps it on its tombstone. A
+        // revision the delta's tombstones do not reach is a deletion this cache never saw: the
+        // window is rebuilt from the server instead of merged over rows that may be gone.
+        const serverRevision = page.session.history_revision
+        const seenRevision = Math.max(timelineState?.historyRevision ?? 0, ...page.events.map(event => (
+          event.type === 'history_rewound' && Number.isSafeInteger(event.history_revision) ? event.history_revision! : 0
+        )))
+        historyDiverged = Boolean(before?.events.length) && serverRevision != null && serverRevision > 0 && seenRevision < serverRevision
+        if (historyDiverged) appLog('timeline', 'cached history revision behind the server; replacing the cached window', {
+          sessionId, cached: timelineState?.historyRevision ?? null, seen: seenRevision, server: serverRevision
         })
-        pageWasSemanticAttempt = true
-        if (!this.isCurrentTimeline(scope, sessionId, lease)) return
-        mode = 'replace'
+        if (historyDiverged || (page.events_omitted_after ?? 0) > 0 || (page.latest_seq ?? cachedLast) < cachedLast) {
+          page = await this.semanticTimelinePage(scope, sessionId, {
+            limit: INITIAL_SEMANTIC_ITEM_LIMIT, tail: true, visible: true
+          })
+          pageWasSemanticAttempt = true
+          if (!this.isCurrentTimeline(scope, sessionId, lease)) return
+          mode = 'replace'
+        }
       }
       // Settle old socket writes before either a refresh or a log reset. A
       // delayed cache batch must not reinsert the retired log after replacement.
@@ -5989,18 +6004,7 @@ export class AppService {
       }
       this.cache.putSession(scope.namespace, page.session)
       this.rememberSessionDetail(scope, page.session)
-      if (mode === 'replace') this.cache.replaceEvents(scope.namespace, sessionId, page.events)
-      else this.cache.putEvents(scope.namespace, sessionId, page.events, cachedLast)
-      // A rewind performed elsewhere while this chat was not streaming arrives as a tombstone
-      // in the catch-up page: the cached rows it removed go as well, and the renderer prunes
-      // its retained window from the same tombstone when it merges the delta. One the socket
-      // delivered during this reconcile was already applied by the stream handler.
-      if (mode === 'merge') {
-        for (const tombstone of page.events) {
-          if (tombstone.type !== 'history_rewound' || liveDuringReconcile?.some(event => event.id === tombstone.id)) continue
-          this.applyHistoryRewind(scope, sessionId, tombstone.from_seq, tombstone.through_seq)
-        }
-      }
+      this.ingestEventsIntoCache(scope, sessionId, page.events, { replace: mode === 'replace', reconciledAfter: cachedLast })
       this.cache.putQueuedTurns(scope.namespace, sessionId, page.queued_turns ?? [])
       const hasMoreEvents = mode === 'replace'
         ? Boolean(page.has_more)
@@ -6019,11 +6023,13 @@ export class AppService {
         verifiedLatestSeq,
         knownTotal,
         nextTimelineBefore,
-        pageWasSemanticAttempt ? semanticAttemptSucceeded(page) : undefined
+        pageWasSemanticAttempt ? semanticAttemptSucceeded(page) : undefined,
+        page.session.history_revision ?? undefined
       )
       const semanticPaging = pageWasSemanticAttempt
         ? semanticAttemptSucceeded(page)
         : before?.semanticPaging ?? null
+      const pageLatestSeq = page.latest_seq ?? page.events.at(-1)?.seq ?? cachedLast
       const snapshot: SessionSnapshot = mode === 'replace' ? { ...(this.cache.snapshot(scope.namespace, sessionId) ?? {
         session: page.session,
         events: page.events,
@@ -6037,10 +6043,11 @@ export class AppService {
         semanticPaging,
         filesTotal: before?.filesTotal ?? 0,
         cachedAt: Date.now()
-      }), historyVerified: true } : {
+      }), historyVerified: true, queuedAsOfSeq: pageLatestSeq } : {
         session: page.session,
         events: page.events,
         queuedTurns: page.queued_turns ?? [],
+        queuedAsOfSeq: pageLatestSeq,
         files: [],
         hasMoreEvents,
         historyVerified: true,
@@ -6061,9 +6068,10 @@ export class AppService {
         || !jsonEqual(before?.queuedTurns ?? [], snapshot.queuedTurns)
         || !jsonEqual(before?.session, snapshot.session)
       if (changed) this.emit('server:timeline', {
-        sessionId, snapshot, source: 'server', mode, profileId: scope.profileId, profileGeneration: scope.generation
+        sessionId, snapshot, source: 'server', mode, profileId: scope.profileId, profileGeneration: scope.generation,
+        ...(historyDiverged ? { authoritative: true } : {})
       })
-      const streamAfter = page.latest_seq ?? page.events.at(-1)?.seq ?? cachedLast
+      const streamAfter = pageLatestSeq
       if (!streamStarted) this.activateTimelineStream(scope, sessionId, streamAfter, lease)
       this.scheduleSubagentSnapshotRefresh(scope, sessionId, lease)
       queueMicrotask(() => void this.refreshTimelineFiles(scope, sessionId))
@@ -6086,7 +6094,7 @@ export class AppService {
     if (!this.isCurrentTimeline(scope, sessionId, lease)) throw new Error('Timeline selection superseded')
     this.cache.putSession(scope.namespace, page.session)
     this.rememberSessionDetail(scope, page.session)
-    this.cache.replaceEvents(scope.namespace, sessionId, page.events)
+    this.ingestEventsIntoCache(scope, sessionId, page.events, { replace: true })
     this.cache.putQueuedTurns(scope.namespace, sessionId, page.queued_turns ?? [])
     const nextTimelineBefore = timelinePageNextBefore(page)
     const semanticPaging = semanticAttemptSucceeded(page)
@@ -6097,17 +6105,20 @@ export class AppService {
       page.latest_seq,
       page.total,
       nextTimelineBefore,
-      semanticPaging
+      semanticPaging,
+      page.session.history_revision ?? undefined
     )
     const cached = this.cache.snapshot(scope.namespace, sessionId)
     if (!this.isCurrentTimeline(scope, sessionId, lease)) throw new Error('Timeline selection superseded')
     this.activateTimelineStream(scope, sessionId, page.latest_seq ?? page.events.at(-1)?.seq ?? 0, lease)
     this.scheduleSubagentSnapshotRefresh(scope, sessionId, lease)
     queueMicrotask(() => void this.refreshTimelineFiles(scope, sessionId, true))
+    const queuedAsOfSeq = page.latest_seq ?? page.events.at(-1)?.seq ?? 0
     return cached ? {
       ...cached,
       session: page.session,
       queuedTurns: page.queued_turns ?? [],
+      queuedAsOfSeq,
       hasMoreEvents: Boolean(page.has_more),
       historyVerified: true,
       eventsTotal: page.total ?? cached.eventsTotal ?? null,
@@ -6118,6 +6129,7 @@ export class AppService {
       session: page.session,
       events: page.events,
       queuedTurns: page.queued_turns ?? [],
+      queuedAsOfSeq,
       files: [],
       hasMoreEvents: Boolean(page.has_more),
       historyVerified: true,
@@ -6197,7 +6209,7 @@ export class AppService {
     ))
     if (!events.length) return
     this.flushEventCache()
-    this.cache.putEvents(scope.namespace, sessionId, events)
+    this.ingestEventsIntoCache(scope, sessionId, events)
     const snapshot = this.cache.snapshot(scope.namespace, sessionId)
     if (!snapshot || !this.isCurrentTimeline(scope, sessionId, lease)) return
     this.emit('server:timeline', {
@@ -6272,8 +6284,37 @@ export class AppService {
     }
   }
 
-  private applyEventToCaches(scope: ConnectionScope, event: Event): void {
-    this.applyEventsToCaches(scope, event.session_id, [event])
+  /**
+   * The one way rows enter the durable cache. Streamed batches, send receipts, catch-up pages,
+   * first-open and refresh windows and older pages all pass here: the rows persist, a tombstone
+   * prunes its range (recording the history revision it carries) when it first enters, and the
+   * queue, file and session caches derive from the rows newer than the tail the cache knew.
+   */
+  private ingestEventsIntoCache(
+    scope: ConnectionScope, sessionId: string, events: readonly Event[],
+    options: { replace?: boolean; reconciledAfter?: number } = {}
+  ): void {
+    if (!events.length) return
+    const tailBefore = this.cache.latestEventSequence(scope.namespace, sessionId)
+    if (options.replace) {
+      // The window replaces every cached row of the chat, so no tombstone range can still hold
+      // rows, and the page's own queue and the file list follow from their own sources.
+      this.cache.replaceEvents(scope.namespace, sessionId, [...events])
+      return
+    }
+    try {
+      if (options.reconciledAfter === undefined) this.cache.putEvents(scope.namespace, sessionId, [...events])
+      else this.cache.putEvents(scope.namespace, sessionId, [...events], options.reconciledAfter)
+    } finally {
+      // A tombstone prunes even when the row write failed (a storage gap), so the cache never
+      // keeps rows the server removed; an already-empty range costs one no-op delete.
+      for (const event of events) {
+        if (event.type === 'history_rewound') this.applyHistoryRewind(scope, sessionId, event.from_seq, event.through_seq, event.history_revision)
+      }
+    }
+    // Rows newer than the tail the cache knew feed the queue, file and session caches; older
+    // rows (an older page) change none of them.
+    this.applyEventsToCaches(scope, sessionId, events.filter(event => event.seq > tailBefore))
   }
 
   private applyEventsToCaches(scope: ConnectionScope, sessionId: string, events: readonly Event[]): void {
@@ -6328,19 +6369,28 @@ export class AppService {
   }
 
   /** Mirrors a server-side history rewind in the durable cache and the landmark index. */
-  private applyHistoryRewind(scope: ConnectionScope, sessionId: string, fromSeq: number | null | undefined, throughSeq: number | null | undefined): void {
+  private applyHistoryRewind(
+    scope: ConnectionScope, sessionId: string,
+    fromSeq: number | null | undefined, throughSeq: number | null | undefined, historyRevision?: number | null
+  ): void {
     if (!Number.isSafeInteger(fromSeq) || !Number.isSafeInteger(throughSeq)) return
     // Buffered live events may fall inside the removed range; persist them
     // first so the single range delete below covers them too.
     this.flushEventCache()
+    let removed = 0
     try {
-      this.cache.removeEventRange(scope.namespace, sessionId, fromSeq!, throughSeq!)
+      removed = this.cache.removeEventRange(scope.namespace, sessionId, fromSeq!, throughSeq!)
+      // The revision lets the next reconcile prove this cache saw every rewind the server made.
+      if (Number.isSafeInteger(historyRevision)) this.cache.recordHistoryRevision(scope.namespace, sessionId, historyRevision!)
     } catch (error) {
       reportStorageError(error)
       appLog('cache', 'failed to remove rewound events', {
         profileId: scope.profileId, generation: scope.generation, sessionId, fromSeq, throughSeq, error: errorText(error)
       })
     }
+    // A range that held nothing (a tombstone seen again, or a window that replaced the rows)
+    // leaves the landmark index and the file list as they are.
+    if (!removed) return
     this.timelineIndexes.delete(`${scope.namespace}:${sessionId}`)
     // The server deletes the artifacts of rewound turns; bypass the 30 s throttle so they leave the file list now.
     void this.refreshTimelineFiles(scope, sessionId, true)
@@ -6353,8 +6403,7 @@ export class AppService {
     this.pendingEventCache = new Map()
     for (const { scope, sessionId, events } of pending.values()) {
       try {
-        this.cache.putEvents(scope.namespace, sessionId, events)
-        this.applyEventsToCaches(scope, sessionId, events)
+        this.ingestEventsIntoCache(scope, sessionId, events)
       } catch (error) {
         reportStorageError(error)
         appLog('cache', 'failed to persist streamed events', {

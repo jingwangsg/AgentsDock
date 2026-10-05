@@ -219,6 +219,7 @@ export class LocalCache {
         next_timeline_before INTEGER,
         paging_schema_version INTEGER,
         semantic_paging INTEGER,
+        history_revision INTEGER,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (server_id, session_id)
       );
@@ -242,6 +243,7 @@ export class LocalCache {
     if (!timelineColumns.some(column => column.name === 'next_timeline_before')) this.db.exec('ALTER TABLE timeline_state ADD COLUMN next_timeline_before INTEGER')
     if (!timelineColumns.some(column => column.name === 'paging_schema_version')) this.db.exec('ALTER TABLE timeline_state ADD COLUMN paging_schema_version INTEGER')
     if (!timelineColumns.some(column => column.name === 'semantic_paging')) this.db.exec('ALTER TABLE timeline_state ADD COLUMN semantic_paging INTEGER')
+    if (!timelineColumns.some(column => column.name === 'history_revision')) this.db.exec('ALTER TABLE timeline_state ADD COLUMN history_revision INTEGER')
     this.migrateFileOwnershipCache()
     this.settleRewindTombstones()
     } catch (error) {
@@ -310,7 +312,7 @@ export class LocalCache {
       if (version?.value !== FILE_OWNERSHIP_CACHE_SCHEMA_VERSION) return false
       if (!this.db.prepare('SELECT value FROM cache_meta WHERE key = ?').get(REWIND_TOMBSTONES_SETTLED_KEY)) return false
       const columns = this.db.prepare('PRAGMA table_info(timeline_state)').all() as Array<{ name: string }>
-      return ['verified_latest_seq', 'known_total', 'next_timeline_before', 'paging_schema_version', 'semantic_paging']
+      return ['verified_latest_seq', 'known_total', 'next_timeline_before', 'paging_schema_version', 'semantic_paging', 'history_revision']
         .every(name => columns.some(column => column.name === name))
     } catch { return false }
   }
@@ -854,10 +856,11 @@ export class LocalCache {
     nextTimelineBefore: number | null
     pagingSchemaVersion: number | null
     semanticPaging: boolean | null
+    historyRevision: number | null
   } | null {
     const row = this.statement(`
       SELECT has_more, verified_latest_seq, known_total, next_timeline_before,
-             paging_schema_version, semantic_paging
+             paging_schema_version, semantic_paging, history_revision
       FROM timeline_state WHERE server_id = ? AND session_id = ?
     `)
       .get(serverId, sessionId) as {
@@ -867,9 +870,11 @@ export class LocalCache {
         next_timeline_before: number | null
         paging_schema_version: number | null
         semantic_paging: number | null
+        history_revision: number | null
       } | undefined
     return row ? {
       hasMore: Boolean(row.has_more),
+      historyRevision: row.history_revision ?? null,
       verifiedLatestSeq: row.verified_latest_seq,
       knownTotal: row.known_total,
       nextTimelineBefore: row.next_timeline_before,
@@ -972,8 +977,8 @@ export class LocalCache {
     }
   }
 
-  /** Drops the closed sequence range a `history_rewound` tombstone removed on the server. */
-  removeEventRange(serverId: string, sessionId: string, fromSeq: number, throughSeq: number): void {
+  /** Drops the closed sequence range a `history_rewound` tombstone removed on the server; returns how many rows left. */
+  removeEventRange(serverId: string, sessionId: string, fromSeq: number, throughSeq: number): number {
     const key = JSON.stringify([serverId, sessionId])
     const removedIds = `SELECT event_id FROM events WHERE server_id = ? AND session_id = ? AND seq >= ? AND seq <= ?`
     this.db.exec('BEGIN')
@@ -990,13 +995,14 @@ export class LocalCache {
         DELETE FROM event_search_keys
         WHERE server_id = ? AND session_id = ? AND event_id IN (${removedIds})
       `).run(serverId, sessionId, serverId, sessionId, fromSeq, throughSeq)
-      this.statement('DELETE FROM events WHERE server_id = ? AND session_id = ? AND seq >= ? AND seq <= ?')
+      const removed = this.statement('DELETE FROM events WHERE server_id = ? AND session_id = ? AND seq >= ? AND seq <= ?')
         .run(serverId, sessionId, fromSeq, throughSeq)
       this.db.exec('COMMIT')
       // A dropped-batch gap that starts inside the removed range no longer
       // hides any surviving event; an older gap still does and must stay.
       const gap = this.eventWriteGaps.get(key)
       if (gap && gap.after >= fromSeq - 1) this.eventWriteGaps.delete(key)
+      return Number(removed.changes)
     } catch (error) {
       this.rollbackTransaction()
       throw error
@@ -1258,17 +1264,19 @@ export class LocalCache {
     verifiedLatestSeq?: number | null,
     knownTotal?: number | null,
     nextTimelineBefore?: number | null,
-    semanticPaging?: boolean
+    semanticPaging?: boolean,
+    historyRevision?: number | null
   ): void {
     const gap = this.eventWriteGaps.get(JSON.stringify([serverId, sessionId]))
     if (gap) throw gap.error
     const updateCursor = nextTimelineBefore !== undefined
     const updatePaging = semanticPaging !== undefined
+    const updateRevision = historyRevision !== undefined
     this.statement(`
       INSERT INTO timeline_state(
         server_id, session_id, has_more, verified_latest_seq, known_total, next_timeline_before,
-        paging_schema_version, semantic_paging, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        paging_schema_version, semantic_paging, history_revision, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(server_id, session_id) DO UPDATE SET
         has_more = excluded.has_more,
         verified_latest_seq = COALESCE(excluded.verified_latest_seq, timeline_state.verified_latest_seq),
@@ -1279,6 +1287,7 @@ export class LocalCache {
           ELSE timeline_state.paging_schema_version
         END,
         semantic_paging = CASE WHEN ? THEN excluded.semantic_paging ELSE timeline_state.semantic_paging END,
+        history_revision = CASE WHEN ? THEN excluded.history_revision ELSE timeline_state.history_revision END,
         updated_at = excluded.updated_at
     `).run(
       serverId,
@@ -1289,11 +1298,23 @@ export class LocalCache {
       nextTimelineBefore ?? null,
       updatePaging ? TIMELINE_PAGING_SCHEMA_VERSION : null,
       updatePaging ? (semanticPaging ? 1 : 0) : null,
+      updateRevision ? historyRevision : null,
       Date.now(),
       updateCursor ? 1 : 0,
       updatePaging ? 1 : 0,
-      updatePaging ? 1 : 0
+      updatePaging ? 1 : 0,
+      updateRevision ? 1 : 0
     )
+  }
+
+  /** A `history_rewound` tombstone reached this cache: remember the server history revision it carries. */
+  recordHistoryRevision(serverId: string, sessionId: string, revision: number): void {
+    this.statement(`
+      INSERT INTO timeline_state(server_id, session_id, has_more, history_revision, updated_at)
+      VALUES (?, ?, 0, ?, ?)
+      ON CONFLICT(server_id, session_id) DO UPDATE SET
+        history_revision = MAX(COALESCE(timeline_state.history_revision, 0), excluded.history_revision)
+    `).run(serverId, sessionId, revision, Date.now())
   }
 
   queuedTurns(serverId: string, sessionId: string): QueuedTurn[] {

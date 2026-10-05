@@ -225,6 +225,31 @@ try {
   assert.deepEqual(useAppStore.getState().snapshots[sessionA.id]!.files, [], 'the artifact of a rewound turn leaves the file list')
   assert.equal(useAppStore.getState().snapshots[sessionA.id]!.hasMore, false, 'the pruned range is not mistaken for tail eviction')
 
+  // A revision the catch-up page's tombstones do not reach means a rewind this cache never saw:
+  // the window is rebuilt from the server tail instead of merged over rows that may be gone.
+  let fullTailFetches = 0
+  useAppStore.setState(state => ({ snapshots: { ...state.snapshots, [sessionA.id]: {
+    ...state.snapshots[sessionA.id]!, events: initialEvents, latestSeq: 5, total: 5, hasMore: false, files: [], filesTotal: 0, historyRevision: 0,
+  } } }))
+  const rewoundSession = { ...sessionA, history_revision: 1 }
+  const thirdTurn = event(7, 'turn_started', { run_id: 'run-3', prompt: 'Third' })
+  client.sessionPage = async (sessionId, options) => {
+    if (sessionId !== sessionA.id) return page(sessionB)
+    if ((options as { tail?: boolean } | undefined)?.tail) {
+      fullTailFetches += 1
+      return { ...page(sessionA), session: rewoundSession, latest_seq: 7, total: 4, events: [
+        initialEvents[0], initialEvents[1], event(6, 'history_rewound', { from_seq: 3, through_seq: 5, history_revision: 1 }), thirdTurn,
+      ] }
+    }
+    // The delta that should have carried the tombstone arrives without it.
+    return { ...page(sessionA), session: rewoundSession, latest_seq: 7, total: 4, events: [thirdTurn] }
+  }
+  await useAppStore.getState().selectSession(sessionB.id)
+  await useAppStore.getState().selectSession(sessionA.id)
+  assert.equal(fullTailFetches, 1, 'a history revision behind the server fetches the authoritative tail')
+  assert.deepEqual(useAppStore.getState().snapshots[sessionA.id]!.events.map(value => value.seq), [1, 2, 6, 7], 'the cached window is rebuilt from the server')
+  assert.equal(useAppStore.getState().snapshots[sessionA.id]!.historyRevision, 1, 'the snapshot records the revision it now matches')
+
   console.log('store rewind and notification regressions passed')
 } finally {
   appState.__emitAppState('background')

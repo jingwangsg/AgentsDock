@@ -420,6 +420,8 @@ export interface Session {
   latest_event_seq?: number | null
   latest_event_at?: string | null
   latest_event_type?: string | null
+  /** Count of history rewinds on the server; every `history_rewound` tombstone carries the value it produced. */
+  history_revision?: number | null
   latest_agent_event_seq?: number | null
   latest_agent_event_at?: string | null
   latest_agent_event_type?: string | null
@@ -1010,6 +1012,7 @@ export interface Event {
   /** `history_rewound` tombstone: the removed closed sequence range and its provider action. */
   from_seq?: number | null
   through_seq?: number | null
+  history_revision?: number | null
   /** `history_reload`: the range was an import batch removed by Reload history, not a rewind. */
   reason?: string | null
   to_run_id?: string | null
@@ -1658,6 +1661,10 @@ export interface Snapshot {
   latestSeq?: number | null
   nextBefore?: number | null
   semanticPaging?: boolean | null
+  /** Highest server history revision whose rewind this snapshot has applied. */
+  historyRevision?: number | null
+  /** The sequence the queue list is current for; only newer events fold into it. */
+  queuedAsOfSeq?: number | null
   cachedAt: number
 }
 

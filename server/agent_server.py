@@ -52613,11 +52613,15 @@ def public_session(sess: dict[str, Any], *, summary: bool = False) -> dict[str, 
             "claude_pending_interaction_count", "claude_needs_user_action",
             "parent_id", "fork_from", "memory_forked", "memory_seed_used",
             "pinned", "pinned_at", "archived", "archived_at", "sort_order", "created_at", "updated_at",
-            "latest_event_seq", "latest_event_at", "latest_event_type",
+            "latest_event_seq", "latest_event_at", "latest_event_type", "history_revision",
             "latest_agent_event_seq", "latest_agent_event_at", "latest_agent_event_type",
             "last_read_agent_event_seq", "last_read_agent_event_at", "manual_unread",
         )
     }
+    # A chat that was never rewound reports revision 0 in detail responses, so a
+    # client can record a baseline and later prove its cache saw every rewind.
+    if not summary:
+        public["history_revision"] = int(sess.get("history_revision") or 0)
     # Omit only never-configured defaults from high-volume lists. A stored null
     # is a clear tombstone and must survive summary/cache merges.
     if not summary or "subagent_limit" in sess:
@@ -93683,6 +93687,9 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                     await notify_timeline_pins_changed(session_id, state)
         except TimelinePinStorageError as exc:
             logger.warning("rewound chat pins could not be pruned session=%s: %s", session_id, exc)
+        # Every rewind advances the chat's history revision and stamps it on the
+        # tombstone, so a client can prove its cache saw every rewind the server made.
+        sess["history_revision"] = int(sess.get("history_revision") or 0) + 1
         await append_event(session_id, "history_rewound", {
             "from_seq": before_seq,
             "through_seq": summary["through_seq"],
@@ -93690,6 +93697,7 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
             "removed_events": summary["removed_events"],
             "provider_rewind": provider_rewind,
             "outputs_reverted": outputs_reverted,
+            "history_revision": sess["history_revision"],
         })
         for queued_id in orphaned_queued_ids:
             await append_durable_event(session_id, "turn_unqueued", {
@@ -93780,11 +93788,13 @@ async def reload_session_history(session_id: str) -> dict[str, Any]:
 
                 await finish_despite_caller_cancellation(perform_reload())
             for row in removed:
+                sess["history_revision"] = int(sess.get("history_revision") or 0) + 1
                 await append_event(session_id, "history_rewound", {
                     "from_seq": row["from_seq"],
                     "through_seq": row["through_seq"],
                     "removed_events": row["removed_events"],
                     "reason": "history_reload",
+                    "history_revision": sess["history_revision"],
                 })
         # Without a cursor the sync realigns on the newest message still on the timeline.
         sess.pop("_history_sync_cursor", None)

@@ -86,7 +86,6 @@ import { timelineTargetIsRepresented } from '../lib/timeline-history-navigation'
 import {
   boundHistoricalTimelineEvents,
   boundLiveTimelineEvents,
-  dropRewoundEvents,
   historicalTimelineEvents,
   liveTimelineEventsWereTrimmed,
   mergeEvents,
@@ -1623,7 +1622,17 @@ export const useAppStore = create<AppState>((set, get) => ({
           : await scope.client.sessionPage(sessionId, { after, limit: TAIL_LIMIT, tail: false, visible: true })
         if (NativeAppState.currentState !== 'active') return
         let fetchedFullTail = fullTail
-        if (!fullTail && ((page.events_omitted_after ?? 0) > 0 || (page.latest_seq ?? after) < after)) {
+        // Every rewind bumps the server's history revision and stamps it on its tombstone. A
+        // revision the delta's tombstones do not reach is a deletion this cache never saw: the
+        // window is rebuilt from the server instead of merged over rows that may be gone.
+        const cachedBeforeFetch = get().snapshots[sessionId]
+        const serverRevision = page.session.history_revision
+        const seenRevision = Math.max(cachedBeforeFetch?.historyRevision ?? 0, ...page.events.map(event => (
+          event.type === 'history_rewound' && Number.isSafeInteger(event.history_revision) ? event.history_revision! : 0
+        )))
+        const historyDiverged = Boolean(cachedBeforeFetch?.events.length)
+          && serverRevision != null && serverRevision > 0 && seenRevision < serverRevision
+        if (!fullTail && (historyDiverged || (page.events_omitted_after ?? 0) > 0 || (page.latest_seq ?? after) < after)) {
           page = await fetchFullTail()
           fetchedFullTail = true
         }
@@ -1634,6 +1643,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           .filter(event => event.session_id === sessionId && Number.isFinite(event.seq))
           .map(sanitizeTimelineEvent)
         const replaceEvents = (fetchedFullTail && fullTailSemanticPaging === true)
+          || historyDiverged
           || shouldReplaceCachedTimeline(current, incomingEvents, page.latest_seq, page.has_more, fetchedFullTail)
         const now = Date.now()
         // If the live stream appended while a full-tail request was pending,
@@ -1643,51 +1653,47 @@ export const useAppStore = create<AppState>((set, get) => ({
         const concurrentEvents = replaceEvents
           ? (current?.events ?? []).filter(event => !eventIdsAtStart.has(event.id) && !incomingIds.has(event.id))
           : []
-        // A rewind done elsewhere while this chat was not streaming arrives as a tombstone in
-        // the catch-up page; its range leaves the cached snapshot (events, files, total) too. A
-        // cached tombstone whose files survived (older builds kept them) heals the same way.
-        const tombstones = [...(current?.events ?? []), ...incomingEvents].filter(event => (
-          event.type === 'history_rewound' && Number.isSafeInteger(event.from_seq) && Number.isSafeInteger(event.through_seq)
-        ))
-        const healedCurrent = current && !replaceEvents
-          ? tombstones.reduce((snapshot, tombstone) => rewindSnapshot(snapshot, tombstone.from_seq, tombstone.through_seq), current)
-          : current
-        // Rewound rows leave before bounding so a pruned range is not mistaken for tail eviction.
-        const reconciledEvents = replaceEvents
-          ? mergeEvents(incomingEvents, concurrentEvents)
-          : dropRewoundEvents(mergeEvents(healedCurrent?.events ?? [], incomingEvents))
-        const mergedEvents = boundLiveTimelineEvents(reconciledEvents)
-        const eventsWereTrimmed = liveTimelineEventsWereTrimmed(reconciledEvents, mergedEvents)
-        const latestSeq = replaceEvents
-          ? Math.max(mergedEvents.at(-1)?.seq ?? 0, page.latest_seq ?? 0)
-          : Math.max(mergedEvents.at(-1)?.seq ?? 0, page.latest_seq ?? 0, current?.latestSeq ?? 0)
         const currentSession = get().sessions.find(value => value.id === sessionId)
           ?? current?.session
           ?? page.session
         const reconciledSession = sessionMutations.reconcileIncoming(currentSession, page.session, sessionRead)
+        // Page rows (and, when replacing, the socket rows that overtook the page) enter through the
+        // same reducer as live events; the page's queue is current as of its latest sequence.
+        const seed: Snapshot = replaceEvents || !current
+          ? {
+              cacheVersion: SNAPSHOT_CACHE_VERSION, session: reconciledSession, events: [], queuedTurns: [],
+              files: current?.files ?? [], filesTotal: current?.filesTotal ?? 0,
+              hasMore: false, total: current?.total ?? null, latestSeq: null, nextBefore: null, semanticPaging: null, cachedAt: now,
+            }
+          : { ...current, hasMore: false }
+        const asOfSeq = page.latest_seq ?? Math.max(snapshotLatestSeq(current), ...incomingEvents.map(event => event.seq))
+        const ingested = ingestSnapshot(seed, {
+          events: replaceEvents ? [...incomingEvents, ...concurrentEvents] : incomingEvents,
+          queue: { turns: page.queued_turns, asOfSeq },
+        })
         const next: Snapshot = {
+          ...ingested,
           cacheVersion: SNAPSHOT_CACHE_VERSION,
           session: reconciledSession,
-          events: mergedEvents,
-          queuedTurns: page.queued_turns,
-          files: mergeFiles(healedCurrent?.files ?? [], filesFromEvents(dropRewoundEvents(incomingEvents))),
-          filesTotal: healedCurrent?.filesTotal ?? 0,
-          hasMore: (fetchedFullTail ? page.has_more : current?.hasMore ?? page.has_more) || eventsWereTrimmed,
-          total: fetchedFullTail ? page.total : healedCurrent?.total ?? null,
-          latestSeq,
+          hasMore: (fetchedFullTail ? page.has_more : current?.hasMore ?? page.has_more) || ingested.hasMore,
+          total: fetchedFullTail ? page.total : ingested.total,
+          latestSeq: Math.max(ingested.latestSeq ?? 0, page.latest_seq ?? 0),
           nextBefore: fetchedFullTail
             ? (page.has_more
                 ? timelinePageNextBefore(page)
-                : eventsWereTrimmed ? mergedEvents[0]?.seq ?? null : null)
+                : ingested.hasMore ? ingested.events[0]?.seq ?? null : null)
             : current?.nextBefore ?? null,
           semanticPaging: fetchedFullTail
             ? fullTailSemanticPaging
             : current?.semanticPaging ?? null,
+          // The server's revision is adopted only with an authoritative window; a merged page
+          // keeps the revision its tombstones reached, so a missed rewind stays detectable.
+          historyRevision: replaceEvents ? page.session.history_revision ?? ingested.historyRevision ?? null : ingested.historyRevision ?? null,
           cachedAt: now,
         }
         set(state => ({
           snapshots: snapshotMapWith(state.snapshots, sessionId, next),
-          queuedRunStatus: reconcileQueuedRunStatus(state.queuedRunStatus, sessionId, page.queued_turns),
+          queuedRunStatus: reconcileQueuedRunStatus(state.queuedRunStatus, sessionId, next.queuedTurns),
           sessions: state.sessions.map(value => value.id === sessionId ? reconciledSession : value),
           loadingSessionId: null,
           syncSessionId: sessionId,
@@ -2032,6 +2038,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         files,
         filesTotal: files.length,
         hasMore: older.has_more,
+        historyRevision: incomingSession.history_revision ?? null,
         total: Math.max(older.total ?? 0, newer.total ?? 0) || null,
         latestSeq: Math.max(
           older.latest_seq ?? 0,
@@ -2597,10 +2604,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (chatReferences.some(reference => reference.action === 'route' && reference.grant_intent === true)) {
         void get().refreshAgentRoutes(sessionId, expectedGeneration)
       }
-      const currentSessionAfterSend = stateAfterSend.sessions.find(value => value.id === sessionId)
+      // A receipt the socket overtook, or one for a turn this client already saw stop, is not new
+      // activity: it enters the live path only when it is newer than everything observed so far.
       const locallyObservedSeq = Math.max(
-        stateAfterSend.snapshots[sessionId]?.latestSeq ?? 0,
-        currentSessionAfterSend?.latest_event_seq ?? 0,
+        snapshotLatestSeq(stateAfterSend.snapshots[sessionId]),
+        stateAfterSend.sessions.find(value => value.id === sessionId)?.latest_event_seq ?? 0,
       )
       const sentFileIds = new Set(files.map(file => file.id))
       set(state => ({
@@ -3080,7 +3088,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!connectionIsCurrent(scope)) return false
       set(current => {
         const previous = current.snapshots[sessionId]
-        const rewound = previous ? rewindSnapshot(previous, result.from_seq, result.through_seq) : undefined
+        const rewound = previous ? ingestSnapshot(previous, { rewound: [result] }) : undefined
         if (rewound && rewound !== previous) scheduleLiveSnapshotSave(scope, rewound, true)
         return {
           ...(rewound && rewound !== previous ? { snapshots: snapshotMapWith(current.snapshots, sessionId, rewound) } : {}),
@@ -3110,7 +3118,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!connectionIsCurrent(scope)) return false
       set(current => {
         const previous = current.snapshots[sessionId]
-        const rewound = previous ? result.removed.reduce((snapshot, range) => rewindSnapshot(snapshot, range.from_seq, range.through_seq), previous) : undefined
+        const rewound = previous ? ingestSnapshot(previous, { rewound: result.removed }) : undefined
         if (rewound && rewound !== previous) scheduleLiveSnapshotSave(scope, rewound, true)
         return rewound && rewound !== previous ? { snapshots: snapshotMapWith(current.snapshots, sessionId, rewound) } : {}
       })
@@ -4950,7 +4958,6 @@ function applyLiveEvent(scope: ConnectionScope, event: Event, set: (value: Parti
   if (event.type === 'turn_started') unconfirmedTurnRequests.delete(`${scope.profileId}:${sessionId}`)
   // Subagent state has its own slice; the timeline path below drops it as internal.
   if (event.type === 'subagent_state') set(state => ({ subagentsBySession: withSubagentStates(state.subagentsBySession, sessionId, [event]) }))
-  const timelineInternal = TIMELINE_INTERNAL_EVENT_TYPES.has(event.type)
   const nativeSteerSupersession = isNativeSteerSupersession(event)
   const terminalEvent = ['turn_finished', 'turn_stopped', 'error'].includes(event.type) && !nativeSteerSupersession
   if (event.type === 'turn_started' || event.type === 'process_started' || terminalEvent) {
@@ -4992,34 +4999,12 @@ function applyLiveEvent(scope: ConnectionScope, event: Event, set: (value: Parti
       lastTimelineSyncAt: Date.now(),
     } : {}
     if (!snapshot) return { activeSessionIds: active, sessions, profiles, ...selectedSync }
-    const queuedTurns = updateQueuedTurns(snapshot.queuedTurns, event)
-    const queuedRunStatus = queuedRunStatusForEvent(state.queuedRunStatus, sessionId, queuedTurns, event)
-    // Queue, job and subagent bookkeeping must still update their dedicated
-    // projections, but storing those packets as transcript events invalidates
-    // every long-chat row and makes live scrolling stutter. If an internal
-    // event did not alter the queue, keep the snapshot reference stable.
-    if (timelineInternal && queuedTurns === snapshot.queuedTurns) {
-      return { queuedRunStatus, activeSessionIds: active, sessions, profiles, ...selectedSync }
-    }
-    // A history_rewound tombstone removes its closed range from the retained
-    // window before the tombstone itself is appended.
-    const rewound = event.type === 'history_rewound' ? rewindSnapshot(snapshot, event.from_seq, event.through_seq) : snapshot
-    const mergedEvents = timelineInternal ? snapshot.events : mergeEvents(rewound.events, [event])
-    const boundedEvents = boundLiveTimelineEvents(mergedEvents)
-    const next: Snapshot = {
-      ...rewound,
-      events: boundedEvents,
-      files: timelineInternal ? snapshot.files : mergeFiles(snapshot.files, filesFromEvents([event])),
-      queuedTurns,
-      hasMore: snapshot.hasMore || (!timelineInternal && liveTimelineEventsWereTrimmed(mergedEvents, boundedEvents)),
-      latestSeq: Math.max(snapshot.latestSeq ?? 0, event.seq),
-      cachedAt: Date.now(),
-    }
-    scheduleLiveSnapshotSave(
-      scope,
-      next,
-      terminalEvent || rewound !== snapshot,
-    )
+    const next = ingestSnapshot(snapshot, { events: [event] })
+    const queuedRunStatus = queuedRunStatusForEvent(state.queuedRunStatus, sessionId, next.queuedTurns, event)
+    // Queue, job and subagent bookkeeping update their own projections; an event that left the
+    // snapshot untouched keeps its reference stable so long chats do not re-render.
+    if (next === snapshot) return { queuedRunStatus, activeSessionIds: active, sessions, profiles, ...selectedSync }
+    scheduleLiveSnapshotSave(scope, next, terminalEvent || event.type === 'history_rewound')
     return {
       snapshots: snapshotMapWith(state.snapshots, sessionId, next),
       queuedRunStatus,
@@ -5138,22 +5123,80 @@ function scheduleJobsRefresh(scope: ConnectionScope, get: () => AppState): void 
 }
 
 /** Store mirror of a server history rewind; returns `snapshot` itself when no retained event is in range. */
-function rewindSnapshot(snapshot: Snapshot, fromSeq: number | null | undefined, throughSeq: number | null | undefined): Snapshot {
-  if (!Number.isSafeInteger(fromSeq) || !Number.isSafeInteger(throughSeq)) return snapshot
-  const events = snapshot.events.filter(event => event.seq < fromSeq! || event.seq > throughSeq!)
-  // The server deletes files published by the removed turns. refreshFiles merges
-  // pages into the retained list rather than replacing it, so drop them here.
-  const files = snapshot.files.filter(file => {
-    const seq = file.seq ?? file.event_seq
-    return seq == null || seq < fromSeq! || seq > throughSeq!
-  })
-  if (events.length === snapshot.events.length && files.length === snapshot.files.length) return snapshot
+interface SnapshotIngest {
+  /** Events from any source: a socket delivery, a catch-up page, a send receipt. Internal types fold into the queue but are not stored as rows. */
+  events?: readonly Event[]
+  /** A server page's queue, current as of the page's latest sequence; newer events fold on top. */
+  queue?: { turns: QueuedTurn[]; asOfSeq: number }
+  /** Ranges a rewind or reload removed, learned from the request's result before the tombstone arrives. */
+  rewound?: ReadonlyArray<{ from_seq?: number | null; through_seq?: number | null; history_revision?: number | null }>
+}
+
+/**
+ * The one way events enter a chat's snapshot. Every source feeds this reducer and it derives
+ * the rest: no row or file survives inside a tombstone range either side knows; the queue folds
+ * only events newer than the sequence it is current for, so a receipt the socket overtook cannot
+ * resurrect a consumed queued turn; a row contributes its file only when newer than the shown
+ * tail; the live budget bounds the rows and a pruned range never counts as tail eviction; the
+ * server's history revision is remembered from every tombstone seen.
+ */
+function ingestSnapshot(snapshot: Snapshot, input: SnapshotIngest): Snapshot {
+  const incoming = [...(input.events ?? [])].sort((a, b) => a.seq - b.seq)
+  const knownTail = snapshotLatestSeq(snapshot)
+  const rows = incoming.filter(event => !TIMELINE_INTERNAL_EVENT_TYPES.has(event.type))
+  const merged = rows.length ? mergeEvents(snapshot.events, rows) : snapshot.events
+  const ranges: Array<[number, number]> = []
+  let historyRevision = snapshot.historyRevision
+  for (const source of [...merged.filter(event => event.type === 'history_rewound'), ...(input.rewound ?? [])]) {
+    if (!Number.isSafeInteger(source.from_seq) || !Number.isSafeInteger(source.through_seq)) continue
+    ranges.push([source.from_seq!, source.through_seq!])
+    if (Number.isSafeInteger(source.history_revision)) historyRevision = Math.max(historyRevision ?? 0, source.history_revision!)
+  }
+  const inRange = (seq: number) => ranges.some(([from, through]) => seq >= from && seq <= through)
+  const kept = ranges.length ? merged.filter(event => !inRange(event.seq)) : merged
+  const events = boundLiveTimelineEvents(kept)
+  const eventsChanged = events.length !== snapshot.events.length || events.some((event, index) => event !== snapshot.events[index])
+  const trimmed = liveTimelineEventsWereTrimmed(kept, events)
+
+  const carried = filesFromEvents(rows.filter(event => event.seq > knownTail))
+  const mergedFiles = carried.length ? mergeFiles(snapshot.files, carried) : snapshot.files
+  const keptFiles = ranges.length
+    ? mergedFiles.filter(file => { const seq = file.seq ?? file.event_seq; return seq == null || !inRange(seq) })
+    : mergedFiles
+  const files = keptFiles.length === mergedFiles.length ? mergedFiles : keptFiles
+
+  // Internal packets fold into the queue but advance the snapshot only when they changed it, so
+  // bookkeeping bursts (jobs, subagents, queue snapshots) leave a long chat's snapshot untouched.
+  const base = input.queue ?? { turns: snapshot.queuedTurns, asOfSeq: snapshot.queuedAsOfSeq ?? knownTail }
+  let queuedTurns = base.turns
+  let queuedAsOfSeq = base.asOfSeq
+  let latestSeq = snapshot.latestSeq
+  for (const event of incoming) {
+    const stored = !TIMELINE_INTERNAL_EVENT_TYPES.has(event.type)
+    if (event.seq > queuedAsOfSeq) {
+      const folded = updateQueuedTurns(queuedTurns, event)
+      if (stored || folded !== queuedTurns) queuedAsOfSeq = event.seq
+      if (stored || folded !== queuedTurns) latestSeq = Math.max(latestSeq ?? 0, event.seq)
+      queuedTurns = folded
+    } else if (stored) {
+      latestSeq = Math.max(latestSeq ?? 0, event.seq)
+    }
+  }
+
+  const removedRows = ranges.length ? snapshot.events.filter(event => inRange(event.seq)).length : 0
+  const total = removedRows && snapshot.total != null ? Math.max(0, snapshot.total - removedRows) : snapshot.total
+  const filesTotal = Math.max(files.length, snapshot.filesTotal - (mergedFiles.length - files.length))
+  const hasMore = snapshot.hasMore || trimmed
+  if (
+    !eventsChanged && files === snapshot.files && queuedTurns === snapshot.queuedTurns
+    && queuedAsOfSeq === (snapshot.queuedAsOfSeq ?? knownTail) && hasMore === snapshot.hasMore
+    && latestSeq === snapshot.latestSeq && total === snapshot.total && filesTotal === snapshot.filesTotal
+    && historyRevision === snapshot.historyRevision
+  ) return snapshot
   return {
     ...snapshot,
-    events,
-    files,
-    filesTotal: Math.max(files.length, snapshot.filesTotal - (snapshot.files.length - files.length)),
-    total: snapshot.total == null ? snapshot.total : Math.max(0, snapshot.total - (snapshot.events.length - events.length)),
+    events: eventsChanged ? events : snapshot.events,
+    files, filesTotal, queuedTurns, queuedAsOfSeq, hasMore, latestSeq, total, historyRevision,
     cachedAt: Date.now(),
   }
 }

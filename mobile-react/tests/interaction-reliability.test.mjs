@@ -186,8 +186,10 @@ test('server bookkeeping packets update projections without churning the residen
     'job_deleted',
     'claude_subagents_stopped',
   ]) assert.match(store, new RegExp(`'${type}'`))
-  assert.match(store, /if \(timelineInternal && queuedTurns === snapshot\.queuedTurns\)/)
-  assert.match(store, /const mergedEvents = timelineInternal \? snapshot\.events : mergeEvents/)
+  // Internal packets fold into the queue inside the one snapshot reducer but are never stored as rows,
+  // and a packet that changed nothing keeps the snapshot reference stable.
+  assert.match(store, /const rows = incoming\.filter\(event => !TIMELINE_INTERNAL_EVENT_TYPES\.has\(event\.type\)\)/)
+  assert.match(store, /if \(next === snapshot\) return \{ queuedRunStatus, activeSessionIds: active, sessions, profiles, \.\.\.selectedSync \}/)
   // Job events arrive in bursts; the jobs list is re-read once per quiet burst, not per event.
   assert.match(store, /if \(event\.type\.startsWith\('job_'\)\) scheduleJobsRefresh\(scope, get\)/)
   assert.match(store, /if \(connectionIsCurrent\(scope\)\) void get\(\)\.refreshJobs\(\)/)

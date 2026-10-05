@@ -841,6 +841,7 @@ describe('multi-server cache foundations', () => {
     ])
     expect(value.viewState(target, chat.id)).toEqual(expect.objectContaining({ updatedAt: 42 }))
     expect(value.timelineState(target, chat.id)).toEqual({
+      historyRevision: null,
       hasMore: true,
       verifiedLatestSeq: 3,
       knownTotal: 10,

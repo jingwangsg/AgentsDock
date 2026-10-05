@@ -143,6 +143,8 @@ class SessionRewindTests(RewindFixture):
         self.assertEqual(tombstone["type"], "history_rewound")
         self.assertEqual({key: tombstone[key] for key in ("from_seq", "through_seq", "to_run_id", "removed_events", "provider_rewind")},
                          {"from_seq": 8, "through_seq": 10, "to_run_id": "third", "removed_events": 3, "provider_rewind": "claude_fork"})
+        # The tombstone carries the revision it produced; the detail session reports the same.
+        self.assertEqual((tombstone["history_revision"], sess["history_revision"], result["session"]["history_revision"]), (1, 1, 1))
         self.assertEqual(server.HUB.broadcast.await_args.args[1]["type"], "history_rewound")
         self.assertEqual(sess["latest_event_seq"], 11)
         self.assertEqual(sess["latest_event_type"], "history_rewound")

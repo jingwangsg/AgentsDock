@@ -67,7 +67,8 @@ test('a rewind carries the reverted-output counts and refreshes the files list',
   assert.match(types, /outputs_reverted\?: \{ canvases: number; artifacts: number \} \| null/)
   const rewind = store.slice(store.indexOf('  async rewindSession(sessionId, runId, expectedGeneration, toSeq) {'), store.indexOf('  async restoreCheckpoint('))
   assert.match(rewind, /void get\(\)\.refreshSessions\(scope\.generation\)\s+void get\(\)\.refreshFiles\(sessionId, false, scope\.generation\)/)
-  const rewindSnapshot = store.slice(store.indexOf('function rewindSnapshot('), store.indexOf('function sessionBusyForRewind('))
-  assert.match(rewindSnapshot, /const files = snapshot\.files\.filter\(file => \{\s+const seq = file\.seq \?\? file\.event_seq\s+return seq == null \|\| seq < fromSeq! \|\| seq > throughSeq!/)
+  // Every snapshot change goes through one reducer; the files of a rewound range leave there.
+  const ingest = store.slice(store.indexOf('function ingestSnapshot('), store.indexOf('function sessionBusyForRewind('))
+  assert.match(ingest, /mergedFiles\.filter\(file => \{ const seq = file\.seq \?\? file\.event_seq; return seq == null \|\| !inRange\(seq\) \}\)/)
   assert.match(store, /get\(\)\.rewindSession\(sessionId, runId, scope\.generation\)/, 'restoreCheckpoint funnels through rewindSession and inherits the refresh')
 })

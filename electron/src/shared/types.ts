@@ -485,6 +485,8 @@ export interface Session {
   latest_event_seq?: number | null
   latest_event_at?: string | null
   latest_event_type?: string | null
+  /** Count of history rewinds on the server; every `history_rewound` tombstone carries the value it produced. */
+  history_revision?: number | null
   latest_agent_event_seq?: number | null
   latest_agent_event_at?: string | null
   latest_agent_event_type?: string | null
@@ -1210,6 +1212,7 @@ export interface Event extends SharedChatAttribution {
   /** `history_rewound` tombstone: the removed closed sequence range and its provider action. */
   from_seq?: number | null
   through_seq?: number | null
+  history_revision?: number | null
   to_run_id?: string | null
   removed_events?: number | null
   provider_rewind?: string | null
@@ -2048,6 +2051,8 @@ export interface ProfileTimelineEvent extends ProfileEventContext {
   snapshot: SessionSnapshot
   source: 'cache' | 'server'
   mode?: 'merge' | 'replace'
+  /** The cached window proved stale (history revision behind the server): adopt this snapshot whole, older paged rows included. */
+  authoritative?: boolean
 }
 export interface ProfileTerminalDataEvent extends ProfileEventContext { sessionId: string; data: string }
 export interface ProfileTerminalStateEvent extends ProfileEventContext {
@@ -2458,6 +2463,8 @@ export interface SessionSnapshot {
   generation?: number
   /** Renderer-only epoch for a genuinely disjoint authoritative timeline replacement. */
   timelineListGeneration?: number
+  /** The sequence the queue list is current for (a server page's latest sequence); only newer rows fold into it. */
+  queuedAsOfSeq?: number
   /** Renderer-only provider reasoning channels; never part of the durable event/cache cursor. */
   reasoningStream?: ReasoningSummaryStreamSnapshot
 }

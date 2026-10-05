@@ -1,5 +1,55 @@
 # Public development log
 
+## 2026-10-05 — One event path per client, and a server history revision that proves a cache saw every rewind (desktop package 99, Android build 47, server)
+
+- The two fixes in package 98 (ghost rows after a rewind done while the chat
+  was closed; a queued message resurrected by a late send receipt) were both
+  instances of one weakness: each client applied events through several paths
+  (socket batch, catch-up page, HTTP receipt, local rewind result, older page),
+  each with its own bookkeeping, so a mutation handled on one path could be
+  missed on another. This change removes the per-path bookkeeping.
+- Desktop renderer: every path now feeds one reducer. Rows merge by id; no row
+  or file survives inside a tombstone range either side knows; the queue folds
+  only rows newer than the sequence it is current for (a page's queue is
+  current as of the page's latest sequence, so a receipt the socket already
+  passed cannot re-add a consumed queued turn); a row contributes its file only
+  when it is newer than the shown tail; the projection generations advance
+  only when retained rows change. Desktop main process: one cache ingestion
+  for streamed batches, receipts, catch-up, first-open and refresh windows and
+  older pages. Rows persist, a tombstone prunes its range even when the row
+  write failed, derived caches take only rows newer than the tail, and a
+  rewind arriving on the socket reaches the cache at once. Android: the same
+  reducer for its snapshot; bookkeeping packets fold into the queue without
+  touching a long chat's snapshot unless they changed it.
+- The server now keeps a history revision per chat, raised by every rewind and
+  history reload and stamped on each tombstone; detail sessions report it.
+  Clients record the revision their cache has reached. On reopen, a server
+  revision beyond what the catch-up page's tombstones reach means a deletion
+  the cache never saw: the window is rebuilt from the server and older paged
+  rows are dropped (the desktop logs "cached history revision behind the
+  server"). A one-time desktop cache migration settles tombstones older builds
+  stored without applying them.
+- Verified with the desktop suite (5215 tests; the two files that cannot bundle
+  node:sqlite still fail as before), the Android store and contract suites
+  (five pre-existing failures unchanged), the server rewind and reload tests,
+  and two review passes. Real transport, desktop: an isolated AgentsServer and
+  the built app driven over CDP. Three Claude turns were cached, the app was
+  quit, the third turn rewound and a fourth added on the server; the relaunch
+  showed the first two turns, "Rewound to here" and the fourth, with no trace
+  of the removed one and no safety-net replacement. The SQLite cache was then
+  forged (removed rows re-inserted, revision reset): the next launch logged the
+  revision gap, replaced the window, and left zero forged rows. Real transport,
+  Android: build 47 on the emulator against the same kind of server; the chat
+  was opened, the app sent to the background, a rewind and a new turn made on
+  the server; the foregrounded chat showed "Rewound To Here" and the new turn
+  and not the removed one (screenshots; the timeline text is not in the
+  accessibility tree, so that check is visual). The remotes nv_l40, oci_dev,
+  oci_herorun and nv_gb300 run the new server; the hub still needs its restart,
+  which ends the chat run that issues it and was left to the operator.
+  Package 99 (`AgentsDock-0.2.0-99-mac-arm64.pkg`) and build 47
+  (`AgentsDock-0.1.1-47-sideload.apk`) were attached to the working chat.
+  Availability: local package.
+
 ## 2026-10-05 — A rewind done elsewhere no longer leaves ghost turns, and a send receipt no longer resurrects a queued message (desktop package 98, Android build 46)
 
 - A turn rewound from another device while a chat was closed here came
