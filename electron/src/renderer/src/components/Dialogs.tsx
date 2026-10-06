@@ -4224,7 +4224,7 @@ export function JobDialog() {
     wasOpenRef.current = open
   }, [open])
   const supportsIndependentRuns = supportedContextModes?.includes('standalone') === true || editing?.context_mode === 'standalone'
-  const standaloneRunsOpenNewChat = health?.capabilities?.scheduled_jobs?.features?.standalone_runs_open_new_chat === true
+  const standaloneRunsOpenNewChatWhenBusy = health?.capabilities?.scheduled_jobs?.features?.standalone_runs_open_new_chat_when_busy === true
   const preservesChatReferences = scheduledJobChatReferencesAvailable(health)
     || Boolean(editing?.chat_references?.length)
     || chatReferences.length > 0
@@ -4488,7 +4488,7 @@ export function JobDialog() {
           && <small id="job-opencode-runtime-help" className="runtime-option-help">{opencodeBackendUnavailableReason(health, catalog)}</small>}</fieldset>
       <fieldset className="job-context-fieldset"><legend>{t("ui.Dialogs.JobDialog.run_context_20887b3")}</legend><div className={`job-context-picker${supportsIndependentRuns ? '' : ' single'}`} role="group" aria-label={t("ui.Dialogs.JobDialog.run_context_20887b3")}>
         <button type="button" className={contextMode === 'chat' ? 'active' : ''} aria-pressed={contextMode === 'chat'} onClick={() => selectContextMode('chat')}><strong>{t("ui.Dialogs.JobDialog.continue_in_this_chat_eed3ae3")}</strong><small>{t("ui.Dialogs.JobDialog.use_this_chat_s_existing_context_and_add_e_d7db2e4")}</small></button>
-        {supportsIndependentRuns && <button type="button" className={contextMode === 'standalone' ? 'active' : ''} aria-pressed={contextMode === 'standalone'} onClick={() => selectContextMode('standalone')}><strong>{t("ui.Dialogs.JobDialog.independent_runs_3d32d40")}</strong><small>{t(standaloneRunsOpenNewChat ? 'ui.job.independentNewChatHelp' : 'ui.job.independentHelp', { backend: backendLabel(backend, backend === session?.backend ? session.codex_provider : undefined) })}</small></button>}
+        {supportsIndependentRuns && <button type="button" className={contextMode === 'standalone' ? 'active' : ''} aria-pressed={contextMode === 'standalone'} onClick={() => selectContextMode('standalone')}><strong>{t("ui.Dialogs.JobDialog.independent_runs_3d32d40")}</strong><small>{t(standaloneRunsOpenNewChatWhenBusy ? 'ui.job.independentNewChatHelp' : 'ui.job.independentHelp', { backend: backendLabel(backend, backend === session?.backend ? session.codex_provider : undefined) })}</small></button>}
       </div>{!supportsIndependentRuns && <small className="job-context-unavailable">{t("ui.Dialogs.JobDialog.update_agentsserver_to_add_independent_run_6138641")}</small>}</fieldset>
       {runtimeError && <small className="schedule-validation error" role="alert">{runtimeError}{enabled ? t("ui.Dialogs.JobDialog.pause_this_job_or_choose_an_available_runt_1d574aa") : ''}</small>}
       <fieldset className="schedule-builder"><legend>{t("ui.Dialogs.JobDialog.schedule_f4830a1")}</legend><div className="segmented schedule-kind">{(['interval', 'cron', 'rrule'] as JobScheduleKind[]).map(kind => <button type="button" key={kind} className={scheduleKind === kind ? 'active' : ''} aria-pressed={scheduleKind === kind} onClick={() => setScheduleKind(kind)}>{kind === 'rrule' ? 'RRULE' : kind[0].toUpperCase() + kind.slice(1)}</button>)}</div>

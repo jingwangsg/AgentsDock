@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-07 — A standalone scheduled job opens a run chat only while its chat is busy, and that chat is archived when the run ends (server + desktop package 107)
+
+- Since package 105 every run of an independent (standalone) job started a
+  new chat, whether or not the job's chat was busy, and the run chats stayed
+  in the chat list as ordinary chats: a job that runs every 30 minutes added
+  a chat per run. The change had announced the new chat for a busy parent only.
+- An independent run now opens its own chat only while the job's chat is
+  busy (a running turn, Stop cleanup or provider maintenance). An idle chat
+  hosts the run itself with a fresh provider context, as before package 105.
+  When a run that opened its own chat ends, the server archives that chat
+  unless a follow-up is already queued there, so finished runs leave the chat
+  list; the parent's job card keeps the result and its "Open run chat" link,
+  which opens the archived chat. Restart recovery looks for the admitted
+  occurrence in the parent chat first and in the newest run chat otherwise.
+  The capability is now `standalone_runs_open_new_chat_when_busy`; the job
+  dialog describes the behaviour from it, and older desktops fall back to
+  the generic independent-runs text.
+- Verified with the updated server regressions (idle parent hosts the run,
+  busy parent opens the run chat, archive on finish and on stop, no archive
+  with a queued follow-up, an archive failure keeps the report, two-pass
+  restart recovery; the standalone-chat, job schedule and update endpoint
+  modules pass except one endpoint test that reads the real host's free
+  memory and fails on this machine below 4 GiB free), the desktop type check,
+  and the job dialog and localization tests (89 pass with a longer per-test
+  timeout on this loaded machine). Accepted against an isolated server with
+  the real Codex provider: a manual run on an idle parent was admitted in the
+  parent and created no chat; while the parent ran a 90-second command, the
+  next manual run opened a run chat with the job marker, folder and
+  directory, the parent card closed with the result, and the run chat was
+  archived within a second, with the parent left unarchived. Package 107
+  carries the desktop part; the server part was deployed to the user's remote
+  server on request.
+
 ## 2026-10-06 — A terminal tab shown while it is still connecting gets its visible size (desktop package 106)
 
 - A terminal tab could run its shell at 80 columns inside a much wider view.

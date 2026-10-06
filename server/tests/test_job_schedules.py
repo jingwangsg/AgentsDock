@@ -1075,6 +1075,13 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
                         "create",
                         AsyncMock(return_value={"id": "run_chat"}),
                     ),
+                    # A standalone run opens its own chat only while the
+                    # parent is busy.
+                    patch.object(
+                        agent_server,
+                        "BUSY_SESSIONS",
+                        {"source"} if context_mode == "standalone" else set(),
+                    ),
                     patch.object(agent_server, "AGENT_TOKEN", "test-token"),
                     patch.object(
                         agent_server,
@@ -1106,9 +1113,9 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
                         start_turn.await_args.args[0],
                         "source" if context_mode == "chat" else "run_chat",
                     )
-                    self.assertNotIn(
-                        "provider_context_mode",
-                        start_turn.await_args.kwargs,
+                    self.assertEqual(
+                        start_turn.await_args.kwargs["provider_context_mode"],
+                        "chat",
                     )
                     self.assertEqual(
                         start_turn.await_args.kwargs[
@@ -4207,6 +4214,13 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
                         "create",
                         AsyncMock(return_value={"id": "sess_run"}),
                     ),
+                    # A standalone run opens its own chat only while the
+                    # parent is busy.
+                    patch.object(
+                        agent_server,
+                        "BUSY_SESSIONS",
+                        {"sess_context"} if stored_mode == "standalone" else set(),
+                    ),
                     patch.object(store, "mark_ran", new_callable=AsyncMock),
                     patch.object(agent_server, "append_event", events),
                 ):
@@ -4269,6 +4283,7 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
                 with (
                     patch.object(agent_server, "start_turn", start_turn),
                     patch.object(agent_server.STORE, "create", create),
+                    patch.object(agent_server, "BUSY_SESSIONS", {"sess_legacy_codex"}),
                     patch.object(store, "mark_ran", new_callable=AsyncMock),
                     patch.object(agent_server, "append_event", events),
                 ):

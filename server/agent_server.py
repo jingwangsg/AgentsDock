@@ -12150,8 +12150,12 @@ class JobStore:
                 job_id: dict(job)
                 for job_id, job in self.jobs.items()
             }
-        # A standalone occurrence is admitted in the newest chat started for
-        # its job, not in the chat that owns the job.
+        admissions = await asyncio.to_thread(
+            durable_scheduled_job_admissions,
+            snapshot,
+        )
+        # A standalone occurrence admitted while its parent was busy lives in
+        # the newest chat started for its job, not in the chat that owns it.
         newest_run_chat: dict[str, tuple[str, str]] = {}
         for run_session_id, session in list(STORE.sessions.items()):
             marker = session.get("scheduled_job_run")
@@ -12159,13 +12163,18 @@ class JobStore:
             created_at = str(session.get("created_at") or "")
             if job_id and created_at >= newest_run_chat.get(job_id, ("", ""))[0]:
                 newest_run_chat[job_id] = (created_at, run_session_id)
-        for job_id, job in snapshot.items():
-            if job_context_mode(job) == "standalone" and job_id in newest_run_chat:
-                job["session_id"] = newest_run_chat[job_id][1]
-        admissions = await asyncio.to_thread(
-            durable_scheduled_job_admissions,
-            snapshot,
-        )
+        in_run_chats = {
+            job_id: {**job, "session_id": newest_run_chat[job_id][1]}
+            for job_id, job in snapshot.items()
+            if job_id not in admissions
+            and job_context_mode(job) == "standalone"
+            and job_id in newest_run_chat
+        }
+        if in_run_chats:
+            admissions.update(await asyncio.to_thread(
+                durable_scheduled_job_admissions,
+                in_run_chats,
+            ))
         recovered = 0
         for job_id in sorted(admissions):
             event = admissions[job_id]
@@ -13384,10 +13393,20 @@ class JobStore:
             )
             context_mode = job_context_mode(job)
             run_session_id = session_id
+            parent_busy = False
             if context_mode == "standalone":
-                # Like a Codex cron automation, each standalone run starts a
-                # new chat with the parent's settings, so it never waits for
-                # the parent's turn and the user can continue it afterwards.
+                async with ACTIVE_LOCK:
+                    parent_busy = (
+                        session_id in BUSY_SESSIONS
+                        or session_id in SERVER_MAINTENANCE_SESSIONS
+                        or stop_cleanup_in_progress(session_id)
+                    )
+            if parent_busy:
+                # The run has its own provider thread, so a busy parent must
+                # not hold it: like a Codex cron automation it starts a new
+                # chat with the parent's settings, which the user can continue
+                # afterwards. An idle parent hosts the run itself. The run
+                # chat is archived when the run ends (report_standalone_job_run).
                 parent = parent_session or {}
                 parent_backend = str(parent.get("backend") or DEFAULT_BACKEND)
                 run_backend = str(job.get("backend") or parent_backend)
@@ -13411,6 +13430,11 @@ class JobStore:
                     run_session_id,
                     req,
                     queue_if_busy=False,
+                    # A run hosted by the parent keeps its own provider
+                    # context; a run chat is fresh already.
+                    provider_context_mode=(
+                        context_mode if run_session_id == session_id else "chat"
+                    ),
                     scheduled_job_owner_session_id=session_id,
                     scheduled_job_chat_references=True,
                     scheduled_job_revision=job_revision,
@@ -46875,10 +46899,11 @@ async def finalize_cross_chat_terminal(event: dict[str, Any]) -> None:
 
 
 async def report_standalone_job_run(session_id: str, event: dict[str, Any]) -> None:
-    """Close the owning chat's job card when a standalone run ends.
+    """Close the owning chat's job card and archive the run chat when a
+    standalone run that opened its own chat ends.
 
-    The run executes in a chat of its own; the chat that scheduled the job
-    receives its outcome here so its card does not stay "running".
+    The chat that scheduled the job receives the outcome here so its card
+    does not stay "running"; the run chat then leaves the chat list.
     """
 
     marker = (STORE.sessions.get(session_id) or {}).get("scheduled_job_run")
@@ -46916,6 +46941,23 @@ async def report_standalone_job_run(session_id: str, event: dict[str, Any]) -> N
             "could not report standalone job run session=%s run=%s: %s",
             session_id,
             event.get("run_id"),
+            concise_error_message(exc),
+        )
+    # The parent card carries the outcome; archiving keeps finished runs out
+    # of the chat list. A follow-up the user already queued in the run chat
+    # keeps it open, because archived chats cannot start turns.
+    if (
+        (STORE.sessions.get(session_id) or {}).get("archived")
+        or QUEUED_TURNS.get(session_id)
+        or RUN_NOW_TURNS.get(session_id)
+    ):
+        return
+    try:
+        await update_session(session_id, UpdateSessionRequest(archived=True))
+    except Exception as exc:
+        logger.warning(
+            "could not archive finished standalone job run chat session=%s: %s",
+            session_id,
             concise_error_message(exc),
         )
 
@@ -53528,8 +53570,9 @@ async def scheduled_job_blocker(
         ).strip().lower()
         if CODEX_GOALS_RECONFIGURING and backend == BACKEND_CODEX:
             return "wait for Codex goals configuration to finish"
-        # A standalone run starts its own chat (like a Codex cron automation
-        # starts its own thread), so this chat's turn cannot hold it back.
+        # A standalone run has its own provider thread; when this chat is
+        # busy it starts its own chat (like a Codex cron automation starts
+        # its own thread), so this chat's turn cannot hold it back.
         if not standalone:
             if session_id in SERVER_MAINTENANCE_SESSIONS:
                 return (
@@ -83792,7 +83835,7 @@ async def health() -> dict[str, Any]:
                     "route_hint_mentions": True,
                     "next_run_reset": True,
                     "interval_next_run_reanchors": True,
-                    "standalone_runs_open_new_chat": True,
+                    "standalone_runs_open_new_chat_when_busy": True,
                 },
             },
             "provider_jobs_access_control_v1": {

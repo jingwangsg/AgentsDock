@@ -1472,7 +1472,7 @@ export interface ScheduledJobsCapability extends ServerCapability {
     direct_message_mentions?: boolean
     route_mentions?: boolean
     route_hint_mentions?: boolean
-    standalone_runs_open_new_chat?: boolean
+    standalone_runs_open_new_chat_when_busy?: boolean
     [key: string]: JsonValue | undefined
   }
 }

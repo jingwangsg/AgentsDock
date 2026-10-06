@@ -2151,7 +2151,7 @@
   "ui.import.selectedCounts": "已选择 {selected}/{count}",
   "ui.inspector.recordCount": "{count} 条记录",
   "ui.job.independentHelp": "每次运行都使用全新的 {backend} 上下文。结果仍会显示在此会话中。",
-  "ui.job.independentNewChatHelp": "每次运行新建一个会话，使用全新的 {backend} 上下文。此会话会收到结果和链接。",
+  "ui.job.independentNewChatHelp": "每次运行使用全新的 {backend} 上下文。此会话忙时，运行会在新会话中进行，结束后自动归档；此会话会收到结果和链接。",
   "ui.permission.unavailable": "权限不可用",
   "ui.restart.forceWarning": " 正在进行的轮次、未持久保存的队列轮次、终端、隧道及 agents-server.service 内的任何进程都可能被终止。Teamspace 会短暂断开。已保存的会话和持久历史记录会保留。当前配置为“{name}”，已通过身份验证的服务端控制端点为 {url}。必须使用该控制端点；Teamspace 直连 IP 路由不能作为独立的重启通道。",
   "ui.server.unreadMany": "{count} 个未读会话",

@@ -1049,12 +1049,16 @@ skipped, and ambiguous fall-back times run once.
 
 A job's `context_mode` follows the two kinds of Codex automation. `chat` (a
 heartbeat) runs in the job's chat and waits while that chat runs a turn; the
-wait posts no timeline card. `standalone` (a cron automation) starts a new
-chat for every run with the parent chat's folder, working directory and
+wait posts no timeline card. `standalone` runs with a fresh provider context
+in the job's chat while that chat is idle. While the chat is busy (a running
+turn, Stop cleanup or provider maintenance) the run starts a new chat instead,
+like a cron automation, with the parent chat's folder, working directory and
 settings (the job's backend when it differs), so a busy parent never delays
 it. The run chat carries `scheduled_job_run: {job_id, session_id}`; the
 parent's `job_ran` and closing `job_finished` events carry `run_session_id`.
-Clients detect this through `scheduled_jobs.features.standalone_runs_open_new_chat`.
+When such a run ends, the server archives the run chat unless a follow-up is
+already queued there. Clients detect this through
+`scheduled_jobs.features.standalone_runs_open_new_chat_when_busy`.
 
 Interval schedules are capped at ten years. RRULE `COUNT` is capped at 10,000,
 and leap-second `BYSECOND=60` is rejected because the runtime clock cannot

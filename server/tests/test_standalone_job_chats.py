@@ -1,12 +1,14 @@
-"""Standalone scheduled jobs run in their own chat, like Codex cron automations.
+"""Standalone scheduled jobs run in their own chat while the parent is busy.
 
 Regression for a standalone job that never ran while its parent chat held a
 days-long goal: the per-chat busy check deferred it every minute and posted a
-DEFERRED card each time.
+DEFERRED card each time. The run chat is archived when the run ends, and an
+idle parent hosts the run itself.
 """
 import asyncio
 import json
 import unittest
+from collections import deque
 from unittest.mock import AsyncMock, Mock, patch
 
 import agent_server
@@ -110,7 +112,7 @@ class StandaloneRunChatTests(unittest.IsolatedAsyncioTestCase):
         run_chat_id = start_turn.await_args.args[0]
         self.assertNotEqual(run_chat_id, PARENT)
         self.assertEqual(start_turn.await_args.kwargs["scheduled_job_owner_session_id"], PARENT)
-        self.assertNotIn("provider_context_mode", start_turn.await_args.kwargs)
+        self.assertEqual(start_turn.await_args.kwargs["provider_context_mode"], "chat")
         run_chat = sessions[run_chat_id]
         self.assertEqual(
             {key: run_chat[key] for key in ("title", "folder", "cwd", "backend", "model", "effort", "system_prompt")},
@@ -134,6 +136,31 @@ class StandaloneRunChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ran[0][2]["run_session_id"], run_chat_id)
         self.assertEqual(ran[0][2]["run_id"], "run_standalone")
 
+    async def test_idle_parent_hosts_the_standalone_run_itself(self) -> None:
+        store = agent_server.JobStore()
+        store.jobs = {"job_standalone": due_job("job_standalone", "standalone")}
+        sessions = {PARENT: parent_session()}
+        start_turn = AsyncMock(return_value={"run_id": "run_standalone"})
+        events = AsyncMock()
+        with (
+            patch.object(agent_server.STORE, "sessions", sessions),
+            patch.object(agent_server.STORE, "save", new_callable=AsyncMock),
+            patch.object(agent_server, "BUSY_SESSIONS", set()),
+            patch.object(agent_server, "start_turn", start_turn),
+            patch.object(agent_server, "append_event", events),
+            patch.object(store, "save", new_callable=AsyncMock),
+        ):
+            result = await store.run_job("job_standalone")
+
+        self.assertEqual(result["run_id"], "run_standalone")
+        self.assertEqual(list(sessions), [PARENT])
+        self.assertEqual(start_turn.await_args.args[0], PARENT)
+        self.assertEqual(start_turn.await_args.kwargs["provider_context_mode"], "standalone")
+        ran = [call.args for call in events.await_args_list if call.args[1] == "job_ran"]
+        self.assertEqual(len(ran), 1)
+        self.assertNotIn("run_session_id", ran[0][2])
+        self.assertEqual(ran[0][2]["message"], "Scheduled job ran: Monitor standalone")
+
     async def test_failed_admission_deletes_the_empty_run_chat(self) -> None:
         store = agent_server.JobStore()
         store.jobs = {"job_standalone": due_job("job_standalone", "standalone")}
@@ -143,6 +170,7 @@ class StandaloneRunChatTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(agent_server.STORE, "sessions", sessions),
             patch.object(agent_server.STORE, "save", new_callable=AsyncMock),
+            patch.object(agent_server, "BUSY_SESSIONS", {PARENT}),
             patch.object(agent_server, "start_turn", AsyncMock(side_effect=failure)),
             patch.object(agent_server, "delete_session", delete_session),
             patch.object(agent_server, "append_event", new_callable=AsyncMock),
@@ -210,9 +238,11 @@ class StandaloneRunReportTests(unittest.IsolatedAsyncioTestCase):
             "job_id": "job_standalone",
             "job_title": "Monitor standalone",
         }
+        archive = AsyncMock()
         with (
             patch.object(agent_server.STORE, "sessions", self.sessions()),
             patch.object(agent_server, "append_event", side_effect=record),
+            patch.object(agent_server, "update_session", archive),
             patch.object(agent_server, "refresh_native_session_title", AsyncMock()),
             patch.object(agent_server, "schedule_generated_session_title", Mock()),
             patch.object(agent_server, "finalize_cross_chat_terminal", AsyncMock()),
@@ -232,11 +262,68 @@ class StandaloneRunReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["run_id"], "run_standalone")
         self.assertEqual(payload["result_text"], "Training is at step 1200.")
         self.assertEqual(agent_server.scheduled_job_run_status({"type": "job_finished", **payload}), "completed")
+        # The run chat leaves the chat list once its card is closed.
+        archive.assert_awaited_once()
+        archived_id, archive_request = archive.await_args.args
+        self.assertEqual(archived_id, "sess_run")
+        self.assertEqual(archive_request.model_dump(exclude_unset=True), {"archived": True})
+
+    async def test_finished_run_keeps_the_run_chat_when_a_follow_up_is_queued(self) -> None:
+        terminal = {
+            "run_id": "run_standalone",
+            "exit_code": 0,
+            "result_text": "ok",
+            "purpose": "scheduled_job",
+            "job_id": "job_standalone",
+            "job_title": "Monitor standalone",
+        }
+        archive = AsyncMock()
+        with (
+            patch.object(agent_server.STORE, "sessions", self.sessions()),
+            patch.object(agent_server, "QUEUED_TURNS", {"sess_run": deque([{"queued_id": "q1", "prompt": "and the loss?"}])}),
+            patch.object(agent_server, "append_event", new_callable=AsyncMock),
+            patch.object(agent_server, "update_session", archive),
+            patch.object(agent_server, "refresh_native_session_title", AsyncMock()),
+            patch.object(agent_server, "schedule_generated_session_title", Mock()),
+            patch.object(agent_server, "finalize_cross_chat_terminal", AsyncMock()),
+            patch.object(agent_server, "schedule_model_capacity_resend", Mock()),
+        ):
+            await agent_server.append_turn_finished_event("sess_run", terminal)
+        archive.assert_not_awaited()
+
+    async def test_archive_failure_leaves_the_report_in_place(self) -> None:
+        appended: list[tuple] = []
+
+        async def record(session_id, event_type, payload=None):
+            appended.append((session_id, event_type, dict(payload or {})))
+            return {"seq": len(appended), "type": event_type, "session_id": session_id, **(payload or {})}
+
+        terminal = {
+            "run_id": "run_standalone",
+            "exit_code": 0,
+            "result_text": "ok",
+            "purpose": "scheduled_job",
+            "job_id": "job_standalone",
+            "job_title": "Monitor standalone",
+        }
+        with (
+            patch.object(agent_server.STORE, "sessions", self.sessions()),
+            patch.object(agent_server, "append_event", side_effect=record),
+            patch.object(agent_server, "update_session", AsyncMock(side_effect=RuntimeError("disk full"))),
+            patch.object(agent_server, "refresh_native_session_title", AsyncMock()),
+            patch.object(agent_server, "schedule_generated_session_title", Mock()),
+            patch.object(agent_server, "finalize_cross_chat_terminal", AsyncMock()),
+            patch.object(agent_server, "schedule_model_capacity_resend", Mock()),
+        ):
+            await agent_server.append_turn_finished_event("sess_run", terminal)
+        self.assertEqual([entry[1] for entry in appended if entry[0] == PARENT], ["job_finished"])
 
     async def test_stopped_run_closes_the_owning_chat_card_as_stopped(self) -> None:
         sessions = self.sessions()
+        archive = AsyncMock()
         with (
             patch.object(agent_server.STORE, "sessions", sessions),
+            patch.object(agent_server, "update_session", archive),
             patch.object(agent_server, "finalize_cross_chat_terminal", AsyncMock()),
         ):
             for session_id in sessions:
@@ -256,6 +343,7 @@ class StandaloneRunReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(reports), 1)
         self.assertTrue(reports[0]["stopped"])
         self.assertEqual(agent_server.scheduled_job_run_status(reports[0]), "stopped")
+        self.assertEqual(archive.await_args.args[0], "sess_run")
 
     def test_job_summary_keeps_the_run_chat_link(self) -> None:
         landmark = {"key": "job:job_standalone", "job_id": "job_standalone", "start_seq": 1, "end_seq": 2}
@@ -292,10 +380,32 @@ class StandaloneRestartRecoveryTests(unittest.IsolatedAsyncioTestCase):
             patch.object(agent_server, "durable_scheduled_job_admissions", scan),
         ):
             await store.reconcile_admitted_runs_after_restart()
-        scanned = scan.call_args.args[0]
-        self.assertEqual(scanned["job_standalone"]["session_id"], "sess_run_new")
-        self.assertEqual(scanned["job_chat"]["session_id"], PARENT)
+        first, second = [call.args[0] for call in scan.call_args_list]
+        # The parent hosts idle-time runs, so it is scanned first for every job.
+        self.assertEqual({job_id: job["session_id"] for job_id, job in first.items()}, {"job_standalone": PARENT, "job_chat": PARENT})
+        # Only the standalone job's busy-time occurrence can live in a run chat.
+        self.assertEqual({job_id: job["session_id"] for job_id, job in second.items()}, {"job_standalone": "sess_run_new"})
         self.assertEqual(store.jobs["job_standalone"]["session_id"], PARENT)
+
+    async def test_recovery_skips_the_run_chats_when_the_parent_admitted_the_run(self) -> None:
+        store = agent_server.JobStore()
+        job = due_job("job_standalone", "standalone")
+        store.jobs = {"job_standalone": job}
+        sessions = {
+            PARENT: parent_session(),
+            "sess_run": {"id": "sess_run", "created_at": "2026-10-06T10:00:00Z", "scheduled_job_run": {"job_id": "job_standalone", "session_id": PARENT}},
+        }
+        admitted = {"job_standalone": {"job_revision": job["_revision"], "job_scheduled_run_at": 1.0}}
+        scan = Mock(return_value=admitted)
+        with (
+            patch.object(agent_server.STORE, "sessions", sessions),
+            patch.object(agent_server, "durable_scheduled_job_admissions", scan),
+            patch.object(store, "mark_ran", AsyncMock(return_value=job)) as mark_ran,
+        ):
+            recovered = await store.reconcile_admitted_runs_after_restart()
+        self.assertEqual(recovered, 1)
+        self.assertEqual(scan.call_count, 1)
+        mark_ran.assert_awaited_once()
 
 
 if __name__ == "__main__":
