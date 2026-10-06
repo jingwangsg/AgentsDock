@@ -1907,13 +1907,33 @@ PROVIDER_THREAD_INSTRUCTION_ADDENDUM = (
 if len(PROVIDER_THREAD_INSTRUCTION_ADDENDUM) > MAX_PROVIDER_STATIC_INSTRUCTIONS_CHARS:
     raise RuntimeError("AgentsDock static provider instructions exceed their safe limit")
 
+# The interactive SDK transport keeps one CLI process per chat with its input
+# open, so a background Bash task survives the model's turn and its completion
+# wakes the model inside the same run (claude_sdk_client defers the run end).
+# The one-shot `claude -p` transport closes its input with the reply; the CLI
+# then kills background shells after a 5 s grace, so session_system_prompt
+# swaps this line for the one-shot rule on that transport. Neither rule has
+# braces, so the prelude's `.format()` contract is unchanged.
+CLAUDE_BACKGROUND_RULE_TRACKED = (
+    "- For a command that may run long, use Bash `run_in_background`: the task is tracked, "
+    "this chat stays open until it finishes, and its completion re-invokes you in the same "
+    "turn. Never detach work with `nohup`, `disown`, `setsid`, or shell `&`; AgentsDock cannot "
+    "track those and they are refused. Keep work needed for the current reply in foreground "
+    "or in such a tracked task."
+)
+CLAUDE_BACKGROUND_RULE_ONE_SHOT = (
+    "- Never detach required work with `nohup`, `disown`, `setsid`, shell `&`, or Bash "
+    "`run_in_background`: this one-shot process ends with your reply and kills its shells. "
+    "Keep work needed for the current reply in foreground; async completion that must wake "
+    "chat requires a tracked Agent/workflow."
+)
 CLAUDE_PROMPT_PRELUDE = """\
 You are operating through AgentsDock, backed by AgentsServer.
 - Keep final answers concise; the UI separates tools, output, reasoning, and artifacts.
 - Render inline math as `$...$` and display math as `$$...$$`.
 - Continue through ordinary inspection errors when a safe retry or narrow fix is available.
 - Treat milestone completion as progress, not completion of the user's whole request. Before finishing, join child tasks you started and wait for every requested milestone and acceptance check; automate only when explicitly asked.
-- Never detach required work with `nohup`, `disown`, `setsid`, shell `&`, or Bash `run_in_background`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a tracked Agent/workflow; background Bash does not guarantee a completion wake-up.
+""" + CLAUDE_BACKGROUND_RULE_TRACKED + """
 - This is AgentsDock, not Slack: deliver files to the user through the AgentsDock provider tool below, never through Slack sharing. A configured Slack MCP server's tools, including its file search and listing tools, remain available for Slack tasks.
 - Link editor-readable files with Markdown paths relative to the chat working directory, optionally with `#L42`; do not use `file://`.
 - Publish user-facing files, images included, only with the AgentsDock provider tool described below; chat Markdown cannot display a local image (`![](path)` renders broken). Say “attached” only after a successful JSON receipt; if the tool returns an error, quote it and give the absolute path. Older-server fallback, only when the tool is absent: write `{{"files":["/absolute/path.ext"]}}` to resolved `$AGENTSDOCK_MANIFEST_PATH` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
@@ -62078,12 +62098,20 @@ def session_system_prompt(
     session_id: str,
     sess: dict[str, Any],
     manifest_path: Path,
+    *,
+    tracked_background_bash: bool = True,
 ) -> str:
     del manifest_path
     return "\n\n".join(
         value
         for value in (
-            CLAUDE_PROMPT_PRELUDE.format() + session_prompt_addendum(sess),
+            (
+                CLAUDE_PROMPT_PRELUDE.format()
+                if tracked_background_bash
+                else CLAUDE_PROMPT_PRELUDE.format().replace(
+                    CLAUDE_BACKGROUND_RULE_TRACKED, CLAUDE_BACKGROUND_RULE_ONE_SHOT,
+                )
+            ) + session_prompt_addendum(sess),
             # Indirection keeps the Claude system prompt identical across chats
             # (prompt-cache stability); the runner env exports the variable.
             agentsdock_canvas.prompt_section(STATE_DIR, session_id, directory_label="$AGENTSDOCK_CANVAS_DIR"),
@@ -62170,6 +62198,9 @@ def build_claude_cmd(
         session_id,
         sess,
         manifest_path,
+        # `claude -p` closes its input with the reply; the CLI kills background
+        # shells 5 s later, so this transport keeps the foreground-only rule.
+        tracked_background_bash=False,
     )
     cmd = [
         CLAUDE_BIN, "-p",

@@ -140,8 +140,9 @@ class CodexThreadPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("immediately retry the still-safe requested operation", instructions)
         self.assertIn("delegate bounded noisy exploration", instructions)
         self.assertIn("Keep work needed for the current reply in foreground", instructions)
-        self.assertIn("tracked Agent/workflow", instructions)
-        self.assertIn("does not guarantee a completion wake-up", instructions)
+        # Interactive Claude chats keep background Bash attached; detachment is still refused.
+        self.assertIn("use Bash `run_in_background`", instructions)
+        self.assertIn("AgentsDock cannot track those and they are refused", instructions)
         self.assertIn(
             "Never use Claude's `Monitor`, `ScheduleWakeup`, `/loop`, or `CronCreate`",
             instructions,

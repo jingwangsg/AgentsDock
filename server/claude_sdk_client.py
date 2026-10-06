@@ -263,7 +263,11 @@ def _message_type(message: Any) -> str:
     return class_name.lower()
 
 
-_DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
+# Task types whose completion wakes Claude for a follow-up model turn: a Result
+# that arrives while one is running ends only that model turn, not the run.
+# Background Bash joined the set on 2026-10-07: the chat-scoped SDK process
+# keeps the shell alive, so its notification reaches the same run.
+_DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_bash", "local_workflow"})
 _TERMINAL_TASK_STATUSES = frozenset(
     {"completed", "failed", "stopped", "killed"}
 )
@@ -762,11 +766,13 @@ _SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", "&", "(", ")", "\n"}
 _SHELL_COMMAND_WRAPPERS = {"builtin", "command", "env"}
 _SHELL_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _UNTRACKED_BACKGROUND_REASON = (
-    "AgentsDock cannot reliably keep background Bash attached or wake this chat when "
-    "it finishes. Retry without run_in_background, nohup, disown, setsid, or shell "
-    "'&'. Keep work needed for the current reply in the foreground. For asynchronous "
-    "completion that must notify this chat, delegate a tracked Agent/workflow. If the "
-    "user explicitly requested a durable service, use an observable service manager."
+    "AgentsDock cannot track a shell detached with nohup, disown, setsid, or shell "
+    "'&', so it can neither keep it attached nor wake this chat when it finishes. "
+    "For a long-running command use Bash with run_in_background instead: the SDK "
+    "tracks that task, this chat stays open until it ends, and its completion "
+    "re-invokes you. Otherwise keep work needed for the current reply in the "
+    "foreground. If the user explicitly requested a durable service, use an "
+    "observable service manager."
 )
 _NON_DURABLE_SCHEDULER_REASON = (
     "Claude's {tool_name} is not an AgentsDock durable job and cannot be relied on "
@@ -927,9 +933,8 @@ def claude_untracked_background_reason(
 
     if str(tool_name or "").strip().lower() != "bash":
         return None
+    # run_in_background is the tracked path (a local_bash task), not detachment.
     normalized_input = tool_input or {}
-    if normalized_input.get("run_in_background") is True:
-        return _UNTRACKED_BACKGROUND_REASON
     command = str(normalized_input.get("command") or "")
     if not command.strip():
         return None

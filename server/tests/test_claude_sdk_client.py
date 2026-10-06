@@ -2154,6 +2154,34 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replacement.configuration_key, "limit-1")
         self.assertTrue(client.disconnected)
 
+    async def test_result_with_running_background_bash_defers_run_end(self) -> None:
+        handle = await self.manager.start_run(
+            "chat-bg-bash", "Download the weights", run_id="bg-bash-run", options={}, configuration_key="same",
+        )
+        client = self.factory.clients[-1]
+        started = {
+            "type": "system", "subtype": "task_started",
+            "task_id": "bash-still-running", "task_type": "local_bash",
+            "description": "Download the weights",
+        }
+        progress = {"type": "assistant", "text": "Waiting for the download"}
+        await client.emit(started)
+        await client.emit({"type": "result", "is_error": False, "result": "started the download"})
+        await client.emit(progress)
+        # The model's turn ended, but the run waits for the shell: the intermediate Result is not delivered.
+        self.assertEqual(await asyncio.wait_for(handle.__anext__(), 5), started)
+        self.assertEqual(await asyncio.wait_for(handle.__anext__(), 5), progress)
+        self.assertFalse(handle.done)
+        self.assertEqual(handle.background_task_receipts[0]["status"], "running")
+        await client.emit({
+            "type": "system", "subtype": "task_notification",
+            "task_id": "bash-still-running", "status": "completed",
+        })
+        await client.emit({"type": "result", "is_error": False, "result": "weights downloaded"})
+        result = await asyncio.wait_for(handle.wait_result(), 5)
+        self.assertEqual(result["result"], "weights downloaded")
+        self.assertEqual(handle.background_task_receipts[0]["status"], "completed")
+
     async def test_evict_disconnects_only_selected_chat(self) -> None:
         run = await self.manager.start_run(
             "chat-1",
@@ -3104,11 +3132,19 @@ class ClaudeSDKBackgroundTrackingHookTests(unittest.IsolatedAsyncioTestCase):
                     claude_untracked_background_reason("Bash", {"command": command})
                 )
 
-    def test_rejects_native_bash_background_mode(self) -> None:
-        self.assertIsNotNone(
+    def test_allows_native_bash_background_mode(self) -> None:
+        # run_in_background is a tracked local_bash task; the supervisor keeps
+        # the run open until it ends, so it is not detachment.
+        self.assertIsNone(
             claude_untracked_background_reason(
                 "Bash",
                 {"command": "python sweep.py", "run_in_background": True},
+            )
+        )
+        self.assertIsNotNone(
+            claude_untracked_background_reason(
+                "Bash",
+                {"command": "nohup python sweep.py &", "run_in_background": True},
             )
         )
 
@@ -3139,10 +3175,7 @@ class ClaudeSDKBackgroundTrackingHookTests(unittest.IsolatedAsyncioTestCase):
         result = await reject_untracked_background_hook(
             {
                 "tool_name": "Bash",
-                "tool_input": {
-                    "command": "./worker",
-                    "run_in_background": True,
-                },
+                "tool_input": {"command": "nohup ./worker > worker.log 2>&1 &"},
             },
             "tool-1",
             {"signal": None},
@@ -3150,7 +3183,13 @@ class ClaudeSDKBackgroundTrackingHookTests(unittest.IsolatedAsyncioTestCase):
         output = result["hookSpecificOutput"]
         self.assertEqual(output["hookEventName"], "PreToolUse")
         self.assertEqual(output["permissionDecision"], "deny")
+        # The denial names the tracked alternative.
         self.assertIn("run_in_background", output["permissionDecisionReason"])
+        self.assertEqual(await reject_untracked_background_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "./worker", "run_in_background": True}},
+            "tool-2",
+            {"signal": None},
+        ), {})
 
     def test_scheduler_policy_matches_only_exact_nondurable_tool_names(self) -> None:
         self.assertEqual(

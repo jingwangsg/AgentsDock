@@ -1,5 +1,42 @@
 # Public development log
 
+## 2026-10-07 — Claude chats may run Bash in the background; the chat waits for it and the shell's completion wakes the model (server)
+
+- A Claude chat's PreToolUse hook denied every background Bash call, with the
+  reason that AgentsDock could not keep the shell attached or wake the chat
+  when it finished. That was true of the one-shot `claude -p` transport, whose
+  CLI closes its input with the reply and kills background shells five seconds
+  later. The interactive Agent SDK transport the desktop and Android apps use
+  keeps one CLI process per chat with its input open, and already kept a run
+  open for background subagents: a Result that arrives while one runs ends
+  only that model turn, and the subagent's completion wakes the model for a
+  later Result.
+- Background Bash now joins that path. `run_in_background` is admitted; the
+  server treats the CLI's `local_bash` task like a background subagent, so the
+  run stays open after the model's turn ends, the task's completion wakes the
+  model inside the same run, and the run ends with the model's final reply.
+  Stop interrupts the run and kills the shell with the chat's CLI process; a
+  killed task reaches the next turn as a tracking-lost receipt as before.
+  Shells detached with `nohup`, `disown`, `setsid` or `&` are still refused,
+  and the refusal now names `run_in_background` as the tracked alternative.
+  The Claude prelude says the same, except on `claude -p` turns (clients
+  without the interactive capability, scheduled standalone runs), which keep
+  the foreground-only rule because that CLI exits with its shells.
+- Verified with the SDK client tests (84 pass, including a new test that a
+  Result with a running `local_bash` task does not end the run), the
+  background reconciliation, subagent snapshot and admission modules, and
+  the system prompt rendered for both transports. Accepted against an isolated
+  server with a real Claude chat over the interactive transport: a 40-second
+  background command was admitted, the model replied "started" and ended its
+  turn, the run stayed open for 48 seconds, the task's completion woke the
+  model, which read the file the command wrote and replied "finished", with
+  exactly one `turn_finished`; a second run with a 600-second command was
+  stopped 3 seconds after the model went idle: the run ended as stopped nine
+  seconds later, the shell was gone and the chat was idle. The same script
+  over the print transport showed the CLI killing the shell five seconds after
+  the reply, which is why that transport keeps the old rule. Server only; not
+  deployed. The hub needs a restart and remotes a redeploy to pick it up.
+
 ## 2026-10-07 — A chat link to a file outside the working directory opens on Android (server + Android build 49)
 
 - Tapping a Markdown link such as `../../tmp/inv_kazheng/media/clip.mp4` in a
