@@ -107,6 +107,19 @@ describe('TerminalSurface', () => {
     expect(terminal.write).toHaveBeenCalledTimes(1)
   })
 
+  it('gives the shell the visible grid once attached, since a resize sent while the link was opening was lost', async () => {
+    render(<TerminalSurface surface={surface} active={false} />)
+    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledWith('profile-a', 4, 'term_abc', { cwd: '/work/app', columns: 80, rows: 24 }))
+    // The hidden tab is shown and fitted before the server answers; main had no open socket for that resize.
+    const [terminal] = ghostty.instances
+    terminal.cols = 148
+    terminal.rows = 57
+    terminalApi.resize.mockClear()
+
+    emit('terminal:state', { state: 'connected', name: 'fish' })
+    expect(terminalApi.resize).toHaveBeenCalledWith('profile-a', 4, 'term_abc', 148, 57)
+  })
+
   it('answers a Primary Device Attributes query for the shell, once per query', async () => {
     render(<TerminalSurface surface={surface} active />)
     await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(1))

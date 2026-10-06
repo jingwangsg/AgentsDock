@@ -1,5 +1,25 @@
 # Public development log
 
+## 2026-10-06 — A terminal tab shown while it is still connecting gets its visible size (desktop)
+
+- A terminal tab could run its shell at 80 columns inside a much wider view.
+  fish's right prompt stopped near column 80, and each redraw of a long
+  command line overwrote the one before it. Every tab stays mounted. A hidden
+  tab cannot be measured, so it connects at the terminal's default 80×24, and
+  the server sizes the shell's pty from that connect request. If the tab was
+  shown before the connection finished, the resize was dropped because no
+  socket was open yet. On a remote reached through the hub, that window lasts
+  seconds. After connecting, the terminal never sent the size again.
+- After the shell attaches, the tab now sends its current grid size.
+  Re-sending an unchanged size does not signal the shell.
+- Verified with a new TerminalSurface test that fails without the change, the
+  type check, and the built desktop app against an isolated server behind a
+  proxy that delays only the terminal WebSocket handshake by 4 s. Before the
+  change, `stty size` in the tab reported 24 80 while the tab showed 148
+  columns. After it, the report was 57 148, the same as without the delay.
+  Output already recorded at the wrong width is replayed unchanged on
+  reconnect. Availability: source only.
+
 ## 2026-10-06 — A Claude goal can be started or replaced while Claude is working (desktop package 105 + server)
 
 - The Claude goal dialog refused to start a goal while a turn was running

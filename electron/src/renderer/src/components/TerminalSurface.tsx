@@ -144,6 +144,9 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
         // so a reconnect does not show it twice.
         terminal.reset()
         fitNow()
+        // The server sized the pty from the connect request. A fit made while the link was still
+        // opening (a hidden tab shown on a slow remote) never reached it, and fit() will not repeat it.
+        window.agentsDock.terminal.resize(profileId, profileGeneration, surface.id, terminal.cols, terminal.rows)
         terminal.focus()
       }
     })
