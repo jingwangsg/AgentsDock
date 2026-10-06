@@ -90,27 +90,63 @@ export function workspaceRelativeSourcePath(sourcePath?: string | null, workspac
   return relative && !relative.split('/').includes('..') ? relative : null
 }
 
-export type WorkspacePathLinkTarget = { kind: 'workspace'; path: string } | { kind: 'outside'; path: string }
+export type WorkspacePathLinkTarget =
+  | { kind: 'workspace'; path: string }
+  | { kind: 'absolute'; path: string }
+  | { kind: 'outside'; path: string }
 
 /**
- * Resolves a chat's path link against the chat cwd. The workspace routes reach
- * only paths inside cwd (`path` '' is cwd itself); anything else is `outside`
- * so the caller can say why it cannot open it. `~` is the server account's
- * home, which the phone cannot compare with cwd.
+ * Resolves a chat's path link against the chat cwd. Paths inside cwd open
+ * through the workspace routes (`path` '' is cwd itself). Any other file the
+ * link names on the server is `absolute`, in the canonical form the server's
+ * absolute-file routes require; those routes also expand a leading `~/` as
+ * the server account's home. `outside` is left for links that name no file:
+ * a climb above the root, or a climb out of a chat without a working directory.
  */
 export function workspacePathLinkTarget(href: string, cwd?: string | null): WorkspacePathLinkTarget {
   let path = href.trim()
   try { path = decodeURIComponent(path) } catch { /* markdown-it encodes hrefs; keep text it could not decode */ }
   const absolute = normalizedAbsolutePath(path)
-  if (absolute !== null) {
-    if (absolute === normalizedAbsolutePath(cwd)) return { kind: 'workspace', path: '' }
-    const relative = workspaceRelativeSourcePath(path, cwd)
-    return relative ? { kind: 'workspace', path: relative } : { kind: 'outside', path }
+  if (absolute !== null) return absolutePathLinkTarget(absolute, cwd)
+  if (path.startsWith('~')) {
+    const home = path.startsWith('~/') ? normalizedAbsolutePath(path.slice(1)) : null
+    return home && home !== '/' ? { kind: 'absolute', path: `~${home}` } : { kind: 'outside', path }
   }
-  if (path.startsWith('~')) return { kind: 'outside', path }
-  // Rooting the relative path reuses the dot-segment rules; null means it climbs above cwd.
+  // Rooting the relative path reuses the dot-segment rules; null means it climbs out of cwd.
   const relative = normalizedAbsolutePath(`/${path}`)
-  return relative === null ? { kind: 'outside', path } : { kind: 'workspace', path: relative.slice(1) }
+  if (relative !== null) return { kind: 'workspace', path: relative.slice(1) }
+  // A climb out of cwd (../sibling/REVIEW.md) still names one file: resolve it against cwd.
+  const normalizedCwd = normalizedAbsolutePath(cwd)
+  const resolved = normalizedCwd ? normalizedAbsolutePath(`${normalizedCwd}/${path}`) : null
+  return resolved ? absolutePathLinkTarget(resolved, cwd) : { kind: 'outside', path }
+}
+
+function absolutePathLinkTarget(absolute: string, cwd?: string | null): WorkspacePathLinkTarget {
+  if (absolute === normalizedAbsolutePath(cwd)) return { kind: 'workspace', path: '' }
+  const relative = workspaceRelativeSourcePath(absolute, cwd)
+  return relative ? { kind: 'workspace', path: relative } : { kind: 'absolute', path: absolute }
+}
+
+/** Whether the server's preview route serves this file: an advertised image or PDF type within the preview size limit. */
+export function workspacePreviewAllowed(info: { max_preview_file_bytes?: number; preview_media_types?: string[] } | null, entry: { name: string; size?: number | null }): boolean {
+  if (typeof entry.size === 'number' && typeof info?.max_preview_file_bytes === 'number' && entry.size > info.max_preview_file_bytes) return false
+  const contentType = inferredMobileFileContentType(entry.name).toLowerCase()
+  const advertised = info?.preview_media_types
+  if (!advertised?.length) return contentType.startsWith('image/') || contentType === 'application/pdf'
+  return advertised.some(value => {
+    const pattern = value.toLowerCase().trim()
+    return pattern.endsWith('/*') ? contentType.startsWith(pattern.slice(0, -1)) : pattern === contentType
+  })
+}
+
+/** Short stable name for a cached preview copy of a server file. */
+export function fileViewerCacheKey(value: string): string {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
 }
 
 export function joinWorkspacePath(directory: string, name: string): string {

@@ -3024,6 +3024,9 @@ def workspace_info_sync(session_id: str) -> dict[str, Any]:
         "max_text_file_bytes": workspace_text_bytes_capability(),
         "max_preview_file_bytes": MAX_WORKSPACE_PREVIEW_BYTES,
         "preview_media_types": sorted(set(WORKSPACE_PREVIEW_MEDIA_TYPES.values())),
+        # Chat links outside the working directory preview and download
+        # through the absolute-preview / absolute-download routes.
+        "absolute_file_transfers": True,
     }
 
 
@@ -3182,8 +3185,8 @@ def normalize_absolute_file_path(value: str | None) -> tuple[Path, str, str]:
     return Path(absolute.anchor), relative, raw
 
 
-def read_absolute_file_sync(session_id: str, absolute_path: str) -> dict[str, Any]:
-    """Read one explicitly named absolute UTF-8 file without enumerating its parent."""
+def absolute_file_target(session_id: str, absolute_path: str) -> tuple[dict[str, Any], Path, str, str]:
+    """The chat plus the root, root-relative walk and displayed form of one explicit absolute path."""
     if not WORKSPACE_SECURE_OPEN_AVAILABLE:
         raise workspace_http_error(
             501,
@@ -3194,6 +3197,12 @@ def read_absolute_file_sync(session_id: str, absolute_path: str) -> dict[str, An
     if not sess:
         raise workspace_http_error(404, "session_not_found", "Chat not found.")
     root, relative, normalized = normalize_absolute_file_path(absolute_path)
+    return sess, root, relative, normalized
+
+
+def read_absolute_file_sync(session_id: str, absolute_path: str) -> dict[str, Any]:
+    """Read one explicitly named absolute UTF-8 file without enumerating its parent."""
+    sess, root, relative, normalized = absolute_file_target(session_id, absolute_path)
     parent_fd, name = open_workspace_parent_fd(root, relative)
     file_fd = -1
     try:
@@ -3259,34 +3268,44 @@ def open_workspace_preview_sync(session_id: str, relative_path: str) -> dict[str
     """Securely open one preview resource and transfer ownership of its file descriptor."""
     _, root = session_workspace_root(session_id)
     normalized = normalize_workspace_path(relative_path)
-    parent_fd, name = open_workspace_parent_fd(root, normalized)
+    return open_preview_resource(root, normalized, normalized)
+
+
+def open_absolute_preview_sync(session_id: str, absolute_path: str) -> dict[str, Any]:
+    """Preview one explicitly named absolute file, such as a chat link outside the workspace."""
+    _, root, relative, normalized = absolute_file_target(session_id, absolute_path)
+    return open_preview_resource(root, relative, normalized)
+
+
+def open_preview_resource(root: Path, relative: str, displayed: str) -> dict[str, Any]:
+    parent_fd, name = open_workspace_parent_fd(root, relative)
     file_fd = -1
     try:
         try:
             file_fd = os.open(name, workspace_open_flags(), dir_fd=parent_fd)
         except OSError as exc:
-            raise translate_workspace_os_error(exc, normalized) from exc
+            raise translate_workspace_os_error(exc, displayed) from exc
         item_stat = os.fstat(file_fd)
         if not stat.S_ISREG(item_stat.st_mode):
             raise workspace_http_error(
                 400,
                 "workspace_not_regular_file",
-                f"Not a regular workspace file: {normalized}",
+                f"Not a regular workspace file: {displayed}",
             )
         if item_stat.st_size > MAX_WORKSPACE_PREVIEW_BYTES:
             raise workspace_http_error(
                 413,
                 "workspace_preview_too_large",
                 (
-                    f"{normalized} is larger than the "
+                    f"{displayed} is larger than the "
                     f"{MAX_WORKSPACE_PREVIEW_BYTES // (1024 * 1024)} MiB preview limit."
                 ),
             )
-        media_type = workspace_preview_media_type(normalized)
+        media_type = workspace_preview_media_type(displayed)
         result = {
             "file_fd": file_fd,
             "root": str(root),
-            "path": normalized,
+            "path": displayed,
             "name": name,
             "media_type": media_type,
             "revision": workspace_entry_revision(item_stat),
@@ -3305,24 +3324,34 @@ def open_workspace_download_sync(session_id: str, relative_path: str) -> dict[st
     """Securely open one workspace file for an explicit user download."""
     _, root = session_workspace_root(session_id)
     normalized = normalize_workspace_path(relative_path)
-    parent_fd, name = open_workspace_parent_fd(root, normalized)
+    return open_download_resource(root, normalized, normalized)
+
+
+def open_absolute_download_sync(session_id: str, absolute_path: str) -> dict[str, Any]:
+    """Download one explicitly named absolute file, such as a chat link outside the workspace."""
+    _, root, relative, normalized = absolute_file_target(session_id, absolute_path)
+    return open_download_resource(root, relative, normalized)
+
+
+def open_download_resource(root: Path, relative: str, displayed: str) -> dict[str, Any]:
+    parent_fd, name = open_workspace_parent_fd(root, relative)
     file_fd = -1
     try:
         try:
             file_fd = os.open(name, workspace_open_flags(), dir_fd=parent_fd)
         except OSError as exc:
-            raise translate_workspace_os_error(exc, normalized) from exc
+            raise translate_workspace_os_error(exc, displayed) from exc
         item_stat = os.fstat(file_fd)
         if not stat.S_ISREG(item_stat.st_mode):
             raise workspace_http_error(
                 400,
                 "workspace_not_regular_file",
-                f"Not a regular workspace file: {normalized}",
+                f"Not a regular workspace file: {displayed}",
             )
         result = {
             "file_fd": file_fd,
             "root": str(root),
-            "path": normalized,
+            "path": displayed,
             "name": name,
             "revision": workspace_entry_revision(item_stat),
             "size": int(item_stat.st_size),
@@ -83792,6 +83821,7 @@ async def health() -> dict[str, Any]:
                 "max_text_file_bytes": workspace_text_bytes_capability(),
                 "max_preview_file_bytes": MAX_WORKSPACE_PREVIEW_BYTES,
                 "preview_media_types": sorted(set(WORKSPACE_PREVIEW_MEDIA_TYPES.values())),
+                "absolute_file_transfers": WORKSPACE_SECURE_OPEN_AVAILABLE,
             },
             "working_directory_completion": {
                 "available": True,
@@ -99629,6 +99659,26 @@ async def get_session_workspace_preview(
     path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
 ) -> Response:
     preview = await asyncio.to_thread(open_workspace_preview_sync, session_id, path)
+    return workspace_preview_response(request, preview)
+
+
+@app.get("/api/sessions/{session_id}/workspace/absolute-preview")
+@app.head("/api/sessions/{session_id}/workspace/absolute-preview")
+@app.api_route(
+    "/api/sessions/{session_id}/workspace/absolute-preview",
+    methods=["GET", "HEAD"],
+    include_in_schema=False,
+)
+async def get_session_absolute_preview(
+    request: Request,
+    session_id: str,
+    path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
+) -> Response:
+    preview = await asyncio.to_thread(open_absolute_preview_sync, session_id, path)
+    return workspace_preview_response(request, preview)
+
+
+def workspace_preview_response(request: Request, preview: dict[str, Any]) -> Response:
     file_fd = int(preview["file_fd"])
     try:
         size = int(preview["size"])
@@ -99683,6 +99733,26 @@ async def get_session_workspace_download(
     path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
 ) -> Response:
     download = await asyncio.to_thread(open_workspace_download_sync, session_id, path)
+    return workspace_download_response(request, download)
+
+
+@app.get("/api/sessions/{session_id}/workspace/absolute-download")
+@app.head("/api/sessions/{session_id}/workspace/absolute-download")
+@app.api_route(
+    "/api/sessions/{session_id}/workspace/absolute-download",
+    methods=["GET", "HEAD"],
+    include_in_schema=False,
+)
+async def get_session_absolute_download(
+    request: Request,
+    session_id: str,
+    path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
+) -> Response:
+    download = await asyncio.to_thread(open_absolute_download_sync, session_id, path)
+    return workspace_download_response(request, download)
+
+
+def workspace_download_response(request: Request, download: dict[str, Any]) -> Response:
     file_fd = int(download["file_fd"])
     try:
         size = int(download["size"])

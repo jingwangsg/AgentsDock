@@ -25,6 +25,12 @@ const WorkspaceFileViewerModal = lazy(() => importWithDeadline(
 ).then(module => ({
   default: module.WorkspaceFileViewerModal,
 })))
+const AbsoluteFileViewerModal = lazy(() => importWithDeadline(
+  () => import('./AbsoluteFileViewerModal'),
+  'File viewer',
+).then(module => ({
+  default: module.AbsoluteFileViewerModal,
+})))
 
 export function FileViewerProvider({ children }: { children: ReactNode }) {
   // Capture safe-area values in the persistent app root. Native full-screen
@@ -58,6 +64,7 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
     viewerActive: Boolean(activeRequest || pendingRequest),
     openArtifacts: (request: Omit<Extract<FileViewerRequest, { kind: 'artifacts' }>, 'kind'>) => present({ kind: 'artifacts', ...request }),
     openWorkspace: (sessionId: string, initialPath?: string) => present({ kind: 'workspace', sessionId, initialPath }),
+    openAbsoluteFile: (sessionId: string, path: string) => present({ kind: 'absolute', sessionId, path }),
     closeViewer,
     setPresentationBlocked,
   }), [activeRequest, closeViewer, pendingRequest, present, setPresentationBlocked])
@@ -86,6 +93,7 @@ export function FileViewerProvider({ children }: { children: ReactNode }) {
       <Suspense fallback={activeRequest ? <DeferredViewerLoading topInset={modalInsets.top} onClose={closeViewer} /> : null}>
         {activeRequest?.kind === 'artifacts' ? <ArtifactFileViewerModal request={activeRequest} modalInsets={modalInsets} onClose={closeViewer} /> : null}
         {activeRequest?.kind === 'workspace' ? <WorkspaceFileViewerModal request={activeRequest} modalInsets={modalInsets} onClose={closeViewer} /> : null}
+        {activeRequest?.kind === 'absolute' ? <AbsoluteFileViewerModal request={activeRequest} modalInsets={modalInsets} onClose={closeViewer} /> : null}
       </Suspense>
     </DeferredLoadBoundary>
   </FileViewerContext.Provider>

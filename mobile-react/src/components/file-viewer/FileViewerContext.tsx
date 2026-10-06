@@ -1,7 +1,7 @@
 import { createContext, useContext } from 'react'
 import type { AgentFile } from '../../types'
 
-export type FileViewerRequest = ArtifactFileViewerRequest | WorkspaceFileViewerRequest
+export type FileViewerRequest = ArtifactFileViewerRequest | WorkspaceFileViewerRequest | AbsoluteFileViewerRequest
 
 export interface ArtifactFileViewerRequest {
   kind: 'artifacts'
@@ -18,10 +18,18 @@ export interface WorkspaceFileViewerRequest {
   initialPath?: string
 }
 
+export interface AbsoluteFileViewerRequest {
+  kind: 'absolute'
+  sessionId: string
+  /** Canonical server path (or `~/…`) of a chat link outside the chat's working directory. */
+  path: string
+}
+
 export interface FileViewerController {
   viewerActive: boolean
   openArtifacts: (request: Omit<ArtifactFileViewerRequest, 'kind'>) => void
   openWorkspace: (sessionId: string, initialPath?: string) => void
+  openAbsoluteFile: (sessionId: string, path: string) => void
   closeViewer: () => void
   setPresentationBlocked: (blocked: boolean) => void
 }

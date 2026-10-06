@@ -945,6 +945,57 @@ class WorkspaceFilesTests(unittest.TestCase):
         self.assertEqual(absolute_updated["scope"], "absolute")
         self.assertEqual(absolute_updated["content"], absolute_content)
 
+    def test_absolute_preview_and_download_reach_files_outside_the_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            workspace = base / "workspace"
+            workspace.mkdir()
+            media = base / "media"
+            media.mkdir()
+            image_data = b"\x89PNG\r\n\x1a\noutside-preview"
+            (media / "clip.png").write_bytes(image_data)
+            video_data = b"\x00\x00\x00\x18ftypmp42outside-video"
+            (media / "clip.mp4").write_bytes(video_data)
+            link = media / "clip-link.png"
+            link.symlink_to(media / "clip.png")
+            with patch.object(agent_server.STORE, "sessions", {"session-1": self.session(workspace)}):
+                info = agent_server.workspace_info_sync("session-1")
+                image_response = asyncio.run(agent_server.get_session_absolute_preview(
+                    self.request(), "session-1", str(media / "clip.png"),
+                ))
+                image_body = self.response_body(image_response)
+                download_response = asyncio.run(agent_server.get_session_absolute_download(
+                    self.request(), "session-1", str(media / "clip.mp4"),
+                ))
+                download_body = self.response_body(download_response)
+                head_response = asyncio.run(agent_server.get_session_absolute_download(
+                    self.request("HEAD"), "session-1", str(media / "clip.mp4"),
+                ))
+                with self.assertRaises(HTTPException) as video_preview:
+                    agent_server.open_absolute_preview_sync("session-1", str(media / "clip.mp4"))
+                with self.assertRaises(HTTPException) as relative:
+                    agent_server.open_absolute_download_sync("session-1", "media/clip.mp4")
+                with self.assertRaises(HTTPException) as traversal:
+                    agent_server.open_absolute_download_sync("session-1", f"{workspace}/../media/clip.mp4")
+                with self.assertRaises(HTTPException) as symlink:
+                    agent_server.open_absolute_preview_sync("session-1", str(link))
+                with self.assertRaises(HTTPException) as folder:
+                    agent_server.open_absolute_download_sync("session-1", str(media))
+
+        self.assertTrue(info["absolute_file_transfers"])
+        self.assertEqual(image_response.status_code, 200)
+        self.assertEqual(image_response.headers["content-type"], "image/png")
+        self.assertEqual(image_body, image_data)
+        self.assertEqual(download_response.headers["content-type"], "application/octet-stream")
+        self.assertIn("clip.mp4", download_response.headers["content-disposition"])
+        self.assertEqual(download_body, video_data)
+        self.assertEqual(head_response.headers["content-length"], str(len(video_data)))
+        self.assertEqual(video_preview.exception.status_code, 415)
+        self.assertEqual(relative.exception.detail["code"], "invalid_absolute_file_path")
+        self.assertEqual(traversal.exception.detail["code"], "invalid_absolute_file_path")
+        self.assertEqual(symlink.exception.detail["code"], "workspace_symlink_blocked")
+        self.assertEqual(folder.exception.detail["code"], "workspace_not_regular_file")
+
     def test_preview_get_and_head_stream_safe_media_with_revision_and_ranges(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

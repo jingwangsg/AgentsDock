@@ -1,5 +1,39 @@
 # Public development log
 
+## 2026-10-07 — A chat link to a file outside the working directory opens on Android (server + Android build 49)
+
+- Tapping a Markdown link such as `../../tmp/inv_kazheng/media/clip.mp4` in a
+  chat on the phone showed "Mobile can open files and folders only inside this
+  chat's working directory". The desktop has opened such links since package
+  104; the phone resolved them only to "outside".
+- The phone now resolves a link the way the desktop does: a path inside the
+  working directory opens in the workspace browser as before; a relative link
+  that climbs out of it is resolved against the working directory, and that
+  file, an absolute path, or a `~/` path opens in a new read-only file viewer.
+  Text and Markdown load through the server's existing absolute-file route;
+  images and PDFs preview, and any file downloads or shares, through two new
+  server routes, absolute-preview and absolute-download, which apply the same
+  canonical-path, no-follow, size and media-type rules as the workspace routes
+  and never list a directory. Videos show the same download-or-share notice
+  as workspace videos. Only a link that climbs above the filesystem root, or
+  out of a chat without a working directory, is still refused, with a message
+  that says the link names no file. The workspace info and the health
+  capability advertise `absolute_file_transfers`; on an older server the viewer
+  still opens text and reports that downloads need a server update.
+- Verified with the server workspace tests (55 pass, including a new test that
+  previews and downloads files outside the workspace and rejects relative,
+  traversing, symlinked and directory paths), the mobile type check, and the
+  mobile test suite (390 pass; the four failures are pre-existing and in files
+  this change does not touch). Accepted on the Android emulator with build 49
+  against an isolated server running this source and a real Claude reply:
+  tapping the note link opened the Markdown read-only with its path in the
+  header, the chart link showed the image preview, the clip link showed the
+  download-or-share notice, and Share produced the system share sheet with
+  the file; the server log shows one absolute-file, one absolute-preview and
+  one absolute-download request, all 200. iOS not exercised. The server part
+  is not deployed; the hub and the remotes still refuse the preview and
+  download routes until they run this source. Availability: local APK.
+
 ## 2026-10-07 — A standalone scheduled job opens a run chat only while its chat is busy, and that chat is archived when the run ends (server + desktop package 107)
 
 - Since package 105 every run of an independent (standalone) job started a

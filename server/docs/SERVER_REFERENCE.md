@@ -1344,6 +1344,10 @@ GET /api/sessions/{session_id}/workspace/entries?path=&offset=0&limit=500
 GET /api/sessions/{session_id}/workspace/search?q=app&limit=100
 GET /api/sessions/{session_id}/workspace/file?path=src/App.tsx
 PUT /api/sessions/{session_id}/workspace/file
+GET /api/sessions/{session_id}/workspace/absolute-file?path=/tmp/notes/REVIEW.md
+PUT /api/sessions/{session_id}/workspace/absolute-file
+GET /api/sessions/{session_id}/workspace/absolute-preview?path=/tmp/notes/chart.png
+GET /api/sessions/{session_id}/workspace/absolute-download?path=/tmp/notes/clip.mp4
 POST /api/sessions/{session_id}/workspace/entry
 PATCH /api/sessions/{session_id}/workspace/entry
 DELETE /api/sessions/{session_id}/workspace/entry?path=src/old.ts&expected_revision=...&recursive=false
@@ -1357,6 +1361,14 @@ targets. Directory traversal is descriptor-relative and fails closed when the
 host lacks secure no-follow file APIs. Configure the text limit with
 `AGENTSDOCK_WORKSPACE_TEXT_MAX_BYTES`; a positive value selects a bounded
 transport ceiling, while an explicit zero disables the AgentsServer ceiling.
+
+The `absolute-*` routes serve one explicitly named file outside the workspace,
+such as a chat link that climbs out of the working directory. They accept only
+a canonical absolute path (or a leading `~/`, expanded as the server account's
+home), never enumerate a directory, and apply the same no-follow descriptor
+walk, text limit, preview media types and preview size limit as the workspace
+routes. `absolute_file_transfers` in the workspace info and in the
+`workspace_files` capability says the preview and download routes exist.
 
 Workspace-files capability v2 adds an opaque `revision` to every explorer and
 search entry. Rename accepts `{path, new_name, expected_revision}`, is limited

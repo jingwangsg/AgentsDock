@@ -536,6 +536,8 @@ export interface WorkspaceInfo {
   max_text_file_bytes: number
   max_preview_file_bytes?: number
   preview_media_types?: string[]
+  /** The server streams previews and downloads of explicit absolute paths (chat links outside cwd). */
+  absolute_file_transfers?: boolean
 }
 
 export interface WorkspaceEntriesPage {

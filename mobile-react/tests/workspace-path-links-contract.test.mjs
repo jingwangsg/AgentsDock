@@ -13,6 +13,7 @@ const host = source('src/components/file-viewer/FileViewerHost.tsx')
 
 // The emitter runs for real against a DeviceEventEmitter that records emits.
 const outfile = path.resolve('build/tmp', `workspace-path-links-${process.pid}.mjs`)
+const resolverOutfile = path.resolve('build/tmp', `file-viewer-${process.pid}.mjs`)
 await mkdir(path.dirname(outfile), { recursive: true })
 await build({
   entryPoints: ['src/lib/workspace-path-links.ts'], outfile,
@@ -25,9 +26,11 @@ await build({
     }))
   } }],
 })
-after(async () => { await unlink(outfile) })
+await build({ entryPoints: ['src/lib/file-viewer.ts'], outfile: resolverOutfile, bundle: true, format: 'esm', platform: 'node', logLevel: 'silent' })
+after(async () => { await unlink(outfile); await unlink(resolverOutfile) })
 globalThis.__workspacePathEmits = []
 const { OPEN_WORKSPACE_PATH_EVENT, openWorkspacePathLink } = await import(pathToFileURL(outfile).href)
+const { workspacePathLinkTarget } = await import(pathToFileURL(resolverOutfile).href)
 
 test('chat path links go to the chat; URLs, anchors and Markdown without a chat keep their old handling', () => {
   const paths = ['/Users/dev/O-1%20refs', 'out/run/report.csv', '~/notes', 'C:/work/report.pdf']
@@ -46,10 +49,33 @@ test('chat path links go to the chat; URLs, anchors and Markdown without a chat 
   )
 })
 
-test('the chat screen resolves a path link against its cwd, then opens the viewer or explains', () => {
+test('a path link resolves to the workspace, to one absolute server file, or to nothing', () => {
+  const cwd = '/Users/dev/WORKSPACE/agentdock/AgentsDock'
+  assert.deepEqual(workspacePathLinkTarget('src/App.tsx', cwd), { kind: 'workspace', path: 'src/App.tsx' })
+  assert.deepEqual(workspacePathLinkTarget('src/../README.md', cwd), { kind: 'workspace', path: 'README.md' })
+  assert.deepEqual(workspacePathLinkTarget(`${cwd}/docs/DEV_LOG.md`, cwd), { kind: 'workspace', path: 'docs/DEV_LOG.md' })
+  assert.deepEqual(workspacePathLinkTarget(cwd, cwd), { kind: 'workspace', path: '' })
+  // A climb that lands back inside cwd is still a workspace file.
+  assert.deepEqual(workspacePathLinkTarget('../AgentsDock/README.md', cwd), { kind: 'workspace', path: 'README.md' })
+  // A Markdown link that climbs out of cwd names one file on the server, in the canonical form the server requires.
+  assert.deepEqual(workspacePathLinkTarget('../../../../../tmp/inv_kazheng/media/clip.mp4', cwd), { kind: 'absolute', path: '/tmp/inv_kazheng/media/clip.mp4' })
+  assert.deepEqual(workspacePathLinkTarget('../sibling/REVIEW.md', cwd), { kind: 'absolute', path: '/Users/dev/WORKSPACE/agentdock/sibling/REVIEW.md' })
+  assert.deepEqual(workspacePathLinkTarget('/etc/hosts', cwd), { kind: 'absolute', path: '/etc/hosts' })
+  assert.deepEqual(workspacePathLinkTarget('/Users/dev/O-1%20refs/plan.md', cwd), { kind: 'absolute', path: '/Users/dev/O-1 refs/plan.md' })
+  assert.deepEqual(workspacePathLinkTarget('~/notes/a/../todo.md', cwd), { kind: 'absolute', path: '~/notes/todo.md' })
+  // Nothing on the server has these names.
+  assert.deepEqual(workspacePathLinkTarget('../../../../../../../../x', cwd), { kind: 'outside', path: '../../../../../../../../x' })
+  assert.deepEqual(workspacePathLinkTarget('~other/x', cwd), { kind: 'outside', path: '~other/x' })
+  assert.deepEqual(workspacePathLinkTarget('~', cwd), { kind: 'outside', path: '~' })
+  assert.deepEqual(workspacePathLinkTarget('../x', null), { kind: 'outside', path: '../x' })
+})
+
+test('the chat screen resolves a path link against its cwd, then opens the workspace, the file, or explains', () => {
   assert.match(markdown, /import \{ openWorkspacePathLink \} from '\.\.\/lib\/workspace-path-links'/)
   assert.match(chatScreen, /DeviceEventEmitter\.addListener\(OPEN_WORKSPACE_PATH_EVENT, \(request: OpenWorkspacePathRequest\) => \{\n\s+if \(request\.sessionId !== sessionId\) return/)
   assert.match(chatScreen, /const target = workspacePathLinkTarget\(request\.href, useAppStore\.getState\(\)\.sessions\.find\(value => value\.id === sessionId\)\?\.cwd\)/)
-  assert.match(chatScreen, /if \(target\.kind === 'workspace'\) openWorkspace\(sessionId, target\.path\)\n\s+else Alert\.alert\('Outside the working directory', `[^`]*\$\{target\.path\}`\)/)
+  assert.match(chatScreen, /if \(target\.kind === 'workspace'\) openWorkspace\(sessionId, target\.path\)\n\s+else if \(target\.kind === 'absolute'\) openAbsoluteFile\(sessionId, target\.path\)\n\s+else Alert\.alert\('Cannot open this path', `[^`]*\$\{target\.path\}`\)/)
   assert.match(host, /openWorkspace: \(sessionId: string, initialPath\?: string\) => present\(\{ kind: 'workspace', sessionId, initialPath \}\)/)
+  assert.match(host, /openAbsoluteFile: \(sessionId: string, path: string\) => present\(\{ kind: 'absolute', sessionId, path \}\)/)
+  assert.match(host, /activeRequest\?\.kind === 'absolute' \? <AbsoluteFileViewerModal request=\{activeRequest\}/)
 })

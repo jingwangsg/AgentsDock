@@ -132,6 +132,16 @@ export function workspaceTransferRequest(entry: WorkspaceEntry, sessionId: strin
   }
 }
 
+/** A chat link outside the working directory: the server's absolute-download route serves the current file. */
+export function absoluteFileTransferRequest(path: string, sessionId: string, client: AgentServerClient, action: FileTransferAction, isCurrent: () => boolean): FileTransferRequest {
+  const filename = path.split('/').at(-1) || path
+  return {
+    action, filename, title: filename, contentType: inferredMobileFileContentType(filename),
+    isCurrent,
+    source: () => ({ url: client.workspaceAbsoluteDownloadURL(sessionId, path), headers: client.authHeaders() }),
+  }
+}
+
 export type ConversationExportFormat = 'markdown' | 'html' | 'jsonl'
 
 export function conversationTransferRequest(session: { id: string; title?: string | null }, client: AgentServerClient, format: ConversationExportFormat, isCurrent: () => boolean): FileTransferRequest {

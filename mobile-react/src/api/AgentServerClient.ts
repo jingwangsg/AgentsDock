@@ -294,6 +294,12 @@ export class AgentServerClient {
   workspaceDownloadURL(sessionId: string, path: string): string {
     return this.url(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/download?path=${encodeURIComponent(path)}`)
   }
+  workspaceAbsolutePreviewURL(sessionId: string, path: string): string {
+    return this.url(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/absolute-preview?path=${encodeURIComponent(path)}`)
+  }
+  workspaceAbsoluteDownloadURL(sessionId: string, path: string): string {
+    return this.url(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/absolute-download?path=${encodeURIComponent(path)}`)
+  }
   sessionExportURL(sessionId: string, format: ConversationExportFormat): string {
     return this.url(`/api/sessions/${encodeURIComponent(sessionId)}/export?format=${format}`)
   }
@@ -435,6 +441,9 @@ export class AgentServerClient {
   }
   workspaceFile(sessionId: string, path: string): Promise<WorkspaceFile> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/file?path=${encodeURIComponent(path)}`)
+  }
+  workspaceAbsoluteFile(sessionId: string, path: string): Promise<WorkspaceFile> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/absolute-file?path=${encodeURIComponent(path)}`)
   }
   workspaceWriteFile(sessionId: string, path: string, content: string, expectedRevision: string): Promise<WorkspaceFile> {
     return this.put(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/file`, {

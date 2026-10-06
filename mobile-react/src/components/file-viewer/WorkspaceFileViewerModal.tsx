@@ -6,6 +6,7 @@ import { ActionSheetIOS, ActivityIndicator, Alert, KeyboardAvoidingView, Modal, 
 import { AlertCircle, ChevronLeft, ChevronRight, Download, File, FileDiff, FilePlus, Folder, FolderPlus, Link, MoreHorizontal, Pencil, RefreshCw, Search, Share2, Trash2, X } from 'lucide-react-native'
 import type { AgentServerClient } from '../../api/AgentServerClient'
 import {
+  fileViewerCacheKey,
   inferredMobileFileContentType,
   joinWorkspacePath,
   mobileFileViewerLayout,
@@ -13,6 +14,7 @@ import {
   parentWorkspacePath,
   sortFileViewerEntries,
   workspacePathSegments,
+  workspacePreviewAllowed,
 } from '../../lib/file-viewer'
 import { dismissAppKeyboard } from '../../lib/app-keyboard'
 import { formatBytes } from '../../lib/format'
@@ -929,30 +931,12 @@ function validatedWorkspaceText(file: WorkspaceFile, expectedPath: string, limit
   return { content: file.content, revision: file.revision, writable: file.writable, size: file.size, mtime_ns: file.mtime_ns }
 }
 
-function workspacePreviewAllowed(info: WorkspaceInfo | null, entry: WorkspaceEntry): boolean {
-  if (typeof entry.size === 'number' && typeof info?.max_preview_file_bytes === 'number' && entry.size > info.max_preview_file_bytes) return false
-  const contentType = inferredMobileFileContentType(entry.name).toLowerCase()
-  const advertised = info?.preview_media_types
-  if (!advertised?.length) return contentType.startsWith('image/') || contentType === 'application/pdf'
-  return advertised.some(value => {
-    const pattern = value.toLowerCase().trim()
-    return pattern.endsWith('/*') ? contentType.startsWith(pattern.slice(0, -1)) : pattern === contentType
-  })
-}
 function revisionedWorkspaceURL(url: string, revision?: string): string {
   return revision ? `${url}${url.includes('?') ? '&' : '?'}revision=${encodeURIComponent(revision)}` : url
 }
 function scopedWorkspaceCacheKey(connection: WorkspaceConnectionScope, sessionId: string, entry: WorkspaceEntry): string {
   const serverScopedURL = connection.client.workspaceDownloadURL(sessionId, entry.path)
-  return stableHash(`${connection.cacheNamespace}\u0000${serverScopedURL}\u0000${entry.revision ?? entry.mtime_ns ?? ''}`)
-}
-function stableHash(value: string): string {
-  let hash = 2166136261
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(36)
+  return fileViewerCacheKey(`${connection.cacheNamespace}\u0000${serverScopedURL}\u0000${entry.revision ?? entry.mtime_ns ?? ''}`)
 }
 function fileViewerError(cause: unknown): string { return (cause instanceof Error ? cause.message : String(cause)).replace(/^Error:\s*/i, '').trim() || 'The workspace request failed.' }
 async function prepareWorkspaceEditorForDeparture(controller: FilePreviewEditController | null): Promise<boolean> {

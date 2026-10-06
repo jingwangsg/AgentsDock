@@ -28,7 +28,7 @@ import { useFileViewer } from './file-viewer/FileViewerContext'
 export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, sidebarCollapsed, onToggleSidebar, onBack, onOptions, onSearch, onToggleInspector, onReview, onChanges, onSetupServer, onOpenMcp, onShellAction }: { sessionId: string; compact: boolean; inlineInspectorAvailable: boolean; sidebarCollapsed: boolean; onToggleSidebar: () => void; onBack: () => void; onOptions: () => void; onSearch: () => void; onToggleInspector: () => void; onReview: (runId: string) => void; onChanges: () => void; onSetupServer: () => void; onOpenMcp: () => void; onShellAction: (action: ComposerShellAction) => void }) {
   const colors = usePalette()
   const insets = useSafeAreaInsets()
-  const { openWorkspace } = useFileViewer()
+  const { openAbsoluteFile, openWorkspace } = useFileViewer()
   const welcome = isWelcomeSession(sessionId)
   const [scrollRequest, setScrollRequest] = useState(0)
   const [outputsOpen, setOutputsOpen] = useState(false)
@@ -126,17 +126,18 @@ export function ChatScreen({ sessionId, compact, inlineInspectorAvailable, sideb
     })
     return () => subscription.remove()
   }, [sessionId])
-  // Path links arrive the same way. The workspace routes reach only paths inside this chat's cwd.
+  // Path links arrive the same way. Inside this chat's cwd they open in the workspace browser; any other file on the server opens by itself.
   useEffect(() => {
     const subscription = DeviceEventEmitter.addListener(OPEN_WORKSPACE_PATH_EVENT, (request: OpenWorkspacePathRequest) => {
       if (request.sessionId !== sessionId) return
       dismissAppKeyboard()
       const target = workspacePathLinkTarget(request.href, useAppStore.getState().sessions.find(value => value.id === sessionId)?.cwd)
       if (target.kind === 'workspace') openWorkspace(sessionId, target.path)
-      else Alert.alert('Outside the working directory', `Mobile can open files and folders only inside this chat’s working directory.\n\n${target.path}`)
+      else if (target.kind === 'absolute') openAbsoluteFile(sessionId, target.path)
+      else Alert.alert('Cannot open this path', `This link does not name a file on the server.\n\n${target.path}`)
     })
     return () => subscription.remove()
-  }, [openWorkspace, sessionId])
+  }, [openAbsoluteFile, openWorkspace, sessionId])
   const content = (
     <View style={[styles.root, { backgroundColor: colors.background }]}>
       <ChatHeader sessionId={sessionId} compact={compact} inlineInspectorAvailable={inlineInspectorAvailable} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={onToggleSidebar} onBack={onBack} onOptions={onOptions} onSearch={onSearch} onFiles={() => { trackEvent('open_file_clicked'); dismissAppKeyboard(); openWorkspace(sessionId) }} outputsOpen={outputsOpen} onOutputs={() => { dismissAppKeyboard(); setOutputsOpen(true) }} onToggleInspector={onToggleInspector} onSetupServer={onSetupServer} />
