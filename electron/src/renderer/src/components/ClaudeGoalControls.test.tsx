@@ -84,6 +84,23 @@ describe('Claude native goals', () => {
     expect(within(dialog).getByRole('button', { name: 'Start goal' })).toBeEnabled()
   })
 
+  it('starts or replaces a goal while Claude is working, as Claude Code does', async () => {
+    runtime.mockResolvedValue(active)
+    setGoal.mockResolvedValue({ ...active, goal_starting: true })
+    render(surface())
+    const user = userEvent.setup()
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText('Replacing stops the current work; Claude then continues with the new goal.')).toBeInTheDocument()
+    const field = within(dialog).getByRole('textbox', { name: 'Completion condition' })
+    await waitFor(() => expect(field).toHaveValue('The application builds.'))
+    await user.clear(field)
+    await user.type(field, 'All tests pass.')
+    const replace = within(dialog).getByRole('button', { name: 'Replace goal' })
+    expect(replace).toBeEnabled()
+    await user.click(replace)
+    expect(setGoal).toHaveBeenCalledWith(session.id, 'All tests pass.')
+  })
+
   it('keeps old servers usable without probing unsupported goal mutations', async () => {
     runtime.mockResolvedValue({ ...empty, features: {} })
     render(surface())

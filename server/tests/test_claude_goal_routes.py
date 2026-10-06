@@ -44,6 +44,8 @@ def load_routes():
         "append_event": AsyncMock(),
         "CLAUDE_GOAL_PROJECTIONS": {}, "CLAUDE_GOAL_PATHS": {}, "CLAUDE_GOAL_LOCKS": {},
         "CLAUDE_GOAL_PENDING": {}, "ACTIVE": {}, "ACTIVE_LOCK": asyncio.Lock(),
+        "CURRENT_TURNS": {}, "STEERING_WAIT_TASKS": {},
+        "run_queued_turn_now": AsyncMock(return_value={"ok": True}),
         "ensure_session_not_deleting": lambda session_id: None,
         "start_turn": AsyncMock(return_value={"run_id": "new-run"}),
     }
@@ -67,7 +69,7 @@ class ClaudeGoalRouteTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.client.aclose()
 
-    async def test_set_dispatches_only_validated_native_goal_and_does_not_queue(self):
+    async def test_set_dispatches_only_validated_native_goal(self):
         response = await self.client.put("/api/sessions/chat/claude/goal", json={"condition": "  Reply DONE  "})
         self.assertEqual(response.status_code, 200, response.text)
         call = self.ns["start_turn"].await_args
@@ -75,7 +77,35 @@ class ClaudeGoalRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call.args[1].prompt, "/goal Reply DONE")
         self.assertEqual(call.args[1].skill_selection.id, "opaque-native-goal")
         self.assertEqual(call.args[1].skill_selection.revision, "inventory-revision")
-        self.assertFalse(call.kwargs["queue_if_busy"])
+        self.assertTrue(call.kwargs["queue_if_busy"])
+        self.ns["run_queued_turn_now"].assert_not_awaited()
+
+    async def test_busy_set_force_sends_the_queued_goal_and_binds_its_promoted_run(self):
+        self.ns["ACTIVE"]["chat"] = {"transport": "agent-sdk", "run_id": "working-run"}
+        self.ns["start_turn"].return_value = {"queued": True, "queued_id": "goal-row"}
+
+        async def promoted_run_admitted():
+            self.ns["ACTIVE"]["chat"] = {"transport": "agent-sdk", "run_id": "goal-run"}
+            self.ns["CURRENT_TURNS"]["chat"] = {"run_id": "goal-run", "queued_id": "goal-row"}
+
+        async def force_send(session_id, queued_id):
+            self.ns["STEERING_WAIT_TASKS"][session_id] = (
+                queued_id, 0.0, asyncio.create_task(promoted_run_admitted()))
+            return {"ok": True, "queued_id": queued_id, "interrupted": True}
+        self.ns["run_queued_turn_now"].side_effect = force_send
+        response = await self.client.put("/api/sessions/chat/claude/goal", json={"condition": "Reply DONE"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.ns["run_queued_turn_now"].assert_awaited_once_with("chat", "goal-row")
+        self.assertEqual(self.ns["CLAUDE_GOAL_PENDING"]["chat"]["run_id"], "goal-run")
+
+    async def test_deferred_force_send_leaves_goal_queued_without_pending_state(self):
+        self.ns["ACTIVE"]["chat"] = {"transport": "agent-sdk", "run_id": "starting-run"}
+        self.ns["start_turn"].return_value = {"queued": True, "queued_id": "goal-row"}
+        self.ns["run_queued_turn_now"].return_value = {"ok": False, "deferred": True, "queued_id": "goal-row"}
+        response = await self.client.put("/api/sessions/chat/claude/goal", json={"condition": "Reply DONE"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.ns["run_queued_turn_now"].assert_awaited_once_with("chat", "goal-row")
+        self.assertEqual(self.ns["CLAUDE_GOAL_PENDING"], {})
 
     async def test_unavailable_goal_command_and_busy_start_leave_no_pending_goal(self):
         self.ns["discover_session_provider_commands"].return_value = (

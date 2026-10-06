@@ -88,7 +88,7 @@ export function ClaudeGoalControls({ open, onOpenChange, disabled = false }: {
   }, [active, goal?.set_at])
 
   const changeGoal = async (next: string | null) => {
-    if (blocked || mutating || next !== null && busy) return
+    if (blocked || mutating) return
     const requestScope = scope
     setError(null)
     errorAction.current = null
@@ -131,7 +131,7 @@ export function ClaudeGoalControls({ open, onOpenChange, disabled = false }: {
             {busy && <p className="goal-feedback">{t(active ? 'claudeGoal.busyReplace' : 'claudeGoal.busyStart')}</p>}
             <footer>
               {active && <button type="button" className="quiet-button" aria-label={clearHint} title={clearHint} disabled={blocked || mutating} onClick={() => void changeGoal(null)}>{clearLabel}</button>}
-              <button type="submit" className="primary-button" disabled={blocked || busy || mutating || runtime?.goal_starting === true || !trimmedCondition || condition.length > 4000}>
+              <button type="submit" className="primary-button" disabled={blocked || mutating || runtime?.goal_starting === true || !trimmedCondition || condition.length > 4000}>
                 {mutating && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
                 {active ? t('claudeGoal.replace') : t('claudeGoal.start')}
               </button>

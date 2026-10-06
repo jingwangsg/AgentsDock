@@ -1,5 +1,30 @@
 # Public development log
 
+## 2026-10-06 — A Claude goal can be started or replaced while Claude is working (desktop + server, source only)
+
+- The Claude goal dialog refused to start a goal while a turn was running
+  ("Wait for current work to finish") and to replace an active goal without
+  Clear & stop first. Claude Code 2.1.288 accepts `/goal` at any time: the
+  terminal client runs it as an immediate command, while its SDK input, which
+  AgentsServer drives, queues a slash command until the current turn ends
+  (verified with a stream-json session: the command is enqueued during the
+  tool call and runs after the turn's result).
+- Start goal and Replace goal now stay enabled while Claude works. The server
+  queues the native `/goal <condition>` command and Force Sends it: the
+  current turn is interrupted and the command runs next with its exact text,
+  so the new goal takes over at once; the dialog explains this while Claude
+  is busy. A Force Send that cannot interrupt yet (provider still starting)
+  leaves the command queued for the next turn. Clear & stop is unchanged.
+- Verified with the goal route tests (two new cases), the goal dialog tests
+  (one new case), the type check and production build, and an isolated
+  server plus the built desktop app (offscreen profile) against the real
+  Claude CLI: a goal started during a running Bash call interrupted it and
+  became active, then a replacement during the goal's own Bash call
+  interrupted that turn and the new goal was achieved; click to active goal
+  took about 9 s, most of it the existing Stop confirmation. Android already
+  offered Stop & set goal (it clears the goal, waits for idle, then sets it)
+  and is unchanged. Availability: source only.
+
 ## 2026-10-06 — A standalone scheduled job runs in its own chat while the parent chat is busy (server + desktop)
 
 - A scheduled job set to run independently never ran while its chat held a

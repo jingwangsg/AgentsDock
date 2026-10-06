@@ -90956,7 +90956,9 @@ def require_claude_goal_session(session_id: str) -> dict[str, Any]:
     return session
 
 
-async def start_claude_goal_command(session_id: str, argument: str) -> dict[str, Any]:
+async def start_claude_goal_command(
+    session_id: str, argument: str, *, queue_if_busy: bool = False,
+) -> dict[str, Any]:
     session = require_claude_goal_session(session_id)
     snapshot, inventory = await discover_session_provider_commands(session_id, session)
     command = next((record for record in inventory.records
@@ -90967,7 +90969,7 @@ async def start_claude_goal_command(session_id: str, argument: str) -> dict[str,
         prompt=f"/goal {argument}",
         skill_selection=SkillSelection(id=command.public["id"], revision=inventory.revision),
         client_capabilities=[CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY],
-    ), queue_if_busy=False)
+    ), queue_if_busy=queue_if_busy)
 
 
 @app.post("/api/sessions/{session_id}/claude/compact")
@@ -91010,7 +91012,20 @@ async def put_claude_goal(session_id: str, req: ClaudeGoalRequest) -> dict[str, 
     if not condition or condition.lower() == "clear":
         raise HTTPException(status_code=400, detail="Enter a completion condition for Claude")
     previous = await refresh_claude_goal(session_id, notify=False)
-    accepted = await start_claude_goal_command(session_id, condition)
+    accepted = await start_claude_goal_command(session_id, condition, queue_if_busy=True)
+    if accepted.get("queued"):
+        # Claude Code applies /goal immediately even while Claude is working.
+        # Its SDK input only runs a slash command after the current turn, so
+        # Force Send interrupts that turn and runs this exact command next.
+        queued_id = str(accepted.get("queued_id") or "")
+        outcome = await run_queued_turn_now(session_id, queued_id)
+        waiter = STEERING_WAIT_TASKS.get(session_id)
+        if outcome.get("ok") and waiter is not None and waiter[0] == queued_id:
+            await asyncio.shield(waiter[2])
+        async with ACTIVE_LOCK:
+            promoted = CURRENT_TURNS.get(session_id) or {}
+            if promoted.get("queued_id") == queued_id and promoted.get("run_id"):
+                accepted = {"run_id": str(promoted["run_id"])}
     # Bind pending display state only after actual admission. A competing
     # request or an older run's cleanup cannot clear the winner's operation.
     async with ACTIVE_LOCK:
