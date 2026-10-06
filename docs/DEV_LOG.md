@@ -1,6 +1,6 @@
 # Public development log
 
-## 2026-10-06 — A Claude goal can be started or replaced while Claude is working (desktop + server, source only)
+## 2026-10-06 — A Claude goal can be started or replaced while Claude is working (desktop package 105 + server)
 
 - The Claude goal dialog refused to start a goal while a turn was running
   ("Wait for current work to finish") and to replace an active goal without
@@ -23,9 +23,11 @@
   interrupted that turn and the new goal was achieved; click to active goal
   took about 9 s, most of it the existing Stop confirmation. Android already
   offered Stop & set goal (it clears the goal, waits for idle, then sets it)
-  and is unchanged. Availability: source only.
+  and is unchanged. Package 105 (`AgentsDock-0.2.0-105-mac-arm64.pkg`) was
+  attached to the working chat; the server part is not deployed.
+  Availability: local package.
 
-## 2026-10-06 — A standalone scheduled job runs in its own chat while the parent chat is busy (server + desktop)
+## 2026-10-06 — A standalone scheduled job runs in its own chat while the parent chat is busy (server + desktop package 105)
 
 - A scheduled job set to run independently never ran while its chat held a
   long Codex goal: the scheduler deferred any job whose chat had a running
@@ -54,7 +56,8 @@
   the parent card showed the result and opened the run chat; the
   chat-context job posted no card and ran after the parent became idle; a
   follow-up in the run chat kept the run's context. Mobile still shows the
-  parent card without the run chat link. Availability: source only.
+  parent card without the run chat link. Package 105 carries the desktop
+  part; the server part is not deployed. Availability: local package.
 
 ## 2026-10-05 — A chat link that climbs out of the working directory opens its file (desktop package 104)
 
