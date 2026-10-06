@@ -1157,6 +1157,17 @@ class ClaudeSDKRunHandle:
         self._background_task_reconciliation_consumed = False
         self._background_reconciliation_progress_observed = False
         self._background_reconciliation_aborted = False
+        self._awaiting_background_tasks = False
+        self._deferred_result: Any = None
+
+    @property
+    def awaiting_background_tasks(self) -> bool:
+        """The model's turn ended but tracked background tasks keep this run open.
+
+        A user message sent now reaches an idle model, so the runner may deliver
+        it as a steer instead of holding it in the queue until the tasks end.
+        """
+        return self._awaiting_background_tasks and not self.done
 
     @property
     def background_task_receipts(self) -> tuple[MappingProxyType, ...]:
@@ -1305,10 +1316,13 @@ class ClaudeSDKRunHandle:
         self._acknowledged = True
         self._acknowledged_event.set()
 
-    def _finish(self, terminal: Any) -> None:
+    def _finish(self, terminal: Any, *, keep_background_tracking: bool = False) -> None:
         if self.done:
             return
-        self._lose_background_tracking()
+        # A run released for a queued message hands its live tasks to the next
+        # run on the same connection; their receipts stay "running", not lost.
+        if not keep_background_tracking:
+            self._lose_background_tracking()
         self._terminal.set_result(terminal)
         self._messages.put_nowait(_RUN_END)
 
@@ -1348,6 +1362,14 @@ class _StartRun:
     response: asyncio.Future[ClaudeSDKRunHandle]
     background_task_reconciliation: dict[str, Any] | None = None
     pending_mail_hint: Callable[[], str | None] | None = None
+
+
+@dataclass
+class _ReleaseAwaiting:
+    """End a run whose model is idle while background tasks keep it open."""
+
+    run_id: str | None
+    response: asyncio.Future[bool]
 
 
 @dataclass
@@ -1448,6 +1470,7 @@ class ClaudeSDKSupervisor:
         query_delivery_timeout_seconds: float = 10.0,
         control_timeout_seconds: float = 15.0,
         usage_observer: Callable[[str, str, Any], Awaitable[None]] | None = None,
+        awaiting_observer: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         clean_chat_id = str(chat_id or "").strip()
         if not clean_chat_id:
@@ -1460,6 +1483,7 @@ class ClaudeSDKSupervisor:
         self._client_factory = client_factory
         self._is_result_message = is_result_message
         self._usage_observer = usage_observer
+        self._awaiting_observer = awaiting_observer
         if connect_timeout_seconds <= 0:
             raise ValueError("connect_timeout_seconds must be positive")
         self._connect_timeout_seconds = float(connect_timeout_seconds)
@@ -1625,6 +1649,21 @@ class ClaudeSDKSupervisor:
         response: asyncio.Future[bool] = loop.create_future()
         assert self._commands is not None
         await self._commands.put(_Interrupt(run_id=run_id, response=response))
+        return await asyncio.shield(response)
+
+    async def release_awaiting_run(self, *, run_id: str | None = None) -> bool:
+        """End the active run if only background tasks keep it open.
+
+        The model's own Result is delivered as the run's terminal message and
+        the tasks stay alive on this connection, so a waiting user message can
+        start the next run without an interrupt. Returns False when the run is
+        not in that state.
+        """
+
+        loop = self._ensure_actor()
+        response: asyncio.Future[bool] = loop.create_future()
+        assert self._commands is not None
+        await self._commands.put(_ReleaseAwaiting(run_id=run_id, response=response))
         return await asyncio.shield(response)
 
     async def clear_goal(
@@ -2336,6 +2375,39 @@ class ClaudeSDKSupervisor:
                     f"Claude goal-clear delivery is uncertain: {exc}"
                 ))
 
+    async def _notify_awaiting(self, run_id: str) -> None:
+        assert self._awaiting_observer is not None
+        try:
+            await self._awaiting_observer(self.chat_id, run_id)
+        except Exception:
+            logger.debug("Claude awaiting-background observer failed", exc_info=True)
+
+    async def _handle_release_awaiting(self, command: _ReleaseAwaiting) -> None:
+        active = self._active_run
+        if (
+            active is None
+            or active.done
+            or not active._awaiting_background_tasks
+            or active._deferred_result is None
+            or (command.run_id is not None and active.run_id != command.run_id)
+        ):
+            if not command.response.done():
+                command.response.set_result(False)
+            return
+        message = active._deferred_result
+        active._deliver(message)
+        self._cancel_ack_timeout()
+        active._finish(message, keep_background_tracking=True)
+        if self._pending_mail_hint_hook is not None:
+            self._pending_mail_hint_hook.retire()
+        self._active_run = None
+        bind_provider_tool_owner(self.options, "", "")
+        # _inflight_tasks is deliberately kept: the tasks keep running on this
+        # connection and their completion wakes the model inside the next run.
+        self._last_used_at = time.monotonic()
+        if not command.response.done():
+            command.response.set_result(True)
+
     async def _handle_interrupt(self, command: _Interrupt) -> None:
         active = self._active_run
         if (
@@ -2857,6 +2929,12 @@ class ClaudeSDKSupervisor:
             had_inflight_tasks = bool(self._inflight_tasks)
             forced_run_end = _result_forces_run_end(command.message)
             if had_inflight_tasks and not forced_run_end:
+                active._awaiting_background_tasks = True
+                active._deferred_result = command.message
+                if self._awaiting_observer is not None:
+                    # Off the actor: the observer may answer with a command
+                    # on this same queue (release_awaiting_run).
+                    asyncio.create_task(self._notify_awaiting(active.run_id))
                 return
             active._deliver(command.message)
             self._cancel_ack_timeout()
@@ -2880,6 +2958,14 @@ class ClaudeSDKSupervisor:
         subtype, task_id, task_type, status = _task_lifecycle_fields(
             command.message
         )
+        if (
+            _message_type(command.message) in {"assistant", "assistantmessage", "stream_event", "streamevent", "user", "usermessage"}
+            and not _message_field(command.message, "parent_tool_use_id")
+        ):
+            # The top-level model is working again, woken by a task or steered
+            # by the user. A subagent's own frames carry parent_tool_use_id and
+            # leave the parent idle.
+            active._awaiting_background_tasks = False
         active._observe_background_task(command.message)
         if task_id:
             if subtype == "task_started" and task_type in _DEFERRING_TASK_TYPES:
@@ -2961,6 +3047,8 @@ class ClaudeSDKSupervisor:
                     await self._handle_start(command)
                 elif isinstance(command, _Interrupt):
                     await self._handle_interrupt(command)
+                elif isinstance(command, _ReleaseAwaiting):
+                    await self._handle_release_awaiting(command)
                 elif isinstance(command, _GetContextUsage):
                     await self._handle_get_context_usage(command)
                 elif isinstance(command, _GetMCPStatus):
@@ -3031,6 +3119,7 @@ class ClaudeSDKSupervisorManager:
         query_delivery_timeout_seconds: float = 10.0,
         control_timeout_seconds: float = 15.0,
         usage_observer: Callable[[str, str, Any], Awaitable[None]] | None = None,
+        awaiting_observer: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         if max_clients < 1:
             raise ValueError("max_clients must be positive")
@@ -3039,6 +3128,7 @@ class ClaudeSDKSupervisorManager:
         self._client_factory = client_factory
         self._is_result_message = is_result_message
         self._usage_observer = usage_observer
+        self._awaiting_observer = awaiting_observer
         self._max_clients = int(max_clients)
         self._idle_ttl_seconds = idle_ttl_seconds
         if connect_timeout_seconds <= 0:
@@ -3152,6 +3242,7 @@ class ClaudeSDKSupervisorManager:
                 query_delivery_timeout_seconds=self._query_delivery_timeout_seconds,
                 control_timeout_seconds=self._control_timeout_seconds,
                 usage_observer=self._usage_observer,
+                awaiting_observer=self._awaiting_observer,
             )
             self._supervisors[chat_id] = supervisor
         else:
@@ -3290,6 +3381,17 @@ class ClaudeSDKSupervisorManager:
         if supervisor is None:
             return False
         return await supervisor.interrupt(run_id=run_id)
+
+    async def release_awaiting_run(self, chat_id: str, *, run_id: str | None = None) -> bool:
+        """End a chat's run that only background tasks keep open; see the supervisor."""
+
+        self._bind_loop()
+        assert self._lock is not None
+        async with self._lock:
+            supervisor = self._supervisors.get(str(chat_id))
+        if supervisor is None:
+            return False
+        return await supervisor.release_awaiting_run(run_id=run_id)
 
     async def clear_goal(
         self, chat_id: str, *, run_id: str,

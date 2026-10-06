@@ -18537,6 +18537,10 @@ async def enqueue_turn(
         still_busy = session_id in BUSY_SESSIONS
     if not still_busy:
         schedule_next_queued_turn(session_id)
+    else:
+        # A Claude run whose model is idle while background tasks run ends now
+        # so this message starts; the tasks keep running. Other runs stay busy.
+        asyncio.create_task(release_claude_run_for_queued_turn(session_id))
     return {
         "queued": True,
         "queued_id": queued_id,
@@ -32758,10 +32762,14 @@ def _build_claude_subagent_snapshot_locked(session_id: str, limit: int) -> dict[
     # Resume the fold where the last one stopped, re-reading only what was appended.
     cached = CLAUDE_SUBAGENT_FOLD_CACHE.get(session_id)
     if cached is None or source is None or not transcript_offset_is_current(source, cached):
-        cached = {"states": OrderedDict(), "task_keys": {}, "tool_keys": {}, "latest_seq": 0, "offset": 0}
+        cached = {"states": OrderedDict(), "task_keys": {}, "tool_keys": {}, "task_any": {}, "latest_seq": 0, "offset": 0}
     states: OrderedDict[str, dict[str, Any]] = cached["states"]
     task_keys: dict[str, str] = cached["task_keys"]
     tool_keys: dict[str, str] = cached["tool_keys"]
+    # One CLI session per chat: a task id names the same task in every run.
+    # A background agent launched in one run completes in the run that is
+    # open when it finishes, so its frames must find the state by task alone.
+    task_any: dict[str, str] = cached.setdefault("task_any", {})
     latest_seq: int = cached["latest_seq"]
     offset: int = cached["offset"]
 
@@ -32770,7 +32778,7 @@ def _build_claude_subagent_snapshot_locked(session_id: str, limit: int) -> dict[
 
     def forget(state_key: str) -> None:
         states.pop(state_key, None)
-        for index in (task_keys, tool_keys):
+        for index in (task_keys, tool_keys, task_any):
             for provider_key, candidate in list(index.items()):
                 if candidate == state_key:
                     index.pop(provider_key, None)
@@ -32787,6 +32795,8 @@ def _build_claude_subagent_snapshot_locked(session_id: str, limit: int) -> dict[
         state_key = task_keys.get(scoped(run_id, task_id)) if task_id else None
         if state_key is None and tool_id:
             state_key = tool_keys.get(scoped(run_id, tool_id))
+        if state_key is None and task_id:
+            state_key = task_any.get(task_id)
         return state_key, states.get(state_key) if state_key else None
 
     def merge_states(primary_key: str, secondary_key: str) -> dict[str, Any]:
@@ -32860,6 +32870,7 @@ def _build_claude_subagent_snapshot_locked(session_id: str, limit: int) -> dict[
         if task_id:
             state["task_id"] = task_id
             task_keys[scoped(run_id, task_id)] = state_key
+            task_any[task_id] = state_key
         if tool_id:
             state["tool_id"] = tool_id
             tool_keys[scoped(run_id, tool_id)] = state_key
@@ -33137,7 +33148,7 @@ def _build_claude_subagent_snapshot_locked(session_id: str, limit: int) -> dict[
                         note(state, event, "Stopped with parent chat")
             CLAUDE_SUBAGENT_FOLD_CACHE[session_id] = {
                 **transcript_fingerprint(source, offset), "offset": offset, "states": states,
-                "task_keys": task_keys, "tool_keys": tool_keys, "latest_seq": latest_seq,
+                "task_keys": task_keys, "tool_keys": tool_keys, "task_any": task_any, "latest_seq": latest_seq,
             }
         CLAUDE_SUBAGENT_FOLD_CACHE.move_to_end(session_id)
         while len(CLAUDE_SUBAGENT_FOLD_CACHE) > CLAUDE_SUBAGENT_FOLD_CACHE_MAX:
@@ -57223,9 +57234,47 @@ async def claude_sdk_manager() -> ClaudeSDKSupervisorManager:
                 connect_timeout_seconds=CLAUDE_SDK_CONNECT_TIMEOUT_SECONDS,
                 control_timeout_seconds=CLAUDE_MCP_CONTROL_TIMEOUT_SECONDS,
                 usage_observer=observe_claude_provider_usage,
+                awaiting_observer=release_claude_run_for_queued_turn,
             )
             CLAUDE_SDK_MANAGER = manager
         return manager
+
+
+async def release_claude_run_for_queued_turn(session_id: str, run_id: str | None = None) -> bool:
+    """Let a queued message through a Claude run that only background tasks keep open.
+
+    Called when a message is queued and when a run enters that state. The run
+    ends with the model's own Result, its agents and background shells stay
+    alive on the chat's SDK connection, and the queued message starts the next
+    run without an interrupt (which would kill them). Their completion then
+    wakes the model inside whichever run is open.
+    """
+    manager = CLAUDE_SDK_MANAGER
+    if manager is None or not QUEUED_TURNS.get(session_id):
+        return False
+    async with ACTIVE_LOCK:
+        active = ACTIVE.get(session_id) or {}
+        if (
+            active.get("transport") != CLAUDE_TRANSPORT_AGENT_SDK
+            or active.get("stop_requested")
+            or (run_id is not None and str(active.get("run_id") or "") != run_id)
+        ):
+            return False
+        active_run_id = str(active.get("run_id") or "")
+    try:
+        released = await manager.release_awaiting_run(session_id, run_id=active_run_id)
+    except Exception as exc:
+        logger.warning(
+            "could not release waiting Claude run session=%s run=%s: %s",
+            session_id, active_run_id, concise_error_message(exc),
+        )
+        return False
+    if released:
+        logger.info(
+            "Claude run released to a queued message while background tasks keep running session=%s run=%s",
+            session_id, active_run_id,
+        )
+    return released
 
 
 async def close_claude_sdk_manager() -> None:

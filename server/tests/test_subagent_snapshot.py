@@ -48,6 +48,39 @@ class ClaudeSubagentSnapshotTests(unittest.IsolatedAsyncioTestCase):
             raw=json.dumps(payload),
         )
 
+    def test_background_agent_completes_from_a_later_run_without_a_duplicate_state(self) -> None:
+        # A queued message released run-1 while its agent ran; the agent's completion
+        # and the next run's task receipt arrive under run-2 and must update one state.
+        events = [
+            self.event(1, "tool_started", tool={"id": "tool-agent", "name": "Agent", "input": {"description": "Seventy second probe", "run_in_background": True}}),
+            self.raw(2, {"type": "system", "subtype": "task_started", "task_id": "task-1", "tool_use_id": "tool-agent", "task_type": "local_agent", "description": "Seventy second probe", "is_backgrounded": True}),
+            self.event(3, "tool_finished", tool_id="tool-agent", tool={"id": "tool-agent", "name": "Agent", "input": {"run_in_background": True}}, output="Async agent launched successfully.", is_error=False),
+            self.event(4, "turn_finished", exit_code=0, result_text="launched"),
+            self.event(5, "turn_started", run_id="run-2", prompt="hello?"),
+            self.raw(6, {"type": "system", "subtype": "task_progress", "task_id": "task-1", "description": "Running python3"}, run_id="run-2"),
+            self.raw(7, {"type": "system", "subtype": "task_notification", "task_id": "task-1", "status": "completed", "summary": "AGENT_DONE"}, run_id="run-2"),
+            self.event(8, "claude_background_tasks_reconciled", run_id="run-2", backend="claude", provider_session_id="provider-1", reconciliation_id="r1", overflow_count=0, tasks=[
+                {"task_id": "task-1", "task_type": "local_agent", "status": "completed", "owner_run_id": "run-2", "provider_session_id": "provider-1"},
+            ]),
+            self.event(9, "turn_finished", run_id="run-2", exit_code=0, result_text="collected"),
+        ]
+        self.write_events(events)
+        snapshot = agent_server.build_claude_subagent_snapshot(self.session_id, 20)
+        self.assertEqual(snapshot["count"], 1)
+        self.assertEqual(snapshot["active_count"], 0)
+        [state] = snapshot["subagents"]
+        self.assertEqual(state["subagent_name"], "Seventy second probe")
+        self.assertEqual(state["subagent_status"], "completed")
+        self.assertEqual(state["run_id"], "run-1")
+        self.assertEqual(state["subagent_summary"], "AGENT_DONE")
+        self.assertIn("Running python3", [entry["text"] for entry in state["subagent_log"]])
+        # Before the completion frame the released run leaves the agent running.
+        self.write_events(events[:5])
+        agent_server.CLAUDE_SUBAGENT_FOLD_CACHE.pop(self.session_id, None)
+        live = agent_server.build_claude_subagent_snapshot(self.session_id, 20)
+        self.assertEqual(live["active_count"], 1)
+        self.assertEqual(live["subagents"][0]["subagent_status"], "running")
+
     def test_projects_background_agent_lifecycle_without_raw_prompt_or_output(self) -> None:
         prompt_secret = "PROMPT_SECRET_DO_NOT_EXPOSE"
         command_secret = "COMMAND_SECRET_DO_NOT_EXPOSE"

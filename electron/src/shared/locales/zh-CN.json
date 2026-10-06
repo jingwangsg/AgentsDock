@@ -1032,6 +1032,7 @@
   "timeline.subagent.parentStopped": "父轮次已停止",
   "timeline.subagent.path": "路径：{path}",
   "timeline.subagent.started": "Subagent 已启动",
+  "timeline.subagent.runningInBackground": "正在后台运行",
   "timeline.subagent.starting": "正在启动 {name}",
   "timeline.subagent.status": "Subagent {status}",
   "timeline.subagent.task": "任务：{task}",

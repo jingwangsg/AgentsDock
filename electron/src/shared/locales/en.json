@@ -1032,6 +1032,7 @@
   "timeline.subagent.parentStopped": "Parent turn stopped",
   "timeline.subagent.path": "Path: {path}",
   "timeline.subagent.started": "Subagent started",
+  "timeline.subagent.runningInBackground": "Running in the background",
   "timeline.subagent.starting": "Starting {name}",
   "timeline.subagent.status": "Subagent {status}",
   "timeline.subagent.task": "Task: {task}",

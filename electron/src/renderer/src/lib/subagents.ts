@@ -28,6 +28,8 @@ export interface SubagentActivity {
   latestActivity?: string
   summary?: string
   providerRef?: string
+  /** Launched with run_in_background, or seen as a CLI task: the Agent tool's return is a launch receipt, not completion. */
+  background?: boolean
   log: SubagentLogEntry[]
 }
 
@@ -49,6 +51,9 @@ export function subagentsFromEvents(events: Event[], ownerBackend?: 'claude' | '
   const agents = new Map<string, SubagentActivity>()
   const taskKeys = new Map<string, string>()
   const toolKeys = new Map<string, string>()
+  // One CLI session per Claude chat: a task id names the same task in every run. A background
+  // agent launched in one run finishes in whichever run is open then, so its frames look up by id.
+  const claudeTaskKeys = new Map<string, string>()
   const runBackends = new Map<string, 'claude' | 'codex'>()
   const unsupportedRuns = new Set<string>()
   const authoritativeKeys = new Set<string>()
@@ -193,6 +198,7 @@ export function subagentsFromEvents(events: Event[], ownerBackend?: 'claude' | '
         startedAt: event.ts,
         updatedAt: event.ts
       })
+      if (input.run_in_background === true) agent.background = true
       if (!agentStartSeqs.has(agent.key)) agentStartSeqs.set(agent.key, event.seq)
       toolKeys.set(alias, key)
       if (!authoritativeKeys.has(agent.key)) note(agent, event.ts, t('timeline.subagent.starting', { name: agent.name }))
@@ -227,15 +233,19 @@ export function subagentsFromEvents(events: Event[], ownerBackend?: 'claude' | '
       const key = toolKeys.get(toolAlias(backend, runId, id))
       const agent = key ? agents.get(key) : undefined
       if (agent) {
+        // A background Claude agent's tool result is only its launch receipt; it finishes through its task frames.
+        const launchReceipt = agent.backend === 'claude' && !event.is_error && agent.background === true
         if (!authoritativeKeys.has(agent.key)) {
-          agent.status = event.is_error ? 'failed' : agent.backend === 'claude' ? 'completed' : 'running'
+          if (launchReceipt) { if (agent.status === 'starting') agent.status = 'running' }
+          else agent.status = event.is_error ? 'failed' : agent.backend === 'claude' ? 'completed' : 'running'
         }
         if (agent.backend === 'codex') {
           const providerIdentity = parseProviderIdentity(event.output)
           agent.providerRef = providerIdentity.providerRef || agent.providerRef
           applySubagentIdentity(agent, providerIdentity)
         }
-        if (agent.status !== 'tracking_lost') note(agent, event.ts, event.is_error ? event.output || t('timeline.subagent.failed') : agent.backend === 'claude' ? event.output || t('timeline.subagent.completed') : t('timeline.subagent.attached'))
+        if (launchReceipt) note(agent, event.ts, t('timeline.subagent.runningInBackground'))
+        else if (agent.status !== 'tracking_lost') note(agent, event.ts, event.is_error ? event.output || t('timeline.subagent.failed') : agent.backend === 'claude' ? event.output || t('timeline.subagent.completed') : t('timeline.subagent.attached'))
       }
     }
 
@@ -248,7 +258,7 @@ export function subagentsFromEvents(events: Event[], ownerBackend?: 'claude' | '
 
       if (raw.type === 'system' && subtype === 'task_started' && raw.task_type === 'local_agent' && taskId) {
         const key = taskKeys.get(taskAlias('claude', taskId, runId))
-          || toolKeys.get(toolAlias('claude', runId, rawToolId)) || `claude:${runId}:${rawToolId || taskId}`
+          || toolKeys.get(toolAlias('claude', runId, rawToolId)) || claudeTaskKeys.get(taskId) || `claude:${runId}:${rawToolId || taskId}`
         const task = cleanIdentityText(raw.description)
         const fallbackName = task || cleanIdentityText(raw.subagent_type) || 'Claude subagent'
         const agent = ensure(key, {
@@ -270,17 +280,20 @@ export function subagentsFromEvents(events: Event[], ownerBackend?: 'claude' | '
         }
         agent.kind = String(raw.subagent_type || agent.kind || 'agent')
         agent.status = 'running'
+        // The CLI tracks it as a task, so its completion arrives as a task frame.
+        if (raw.is_backgrounded === true) agent.background = true
         taskKeys.set(taskAlias('claude', taskId, runId), key)
+        claudeTaskKeys.set(taskId, key)
         if (rawToolId) toolKeys.set(toolAlias('claude', runId, rawToolId), key)
         note(agent, event.ts, raw.description || t('timeline.subagent.started'))
       } else if (raw.type === 'system' && subtype === 'task_progress' && taskId) {
-        const agent = agents.get(taskKeys.get(taskAlias('claude', taskId, runId)) || '')
+        const agent = agents.get(taskKeys.get(taskAlias('claude', taskId, runId)) || claudeTaskKeys.get(taskId) || '')
         if (agent && ACTIVE_STATUSES.has(agent.status)) {
           agent.status = 'running'
           note(agent, event.ts, raw.description || t('timeline.ui.working'))
         }
       } else if (raw.type === 'system' && subtype === 'task_notification' && taskId) {
-        const agent = agents.get(taskKeys.get(taskAlias('claude', taskId, runId)) || '')
+        const agent = agents.get(taskKeys.get(taskAlias('claude', taskId, runId)) || claudeTaskKeys.get(taskId) || '')
         if (agent) {
           const nextStatus = normalizedStatus(raw.status)
           if (!ACTIVE_STATUSES.has(agent.status) && ACTIVE_STATUSES.has(nextStatus)) continue
@@ -304,6 +317,8 @@ export function subagentsFromEvents(events: Event[], ownerBackend?: 'claude' | '
         ) continue
         const parentStopped = event.type === 'turn_stopped' || (event.type === 'turn_finished' && event.stopped === true)
         const parentFailed = event.type === 'error' || (event.exit_code != null && event.exit_code !== 0)
+        // A background agent outlives a turn that ended normally; only a stop or an error takes it down.
+        if (agent.background === true && !parentStopped && !parentFailed) continue
         agent.status = parentStopped ? 'stopped' : parentFailed ? 'failed' : 'completed'
         note(agent, event.ts, t(agent.status === 'stopped' ? 'timeline.subagent.parentStopped' : agent.status === 'failed' ? 'timeline.subagent.parentFailed' : 'timeline.subagent.parentCompleted'))
       }

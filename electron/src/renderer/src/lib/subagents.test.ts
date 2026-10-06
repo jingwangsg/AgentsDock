@@ -175,6 +175,59 @@ describe('subagentsFromEvents', () => {
     expect(subagentsFromEvents(events)[0].log[0].text).toBe('Starting Review Prompt')
   })
 
+  it('keeps a background Claude agent running after its launch receipt until its task frame ends it', () => {
+    const tool = { id: 'tool-bg', name: 'Agent', input: { description: 'Slow background probe', run_in_background: true } }
+    const launched = [
+      event(1, 'tool_started', { backend: 'claude', tool }),
+      event(2, 'raw_event', { backend: 'claude', raw: JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 'task-bg', tool_use_id: 'tool-bg', description: 'Slow background probe', is_backgrounded: true, task_type: 'local_agent' }) }),
+      event(3, 'tool_finished', { backend: 'claude', tool_id: 'tool-bg', tool, output: 'Async agent launched successfully. (This tool result is internal metadata)' })
+    ]
+    const [running] = subagentsFromEvents(launched)
+    expect(running).toMatchObject({ id: 'task-bg', status: 'running', background: true })
+    expect(isSubagentActive(running)).toBe(true)
+    expect(running.log.map(entry => entry.text)).toEqual(['Starting Slow background probe', 'Slow background probe', 'Running in the background'])
+    // The parent's turn ending does not finish it either while the run stays open for it.
+    const [done] = subagentsFromEvents([
+      ...launched,
+      event(4, 'raw_event', { backend: 'claude', raw: JSON.stringify({ type: 'system', subtype: 'task_notification', task_id: 'task-bg', status: 'completed', summary: 'PROBE_DONE' }) }),
+      event(5, 'turn_finished', { backend: 'claude', exit_code: 0 })
+    ])
+    expect(done).toMatchObject({ status: 'completed', summary: 'PROBE_DONE' })
+    // Without run_in_background the receipt still completes the agent.
+    const foreground = { id: 'tool-fg', name: 'Agent', input: { description: 'Quick check' } }
+    const [quick] = subagentsFromEvents([
+      event(1, 'tool_started', { backend: 'claude', tool: foreground }),
+      event(2, 'tool_finished', { backend: 'claude', tool_id: 'tool-fg', tool: foreground, output: 'All good' })
+    ])
+    expect(quick.status).toBe('completed')
+  })
+
+  it('completes a background Claude agent from a task frame in a later run and ignores the launching run ending', () => {
+    const tool = { id: 'tool-bg', name: 'Agent', input: { description: 'Seventy second probe', run_in_background: true } }
+    const agents = subagentsFromEvents([
+      event(1, 'tool_started', { backend: 'claude', tool }),
+      event(2, 'raw_event', { backend: 'claude', raw: JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 'task-bg', tool_use_id: 'tool-bg', description: 'Seventy second probe', is_backgrounded: true, task_type: 'local_agent' }) }),
+      event(3, 'tool_finished', { backend: 'claude', tool_id: 'tool-bg', tool, output: 'Async agent launched successfully.' }),
+      // A queued message released this run; the agent keeps running on the chat's CLI connection.
+      event(4, 'turn_finished', { backend: 'claude', exit_code: 0 }),
+      event(5, 'turn_started', { backend: 'claude', run_id: 'run-2' }),
+      event(6, 'raw_event', { backend: 'claude', run_id: 'run-2', raw: JSON.stringify({ type: 'system', subtype: 'task_progress', task_id: 'task-bg', description: 'Running python3' }) }),
+      event(7, 'raw_event', { backend: 'claude', run_id: 'run-2', raw: JSON.stringify({ type: 'system', subtype: 'task_notification', task_id: 'task-bg', status: 'completed', summary: 'AGENT_DONE' }) }),
+      event(8, 'turn_finished', { backend: 'claude', run_id: 'run-2', exit_code: 0 })
+    ])
+    expect(agents).toHaveLength(1)
+    expect(agents[0]).toMatchObject({ id: 'task-bg', runId: 'run-1', status: 'completed', summary: 'AGENT_DONE' })
+    expect(agents[0].log.map(entry => entry.text)).toContain('Running python3')
+    // Up to the release, the agent is still running.
+    const [live] = subagentsFromEvents([
+      event(1, 'tool_started', { backend: 'claude', tool }),
+      event(2, 'raw_event', { backend: 'claude', raw: JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 'task-bg', tool_use_id: 'tool-bg', is_backgrounded: true, task_type: 'local_agent' }) }),
+      event(3, 'tool_finished', { backend: 'claude', tool_id: 'tool-bg', tool, output: 'Async agent launched successfully.' }),
+      event(4, 'turn_finished', { backend: 'claude', exit_code: 0 })
+    ])
+    expect(live.status).toBe('running')
+  })
+
   it('tracks a Claude local agent through progress, child tools, and completion', () => {
     const tool = { id: 'tool-agent', name: 'Agent', input: { description: 'Audit the renderer', subagent_type: 'general-purpose' } }
     const agents = subagentsFromEvents([

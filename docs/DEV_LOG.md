@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-07 — A background Claude agent shows as running, and a message sent while agents run no longer kills them (server, desktop package 108, Android build 50)
+
+- A Claude subagent started with `run_in_background` showed "completed" the
+  moment it was launched, on desktop and Android: the Agent tool returns a
+  launch receipt at once, and both clients treated that tool result as the
+  agent's completion. The server's own snapshot already knew better. Both
+  clients now keep an agent launched in the background, or reported by the CLI
+  as a background task, running until its task frame or a snapshot ends it;
+  the receipt is logged as "Running in the background".
+- While background agents ran, the chat stayed "Working" and a new message
+  waited in the queue until they finished, so the way to talk to the chat was
+  Stop, and Stop kills the agents: the CLI's interrupt stops every background
+  task, agents and shells alike (measured through the Agent SDK while the
+  model was idle and while it was in a tool). A message queued while a Claude
+  run is waiting only for background tasks now ends that run with the model's
+  own reply and starts immediately; the agents keep running on the chat's CLI
+  connection, the model answers the message, and the agents' completion wakes
+  it inside the new run. Stop keeps its meaning: it interrupts the CLI and
+  therefore ends the agents too.
+- Verified with the SDK client tests (88 pass, including the release of a
+  waiting run to a queued message, with the agent's own frames leaving the
+  parent idle), a new server test for the queue hook, the desktop and Android
+  subagent parsers (new background-launch cases), and the mobile Android
+  contract tests. Accepted against an isolated server with real Claude agents
+  over the interactive transport: a background agent kept its run open until
+  it finished and the parent reacted; a follow-up sent while a second agent
+  ran ended the waiting run within a second with the parent's reply, started
+  as its own run, was answered while the agent's shell was still running, and
+  that run then waited for the agent and ended with the parent reacting to it,
+  with no killed-task frame. The built desktop app and the Android emulator
+  showed the background agent as running after its launch receipt. Server
+  part not deployed; the hub needs a restart and remotes a redeploy.
+
 ## 2026-10-07 — Claude chats may run Bash in the background; the chat waits for it and the shell's completion wakes the model (server)
 
 - A Claude chat's PreToolUse hook denied every background Bash call, with the

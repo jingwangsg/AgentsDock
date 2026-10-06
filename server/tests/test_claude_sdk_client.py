@@ -2182,6 +2182,57 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["result"], "weights downloaded")
         self.assertEqual(handle.background_task_receipts[0]["status"], "completed")
 
+    async def test_queued_message_releases_a_run_that_only_background_tasks_keep_open(self) -> None:
+        awaited: list[tuple[str, str]] = []
+
+        async def observe(chat_id: str, run_id: str) -> None:
+            awaited.append((chat_id, run_id))
+
+        manager = ClaudeSDKSupervisorManager(
+            client_factory=self.factory, max_clients=4, idle_ttl_seconds=None, awaiting_observer=observe,
+        )
+        try:
+            handle = await manager.start_run("chat-release", "Delegate", run_id="run-parent", options={}, configuration_key="same")
+            client = self.factory.clients[-1]
+            self.assertFalse(await manager.release_awaiting_run("chat-release", run_id="run-parent"))
+            started = {"type": "system", "subtype": "task_started", "task_id": "agent-1", "task_type": "local_agent"}
+            parent_result = {"type": "result", "is_error": False, "result": "launched"}
+            await client.emit(started)
+            await client.emit(parent_result)
+            self.assertEqual(await asyncio.wait_for(handle.__anext__(), 5), started)
+            for _ in range(50):
+                if awaited:
+                    break
+                await asyncio.sleep(0)
+            self.assertEqual(awaited, [("chat-release", "run-parent")])
+            self.assertTrue(handle.awaiting_background_tasks)
+            self.assertFalse(handle.done)
+            # The agent's own activity does not make the parent busy again.
+            child_frame = {"type": "assistant", "text": "reading files", "parent_tool_use_id": "tool-agent-1"}
+            await client.emit(child_frame)
+            self.assertEqual(await asyncio.wait_for(handle.__anext__(), 5), child_frame)
+            self.assertTrue(handle.awaiting_background_tasks)
+
+            # A message is waiting: the run ends with the model's own Result, the agent stays alive.
+            self.assertTrue(await manager.release_awaiting_run("chat-release", run_id="run-parent"))
+            self.assertEqual(await asyncio.wait_for(handle.wait_result(), 5), parent_result)
+            self.assertEqual(handle.background_task_receipts[0]["status"], "running")
+            self.assertFalse(handle.awaiting_background_tasks)
+            self.assertFalse(client.disconnected)
+
+            # The next run adopts the still-running agent: its completion wakes the model inside it.
+            follow_up = await manager.start_run("chat-release", "What did it find?", run_id="run-next", options={}, configuration_key="same")
+            self.assertIs(self.factory.clients[-1], client)
+            await client.emit({"type": "result", "is_error": False, "result": "still waiting for the agent"})
+            await client.emit({"type": "assistant", "text": "woken"})
+            self.assertEqual((await asyncio.wait_for(follow_up.__anext__(), 5))["text"], "woken")
+            self.assertFalse(follow_up.done)
+            await client.emit({"type": "system", "subtype": "task_notification", "task_id": "agent-1", "status": "completed"})
+            await client.emit({"type": "result", "is_error": False, "result": "the agent found it"})
+            self.assertEqual((await asyncio.wait_for(follow_up.wait_result(), 5))["result"], "the agent found it")
+        finally:
+            await manager.close_all()
+
     async def test_evict_disconnects_only_selected_chat(self) -> None:
         run = await self.manager.start_run(
             "chat-1",

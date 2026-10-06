@@ -886,11 +886,16 @@ Idle SDK clients are retained for at most five minutes by default, with up to
 four chat processes loaded. Active chats are never evicted to enforce the idle
 limit.
 
-On this transport Claude may run Bash with `run_in_background`. The CLI tracks
-the shell as a `local_bash` task; the server keeps the run open after the
-model's turn ends until that task reports completion, the CLI then wakes the
-model inside the same run, and the run ends with its final reply. Stop
-interrupts the run and kills the shell with the chat's CLI process. Shells
+On this transport Claude may run Bash with `run_in_background`, and the Agent
+tool with `run_in_background` starts a background subagent. The CLI tracks
+both as tasks (`local_bash`, `local_agent`); the server keeps the run open
+after the model's turn ends until every such task reports completion, the CLI
+then wakes the model inside the same run, and the run ends with its final
+reply. A message queued while the run is in that waiting state ends the run
+with the model's own reply and starts at once; the tasks stay alive on the
+chat's CLI connection and their completion wakes the model inside the new run.
+Stop interrupts the CLI, which kills every background task, agents included;
+that is CLI behaviour and the only way to end such a run early. Shells
 detached with `nohup`, `disown`, `setsid` or `&` are still refused by a
 PreToolUse hook because nothing tracks them. On the one-shot `claude -p`
 transport the CLI closes its input with the reply and kills background shells
