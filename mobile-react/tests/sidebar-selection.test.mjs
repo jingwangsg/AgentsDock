@@ -32,8 +32,9 @@ test('Android chat and folder actions open from a long press on a collapsed sibl
   assert.doesNotMatch(source, /MoreHorizontal|AndroidMoreMenu/)
 })
 
-test('folder menus offer a new chat per selectable backend in that folder on both platforms', () => {
-  assert.match(source, /const chatBackends = useMemo\(\(\) => selectableChatBackends\(health\), \[health\]\)/)
+test('folder menus offer a new chat per backend that can start on this host, in that folder, on both platforms', () => {
+  // The server supports Cursor everywhere; the menu lists it only while this host's Cursor CLI is ready.
+  assert.match(source, /const chatBackends = useMemo\(\(\) => readyChatBackends\(health, runtime\), \[health, runtime\]\)/)
   assert.match(source, /\.\.\.backends\.map\(backend => \(\{ id: `new:\$\{backend\}`, title: `New \$\{backendLabel\(backend\)\} chat`, image: 'plus' \} satisfies MenuAction\)\),/)
   assert.match(source, /const backend = backends\.find\(value => id === `new:\$\{value\}`\)\s*if \(backend\) onNewChat\(backend\)/)
   assert.match(source, /onNewChat=\{backend => onNewChatIn\(item\.folder, backend\)\}/)

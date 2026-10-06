@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Health, RuntimeCatalog } from '../types'
-import {
+import { readyChatBackends,
   cursorBackendSupported,
   isBackendLocked,
   runtimeCatalogOptions,
@@ -124,6 +124,22 @@ test('Cursor admission fails closed unless hardened capability v2 is advertised'
   assert.equal(cursorBackendSupported(cursorHealth(2)), true)
   assert.deepEqual(selectableChatBackends(cursorHealth(2)), ['claude', 'codex', 'cursor'])
   assert.equal(runtimeSelectionError(cursorHealth(2), cursorCatalog, 'cursor', 'auto'), null)
+})
+
+test('a new chat may start on Cursor only while the host has a ready Cursor CLI', () => {
+  const missingCursor: RuntimeCatalog = {
+    ...cursorCatalog,
+    backends: {
+      ...cursorCatalog.backends,
+      cursor: { ...cursorCatalog.backends.cursor!, available: false, diagnostic: { backend: 'cursor', status: 'missing', available: false, installed: false, message: 'Cursor is not installed or is not available to the agent server.' } },
+    },
+  }
+  // The server supports Cursor on every host, so it stays selectable in settings; starting a chat needs the CLI.
+  assert.deepEqual(selectableChatBackends(cursorHealth(2)), ['claude', 'codex', 'cursor'])
+  assert.deepEqual(readyChatBackends(cursorHealth(2), cursorCatalog), ['claude', 'codex', 'cursor'])
+  assert.deepEqual(readyChatBackends(cursorHealth(2), missingCursor), ['claude', 'codex'])
+  assert.deepEqual(readyChatBackends(cursorHealth(2), null), ['claude', 'codex'])
+  assert.deepEqual(readyChatBackends(cursorHealth(1), cursorCatalog), ['claude', 'codex'])
 })
 
 test('a chat backend is switchable only before a provider session exists', () => {

@@ -1,5 +1,22 @@
 # Public development log
 
+## 2026-10-07 — Android offers "New Cursor chat" only on a host whose Cursor CLI is ready (Android build 51)
+
+- A folder's menu on Android listed "New Cursor chat" on every server, because
+  the list came from the server's `cursor_backend` capability, which says the
+  server software supports Cursor, not that the host has the Cursor CLI. The
+  runtime catalog's Cursor diagnostic on the hub and the remotes says
+  "missing". The desktop's folder menu already consulted that diagnostic.
+- The Android folder menu now lists a backend only when a chat can start on
+  it: Claude and Codex always, Cursor only while the host's Cursor CLI is
+  ready. A quick new chat falls back the same way instead of inheriting a
+  Cursor default the host cannot run. The settings and job pickers keep
+  showing Cursor disabled with the reason, as the desktop does.
+- Verified with the runtime catalog unit tests (new ready-backends case), the
+  sidebar and Android contract tests, the mobile type check, and on the
+  emulator against the hub, whose Cursor CLI is missing: the General folder's
+  menu shows New Claude chat and New Codex chat only. Availability: local APK.
+
 ## 2026-10-07 — A background Claude agent shows as running, and a message sent while agents run no longer kills them (server, desktop package 108, Android build 50)
 
 - A Claude subagent started with `run_in_background` showed "completed" the

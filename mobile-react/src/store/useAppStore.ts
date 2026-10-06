@@ -76,7 +76,7 @@ import { publishSideChatChanged } from '../lib/side-chat'
 import { reconcileTeamReferences, requireTeamReferenceSupport, restoreFailedTeamReferences, teamMessagesAvailable, teamReferenceContractSupported, teamReferencesEqual, teamReferenceTokenPresent, validTeamReferences } from '../lib/team-references'
 import { BUILT_IN_HUB_TOKEN, DEFAULT_SERVER_URL, localHubAlive } from '../lib/server-setup'
 import { serverSearchQuery } from '../lib/server-search'
-import { runtimeSelectionError, selectableChatBackends } from '../lib/runtime-catalog'
+import { readyChatBackends, runtimeSelectionError } from '../lib/runtime-catalog'
 import { clearCodeReviewFallbacks } from '../lib/code-review'
 import { SessionMutationReconciler, type SessionReadToken } from '../lib/session-mutation-reconciler'
 import { APP_FONT_SCALE_DEFAULT, clampAppFontScale } from '../lib/typography'
@@ -2988,7 +2988,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // chat supplies the working directory.
     const folderSeed = preset ? newestChatInFolder(state.sessions, preset.folder) : undefined
     const defaultCwd = state.health?.default_cwd?.trim() || ''
-    const backends = selectableChatBackends(state.health)
+    const backends = readyChatBackends(state.health, state.runtime)
     const backend: Backend = preset && backends.includes(preset.backend) ? preset.backend
       : backends.includes(state.chatDefaults.backend) ? state.chatDefaults.backend : (backends[0] ?? 'codex')
     let model = state.chatDefaults.model

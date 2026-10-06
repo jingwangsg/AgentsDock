@@ -35,6 +35,11 @@ export function selectableChatBackends(health: Health | null | undefined): Backe
   return cursorBackendSupported(health) ? ['claude', 'codex', 'cursor'] : ['claude', 'codex']
 }
 
+/** Backends a chat can start on this server right now: the server supports Cursor everywhere, but only a host with a ready Cursor CLI can run one. */
+export function readyChatBackends(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): Backend[] {
+  return selectableChatBackends(health).filter(backend => backend !== 'cursor' || cursorBackendAvailable(health, catalog))
+}
+
 export function cursorBackendUnavailableReason(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): string | null {
   if (cursorBackendAvailable(health, catalog)) return null
   if (!cursorBackendSupported(health)) return 'Cursor requires the hardened Cursor backend in a newer AgentsServer. Update the server, then reconnect.'

@@ -9,7 +9,7 @@ import { radius, usePalette } from '../theme'
 import type { Backend, Session, Surface, SurfaceKind, TimelineSearchResult } from '../types'
 import { backendLabel, formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
 import { compareSessions, orderedSessionSections, resolveSidebarDrop, sessionSection } from '../lib/session-order'
-import { selectableChatBackends } from '../lib/runtime-catalog'
+import { readyChatBackends } from '../lib/runtime-catalog'
 import { promptSurfaceRename, surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { sessionNeedsProviderInteraction, sessionPendingInteractionCount } from '../lib/claude-controls'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
@@ -83,6 +83,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const workspaceAdopting = useAppStore(state => state.workspaceAdopting)
   const health = useAppStore(state => state.health)
+  const runtime = useAppStore(state => state.runtime)
   const searchResults = useAppStore(state => state.searchResults)
   const searchBusy = useAppStore(state => state.searchBusy)
   const searchError = useAppStore(state => state.searchError)
@@ -274,7 +275,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   // Move Folder Up/Down and duplicate-name checks act on what is on screen.
   // Pinned is a virtual section, not a folder.
   const folders = useMemo(() => orderedSessionSections(sessions, folderOrder, false, true).map(section => section.id).filter(folder => folder !== 'Pinned'), [folderOrder, sessions])
-  const chatBackends = useMemo(() => selectableChatBackends(health), [health])
+  const chatBackends = useMemo(() => readyChatBackends(health, runtime), [health, runtime])
   const createFolder = () => {
     const scope = profileScope
     if (!profileScopeIsCurrent(scope)) return
