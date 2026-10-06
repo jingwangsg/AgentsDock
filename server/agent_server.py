@@ -1045,6 +1045,9 @@ JOB_BUSY_RETRY_SECONDS = int(agentsdock_setting("JOB_BUSY_RETRY_SECONDS", "60"))
 JOB_MAX_ACTIVE_RUNS = int(agentsdock_setting("JOB_MAX_ACTIVE_RUNS", "0"))
 JOB_MIN_AVAILABLE_MEM_MB = int(agentsdock_setting("JOB_MIN_AVAILABLE_MEM_MB", "4096"))
 JOB_DEFER_EVENT_MIN_SECONDS = int(agentsdock_setting("JOB_DEFER_EVENT_MIN_SECONDS", "300"))
+# A chat-context job waits silently while its chat runs a turn, the way a Codex
+# heartbeat automation skips a busy thread without a visible record.
+JOB_CHAT_BUSY_DETAIL = "chat already has a running turn"
 # A missing or logged-out provider runtime may recover without operator action,
 # but an occurrence must not be parked forever.  Keep the small retry budget on
 # the durable job row so a restart cannot reset it into an infinite loop.
@@ -10836,6 +10839,7 @@ class SessionStore:
         parent_id: str | None = None,
         initializing_fork: bool = False,
         initializing_import: bool = False,
+        scheduled_job_run: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         backend = (req.backend or DEFAULT_BACKEND).lower()
         if backend not in VALID_BACKENDS:
@@ -10994,6 +10998,8 @@ class SessionStore:
         }
         if req.subagent_limit is not None:
             sess["subagent_limit"] = req.subagent_limit
+        if scheduled_job_run is not None:
+            sess["scheduled_job_run"] = dict(scheduled_job_run)
         if initializing_fork and parent_id:
             parent = self.sessions.get(parent_id) or {}
             if isinstance(parent.get("codex_config_overrides"), dict):
@@ -12144,6 +12150,18 @@ class JobStore:
                 job_id: dict(job)
                 for job_id, job in self.jobs.items()
             }
+        # A standalone occurrence is admitted in the newest chat started for
+        # its job, not in the chat that owns the job.
+        newest_run_chat: dict[str, tuple[str, str]] = {}
+        for run_session_id, session in list(STORE.sessions.items()):
+            marker = session.get("scheduled_job_run")
+            job_id = str(marker.get("job_id") or "") if isinstance(marker, dict) else ""
+            created_at = str(session.get("created_at") or "")
+            if job_id and created_at >= newest_run_chat.get(job_id, ("", ""))[0]:
+                newest_run_chat[job_id] = (created_at, run_session_id)
+        for job_id, job in snapshot.items():
+            if job_context_mode(job) == "standalone" and job_id in newest_run_chat:
+                job["session_id"] = newest_run_chat[job_id][1]
         admissions = await asyncio.to_thread(
             durable_scheduled_job_admissions,
             snapshot,
@@ -13005,7 +13023,10 @@ class JobStore:
             job["last_deferred_at"] = now_iso()
             job["last_defer_reason"] = reason
             last_emit = float(job.get("_last_defer_event_at") or 0)
-            if JOB_DEFER_EVENT_MIN_SECONDS <= 0 or now - last_emit >= JOB_DEFER_EVENT_MIN_SECONDS:
+            if reason != JOB_CHAT_BUSY_DETAIL and (
+                JOB_DEFER_EVENT_MIN_SECONDS <= 0
+                or now - last_emit >= JOB_DEFER_EVENT_MIN_SECONDS
+            ):
                 job["_last_defer_event_at"] = now
                 emit_event = True
                 event_job = public_job(job)
@@ -13362,15 +13383,45 @@ class JobStore:
                 team_references=team_references,
             )
             context_mode = job_context_mode(job)
-            result = await start_turn(
-                session_id,
-                req,
-                queue_if_busy=False,
-                provider_context_mode=context_mode,
-                scheduled_job_chat_references=True,
-                scheduled_job_revision=job_revision,
-                scheduled_job_manual_run=manual,
-            )
+            run_session_id = session_id
+            if context_mode == "standalone":
+                # Like a Codex cron automation, each standalone run starts a
+                # new chat with the parent's settings, so it never waits for
+                # the parent's turn and the user can continue it afterwards.
+                parent = parent_session or {}
+                parent_backend = str(parent.get("backend") or DEFAULT_BACKEND)
+                run_backend = str(job.get("backend") or parent_backend)
+                same_backend = run_backend == parent_backend
+                run_chat = await STORE.create(CreateSessionRequest(
+                    title=str(job.get("title") or jid),
+                    folder=parent.get("folder"),
+                    cwd=parent.get("cwd"),
+                    backend=run_backend,
+                    codex_provider=parent.get("codex_provider") if same_backend else None,
+                    model=parent.get("model") if same_backend else None,
+                    effort=parent.get("effort") if same_backend else None,
+                    subagent_limit=parent.get("subagent_limit") if same_backend else None,
+                    system_prompt=parent.get("system_prompt"),
+                    codex_approvals_reviewer=parent.get("codex_approvals_reviewer"),
+                    provider_jobs_access=parent.get("provider_jobs_access"),
+                ), scheduled_job_run={"job_id": jid, "session_id": session_id})
+                run_session_id = str(run_chat["id"])
+            try:
+                result = await start_turn(
+                    run_session_id,
+                    req,
+                    queue_if_busy=False,
+                    scheduled_job_owner_session_id=session_id,
+                    scheduled_job_chat_references=True,
+                    scheduled_job_revision=job_revision,
+                    scheduled_job_manual_run=manual,
+                )
+            except Exception:
+                if run_session_id != session_id:
+                    # Leave no empty chat behind; a retry starts a new one.
+                    with suppress(Exception):
+                        await delete_session(run_session_id)
+                raise
         except TeamReferenceTargetRepairRequired as exc:
             repair = ScheduledJobChatReferenceRepairRequired(
                 status_code=409,
@@ -13406,8 +13457,10 @@ class JobStore:
             "job_scheduled_run_at": scheduled_run_at,
             "manual_run": manual,
             "context_mode": context_mode,
+            **({"run_session_id": run_session_id} if run_session_id != session_id else {}),
             "message": (
-                f"Scheduled job ran{' manually' if manual else ''}: "
+                f"Scheduled job ran{' manually' if manual else ''}"
+                f"{' in a new chat' if run_session_id != session_id else ''}: "
                 f"{ran_job.get('title') or jid}"
             ),
         })
@@ -13464,6 +13517,7 @@ class JobStore:
                     blocker = await scheduled_job_blocker(
                         session_id,
                         manual=True,
+                        standalone=job_context_mode(job) == "standalone",
                     )
                     if blocker:
                         return await self._record_manual_run_deferred(jid, blocker)
@@ -13642,6 +13696,7 @@ class JobStore:
                 blocker = await scheduled_job_blocker(
                     job_session_id,
                     manual=manual_run_pending,
+                    standalone=job_context_mode(job) == "standalone",
                 )
                 if blocker:
                     if manual_run_pending:
@@ -17323,6 +17378,7 @@ async def append_event(
                 event.get("run_id"),
                 concise_error_message(exc),
             )
+        await report_standalone_job_run(session_id, event)
     return event
 
 
@@ -33799,6 +33855,7 @@ def job_run_history_event_snapshot(
         "is_error",
         "stopped",
         "native_interrupt",
+        "run_session_id",
     ]
     if include_output:
         fields.extend(("result_text", "text", "output"))
@@ -35878,6 +35935,7 @@ def semantic_job_summary_event(
         "exit_code",
         "is_error",
         "stopped",
+        "run_session_id",
     ):
         if latest_display.get(field) is not None:
             summary[field] = latest_display[field]
@@ -35889,6 +35947,7 @@ def semantic_job_summary_event(
             "is_error",
             "stopped",
             "native_interrupt",
+            "run_session_id",
         ):
             if latest_status_event.get(field) is not None:
                 summary[field] = latest_status_event[field]
@@ -46815,6 +46874,52 @@ async def finalize_cross_chat_terminal(event: dict[str, Any]) -> None:
             await revoke_cross_chat_capability(run_id)
 
 
+async def report_standalone_job_run(session_id: str, event: dict[str, Any]) -> None:
+    """Close the owning chat's job card when a standalone run ends.
+
+    The run executes in a chat of its own; the chat that scheduled the job
+    receives its outcome here so its card does not stay "running".
+    """
+
+    marker = (STORE.sessions.get(session_id) or {}).get("scheduled_job_run")
+    if not (
+        isinstance(marker, dict)
+        and event.get("purpose") == "scheduled_job"
+        and event.get("job_id") == marker.get("job_id")
+        and marker.get("session_id") in STORE.sessions
+    ):
+        return
+    title = str(event.get("job_title") or marker.get("job_id") or "")
+    stopped = event.get("type") == "turn_stopped" or event.get("stopped") is True
+    payload = {
+        "job_id": marker.get("job_id"),
+        "job_title": title,
+        "run_id": event.get("run_id"),
+        "run_session_id": session_id,
+        "job_scheduled_run_at": event.get("job_scheduled_run_at"),
+        "exit_code": event.get("exit_code"),
+        "is_error": event.get("is_error"),
+        "stopped": True if stopped else None,
+        "result_text": bounded_job_history_text(
+            event.get("result_text"), JOB_RUN_HISTORY_TEXT_LIMIT,
+        ),
+        "message": f"Scheduled job finished in its own chat: {title}",
+    }
+    try:
+        await append_event(
+            str(marker.get("session_id") or ""),
+            "job_finished",
+            {key: value for key, value in payload.items() if value is not None},
+        )
+    except Exception as exc:
+        logger.warning(
+            "could not report standalone job run session=%s run=%s: %s",
+            session_id,
+            event.get("run_id"),
+            concise_error_message(exc),
+        )
+
+
 # A Codex or Claude turn that fails because the model is at capacity is resent
 # as the user message "go on", the same way a user recovers by hand.
 # Codex: "Selected model is at capacity…"; Claude: 'API Error: 529 {… "overloaded_error" …}'.
@@ -46951,6 +47056,7 @@ async def append_turn_finished_event(session_id: str, payload: dict[str, Any]) -
                 event.get("run_id"),
                 concise_error_message(exc),
             )
+        await report_standalone_job_run(session_id, event)
     schedule_model_capacity_resend(session_id, event)
     return event
 
@@ -52665,6 +52771,10 @@ def public_session(sess: dict[str, Any], *, summary: bool = False) -> dict[str, 
     if not summary or emergency_alert is not None:
         public["emergency_alert"] = emergency_alert
         public["unacknowledged_emergency_count"] = emergency_count
+    # Sparse like the emergency keys: only chats started by a standalone job
+    # run carry the link to the job and the chat that owns it.
+    if isinstance(sess.get("scheduled_job_run"), dict):
+        public["scheduled_job_run"] = dict(sess["scheduled_job_run"])
     if not summary:
         public["provider_jobs_access"] = effective_provider_jobs_access(sess)
         public["claude_stop_fence_pending"] = (
@@ -53404,6 +53514,7 @@ async def scheduled_job_blocker(
     session_id: str,
     *,
     manual: bool = False,
+    standalone: bool = False,
 ) -> str | None:
     async with ACTIVE_LOCK:
         update_blocker = managed_server_update_scheduled_job_blocker(
@@ -53417,16 +53528,19 @@ async def scheduled_job_blocker(
         ).strip().lower()
         if CODEX_GOALS_RECONFIGURING and backend == BACKEND_CODEX:
             return "wait for Codex goals configuration to finish"
-        if session_id in SERVER_MAINTENANCE_SESSIONS:
-            return (
-                "wait for Claude Stop recovery to finish"
-                if session_id in CLAUDE_STOP_FENCE_SESSIONS
-                else "wait for provider session maintenance to finish"
-            )
-        if stop_cleanup_in_progress(session_id):
-            return "chat is finishing an explicit Stop"
-        if session_id in BUSY_SESSIONS:
-            return "chat already has a running turn"
+        # A standalone run starts its own chat (like a Codex cron automation
+        # starts its own thread), so this chat's turn cannot hold it back.
+        if not standalone:
+            if session_id in SERVER_MAINTENANCE_SESSIONS:
+                return (
+                    "wait for Claude Stop recovery to finish"
+                    if session_id in CLAUDE_STOP_FENCE_SESSIONS
+                    else "wait for provider session maintenance to finish"
+                )
+            if stop_cleanup_in_progress(session_id):
+                return "chat is finishing an explicit Stop"
+            if session_id in BUSY_SESSIONS:
+                return JOB_CHAT_BUSY_DETAIL
         active_count = len(BUSY_SESSIONS)
 
     global_blocker = await turn_start_blocker()
@@ -74155,6 +74269,7 @@ async def start_turn(
     provider_context_mode: Literal["chat", "standalone"] = "chat",
     accepted_obligation_ids: list[str] | None = None,
     accepted_exchange_ids: list[str] | None = None,
+    scheduled_job_owner_session_id: str | None = None,
     scheduled_job_chat_references: bool = False,
     scheduled_job_revision: str | None = None,
     scheduled_job_manual_run: bool = False,
@@ -74196,6 +74311,7 @@ async def start_turn(
                 admission_backend=admission_backend,
                 accepted_obligation_ids=accepted_obligation_ids,
                 accepted_exchange_ids=accepted_exchange_ids,
+                scheduled_job_owner_session_id=scheduled_job_owner_session_id,
                 scheduled_job_chat_references=scheduled_job_chat_references,
                 scheduled_job_revision=scheduled_job_revision,
                 scheduled_job_manual_run=scheduled_job_manual_run,
@@ -74224,6 +74340,7 @@ async def _start_turn_locked(
     accepted_provider_route_snapshot: list[dict[str, Any]] | None = None,
     accepted_team_mail_route_snapshot: list[dict[str, Any]] | None = None,
     accepted_secure_peer_route_snapshots: list[dict[str, Any]] | None = None,
+    scheduled_job_owner_session_id: str | None = None,
     scheduled_job_chat_references: bool = False,
     scheduled_job_revision: str | None = None,
     scheduled_job_manual_run: bool = False,
@@ -74534,9 +74651,11 @@ async def _start_turn_locked(
                     detail="scheduled job id and dispatch revision must be paired",
                 )
             if req.job_id and scheduled_job_revision:
+                # A standalone run executes in a new chat; the job still
+                # belongs to the chat that scheduled it.
                 await JOBS.assert_dispatch_revision(
                     req.job_id,
-                    session_id,
+                    scheduled_job_owner_session_id or session_id,
                     scheduled_job_revision,
                 )
             req.chat_references = validate_scheduled_job_chat_references(
@@ -83658,8 +83777,8 @@ async def health() -> dict[str, Any]:
                 "available": True,
                 "required": False,
                 "message": (
-                    "Scheduled jobs support parent-chat and standalone "
-                    "provider contexts."
+                    "Scheduled jobs run in their chat or, when standalone, "
+                    "each in a new chat."
                 ),
                 "action": None,
                 "version": 6,
@@ -83673,6 +83792,7 @@ async def health() -> dict[str, Any]:
                     "route_hint_mentions": True,
                     "next_run_reset": True,
                     "interval_next_run_reanchors": True,
+                    "standalone_runs_open_new_chat": True,
                 },
             },
             "provider_jobs_access_control_v1": {

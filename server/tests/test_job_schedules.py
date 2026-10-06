@@ -1070,6 +1070,11 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
                 start_turn = AsyncMock(return_value={"run_id": "run_handoff"})
                 with (
                     patch.object(agent_server.STORE, "sessions", sessions),
+                    patch.object(
+                        agent_server.STORE,
+                        "create",
+                        AsyncMock(return_value={"id": "run_chat"}),
+                    ),
                     patch.object(agent_server, "AGENT_TOKEN", "test-token"),
                     patch.object(
                         agent_server,
@@ -1096,9 +1101,20 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(turn_request.purpose, "scheduled_job")
                     self.assertFalse(start_turn.await_args.kwargs["queue_if_busy"])
+                    # A standalone run is the first turn of its own new chat.
                     self.assertEqual(
-                        start_turn.await_args.kwargs["provider_context_mode"],
-                        context_mode,
+                        start_turn.await_args.args[0],
+                        "source" if context_mode == "chat" else "run_chat",
+                    )
+                    self.assertNotIn(
+                        "provider_context_mode",
+                        start_turn.await_args.kwargs,
+                    )
+                    self.assertEqual(
+                        start_turn.await_args.kwargs[
+                            "scheduled_job_owner_session_id"
+                        ],
+                        "source",
                     )
                     self.assertTrue(
                         start_turn.await_args.kwargs[
@@ -1494,6 +1510,7 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
             _session_id: str,
             *,
             manual: bool = False,
+            standalone: bool = False,
         ) -> None:
             self.assertFalse(manual)
             store.jobs["job_due"]["enabled"] = False
@@ -1558,6 +1575,7 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
             _session_id: str,
             *,
             manual: bool = False,
+            standalone: bool = False,
         ) -> str:
             self.assertFalse(manual)
             await store.update("job_due", {"next_run_at": "100"})
@@ -2328,6 +2346,7 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
             _session_id: str,
             *,
             manual: bool = False,
+            standalone: bool = False,
         ) -> None:
             nonlocal blocker_count
             self.assertFalse(manual)
@@ -4160,9 +4179,9 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
             agent_server.STORE.sessions.pop("sess_backend_update", None)
 
     async def test_run_job_forwards_context_mode_and_projects_run_event(self) -> None:
-        for stored_mode, expected_mode in (
-            (None, "chat"),
-            ("standalone", "standalone"),
+        for stored_mode, expected_mode, run_chat in (
+            (None, "chat", "sess_context"),
+            ("standalone", "standalone", "sess_run"),
         ):
             with self.subTest(stored_mode=stored_mode):
                 store = agent_server.JobStore()
@@ -4183,20 +4202,27 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
                 events = AsyncMock()
                 with (
                     patch.object(agent_server, "start_turn", start_turn),
+                    patch.object(
+                        agent_server.STORE,
+                        "create",
+                        AsyncMock(return_value={"id": "sess_run"}),
+                    ),
                     patch.object(store, "mark_ran", new_callable=AsyncMock),
                     patch.object(agent_server, "append_event", events),
                 ):
                     result = await store.run_job(job["id"])
 
                 self.assertEqual(result["run_id"], "run_context")
-                self.assertEqual(
-                    start_turn.await_args.kwargs["provider_context_mode"],
-                    expected_mode,
-                )
+                self.assertEqual(start_turn.await_args.args[0], run_chat)
                 self.assertFalse(start_turn.await_args.kwargs["queue_if_busy"])
+                self.assertEqual(events.await_args.args[0], "sess_context")
                 self.assertEqual(
                     events.await_args.args[2]["context_mode"],
                     expected_mode,
+                )
+                self.assertEqual(
+                    events.await_args.args[2].get("run_session_id"),
+                    None if run_chat == "sess_context" else run_chat,
                 )
 
     async def test_load_migrates_and_runs_legacy_alternate_backend_standalone(
@@ -4239,8 +4265,10 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
                     persisted["job_legacy_claude"]["context_mode"],
                     "standalone",
                 )
+                create = AsyncMock(return_value={"id": "sess_legacy_run"})
                 with (
                     patch.object(agent_server, "start_turn", start_turn),
+                    patch.object(agent_server.STORE, "create", create),
                     patch.object(store, "mark_ran", new_callable=AsyncMock),
                     patch.object(agent_server, "append_event", events),
                 ):
@@ -4249,10 +4277,13 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["run_id"], "run_legacy")
             turn_request = start_turn.await_args.args[1]
             self.assertEqual(turn_request.backend, agent_server.BACKEND_CLAUDE)
+            # The run's own chat uses the job's backend, not the parent's.
             self.assertEqual(
-                start_turn.await_args.kwargs["provider_context_mode"],
-                "standalone",
+                create.await_args.args[0].backend,
+                agent_server.BACKEND_CLAUDE,
             )
+            self.assertIsNone(create.await_args.args[0].model)
+            self.assertEqual(start_turn.await_args.args[0], "sess_legacy_run")
 
     async def test_scheduler_supervisor_restarts_after_escaped_iteration_error(
         self,
@@ -4291,6 +4322,7 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
             _session_id: str,
             *,
             manual: bool = False,
+            standalone: bool = False,
         ) -> None:
             self.assertFalse(manual)
             agent_server.STORE.sessions.pop(session_id, None)

@@ -1,5 +1,36 @@
 # Public development log
 
+## 2026-10-06 — A standalone scheduled job runs in its own chat while the parent chat is busy (server + desktop)
+
+- A scheduled job set to run independently never ran while its chat held a
+  long Codex goal: the scheduler deferred any job whose chat had a running
+  turn, without checking the run context, and posted a DEFERRED card every
+  few minutes. The job's own Codex thread shared nothing with the goal; only
+  the server's one-run-per-chat slot blocked it.
+- Scheduled jobs now follow Codex automations. A standalone job (Codex's
+  cron automation) starts a new chat for every run, titled after the job,
+  with the parent chat's folder, working directory and settings, so it runs
+  whether or not the parent is busy. The run is that chat's first turn, so
+  the user can continue it there. The parent chat's job card shows the run's
+  result when it ends and links to the run chat ("Open run chat"). A
+  chat-context job (Codex's heartbeat automation) still waits for its chat
+  to be idle, but the wait is now silent: no DEFERRED card is posted while
+  the chat runs a turn. The job dialog explains that each independent run
+  starts a new chat when the server supports it.
+- Verified with new server regressions (scheduler with a busy parent, run
+  chat creation, admission ownership, result report on finish and stop,
+  restart recovery; all fail on the previous server), the updated job tests,
+  the eight server test shards (the remaining failures also occur on the
+  previous server or come from the longer worktree path), and the desktop
+  type check and job card, dialog and localization tests.
+  Accepted against an isolated server with a real Codex provider and the
+  built desktop app: while the parent ran a 100-second turn, the standalone
+  job created its chat, which appeared in the sidebar live, and finished;
+  the parent card showed the result and opened the run chat; the
+  chat-context job posted no card and ran after the parent became idle; a
+  follow-up in the run chat kept the run's context. Mobile still shows the
+  parent card without the run chat link. Availability: source only.
+
 ## 2026-10-05 — A chat link that climbs out of the working directory opens its file (desktop package 104)
 
 - A relative link such as `../sibling-worktree/REVIEW.md` in a reply was

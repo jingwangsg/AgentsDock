@@ -3554,6 +3554,54 @@ describe('timeline pin state', () => {
     expect(document.querySelector('.job-row')).toHaveAttribute('data-job-state', 'scheduled')
   })
 
+  it('links a standalone run to its own chat and treats that chat as part of the live job', () => {
+    const selectSession = vi.fn(async () => {})
+    useAppStore.setState({
+      selectSession,
+      jobs: [{
+        id: 'job-1', session_id: 'chat-1', title: 'Monitor training', prompt: 'Check it',
+        interval_seconds: 1800, enabled: true, context_mode: 'standalone'
+      }],
+      sessions: [
+        { id: 'chat-1', title: 'Training goal', backend: 'codex' },
+        { id: 'run-chat', title: 'Monitor training', backend: 'codex', scheduled_job_run: { job_id: 'job-1', session_id: 'chat-1' } }
+      ]
+    } as Partial<ReturnType<typeof useAppStore.getState>>)
+    const finished: Event = {
+      id: 'job-finished', session_id: 'chat-1', seq: 4, type: 'job_finished',
+      ts: '2026-10-06T10:31:00Z', run_id: 'run-1', job_id: 'job-1', exit_code: 0,
+      run_session_id: 'run-chat', result_text: 'Training is at step 1200.'
+    }
+    const parentItem: JobItem = {
+      kind: 'job', id: 'job:job-1', key: 'job:job-1', seq: 4,
+      title: 'Monitor training', events: [finished], latest: finished,
+      eventCount: 1, runCount: 1, startSeq: 4, endSeq: 4
+    }
+    const { unmount } = render(<TimelineRowView item={parentItem} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
+
+    expect(screen.getByText('Training is at step 1200.')).toBeInTheDocument()
+    expect(screen.getByText('Completed')).toBeInTheDocument()
+    // The run's trace lives in the run chat, not here.
+    expect(document.querySelector('.job-run-trace')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open run chat' }))
+    expect(selectSession).toHaveBeenCalledWith('run-chat')
+    unmount()
+
+    const started: Event = {
+      id: 'run-started', session_id: 'run-chat', seq: 2, type: 'turn_started',
+      ts: '2026-10-06T10:30:00Z', run_id: 'run-1', job_id: 'job-1', purpose: 'scheduled_job'
+    }
+    const runItem: JobItem = {
+      kind: 'job', id: 'job:job-1', key: 'job:job-1', seq: 2,
+      title: 'Monitor training', events: [started], latest: started,
+      eventCount: 1, runCount: 1, startSeq: 2, endSeq: 2
+    }
+    render(<TimelineRowView item={runItem} sessionId="run-chat" onFindFile={() => {}} pinnedItemIds={new Set()} />)
+
+    expect(screen.queryByText(/schedule no longer exists/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open run chat' })).not.toBeInTheDocument()
+  })
+
   it('keeps a runless deferral compact and moves the retained result into run history', () => {
     const previous: Event = {
       id: 'job-previous', session_id: 'chat-1', seq: 2, type: 'turn_finished',

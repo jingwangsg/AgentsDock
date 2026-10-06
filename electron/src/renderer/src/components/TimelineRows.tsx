@@ -2226,9 +2226,12 @@ function JobView({ item, sessionId, profileScope, pinnedItemIds }: { item: JobIt
     || item.id.replace(/^job:/, '').replace(/:segment:\d+$/, '').trim()
   ), [item.events, item.id, item.jobId])
   const timelineGroupId = item.timelineGroupId?.trim() || item.key
+  // A standalone run's own chat shows the job card too; the job lives in the chat that scheduled it.
+  const ownerSessionId = useAppStore(state => state.sessions.find(session => session.id === sessionId)?.scheduled_job_run?.session_id)
   const scheduleExists = useAppStore(state => state.jobs.some(job => (
-    job.id === jobId && job.session_id === sessionId
+    job.id === jobId && (job.session_id === sessionId || job.session_id === ownerSessionId)
   )))
+  const runSessionId = String(latestStatusSource.run_session_id || latestSource.run_session_id || '').trim()
   const bundledHistory = useMemo(() => [...previous].reverse().slice(0, 20), [previous])
   const history = useMemo(
     () => (
@@ -2376,9 +2379,10 @@ function JobView({ item, sessionId, profileScope, pinnedItemIds }: { item: JobIt
         <button className="job-detail-toggle" aria-expanded={showStructuredDetail} aria-controls={structuredDetailId} onClick={() => setShowStructuredDetail(value => !value)}><ChevronRight size={13} />{showStructuredDetail ? t('timeline.ui.hideDetails') : t('timeline.ui.showDetails')}</button>
         {showStructuredDetail && <pre id={structuredDetailId} className="job-structured-detail">{presentation.detail}</pre>}
       </> : <MarkdownContent text={presentation.detail} files={files} sessionId={sessionId} fold={false} />}
+      {runSessionId && <button type="button" className="job-detail-toggle" onClick={() => runTimelineAction(useAppStore.getState().selectSession(runSessionId))}><MessageSquareShare size={12} />{t('timeline.job.openRunChat')}</button>}
       {files.length > 0 && <MediaGrid files={files} sessionId={sessionId} profileScope={profileScope} compact pinnedItemIds={pinnedItemIds} />}
       {codeDiffFileCount > 0 ? <CodeChangesCard fileCount={codeDiffFileCount} files={codeDiff?.diff_files} additions={codeDiff?.additions ?? 0} deletions={codeDiff?.deletions ?? 0} onOpen={openReview} /> : null}
-      {traceRunId && <div className="job-run-trace"><TraceDisclosure events={latestRunTrace} sessionId={sessionId} anchorSeq={latestRunTraceAnchor} resetKey={latestRunTraceResetKey} includeCommentary showCodeChanges={codeDiffFileCount === 0 || codeDiff?.run_id !== traceRunId} /></div>}
+      {traceRunId && !runSessionId && <div className="job-run-trace"><TraceDisclosure events={latestRunTrace} sessionId={sessionId} anchorSeq={latestRunTraceAnchor} resetKey={latestRunTraceResetKey} includeCommentary showCodeChanges={codeDiffFileCount === 0 || codeDiff?.run_id !== traceRunId} /></div>}
     </div>
     {previousRunCount > 0 && <div className="job-history">
       <button type="button" className="job-history-toggle" aria-label={t('timeline.job.previousRuns', { count: previousRunCount })} aria-expanded={showHistory} onClick={toggleHistory}>

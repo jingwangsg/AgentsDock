@@ -496,6 +496,8 @@ export interface Session {
   /** Durable, explicit agent emergency. Reading the chat never acknowledges it. */
   emergency_alert?: EmergencyAlert | null
   unacknowledged_emergency_count?: number | null
+  /** Present on a chat started by one standalone scheduled-job run. */
+  scheduled_job_run?: { job_id: string; session_id: string } | null
 }
 
 export interface EmergencyAlert {
@@ -1172,6 +1174,8 @@ export interface Event extends SharedChatAttribution {
   job?: Job | null
   job_id?: string | null
   job_title?: string | null
+  /** Chat a standalone scheduled-job run executes in; the run's job card links to it. */
+  run_session_id?: string | null
   /** Stable scheduler attempt identity; preferred over provider run IDs, which may be recycled. */
   job_occurrence_id?: string | null
   /** Canonical scheduled instant for this firing, in Unix seconds. */
@@ -1468,6 +1472,7 @@ export interface ScheduledJobsCapability extends ServerCapability {
     direct_message_mentions?: boolean
     route_mentions?: boolean
     route_hint_mentions?: boolean
+    standalone_runs_open_new_chat?: boolean
     [key: string]: JsonValue | undefined
   }
 }

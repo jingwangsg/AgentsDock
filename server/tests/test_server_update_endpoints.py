@@ -1615,8 +1615,8 @@ class ServerUpdateEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "available": True,
                 "required": False,
                 "message": (
-                    "Scheduled jobs support parent-chat and standalone "
-                    "provider contexts."
+                    "Scheduled jobs run in their chat or, when standalone, "
+                    "each in a new chat."
                 ),
                 "action": None,
                 "version": 6,
@@ -1630,6 +1630,7 @@ class ServerUpdateEndpointTests(unittest.IsolatedAsyncioTestCase):
                     "route_hint_mentions": True,
                     "next_run_reset": True,
                     "interval_next_run_reanchors": True,
+                    "standalone_runs_open_new_chat": True,
                 },
             },
         )
