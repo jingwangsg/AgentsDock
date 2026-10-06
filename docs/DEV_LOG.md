@@ -1,6 +1,6 @@
 # Public development log
 
-## 2026-10-06 — A terminal tab shown while it is still connecting gets its visible size (desktop)
+## 2026-10-06 — A terminal tab shown while it is still connecting gets its visible size (desktop package 106)
 
 - A terminal tab could run its shell at 80 columns inside a much wider view.
   fish's right prompt stopped near column 80, and each redraw of a long
@@ -18,7 +18,8 @@
   change, `stty size` in the tab reported 24 80 while the tab showed 148
   columns. After it, the report was 57 148, the same as without the delay.
   Output already recorded at the wrong width is replayed unchanged on
-  reconnect. Availability: source only.
+  reconnect. Package 106 (`AgentsDock-0.2.0-106-mac-arm64.pkg`) was attached
+  to the working chat. Availability: local package.
 
 ## 2026-10-06 — A Claude goal can be started or replaced while Claude is working (desktop package 105 + server)
 
