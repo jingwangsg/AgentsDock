@@ -121,9 +121,11 @@ const LOCAL_SERVER_START_TIMEOUT_MS = 20_000
 
 /**
  * Starts the local server's LaunchAgent (loading its plist first when launchd has not, e.g. right after login)
- * and resolves once the server port accepts connections.
+ * and resolves once the server port accepts connections. `restart` kills a running server first and returns
+ * without that port check; the caller confirms the restart by the server's new instance id.
  */
 export async function startLocalServerAgent(
+  restart = false,
   agentsDir = join(homedir(), 'Library', 'LaunchAgents'),
   labels: readonly string[] = LOCAL_SERVER_LAUNCH_AGENTS,
   serverUrl = DEFAULT_SERVER_URL
@@ -138,12 +140,14 @@ export async function startLocalServerAgent(
       resolve(error ? stderr.trim() || stdout.trim() || error.message : null)
     })
   })
-  // Without -k, kickstart leaves a running server alone; it fails when launchd has not loaded the plist.
-  if (await launchctl('kickstart', `${domain}/${label}`)) {
+  // Without -k, kickstart leaves a running server alone; either form fails when launchd has not loaded the plist.
+  if (await launchctl('kickstart', ...(restart ? ['-k'] : []), `${domain}/${label}`)) {
     const failure = await launchctl('bootstrap', domain, join(agentsDir, `${label}.plist`))
       ?? await launchctl('kickstart', `${domain}/${label}`)
     if (failure) throw new Error(`launchd could not start ${label}: ${failure}`)
   }
+  // A restarted server can take longer to listen than this check allows.
+  if (restart) return
 
   const { hostname, port } = new URL(serverUrl)
   const deadline = Date.now() + LOCAL_SERVER_START_TIMEOUT_MS

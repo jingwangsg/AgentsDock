@@ -197,7 +197,8 @@ const api: AgentsDockAPI = {
     cancel: () => ipcRenderer.invoke('remote-servers:cancel'),
     remove: profileId => ipcRenderer.invoke('remote-servers:remove', profileId),
     move: (profileId, input) => ipcRenderer.invoke('remote-servers:move', profileId, input),
-    redeploy: (profileId, force) => ipcRenderer.invoke('remote-servers:redeploy', profileId, force)
+    redeploy: (profileId, force) => ipcRenderer.invoke('remote-servers:redeploy', profileId, force),
+    updateAll: force => ipcRenderer.invoke('remote-servers:update-all', force)
   },
   inferenceProxy: {
     status: () => ipcRenderer.invoke('inference-proxy:status'),

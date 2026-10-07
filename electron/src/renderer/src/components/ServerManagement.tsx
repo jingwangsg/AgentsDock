@@ -6,8 +6,8 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Cable, Check, Clock3, Download, GripVertical, LoaderCircle, Pencil, Plus, RotateCw, Server, Trash2, Wifi } from 'lucide-react'
-import type { PublicServerProfile, ServerSetupProgress } from '@shared/types'
+import { Cable, Check, Clock3, Download, GripVertical, LoaderCircle, Pencil, Plus, RefreshCw, RotateCw, Server, Trash2, Wifi } from 'lucide-react'
+import type { PublicServerProfile, ServerRunningChats, ServerSetupProgress } from '@shared/types'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { SSH_HOST_ALIAS_PATTERN } from '@shared/ssh-host-alias'
 import { trackEvent } from '../lib/analytics'
@@ -69,6 +69,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
   // Per row, so a CLI update (minutes) or a redeploy leaves the other rows usable.
   const [rowWork, setRowWork] = useState<Record<string, RowWork>>({})
+  const [updateAllConfirm, setUpdateAllConfirm] = useState<ServerRunningChats[] | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const revealEditor = useRef(false)
@@ -325,6 +326,30 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     }
   }
 
+  // A row action running beside the hub restart or a redeploy would collide with it: `busy` disables them during a run.
+  const updateAllBlocked = Boolean(busy) || Object.values(rowWork).some(work => work.working)
+  const updateAll = async (force: boolean) => {
+    setUpdateAllConfirm(null)
+    // Each row shows its own step; notes left from earlier row actions (such as Redeploy anyway) go.
+    setRowWork({})
+    setBusy('update-all')
+    const stop = window.agentsDock.events?.on?.('remote-servers:update-all-progress', progress => {
+      if (progress.step === 'restart') noteRow(progress.profileId, { kind: 'redeploy', working: true, text: t('updateAll.restarting') })
+      else if (progress.step === 'redeploy') noteRow(progress.profileId, { kind: 'redeploy', working: true, text: progress.message })
+      else if (progress.step === 'done') noteRow(progress.profileId, { kind: 'cli', failed: progress.failed, text: progress.message })
+      else noteRow(progress.profileId, { kind: 'cli', working: true, text: t(progress.step === 'claude' ? 'updateAll.updatingClaude' : 'updateAll.updatingCodex') })
+    })
+    try {
+      const running = await window.agentsDock.remoteServers.updateAll(force)
+      if (running.length) setUpdateAllConfirm(running)
+    } catch (error) {
+      if (hub) noteRow(hub.id, { kind: 'redeploy', failed: true, text: cleanIPCError(errorMessage(error)) })
+    } finally {
+      stop?.()
+      setBusy(null)
+    }
+  }
+
   // Phones connect to the same hub over Tailscale; the token stays in the main process.
   const [pairingUrl, setPairingUrl] = useState<string | null>(null)
   const [tokenCopied, setTokenCopied] = useState(false)
@@ -343,7 +368,21 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
 
   return <section className="server-management" aria-label={t("ui.ServerManagement.ServerManagement.saved_servers_4bf0848")}>
     <div className="server-management-heading">
-      <div><strong>{t("ui.ServerManagement.ServerManagement.servers_68d7beb")}</strong><small>{t("ui.ServerManagement.ServerManagement.each_server_keeps_its_own_chats_drafts_fil_35087b7")}</small></div>
+      <div>
+        <strong>{t("ui.ServerManagement.ServerManagement.servers_68d7beb")}</strong><small>{t("ui.ServerManagement.ServerManagement.each_server_keeps_its_own_chats_drafts_fil_35087b7")}</small>
+        {updateAllConfirm && <div className="server-management-work">
+          <small role="status">{t('updateAll.running', {
+            servers: updateAllConfirm.map(server => server.running === null
+              ? t('updateAll.unchecked', { server: server.name })
+              : t('updateAll.count', { server: server.name, count: server.running })).join(', ')
+          })}</small>
+          <button type="button" className="danger-button compact" disabled={updateAllBlocked} onClick={() => void updateAll(true)}>{t('updateAll.anyway')}</button>
+          <button type="button" className="quiet-button" onClick={() => setUpdateAllConfirm(null)}>{t('editor.cancel')}</button>
+        </div>}
+      </div>
+      {hub && <button type="button" className="quiet-button" disabled={updateAllBlocked} title={t('updateAll.title')} onClick={() => void updateAll(false)}>
+        {busy === 'update-all' ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}{' '}{t('updateAll.label')}
+      </button>}
       <button type="button" className="quiet-button" disabled={Boolean(busy) || !hub} title={hub ? undefined : t('hub.localServerRequired')} onClick={() => openEditor(emptyDraft())}><Plus size={13} />{" "}{t("ui.ServerManagement.ServerManagement.add_server_1099b2a")}</button>
     </div>
     <div className="server-management-list">

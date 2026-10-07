@@ -114,6 +114,8 @@ import type {
   ServerRestartRequest,
   ServerRestartStatus,
   ServerSetupProgress,
+  ServerRunningChats,
+  ServerUpdateAllProgress,
   ServerUpdateStatus,
   ServerUpdateTrack,
   Session,
@@ -420,6 +422,8 @@ export class AppService {
   private profileAuthorityOperations = new Map<string, Promise<void>>()
   /** The hub deploy this client is currently polling, if any; lets Cancel reach both the poll loop and the server-side job. */
   private remoteDeploy: { client: AgentServerClient; jobId: string; cancelled: boolean } | null = null
+  /** The renderer disables the button during a run, but another window, or this one after a reload, does not. */
+  private updatingAll = false
   private pendingProfileAuthorityNamespaces = new Map<string, string[]>()
   private windows = new Set<BrowserWindow>()
   private focusedSessionId: string | null = null
@@ -1751,6 +1755,84 @@ export class AppService {
     }
     this.requestInactiveProfileHealthSweep()
     return { redeployed: true, running: 0 }
+  }
+
+  /**
+   * Server list "Update & redeploy all": launchd restarts the hub on the server code on disk, the hub redeploys
+   * each of its remotes from it, and Claude Code and Codex update on all of them. The restarts stop running
+   * chats, so without `force` it stops at the servers that have some (null: could not be checked) and returns them.
+   */
+  async updateAndRedeployAll(
+    force: boolean,
+    onProgress: (value: ServerUpdateAllProgress) => void
+  ): Promise<ServerRunningChats[]> {
+    const hub = this.hubProfile()
+    if (!hub) throw new Error('Update & redeploy all needs the local server.')
+    if (this.updatingAll) throw new Error('Update & redeploy all is already running.')
+    // The hub restart would end it.
+    if (this.remoteDeploy) throw new Error('A remote server deployment is already running.')
+    this.updatingAll = true
+    try {
+      const remotes = this.settings.listProfiles().filter(profile => isHubRemoteUrl(hub.serverUrl, profile.serverUrl))
+      if (!force) {
+        const running = (await Promise.all([hub, ...remotes].map(async profile => {
+          // Unreachable, or with an unreadable token, says nothing about the chats running there.
+          const count = await this.settings.accessTokenForConnectionAsync(profile.id).then(async token => {
+            const probe = this.clientFactory(profile.serverUrl, token)
+            try { return (await probe.health()).active?.length ?? 0 } finally { probe.dispose() }
+          }).catch(() => null)
+          return { name: profile.name, running: count }
+        }))).filter(server => server.running !== 0)
+        if (running.length) return running
+      }
+
+      onProgress({ profileId: hub.id, step: 'restart' })
+      const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+      try {
+        const instanceId = () => client.health().then(health => health.server_instance_id ?? null, () => null)
+        const previous = await instanceId()
+        await startLocalServerAgent(true)
+        // Only a new instance id proves the restart: the stopping process may still answer. Two minutes, as the hub
+        // gives a redeployed remote.
+        const deadline = Date.now() + 120_000
+        for (;;) {
+          const current = await instanceId()
+          if (current !== null && current !== previous) break
+          if (Date.now() > deadline) throw new Error('The local server did not come back within 2 minutes of its restart.')
+          await new Promise(resolve => setTimeout(resolve, 1_000))
+        }
+      } finally {
+        client.dispose()
+      }
+      appLog('hub', 'restarted the local server LaunchAgent for update & redeploy all')
+
+      const updateClis = async (profile: PublicServerProfile, redeployError?: string) => {
+        const results = redeployError ? [`redeploy: ${redeployError}`] : []
+        let failed = Boolean(redeployError)
+        for (const backend of ['claude', 'codex'] as const) {
+          onProgress({ profileId: profile.id, step: backend })
+          try {
+            results.push((await this.updateServerRuntimeCli(profile.id, backend)).diagnostic.version ?? backend)
+          } catch (error) {
+            failed = true
+            results.push(`${backend}: ${errorText(error)}`)
+          }
+        }
+        onProgress({ profileId: profile.id, step: 'done', failed, message: results.join(' · ') })
+      }
+      // The hub deploys one remote at a time. A remote's CLIs update right after its redeploy, even a failed one:
+      // the hub never redeploys an attached remote, and every server's CLIs were asked for.
+      const updates = [updateClis(hub)]
+      for (const remote of remotes) {
+        const redeployError = await this.redeployHubRemote(remote.id, true, value => onProgress({ profileId: remote.id, step: 'redeploy', message: value.message }))
+          .then(() => undefined, errorText)
+        updates.push(updateClis(remote, redeployError))
+      }
+      await Promise.all(updates)
+      return []
+    } finally {
+      this.updatingAll = false
+    }
   }
 
   /**

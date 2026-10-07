@@ -264,6 +264,9 @@ export function registerIpc(
   handleWithEvent('remote-servers:redeploy', (event, profileId, force) => service.redeployHubRemote(profileId, force === true, progress => {
     if (!event.sender.isDestroyed()) event.sender.send('remote-servers:redeploy-progress', progress)
   }))
+  handleWithEvent('remote-servers:update-all', (event, force) => service.updateAndRedeployAll(force === true, progress => {
+    if (!event.sender.isDestroyed()) event.sender.send('remote-servers:update-all-progress', progress)
+  }))
   handle('servers:update-cli', (profileId, backend) => service.updateServerRuntimeCli(profileId, backend))
   handle('hub:adopt-local-token', () => service.retryLocalHubToken())
   handle('hub:pairing-url', () => localHubPairingUrl())

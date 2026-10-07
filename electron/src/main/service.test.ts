@@ -23,6 +23,7 @@ import type {
   RuntimeCatalog,
   ServerRestartRequest,
   ServerRestartStatus,
+  ServerUpdateAllProgress,
   ServerUpdateStatus,
   ServerUpdateTrack,
   Session,
@@ -87,7 +88,11 @@ vi.mock('electron', () => ({
   }
 }))
 
+// A test must never kickstart this machine's real local server.
+vi.mock('./local-hub', async importOriginal => ({ ...await importOriginal<typeof import('./local-hub')>(), startLocalServerAgent: vi.fn() }))
+
 import { LocalCache, TIMELINE_PAGING_SCHEMA_VERSION } from './persistence'
+import { startLocalServerAgent } from './local-hub'
 import {
   ServerError,
   TeamHubBootstrapTransportError,
@@ -9422,6 +9427,88 @@ describe('server profile lifecycle', () => {
     expect(hub.dispose).toHaveBeenCalledOnce()
     await expect(service.redeployHubRemote('a', true, () => undefined)).rejects.toThrow('Only servers the hub deployed can be redeployed.')
     await expect(service.redeployHubRemote(undefined as unknown as string, true, () => undefined)).rejects.toThrow('Unknown server profile.')
+  })
+
+  it('updates and redeploys all: restarts the hub, then redeploys each remote and updates both CLIs on every server', async () => {
+    // What the hub answers after kickstart -k: the stopping process, a refused connection, then the new process.
+    const afterRestart: Array<string | null> = ['boot-1', null, 'boot-2']
+    let restarted = false
+    let answered: string | null = null
+    const redeployedAfter: Array<string | null> = []
+    const hub = Object.assign(fakeClient({
+      health: async () => {
+        answered = !restarted ? 'boot-1' : afterRestart.length > 1 ? afterRestart.shift()! : afterRestart[0]
+        if (answered === null) throw new Error('connect ECONNREFUSED 127.0.0.1:7850')
+        return { ok: true, active: ['chat-1'], server_instance_id: answered }
+      }
+    }), {
+      updateRuntimeCli: vi.fn(async (backend: string) => ({ output: '', diagnostic: { available: true, version: `${backend} 9.9` } })),
+      startRemoteRedeploy: vi.fn(async (remoteId: string) => { redeployedAfter.push(answered); return { job_id: remoteId } }),
+      remoteDeployStatus: vi.fn(async (jobId: string) => ({
+        job_id: jobId, phase: 'complete', done: true, server: hubRemote(jobId),
+        error: jobId === 'r2' ? 'ssh: connect to host r2.example: Connection refused' : null,
+        log: [{ phase: 'install', message: `Installing on ${jobId}` }]
+      }))
+    })
+    const r1 = Object.assign(fakeClient({ health: async () => ({ ok: true, active: [] }) }), {
+      updateRuntimeCli: vi.fn(async (backend: string) => {
+        if (backend === 'codex') throw new Error('`codex update` exited with 1.')
+        return { output: '', diagnostic: { available: true, version: 'claude 9.9' } }
+      })
+    })
+    const r2 = Object.assign(fakeClient(), {
+      updateRuntimeCli: vi.fn(async (backend: string) => ({ output: '', diagnostic: { available: true, version: `${backend} 9.9` } }))
+    })
+    // Upper bounds: redeploys also start background health probes of every profile.
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [fakeClient(), fakeClient()],
+      [DEFAULT_SERVER_URL]: Array(12).fill(hub),
+      [`${DEFAULT_SERVER_URL}/api/remote/r1`]: Array(6).fill(r1),
+      [`${DEFAULT_SERVER_URL}/api/remote/r2`]: Array(6).fill(r2)
+    })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const remote1 = settings.addProfile({ name: 'r1', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1` })
+    const remote2 = settings.addProfile({ name: 'r2', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r2` })
+    vi.mocked(startLocalServerAgent).mockReset().mockImplementation(async () => { restarted = true })
+    const progress: ServerUpdateAllProgress[] = []
+
+    // An idle server is not listed; one whose token cannot be read counts as unchecked, not idle.
+    const readToken = settings.accessTokenForConnectionAsync.bind(settings)
+    const tokens = vi.spyOn(settings, 'accessTokenForConnectionAsync').mockImplementation(async profileId => {
+      if (profileId === remote2.id) throw new Error('The saved access token could not be read.')
+      return readToken(profileId)
+    })
+    await expect(service.updateAndRedeployAll(false, value => progress.push(value))).resolves.toEqual([
+      { name: 'Hub', running: 1 }, { name: 'r2', running: null }
+    ])
+    tokens.mockRestore()
+    expect(startLocalServerAgent).not.toHaveBeenCalled()
+    expect(progress).toEqual([])
+
+    await expect(service.updateAndRedeployAll(true, value => progress.push(value))).resolves.toEqual([])
+    expect(startLocalServerAgent).toHaveBeenCalledWith(true)
+    // Neither the stopping hub's answer nor a refused connection counts as restarted.
+    expect(redeployedAfter).toEqual(['boot-2', 'boot-2'])
+    const steps = (profileId: string) => progress.filter(value => value.profileId === profileId)
+    expect(steps('b')).toEqual([
+      { profileId: 'b', step: 'restart' },
+      { profileId: 'b', step: 'claude' },
+      { profileId: 'b', step: 'codex' },
+      { profileId: 'b', step: 'done', failed: false, message: 'claude 9.9 · codex 9.9' }
+    ])
+    expect(steps(remote1.id)).toEqual([
+      { profileId: remote1.id, step: 'redeploy', message: 'Installing on r1' },
+      { profileId: remote1.id, step: 'claude' },
+      { profileId: remote1.id, step: 'codex' },
+      { profileId: remote1.id, step: 'done', failed: true, message: 'claude 9.9 · codex: `codex update` exited with 1.' }
+    ])
+    // A failed redeploy still updates that server's CLIs.
+    expect(steps(remote2.id)).toEqual([
+      { profileId: remote2.id, step: 'redeploy', message: 'Installing on r2' },
+      { profileId: remote2.id, step: 'claude' },
+      { profileId: remote2.id, step: 'codex' },
+      { profileId: remote2.id, step: 'done', failed: true, message: 'redeploy: ssh: connect to host r2.example: Connection refused · claude 9.9 · codex 9.9' }
+    ])
   })
 
   it('moves a hub remote through the hub, and its profile follows the new host even when the deploy fails', async () => {

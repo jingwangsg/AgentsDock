@@ -1,5 +1,5 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from './provider-usage'
-import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, CreateSurfaceInput, InferenceProxyStatus, RuntimeCliUpdate, Surface, UpdateSurfaceInput } from './types'
+import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, CreateSurfaceInput, InferenceProxyStatus, RuntimeCliUpdate, ServerRunningChats, Surface, UpdateSurfaceInput } from './types'
 import type { CanvasHostTheme } from './canvas'
 import type { ChatOutputsSummary } from './chat-outputs'
 import type {
@@ -386,6 +386,8 @@ export interface AgentsDockAPI {
     remove(profileId: string): Promise<void>
     move(profileId: string, input: RemoteServerMoveInput): Promise<void>
     redeploy(profileId: string, force: boolean): Promise<{ redeployed: boolean; running: number | null }>
+    /** Restarts the hub, redeploys its remotes and updates both CLIs everywhere; without `force` it stops at the servers with running chats and returns them. */
+    updateAll(force: boolean): Promise<ServerRunningChats[]>
   }
   /** The NV Inference Hub proxy on this machine: its config and LaunchAgent, plus the hub's reverse forward of its port. */
   inferenceProxy: {

@@ -2104,6 +2104,21 @@ export interface ServerSetupProgress {
   message: string
 }
 
+/** A server whose running chats a restart would stop; `running` is null when they could not be checked. */
+export interface ServerRunningChats {
+  name: string
+  running: number | null
+}
+
+/** One server's step in Settings → Server "Update & redeploy all". */
+export type ServerUpdateAllProgress = { profileId: string } & (
+  | { step: 'restart' | 'claude' | 'codex' }
+  /** The hub's deploy log line. */
+  | { step: 'redeploy'; message: string }
+  /** The redeploy error, if any, then each CLI's version or error. */
+  | { step: 'done'; failed: boolean; message: string }
+)
+
 /** Reported by the active server's ssh tunnel supervisor for one registered remote. */
 export interface RemoteServerTunnelStatus {
   state: 'starting' | 'connected' | 'reconnecting' | 'stopped'
@@ -2722,6 +2737,7 @@ export interface AppEventMap {
   'server:pins': ProfilePinsEvent
   'server:setup-progress': ServerSetupProgress
   'remote-servers:redeploy-progress': ServerSetupProgress
+  'remote-servers:update-all-progress': ServerUpdateAllProgress
   'server:files': ProfileFilesEvent
   'server:timeline': ProfileTimelineEvent
   'terminal:data': ProfileTerminalDataEvent

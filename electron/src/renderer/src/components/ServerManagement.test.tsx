@@ -2,7 +2,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
-import type { PublicServerProfile } from '@shared/types'
+import type { PublicServerProfile, ServerUpdateAllProgress } from '@shared/types'
 import { useAppStore } from '../store/app-store'
 import { trackEvent } from '../lib/analytics'
 import { ServerManagement, serverOrderAfterDrag } from './ServerManagement'
@@ -83,6 +83,8 @@ describe('ServerManagement', () => {
   const remoteRemove = vi.fn()
   const remoteMove = vi.fn()
   const remoteRedeploy = vi.fn()
+  const remoteUpdateAll = vi.fn()
+  const progressListeners = new Set<(value: ServerUpdateAllProgress) => void>()
   const pairingUrl = vi.fn()
   const copyToken = vi.fn()
   const startLocalServer = vi.fn()
@@ -100,6 +102,8 @@ describe('ServerManagement', () => {
     remoteRemove.mockReset().mockResolvedValue(undefined)
     remoteMove.mockReset().mockResolvedValue(undefined)
     remoteRedeploy.mockReset()
+    remoteUpdateAll.mockReset()
+    progressListeners.clear()
     pairingUrl.mockReset().mockResolvedValue('http://nvmac.tail46daa8.ts.net:7850')
     copyToken.mockReset().mockResolvedValue(true)
     startLocalServer.mockReset().mockResolvedValue(undefined)
@@ -111,8 +115,13 @@ describe('ServerManagement', () => {
       configurable: true,
       value: {
         servers: { list, update, remove, reorder },
-        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove, move: remoteMove, redeploy: remoteRedeploy },
-        hub: { pairingUrl, copyToken, startLocalServer }
+        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove, move: remoteMove, redeploy: remoteRedeploy, updateAll: remoteUpdateAll },
+        hub: { pairingUrl, copyToken, startLocalServer },
+        events: { on: (name: string, listener: (value: ServerUpdateAllProgress) => void) => {
+          if (name !== 'remote-servers:update-all-progress') return () => undefined
+          progressListeners.add(listener)
+          return () => progressListeners.delete(listener)
+        } }
       } as unknown as AgentsDockAPI
     })
     useAppStore.setState({
@@ -251,6 +260,49 @@ describe('ServerManagement', () => {
     expect(await screen.findByText('Redeployed.')).toBeInTheDocument()
   })
 
+  it('updates and redeploys all servers after confirming their running chats, showing each server\'s step', async () => {
+    let finish: () => void = () => {}
+    const emit = (value: ServerUpdateAllProgress) => act(() => progressListeners.forEach(listener => listener(value)))
+    remoteUpdateAll.mockImplementation(async (force: boolean) => force
+      ? new Promise(resolve => { finish = () => resolve([]) })
+      : [{ name: 'This Mac', running: 2 }, { name: 'OSMO', running: null }])
+    remoteRedeploy.mockResolvedValue({ redeployed: false, running: 1 })
+    useAppStore.setState({ profiles: [hub, osmo, gb300], activeProfileId: osmo.id })
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+    await user.click(screen.getByRole('button', { name: 'Redeploy GB300' }))
+    expect(await screen.findByRole('button', { name: 'Redeploy anyway' })).toBeInTheDocument()
+
+    // A row's earlier confirmation goes, so it cannot start a redeploy during the run.
+    await user.click(screen.getByRole('button', { name: 'Update & redeploy all' }))
+    expect(screen.queryByRole('button', { name: 'Redeploy anyway' })).toBeNull()
+    expect(await screen.findByText("Running chats will stop on: This Mac (2), OSMO (couldn't check).")).toBeInTheDocument()
+    expect(remoteUpdateAll).toHaveBeenCalledExactlyOnceWith(false)
+    await user.click(screen.getByRole('button', { name: 'Update anyway' }))
+    await waitFor(() => expect(remoteUpdateAll).toHaveBeenLastCalledWith(true))
+    expect(screen.queryByText(/Running chats will stop/)).toBeNull()
+
+    emit({ profileId: 'hub', step: 'restart' })
+    expect(screen.getByText('Restarting…')).toBeInTheDocument()
+    // Nothing else may start a redeploy or CLI update meanwhile.
+    expect(screen.getByRole('button', { name: 'Redeploy GB300' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Update a CLI on OSMO' })).toBeDisabled()
+    emit({ profileId: 'hub', step: 'codex' })
+    emit({ profileId: 'osmo', step: 'redeploy', message: 'Uploading AgentsServer source to osmo_9000…' })
+    emit({ profileId: 'gb300', step: 'done', failed: true, message: 'ssh: connect to host nv_gb300: Connection refused' })
+    expect(screen.getByText('Updating Codex…')).toBeInTheDocument()
+    expect(screen.getByText('Uploading AgentsServer source to osmo_9000…')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('ssh: connect to host nv_gb300: Connection refused')
+
+    emit({ profileId: 'hub', step: 'done', failed: false, message: '2.1.300 (Claude Code) · codex-cli 0.161.0' })
+    emit({ profileId: 'osmo', step: 'done', failed: false, message: '2.1.300 (Claude Code) · codex-cli 0.161.0' })
+    await act(async () => finish())
+    expect(screen.getAllByText('2.1.300 (Claude Code) · codex-cli 0.161.0')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: 'Update & redeploy all' })).toBeEnabled()
+    // The listener is gone once the run ends.
+    expect(progressListeners.size).toBe(0)
+  })
+
   it('asks before redeploying a remote whose running chats could not be checked', async () => {
     remoteRedeploy.mockResolvedValue({ redeployed: false, running: null })
     useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })
@@ -287,6 +339,7 @@ describe('ServerManagement', () => {
     useAppStore.setState({ profiles: [osmo], activeProfileId: osmo.id })
     render(<ServerManagement />)
 
+    expect(screen.queryByRole('button', { name: 'Update & redeploy all' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Add server' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Add server' })).toHaveAttribute('title', 'Remote servers are added through the local server; add it first.')
   })
