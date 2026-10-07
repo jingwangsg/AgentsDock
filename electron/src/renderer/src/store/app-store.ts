@@ -11,7 +11,7 @@ import { bulletinHintPending, type BulletinHintRefresh } from '@shared/team-bull
 import { applyOpenCodeSessionEvent, openCodeProviderCommandsAvailable } from '@shared/opencode'
 import { t } from '@shared/i18n'
 import { runtimeSelectionError, selectableChatBackends } from '@shared/runtime-catalog'
-import { isAsyncCrossChatMessage, isNativeGoalSteerEvent, isNativeSteerTransitionStop, timelineSemanticUnits } from '@shared/semantic-timeline'
+import { isAsyncCrossChatMessage, isNativeSteerEvent, isNativeSteerTransitionStop, timelineSemanticUnits } from '@shared/semantic-timeline'
 import { turnSendErrorMessage } from '@shared/server-errors'
 import { completedPrefixForkAvailable, RUNNING_FORK_UNAVAILABLE } from '@shared/session-fork'
 import { sessionRewindAvailable } from '@shared/session-rewind'
@@ -4593,7 +4593,7 @@ function eventAffectsQueuedTurns(event: Event): boolean {
     || event.type === 'turn_queue_delivery_fenced'
     || event.type === 'turn_unqueued'
     || event.type === 'turn_started'
-    || isNativeGoalSteerEvent(event)
+    || isNativeSteerEvent(event)
     || event.type === 'turn_queue_run_now'
     || event.type === 'turn_queue_updated'
 }
@@ -5204,7 +5204,7 @@ export function snapshotNeedsAuthoritativeTail(snapshot: SessionSnapshot | undef
 function eventMayRenderInTimeline(event: Event): boolean {
   if (isImportedClaudeControlCompanion(event) || isImportedCodexRuntimeContext(event)) return false
   if (isImportedProviderInterruption(event)) return true
-  if (event.type === 'turn_started' || isNativeGoalSteerEvent(event)) return Boolean(event.prompt?.trim() || event.file_ids?.length)
+  if (event.type === 'turn_started' || isNativeSteerEvent(event)) return Boolean(event.prompt?.trim() || event.file_ids?.length)
   if (event.type === 'assistant_text') return Boolean(event.text?.trim())
   if (event.type === 'turn_finished') return Boolean(event.result_text?.trim())
   if (event.type === 'reasoning_summary' || event.type === 'reasoning_text') return Boolean((event.text || String(event.message || '')).trim())

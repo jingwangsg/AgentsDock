@@ -24954,6 +24954,11 @@ async def _run_queued_turn_now_once(
                             active_turn.get("transport")
                             == CLAUDE_TRANSPORT_AGENT_SDK
                             and selected_backend == BACKEND_CLAUDE
+                            # The message joins the working turn under its
+                            # existing owner, so it must not carry a purpose,
+                            # a provider command or new references: the Codex
+                            # goal lane's plainness rule.
+                            and codex_goal_steer_selection_is_plain(selected)
                             and queued_claude_runtime_matches_active(
                                 session_id,
                                 selected,
@@ -26561,7 +26566,7 @@ def scan_queued_turns_from_events(
                     pass
             elif queued_id and (
                 event_type in {"turn_started", "turn_unqueued"}
-                or is_native_goal_steer_event(event)
+                or is_native_steer_event(event)
             ):
                 pending.pop(queued_id, None)
                 if queued_id in order:
@@ -27153,7 +27158,7 @@ def _prune_history_bookkeeping_connection(path: Path) -> sqlite3.Connection:
 
 def _prune_history_message_key(event: dict[str, Any]) -> tuple[str, str] | None:
     event_type = str(event.get("type") or "")
-    if event_type == "turn_started" or is_native_goal_steer_event(event):
+    if event_type == "turn_started" or is_native_steer_event(event):
         # A copied provider-only boundary intentionally carries an empty
         # prompt plus this durable marker. Every such row can share one import
         # run id, so content deduplication must not collapse the boundaries and
@@ -35147,14 +35152,14 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                 record["preview"] = text or "Agent error"
                 continue
 
-            if event_type == "turn_started" or is_native_goal_steer_event(event):
+            if event_type == "turn_started" or is_native_steer_event(event):
                 run_key = run_id or f"seq-{seq}"
                 key = f"turn:{run_key}"
                 base_record = by_key.get(key)
                 safe_start_offset = None
-                if is_native_goal_steer_event(event):
+                if is_native_steer_event(event):
                     # A human follow-up splits presentation only. Its stable
-                    # key also works when paging starts after the goal began.
+                    # key also works when paging starts after the run began.
                     key = f"turn:{run_key}:start-{seq}"
                 elif base_record is not None and (
                     base_record.get("has_turn_start")
@@ -36063,15 +36068,18 @@ def semantic_timeline_event_identity(event: dict[str, Any]) -> str:
     return str(event.get("id") or f"seq:{event.get('seq')}:{event.get('type')}")
 
 
-def is_native_goal_steer_event(event: dict[str, Any]) -> bool:
-    """An accepted human follow-up, not a new run or provider goal prompt."""
+def is_native_steer_event(event: dict[str, Any]) -> bool:
+    """A human follow-up delivered into a run that keeps going.
+
+    A Codex goal steer and a message injected into a working Claude turn both
+    have this shape: the run keeps its id, owner and trace, and only the
+    display slice restarts at the message. Like turn_started it consumes the
+    queued row it came from.
+    """
     return bool(
         event.get("type") == "turn_steered"
-        and event.get("native_goal_steer") is True
         and event.get("native_steer") is True
         and event.get("provider_user_authored") is True
-        and event.get("backend") == BACKEND_CODEX
-        and event.get("purpose") == "codex_goal_resume"
         and str(event.get("run_id") or "").strip()
     )
 
@@ -36091,7 +36099,7 @@ def semantic_timeline_event_is_display(event: dict[str, Any]) -> bool:
     return (
         event_type not in TIMELINE_INDEX_TRACE_TYPES
         and event_type != "turn_started"
-        and not is_native_goal_steer_event(event)
+        and not is_native_steer_event(event)
     )
 
 
@@ -36431,10 +36439,10 @@ def collect_semantic_timeline_events(
                         key = f"job:{job_id}"
                 elif timeline_index_is_error(event):
                     key = f"event:{event.get('id') or seq}"
-                elif event_type == "turn_started" or is_native_goal_steer_event(event):
+                elif event_type == "turn_started" or is_native_steer_event(event):
                     run_key = run_id or f"seq-{seq}"
                     key = f"turn:{run_key}"
-                    if is_native_goal_steer_event(event) or key in seen_user_turn_keys:
+                    if is_native_steer_event(event) or key in seen_user_turn_keys:
                         key = f"turn:{run_key}:start-{seq}"
                     seen_user_turn_keys.add(key)
                     active_turn_key = key
@@ -37040,7 +37048,7 @@ def history_search_event_record(
         if event.get(TIMELINE_IMPORTED_PROMPT_HIDDEN_FIELD):
             return None
     event_type = str(event.get("type") or "")
-    if event_type == "turn_steered" and not is_native_goal_steer_event(event):
+    if event_type == "turn_steered" and not is_native_steer_event(event):
         return None
     if event_type not in HISTORY_SEARCH_EVENT_TYPES and not event_type.endswith("_error"):
         return None
@@ -37048,7 +37056,7 @@ def history_search_event_record(
         role = "job"
     elif timeline_index_is_error(event):
         role = "error"
-    elif event_type == "turn_started" or is_native_goal_steer_event(event):
+    elif event_type == "turn_started" or is_native_steer_event(event):
         role = "user"
     elif event_type in {"assistant_text", "turn_finished"}:
         role = "assistant"
@@ -37509,7 +37517,7 @@ def build_handoff_source_pack(session_id: str, detail: str = "normal", user_prom
 
     for event in events:
         event_type = event.get("type")
-        if event_type == "turn_started" or is_native_goal_steer_event(event):
+        if event_type == "turn_started" or is_native_steer_event(event):
             text = compact_memory_text(event.get("prompt") or "", message_chars)
             if text:
                 lines.append(f"\nUser:\n{text}")
@@ -50904,7 +50912,7 @@ def history_timeline_message_keys(
                 if len(provider_runs) > maximum:
                     provider_runs.pop(next(iter(provider_runs)))
             before_window = raw_seq <= after_seq
-            if event_type == "turn_started" or is_native_goal_steer_event(event):
+            if event_type == "turn_started" or is_native_steer_event(event):
                 key = history_dedup_key("user", event.get("prompt"), source_text_sha256=event.get("source_text_sha256"))
             elif event_type == "assistant_text":
                 key = history_dedup_key("assistant", event.get("text"), source_text_sha256=event.get("source_text_sha256"))
@@ -52585,7 +52593,7 @@ def build_fork_memory(
             or (run_id and run_id in internal_run_ids)
         ):
             continue
-        if event_type in {"turn_started", "assistant_text", "turn_finished", "artifact_created"} or is_native_goal_steer_event(event):
+        if event_type in {"turn_started", "assistant_text", "turn_finished", "artifact_created"} or is_native_steer_event(event):
             events.append(event)
         elif event_type == "reasoning_summary" and event.get("phase") == "commentary":
             events.append(event)
@@ -52597,7 +52605,7 @@ def build_fork_memory(
 
     for event in events:
         event_type = event.get("type")
-        if event_type == "turn_started" or is_native_goal_steer_event(event):
+        if event_type == "turn_started" or is_native_steer_event(event):
             text = compact_memory_text(event.get("prompt") or "")
             if text:
                 lines.append(f"\nUser:\n{text}")
@@ -66155,20 +66163,21 @@ async def run_claude_sdk(
     # before ``manager.start_run()`` returns a handle. The approval callback
     # must already be able to verify an opted-in ACTIVE turn at that point.
     native_steer_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1)
+    # Authority-bearing runs hold a provider-tool owner binding that the
+    # logical-run replacement cannot reissue, so a follow-up they cannot inject
+    # returns to the queue. Decided once: a replacement rewrites
+    # provider_runtime_env with the candidate's env, and that run may replace
+    # again.
+    logical_transition_allowed = not (
+        provider_runtime_env or provider_command is not None
+    )
     startup_active = {
         "proc": None,
         "run_id": run_id,
         "backend": BACKEND_CLAUDE,
         "transport": CLAUDE_TRANSPORT_AGENT_SDK,
         "claude_sdk_run": None,
-        # Authority-bearing runs receive a fresh provider-tool owner binding.
-        # Force Send therefore follows Stop -> queued start for those runs;
-        # retain the legacy native path only for callers without authority.
-        "native_steer_queue": (
-            None
-            if provider_runtime_env or provider_command is not None
-            else native_steer_queue
-        ),
+        "native_steer_queue": native_steer_queue,
         "interactive_agent_sdk": True,
         "provider_model": str(sess.get("model") or ""),
         "provider_effort": str(sess.get("effort") or ""),
@@ -66777,6 +66786,86 @@ async def run_claude_sdk(
                             safe_to_requeue=True,
                         ))
                     continue
+
+                # A follow-up sent while Claude works is injected into the live
+                # turn (claude_sdk_client keeps the run open if the turn ends
+                # before the CLI takes it). The promotion endpoint already
+                # required a plain message on the same runtime, so a decline
+                # here is a race or a CLI failure.
+                declined = ""
+                delivery_uncertain = False
+                async with ACTIVE_LOCK:
+                    live = ACTIVE.get(session_id) or {}
+                    if (
+                        str(live.get("run_id") or "") != current_run_id
+                        or live.get("stop_requested")
+                    ):
+                        declined = "run is stopping or changed"
+                if not declined:
+                    try:
+                        if not await manager.steer(
+                            session_id, run_id=current_run_id, prompt=request_prompt,
+                        ):
+                            declined = "no acknowledged live turn to steer"
+                    except Exception as exc:
+                        declined = concise_error_message(exc)
+                        delivery_uncertain = bool(
+                            getattr(exc, "delivery_uncertain", False)
+                        )
+                if not declined:
+                    await append_event(session_id, "turn_steered", {
+                        "run_id": current_run_id,
+                        "backend": BACKEND_CLAUDE,
+                        "queued_id": selected.get("queued_id"),
+                        "prompt": str(selected.get("display_prompt") or selected.get("prompt") or ""),
+                        "file_ids": list(selected.get("file_ids") or []),
+                        "native_steer": True,
+                        "provider_user_authored": True,
+                    })
+                    if isinstance(future, asyncio.Future) and not future.done():
+                        future.set_result({
+                            "ok": True,
+                            "queued_id": selected.get("queued_id"),
+                            "run_id": current_run_id,
+                            "interrupted": False,
+                            "native_steer": True,
+                            "replays_interrupted_message": False,
+                            "superseded_queued_ids": [],
+                        })
+                    continue
+                if delivery_uncertain:
+                    # The frame may have reached the CLI, which would run it
+                    # as a turn no run owns: never send it again, and retire
+                    # this chat's CLI process once the run ends.
+                    retire_supervisor = True
+                    logger.warning(
+                        "Claude follow-up delivery is uncertain session=%s run=%s: %s",
+                        session_id, current_run_id, declined,
+                    )
+                    if isinstance(future, asyncio.Future) and not future.done():
+                        future.set_exception(NativeSteerHandoffError(
+                            "Claude did not confirm the follow-up in its working "
+                            f"turn: {declined}",
+                            safe_to_requeue=False,
+                            delivery_uncertain=True,
+                        ))
+                    continue
+                if not logical_transition_allowed:
+                    logger.info(
+                        "Claude follow-up returns to the queue session=%s run=%s: %s",
+                        session_id, current_run_id, declined,
+                    )
+                    if isinstance(future, asyncio.Future) and not future.done():
+                        future.set_exception(NativeSteerHandoffError(
+                            "Claude could not take the follow-up in its working "
+                            f"turn: {declined}",
+                            safe_to_requeue=True,
+                        ))
+                    continue
+                logger.info(
+                    "Claude follow-up falls back to the logical-run replacement session=%s run=%s: %s",
+                    session_id, current_run_id, declined,
+                )
 
                 transition_ready = asyncio.Event()
                 transition_reserved = False
@@ -89097,7 +89186,7 @@ async def export_session(session_id: str, format: Literal["markdown", "html", "j
         event_type = event.get("type")
         stamp = str(event.get("ts") or "").replace("T", " ").removesuffix("Z")[:16]
         suffix = f" · {stamp} UTC" if stamp else ""
-        if event_type == "turn_started" or is_native_goal_steer_event(event):
+        if event_type == "turn_started" or is_native_steer_event(event):
             text = str(event.get("prompt") or "").strip()
             if text:
                 blocks.append(("You", suffix, text))
@@ -93692,7 +93781,7 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
             str(event.get("queued_id"))
             for event in events[target_index:]
             if str(event.get("queued_id") or "") in kept_queued_ids
-            and (event.get("type") in {"turn_started", "turn_unqueued"} or is_native_goal_steer_event(event))
+            and (event.get("type") in {"turn_started", "turn_unqueued"} or is_native_steer_event(event))
         ))
         removed = events[target_index:]
         if any(

@@ -128,9 +128,8 @@ class ConsumedGoalQueueRecoveryTests(unittest.IsolatedAsyncioTestCase):
         # native-goal commit batch, must remain visible but never runnable.
         cases = [self.incident_events()[:3], self.incident_events()[:4]]
         for field, value in [
-            ("native_steer", False), ("native_goal_steer", False),
-            ("provider_user_authored", False), ("backend", "claude"),
-            ("purpose", None), ("run_id", ""), ("queued_id", "different-row"),
+            ("native_steer", False), ("provider_user_authored", False),
+            ("run_id", ""), ("queued_id", "different-row"),
         ]:
             events = self.incident_events()
             events[-1] = {**events[-1], field: value}
@@ -151,14 +150,17 @@ class ConsumedGoalQueueRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(queued[0]["paused"])
                 self.assertEqual(queued[0]["pause_reason"], "delivery_uncertain")
 
-    async def test_ordinary_steer_event_does_not_consume_a_waiting_queue_row(self) -> None:
+    async def test_claude_follow_up_injected_into_a_working_turn_is_not_redelivered(self) -> None:
+        # The Claude lane appends only turn_steered: no promotion event, no
+        # turn_started. Recovery must still treat the row as delivered.
         events = self.incident_events()
-        ordinary_steer = {**events[-1], "purpose": None, "native_goal_steer": False}
-        self.write_events([events[0], ordinary_steer])
-        self.assertEqual(await agent_server.recover_queued_turns_after_start(), (1, 1))
+        injected = {**events[-1], "backend": "claude", "purpose": None, "native_goal_steer": None,
+                    "provider_turn_id": None, "run_id": "claude-run"}
+        self.write_events([events[0], injected])
+        self.assertEqual(await agent_server.recover_queued_turns_after_start(), (0, 0))
         await self.settle()
-        self.launch.assert_awaited_once()
-        self.assertEqual(self.launch.await_args.kwargs["queued_id"], self.queued_id)
+        self.launch.assert_not_awaited()
+        self.assertEqual(await agent_server.queued_turns_snapshot(self.session_id), [])
 
 
 if __name__ == "__main__":

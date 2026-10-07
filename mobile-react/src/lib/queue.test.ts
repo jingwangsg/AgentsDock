@@ -39,6 +39,9 @@ queue = updateQueuedTurns(queue, event('turn_started', { queued_id: 'second' }))
 assert(queue.map(turn => turn.queued_id).join(',') === 'first', 'a promoted turn must leave the queue immediately')
 queue = updateQueuedTurns(queue, event('turn_queue_run_now', { queued_id: 'first' }))
 assert(queue.length === 0, 'a run-now acknowledgement must remove the promoted turn before turn_started arrives')
+queue = updateQueuedTurns([], event('turn_queued', { queued_id: 'injected', prompt: 'Also reply pong' }))
+queue = updateQueuedTurns(queue, event('turn_steered', { queued_id: 'injected', run_id: 'claude-run', backend: 'claude', native_steer: true, provider_user_authored: true }))
+assert(queue.length === 0, 'a follow-up injected into a working Claude turn consumes its queued row')
 
 queue = updateQueuedTurns(queue, event('turn_queue_delivery_fenced', {
   queued_id: 'first',

@@ -1,6 +1,6 @@
 import type { Event, QueuedTurn } from './types'
 import { isImportedProviderControlMetadata } from './provider-origin'
-import { isNativeGoalSteerEvent } from './semantic-timeline'
+import { isNativeSteerEvent } from './semantic-timeline'
 import { isSharedChatCollaborator } from './chat-shares'
 
 export function updateQueuedTurns(current: QueuedTurn[], event: Event): QueuedTurn[] {
@@ -55,7 +55,7 @@ export function updateQueuedTurns(current: QueuedTurn[], event: Event): QueuedTu
     })
     return changed ? next : current
   }
-  if ((event.type === 'turn_unqueued' || event.type === 'turn_started' || isNativeGoalSteerEvent(event)) && event.queued_id) {
+  if ((event.type === 'turn_unqueued' || event.type === 'turn_started' || isNativeSteerEvent(event)) && event.queued_id) {
     return current.filter(turn => turn.queued_id !== event.queued_id)
   }
   if (event.type === 'turn_queue_run_now' && event.queued_id) {

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { AgentFile, Event } from '@shared/types'
-import { incompleteLeadingRunId, isNativeGoalSteerEvent, timelineSemanticUnits } from '@shared/semantic-timeline'
+import { incompleteLeadingRunId, isNativeSteerEvent, timelineSemanticUnits } from '@shared/semantic-timeline'
 import { updateQueuedTurns } from '@shared/queue'
 import { mergeEvents, snapshotNeedsAuthoritativeTail, updateActiveSessions } from '../store/app-store'
 import { projectTimeline, renderTimelineItems } from './timeline'
@@ -48,6 +48,24 @@ describe('native goal steering presentation', () => {
     const active = new Set(['chat'])
     expect(updateActiveSessions(active, steer())).toBe(active)
     expect(updateActiveSessions(new Set(), steer())).toEqual(new Set())
+  })
+
+  it('presents a follow-up injected into a working Claude turn as a new user segment of the same run', () => {
+    const claude = (seq: number, type: string, patch: Partial<Event> = {}): Event => event(seq, type, { backend: 'claude', run_id: 'claude-run', ...patch })
+    const items = projectTimeline([
+      claude(1, 'turn_started', { prompt: 'Render all replays.' }),
+      claude(2, 'tool_started', { tool: { id: 'bash-1', name: 'Bash', input: { command: 'python render.py' } } }),
+      claude(3, 'turn_steered', { native_steer: true, provider_user_authored: true, queued_id: 'queued-3', prompt: 'Is the GPU busy?', file_ids: [] }),
+      claude(4, 'tool_finished', { tool_id: 'bash-1', tool: { id: 'bash-1', name: 'Bash' }, output: 'rendered' }),
+      claude(5, 'assistant_text', { phase: 'final_answer', text: 'Rendered; the GPU was at 90%.' }),
+      claude(6, 'turn_finished', { exit_code: 0 })
+    ], [])
+    expect(items.filter(item => item.kind === 'turn').map(item => [item.key, item.runId])).toEqual([
+      ['turn:claude-run', 'claude-run'], ['turn:claude-run:start-3', 'claude-run']
+    ])
+    const rows = renderTimelineItems(items)
+    expect(rows.filter(row => row.kind === 'message').map(row => row.seq)).toEqual([1, 3, 5])
+    expect(rows.some(row => row.kind === 'progress' && row.stoppedAt)).toBe(false)
   })
 
   it('is identical after every incremental append, duplicate replay, and cold reopen', () => {
@@ -100,13 +118,20 @@ describe('native goal steering presentation', () => {
     expect(rows.at(-1)).toMatchObject({ kind: 'progress', active: false, stoppedAt: event(11, '').ts })
   })
 
-  it.each([
-    { native_goal_steer: false }, { native_steer: false }, { backend: 'claude' as const },
-    { purpose: 'scheduled_job' }, { provider_user_authored: undefined }, { run_id: undefined }
-  ])('does not reinterpret an unproven event as a native goal user boundary: %j', patch => {
-    const input = steer(5, patch)
-    expect(isNativeGoalSteerEvent(input)).toBe(false)
-    const queue = [{ queued_id: 'queued-5', session_id: 'chat', prompt: 'Held', file_ids: [] }]
-    expect(updateQueuedTurns(queue, input)).toBe(queue)
-  })
+  it.each([{ native_steer: false }, { provider_user_authored: undefined }, { run_id: undefined }])(
+    'keeps the queued row when the steer is not a proven user follow-up: %j', patch => {
+      const input = steer(5, patch)
+      expect(isNativeSteerEvent(input)).toBe(false)
+      const queue = [{ queued_id: 'queued-5', session_id: 'chat', prompt: 'Held', file_ids: [] }]
+      expect(updateQueuedTurns(queue, input)).toBe(queue)
+    })
+
+  it.each([{ native_goal_steer: false }, { backend: 'claude' as const }, { purpose: undefined }])(
+    'accepts a provider-authored native follow-up outside a Codex goal as the same-run user boundary: %j', patch => {
+      // A message injected into a working Claude turn: no goal, same run, queue row consumed.
+      const input = steer(5, patch)
+      expect(isNativeSteerEvent(input)).toBe(true)
+      const queue = [{ queued_id: 'queued-5', session_id: 'chat', prompt: 'Held', file_ids: [] }]
+      expect(updateQueuedTurns(queue, input)).toEqual([])
+    })
 })

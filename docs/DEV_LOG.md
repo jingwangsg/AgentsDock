@@ -1,5 +1,46 @@
 # Public development log
 
+## 2026-10-07 — A message sent while Claude works no longer stops its command (server, desktop, Android)
+
+- Sending a message with Send now while a Claude chat ran a command stopped
+  the run: the command was killed, the chat showed "You stopped", and the
+  message started a new run. Every Claude run carries its chat-scoped
+  provider authority, and Send now reused a running Claude turn only for runs
+  without one, so in practice every follow-up stopped the run.
+- The server now injects such a message into the working turn, as Claude
+  Code's own composer does: the running tool and any background tasks finish,
+  the model reads the message at its next step, and the run keeps its id,
+  owner and authority. If the turn ends before the CLI has taken the message,
+  the run stays open and the CLI answers it in the same run. The timeline
+  shows the message inline on that run and the queue
+  row is removed; queue recovery after a restart, rewind, history search,
+  summaries, forks, exports and the shared-chat transcript treat it as a
+  delivered user message, as they treat a Codex goal follow-up. A message that
+  needs a new run (a provider command, a purpose, new chat or team references,
+  another model or effort) still stops the run as before, and a run that
+  started without provider authority still falls back to stopping and
+  restarting. If the CLI cannot take the message because the run is already
+  stopping, the message returns to the queue and Send now reports the
+  deferral; if delivery cannot be confirmed, the message is not sent again and
+  the chat's CLI process is retired when the run ends.
+- Desktop and Android treat a Claude follow-up accepted this way like a Codex
+  native steer: drawn inline on the running turn, removed from the queue and
+  its caches.
+- Verified with the SDK client tests (injection into an acknowledged run, a
+  turn that ends before the CLI takes the message, waking a run kept open only
+  by background tasks), the runner tests (an injected follow-up finishes in the
+  same run without an interrupt; a follow-up the CLI cannot take returns to
+  the queue on an authority-bearing run; an unconfirmed delivery is not
+  requeued and retires the CLI process; the existing logical-run replacement
+  for runs without authority), the queue recovery, projection, transcript and
+  admission tests, the desktop and mobile timeline and queue tests and both
+  type checks. Accepted against an isolated server with the
+  real Claude CLI: while a 55-second foreground command ran, Send now returned
+  without an interrupt, the command process survived and finished, one run
+  ended with both answers, and the queue was empty.
+  Availability: source; servers need a redeploy, and the desktop and Android
+  timeline change ships with their next package and APK.
+
 ## 2026-10-07 — A standalone job's run chat stays out of the sidebar until it is opened or archived (desktop package 109, Android build 52)
 
 - When a standalone scheduled job fired while its chat was busy, the run chat

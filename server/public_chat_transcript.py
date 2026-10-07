@@ -25,14 +25,12 @@ class PublicTranscriptError(ValueError):
     pass
 
 
-def _is_goal_followup(event: dict) -> bool:
+def _is_native_followup(event: dict) -> bool:
+    """A human follow-up delivered into a run that kept going (see is_native_steer_event)."""
     return bool(
         event.get("type") == "turn_steered"
-        and event.get("native_goal_steer") is True
         and event.get("native_steer") is True
         and event.get("provider_user_authored") is True
-        and event.get("backend") == "codex"
-        and event.get("purpose") == "codex_goal_resume"
         and isinstance(event.get("run_id"), str)
         and event["run_id"].strip()
     )
@@ -143,7 +141,7 @@ def make_public_event_projector(
             raise PublicTranscriptError("Chat history has an invalid run identity")
         if len(run) > 1024:
             raise PublicTranscriptError("Chat history has an oversized run identity")
-        if kind == "turn_started" or _is_goal_followup(event):
+        if kind == "turn_started" or _is_native_followup(event):
             private_segments.discard(run)
         purpose = event.get("purpose")
         internal = (
@@ -158,7 +156,7 @@ def make_public_event_projector(
         if run in private_runs or run in private_segments or not event_is_visible(event):
             return None
         projected = project_provider_event(event, session_id)
-        if kind != "turn_started" and not _is_goal_followup(event):
+        if kind != "turn_started" and not _is_native_followup(event):
             return projected
         prompt = projected.get("prompt")
         if not isinstance(prompt, str):
@@ -240,7 +238,7 @@ def read_public_transcript(
                 kind = raw.get("type")
                 if not isinstance(kind, str):
                     raise PublicTranscriptError("Chat history contains an invalid event type")
-                if kind not in {"turn_started", "assistant_text", "turn_finished", "reasoning_summary", "artifact_created"} and not _is_goal_followup(raw):
+                if kind not in {"turn_started", "assistant_text", "turn_finished", "reasoning_summary", "artifact_created"} and not _is_native_followup(raw):
                     continue
                 if kind == "reasoning_summary" and raw.get("phase") != "commentary":
                     continue
@@ -256,12 +254,12 @@ def read_public_transcript(
                 # actual user attachment or committed artifact. Tool payloads,
                 # arbitrary Markdown paths and final receipts grant no media.
                 videos = []
-                if kind in {"turn_started", "artifact_created"} or _is_goal_followup(event):
+                if kind in {"turn_started", "artifact_created"} or _is_native_followup(event):
                     try:
                         videos = normalize_shared_chat_videos(event.get("shared_videos", []))
                     except ValueError as exc:
                         raise PublicTranscriptError("Chat history has invalid shared video metadata") from exc
-                if kind == "turn_started" or _is_goal_followup(event):
+                if kind == "turn_started" or _is_native_followup(event):
                     outputs.pop(run, None)
                     role, text = "user", event.get("prompt")
                 elif kind == "artifact_created":

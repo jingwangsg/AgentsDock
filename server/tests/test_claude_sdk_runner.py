@@ -190,6 +190,14 @@ class FakeClaudeManager:
         self.context_usage_response: tuple[dict[str, Any], int] | None = None
         self.context_usage_calls: list[tuple[str, str | None]] = []
         self.loaded = True
+        self.steer_calls: list[tuple[str, str, str]] = []
+        self.steer_result: bool | BaseException = False
+
+    async def steer(self, chat_id: str, *, run_id: str, prompt: str) -> bool:
+        self.steer_calls.append((chat_id, run_id, prompt))
+        if isinstance(self.steer_result, BaseException):
+            raise self.steer_result
+        return self.steer_result
 
     async def start_run(
         self,
@@ -5490,6 +5498,159 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             and call.args[2].get("run_id") == "run-claude"
         ]
         self.assertEqual(prior_stopped, [])
+
+    def _run_claude_sdk_patches(self, manager: FakeClaudeManager, append_event: AsyncMock, append_finished: AsyncMock) -> ExitStack:
+        stack = ExitStack()
+        for name, value in (
+            ("resolve_claude_resume_provider", Mock(return_value=(None, None))),
+            ("capture_git_baseline", AsyncMock(return_value={"head": "base"})),
+            ("build_claude_sdk_options", Mock(return_value=(object(), "config", "/usr/bin/claude"))),
+            ("claude_sdk_manager", AsyncMock(return_value=manager)),
+            ("watch_manifest_artifacts", wait_forever),
+            ("append_event", append_event),
+            ("append_turn_finished_event", append_finished),
+            ("mark_provider_turn_ready", AsyncMock()),
+            ("build_user_provider_prompt", Mock(return_value="Steered prompt")),
+            ("persist_run_provider_session", AsyncMock()),
+            ("cancel_claude_interactions", AsyncMock()),
+            ("collect_manifest", AsyncMock()),
+            ("publish_turn_code_diff", AsyncMock()),
+            ("collect_recent_leftover_manifests", AsyncMock()),
+            ("release_turn_slot", AsyncMock(return_value=True)),
+            ("record_runtime_success", Mock()),
+            ("should_schedule_queue_after_finish", Mock(return_value=False)),
+        ):
+            stack.enter_context(patch.object(agent_server, name, value))
+        return stack
+
+    async def _put_follow_up(self) -> asyncio.Future[dict[str, object]]:
+        for _ in range(500):
+            active = agent_server.ACTIVE.get("chat-claude") or {}
+            if active.get("native_steer_queue") is not None:
+                break
+            await asyncio.sleep(0.01)
+        steer_future: asyncio.Future[dict[str, object]] = asyncio.get_running_loop().create_future()
+        await agent_server.ACTIVE["chat-claude"]["native_steer_queue"].put({
+            "selected": {"queued_id": "queued-next", "prompt": "Steer", "file_ids": []},
+            "remaining": 0,
+            "future": steer_future,
+        })
+        return steer_future
+
+    async def test_follow_up_is_injected_into_the_working_turn_without_interrupt(self) -> None:
+        first = FakeClaudeRun()
+        manager = FakeClaudeManager(first)
+        manager.steer_result = True
+        append_event = AsyncMock(return_value={})
+        append_finished = AsyncMock(return_value={})
+
+        with self._run_claude_sdk_patches(manager, append_event, append_finished):
+            runner = asyncio.create_task(agent_server.run_claude_sdk(
+                "chat-claude",
+                "run-claude",
+                "Prompt",
+                dict(self.session),
+                Path(self.cwd) / ".manifest.json",
+                provider_runtime_env={"AGENTSDOCK_CHAT_ID": "chat-claude"},
+            ))
+            steer_future = await self._put_follow_up()
+            steer_result = await asyncio.wait_for(steer_future, 5)
+            self.assertEqual(first.interrupt_calls, 0)
+            self.assertEqual(len(manager.start_calls), 1)
+            await first.messages.put({
+                "type": "result",
+                "result": "first pong",
+                "session_id": "provider-1",
+                "terminal_reason": "end_turn",
+            })
+            await asyncio.wait_for(runner, 5)
+
+        self.assertEqual(manager.steer_calls, [("chat-claude", "run-claude", "Steered prompt")])
+        self.assertEqual(steer_result["run_id"], "run-claude")
+        self.assertTrue(steer_result["native_steer"])
+        self.assertFalse(steer_result["interrupted"])
+        steered = [
+            call.args[2]
+            for call in append_event.await_args_list
+            if call.args[1] == "turn_steered"
+        ]
+        self.assertEqual(len(steered), 1)
+        self.assertEqual(steered[0]["run_id"], "run-claude")
+        self.assertTrue(steered[0]["native_steer"])
+        self.assertTrue(steered[0]["provider_user_authored"])
+        self.assertEqual(steered[0]["prompt"], "Steer")
+        finished = [call.args[1] for call in append_finished.await_args_list]
+        self.assertEqual([entry["run_id"] for entry in finished], ["run-claude"])
+        self.assertEqual(finished[0]["result_text"], "first pong")
+        self.assertFalse(any(call.args[1] == "turn_stopped" for call in append_event.await_args_list))
+
+    async def test_follow_up_whose_delivery_is_uncertain_is_not_requeued_and_retires_the_cli(self) -> None:
+        first = FakeClaudeRun()
+        manager = FakeClaudeManager(first)
+        manager.steer_result = ClaudeSDKQueryError("Claude finished before replaying the injected follow-up")
+        append_event = AsyncMock(return_value={})
+        append_finished = AsyncMock(return_value={})
+
+        with self._run_claude_sdk_patches(manager, append_event, append_finished):
+            runner = asyncio.create_task(agent_server.run_claude_sdk(
+                "chat-claude",
+                "run-claude",
+                "Prompt",
+                dict(self.session),
+                Path(self.cwd) / ".manifest.json",
+                provider_runtime_env={"AGENTSDOCK_CHAT_ID": "chat-claude"},
+            ))
+            steer_future = await self._put_follow_up()
+            with self.assertRaises(agent_server.NativeSteerHandoffError) as raised:
+                await asyncio.wait_for(steer_future, 5)
+            self.assertEqual(first.interrupt_calls, 0)
+            await first.messages.put({
+                "type": "result",
+                "result": "first",
+                "session_id": "provider-1",
+                "terminal_reason": "end_turn",
+            })
+            await asyncio.wait_for(runner, 5)
+
+        self.assertTrue(raised.exception.delivery_uncertain)
+        self.assertFalse(raised.exception.safe_to_requeue)
+        self.assertFalse(any(call.args[1] in {"turn_steered", "turn_stopped"} for call in append_event.await_args_list))
+        self.assertEqual([call.args[1]["result_text"] for call in append_finished.await_args_list], ["first"])
+        # The frame may be running as a turn no run owns: the chat's CLI process is retired with the run.
+        self.assertEqual(manager.evict_calls, [("chat-claude", True)])
+
+    async def test_follow_up_the_cli_cannot_take_returns_to_the_queue_on_an_authority_run(self) -> None:
+        first = FakeClaudeRun()
+        manager = FakeClaudeManager(first)
+        append_event = AsyncMock(return_value={})
+        append_finished = AsyncMock(return_value={})
+
+        with self._run_claude_sdk_patches(manager, append_event, append_finished):
+            runner = asyncio.create_task(agent_server.run_claude_sdk(
+                "chat-claude",
+                "run-claude",
+                "Prompt",
+                dict(self.session),
+                Path(self.cwd) / ".manifest.json",
+                provider_runtime_env={"AGENTSDOCK_CHAT_ID": "chat-claude"},
+            ))
+            steer_future = await self._put_follow_up()
+            with self.assertRaises(agent_server.NativeSteerHandoffError) as raised:
+                await asyncio.wait_for(steer_future, 5)
+            self.assertEqual(first.interrupt_calls, 0)
+            self.assertEqual(len(manager.start_calls), 1)
+            await first.messages.put({
+                "type": "result",
+                "result": "first",
+                "session_id": "provider-1",
+                "terminal_reason": "end_turn",
+            })
+            await asyncio.wait_for(runner, 5)
+
+        self.assertTrue(raised.exception.safe_to_requeue)
+        self.assertEqual(len(manager.steer_calls), 1)
+        self.assertFalse(any(call.args[1] in {"turn_steered", "turn_stopped"} for call in append_event.await_args_list))
+        self.assertEqual([call.args[1]["run_id"] for call in append_finished.await_args_list], ["run-claude"])
 
     async def test_empty_natural_completion_during_steer_is_failed(self) -> None:
         first = FakeClaudeRun()

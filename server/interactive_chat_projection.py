@@ -10,7 +10,7 @@ from typing import Callable
 
 from public_chat_transcript import (
     PublicTranscriptError,
-    _is_goal_followup, _public_timestamp,
+    _is_native_followup, _public_timestamp,
 )
 
 
@@ -103,7 +103,7 @@ class IncrementalChatTranscript:
 
     def _consume(self, raw: dict) -> None:
         kind = raw["type"]
-        if kind not in {"turn_started", "assistant_text", "turn_finished", "reasoning_summary"} and not _is_goal_followup(raw):
+        if kind not in {"turn_started", "assistant_text", "turn_finished", "reasoning_summary"} and not _is_native_followup(raw):
             return
         if kind == "reasoning_summary" and raw.get("phase") != "commentary":
             return
@@ -113,7 +113,7 @@ class IncrementalChatTranscript:
         if not isinstance(event, dict):
             raise PublicTranscriptError("Chat history projection is invalid")
         run = str(event.get("run_id") or "")
-        if kind == "turn_started" or _is_goal_followup(event):
+        if kind == "turn_started" or _is_native_followup(event):
             self._outputs[run] = []
             role, text = "user", event.get("prompt")
         else:

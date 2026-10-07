@@ -2233,6 +2233,62 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await manager.close_all()
 
+    async def test_steer_injects_a_follow_up_into_the_live_run_without_interrupting(self) -> None:
+        handle = await self.manager.start_run("chat-steer", "Render the batch", run_id="run-steer", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "assistant", "text": "Rendering…"})
+        self.assertEqual((await asyncio.wait_for(handle.__anext__(), 5))["text"], "Rendering…")
+        queries_before = [call for call in client.calls if call[0] == "query"]
+        self.assertTrue(await self.manager.steer("chat-steer", run_id="run-steer", prompt="Is the GPU busy?"))
+        queries = [call for call in client.calls if call[0] == "query"]
+        self.assertEqual(len(queries), len(queries_before) + 1)
+        self.assertEqual(queries[-1][1], "Is the GPU busy?")
+        self.assertNotIn(("interrupt",), client.calls)
+        # The fake CLI replayed the injected frame (auto_ack): that replay confirmed the steer and is not a user bubble.
+        await client.emit({"type": "assistant", "text": "GPU is at 90%"})
+        self.assertEqual((await asyncio.wait_for(handle.__anext__(), 5))["text"], "GPU is at 90%")
+        self.assertFalse(handle.done)
+        await client.emit({"type": "result", "is_error": False, "result": "done"})
+        self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "done")
+        # Nothing to steer once the run ended, and never a different run.
+        self.assertFalse(await self.manager.steer("chat-steer", run_id="run-steer", prompt="late"))
+        self.assertFalse(await self.manager.steer("chat-other", run_id="run-x", prompt="nobody"))
+
+    async def test_a_result_that_ends_the_turn_before_the_replay_keeps_the_run_open_for_the_answer(self) -> None:
+        handle = await self.manager.start_run("chat-steer-race", "Render", run_id="run-race", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "assistant", "text": "Rendering…"})
+        self.assertEqual((await asyncio.wait_for(handle.__anext__(), 5))["text"], "Rendering…")
+        client.auto_ack = False
+        self.assertTrue(await self.manager.steer("chat-steer-race", run_id="run-race", prompt="Also pong"))
+        # The terminal result was already in the pipe: it ended the turn without the follow-up.
+        await client.emit({"type": "result", "is_error": False, "result": "first"})
+        for _ in range(20):
+            await asyncio.sleep(0)
+        self.assertFalse(handle.done)
+        # The CLI takes the follow-up next: replay, answer, and the result that ends the run.
+        await client.emit(replay_ack(client.query_envelopes[-1][0]["uuid"]))
+        await client.emit({"type": "assistant", "text": "pong"})
+        self.assertEqual((await asyncio.wait_for(handle.__anext__(), 5))["text"], "pong")
+        await client.emit({"type": "result", "is_error": False, "result": "first pong"})
+        self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "first pong")
+
+    async def test_steer_wakes_a_run_that_only_background_tasks_kept_open(self) -> None:
+        handle = await self.manager.start_run("chat-steer-bg", "Delegate", run_id="run-bg", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        started = {"type": "system", "subtype": "task_started", "task_id": "agent-1", "task_type": "local_agent"}
+        await client.emit(started)
+        await client.emit({"type": "result", "is_error": False, "result": "launched"})
+        self.assertEqual(await asyncio.wait_for(handle.__anext__(), 5), started)
+        for _ in range(50):
+            if handle.awaiting_background_tasks:
+                break
+            await asyncio.sleep(0)
+        self.assertTrue(handle.awaiting_background_tasks)
+        self.assertTrue(await self.manager.steer("chat-steer-bg", run_id="run-bg", prompt="status?"))
+        self.assertFalse(handle.awaiting_background_tasks)
+        self.assertFalse(handle.done)
+
     async def test_evict_disconnects_only_selected_chat(self) -> None:
         run = await self.manager.start_run(
             "chat-1",

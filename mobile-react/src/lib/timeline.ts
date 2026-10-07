@@ -490,7 +490,7 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
     } else if (queuedId && event.type === 'turn_unqueued') {
       queuedInputFileIds.delete(queuedId)
       removeDeferredRow(queuedId)
-    } else if (queuedId && (event.type === 'turn_started' || isNativeGoalSteerEvent(event))) {
+    } else if (queuedId && (event.type === 'turn_started' || isNativeSteerEvent(event))) {
       const ownedFileIds = queuedInputFileIds.get(queuedId)
       if (ownedFileIds) event = { ...event, file_ids: [...ownedFileIds] }
       queuedInputFileIds.delete(queuedId)
@@ -645,7 +645,7 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
       items.push({ kind: 'system', key: `event:${event.id}`, seq: event.seq, event })
       continue
     }
-    if (isNativeGoalSteerEvent(event)) {
+    if (isNativeSteerEvent(event)) {
       // Native steering keeps the same goal/run alive. End only the previous
       // display slice so its activity and trace cannot absorb the new input.
       const prior = turns.get(runId)
@@ -1494,13 +1494,14 @@ function codexLifecycleEventPriority(event: Event): number {
   return 0
 }
 
-/** A genuine user boundary within one still-running native Codex goal owner. */
-export function isNativeGoalSteerEvent(event: Event): boolean {
+/**
+ * A user follow-up delivered into a run that keeps going: a native Codex goal steer, or a
+ * message injected into a working Claude turn. The run's owner, trace and tasks continue; the
+ * timeline only starts a new display slice at the message.
+ */
+export function isNativeSteerEvent(event: Event): boolean {
   return event.type === 'turn_steered'
-    && event.native_goal_steer === true
     && event.native_steer === true
-    && event.backend === 'codex'
-    && event.purpose === 'codex_goal_resume'
     && event.provider_user_authored === true
     && Boolean(event.run_id?.trim())
 }

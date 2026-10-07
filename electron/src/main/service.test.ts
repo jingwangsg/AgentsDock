@@ -6151,7 +6151,7 @@ describe('streamed event cache batching', () => {
       receiveEvent(steer)
       // A lookalike event without the native acceptance proof cannot consume
       // another queued message.
-      receiveEvent({ ...steer, id: 'unproven', seq: 3, queued_id: waiting.queued_id, native_goal_steer: false })
+      receiveEvent({ ...steer, id: 'unproven', seq: 3, queued_id: waiting.queued_id, native_steer: false })
       if (flush === 'batch') await vi.advanceTimersByTimeAsync(50)
       else service.stop()
       expect(cache.queuedTurns('profile:a', 'chat')).toEqual([waiting])

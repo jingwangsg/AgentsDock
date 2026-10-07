@@ -902,6 +902,26 @@ transport the CLI closes its input with the reply and kills background shells
 five seconds later, so those turns are told to keep required work in the
 foreground.
 
+Send now, unlike automatic queue delivery, injects a message into the working
+turn, as Claude Code's own composer does: the running tool and any background
+tasks finish, the model reads the message at its next step, and the run keeps
+its owner, authority and run id. If the turn ends before the CLI has taken the
+message, the run stays open and the CLI answers it in the same run. The
+timeline records `turn_steered` with `native_steer` and
+`provider_user_authored` on that run, which every consumer
+of the event log (queue recovery, rewind, history search, summaries, forks,
+exports, the shared-chat transcript) treats as a delivered user message, as it
+treats a Codex goal follow-up. This lane takes a plain text or attachment
+message on the same model, effort and runtime; a message with a provider
+command, a purpose or new chat or team references, or one that changes the
+model or effort, still stops the run and starts its own, and a run that
+started without provider authority still falls back to the logical-run
+replacement. If the CLI cannot take the message because the run is already
+stopping, the message returns to the queue and Send now reports the deferral.
+If the frame was written but never confirmed, the message is not sent again,
+Send now reports the uncertain delivery, and the chat's CLI process is retired
+when the run ends.
+
 Claude-controls capability v3 adds authenticated MCP management without
 changing global API contract v13. Clients gate on
 `capabilities.claude_controls.features.mcp_management` and use the additive

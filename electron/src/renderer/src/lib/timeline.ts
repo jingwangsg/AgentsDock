@@ -4,7 +4,7 @@ import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 import { hasTimelineChangeSignal } from '@shared/timeline-change-signal'
 import { agentFileBelongsToSession, eventFileForSession } from '@shared/session-files'
 import { hasProviderUserProvenance, isImportedClaudeControlCompanion, isImportedCodexRuntimeContext, isImportedProviderControlMetadata, isImportedProviderInterruption, isImportedSourceProvenRepair, isImportedSourceProvenAssistantReplay, isImportedSourceProvenNativeReplay } from '@shared/provider-origin'
-import { codexLifecycleSemanticKey, crossChatSemanticKey, isAsyncCrossChatMessage, isCompactionCompletedEvent, isCompactionLifecycleKey, isCompactionStartedEvent, isNativeGoalSteerEvent, isNativeSteerTransitionStop, providerInteractionAuditKey } from '@shared/semantic-timeline'
+import { codexLifecycleSemanticKey, crossChatSemanticKey, isAsyncCrossChatMessage, isCompactionCompletedEvent, isCompactionLifecycleKey, isCompactionStartedEvent, isNativeSteerEvent, isNativeSteerTransitionStop, providerInteractionAuditKey } from '@shared/semantic-timeline'
 import { isChatMailboxEvent } from '@shared/chat-inbox'
 
 export type TimelineItem = TurnItem | SystemItem | JobItem
@@ -510,7 +510,7 @@ export class TimelineProjector {
     } else if (queuedId && event.type === 'turn_unqueued') {
       this.queuedInputFileIds.delete(queuedId)
       this.removeItem(`turn-deferred:${queuedId}`)
-    } else if (queuedId && (event.type === 'turn_started' || isNativeGoalSteerEvent(event))) {
+    } else if (queuedId && (event.type === 'turn_started' || isNativeSteerEvent(event))) {
       const ownedFileIds = this.queuedInputFileIds.get(queuedId)
       if (ownedFileIds) event = { ...event, file_ids: [...ownedFileIds] }
       this.queuedInputFileIds.delete(queuedId)
@@ -685,7 +685,7 @@ export class TimelineProjector {
       return
     }
 
-    if (isNativeGoalSteerEvent(event)) {
+    if (isNativeSteerEvent(event)) {
       // Native steering keeps the same goal/run alive. End only the previous
       // display slice so its activity and trace cannot absorb the new input.
       const prior = this.turnByRun.get(event.run_id!)
@@ -2230,7 +2230,7 @@ function normalizeAssistantOutput(value: string): string {
 export function messageText(event: Event): string {
   const text = stripProviderInternalMarkup(event.result_text || event.text || event.prompt || printableEventValue(event.message) || printableEventValue(event.error) || event.output || '')
   return !hasProviderUserProvenance(event)
-    && (event.type === 'turn_started' || event.type === 'turn_queued' || event.type === 'turn_queue_run_now' || isNativeGoalSteerEvent(event))
+    && (event.type === 'turn_started' || event.type === 'turn_queued' || event.type === 'turn_queue_run_now' || isNativeSteerEvent(event))
     ? stripInjectedProviderAuthority(text)
     : text
 }

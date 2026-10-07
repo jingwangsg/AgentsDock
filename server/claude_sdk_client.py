@@ -1159,6 +1159,13 @@ class ClaudeSDKRunHandle:
         self._background_reconciliation_aborted = False
         self._awaiting_background_tasks = False
         self._deferred_result: Any = None
+        # Follow-ups injected into this run whose stdin frame the CLI has not
+        # replayed yet. The replay is not a user bubble, and a Result that
+        # arrives before it ended the turn without the message, so the run
+        # stays open for the CLI's answer.
+        self._unconfirmed_steer_ids: set[str] = set()
+        # A steer query joins the start query's CLI session.
+        self._query_session_id: str | None = None
 
     @property
     def awaiting_background_tasks(self) -> bool:
@@ -1362,6 +1369,15 @@ class _StartRun:
     response: asyncio.Future[ClaudeSDKRunHandle]
     background_task_reconciliation: dict[str, Any] | None = None
     pending_mail_hint: Callable[[], str | None] | None = None
+
+
+@dataclass
+class _Steer:
+    """Inject a user follow-up into the active run without interrupting it."""
+
+    run_id: str
+    prompt: str
+    response: asyncio.Future[bool]
 
 
 @dataclass
@@ -1649,6 +1665,22 @@ class ClaudeSDKSupervisor:
         response: asyncio.Future[bool] = loop.create_future()
         assert self._commands is not None
         await self._commands.put(_Interrupt(run_id=run_id, response=response))
+        return await asyncio.shield(response)
+
+    async def steer(self, *, run_id: str, prompt: str) -> bool:
+        """Send a follow-up into the active run, as Claude Code's composer does.
+
+        The CLI queues the message and the model reads it at its next step;
+        the running tool and background tasks are untouched and the run keeps
+        its owner. Returns False when there is no acknowledged run to steer;
+        raises ClaudeSDKQueryError when the write could not be bounded, so the
+        frame may or may not have reached the CLI.
+        """
+
+        loop = self._ensure_actor()
+        response: asyncio.Future[bool] = loop.create_future()
+        assert self._commands is not None
+        await self._commands.put(_Steer(run_id=run_id, prompt=prompt, response=response))
         return await asyncio.shield(response)
 
     async def release_awaiting_run(self, *, run_id: str | None = None) -> bool:
@@ -2207,6 +2239,7 @@ class ClaudeSDKSupervisor:
             interrupt_this_run,
         )
         handle._background_task_reconciliation = command.background_task_reconciliation
+        handle._query_session_id = command.query_session_id
         self._active_run = handle
         self._last_used_at = time.monotonic()
         if command.on_supervisor_ready is not None:
@@ -2375,6 +2408,52 @@ class ClaudeSDKSupervisor:
                     f"Claude goal-clear delivery is uncertain: {exc}"
                 ))
 
+    async def _handle_steer(self, command: _Steer) -> None:
+        active = self._active_run
+        if (
+            active is None
+            or active.done
+            or not active.acknowledged
+            or active.run_id != command.run_id
+        ):
+            if not command.response.done():
+                command.response.set_result(False)
+            return
+        client = self._client
+        if client is None or not self._connected:
+            if not command.response.done():
+                command.response.set_exception(ClaudeSDKSupervisorError(
+                    f"Claude SDK client for {self.chat_id} is not connected"
+                ))
+            return
+        correlation_id = str(uuid.uuid4())
+        active._unconfirmed_steer_ids.add(correlation_id)
+        try:
+            if active._query_session_id is None:
+                query = client.query(_query_message_stream(command.prompt, correlation_id))
+            else:
+                query = client.query(
+                    _query_message_stream(command.prompt, correlation_id),
+                    session_id=active._query_session_id,
+                )
+            await self._deliver_query_bounded(query, run_id=active.run_id)
+        except BaseException as exc:
+            active._unconfirmed_steer_ids.discard(correlation_id)
+            if not command.response.done():
+                command.response.set_exception(
+                    exc if isinstance(exc, Exception)
+                    else ClaudeSDKSupervisorClosed(f"Claude SDK steer was cancelled for chat {self.chat_id}")
+                )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return
+        # The model has new work; a run that was only waiting on background
+        # tasks is active again.
+        active._awaiting_background_tasks = False
+        self._last_used_at = time.monotonic()
+        if not command.response.done():
+            command.response.set_result(True)
+
     async def _notify_awaiting(self, run_id: str) -> None:
         assert self._awaiting_observer is not None
         try:
@@ -2389,6 +2468,7 @@ class ClaudeSDKSupervisor:
             or active.done
             or not active._awaiting_background_tasks
             or active._deferred_result is None
+            or active._unconfirmed_steer_ids
             or (command.run_id is not None and active.run_id != command.run_id)
         ):
             if not command.response.done():
@@ -2908,13 +2988,16 @@ class ClaudeSDKSupervisor:
             # before this query. Nothing owns the new run until its exact UUID
             # is replayed by the CLI.
             return
-        elif _is_matching_replay_ack(
-            command.message,
-            active.correlation_id,
-        ):
+        elif _is_matching_replay_ack(command.message, active.correlation_id):
             # A duplicate acknowledgment is protocol metadata, never a second
             # user bubble.
             return
+        for steer_id in active._unconfirmed_steer_ids:
+            if _is_matching_replay_ack(command.message, steer_id):
+                # The CLI replays an injected follow-up once it has taken it;
+                # the frame is not a user bubble.
+                active._unconfirmed_steer_ids.discard(steer_id)
+                return
 
         active._observe_reconciliation_progress(command.message)
         if self._pending_mail_hint_hook is not None:
@@ -2928,6 +3011,10 @@ class ClaudeSDKSupervisor:
             # runner cannot mistake it for the terminal response.
             had_inflight_tasks = bool(self._inflight_tasks)
             forced_run_end = _result_forces_run_end(command.message)
+            if active._unconfirmed_steer_ids and not forced_run_end:
+                # This Result ended the turn before the CLI took an injected
+                # follow-up; the CLI replays and answers it next, in this run.
+                return
             if had_inflight_tasks and not forced_run_end:
                 active._awaiting_background_tasks = True
                 active._deferred_result = command.message
@@ -3049,6 +3136,8 @@ class ClaudeSDKSupervisor:
                     await self._handle_interrupt(command)
                 elif isinstance(command, _ReleaseAwaiting):
                     await self._handle_release_awaiting(command)
+                elif isinstance(command, _Steer):
+                    await self._handle_steer(command)
                 elif isinstance(command, _GetContextUsage):
                     await self._handle_get_context_usage(command)
                 elif isinstance(command, _GetMCPStatus):
@@ -3381,6 +3470,17 @@ class ClaudeSDKSupervisorManager:
         if supervisor is None:
             return False
         return await supervisor.interrupt(run_id=run_id)
+
+    async def steer(self, chat_id: str, *, run_id: str, prompt: str) -> bool:
+        """Inject a follow-up into a chat's active run without interrupting it; see the supervisor."""
+
+        self._bind_loop()
+        assert self._lock is not None
+        async with self._lock:
+            supervisor = self._supervisors.get(str(chat_id))
+        if supervisor is None:
+            return False
+        return await supervisor.steer(run_id=run_id, prompt=prompt)
 
     async def release_awaiting_run(self, chat_id: str, *, run_id: str | None = None) -> bool:
         """End a chat's run that only background tasks keep open; see the supervisor."""

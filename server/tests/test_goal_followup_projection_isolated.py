@@ -115,14 +115,20 @@ class GoalFollowupProjectionTests(unittest.TestCase):
         ])
         self.assertNotIn("queued_id", json.dumps(result["messages"]))
 
+    def test_claude_follow_up_injected_into_a_working_turn_is_human_history(self):
+        injected = {**deepcopy(self.events[2]), "backend": "claude", "purpose": None, "native_goal_steer": None}
+        self.assertTrue(projection()["is_native_steer_event"](injected))
+        self.write([self.events[0], injected, self.events[4]])
+        result = read_public_transcript(self.path, lambda item: item)
+        self.assertEqual([item["text"] for item in result["messages"]],
+                         ["Original goal request", "Keep working, including the new failure.", "Updated answer"])
+
     def test_unproven_steer_is_not_human_history_or_shareable_input(self):
-        for field, value in (("native_goal_steer", False), ("native_steer", False),
-                             ("provider_user_authored", False), ("purpose", "scheduled_job"),
-                             ("backend", "claude"), ("run_id", "")):
+        for field, value in (("native_steer", False), ("provider_user_authored", False), ("run_id", "")):
             invalid = deepcopy(self.events[2])
             invalid[field] = value
             ns = projection()
-            self.assertFalse(ns["is_native_goal_steer_event"](invalid))
+            self.assertFalse(ns["is_native_steer_event"](invalid))
             self.write([self.events[0], invalid])
             result = read_public_transcript(self.path, lambda item: item)
             self.assertEqual([item["text"] for item in result["messages"]], ["Original goal request"])

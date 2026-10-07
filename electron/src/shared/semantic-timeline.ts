@@ -43,13 +43,14 @@ export interface TimelineSemanticUnit {
   events: Event[]
 }
 
-/** A genuine user boundary within one still-running native Codex goal owner. */
-export function isNativeGoalSteerEvent(event: Event): boolean {
+/**
+ * A user follow-up delivered into a run that keeps going: a native Codex goal steer, or a
+ * message injected into a working Claude turn. The run's owner, trace and tasks continue; the
+ * timeline only starts a new display slice at the message.
+ */
+export function isNativeSteerEvent(event: Event): boolean {
   return event.type === 'turn_steered'
-    && event.native_goal_steer === true
     && event.native_steer === true
-    && event.backend === 'codex'
-    && event.purpose === 'codex_goal_resume'
     && event.provider_user_authored === true
     && Boolean(event.run_id?.trim())
 }
@@ -118,7 +119,7 @@ export function timelineSemanticUnits(events: Event[]): TimelineSemanticUnit[] {
   let latestCreatedKey: string | null = null
   for (const event of ordered) {
     const runId = event.run_id?.trim() || ''
-    if (isNativeGoalSteerEvent(event)) goalSegmentByRun.set(runId, `run:${runId}:start-${event.seq}`)
+    if (isNativeSteerEvent(event)) goalSegmentByRun.set(runId, `run:${runId}:start-${event.seq}`)
     const explicitJobId = explicitSemanticEventJobId(event)
     const stableOccurrenceId = semanticJobOccurrenceIdentity(event)
     const occurrenceKey = occurrenceByEvent.get(event)?.get(runId) || (
@@ -196,7 +197,7 @@ export function incompleteLeadingRunId(events: Event[]): string | null {
     .map(event => event.run_id?.trim() || '')
     .find(Boolean)
   if (!runId) return null
-  return ordered.some(event => (event.type === 'turn_started' || isNativeGoalSteerEvent(event)) && event.run_id?.trim() === runId)
+  return ordered.some(event => (event.type === 'turn_started' || isNativeSteerEvent(event)) && event.run_id?.trim() === runId)
     ? null
     : runId
 }

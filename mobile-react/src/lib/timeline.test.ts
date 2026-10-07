@@ -8,7 +8,7 @@ import {
   activityEventSequence,
   codexLifecycleSemanticKey,
   crossChatSemanticKey,
-  isNativeGoalSteerEvent,
+  isNativeSteerEvent,
   isTimelineError,
   omitTerminalClaudeFinalCommentary,
   jobDisplayEvents,
@@ -1495,9 +1495,9 @@ const goalSteer = event(203, 'turn_steered', {
   run_id: 'goal-run', prompt: 'Also handle X', backend: 'codex', purpose: 'codex_goal_resume',
   native_steer: true, native_goal_steer: true, provider_user_authored: true, file_ids: ['file-steer'],
 })
-assert(isNativeGoalSteerEvent(goalSteer), 'an exact codex goal steer is a native goal steer')
-assert(!isNativeGoalSteerEvent({ ...goalSteer, native_goal_steer: undefined }), 'a plain steer is not a goal steer')
-assert(!isNativeGoalSteerEvent({ ...goalSteer, provider_user_authored: false }), 'goal steers need provider user authorship')
+assert(isNativeSteerEvent(goalSteer), 'an exact codex goal steer is a native steer')
+assert(isNativeSteerEvent({ ...goalSteer, backend: 'claude', purpose: undefined, native_goal_steer: undefined }), 'a follow-up injected into a working Claude turn is a native steer')
+assert(!isNativeSteerEvent({ ...goalSteer, backend: 'claude', purpose: undefined, native_goal_steer: undefined, provider_user_authored: false }), 'native steers need provider user authorship')
 const goalSteerRows = projectTimeline([
   event(200, 'turn_started', { run_id: 'goal-run', prompt: 'Start the goal', backend: 'codex' }),
   event(201, 'reasoning_summary', { run_id: 'goal-run', text: 'Planning' }),

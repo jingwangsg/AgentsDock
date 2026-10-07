@@ -1,6 +1,6 @@
 import type { Event, Health, QueuedCrossChatDeliveryIdentity, QueuedTurn } from '../types'
 import { crossChatCapabilityVersion, crossChatHandoffsAvailable, exactQueuedDeliverySkipAvailable } from './chat-references'
-import { isAsyncCrossChatMessage } from './timeline'
+import { isAsyncCrossChatMessage, isNativeSteerEvent } from './timeline'
 
 export function isUserQueuedTurn(turn: QueuedTurn): boolean {
   return turn.purpose !== 'handoff_digest'
@@ -107,7 +107,7 @@ export function updateQueuedTurns(current: QueuedTurn[], event: Event): QueuedTu
     }
     return [...current.filter(value => value.queued_id !== turn.queued_id), turn].sort(queueSort)
   }
-  if ((event.type === 'turn_unqueued' || event.type === 'turn_started' || event.type === 'turn_queue_run_now') && event.queued_id) {
+  if ((event.type === 'turn_unqueued' || event.type === 'turn_started' || event.type === 'turn_queue_run_now' || isNativeSteerEvent(event)) && event.queued_id) {
     return current.filter(value => value.queued_id !== event.queued_id)
   }
   if (event.type === 'turn_queue_updated' && event.queued_id) {

@@ -41,7 +41,7 @@ FUNCTIONS = {
     "should_bump_session_updated_at", "update_session_event_metadata",
     "clear_imported_active_runs", "prepare_codex_goal_history_repair",
     "sync_history_search_index", "history_search_event_record",
-    "is_native_goal_steer_event",
+    "is_native_steer_event",
 }
 GOAL = (
     '<codex_internal_context source="goal">\n'
