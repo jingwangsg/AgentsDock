@@ -1,5 +1,46 @@
 # Public development log
 
+## 2026-10-07 — Editing a message after stopping Claude rewinds to that message, not to an older completed reply (server)
+
+- Rewinding a Claude chat (editing an earlier message) forked the native
+  session at the last completed reply before that message. A turn ended by
+  Stop, or by a Send now that replaced it, has no completed reply. In a chat
+  whose recent turns were all stopped, the fork point therefore moved back to
+  an older turn: Claude forgot the stopped turns that stayed in the timeline.
+  When Claude had also auto-compacted the session since that older reply, the
+  rewind was refused with "Claude compacted this session's context after its
+  last completed reply" although the edited message came after the
+  compaction. Observed on a remote chat where four rewinds in a row were
+  refused this way; its last completed reply was an hour and one compaction
+  behind the edited message.
+- The rewind now forks at the transcript row the edited message continued
+  from. Claude Code links every transcript row to its parent, so that row is
+  the session exactly as it was before the message, stopped turns included.
+  When the message's own row cannot be found (for example a provider command
+  such as /compact), the rewind forks at the last completed reply as before.
+  A message sent at or before a compaction is still refused, now worded
+  "Claude compacted this session's context after the point it would resume
+  from"; the fork action shares this wording. One case that previously reset
+  the chat to a fresh Claude session because no completed reply survived is
+  now refused like any other rewind: the message's fork point sits behind a
+  compaction. No desktop or mobile change.
+- Verified with the rewind, fork and compaction test modules, including new
+  tests: a message after stopped turns forks at its own row although the last
+  completed reply sits behind a compaction; a message sent before a compaction
+  is still refused, also when no completed reply survives; the row lookup
+  skips an earlier identical prompt and sidechain, compact-summary and
+  tool-result rows, and a later message with the same prefix does not stand
+  in for a row that was not found. Accepted against an
+  isolated server with the real Claude CLI: a completed turn, a turn stopped
+  during a 120-second command, a third message, a rewind to the third message
+  and a follow-up that listed the codewords from both the completed and the
+  stopped turn; the forked transcript continues from the interrupted row. The
+  same steps against the previous server listed only the completed turn's
+  codeword. The rewind was driven over the server's HTTP API; the desktop and
+  Android edit actions, which call the same endpoint, were not exercised, nor
+  was a fork point that a server crash left at an unanswered tool call.
+  Availability: source; servers need a redeploy.
+
 ## 2026-10-07 — A message sent while Claude works no longer stops its command (server, desktop, Android)
 
 - Sending a message with Send now while a Claude chat ran a command stopped

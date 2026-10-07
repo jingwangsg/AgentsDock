@@ -44,6 +44,8 @@ class RewindFixture(unittest.IsolatedAsyncioTestCase):
             patch.object(server, "prepare_codex_login_turn", new=AsyncMock()),
             patch.object(server, "REWIND_ADMISSION_RETRY_SECONDS", 0),
             patch.object(server, "ensure_dirs", return_value=None),
+            # The rewound message's row is looked up in the transcript; never scan this machine's.
+            patch.object(server, "CLAUDE_PROJECTS_ROOT", self.state / "claude-projects"),
             patch.object(server.STORE, "sessions", self.sessions),
             patch.object(server.STORE, "save", new=AsyncMock()),
             patch.object(server.HUB, "broadcast", new=AsyncMock()),
@@ -684,6 +686,98 @@ class RewindEditTests(RewindFixture):
         self.assertEqual([event["seq"] for event in self.stored_events()], list(range(1, 11)))
         self.assertIsNone(sess.get("fork_from"))
         self.assertNotIn("fork_resume_session_at", sess)
+
+    # The second reply as Claude wrote it before Stop: the server recorded no completed turn for it, so it is not a fork terminal.
+    BEFORE_THIRD = {"type": "assistant", "uuid": "before-third-uuid", "timestamp": "2026-09-08T10:03:40Z",
+                    "message": {"content": [{"type": "text", "text": "Second answer, interrupted"}]}}
+
+    def third_message_row(self, **overrides) -> dict:
+        row = {"type": "user", "uuid": "third-uuid", "parentUuid": "before-third-uuid", "timestamp": "2026-09-08T10:04:02Z",
+               "message": {"role": "user", "content": "Third question"}}
+        row.update(overrides)
+        return row
+
+    async def test_claude_rewind_forks_at_the_row_the_message_continued_from_when_the_turn_before_it_was_stopped(self) -> None:
+        # Every turn since the first was stopped, and Claude compacted after the first reply: the
+        # last completed reply is behind the compaction, but the message itself is after it.
+        sess = self.chat()
+        events = self.events()
+        events[5] = {**events[5], "exit_code": None, "result_text": "", "stopped": True}
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        with self.claude_transcript(COMPACTION_BOUNDARY, self.BEFORE_THIRD, self.third_message_row()):
+            result = await server.rewind_session("chat", rewind_request())
+        self.assertEqual(result["provider_rewind"], "claude_fork")
+        self.assertEqual((sess["fork_from"], sess["fork_resume_session_at"]), ("claude-parent", "before-third-uuid"))
+        self.assertEqual([event["seq"] for event in self.stored_events()], [1, 2, 3, 4, 5, 6, 7, 10, 11])
+
+    async def test_claude_rewind_refuses_a_message_sent_before_a_compaction(self) -> None:
+        sess = self.chat()
+        # The message continued from the completed second reply, and Claude compacted during its turn.
+        with self.claude_transcript(self.third_message_row(parentUuid="second-uuid"),
+                                    {**COMPACTION_BOUNDARY, "timestamp": "2026-09-08T10:04:30Z"}):
+            raised = await self.assertRewindRejected(rewind_request(), 409, "rewind_boundary_ambiguous")
+        self.assertIn("compacted", raised.detail["message"])
+        self.assertEqual([event["seq"] for event in self.stored_events()], list(range(1, 11)))
+        self.assertNotIn("fork_resume_session_at", sess)
+
+    async def test_a_message_behind_a_compaction_is_refused_even_when_no_completed_reply_survives(self) -> None:
+        # Before, nothing completed meant a fresh Claude session; a known fork point behind a compaction now refuses like any other.
+        sess = self.chat()
+        events = self.events()
+        for index in (2, 5):
+            events[index] = {**events[index], "exit_code": None, "result_text": "", "stopped": True}
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        with self.claude_transcript(self.BEFORE_THIRD, self.third_message_row(), {**COMPACTION_BOUNDARY, "timestamp": "2026-09-08T10:04:30Z"}):
+            raised = await self.assertRewindRejected(rewind_request(), 409, "rewind_boundary_ambiguous")
+        self.assertIn("compacted", raised.detail["message"])
+        self.assertEqual(sess["claude_session_id"], "claude-parent")
+        self.assertEqual([event["seq"] for event in self.stored_events()], list(range(1, 11)))
+
+    async def test_a_later_message_with_the_same_prefix_does_not_stand_in_for_the_rewound_message(self) -> None:
+        # The third message's own row is missing (a prefixed prompt); a fourth message starts with the same text.
+        sess = self.chat(latest_event_seq=11, latest_agent_event_seq=11, last_read_agent_event_seq=11)
+        events = self.events() + [
+            {"seq": 11, "id": "e11", "type": "turn_started", "run_id": "fourth", "ts": "2026-09-08T10:06:00Z", "prompt": "Third question?"},
+        ]
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        fourth = self.third_message_row(uuid="fourth-uuid", parentUuid="third-reply", timestamp="2026-09-08T10:06:01Z",
+                                        message={"role": "user", "content": "Third question?"})
+        with self.claude_transcript(fourth):
+            result = await server.rewind_session("chat", rewind_request(expected_latest_seq=11))
+        self.assertEqual(result["provider_rewind"], "claude_fork")
+        self.assertEqual(sess["fork_resume_session_at"], "second-uuid")
+
+    async def test_an_unreadable_transcript_resets_when_no_completed_reply_survives_and_refuses_otherwise(self) -> None:
+        sess = self.chat()
+        events = self.events()
+        for index in (2, 5):
+            events[index] = {**events[index], "exit_code": None, "result_text": "", "stopped": True}
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        oversized = patch.object(server, "claude_rewound_message_boundary", side_effect=ValueError("transcript exceeds the import limit"))
+        with oversized:
+            result = await server.rewind_session("chat", rewind_request())
+        self.assertEqual(result["provider_rewind"], "claude_reset")
+        self.assertIsNone(sess["claude_session_id"])
+        self.chat()
+        with oversized:
+            await self.assertRewindRejected(rewind_request(), 409, "rewind_provider_unavailable")
+
+    async def test_the_rewound_message_row_is_the_first_main_chain_user_row_written_after_the_turn_started(self) -> None:
+        sess = self.chat()
+        rows = [
+            self.third_message_row(uuid="earlier-twin", parentUuid="earlier-parent", timestamp="2026-09-08T10:00:10Z"),
+            self.BEFORE_THIRD,
+            self.third_message_row(uuid="side", parentUuid="side-parent", isSidechain=True),
+            self.third_message_row(uuid="summary", parentUuid="summary-parent", isCompactSummary=True),
+            self.third_message_row(uuid="result", parentUuid="result-parent",
+                                   message={"role": "user", "content": [{"type": "tool_result", "content": "Third question"}]}),
+            # The match; the attachment list the server appends after the prompt must not defeat it.
+            self.third_message_row(message={"role": "user", "content": "Third question\n\n[Attached files]\n- /tmp/a.png\n"}),
+        ]
+        with self.claude_transcript(*rows):
+            result = await server.rewind_session("chat", rewind_request())
+        self.assertEqual(result["provider_rewind"], "claude_fork")
+        self.assertEqual(sess["fork_resume_session_at"], "before-third-uuid")
 
 
 if __name__ == "__main__":

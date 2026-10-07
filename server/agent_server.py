@@ -62181,8 +62181,8 @@ def session_system_prompt(
 
 
 CLAUDE_CUTOFF_COMPACTED_DETAIL = (
-    "Claude compacted this session's context after its last completed reply, "
-    "so it cannot resume from that point. The chat was left unchanged."
+    "Claude compacted this session's context after the point it would resume "
+    "from, so it cannot resume there. The chat was left unchanged."
 )
 
 
@@ -93099,6 +93099,18 @@ def claude_imported_fork_boundary(
     return cutoff
 
 
+def claude_fork_transcript_paths(parent: dict[str, Any], provider_id: str) -> list[Path]:
+    """The provider session's transcript for the chat's cwd, else every candidate matching it."""
+    cwd = str(parent.get("cwd") or "")
+    expected_path = claude_resume_file_for_cwd(provider_id, cwd)
+    if expected_path.is_file():
+        return [expected_path]
+    return [
+        path for path in claude_history_candidates(provider_id)
+        if claude_transcript_matches_cwd(path, cwd)
+    ]
+
+
 def claude_completed_fork_boundary(
     parent: dict[str, Any],
     provider_id: str,
@@ -93136,12 +93148,7 @@ def claude_completed_fork_boundary(
         if event.get("type") == "turn_started" and str(event.get("run_id") or "") == run_id
     ), {})
     start_time = parse_job_timestamp(str(started.get("ts") or ""))
-    cwd = str(parent.get("cwd") or "")
-    expected_path = claude_resume_file_for_cwd(provider_id, cwd)
-    paths = [expected_path] if expected_path.is_file() else [
-        path for path in claude_history_candidates(provider_id)
-        if claude_transcript_matches_cwd(path, cwd)
-    ]
+    paths = claude_fork_transcript_paths(parent, provider_id)
     matches: set[str] = set()
     for path in paths:
         for record in bounded_jsonl_events(path):
@@ -93181,6 +93188,61 @@ def claude_completed_fork_boundary(
     if any(claude_cutoff_behind_compaction(path, cutoff) for path in paths):
         raise HTTPException(status_code=409, detail=CLAUDE_CUTOFF_COMPACTED_DETAIL)
     return cutoff
+
+
+def claude_rewound_message_boundary(
+    parent: dict[str, Any],
+    provider_id: str,
+    target: dict[str, Any],
+    following: dict[str, Any] | None,
+) -> str | None:
+    """The transcript row the rewound message continued from, as the fork cutoff.
+
+    Claude Code links every transcript row to its parent, so the parent of the
+    message's own row is the session exactly as it was before that message,
+    whether or not the turn before it completed: a stopped turn's rows stay in
+    the fork as they stay in the timeline. The row is the first main-chain user
+    message written at or after the turn started, and before the next message
+    the chat recorded (``following``), whose text starts with the prompt. None
+    when it cannot be found (a provider command, a prompt the server prefixed
+    with other text, a message that opened the session), so the caller falls
+    back to the last completed reply.
+    """
+    prompt = str(target.get("prompt") or "")
+    started = parse_job_timestamp(str(target.get("ts") or ""))
+    ended = parse_job_timestamp(str((following or {}).get("ts") or ""))
+    if not prompt.strip() or started is None:
+        return None
+    for path in claude_fork_transcript_paths(parent, provider_id):
+        for record in bounded_jsonl_events(path):
+            if (
+                record.get("type") != "user"
+                or record.get("isSidechain")
+                or record.get("isMeta")
+                or record.get("isCompactSummary")
+            ):
+                continue
+            record_time = parse_job_timestamp(str(record.get("timestamp") or ""))
+            if record_time is None or record_time < started:
+                continue
+            if ended is not None and record_time >= ended:
+                # The next message's rows: a later prompt with the same prefix
+                # must not stand in for the one the chat recorded here.
+                return None
+            message = record.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            # A typed prompt is stored as a string; list content is a tool
+            # result or the CLI's own interrupt note. The server may append an
+            # attachment list after the prompt.
+            if not isinstance(content, str) or not content.startswith(prompt):
+                continue
+            cutoff = str(record.get("parentUuid") or "")
+            if not cutoff:
+                return None
+            if claude_cutoff_behind_compaction(path, cutoff):
+                raise HTTPException(status_code=409, detail=CLAUDE_CUTOFF_COMPACTED_DETAIL)
+            return cutoff
+    return None
 
 
 @app.post("/api/sessions/{session_id}/fork")
@@ -93805,40 +93867,63 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                 index for index in range(len(prefix) - 1, -1, -1)
                 if is_completed_fork_terminal(prefix[index])
             ), None)
-            if terminal_index is None:
-                # Nothing completed survives: the next turn starts a fresh
-                # Claude session instead of resuming the removed one.
-                provider_rewind = "claude_reset"
-            else:
-                claude_provider_id = claude_provider_id_for_session(sess)
-                if not claude_provider_id:
-                    logger.warning("session rewind: claude provider id missing session=%s", session_id)
-                    raise HTTPException(status_code=409, detail={
-                        "code": "rewind_provider_unavailable",
-                        "message": (
-                            "This Claude chat has conversation history but no resumable "
-                            "provider session, so it cannot be rewound safely."
-                        ),
-                    })
-                try:
+            claude_provider_id = claude_provider_id_for_session(sess)
+            # A completed reply with no provider session cannot be re-anchored;
+            # with no completed reply, a missing id only means the reset below.
+            if terminal_index is not None and not claude_provider_id:
+                logger.warning("session rewind: claude provider id missing session=%s", session_id)
+                raise HTTPException(status_code=409, detail={
+                    "code": "rewind_provider_unavailable",
+                    "message": (
+                        "This Claude chat has conversation history but no resumable "
+                        "provider session, so it cannot be rewound safely."
+                    ),
+                })
+            try:
+                # The row the rewound message continued from (its row's
+                # parentUuid) is the state before it, stopped turns included;
+                # the last completed reply is the fallback when that row
+                # cannot be found.
+                if claude_provider_id:
+                    following = next((
+                        event for event in events[target_index + 1:]
+                        if event.get("type") == "turn_started" or is_native_steer_event(event)
+                    ), None)
+                    claude_cutoff = await asyncio.to_thread(
+                        claude_rewound_message_boundary,
+                        dict(sess),
+                        claude_provider_id,
+                        events[target_index],
+                        following,
+                    )
+                if claude_cutoff is None and terminal_index is not None:
                     claude_cutoff = await asyncio.to_thread(
                         claude_completed_fork_boundary,
                         dict(sess),
                         claude_provider_id,
                         prefix[:terminal_index + 1],
                     )
-                except (OSError, ValueError) as exc:
-                    logger.warning("session rewind: claude boundary failed session=%s: %s", session_id, concise_error_message(exc))
+            except (OSError, ValueError) as exc:
+                logger.warning("session rewind: claude boundary failed session=%s: %s", session_id, concise_error_message(exc))
+                if terminal_index is not None:
                     raise HTTPException(status_code=409, detail={
                         "code": "rewind_provider_unavailable",
-                        "message": "The completed Claude transcript snapshot is unavailable. The chat was left unchanged.",
+                        "message": "The Claude transcript snapshot is unavailable. The chat was left unchanged.",
                     }) from exc
-                except HTTPException as exc:
-                    logger.warning("session rewind: claude boundary ambiguous session=%s: %s", session_id, exc.detail)
-                    raise HTTPException(status_code=exc.status_code, detail={
-                        "code": "rewind_boundary_ambiguous",
-                        "message": str(exc.detail),
-                    }) from exc
+                # No completed reply to protect: an unreadable transcript falls
+                # through to the reset below, as it did before the row lookup.
+            except HTTPException as exc:
+                logger.warning("session rewind: claude boundary ambiguous session=%s: %s", session_id, exc.detail)
+                raise HTTPException(status_code=exc.status_code, detail={
+                    "code": "rewind_boundary_ambiguous",
+                    "message": str(exc.detail),
+                }) from exc
+            if claude_cutoff is None:
+                # Neither the message's row nor a completed reply before it:
+                # the next turn starts a fresh Claude session instead of
+                # resuming the removed one.
+                provider_rewind = "claude_reset"
+            else:
                 provider_rewind = "claude_fork"
         else:
             codex_thread_id = str(sess.get("codex_thread_id") or sess.get("session_id") or "")
