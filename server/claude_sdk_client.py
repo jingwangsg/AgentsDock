@@ -564,6 +564,8 @@ async def _query_message_stream(
     prompt: str,
     correlation_id: str,
     validated_provider_command_name: str | None = None,
+    *,
+    deliver_now: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield the single UUID-bearing SDK stdin frame for one logical turn."""
 
@@ -576,6 +578,18 @@ async def _query_message_stream(
         "parent_tool_use_id": None,
         "uuid": correlation_id,
     }
+    if deliver_now:
+        # CLI 2.1.292 print mode ("print_send_now"): a frame with priority
+        # "now" reaches the model while a tool call is still running. The CLI
+        # moves a running foreground Bash into a background task and tells the
+        # model "Command was moved to the background … so that a message that
+        # arrived while it was running can reach you; it was not interrupted".
+        # Its trust gate needs an explicit human origin: without one the frame
+        # queues like any other (measured 2026-10-07). With no tool in flight,
+        # "now" aborts the model's sampling instead, so callers set it only
+        # while a top-level tool call is in flight.
+        message["priority"] = "now"
+        message["origin"] = {"kind": "human"}
     if _claude_prompt_needs_verbatim_delivery(
         prompt, validated_provider_command_name,
     ):
@@ -1177,6 +1191,10 @@ class ClaudeSDKRunHandle:
         self._unconfirmed_steer_ids: set[str] = set()
         # A steer query joins the start query's CLI session.
         self._query_session_id: str | None = None
+        # Top-level tool calls the model is blocked on: tool_use seen, no
+        # tool_result yet. A steer sent meanwhile asks the CLI to deliver it
+        # now instead of after the call returns.
+        self._inflight_tool_uses: set[str] = set()
 
     @property
     def released(self) -> bool:
@@ -1217,6 +1235,30 @@ class ClaudeSDKRunHandle:
         if (kind in {"assistant", "assistantmessage", "stream_event", "streamevent"}
                 or (kind == "result" and not _result_forces_run_end(message))):
             self._background_reconciliation_progress_observed = True
+
+    def _observe_tool_uses(self, message: Any) -> None:
+        kind = _message_type(message)
+        if kind in {"assistant", "assistantmessage"}:
+            block_kind, class_name, id_field = "tool_use", "ToolUseBlock", "id"
+        elif kind in {"user", "usermessage"}:
+            block_kind, class_name, id_field = "tool_result", "ToolResultBlock", "tool_use_id"
+        else:
+            return
+        blocks = _message_field(message, "content")
+        if blocks is None:
+            blocks = _message_field(_message_field(message, "message", {}), "content")
+        if not isinstance(blocks, list):
+            return
+        for block in blocks[:128]:
+            if _message_field(block, "type") != block_kind and type(block).__name__ != class_name:
+                continue
+            tool_id = _receipt_field(_message_field(block, id_field))
+            if tool_id is None:
+                continue
+            if block_kind == "tool_use":
+                self._inflight_tool_uses.add(tool_id)
+            else:
+                self._inflight_tool_uses.discard(tool_id)
 
     def _observe_background_task(self, message: Any) -> None:
         subtype, task_id, task_type, status = _task_lifecycle_fields(message)
@@ -2498,14 +2540,18 @@ class ClaudeSDKSupervisor:
             return
         correlation_id = str(uuid.uuid4())
         active._unconfirmed_steer_ids.add(correlation_id)
+        # Blocked in a tool call, the model would read this frame only when
+        # the call returns (an `until … sleep` wait held one for 9 minutes on
+        # 2026-10-07). "now" lets the CLI background the call and deliver.
+        frames = _query_message_stream(
+            command.prompt, correlation_id,
+            deliver_now=bool(active._inflight_tool_uses),
+        )
         try:
             if active._query_session_id is None:
-                query = client.query(_query_message_stream(command.prompt, correlation_id))
+                query = client.query(frames)
             else:
-                query = client.query(
-                    _query_message_stream(command.prompt, correlation_id),
-                    session_id=active._query_session_id,
-                )
+                query = client.query(frames, session_id=active._query_session_id)
             await self._deliver_query_bounded(query, run_id=active.run_id)
         except BaseException as exc:
             active._unconfirmed_steer_ids.discard(correlation_id)
@@ -3104,6 +3150,8 @@ class ClaudeSDKSupervisor:
                 active._result_after_steer = None
                 return
 
+        if not _message_field(command.message, "parent_tool_use_id"):
+            active._observe_tool_uses(command.message)
         active._observe_reconciliation_progress(command.message)
         if self._pending_mail_hint_hook is not None:
             self._pending_mail_hint_hook.observe(command.message)

@@ -2342,6 +2342,39 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.manager.steer("chat-steer", run_id="run-steer", prompt="late"))
         self.assertFalse(await self.manager.steer("chat-other", run_id="run-x", prompt="nobody"))
 
+    async def test_a_steer_during_a_tool_call_asks_the_cli_to_deliver_it_now(self) -> None:
+        handle = await self.manager.start_run("chat-steer-tool", "Render", run_id="run-tool", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_wait", "name": "Bash", "input": {"command": "until false; do sleep 15; done"}},
+        ]}})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        # Blocked in the call, the model reads a plain frame only when it returns;
+        # "now" with a human origin makes the CLI background the call and deliver.
+        self.assertTrue(await self.manager.steer("chat-steer-tool", run_id="run-tool", prompt="status?"))
+        frame = client.query_envelopes[-1][0]
+        self.assertEqual(frame["priority"], "now")
+        self.assertEqual(frame["origin"], {"kind": "human"})
+        self.assertNotIn(("interrupt",), client.calls)
+        await client.emit({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_wait", "content": "Command was moved to the background (ID: b1)"},
+        ]}})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        # With no call in flight, "now" would abort the model's sampling: plain frame.
+        self.assertTrue(await self.manager.steer("chat-steer-tool", run_id="run-tool", prompt="and now?"))
+        frame = client.query_envelopes[-1][0]
+        self.assertNotIn("priority", frame)
+        self.assertNotIn("origin", frame)
+        # A subagent's own tool calls leave the parent's queue alone.
+        await client.emit({"type": "assistant", "parent_tool_use_id": "toolu_agent", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_child", "name": "Bash", "input": {}},
+        ]}})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        self.assertTrue(await self.manager.steer("chat-steer-tool", run_id="run-tool", prompt="third"))
+        self.assertNotIn("priority", client.query_envelopes[-1][0])
+        await client.emit({"type": "result", "is_error": False, "result": "done"})
+        self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "done")
+
     async def test_a_result_that_ends_the_turn_before_the_replay_keeps_the_run_open_for_the_answer(self) -> None:
         handle = await self.manager.start_run("chat-steer-race", "Render", run_id="run-race", options={}, configuration_key="same")
         client = self.factory.clients[-1]

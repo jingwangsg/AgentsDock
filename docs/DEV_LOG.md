@@ -1,5 +1,24 @@
 # Public development log
 
+## 2026-10-07 — A message sent while Claude waits in a command reaches the model at once (server, source only)
+
+- A message sent into a running Claude turn used to reach the model only when
+  its current tool call returned; an `until … sleep` wait in Bash held one for
+  nine minutes while the chat showed only "Working". The server now marks the
+  injected frame for immediate delivery (`priority: "now"` with a human
+  origin) while a top-level tool call is in flight. Claude Code 2.1.292 then
+  moves the running command to a background task without interrupting it,
+  tells the model so, and the message is answered right away; the command's
+  own result still arrives when it finishes. A message sent while the model is
+  generating text is delivered as before, since "now" would cut that response
+  short.
+- Verified with unit tests (the frame during and after a tool call, a
+  subagent's calls ignored) and against an isolated server with the real CLI:
+  run-now on the queued message produced the background move in 0.6 s, the
+  tool result in 1.1 s and the reply in 3.4 s, while the same message without
+  the marker stayed queued for the whole command. Takes effect on a server
+  once it is redeployed.
+
 ## 2026-10-07 — Desktop package 111 and Android build 55 (local package and APK)
 
 - Packages the entries below recorded since package 110 and build 54:
