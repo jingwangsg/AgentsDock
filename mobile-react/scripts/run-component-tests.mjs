@@ -31,6 +31,8 @@ try {
     format: 'esm',
     platform: 'node',
     jsx: 'automatic',
+    // Image is a host-string mock, so a required PNG (BackendMark) needs no content.
+    loader: { '.png': 'empty' },
     logLevel: 'silent',
     banner: {
       js: `import { createRequire } from 'node:module'; const require = createRequire(${JSON.stringify(import.meta.url)});\n`

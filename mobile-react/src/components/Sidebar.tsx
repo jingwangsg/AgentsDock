@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActionSheetIOS, Alert, Image, Platform, Pressable, StyleSheet, View } from 'react-native'
 import DraggableFlatList, { ScaleDecorator, type DragEndParams } from 'react-native-draggable-flatlist'
 import { MenuView, type MenuAction, type MenuComponentRef } from '@expo/ui/community/menu'
-import { ChevronDown, ChevronRight, FolderPlus, Globe, Network, Plus, RefreshCw, Search, Server, Settings, Terminal, GripVertical } from 'lucide-react-native'
+import { ChevronDown, ChevronRight, FolderPlus, Globe, Network, Plus, RefreshCw, Search, Server, Settings, Terminal, GripVertical, Undo2 } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAppStore } from '../store/useAppStore'
 import { radius, usePalette } from '../theme'
@@ -55,7 +55,7 @@ function sessionScopeIsCurrent(scope: ProfileScope, sessionId: string): boolean 
     && state.sessions.some(session => session.id === sessionId)
 }
 
-export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitchServer, onSetupServer, onManageServers, onSettings, onTeamNetwork, onNewChat, onNewChatIn, onNewSurfaceIn, onOpenChat }: {
+export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitchServer, onSetupServer, onManageServers, onSettings, onTeamNetwork, onNewChat, onResumeChat, onNewChatIn, onNewSurfaceIn, onOpenChat }: {
   profiles: readonly ServerProfileListItem[]
   activeProfileId: string | null
   switchingProfileId?: string | null
@@ -65,6 +65,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   onSettings: () => void
   onTeamNetwork: () => void
   onNewChat: () => void
+  onResumeChat: () => void
   onNewChatIn: (folder: string, backend: Backend) => void
   onNewSurfaceIn: (folder: string, kind: SurfaceKind) => void
   onOpenChat?: () => void
@@ -411,6 +412,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
       <View style={styles.actions}>
         <IconButton icon={RefreshCw} disabled={workspaceAdopting || needsServerSetup} onPress={() => { dismissSearchKeyboard(); if (profileScopeIsCurrent(profileScope)) void refreshSessions(profileScope.profileGeneration) }} label="Refresh chats" />
         <IconButton icon={FolderPlus} disabled={workspaceAdopting || needsServerSetup} onPress={createFolder} label="New folder" />
+        <IconButton icon={Undo2} disabled={workspaceAdopting || needsServerSetup} onPress={() => { dismissSearchKeyboard(); if (profileScopeIsCurrent(profileScope)) onResumeChat() }} label="Resume chat" testID="sidebar-resume-chat" />
         <IconButton icon={Plus} disabled={workspaceAdopting || needsServerSetup} onPress={onNewChat} label="New chat" testID="sidebar-new-chat" />
         <IconButton icon={Settings} disabled={workspaceAdopting} onPress={() => { if (profileScopeIsCurrent(profileScope)) onSettings() }} label="Settings" testID="sidebar-settings" />
       </View>

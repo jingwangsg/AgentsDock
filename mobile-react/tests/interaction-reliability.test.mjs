@@ -155,7 +155,8 @@ test('new chat creation cannot silently discard a mobile tap or failed request',
   const quickCreate = store.slice(quickCreateStart, store.indexOf('\n  setChatDefaults(patch) {'))
   assert.match(quickCreate, /const scope = validatedConnectionOrReport\(get, set, expectedGeneration\)[\s\S]*?if \(!scope\) return Promise\.resolve\(false\)/)
   assert.match(quickCreate, /if \(quickCreateSessionInFlight\?\.scope === scope\) return quickCreateSessionInFlight\.promise/)
-  assert.match(quickCreate, /const backends = selectableChatBackends\(state\.health\)/)
+  // Only backends this host can start now: Cursor needs its CLI ready, not just server support.
+  assert.match(quickCreate, /const backends = readyChatBackends\(state\.health, state\.runtime\)/)
   assert.match(quickCreate, /backends\.includes\(state\.chatDefaults\.backend\) \? state\.chatDefaults\.backend : \(backends\[0\] \?\? 'codex'\)/)
   assert.match(quickCreate, /if \(backend !== state\.chatDefaults\.backend \|\| runtimeSelectionError\(state\.health, state\.runtime, backend, model \|\| null\)\) \{[\s\S]*?model = ''[\s\S]*?effort = ''/)
   assert.match(quickCreate, /const operation = get\(\)\.createSession\(\{[\s\S]*?title: 'New chat'[\s\S]*?\}, scope\.generation\)\.finally\(/)

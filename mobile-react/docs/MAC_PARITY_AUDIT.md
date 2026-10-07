@@ -38,6 +38,7 @@ backend switching, lean Inspector, and photo-upload completion fixes.
 | Persistent Codex goal | Visible objective, status, elapsed time/token use, Pause/Resume, direct editor, confirmed Clear; disabled/blocked/exhausted states remain explicit | Rendered component/provider tests plus goal helper and API regressions |
 | Server goal setting | Authenticated server-wide toggle in Settings; disabling requires confirmation; conflicts remain errors, not success | Nine rendered tests including duplicate taps, failure/retry, profile switches and reconnects |
 | New chat `+` | Capture the open chat's folder/cwd at the tap while retaining configured backend/model/effort; scoped single-flight | Store tests for creation, failure/retry, old-server responses and immediate selection |
+| Resume chat | Sidebar button opens the desktop Import Chat flow: resume one provider session by ID (existing chat, server-history match, or agent + directory), or search, group and batch-import server CLI history | Rendered dialog tests for batching, partial failure, every ID path, old servers, server switches and closing during a request; Android emulator run against an isolated server |
 | Inspector | Copy session ID; Fork disabled/rejected during active/stopping/admitting turns, including queued Run now | Inspector wiring and real store-action tests |
 | Purple cross-chat card | Release stale busy states on reconnect/revalidation/failed server switch; keep exact cancellation intent when a queued delivery starts; never claim unconfirmed removal | Twelve rendered interaction tests, including stale reads and terminal reconciliation |
 | Team Network | Independent mailbox/detail request tracking, per-team draft preservation, stale-team projection rejection, reconnect refresh | Request-sequence, authenticated-route and UI-contract tests |
@@ -53,8 +54,8 @@ coverage of every button. Tests execute React state/effects and control handlers
 against mocked native boundaries, plus real store/API code with mocked transport.
 They do not replace an iPhone/iPad touch and layout smoke test of the accepted build.
 
-Desktop-only flows identified for a separate parity pass include provider-session
-resume browsing, the working-directory browser, private Team Mail composition and
+Desktop-only flows identified for a separate parity pass include the
+working-directory browser, private Team Mail composition and
 routing to a chat, Team attachment opening, and human invitation management.
 The larger mobile navigation simplification remains deferred as requested.
 

@@ -59,11 +59,12 @@ for (const [href, cwd, expected, message] of [
   ['/Users/dev/project/', '/Users/dev/project', { kind: 'workspace', path: '' }, 'a link to cwd itself opens the workspace root'],
   ['out/run/../run/report.csv', '/Users/dev/project', { kind: 'workspace', path: 'out/run/report.csv' }, 'relative links resolve dot segments against cwd'],
   ['./', '/Users/dev/project', { kind: 'workspace', path: '' }, 'a relative link to . is the workspace root'],
-  ['../other/notes.pdf', '/Users/dev/project', { kind: 'outside', path: '../other/notes.pdf' }, 'relative links cannot climb above cwd'],
-  ['/Users/dev/Library/CloudStorage/OneDrive/O-1%20refs', '/Users/dev/project', { kind: 'outside', path: '/Users/dev/Library/CloudStorage/OneDrive/O-1 refs' }, 'absolute paths outside cwd are reported with their decoded text'],
-  ['/Users/dev/project-other/a.txt', '/Users/dev/project', { kind: 'outside', path: '/Users/dev/project-other/a.txt' }, 'cwd containment requires a path boundary'],
-  ['~/notes', '/home/dev', { kind: 'outside', path: '~/notes' }, 'server-home paths cannot be compared with cwd on the phone'],
-  ['/srv/data/file.bin', null, { kind: 'outside', path: '/srv/data/file.bin' }, 'a chat without cwd has no workspace'],
+  ['../other/notes.pdf', '/Users/dev/project', { kind: 'absolute', path: '/Users/dev/other/notes.pdf' }, 'a relative climb out of cwd resolves to the file it names'],
+  ['/Users/dev/Library/CloudStorage/OneDrive/O-1%20refs', '/Users/dev/project', { kind: 'absolute', path: '/Users/dev/Library/CloudStorage/OneDrive/O-1 refs' }, 'absolute paths outside cwd are reported with their decoded text'],
+  ['/Users/dev/project-other/a.txt', '/Users/dev/project', { kind: 'absolute', path: '/Users/dev/project-other/a.txt' }, 'cwd containment requires a path boundary'],
+  ['~/notes', '/home/dev', { kind: 'absolute', path: '~/notes' }, 'server-home paths cannot be compared with cwd on the phone'],
+  ['/srv/data/file.bin', null, { kind: 'absolute', path: '/srv/data/file.bin' }, 'a chat without cwd has no workspace'],
+  ['../other/notes.pdf', null, { kind: 'outside', path: '../other/notes.pdf' }, 'a climb out of a chat without cwd names no file'],
 ] as const) assertEqual(JSON.stringify(workspacePathLinkTarget(href, cwd)), JSON.stringify(expected), message)
 
 const sorted = sortFileViewerEntries([

@@ -50,7 +50,8 @@ test('each AgentsDock command runs through an existing mobile surface', () => {
 test('/goal and /compact follow the desktop server paths per backend', () => {
   // Codex goals go through the runtime context (same action as the goal bar); Claude uses PUT /claude/goal.
   assert.match(composer, /await codexRuntime\.updateGoal\(\{ objective: argument, status: 'active' \}\)/)
-  assert.match(composer, /await claudeRuntime\.run\(\(connection, id\) => argument\.toLocaleLowerCase\(\) === 'clear' \? connection\.clearClaudeGoal\(id\) : connection\.setClaudeGoal\(id, argument\)\)/)
+  assert.match(composer, /const clearing = argument\.toLocaleLowerCase\(\) === 'clear'/)
+  assert.match(composer, /await claudeRuntime\.run\(\(connection, id\) => clearing \? connection\.clearClaudeGoal\(id\) : connection\.setClaudeGoal\(id, argument\)\)/)
   assert.match(client, /setClaudeGoal\(sessionId: string, condition: string\)[\s\S]*?this\.put\(`\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/claude\/goal`, \{ condition \}\)/)
   // A typed `/goal <objective>` is intercepted on send instead of reaching the agent as text.
   assert.match(composer, /const goalArgument = consumeComposer \? goalCommandArgument\(currentDraft\) : null/)

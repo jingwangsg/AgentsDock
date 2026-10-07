@@ -1,9 +1,10 @@
 import { AlertTriangle, X } from 'lucide-react-native'
 import { useMemo, useState } from 'react'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
 import { sessionNeedsProviderInteraction } from '../lib/claude-controls'
 import { useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
+import { Text } from './AppText'
 import { IconButton } from './ui'
 
 /** One line above the content naming the chats whose agent is waiting for an answer

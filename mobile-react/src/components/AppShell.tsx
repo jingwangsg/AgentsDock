@@ -23,6 +23,7 @@ import { Text } from './AppText'
 import { CodeReview } from './CodeReview'
 import { WorkspaceChanges } from './WorkspaceChanges'
 import { DigestDialog, JobDialog, ProcessDialog, SearchDialog, ServerSetupDialog, SettingsDialog, TmuxDialog } from './Dialogs'
+import { ResumeChatDialog } from './ResumeChatDialog'
 import { Inspector } from './Inspector'
 import { Sidebar } from './Sidebar'
 import { SurfaceScreen } from './SurfaceScreen'
@@ -102,6 +103,7 @@ function AppShellContent() {
   const quickChatInFlight = useRef(false)
   const [options, setOptions] = useState(false)
   const [search, setSearch] = useState(false)
+  const [resumeChat, setResumeChat] = useState(false)
   const [digest, setDigest] = useState(false)
   const [jobEditor, setJobEditor] = useState<string | 'new' | null>(null)
   const [processes, setProcesses] = useState(false)
@@ -326,6 +328,7 @@ function AppShellContent() {
     setTeamNetwork(false)
     setOptions(false)
     setSearch(false)
+    setResumeChat(false)
     setDigest(false)
     setJobEditor(null)
     setProcesses(false)
@@ -393,7 +396,7 @@ function AppShellContent() {
   if (!initialized) return <View style={[styles.fill, { backgroundColor: colors.background }]}><Loading label="Starting AgentsDock" /></View>
 
   const connectionKey = `${activeProfileId ?? 'none'}:${profileGeneration}`
-  const sidebar = <Sidebar key={`sidebar:${connectionKey}`} profiles={serverProfileItems} activeProfileId={activeProfileId} switchingProfileId={switchingProfileId} onSwitchServer={switchServer} onSetupServer={() => openServers('edit-active')} onManageServers={() => openServers('manage')} onSettings={openSettings} onTeamNetwork={openTeamNetwork} onNewChat={() => void quickNewChat()} onNewChatIn={(folder, backend) => void quickNewChat({ folder, backend })} onNewSurfaceIn={(folder, kind) => void quickNewSurface(folder, kind)} onOpenChat={() => { trackEvent('chat_opened'); openMobileChat() }} />
+  const sidebar = <Sidebar key={`sidebar:${connectionKey}`} profiles={serverProfileItems} activeProfileId={activeProfileId} switchingProfileId={switchingProfileId} onSwitchServer={switchServer} onSetupServer={() => openServers('edit-active')} onManageServers={() => openServers('manage')} onSettings={openSettings} onTeamNetwork={openTeamNetwork} onNewChat={() => void quickNewChat()} onResumeChat={() => { setResumeChat(true); requestAnimationFrame(dismissAppKeyboard) }} onNewChatIn={(folder, backend) => void quickNewChat({ folder, backend })} onNewSurfaceIn={(folder, kind) => void quickNewSurface(folder, kind)} onOpenChat={() => { trackEvent('chat_opened'); openMobileChat() }} />
   // The collapsed rail stays mounted (see sidebarWidth), so it must also leave
   // the accessibility tree or screen readers land on invisible controls.
   const sidebarRail = <View style={{ width: sidebarWidth(width, sidebarCollapsed), overflow: 'hidden' }} accessibilityElementsHidden={sidebarCollapsed} importantForAccessibility={sidebarCollapsed ? 'no-hide-descendants' : 'auto'}>{sidebar}</View>
@@ -463,6 +466,7 @@ function AppShellContent() {
     {TEAM_NETWORK_UI_ENABLED ? <TeamNetwork key={`team-network:${connectionKey}`} visible={modalScopeCurrent && teamNetwork} onClose={() => setTeamNetwork(false)} /> : null}
     <ClaudeMcpDialog key={`claude-mcp:${connectionKey}:${mcpSessionId ?? 'closed'}`} visible={modalScopeCurrent && mcpSessionId != null && mcpSessionId === selected?.id} sessionId={mcpSessionId} onClose={() => setMcpSessionId(null)} />
     <SearchDialog visible={modalScopeCurrent && search && !isWelcomeSession(selected?.id)} sessionId={selected?.id} onClose={() => setSearch(false)} />
+    <ResumeChatDialog visible={modalScopeCurrent && resumeChat} onClose={() => setResumeChat(false)} onOpened={() => { if (compact) openMobileChat() }} />
     <DigestDialog visible={modalScopeCurrent && digest} source={selected} onClose={() => setDigest(false)} />
     <JobDialog key={`job:${connectionKey}:${selected?.id ?? 'none'}`} visible={modalScopeCurrent && jobEditor != null} session={selected} jobId={jobEditor === 'new' ? null : jobEditor} onClose={() => setJobEditor(null)} />
     <ProcessDialog key={`processes:${connectionKey}:${selected?.id ?? 'none'}`} visible={modalScopeCurrent && processes} sessionId={selected?.id ?? null} onClose={() => setProcesses(false)} />

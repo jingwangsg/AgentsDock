@@ -19,7 +19,7 @@ test('timeline Markdown uses a pinned native UITextView range-selection surface'
   assert.match(markdown, /fence:[\s\S]*?<CodeFrame key=\{node\.key\} code=\{code\}><SelectableText selectable uiTextView style=\{\[inheritedStyles, styles\.fence, codeFrameStyles\.text\]\}>/)
   assert.match(markdown, /<CopyTextButton text=\{code\} label="Copy code" testID="markdown-code-copy" \/>/)
   assert.match(markdown, /strong:[\s\S]*?<SelectableText/)
-  assert.match(markdown, /link:[\s\S]*?<SelectableText[\s\S]*?onPress=\{\(\) => openLink\(node\.attributes\.href\)\}/)
+  assert.match(markdown, /link:[\s\S]*?const href = String\(node\.attributes\.href \?\? ''\)[\s\S]*?<SelectableText[\s\S]*?onPress=\{\(\) => openLink\(href\)\}/)
   assert.match(markdown, /code_inline:[\s\S]*?<SelectableText/)
 })
 

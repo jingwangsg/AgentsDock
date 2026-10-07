@@ -82,7 +82,10 @@ try {
     assert.equal(requests.length, 1)
     assert.equal(requests[0].method, 'POST')
     assert.match(requests[0].url, /\/api\/sessions\/team-reference-chat\/turns$/u)
-    assert.deepEqual(requests[0].body, {
+    // Every send carries an idempotency key so a retried request cannot start a second turn.
+    const { client_request_id: clientRequestId, ...body } = requests[0].body as Record<string, unknown>
+    assert.ok(typeof clientRequestId === 'string' && clientRequestId.length > 0)
+    assert.deepEqual(body, {
       prompt: draft.trim(), file_ids: ['attached-file'], model: 'test-model', effort: 'high',
       client_capabilities: ['codex_interactive_v1'], team_references: [reference(draft.trim())],
     })

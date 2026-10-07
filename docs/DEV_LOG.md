@@ -1,5 +1,65 @@
 # Public development log
 
+## 2026-10-07 — The mobile app can resume a provider session or import CLI chats from the server (Android and iOS source)
+
+- The desktop sidebar's Resume button opens Import Chat: resume one Claude,
+  Codex or Cursor session by its ID, or pick chats from the CLI history on the
+  server host. The mobile app had no entry point for either; its client could
+  already send a provider session ID, but no screen used it.
+- The mobile sidebar now has a Resume chat button between New folder and New
+  chat. It opens the same flow as desktop: a session-ID field that opens the
+  chat already using that ID, imports a matching session from server history,
+  or asks for the agent and working directory before creating the chat; and
+  the server history grouped by working directory, with search, multi-select
+  and import in the server's batch size. Servers without history import still
+  resume by ID.
+- A typed ID that a chat already uses opens that chat. The app's chat list
+  holds summary rows without provider IDs, and the server accepts a second
+  chat on a provider session that another chat uses, so the app reads the
+  server's full chat rows before it creates a chat.
+- Closing the sheet during an import does not stop it: the remaining batches
+  are sent and the chat list is refreshed, as on desktop. On a phone the
+  resumed chat opens before its timeline finishes syncing.
+- A manual Cursor resume by ID no longer requests a history import, as on
+  desktop.
+- Verified with 13 rendered dialog tests, parser tests ported from desktop,
+  the mobile type check and the mobile test suites. The dialog tests cover
+  batching, partial failure, every ID path, old servers, a server switch or
+  a close and reopen during a request, and a submit during the history scan.
+- Accepted on an Android emulator with sideload build 51 from this source,
+  against an isolated AgentsServer from the same source (API contract 28),
+  with disposable Claude and Codex sessions. Two chats were imported from
+  history. One session resumed by ID opened with its history, and a
+  follow-up in it was answered from the original Claude session's context.
+  The ID of an imported chat opened that chat with no import or create
+  request. An unknown ID created a chat after the agent and directory step.
+  Close sent no request. The five sidebar buttons keep full 44 dp targets in
+  the narrowest two-pane rail. At phone width the resumed chat opened full
+  screen. Dark and light themes were checked.
+- Changes made after review are covered by the tests above but were not run
+  on the emulator: the guard against submitting during the scan, imports that
+  continue after Close, opening the chat before its sync, a second list
+  refresh when a refresh already in flight predates the new chat, and the
+  failed-batch message. Not exercised on iPhone or iPad.
+- The server's history scan took 10–32 s on a host with more than 500
+  transcripts. Desktop and mobile both give that request 30 s.
+  Availability: source only.
+
+## 2026-10-07 — The mobile test suites pass again (mobile tests)
+
+- The mobile suites had 7 failing tests on main. Six had not followed
+  intended source changes: the Claude `/goal` refactor, ready-backend
+  filtering for a new chat in build 51, the link long-press menu in build 45,
+  file links outside the working directory in build 49, the per-send
+  idempotency key, and two Markdown dependencies and a `linkify` option
+  missing from a test mock. Their assertions now check the current behavior.
+- The seventh found that the waiting-for-you banner bypassed the app
+  text-size setting. The banner now uses the app's text component; this was
+  not exercised on a device.
+- The type check and every mobile suite pass: 398 contract tests with one
+  skipped where no iOS project is generated, 116 unit test modules, and the
+  component and file-transfer tests.
+
 ## 2026-10-07 — Canvas previews get a floating table of contents that can be turned off (desktop and Android, source only)
 
 - A long Canvas report had no way to see its sections or jump between them.

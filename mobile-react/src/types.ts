@@ -1156,6 +1156,12 @@ export interface ServerCapability {
   [key: string]: unknown
 }
 
+export interface LocalSessionImportCapability extends ServerCapability {
+  version: number
+  max_batch_items: number
+  max_list_items: number
+}
+
 export interface WorkingDirectoryCompletionCapability extends ServerCapability {
   version?: number
   max_results?: number
@@ -1520,6 +1526,7 @@ export interface HealthCapabilities {
   team_hub_v1?: TeamHubV1Capability
   server_updates?: ServerUpdatesCapability
   working_directory_completion?: WorkingDirectoryCompletionCapability
+  local_session_import_v1?: LocalSessionImportCapability
   remote_servers_v1?: RemoteServersCapability
   side_questions?: { available: boolean; version: number; backends: string[]; max_question_chars?: number; native_context?: boolean; sync?: boolean }
   background_activity_v1?: { available: boolean }
@@ -1697,6 +1704,27 @@ export interface CreateSessionInput {
   system_prompt?: string | null
   provider_jobs_access?: ProviderJobsAccess
   providerId?: string
+}
+/** A provider transcript on the server host that no AgentsDock chat owns yet. */
+export interface LocalSessionCandidate {
+  provider_session_id: string
+  backend: Backend
+  label: string
+  updated_at: string
+  cwd: string | null
+}
+export interface BulkImportSessionItem {
+  provider_session_id: string
+  backend: Backend
+  cwd?: string | null
+}
+export interface BulkImportSessionResult {
+  provider_session_id: string
+  backend: Backend
+  session_id: string | null
+  ok: boolean
+  imported: number
+  error?: string
 }
 export interface CreateJobInput {
   session_id: string

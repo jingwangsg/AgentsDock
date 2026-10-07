@@ -2,6 +2,9 @@ import { File } from 'expo-file-system'
 
 import type {
   AgentFile,
+  BulkImportSessionItem,
+  BulkImportSessionResult,
+  LocalSessionCandidate,
   AgentCrossChatRoutesSnapshot,
   CodexKillWritersResult,
   DeleteAgentCrossChatRouteResponse,
@@ -94,6 +97,7 @@ import { teamNetworkRequestPath } from '../lib/team-network'
 import { retriesStaleGitAction } from '../lib/workspace-changes'
 import type { ConversationExportFormat } from '../lib/file-transfer'
 import { Utf8FilenameFormData } from '../lib/upload-filename'
+import { parseBulkImportSessionResultsResponse, parseLocalSessionCandidatesResponse } from '../lib/local-session-import'
 
 interface SessionResponse {
   session: Session
@@ -115,6 +119,8 @@ const TIMELINE_REQUEST_TIMEOUT_MS = 12_000
 // A rewind forks the provider thread; over a remote hub tunnel that outlasts an
 // ordinary request, and the server finishes it even after the client gives up.
 const REWIND_REQUEST_TIMEOUT_MS = 120_000
+// A bulk-import batch copies up to LOCAL_SESSION_IMPORT_HARD_BATCH_LIMIT provider transcripts on the server.
+const LOCAL_SESSION_IMPORT_REQUEST_TIMEOUT_MS = 10 * 60_000
 const STREAM_CONNECT_TIMEOUT_MS = 10_000
 const STREAM_RETRY_INITIAL_MS = 500
 const STREAM_RETRY_MAX_MS = 30_000
@@ -482,8 +488,21 @@ export class AgentServerClient {
       system_prompt: input.system_prompt || null,
       provider_jobs_access: input.provider_jobs_access ?? null,
       provider_session_id: input.providerId || null,
-      import_history: Boolean(input.providerId),
+      // Cursor history arrives only as a snapshot through bulk import.
+      import_history: Boolean(input.providerId) && input.backend !== 'cursor',
     })).session
+  }
+  /** Full rows carry each chat's provider IDs, which the summary list omits. */
+  async sessionsWithProviderIds(): Promise<Session[]> {
+    return (await this.get<{ sessions: Session[] }>('/api/sessions')).sessions
+  }
+  async listLocalSessions(limit: number, includeCursor: boolean): Promise<LocalSessionCandidate[]> {
+    const response = await this.get<unknown>(`/api/local-sessions?limit=${limit}${includeCursor ? '&include_cursor=true' : ''}`)
+    return parseLocalSessionCandidatesResponse(response, limit)
+  }
+  async bulkImportSessions(items: BulkImportSessionItem[]): Promise<BulkImportSessionResult[]> {
+    const response = await this.request<unknown>('/api/sessions/bulk-import', { method: 'POST', body: JSON.stringify({ items }) }, LOCAL_SESSION_IMPORT_REQUEST_TIMEOUT_MS)
+    return parseBulkImportSessionResultsResponse(response, items)
   }
 
   async updateSession(sessionId: string, patch: Partial<Session>): Promise<Session> {
