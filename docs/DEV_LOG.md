@@ -1,5 +1,24 @@
 # Public development log
 
+## 2026-10-07 — Remote tunnels compress, keep a separate connection for the live event streams, and notice a dead hop in 30 s (server, source only)
+
+- The hub's ssh tunnels to a remote server now ask ssh to compress the main
+  connection and a new third connection that carries only the live event
+  streams (a chat's timeline, the sidebar summaries, emergency alerts). The
+  file-body tunnel stays uncompressed, since attachments rarely compress. A
+  large JSON page or a burst of requests queued on the main connection no
+  longer holds up the timeline stream. Keepalive probes run every 10 s
+  instead of 30 s, so a hop that stops answering is replaced after 30 s
+  rather than 90 s.
+- Measured on a Sky-proxied remote with a private tunnel beside the hub's
+  own, three rounds: an 800 KB JSON page moved at 98–133 KiB/s plain and
+  351–410 KiB/s compressed; a health request took 1.5 s plain and 1.0 s
+  compressed; 512 KB of random bytes gained nothing. Verified with unit tests
+  (argv with and without compression, stream sockets routed to the stream
+  tunnel while port tunnels stay on the main one, three tunnels per remote
+  with the stream port kept out of the registry) and the existing tunnel
+  supervision tests. Takes effect on a hub once it is restarted.
+
 ## 2026-10-07 — A message sent while Claude waits in a command reaches the model at once (server, source only)
 
 - A message sent into a running Claude turn used to reach the model only when
