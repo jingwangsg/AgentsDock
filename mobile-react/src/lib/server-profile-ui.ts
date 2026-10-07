@@ -98,11 +98,11 @@ export function serverProfileHost(serverUrl: string): string | null {
   }
 }
 
-/** Profiles saved under their bare loopback address read as "Local" everywhere. */
+/** Profiles saved under their bare loopback address read as "local" everywhere. */
 export function displayServerProfileName(profile: Pick<ServerProfileListItem, 'name' | 'serverUrl'>): string {
   const name = profile.name.trim()
   if (!isLoopbackServerURL(profile.serverUrl)) return name
-  return /^(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[?::1\]?)(?::\d+)?$/i.test(name) ? 'Local' : name
+  return /^(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[?::1\]?)(?::\d+)?$/i.test(name) ? 'local' : name
 }
 
 export function profileHostSubtitle(profile: Pick<ServerProfileListItem, 'name' | 'serverUrl' | 'serverIdentity'>): string | null {

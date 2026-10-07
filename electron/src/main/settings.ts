@@ -793,6 +793,7 @@ function requireProfileName(value: string): string {
 }
 
 function defaultProfileName(serverUrl: string, serverIdentity: string | null): string {
+  if (serverUrl === DEFAULT_SERVER_URL) return 'local'
   if (serverIdentity) return serverIdentity
   try {
     const url = new URL(serverUrl)
@@ -840,9 +841,12 @@ function normalizeProfile(value: unknown, timestamp: string, index: number): Sto
   const createdAt = typeof value.createdAt === 'string' && value.createdAt ? value.createdAt : timestamp
   const updatedAt = typeof value.updatedAt === 'string' && value.updatedAt ? value.updatedAt : createdAt
   const sshHost = typeof value.sshHost === 'string' ? value.sshHost.trim() : ''
+  const name = cleanProfileName(typeof value.name === 'string' ? value.name : undefined)
+  // Earlier versions named the local server after its address or identity.
+  const legacyHubName = serverUrl === DEFAULT_SERVER_URL && (name === '127.0.0.1' || name === serverIdentity)
   return {
     id,
-    name: cleanProfileName(typeof value.name === 'string' ? value.name : undefined) || defaultProfileName(serverUrl, serverIdentity),
+    name: (legacyHubName ? '' : name) || defaultProfileName(serverUrl, serverIdentity),
     serverUrl,
     serverIdentity,
     encryptedAccessToken: cleanEncryptedToken(value.encryptedAccessToken),

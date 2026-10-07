@@ -77,7 +77,7 @@ export function defaultProfileName(serverURL: string, serverIdentity?: string | 
   if (identity) return identity
   // The phone reaches the Mac hub through a Tailscale forward, so a loopback
   // address is always "the local hub", never a server worth naming by IP.
-  if (isLoopbackServerURL(serverURL)) return 'Local'
+  if (isLoopbackServerURL(serverURL)) return 'local'
   try {
     const url = new URL(normalizeServerURL(serverURL))
     return url.hostname || url.host || 'AgentsServer'
@@ -217,7 +217,13 @@ export function normalizeStoredProfileSettings(value: unknown, timestamp = new D
   if (!Array.isArray(value.profiles) || value.profiles.length === 0) {
     throw new Error('Profile settings must contain at least one server profile.')
   }
-  const profiles = value.profiles.map((profile, index) => normalizeStoredServerProfile(profile, timestamp, index))
+  const stored = value.profiles.map((profile, index) => normalizeStoredServerProfile(profile, timestamp, index))
+  // The hub, which the other profiles are proxied through, is "local" as on the desktop, unless named by hand.
+  const hubURLs = new Set(stored.map(profile => hubProxyBaseURL(profile.serverURL)))
+  const profiles = stored.map(profile => hubURLs.has(profile.serverURL)
+    && [defaultProfileName(profile.serverURL), defaultProfileName(profile.serverURL, profile.serverIdentity)].includes(profile.name)
+    ? { ...profile, name: 'local' }
+    : profile)
   validateProfiles(profiles)
   const profileIds = new Set(profiles.map(profile => profile.id))
   const activeProfileId = typeof value.activeProfileId === 'string' && profileIds.has(value.activeProfileId.trim())

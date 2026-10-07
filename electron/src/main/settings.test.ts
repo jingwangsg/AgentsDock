@@ -127,6 +127,23 @@ describe('SettingsStore schema v2 migration', () => {
     expect(store.updateProfile('osmo', { sshForward: true }).sshForward).toBe(true)
   })
 
+  it('names the local server "local", replacing the address or identity earlier versions named it after', () => {
+    const timestamp = '2026-10-07T10:00:00Z'
+    const read = (name: string, serverIdentity: string | null = 'server-hub') => {
+      const path = settingsPath()
+      writeFileSync(path, JSON.stringify({ schemaVersion: 2, activeProfileId: 'hub', profiles: [
+        { id: 'hub', name, serverUrl: 'http://127.0.0.1:7850', serverIdentity, serverSetupComplete: true, createdAt: timestamp, updatedAt: timestamp },
+        { id: 'remote', name: '127.0.0.1', serverUrl: 'http://10.0.0.9:7850', serverSetupComplete: true, createdAt: timestamp, updatedAt: timestamp }
+      ] }))
+      const store = new SettingsStore({ path, safeStorage: memorySafeStorage, isMacAppStoreBuild: () => false })
+      return [store.getProfile('hub')?.name, store.getProfile('remote')?.name]
+    }
+    expect(read('127.0.0.1')).toEqual(['local', '127.0.0.1'])
+    expect(read('server-hub')).toEqual(['local', '127.0.0.1'])
+    expect(read('Studio Mac')).toEqual(['Studio Mac', '127.0.0.1'])
+    expect(new SettingsStore({ path: settingsPath(), safeStorage: memorySafeStorage, isMacAppStoreBuild: () => false }).listProfiles().map(profile => profile.name)).toEqual(['local'])
+  })
+
   it('migrates v1 settings and the fixed Keychain account exactly once', () => {
     const path = settingsPath()
     const legacy = {

@@ -80,7 +80,7 @@ assert(findProfileByIdentity([alpha, beta], 'server-beta', 'beta') === null, 'ed
 assert(profileHostSubtitle(alpha) === 'alpha.example:7850', 'selector must show a distinct server host')
 assert(profileHostSubtitle({ ...alpha, name: 'alpha.example:7850' }) === null, 'selector must not repeat a host used as the profile name')
 const hub = { ...alpha, name: '127.0.0.1', serverUrl: 'http://127.0.0.1:7850', serverIdentity: null }
-assert(displayServerProfileName(hub) === 'Local', 'a loopback hub saved under its address reads as Local')
+assert(displayServerProfileName(hub) === 'local', 'a loopback hub saved under its address reads as local')
 assert(profileHostSubtitle(hub) === null, 'Local must not be repeated as a subtitle')
 assert(displayServerProfileName({ ...hub, name: 'Home Mac' }) === 'Home Mac', 'a user-chosen hub name is kept')
 assert(profileHostSubtitle({ ...hub, name: 'Home Mac' }) === 'Local', 'a named hub shows Local as its host')

@@ -152,6 +152,20 @@ assertThrows(() => normalizeStoredProfileSettings({
   profiles: duplicateIdentityProfiles,
 }), /already belongs/)
 
+// The hub the other profiles are proxied through reads as "local" unless it was named by hand; other names stay.
+const namesWithHubNamed = (name: string) => normalizeStoredProfileSettings({
+  ...duplicateSettings,
+  activeProfileId: 'hub',
+  profiles: [
+    { ...profileA, id: 'hub', name, serverURL: 'http://nvmac.tail46daa8.ts.net:7850', serverIdentity: 'server-hub' },
+    { ...profileB, id: 'osmo', name: 'osmo_dev_l40', serverURL: 'http://nvmac.tail46daa8.ts.net:7850/api/remote/abc', serverIdentity: 'server-osmo' },
+    profileB,
+  ],
+}).profiles.map(profile => profile.name)
+assertEqual(namesWithHubNamed('nvmac.tail46daa8.ts.net'), ['local', 'osmo_dev_l40', 'beta.example'])
+assertEqual(namesWithHubNamed('server-hub'), ['local', 'osmo_dev_l40', 'beta.example'])
+assertEqual(namesWithHubNamed('Home Mac'), ['Home Mac', 'osmo_dev_l40', 'beta.example'])
+
 assertEqual(hubProxyRemoteId('http://h:7850/api/remote/abc/'), 'abc')
 assertEqual(hubProxyRemoteId('http://h:7850'), null)
 

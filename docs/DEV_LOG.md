@@ -1,5 +1,18 @@
 # Public development log
 
+## 2026-10-07 — The local server is named "local" on the desktop and Android (desktop and Android source)
+
+- The desktop named its local server profile after its address
+  ("127.0.0.1"); Android named the hub after its Tailscale host name or its
+  server identity. Both now call it "local". On the desktop that is the
+  profile at 127.0.0.1:7850; on Android it is the profile the other servers
+  are proxied through. Saved profiles still carrying one of the generated
+  names are renamed when settings load; a name set by hand is kept.
+- Verified with settings tests on both clients (generated names become
+  "local", a hand-set name and other servers' names stay) and the built
+  desktop app, whose Server settings list the seeded "127.0.0.1" profile as
+  "local". Not yet checked in the Android app. Availability: source only.
+
 ## 2026-10-07 — Android build 54 (local APK)
 
 - Packages the Android part of the stuck-run audit entry below: the running
