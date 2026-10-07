@@ -1,5 +1,32 @@
 # Public development log
 
+## 2026-10-07 — Android build 54 (local APK)
+
+- Packages the Android part of the stuck-run audit entry below: the running
+  dot is no longer cleared when a run starts. No desktop change since
+  package 110, so no new package.
+  Availability: local APK.
+
+## 2026-10-07 — Settings → Server gets "Update & redeploy all" (desktop source)
+
+- One button in the Servers heading restarts the local server through its
+  LaunchAgent and waits until a new server instance answers. It then
+  redeploys each remote server from it, one at a time, and runs
+  `claude update` and `codex update` on the local server and on each remote
+  right after that remote's redeploy, also when the redeploy failed. Each row
+  shows its own step and ends with the CLI versions or the errors.
+- Restarts stop running chats, so the button first lists the servers that
+  have running chats or could not be checked, and asks "Update anyway" before
+  changing anything.
+- Verified with service and component tests, which fail when the wait for the
+  new instance is removed, when the old instance is accepted, or when a failed
+  redeploy skips the CLI updates; with a real launchd restart of an idle,
+  isolated AgentsServer under a temporary LaunchAgent (new process and
+  instance id within 7 s); and with the built desktop app against the live
+  hub in English and Chinese up to the confirmation, with no restart,
+  redeploy or CLI update reaching the hub. The forced path was not run
+  against the live hub and remotes. Availability: source only.
+
 ## 2026-10-07 — Stuck-run audit: every wait a Claude or Codex run can enter is now bounded (server, Android)
 
 - After the dropped-background-task incident, five parallel reviews (hub
