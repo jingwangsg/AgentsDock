@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from team_hub_host import TEAM_HUB_MODE_HOST, ManagedTeamHubHost
 from secure_peer_runtime import SecurePeerRuntime
+from team_mail_runtime import RuntimeMailHints
 
 
 HOST_ID = "server-parent-integration-12345678"
@@ -1015,6 +1017,52 @@ class TeamHubHealthResponsivenessTests(unittest.IsolatedAsyncioTestCase):
                 with suppress(sqlite3.Error):
                     blocker.rollback()
                 blocker.close()
+
+    async def test_a_held_secure_peer_guard_does_not_stall_health(self) -> None:
+        # 2026-10-07: a pairing-expiry worker held the runtime guard while SQLite
+        # waited on a stalled Lustre volume. Health took the same guard on the
+        # event loop for the Team Mail hint capability, and the server stopped
+        # answering every request.
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = SecurePeerRuntime(
+                Path(temporary) / "secure-peers",
+                server_identity="health-source-server",
+                server_instance_id="health-source-instance",
+                display_name="Health source",
+                mail_hints_enabled=True,
+            )
+            held = threading.Event()
+            release = threading.Event()
+
+            def hold_guard() -> None:
+                with runtime._guard:
+                    held.set()
+                    release.wait(2)
+
+            holder = threading.Thread(target=hold_guard)
+            holder.start()
+            held.wait()
+            loop = asyncio.get_running_loop()
+            try:
+                with (
+                    patch.object(agent_server, "SECURE_PEER_RUNTIME", runtime),
+                    patch.object(agent_server, "working_tmux_bin", return_value=None),
+                ):
+                    started = loop.time()
+                    health = await agent_server.health()
+                    self.assertLess(loop.time() - started, 1.0)
+                    for version in (1, 2):
+                        self.assertEqual(
+                            health["capabilities"][f"team_mail_hints_v{version}"],
+                            RuntimeMailHints.disabled_capability(version),
+                        )
+                    release.set()
+                    worker = agent_server.TEAM_MAIL_HINTS_HEALTH_CAPABILITY_STATE["task"]
+                    if isinstance(worker, asyncio.Task):
+                        await asyncio.wait_for(worker, timeout=5)
+            finally:
+                release.set()
+                holder.join()
 
 
 if __name__ == "__main__":

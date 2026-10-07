@@ -1,5 +1,33 @@
 # Public development log
 
+## 2026-10-07 — A server keeps answering while its secure-peer database waits on a stalled disk (server)
+
+- Two remotes stopped answering every request when the network filesystem
+  holding their state lost two of its storage targets. A stack dump of each
+  showed the same chain: one worker thread waited in the kernel on a SQLite
+  file on those targets; a second, expiring pending pairings, held the
+  secure-peer runtime's lock while it waited inside `sqlite3.connect`; and
+  `/api/health` took that same lock on the event loop to report the Team Mail
+  hint capabilities, so the event loop stopped and nothing else was served.
+- Health now computes both Team Mail hint descriptors in one background
+  probe, bounded like the Team Hub capability (0.25 s by default). If the
+  probe has not finished, health answers with both descriptors in their
+  documented disabled shape; later polls reuse the probe still waiting
+  instead of starting another. The descriptors are unchanged when the probe
+  finishes in time.
+- Verified with a new test that holds the secure-peer lock for 2 s from
+  another thread: health answered in under 1 s with both descriptors
+  disabled (before the change it waited the full 2.03 s), and with the
+  health, Team Hub and Team Mail test modules (410 pass). Accepted against
+  isolated servers built from main and from this change while another
+  process held an exclusive lock on the secure-peer client database: on main
+  neither `/api/health` nor an `/api/jobs` request sent 0.3 s later answered
+  within 30 s; with the change health answered in 0.51–0.55 s and
+  `/api/jobs` in 0.05 s. Not exercised against a real stalled filesystem.
+  Only the health path from the stack dump changed; other requests that
+  take the secure-peer lock on the event loop were not audited. Server only;
+  not deployed. Remotes need a redeploy, and the hub a restart, to pick it up.
+
 ## 2026-10-07 — The hub no longer runs out of file descriptors when a remote stops answering (server)
 
 - When a remote AgentsServer stopped answering while its ssh forward still

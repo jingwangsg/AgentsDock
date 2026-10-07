@@ -136,12 +136,17 @@ class RuntimeMailHints:
             raise MailHintUnsupported("Member Mail notifications are not negotiated")
         return realm
 
-    def capability(self, *, version: int = 1) -> dict[str, Any]:
+    @staticmethod
+    def disabled_capability(version: int = 1) -> dict[str, Any]:
         result = {"enabled": False, "version": version, "websocket_path": "/api/team-mail-hints/events",
                   "websocket_protocol": f"agentsdock.team-mail-hints.v{version}", "mailbox_coverage": True,
                   "mailbox": None}
         if version == 2:
             result["bulletin_coverage"] = True
+        return result
+
+    def capability(self, *, version: int = 1) -> dict[str, Any]:
+        result = self.disabled_capability(version)
         if not self.enabled:
             return result
         try:

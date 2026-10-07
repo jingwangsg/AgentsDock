@@ -168,6 +168,7 @@ from agentsdock_team_hub.store import (
 )
 from agentsdock_team_hub.secure_peer import SecurePeerError
 from secure_peer_runtime import SECURE_PEER_HEARTBEAT_SECONDS, SecurePeerRuntime
+from team_mail_runtime import RuntimeMailHints
 from team_mail_websocket import serve_team_mail_hints
 from claude_history_repair import ClaudeMetadataRepairCache, enrich_interruption_origins, filter_native_claude_mailbox_wake_items
 from codex_history_repair import (
@@ -1437,7 +1438,9 @@ HEALTH_QUEUE_RECONCILE_INTERVAL_SECONDS = float(
     agentsdock_setting("HEALTH_QUEUE_RECONCILE_INTERVAL_SECONDS", "15")
 )
 # Team Hub capability projection can touch SQLite (the client connection list,
-# or the managed host's server-session claims). Health is a high-frequency
+# or the managed host's server-session claims); the Team Mail hint projection
+# waits on the secure-peer guard, which workers hold across SQLite calls on a
+# possibly stalled volume. Health is a high-frequency
 # liveness endpoint, so a busy/corrupt database must not stop the event loop or
 # multiply blocked native workers on every poll.
 HEALTH_TEAM_HUB_CAPABILITY_TIMEOUT_SECONDS = max(
@@ -82559,6 +82562,10 @@ TEAM_HUB_HEALTH_CAPABILITY_STATE: dict[str, Any] = {
     "loop": None,
     "task": None,
 }
+TEAM_MAIL_HINTS_HEALTH_CAPABILITY_STATE: dict[str, Any] = {
+    "loop": None,
+    "task": None,
+}
 
 
 def fail_closed_team_hub_health_capability() -> dict[str, Any]:
@@ -82588,10 +82595,23 @@ def fail_closed_team_hub_health_capability() -> dict[str, Any]:
 
 
 async def team_hub_capability_for_health() -> dict[str, Any]:
+    return await bounded_health_probe(
+        TEAM_HUB_HEALTH_CAPABILITY_STATE,
+        current_team_hub_capability,
+        fail_closed_team_hub_health_capability,
+        "team-hub-capability",
+    )
+
+
+async def bounded_health_probe(
+    state: dict[str, Any],
+    probe: Callable[[], dict[str, Any]],
+    fail_closed: Callable[[], dict[str, Any]],
+    name: str,
+) -> dict[str, Any]:
     """Bound health latency without cancelling an in-flight native DB probe."""
 
     loop = asyncio.get_running_loop()
-    state = TEAM_HUB_HEALTH_CAPABILITY_STATE
     task = state.get("task")
     if (
         not isinstance(task, asyncio.Task)
@@ -82599,8 +82619,8 @@ async def team_hub_capability_for_health() -> dict[str, Any]:
         or state.get("loop") is not loop
     ):
         task = asyncio.create_task(
-            asyncio.to_thread(current_team_hub_capability),
-            name="health-team-hub-capability",
+            asyncio.to_thread(probe),
+            name=f"health-{name}",
         )
         state["loop"] = loop
         state["task"] = task
@@ -82623,15 +82643,16 @@ async def team_hub_capability_for_health() -> dict[str, Any]:
         # The to_thread worker cannot be stopped safely once SQLite is active.
         # Leave exactly this one coalesced probe owned by the loop and return a
         # projection that never advertises an unverified peer/session route.
-        return fail_closed_team_hub_health_capability()
+        return fail_closed()
     try:
         result = task.result()
     except Exception as exc:
         logger.warning(
-            "Team Hub health capability probe failed error=%s",
+            "health %s probe failed error=%s",
+            name,
             concise_error_message(exc),
         )
-        return fail_closed_team_hub_health_capability()
+        return fail_closed()
     return result
 
 
@@ -83573,6 +83594,18 @@ async def health() -> dict[str, Any]:
     update_service_cgroup = public_managed_update_service_cgroup_state()
     port_tunnel_status = await PORT_TUNNELS.snapshot()
     team_hub_capability = await team_hub_capability_for_health()
+    team_mail_hints = await bounded_health_probe(
+        TEAM_MAIL_HINTS_HEALTH_CAPABILITY_STATE,
+        lambda: {
+            "team_mail_hints_v1": SECURE_PEER_RUNTIME.team_mail_hint_capability(),
+            "team_mail_hints_v2": SECURE_PEER_RUNTIME.team_notification_hint_capability(),
+        },
+        lambda: {
+            "team_mail_hints_v1": RuntimeMailHints.disabled_capability(1),
+            "team_mail_hints_v2": RuntimeMailHints.disabled_capability(2),
+        },
+        "team-mail-hints",
+    )
     return {
         "ok": True,
         "server_version": SERVER_VERSION,
@@ -83598,8 +83631,7 @@ async def health() -> dict[str, Any]:
             "background_activity_v1": {"available": True},
             "codex_auth_v1": codex_auth.capability(available=bool(AGENT_TOKEN) and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC),
             "codex_provider_v1": {"available": bool(AGENT_TOKEN) and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC, "wire_api": "responses", "per_chat": True, "per_chat_models": True, "model_discovery": True, "model_compatibility": True},
-            "team_mail_hints_v1": SECURE_PEER_RUNTIME.team_mail_hint_capability(),
-            "team_mail_hints_v2": SECURE_PEER_RUNTIME.team_notification_hint_capability(),
+            **team_mail_hints,
             "websocket_auth_v1": {
                 "available": True,
                 "required": False,
