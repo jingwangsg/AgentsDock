@@ -97,3 +97,72 @@ describe('comment pins in the canvas page', () => {
     }
   })
 })
+
+describe('floating table of contents in the canvas page', () => {
+  it('lists the headings on request, marks the section in view, scrolls on click and stays out of find', async () => {
+    document.body.innerHTML = '<div id="root"><h1>Report</h1><p>Loss fell.</p><h2>Loss</h2><h3>Details</h3><h2>Appendix</h2></div>'
+    const html = buildCanvasPage({ shell: '<!--CANVAS_SCRIPTS-->', vendor: '', javascript: '', state: {}, theme })
+    const shim = Buffer.from(html.match(/base64,([^"]+)/)![1], 'base64').toString('utf8')
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => frames.push(callback))
+    vi.stubGlobal('CSS', { highlights: new Map() })
+    vi.stubGlobal('Highlight', class {})
+    const scrolled = vi.fn()
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: scrolled })
+    const posted = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const flush = async () => { await Promise.resolve(); while (frames.length) frames.shift()!(0) }
+    const host = (call: string, args: unknown[]) => window.dispatchEvent(new MessageEvent('message', { data: { source: 'agentsdock-canvas-host', call, args } }))
+    try {
+      new Function(shim)()
+      await flush()
+      const container = document.querySelector('agentsdock-toc')!
+      const nav = container.shadowRoot!.querySelector('nav')!
+      const entries = () => [...nav.querySelectorAll<HTMLButtonElement>('button')]
+      expect(posted).toHaveBeenCalledWith({ source: 'agentsdock-canvas', message: { kind: 'toc', available: true } }, '*')
+      // The host decides; nothing shows before it asks.
+      expect(nav.hidden).toBe(true)
+      expect(document.getElementById('root')!.contains(container)).toBe(false)
+
+      host('set-toc', [true])
+      await flush()
+      expect(nav.hidden).toBe(false)
+      expect(entries().map(entry => [entry.textContent, entry.style.paddingLeft])).toEqual([['Report', '12px'], ['Loss', '24px'], ['Details', '36px'], ['Appendix', '24px']])
+
+      // "Details" measures 0x0 at the top, like a heading inside a display:none subtree: never the section in view.
+      const rects = [{ top: -400, height: 30 }, { top: -100, height: 24 }, { top: 0, height: 0 }, { top: 900, height: 24 }]
+      document.querySelectorAll('#root h1, #root h2, #root h3').forEach((heading, index) => {
+        vi.spyOn(heading, 'getBoundingClientRect').mockReturnValue(rects[index] as DOMRect)
+      })
+      window.dispatchEvent(new Event('scroll'))
+      await flush()
+      expect(entries().filter(entry => entry.classList.contains('active')).map(entry => entry.textContent)).toEqual(['Loss'])
+
+      entries()[3].click()
+      expect(scrolled).toHaveBeenLastCalledWith({ block: 'start', behavior: 'smooth' })
+      expect(scrolled.mock.contexts.at(-1)).toBe(document.querySelectorAll('#root h2')[1])
+
+      // In-page find walks the light DOM only: the table of contents' copy of "Loss" is not a match.
+      host('find', ['Loss', {}])
+      expect(posted).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas', message: { type: 'find-result', total: 2, active: 1 } }, '*')
+
+      document.querySelector('#root h3')!.remove()
+      await flush()
+      expect(entries().map(entry => entry.textContent)).toEqual(['Report', 'Loss', 'Appendix'])
+
+      host('set-toc', [false])
+      await flush()
+      expect(nav.hidden).toBe(true)
+      // Fewer than two headings: nothing to show, even when the host asks, and the host is told.
+      host('set-toc', [true])
+      document.querySelectorAll('#root h2').forEach(heading => heading.remove())
+      await flush()
+      expect(nav.hidden).toBe(true)
+      expect(posted).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas', message: { kind: 'toc', available: false } }, '*')
+    } finally {
+      vi.unstubAllGlobals()
+      posted.mockRestore()
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
+      document.body.innerHTML = ''
+    }
+  })
+})

@@ -95,6 +95,7 @@
   "canvas.findNext": "Next match",
   "canvas.findPrev": "Previous match",
   "canvas.findCount": "{active}/{total}",
+  "canvas.toc": "Table of contents",
   "canvas.commentOnElement": "Comment on an element",
   "canvas.comments": "Comments",
   "canvas.commentPlaceholder": "Ask about this element, or describe a change…",

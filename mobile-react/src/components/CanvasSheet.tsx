@@ -2,10 +2,11 @@
 // element comments (persistent threads) and an editable source on servers that offer them.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import WebView, { type WebViewMessageEvent } from 'react-native-webview'
-import { ChevronDown, ChevronUp, MessageSquare, MessageSquarePlus, RefreshCw, Search, X } from 'lucide-react-native'
+import { ChevronDown, ChevronUp, MessageSquare, MessageSquarePlus, RefreshCw, Search, TableOfContents, X } from 'lucide-react-native'
 import { MobileCodeEditor, type MobileCodeEditorController } from '../editor/MobileCodeEditor'
 import {
   buildCanvasPage,
@@ -13,6 +14,7 @@ import {
   canvasFindScript,
   canvasFocusCommentScript,
   canvasSelectingScript,
+  canvasTocScript,
   parseCanvasPageMessage,
   type CanvasCommentPin,
   type CanvasHostTheme,
@@ -28,6 +30,7 @@ import { CanvasCommentSubmit, CanvasCommentThreads, canvasAnchorLabel } from './
 import { IconButton, Loading, SheetCloseButton } from './ui'
 
 const STATE_SAVE_DELAY_MS = 400
+const CANVAS_TOC_STORAGE_KEY = 'agentsdock.canvasToc'
 // Opaque origin: the page has no server to talk to, and its CSP allows data: scripts only.
 const CANVAS_PAGE_BASE_URL = 'about:blank'
 const EMPTY_EVENTS: Event[] = []
@@ -81,6 +84,8 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
   const [findOpen, setFindOpen] = useState(false)
   const [findQuery, setFindQuery] = useState('')
   const [findResult, setFindResult] = useState<{ total: number; active: number }>({ total: 0, active: 0 })
+  const [tocVisible, setTocVisible] = useState(true)
+  const [tocAvailable, setTocAvailable] = useState(false)
   const canvasCapability = useAppStore(state => state.health?.capabilities?.canvas_v1)
   // Older servers keep the read-only source and no comments.
   const commentsAvailable = canvasCapability?.comments === true
@@ -208,6 +213,19 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
   }, [activeThread, pins])
   useEffect(() => { injectPins() }, [injectPins])
 
+  useEffect(() => {
+    void AsyncStorage.getItem(CANVAS_TOC_STORAGE_KEY).then(value => { if (value === 'false') setTocVisible(false) }, () => undefined)
+  }, [])
+  const injectToc = useCallback(() => {
+    webViewRef.current?.injectJavaScript(canvasTocScript(tocVisible))
+  }, [tocVisible])
+  useEffect(() => { injectToc() }, [injectToc])
+  const toggleToc = () => {
+    const next = !tocVisible
+    setTocVisible(next)
+    void AsyncStorage.setItem(CANVAS_TOC_STORAGE_KEY, String(next)).catch(() => undefined)
+  }
+
   const receive = (event: WebViewMessageEvent) => {
     const message = parseCanvasPageMessage(event.nativeEvent.data)
     if (!message) return
@@ -215,6 +233,10 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
       case 'ready':
         setPageError(null)
         injectPins()
+        injectToc()
+        break
+      case 'toc':
+        setTocAvailable(message.available)
         break
       case 'selection':
         if (message.elements.length) setSelection(message.elements[0])
@@ -265,6 +287,9 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
     // State is read at build time: a theme switch or reload keeps edits made after the record was fetched.
     return { html: buildCanvasPage({ shell: runtime.shell, vendor: runtime.vendor, javascript: compiled.javascript, state: stateRef.current, theme }), baseUrl: CANVAS_PAGE_BASE_URL }
   }, [compiled, runtime, theme])
+  // Availability belongs to the page on screen, a new one per page HTML (the WebView reloads only when it
+  // changes) and per return from the source; a page that never reports (a load error) leaves the toggle off.
+  useEffect(() => { setTocAvailable(false) }, [source?.html, showSource])
 
   const toggleSelecting = () => {
     const next = !selecting
@@ -389,6 +414,7 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
     <View style={styles.top}>
       <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>Canvas · {name}</Text>
       {compiled && !showSource ? <IconButton icon={Search} size={16} selected={findOpen} label="Find in canvas" testID="canvas-find" onPress={() => (findOpen ? closeFind() : setFindOpen(true))} /> : null}
+      {compiled && !showSource ? <IconButton icon={TableOfContents} size={16} selected={tocVisible} disabled={!tocAvailable} label="Table of contents" testID="canvas-toc" onPress={toggleToc} /> : null}
       {commentsAvailable && compiled && !showSource ? <IconButton icon={MessageSquarePlus} size={16} selected={selecting} label="Comment on an element" testID="canvas-comment-select" onPress={toggleSelecting} /> : null}
       {commentsAvailable ? <Pressable testID="canvas-comments-toggle" accessibilityRole="button" accessibilityLabel={`Comments, ${pins.length} open`} accessibilityState={{ selected: commentsOpen }} onPress={() => setCommentsOpen(value => !value)}
         style={({ pressed }) => [styles.commentsToggle, { backgroundColor: commentsOpen ? colors.raised : 'transparent', opacity: pressed ? 0.7 : 1 }]}>
@@ -486,7 +512,7 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
                     style={[styles.fill, { backgroundColor: colors.surface }]}
                     onMessage={receive}
                     // A reload drops the injected highlights; re-run the open query once the fresh page has mounted.
-                    onLoadEnd={() => { if (findOpen && findQuery) injectFind(findQuery); injectPins() }}
+                    onLoadEnd={() => { if (findOpen && findQuery) injectFind(findQuery); injectPins(); injectToc() }}
                     // The report is self-contained; anything else is a link the runtime should have reported through the bridge.
                     onShouldStartLoadWithRequest={navigation => navigation.url === CANVAS_PAGE_BASE_URL}
                     onError={event => setPageError(event.nativeEvent.description || 'The canvas page failed to load.')}

@@ -1,5 +1,37 @@
 # Public development log
 
+## 2026-10-07 — Canvas previews get a floating table of contents that can be turned off (desktop and Android, source only)
+
+- A long Canvas report had no way to see its sections or jump between them.
+  The preview now shows a translucent, blurred-backdrop table of contents
+  floating at its right edge, listing the report's h1–h3 headings, which
+  include the SDK's H1/H2/H3 and Card titles. It marks the section in view
+  as the report scrolls, and clicking or tapping an entry scrolls to that
+  heading. It appears only when a report has two or more headings. It hides
+  while you pick an element to comment on, and in-page find does not match
+  its text.
+- A new header button (desktop, beside Find) and top-bar button (Android)
+  turns it on or off. It is on by default; the choice is remembered on the
+  device and kept across reloads and other Canvases. The button is disabled
+  when the report has fewer than two headings. The desktop header's wrap
+  points moved by the new button's width, so its controls stay on one row
+  down to 480px (700px with the Canvas picker).
+- One page script draws it on both platforms. It lives in a shadow root under
+  an unstyled custom element, so a report's own element styles, such as `nav`
+  or `button` rules, do not change it.
+- Verified with a DOM test of the page script (headings, indentation,
+  current section including headings inside hidden subtrees, click-to-scroll,
+  live updates, find excluding it, fewer than two headings), pane tests for
+  the toggle, its persistence and its reset on a new page, the Android page
+  and contract tests (including a check that both apps carry the same
+  script), and both type checks. Accepted in the built desktop app against an
+  isolated server (25 checks): it opened from Outputs, then clicks, wheel
+  scrolling, find, collapsing a section, turning it off and reloading,
+  element picking, its translucency in both themes, the narrowest pane, both header wrap
+  points, and a report that styles its own `nav` elements. Not exercised in
+  the Android app: no package was built for this change, so the Android
+  screen layout on a phone is unverified. Availability: source only.
+
 ## 2026-10-07 — Editing a message after stopping Claude rewinds to that message, not to an older completed reply (server)
 
 - Rewinding a Claude chat (editing an earlier message) forked the native

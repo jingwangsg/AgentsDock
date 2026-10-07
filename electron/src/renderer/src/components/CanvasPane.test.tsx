@@ -174,6 +174,52 @@ describe('CanvasPane find', () => {
     expect(post).toHaveBeenLastCalledWith(
       { source: 'agentsdock-canvas-host', call: 'find', args: ['x', { forward: false, matchCase: false, findNext: true }] }, '*')
   })
+
+  it('enables the table of contents toggle while the page has headings, shows it by default, toggles it and remembers the choice', async () => {
+    const { post, reply } = await renderCompiled()
+    const toggle = screen.getByRole('button', { name: 'Table of contents' })
+    // Enabled only while the page on screen reports headings to list.
+    expect(toggle).toBeDisabled()
+    reply({ kind: 'ready' })
+    expect(post).toHaveBeenCalledWith({ source: 'agentsdock-canvas-host', call: 'set-toc', args: [true] }, '*')
+    reply({ kind: 'toc', available: true })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    reply({ kind: 'toc', available: false })
+    await waitFor(() => expect(toggle).toBeDisabled())
+    reply({ kind: 'toc', available: true })
+    await waitFor(() => expect(toggle).toBeEnabled())
+
+    fireEvent.click(toggle)
+    expect(post).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas-host', call: 'set-toc', args: [false] }, '*')
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    expect(localStorage.getItem('agentsdock:canvas-toc')).toBe('hidden')
+    // A reloaded page gets the current choice.
+    reply({ kind: 'ready' })
+    expect(post).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas-host', call: 'set-toc', args: [false] }, '*')
+    // A new page has not reported its headings yet.
+    fireEvent.click(screen.getByTitle('Reload'))
+    await waitFor(() => expect(toggle).toBeDisabled())
+  })
+
+  it('disables the table of contents toggle again when the preview comes back from the source view', async () => {
+    const { reply } = await renderCompiled()
+    const toggle = screen.getByRole('button', { name: 'Table of contents' })
+    reply({ kind: 'toc', available: true })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    // The preview remounts its page, which has not reported its headings yet.
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    await waitFor(() => expect(toggle).toBeDisabled())
+  })
+
+  it('starts with the table of contents hidden after the user turned it off', async () => {
+    localStorage.setItem('agentsdock:canvas-toc', 'hidden')
+    const { post, reply } = await renderCompiled()
+    reply({ kind: 'ready' })
+    expect(post).toHaveBeenCalledWith({ source: 'agentsdock-canvas-host', call: 'set-toc', args: [false] }, '*')
+    expect(screen.getByRole('button', { name: 'Table of contents' })).toHaveAttribute('aria-pressed', 'false')
+  })
 })
 
 

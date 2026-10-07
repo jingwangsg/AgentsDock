@@ -47,6 +47,8 @@ export type CanvasPageMessage =
   /** From the comment pins: a pin was tapped / which threads have their element in this revision. */
   | { kind: 'comment-open'; id: string }
   | { kind: 'comment-anchors'; located: string[] }
+  /** From the floating table of contents: whether the page has two or more headings to list. */
+  | { kind: 'toc'; available: boolean }
   /** Agent actions exist on the desktop only; the sheet ignores them. */
   | { kind: 'action' }
 
@@ -140,6 +142,86 @@ export const COMMENT_PINS_SCRIPT = `
 `
 
 /**
+ * Floating table of contents, installed as window.__agentsdockToc: the report's h1–h3
+ * (the SDK's H1/H2/H3 and CardHeader titles) as a panel at the right edge that marks
+ * the section in view and scrolls to a heading when its entry is tapped. The host
+ * decides whether it shows (`show`); the page draws it only for two or more headings
+ * and reports whether it has them whenever the headings change.
+ * Identical in electron/src/main/canvas-protocol.ts.
+ */
+export const TOC_SCRIPT = `
+  window.__agentsdockToc = (() => {
+    const norm = value => String(value || '').replace(/\\s+/g, ' ').trim();
+    const root = document.getElementById('root') || document.body;
+    // An unstyled custom element whose shadow root holds the panel: the report's CSS (say nav{display:flex} or the
+    // shell's global button style) cannot reach it, and in-page find does not walk into it.
+    const container = document.createElement('agentsdock-toc');
+    const shadow = container.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<style>'
+      + 'nav{box-sizing:border-box;position:fixed;z-index:2147483645;top:50%;right:12px;transform:translateY(-50%);max-width:min(240px,45vw);max-height:70vh;overflow:auto;overscroll-behavior:contain;padding:6px 0;border:1px solid var(--canvas-border);border-radius:8px;background:var(--canvas-background);box-shadow:0 4px 16px rgba(0,0,0,.25);font:12px/1.4 -apple-system,BlinkMacSystemFont,sans-serif}'
+      + 'button{display:block;width:100%;margin:0;padding:3px 12px;border:0;border-left:2px solid transparent;background:none;color:var(--canvas-muted);font:inherit;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}'
+      + 'button:hover{color:var(--canvas-foreground)}'
+      + 'button.active{color:var(--canvas-accent);border-left-color:var(--canvas-accent)}'
+      // Translucent where color-mix exists; a var() inside an unsupported color-mix would leave no background at all.
+      + '@supports (background:color-mix(in srgb,red,red)){nav{background:color-mix(in srgb,var(--canvas-background) 55%,transparent);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}}'
+      + '@media (pointer:coarse){button{padding-top:8px;padding-bottom:8px}}</style><nav hidden></nav>';
+    const nav = shadow.querySelector('nav');
+    // Hidden while the user picks an element to comment on, so a pick never lands on the table of contents.
+    const selectingStyle = document.createElement('style');
+    selectingStyle.textContent = 'body.zed-selecting>agentsdock-toc{display:none}';
+    document.head.appendChild(selectingStyle);
+    document.body.appendChild(container);
+    let visible = false, headings = [], buttons = [], signature = null, active = -1, frame = 0;
+    const spy = () => {
+      let next = 0;
+      // Scrolled to the end, the last sections can never reach the top edge: the last heading is current.
+      const atEnd = window.scrollY > 0 && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+      headings.forEach((heading, index) => {
+        const { top, height } = heading.getBoundingClientRect();
+        // A heading inside a display:none subtree measures 0x0 at the top edge; it is never the section in view.
+        if (height && (atEnd || top <= 48)) next = index;
+      });
+      if (next === active) return;
+      if (buttons[active]) buttons[active].classList.remove('active');
+      active = next;
+      const button = buttons[active];
+      button.classList.add('active');
+      // Keep the current entry inside a long table of contents by scrolling the panel only, never the report.
+      if (button.offsetTop < nav.scrollTop || button.offsetTop + button.offsetHeight > nav.scrollTop + nav.clientHeight) nav.scrollTop = button.offsetTop - nav.clientHeight / 2;
+    };
+    const collect = () => {
+      frame = 0;
+      headings = [...root.querySelectorAll('h1,h2,h3')].filter(heading => norm(heading.textContent));
+      const available = headings.length >= 2;
+      const next = headings.map(heading => heading.tagName + norm(heading.textContent)).join('\\n');
+      if (next !== signature) {
+        signature = next;
+        const topLevel = Math.min(...headings.map(heading => Number(heading.tagName[1])));
+        buttons = headings.map((heading, index) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = button.title = norm(heading.textContent);
+          button.style.paddingLeft = (12 + (Number(heading.tagName[1]) - topLevel) * 12) + 'px';
+          // By index: a re-render can replace a heading element without changing its level or text, which keeps these buttons.
+          button.addEventListener('click', () => headings[index].scrollIntoView({ block: 'start', behavior: 'smooth' }));
+          return button;
+        });
+        nav.replaceChildren(...buttons);
+        active = -1;
+        post({ kind: 'toc', available });
+      }
+      nav.hidden = !visible || !available;
+      if (!nav.hidden) spy();
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(collect); };
+    new MutationObserver(schedule).observe(root, { subtree: true, childList: true, characterData: true });
+    window.addEventListener('scroll', () => { if (!nav.hidden) schedule(); }, { passive: true });
+    schedule();
+    return { show(next) { visible = !!next; schedule(); } };
+  })();
+`
+
+/**
  * Runs before vendor.js. The runtime posts to the WKWebView handler
  * `window.webkit.messageHandlers.zedCanvas`; this routes it to
  * react-native-webview's channel. On iOS that library keeps its own handler in
@@ -159,6 +241,7 @@ const BRIDGE_SHIM = `
   try { Object.defineProperty(handlers, 'zedCanvas', { value: zedCanvas, configurable: true }); }
   catch { webkit.messageHandlers = Object.assign(Object.create(handlers), { zedCanvas }); }
 ${COMMENT_PINS_SCRIPT}
+${TOC_SCRIPT}
 })();
 `
 
@@ -205,7 +288,7 @@ export function canvasFindScript(query: string, options: { forward?: boolean; ma
 })(); true;`
 }
 
-/** Injected calls into the page: the runtime's selection mode and the comment pins. Trailing `true;` as for find. */
+/** Injected calls into the page: the runtime's selection mode, the comment pins and the table of contents. Trailing `true;` as for find. */
 export function canvasSelectingScript(selecting: boolean): string {
   const call = selecting ? 'host.setSelecting(true);' : 'host.setSelecting(false); host.clearSelection();'
   return `(() => { const host = globalThis.__zedCanvasHost; if (host) { ${call} } })(); true;`
@@ -217,6 +300,10 @@ export function canvasCommentPinsScript(pins: readonly CanvasCommentPin[], activ
 
 export function canvasFocusCommentScript(id: string): string {
   return `(() => { if (window.__agentsdockComments) window.__agentsdockComments.focus(${JSON.stringify(id)}); })(); true;`
+}
+
+export function canvasTocScript(visible: boolean): string {
+  return `(() => { if (window.__agentsdockToc) window.__agentsdockToc.show(${visible}); })(); true;`
 }
 
 /** Decodes one WebView `onMessage` payload; null for anything the bridge shim did not send. */

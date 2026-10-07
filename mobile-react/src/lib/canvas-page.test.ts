@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { CANVAS_PAGE_MESSAGE_SOURCE, COMMENT_PINS_SCRIPT, buildCanvasPage, canvasCommentPinsScript, canvasFindScript, canvasFocusCommentScript, canvasNameFromPath, canvasSelectingScript, parseCanvasPageMessage, type CanvasHostTheme } from './canvas-page'
+import { CANVAS_PAGE_MESSAGE_SOURCE, COMMENT_PINS_SCRIPT, TOC_SCRIPT, buildCanvasPage, canvasCommentPinsScript, canvasFindScript, canvasFocusCommentScript, canvasNameFromPath, canvasSelectingScript, canvasTocScript, parseCanvasPageMessage, type CanvasHostTheme } from './canvas-page'
 
 const shell = '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src data:"></head><body><div id="root"></div><!--CANVAS_SCRIPTS--></body></html>'
 const theme: CanvasHostTheme = { background: '#282c33', foreground: '#dce0e5', muted: '#a9afbc', border: '#464b57', accent: '#74ade8', kind: 'dark' }
@@ -92,6 +92,16 @@ assert.match(canvasFindScript(''), /if \(!request\.query \|\| !ok\(\)\) \{ clear
     parseCanvasPageMessage(JSON.stringify({ source: CANVAS_PAGE_MESSAGE_SOURCE, message: { kind: 'comment-anchors', located: ['cmt_1'] } })),
     { kind: 'comment-anchors', located: ['cmt_1'] },
   )
+}
+
+// --- table of contents: the shim installs it, and the injected toggle is plain JS
+{
+  const shim = decodedScripts(buildCanvasPage({ shell, vendor: '', javascript: '', state: {}, theme }))[0]
+  assert.ok(shim.includes(TOC_SCRIPT), 'the bridge shim installs window.__agentsdockToc')
+  for (const visible of [true, false]) {
+    assert.doesNotThrow(() => new Function(canvasTocScript(visible)))
+    assert.match(canvasTocScript(visible), new RegExp(`window\\.__agentsdockToc\\.show\\(${visible}\\)`))
+  }
 }
 
 console.log('canvas page tests passed')

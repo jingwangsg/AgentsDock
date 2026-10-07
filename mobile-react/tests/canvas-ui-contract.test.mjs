@@ -105,8 +105,8 @@ test('the sheet searches the rendered canvas by injecting a find script and rend
   assert.match(sheet, /testID="canvas-find-count"[\s\S]*?\$\{findResult\.active\}\/\$\{findResult\.total\}/)
   // Closing clears the highlights, and a reload re-runs the open query once the page mounts.
   assert.match(sheet, /const closeFind = \(\) => \{[\s\S]*?injectFind\(''\)/)
-  // The fresh page also gets its comment pins back.
-  assert.match(sheet, /onLoadEnd=\{\(\) => \{ if \(findOpen && findQuery\) injectFind\(findQuery\); injectPins\(\) \}\}/)
+  // The fresh page also gets its comment pins and table of contents back.
+  assert.match(sheet, /onLoadEnd=\{\(\) => \{ if \(findOpen && findQuery\) injectFind\(findQuery\); injectPins\(\); injectToc\(\) \}\}/)
   // The find script is a pure builder that highlights and reports back over the WebView channel.
   assert.match(page, /export function canvasFindScript\(query: string, options: \{ forward\?: boolean; matchCase\?: boolean; findNext\?: boolean \} = \{\}\): string/)
   assert.match(page, /CSS\.highlights\.set\('canvas-find'/)
@@ -155,4 +155,18 @@ test('source: edits save against the revision they started from and confirm befo
   assert.match(sheet, /const base = overwrite \? \(await client\.getCanvas\(sessionId, name\)\)\.revision : sourceDraft\.baseRevision/)
   assert.match(sheet, /if \(!overwrite && REVISION_CONFLICT\.test\(message\)\) \{\n\s*Alert\.alert\('The canvas changed'/)
   assert.match(sheet, /state\.sendPrompt\(false, state\.profileGeneration, sessionId, \{\n\s*consumeComposer: false,/)
+})
+
+test('a floating table of contents toggles from the top bar and remembers the choice', () => {
+  assert.match(sheet, /\{compiled && !showSource \? <IconButton icon=\{TableOfContents\} size=\{16\} selected=\{tocVisible\} disabled=\{!tocAvailable\} label="Table of contents" testID="canvas-toc" onPress=\{toggleToc\} \/> : null\}/)
+  // The choice reaches the open page on every change, and a fresh page gets it on ready (and onLoadEnd, above).
+  assert.match(sheet, /injectJavaScript\(canvasTocScript\(tocVisible\)\)/)
+  assert.match(sheet, /useEffect\(\(\) => \{ injectToc\(\) \}, \[injectToc\]\)/)
+  assert.match(sheet, /case 'ready':[\s\S]*?injectToc\(\)[\s\S]*?case 'toc':\s+setTocAvailable\(message\.available\)/)
+  assert.match(sheet, /useEffect\(\(\) => \{ setTocAvailable\(false\) \}, \[source\?\.html, showSource\]\)/, 'a new page has not reported its headings yet')
+  assert.match(sheet, /AsyncStorage\.getItem\(CANVAS_TOC_STORAGE_KEY\)\.then\(value => \{ if \(value === 'false'\) setTocVisible\(false\) \}/)
+  assert.match(sheet, /AsyncStorage\.setItem\(CANVAS_TOC_STORAGE_KEY, String\(next\)\)/)
+  // One page script for both apps; the desktop test exercises it in a DOM.
+  const script = text => text.match(/export const TOC_SCRIPT = `[\s\S]*?\n`\n/)[0]
+  assert.equal(script(page), script(source('../electron/src/main/canvas-protocol.ts')))
 })

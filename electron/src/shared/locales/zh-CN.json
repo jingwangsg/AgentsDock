@@ -95,6 +95,7 @@
   "canvas.findNext": "下一处",
   "canvas.findPrev": "上一处",
   "canvas.findCount": "{active}/{total}",
+  "canvas.toc": "目录",
   "canvas.commentOnElement": "评论一个元素",
   "canvas.comments": "评论",
   "canvas.commentPlaceholder": "对这个元素提问，或描述要做的修改…",

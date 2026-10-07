@@ -1,7 +1,7 @@
 import { CANVAS_HOST_MESSAGE_SOURCE, CANVAS_NAME_PATTERN, CANVAS_PAGE_MESSAGE_SOURCE, canvasPageURL, type CanvasHostTheme } from '@shared/canvas'
 import { t } from '@shared/i18n'
 import type { CanvasCommentMode, CanvasCommentThread, CanvasRecord, CanvasSummary, Session } from '@shared/types'
-import { ChevronDown, ChevronUp, Crosshair, Eye, FileCode2, FileDown, MessageSquare, RefreshCw, Search, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Crosshair, Eye, FileCode2, FileDown, MessageSquare, RefreshCw, Search, TableOfContents, X } from 'lucide-react'
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
@@ -46,6 +46,8 @@ type PageMessage =
   // From the comment pins (canvas-protocol.ts COMMENT_PINS_SCRIPT).
   | { kind: 'comment-open'; id: string }
   | { kind: 'comment-anchors'; located: string[] }
+  // From the floating table of contents (canvas-protocol.ts TOC_SCRIPT): whether the page has two or more headings to list.
+  | { kind: 'toc'; available: boolean }
 
 /** The in-iframe find reports over the same channel keyed on `type`, so it never collides with a runtime `kind`. */
 interface FindResult { type: 'find-result'; total: number; active: number }
@@ -53,6 +55,7 @@ interface FindResult { type: 'find-result'; total: number; active: number }
 const CANVAS_SUFFIX = '.canvas.tsx'
 const STATE_SAVE_DELAY_MS = 400
 const CANVAS_WIDTH_KEY = 'agentsdock:canvas-width'
+const CANVAS_TOC_KEY = 'agentsdock:canvas-toc'
 
 /** "…/report.canvas.tsx" (path, URL or file: link) -> "report"; null when it is not a Canvas path. */
 export function canvasNameFromPath(value: string | null | undefined): string | null {
@@ -119,6 +122,11 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
   const findInputRef = useRef<HTMLInputElement>(null)
   // Read inside the page's `ready` handler (which resubscribes rarely) so a reload re-runs the open query.
   const findLive = useRef({ open: false, query: '' })
+  const [tocVisible, setTocVisible] = useState(() => window.localStorage.getItem(CANVAS_TOC_KEY) !== 'hidden')
+  const [tocAvailable, setTocAvailable] = useState(false)
+  // Also read inside the `ready` handler, so a reloaded page gets the current choice.
+  const tocLive = useRef(tocVisible)
+  tocLive.current = tocVisible
   const iframeRef = useRef<HTMLIFrameElement>(null)
   /** Full persistent state of the canvas on screen; the page reports one key at a time and the server replaces the file wholesale. */
   const stateRef = useRef<Record<string, unknown>>({})
@@ -253,6 +261,10 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
           // A fresh document lost any highlights: re-run the query the find bar still shows.
           if (findLive.current.open && findLive.current.query) runFind(findLive.current.query)
           postToPage('set-comments', [pinsLive.current.pins, pinsLive.current.active])
+          postToPage('set-toc', [tocLive.current])
+          break
+        case 'toc':
+          setTocAvailable(message.available)
           break
         case 'comment-open':
           setCommentsOpen(true)
@@ -300,12 +312,22 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
     if (!profileId || !record || record.diagnostics || !record.javascript) return null
     return canvasPageURL({ profileId, profileGeneration, sessionId: session.id, name, theme: hostTheme(), reloadKey: `${record.revision}-${reloadToken}` })
   }, [name, profileGeneration, profileId, record, reloadToken, session.id])
+  // Availability belongs to the page on screen, a new one per src and per return to the preview;
+  // a page that never reports (an error page) leaves the toggle off.
+  useEffect(() => { setTocAvailable(false) }, [src, view])
 
   const toggleSelecting = () => {
     const next = !selecting
     setSelecting(next)
     if (!next) setSelection(null)
     postToPage('setSelecting', [next])
+  }
+
+  const toggleToc = () => {
+    const next = !tocVisible
+    setTocVisible(next)
+    saveLocalStorage(CANVAS_TOC_KEY, next ? 'shown' : 'hidden')
+    postToPage('set-toc', [next])
   }
 
   const clearComposer = () => {
@@ -516,6 +538,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
         <button type="button" className={view === 'source' ? 'active' : ''} aria-pressed={view === 'source'} onClick={() => setView('source')}><FileCode2 size={13} aria-hidden="true" />{t('canvas.source')}</button>
       </div>
       <button type="button" aria-pressed={findOpen} disabled={!src || view !== 'preview'} title={t('canvas.find')} aria-label={t('canvas.find')} onClick={() => (findOpen ? closeFind() : openFind())}><Search size={14} /></button>
+      <button type="button" aria-pressed={tocVisible} disabled={!src || view !== 'preview' || !tocAvailable} title={t('canvas.toc')} aria-label={t('canvas.toc')} onClick={toggleToc}><TableOfContents size={14} /></button>
       <span className="canvas-pane-header-spacer" aria-hidden="true" />
       <button type="button" aria-pressed={selecting} disabled={!src || view !== 'preview'} title={t(commentsAvailable ? 'canvas.commentOnElement' : 'canvas.selectElement')} onClick={toggleSelecting}><Crosshair size={14} /></button>
       {commentsAvailable && <button type="button" aria-pressed={commentsOpen} title={t('canvas.comments')} aria-label={t('canvas.comments')} onClick={() => setCommentsOpen(value => !value)}>
