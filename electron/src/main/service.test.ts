@@ -9209,6 +9209,35 @@ describe('server profile lifecycle', () => {
     }))
   })
 
+  it('names the failed health probe when a request joins a background refresh the server does not answer', async () => {
+    const a = fakeClient()
+    const { service } = createProfileService({
+      'http://a.test:7850': [a],
+      'http://b.test:7850': [fakeClient()]
+    })
+    await service.bootstrap()
+    const refreshAll = (service as unknown as {
+      refreshAll(announce: boolean, includeJobs: boolean): Promise<void>
+    }).refreshAll.bind(service)
+    const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' })
+
+    // The probe that failed last cleared the validation; the next one is still pending when
+    // Stop arrives, so Stop waits on that probe instead of starting its own.
+    a.health.mockRejectedValueOnce(timeout)
+    await refreshAll(false, true)
+    const pendingProbe = deferred<Awaited<ReturnType<typeof a.health>>>()
+    a.health.mockReturnValueOnce(pendingProbe.promise)
+    const background = refreshAll(false, true)
+    const stop = service.stopTurn('s1')
+    await settleBackgroundWork()
+    pendingProbe.reject(timeout)
+    await background
+
+    await expect(stop).rejects.toThrow(
+      'Health check for “A” failed, so the request was not sent: The operation was aborted due to timeout'
+    )
+  })
+
   it('drops Team Hub discovery on the first rejected active-server health refresh', async () => {
     const capability = {
       available: true,

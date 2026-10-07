@@ -15,7 +15,8 @@ from claude_sdk_client import ClaudeSDKSupervisorClosed
 SOURCE = (Path(__file__).resolve().parents[1] / "agent_server.py")
 
 
-def load_probe(path, *, shutting_down, previous_error=None, result=None, projection_error=False):
+def load_probe(path, *, shutting_down, previous_error=None, result=None, projection_error=False,
+               handle=None, stopped_runs=frozenset({"unrelated-run"})):
     tree = ast.parse(SOURCE.read_text())
     runner = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_claude_sdk")
     classify = next(node for node in runner.body if isinstance(node, ast.FunctionDef) and node.name == "record_sdk_stream_exception")
@@ -40,7 +41,7 @@ async def probe(error, late_shutdown=False):
     delivery_unknown = False
     provider_id = ""
     sdk_ownership_token = ""
-    current_handle = None
+    current_handle = probe_handle
     current_reconciliation_batches = []
     receipts_persisted_run_ids = set()
     manager = None
@@ -54,7 +55,8 @@ async def probe(error, late_shutdown=False):
     compaction_state = {"manual": False}
 ''').body[0]
     setup.body.append(classify)
-    setup.body.append(ast.Try(body=[ast.Raise(exc=ast.Name(id="error", ctx=ast.Load()))], handlers=[handler], orelse=[], finalbody=[]))
+    # error=None runs the finalizer on the normal path, with no catch handler involved.
+    setup.body.append(ast.Try(body=ast.parse("if error is not None:\n    raise error").body, handlers=[handler], orelse=[], finalbody=[]))
     setup.body.extend(ast.parse('''
 if late_shutdown:
     SERVER_SHUTTING_DOWN = True
@@ -65,7 +67,7 @@ if late_shutdown:
     namespace = {
         "ClaudeSDKSupervisorClosed": ClaudeSDKSupervisorClosed,
         "SERVER_SHUTTING_DOWN": shutting_down,
-        "STOPPED_RUNS": {"unrelated-run"}, "RUN_METADATA": {},
+        "STOPPED_RUNS": set(stopped_runs), "RUN_METADATA": {}, "probe_handle": handle,
         "previous_error": previous_error, "initial_result": result,
         "initial_projection_error": projection_error,
         "concise_error_message": str, "clean_assistant_text": str,
@@ -153,6 +155,17 @@ class ClaudeShutdownStatusTests(unittest.IsolatedAsyncioTestCase):
             for path in ("iterator", "outer"):
                 with self.subTest(path=path, options=options):
                     await self.check_case(path, ClaudeSDKSupervisorClosed("supervisor was closed"), shutting_down=True, stopped=False, **options)
+
+    async def test_a_stop_that_released_the_run_keeps_its_task_receipts_running(self):
+        # A stopped run persists its live tasks as tracking_lost unless the handle was
+        # released (Stop ended it through release_awaiting_run; the tasks stay on the connection).
+        for released, tracking_lost in ((True, False), (False, True)):
+            with self.subTest(released=released):
+                env = load_probe("outer", shutting_down=False, handle=SimpleNamespace(released=released),
+                                 stopped_runs={"exact-current-run"})
+                await env["probe"](None)
+                self.assertEqual(env["persist_claude_background_task_receipts"].await_args.kwargs["tracking_lost"], tracking_lost)
+                self.assertTrue(env["append_turn_finished_event"].await_args.args[1]["stopped"])
 
     async def test_existing_result_text_is_preserved_on_outer_shutdown(self):
         env = await self.check_case("outer", ClaudeSDKSupervisorClosed("supervisor was closed"), shutting_down=True, stopped=True, result={"result_text": "Already received output"})

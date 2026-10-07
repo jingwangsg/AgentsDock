@@ -1,5 +1,31 @@
 # Public development log
 
+## 2026-10-07 — Stop leaves background Claude agents running when the model is idle; a failed health probe is named (desktop and server source)
+
+- Server: Stop on a Claude chat whose model has already answered and is only
+  waiting for its background agents or shells no longer interrupts the CLI.
+  The run ends with the model's answer, the tasks keep running on the chat's
+  connection, their records stay "running", and the next message adopts them
+  (the same release a queued message already used). The Claude CLI kills a
+  turn's background agents when that turn is interrupted; a Stop while the
+  model is still working interrupts the CLI as before, and that still ends
+  the turn's background agents. Stop still cancels a pending permission
+  prompt, including one raised by an agent that keeps running.
+- Desktop: when a request such as Stop has to re-validate the server and the
+  health probe it waits on fails, the error names the server and the probe
+  failure ("Health check for “X” failed, so the request was not sent: …")
+  instead of "The server profile has not passed its identity check."
+- Verified with server unit tests (release versus interrupt in Stop, kept task
+  records), the Electron service test and type check, and an isolated server
+  over HTTP: a background agent is launched, Stop arrives while the model is
+  idle, the run ends with the answer, the agent is still running and listed as
+  running, and the next turn adopts it and reports its result. The new
+  desktop error text was not exercised in the built app: it needs a server
+  whose health probe fails during a request. Known limit: an agent that
+  finishes while no run is open keeps its "running" card until a later
+  snapshot; the model's own reply to that completion is imported from the
+  transcript. Availability: source only.
+
 ## 2026-10-07 — The local server is named "local" on the desktop and Android (desktop and Android source)
 
 - The desktop named its local server profile after its address

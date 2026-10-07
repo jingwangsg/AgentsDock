@@ -67852,7 +67852,12 @@ async def run_claude_sdk(
             if current_run_id not in receipts_persisted_run_ids:
                 await persist_claude_background_task_receipts(
                     session_id, current_run_id, provider_id, current_handle,
-                    tracking_lost=stopped or retire_supervisor,
+                    # Stop can end a run by release instead of an interrupt (the
+                    # model had answered; only background tasks kept the run
+                    # open). Those tasks stay on the connection, not lost.
+                    tracking_lost=(
+                        stopped and not getattr(current_handle, "released", False)
+                    ) or retire_supervisor,
                 )
         except asyncio.CancelledError as exc:
             cancelled_error = cancelled_error or exc
@@ -98115,6 +98120,7 @@ async def stop_turn(
     native_interrupt_reserved = False
     native_control_interrupt_reserved = False
     native_claude_interrupt_reserved = False
+    claude_run_released = False
     transition_ready: asyncio.Event | None = None
     owned_tasks: list[asyncio.Task[Any]] = []
     stopping_run_id: str | None = None
@@ -98337,7 +98343,11 @@ async def stop_turn(
 
         nonlocal subagent_stop
         if (
-            not cascade_claude_subagents
+            # Set by the Claude interrupt branch below: the run was released,
+            # not interrupted, so its agents and shells are still running for
+            # the next run to adopt; there is nothing to fence.
+            claude_run_released
+            or not cascade_claude_subagents
             or str(session.get("backend") or DEFAULT_BACKEND) != BACKEND_CLAUDE
         ):
             return
@@ -98840,9 +98850,32 @@ async def stop_turn(
     elif native_claude_interrupt_reserved:
         claude_sdk_run = active.get("claude_sdk_run")
         try:
-            await interrupt_claude_sdk_run_bounded(
-                claude_sdk_run,
-            )
+            if (
+                CLAUDE_SDK_MANAGER is not None
+                and getattr(claude_sdk_run, "awaiting_background_tasks", False)
+            ):
+                # The model already answered; only its background agents and
+                # shells keep this run open. End the run with that answer and
+                # leave them running, as the CLI does once a turn is over. An
+                # SDK interrupt makes the CLI kill them (task killedBy: parent).
+                try:
+                    claude_run_released = await asyncio.wait_for(
+                        CLAUDE_SDK_MANAGER.release_awaiting_run(
+                            session_id, run_id=stopping_run_id,
+                        ),
+                        timeout=STOP_CONFIRM_TIMEOUT_SECONDS,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "could not release waiting Claude run session=%s run=%s: %s",
+                        session_id, stopping_run_id, concise_error_message(exc),
+                    )
+            if not claude_run_released:
+                await interrupt_claude_sdk_run_bounded(
+                    claude_sdk_run,
+                )
+            # Reported as native_interrupt: the provider ended the run on
+            # request, by release or by interrupt.
             native_interrupt = True
         except Exception as exc:
             async with ACTIVE_LOCK:

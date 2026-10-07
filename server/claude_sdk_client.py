@@ -1165,6 +1165,7 @@ class ClaudeSDKRunHandle:
         self._background_reconciliation_progress_observed = False
         self._background_reconciliation_aborted = False
         self._awaiting_background_tasks = False
+        self._released = False
         self._deferred_result: Any = None
         self._awaiting_wake_grace_armed = False
         # The Result the CLI sent before replaying an injected follow-up.
@@ -1176,6 +1177,13 @@ class ClaudeSDKRunHandle:
         self._unconfirmed_steer_ids: set[str] = set()
         # A steer query joins the start query's CLI session.
         self._query_session_id: str | None = None
+
+    @property
+    def released(self) -> bool:
+        """The run ended through release_awaiting_run: the model had answered, and its
+        background tasks stay tracked on this connection for the next run."""
+
+        return self._released
 
     @property
     def awaiting_background_tasks(self) -> bool:
@@ -1707,9 +1715,9 @@ class ClaudeSDKSupervisor:
         """End the active run if only background tasks keep it open.
 
         The model's own Result is delivered as the run's terminal message and
-        the tasks stay alive on this connection, so a waiting user message can
-        start the next run without an interrupt. Returns False when the run is
-        not in that state.
+        the tasks stay alive on this connection, so a waiting user message, or
+        Stop, can end the run without an interrupt. Returns False when the run
+        is not in that state.
         """
 
         loop = self._ensure_actor()
@@ -2538,6 +2546,7 @@ class ClaudeSDKSupervisor:
             return
         # The ledger is kept: the tasks keep running on this connection and
         # their completion wakes the model inside the next run.
+        active._released = True
         await self._end_active_run(
             active, active._deferred_result, keep_background_tracking=True,
         )

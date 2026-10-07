@@ -2220,6 +2220,29 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit({"type": "result", "is_error": False, "result": "next done"})
         self.assertEqual((await asyncio.wait_for(second.wait_result(), 5))["result"], "next done")
 
+    async def test_a_released_run_keeps_its_task_receipts_running(self) -> None:
+        # Release sets the flag the runner reads to persist receipts as running instead of
+        # tracking_lost; a run that ends normally leaves it clear.
+        first = await self.manager.start_run("chat-kept", "Launch", run_id="run-1", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "system", "subtype": "task_started", "task_id": "job", "task_type": "local_agent"})
+        await client.emit({"type": "result", "is_error": False, "result": "launched"})
+        for _ in range(50):
+            if first.awaiting_background_tasks:
+                break
+            await asyncio.sleep(0)
+        self.assertFalse(first.released)
+        self.assertTrue(await self.manager.release_awaiting_run("chat-kept", run_id="run-1"))
+        self.assertEqual((await asyncio.wait_for(first.wait_result(), 5))["result"], "launched")
+        self.assertTrue(first.released)
+        self.assertEqual([item["status"] for item in first.background_task_receipts], ["running"])
+
+        second = await self.manager.start_run("chat-kept", "Next", run_id="run-2", options={}, configuration_key="same")
+        await client.emit({"type": "system", "subtype": "task_notification", "task_id": "job", "status": "completed"})
+        await client.emit({"type": "result", "is_error": False, "result": "done"})
+        self.assertEqual((await asyncio.wait_for(second.wait_result(), 5))["result"], "done")
+        self.assertFalse(second.released)
+
     async def test_a_run_whose_tasks_vanish_without_a_wake_ends_after_the_grace(self) -> None:
         handle = await self.manager.start_run("chat-bg-vanished", "Poll", run_id="run-vanished", options={}, configuration_key="same")
         client = self.factory.clients[-1]

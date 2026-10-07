@@ -5849,7 +5849,7 @@ export class AppService {
       if (!announce) return
       await this.refreshAll(true, false, scope)
       this.assertCurrentScope(scope)
-      if (!this.isValidatedScope(scope)) throw new Error('The server profile has not passed its identity check.')
+      if (!this.isValidatedScope(scope)) throw this.unvalidatedScopeError(scope)
     }
     try {
       const jobs = await scope.client.jobs()
@@ -6816,7 +6816,16 @@ export class AppService {
     if (this.isValidatedScope(scope)) return
     await this.refreshAll(true, false, scope)
     this.assertCurrentScope(scope)
-    if (!this.isValidatedScope(scope)) throw new Error('The server profile has not passed its identity check.')
+    if (!this.isValidatedScope(scope)) throw this.unvalidatedScopeError(scope)
+  }
+
+  private unvalidatedScopeError(scope: ConnectionScope): Error {
+    // An announced refresh that joined an in-flight background probe resolves without
+    // throwing when that probe fails; the recorded failure is the reason the user needs.
+    const reason = this.profileRuntime.get(scope.profileId)?.lastConnectionError
+    if (!reason) return new Error('The server profile has not passed its identity check.')
+    const name = this.settings.getProfile(scope.profileId)?.name ?? scope.profileId
+    return new Error(`Health check for “${name}” failed, so the request was not sent: ${reason}`)
   }
 
   private async withScope<T>(fn: (client: AgentServerClient) => Promise<T>): Promise<T> {
