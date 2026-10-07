@@ -12,7 +12,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from codex_app_server import CodexAppServerClient, CodexAppServerTurn, CodexAppServerTimeout
 from tests import test_goal_followup_lifecycle_isolated as ordinary_fixture
@@ -380,6 +380,25 @@ class CodexChildContinuationTests(unittest.IsolatedAsyncioTestCase):
         self.answer("Consolidated safely", turn_id="turn-2")
         self.completed(turn_id="turn-2")
         await asyncio.wait_for(runner, 5)
+
+    async def test_probe_prunes_a_child_the_observer_missed_and_continues(self):
+        real_wait = asyncio.wait
+
+        async def fast_wait(futures, *, timeout=None, return_when=asyncio.ALL_COMPLETED):
+            return await real_wait(futures, timeout=min(0.01, timeout) if timeout is not None else 0.01,
+                                   return_when=return_when)
+
+        with patch.object(asyncio, "wait", fast_wait):
+            runner = await self.wait_with_child()
+            # The child's terminal never reached the observer; app-server's
+            # persisted spawn tree already lists the child as idle.
+            self.manager.list_descendant_threads = AsyncMock(
+                return_value=[{"id": "child-1", "status": {"type": "idle"}}])
+            await self.wait(lambda: len(self.continuation_calls) == 1)
+            await self.finish_second_turn(runner)
+        self.manager.list_descendant_threads.assert_awaited()
+        self.assertEqual(self.ns["finalize_owned_turn_finished"].await_args.kwargs["payload"]["result_text"],
+                         "Consolidated safely")
 
     async def test_new_child_before_wire_send_allows_retry_only_after_its_drain(self):
         runner = await self.wait_with_child()

@@ -922,6 +922,17 @@ If the frame was written but never confirmed, the message is not sent again,
 Send now reports the uncertain delivery, and the chat's CLI process is retired
 when the run ends.
 
+Every wait a run can enter is bounded. A run kept open only by background
+tasks ends with the model's answer 120 s after its last task ended without the
+CLI waking the model, and at the idle limit while a task still runs; a Result
+held back for an injected follow-up is delivered 30 s after the CLI failed to
+replay it. The in-flight task ledger follows every CLI frame, including those
+between runs, and starts empty on a fresh CLI process. On the `claude -p`
+transport stderr is drained while the CLI runs. A Codex parent turn waiting
+for its subagents re-reads the spawn tree every 60 s
+(`CODEX_CHILD_CONTINUATION_PROBE_SECONDS`) and ends as completed at the idle
+limit; a Codex turn waiting for the user's approval or answer is not idle.
+
 Claude-controls capability v3 adds authenticated MCP management without
 changing global API contract v13. Clients gate on
 `capabilities.claude_controls.features.mcp_management` and use the additive

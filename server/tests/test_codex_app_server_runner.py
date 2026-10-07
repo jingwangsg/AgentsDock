@@ -4311,6 +4311,80 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
         ))
         self.assertEqual(turn.interrupt_calls, 0)
 
+    async def test_pending_approval_pauses_codex_idle_watchdog(self) -> None:
+        turn = FakeTurn()
+        manager = FakeManager(turn)
+        real_wait = asyncio.wait
+
+        async def fast_poll(
+            futures: set[asyncio.Future[object] | asyncio.Task[object]],
+            *,
+            timeout: float | None = None,
+            return_when: str = asyncio.ALL_COMPLETED,
+        ) -> tuple[
+            set[asyncio.Future[object] | asyncio.Task[object]],
+            set[asyncio.Future[object] | asyncio.Task[object]],
+        ]:
+            return await real_wait(
+                futures,
+                timeout=min(0.01, timeout) if timeout is not None else 0.01,
+                return_when=return_when,
+            )
+
+        answer: asyncio.Future[dict[str, object]] = asyncio.get_running_loop().create_future()
+        agent_server.CODEX_PENDING_INTERACTIONS["codexreq_runner_test"] = {
+            "id": "codexreq_runner_test", "session_id": "chat-native", "thread_id": "thread-native",
+            "responded": False, "future": answer,
+        }
+        stack, events, finished, _exec_fallback = self.runner_patches(manager)
+        try:
+            with stack, patch.object(
+                agent_server.asyncio,
+                "wait",
+                fast_poll,
+            ), patch.object(
+                agent_server,
+                "IDLE_WARN_SECONDS",
+                0.02,
+            ), patch.object(
+                agent_server,
+                "IDLE_KILL_SECONDS",
+                0.03,
+            ):
+                runner = asyncio.create_task(
+                    agent_server.run_codex_app_server(
+                        "chat-native",
+                        "run-original",
+                        "Apply the edit",
+                        dict(self.session),
+                        Path(self.cwd) / ".runner-test-manifest.json",
+                        allow_exec_fallback=True,
+                        allow_resume_rollover=False,
+                    )
+                )
+                await self.wait_for_native_provider_ready(runner)
+                await asyncio.sleep(0.08)
+                # Codex waits for the user's approval: no idle warning, no interrupt.
+                self.assertFalse(runner.done())
+                answer.set_result({"decision": "accept"})
+                agent_server.CODEX_PENDING_INTERACTIONS["codexreq_runner_test"]["responded"] = True
+                turn.feed(agent_message(
+                    "final-after-approval",
+                    "Edited after the approval.",
+                    "final_answer",
+                ))
+                turn.feed(completed_notification())
+                await asyncio.wait_for(runner, timeout=2)
+        finally:
+            agent_server.CODEX_PENDING_INTERACTIONS.pop("codexreq_runner_test", None)
+
+        self.assertEqual(finished.await_args.args[1]["exit_code"], 0)
+        self.assertFalse(any(
+            call.args[1] in {"error", "idle_warning"}
+            for call in events.await_args_list
+        ))
+        self.assertEqual(turn.interrupt_calls, 0)
+
     async def test_stale_live_wait_without_replay_resumes_codex_idle_watchdog(self) -> None:
         turn = FakeTurn()
         manager = FakeManager(turn)

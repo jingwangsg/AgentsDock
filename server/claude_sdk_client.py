@@ -272,6 +272,13 @@ _TERMINAL_TASK_STATUSES = frozenset(
     {"completed", "failed", "stopped", "killed"}
 )
 _ABORTED_RESULT_REASONS = frozenset({"aborted_streaming", "aborted_tools"})
+# Two bounded waits on an otherwise idle run. The CLI normally wakes the model
+# when a background task ends, and replays an injected follow-up once it takes
+# it; when neither happens (the task was dropped, the frame was lost) the run
+# ends with the Result the model had already sent instead of waiting for the
+# six-hour idle kill.
+CLAUDE_SDK_AWAITING_WAKE_GRACE_SECONDS = 120.0
+CLAUDE_SDK_STEER_REPLAY_GRACE_SECONDS = 30.0
 CLAUDE_BACKGROUND_TASK_RECEIPT_LIMIT = 64
 CLAUDE_BACKGROUND_TASK_CONTEXT_BYTES = 8192
 _TASK_RECEIPT_STATUSES = _TERMINAL_TASK_STATUSES | {"running", "tracking_lost"}
@@ -1159,6 +1166,9 @@ class ClaudeSDKRunHandle:
         self._background_reconciliation_aborted = False
         self._awaiting_background_tasks = False
         self._deferred_result: Any = None
+        self._awaiting_wake_grace_armed = False
+        # The Result the CLI sent before replaying an injected follow-up.
+        self._result_after_steer: Any = None
         # Follow-ups injected into this run whose stdin frame the CLI has not
         # replayed yet. The replay is not a user bubble, and a Result that
         # arrives before it ended the turn without the message, so the run
@@ -1469,6 +1479,15 @@ class _AckTimeout:
     correlation_id: str
 
 
+@dataclass(frozen=True)
+class _WaitGraceExpired:
+    """A bounded wait on the active run ran out (see the *_GRACE_SECONDS)."""
+
+    generation: int
+    run_id: str
+    kind: str  # "awaiting_wake" | "steer_replay"
+
+
 class ClaudeSDKSupervisor:
     """One lazy, restartable Claude SDK actor for one AgentsDock chat."""
 
@@ -1524,6 +1543,7 @@ class ClaudeSDKSupervisor:
         self._late_connect_cleanup_tasks: set[asyncio.Task[None]] = set()
         self._receiver_task: asyncio.Task[None] | None = None
         self._ack_timeout_task: asyncio.Task[None] | None = None
+        self._grace_tasks: set[asyncio.Task[None]] = set()
         self._active_run: ClaudeSDKRunHandle | None = None
         self._pending_goal_clear: _ClearGoal | None = None
         self._inflight_tasks: set[str] = set()
@@ -2073,6 +2093,8 @@ class ClaudeSDKSupervisor:
             ))
         self._connection_retired.set()
         self._cancel_ack_timeout()
+        # The ledger belongs to this process; a fresh one has no tasks.
+        self._inflight_tasks.clear()
         if self._pending_mail_hint_hook is not None:
             self._pending_mail_hint_hook.retire()
             self._pending_mail_hint_hook = None
@@ -2130,6 +2152,46 @@ class ClaudeSDKSupervisor:
             expire(),
             name=f"claude-sdk-ack:{self.chat_id}:{handle.run_id}",
         )
+
+    def _schedule_wait_grace(self, run_id: str, kind: str, seconds: float) -> None:
+        generation = self._generation
+        commands = self._commands
+        assert commands is not None
+
+        async def expire() -> None:
+            try:
+                await asyncio.sleep(seconds)
+                await commands.put(_WaitGraceExpired(
+                    generation=generation, run_id=run_id, kind=kind,
+                ))
+            except asyncio.CancelledError:
+                return
+
+        task = asyncio.create_task(
+            expire(), name=f"claude-sdk-grace:{self.chat_id}:{run_id}:{kind}",
+        )
+        self._grace_tasks.add(task)
+        task.add_done_callback(self._grace_tasks.discard)
+
+    async def _end_active_run(
+        self,
+        active: ClaudeSDKRunHandle,
+        message: Any,
+        *,
+        keep_background_tracking: bool = False,
+    ) -> None:
+        """Deliver ``message`` as the run's terminal and free the connection."""
+
+        active._deliver(message)
+        self._cancel_ack_timeout()
+        active._finish(message, keep_background_tracking=keep_background_tracking)
+        if self._pending_mail_hint_hook is not None:
+            self._pending_mail_hint_hook.retire()
+        self._active_run = None
+        bind_provider_tool_owner(self.options, "", "")
+        if not keep_background_tracking:
+            self._inflight_tasks.clear()
+        self._last_used_at = time.monotonic()
 
     async def _deliver_query_bounded(
         self,
@@ -2474,17 +2536,11 @@ class ClaudeSDKSupervisor:
             if not command.response.done():
                 command.response.set_result(False)
             return
-        message = active._deferred_result
-        active._deliver(message)
-        self._cancel_ack_timeout()
-        active._finish(message, keep_background_tracking=True)
-        if self._pending_mail_hint_hook is not None:
-            self._pending_mail_hint_hook.retire()
-        self._active_run = None
-        bind_provider_tool_owner(self.options, "", "")
-        # _inflight_tasks is deliberately kept: the tasks keep running on this
-        # connection and their completion wakes the model inside the next run.
-        self._last_used_at = time.monotonic()
+        # The ledger is kept: the tasks keep running on this connection and
+        # their completion wakes the model inside the next run.
+        await self._end_active_run(
+            active, active._deferred_result, keep_background_tracking=True,
+        )
         if not command.response.done():
             command.response.set_result(True)
 
@@ -2525,6 +2581,16 @@ class ClaudeSDKSupervisor:
             )
             self._fail_active(error)
             await self._disconnect_current_client()
+        elif active._result_after_steer is not None:
+            # The model's turn had ended; only an injected follow-up the CLI
+            # never took held the run, and the interrupt discards it.
+            active._unconfirmed_steer_ids.clear()
+            await self._end_active_run(
+                active, active._result_after_steer,
+                keep_background_tracking=bool(self._inflight_tasks),
+            )
+        else:
+            active._unconfirmed_steer_ids.clear()
         self._last_used_at = time.monotonic()
         if not command.response.done():
             command.response.set_result(True)
@@ -2967,6 +3033,34 @@ class ClaudeSDKSupervisor:
                 if pending.retire_after_receipt:
                     await self._disconnect_current_client()
                 return
+        # The task ledger is connection-scoped: a task started by one run can
+        # end while no run, or a not yet acknowledged one, owns the connection,
+        # and that frame must still leave the ledger. Only removals happen
+        # here: a resumed session replays old task_started frames before the
+        # acknowledgment, and those tasks are not running.
+        subtype, task_id, task_type, status = _task_lifecycle_fields(
+            command.message
+        )
+        if subtype == "background_tasks_changed":
+            # The CLI's snapshot is its ledger. A task it no longer lists ended
+            # without a task_notification (seen 2026-10-07: a background shell
+            # dropped when the next message arrived), and it must not keep
+            # this run, or every later run on this connection, open.
+            data = _message_field(command.message, "data", {})
+            tasks = _message_field(command.message, "tasks") or (
+                data.get("tasks") if isinstance(data, dict) else None
+            )
+            self._inflight_tasks &= {
+                str(task.get("task_id") or "")
+                for task in (tasks if isinstance(tasks, list) else [])
+                if isinstance(task, dict)
+                and str(task.get("status") or "") not in _TERMINAL_TASK_STATUSES
+            }
+        elif task_id and (
+            subtype == "task_notification"
+            or (subtype == "task_updated" and status in _TERMINAL_TASK_STATUSES)
+        ):
+            self._inflight_tasks.discard(task_id)
         active = self._active_run
         if active is None or active.done:
             return
@@ -2995,8 +3089,10 @@ class ClaudeSDKSupervisor:
         for steer_id in active._unconfirmed_steer_ids:
             if _is_matching_replay_ack(command.message, steer_id):
                 # The CLI replays an injected follow-up once it has taken it;
-                # the frame is not a user bubble.
+                # the frame is not a user bubble, and the CLI's next Result,
+                # not the one it sent before taking the follow-up, ends the run.
                 active._unconfirmed_steer_ids.discard(steer_id)
+                active._result_after_steer = None
                 return
 
         active._observe_reconciliation_progress(command.message)
@@ -3014,23 +3110,23 @@ class ClaudeSDKSupervisor:
             if active._unconfirmed_steer_ids and not forced_run_end:
                 # This Result ended the turn before the CLI took an injected
                 # follow-up; the CLI replays and answers it next, in this run.
+                if active._result_after_steer is None:
+                    self._schedule_wait_grace(
+                        active.run_id, "steer_replay",
+                        CLAUDE_SDK_STEER_REPLAY_GRACE_SECONDS,
+                    )
+                active._result_after_steer = command.message
                 return
             if had_inflight_tasks and not forced_run_end:
                 active._awaiting_background_tasks = True
+                active._awaiting_wake_grace_armed = False
                 active._deferred_result = command.message
                 if self._awaiting_observer is not None:
                     # Off the actor: the observer may answer with a command
                     # on this same queue (release_awaiting_run).
                     asyncio.create_task(self._notify_awaiting(active.run_id))
                 return
-            active._deliver(command.message)
-            self._cancel_ack_timeout()
-            active._finish(command.message)
-            if self._pending_mail_hint_hook is not None:
-                self._pending_mail_hint_hook.retire()
-            self._active_run = None
-            bind_provider_tool_owner(self.options, "", "")
-            self._inflight_tasks.clear()
+            await self._end_active_run(active, command.message)
             if had_inflight_tasks and forced_run_end:
                 # An interrupted/error response can strand provider-side task
                 # frames after this logical run has ended. Retire only this
@@ -3042,9 +3138,6 @@ class ClaudeSDKSupervisor:
                     await self._disconnect_current_client()
             return
 
-        subtype, task_id, task_type, status = _task_lifecycle_fields(
-            command.message
-        )
         if (
             _message_type(command.message) in {"assistant", "assistantmessage", "stream_event", "streamevent", "user", "usermessage"}
             and not _message_field(command.message, "parent_tool_use_id")
@@ -3054,29 +3147,56 @@ class ClaudeSDKSupervisor:
             # leave the parent idle.
             active._awaiting_background_tasks = False
         active._observe_background_task(command.message)
-        if subtype == "background_tasks_changed":
-            # The CLI's snapshot is its ledger. A task it no longer lists ended
-            # without a task_notification (seen 2026-10-07: a background shell
-            # dropped when the next message arrived), and it must not keep
-            # this run, or every later run on this connection, open.
-            data = _message_field(command.message, "data", {})
-            tasks = _message_field(command.message, "tasks") or (
-                data.get("tasks") if isinstance(data, dict) else None
+        if subtype == "task_started" and task_id and task_type in _DEFERRING_TASK_TYPES:
+            self._inflight_tasks.add(task_id)
+        if (
+            active._awaiting_background_tasks
+            and not self._inflight_tasks
+            and not active._awaiting_wake_grace_armed
+        ):
+            # Every task this run waited for has ended. The CLI's wake (a
+            # top-level frame, then a Result) normally follows; a dropped task
+            # sends none, so the wait is bounded.
+            active._awaiting_wake_grace_armed = True
+            self._schedule_wait_grace(
+                active.run_id, "awaiting_wake",
+                CLAUDE_SDK_AWAITING_WAKE_GRACE_SECONDS,
             )
-            self._inflight_tasks &= {
-                str(task.get("task_id") or "")
-                for task in (tasks if isinstance(tasks, list) else [])
-                if isinstance(task, dict)
-                and str(task.get("status") or "") not in _TERMINAL_TASK_STATUSES
-            }
-        if task_id:
-            if subtype == "task_started" and task_type in _DEFERRING_TASK_TYPES:
-                self._inflight_tasks.add(task_id)
-            elif subtype == "task_notification":
-                self._inflight_tasks.discard(task_id)
-            elif subtype == "task_updated" and status in _TERMINAL_TASK_STATUSES:
-                self._inflight_tasks.discard(task_id)
         active._deliver(command.message)
+
+    async def _handle_wait_grace_expired(self, command: _WaitGraceExpired) -> None:
+        if command.generation != self._generation:
+            return
+        active = self._active_run
+        if active is None or active.done or active.run_id != command.run_id:
+            return
+        if command.kind == "steer_replay":
+            if not active._unconfirmed_steer_ids or active._result_after_steer is None:
+                return
+            logger.warning(
+                "Claude did not replay the injected follow-up for chat %s within %gs; "
+                "run %s ends with the result the model had sent",
+                self.chat_id, CLAUDE_SDK_STEER_REPLAY_GRACE_SECONDS, active.run_id,
+            )
+            active._unconfirmed_steer_ids.clear()
+            await self._end_active_run(
+                active, active._result_after_steer,
+                keep_background_tracking=bool(self._inflight_tasks),
+            )
+            return
+        if (
+            not active._awaiting_background_tasks
+            or active._deferred_result is None
+            or self._inflight_tasks
+            or active._unconfirmed_steer_ids
+        ):
+            return
+        logger.warning(
+            "Claude's background tasks ended without waking the model for chat %s; "
+            "run %s ends with the result the model had sent",
+            self.chat_id, active.run_id,
+        )
+        await self._end_active_run(active, active._deferred_result)
 
     async def _handle_ack_timeout(self, command: _AckTimeout) -> None:
         if command.generation != self._generation:
@@ -3169,6 +3289,8 @@ class ClaudeSDKSupervisor:
                     await self._handle_received(command)
                 elif isinstance(command, _AckTimeout):
                     await self._handle_ack_timeout(command)
+                elif isinstance(command, _WaitGraceExpired):
+                    await self._handle_wait_grace_expired(command)
                 elif isinstance(command, _ReceiverStopped):
                     await self._handle_receiver_stopped(command)
                 elif isinstance(command, _Close):

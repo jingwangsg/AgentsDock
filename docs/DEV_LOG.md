@@ -1,5 +1,67 @@
 # Public development log
 
+## 2026-10-07 — Stuck-run audit: every wait a Claude or Codex run can enter is now bounded (server, Android)
+
+- After the dropped-background-task incident, five parallel reviews (hub
+  event logs since 2026-10-04, the Claude SDK client, the Claude run loop,
+  the Codex app-server channel, the queue and client state machines) looked
+  for other states in which a run keeps showing "working" with nothing left
+  to end it. The log review found no further real stall in four days: apart
+  from the fixed ledger case (three stalls, about three hours), the long
+  silences were the agent's own waits on background shells, slow starts on
+  two chats with 20–28 MB event logs, and hub restarts. The code reviews found
+  the following latent waits, each bounded only by the six-hour idle kill or
+  by nothing at all; all are closed here.
+- Claude (Agent SDK transport):
+  - A task completion that reached the server between two runs, or before the
+    next run's acknowledgment, was dropped before it could leave the in-flight
+    ledger, so the next run's answer was held back as if the task were still
+    running. Removals now apply to every frame; additions still require an
+    acknowledged run (a resumed session replays old task starts).
+  - A run whose tasks had all ended without the CLI waking the model (the
+    task was dropped) now ends with the answer the model had sent after a
+    120-second grace, instead of waiting for the idle kill. A fresh CLI
+    process starts with an empty ledger.
+  - A follow-up injected into a working turn whose Result arrived first was
+    held back until the CLI replayed the follow-up; if the CLI never does,
+    the held Result is delivered after 30 seconds, and Stop delivers it at
+    once.
+  - When the idle kill fires on a run that only a still-running background
+    task kept open (a dev server, a tail), the run now ends cleanly with the
+    model's answer and the task stays on the chat's connection, instead of
+    ending as a stream failure that kills the task.
+- Claude (`claude -p` transport, used by jobs and clients without the
+  interactive capability): the CLI's stderr was read only after the process
+  ended. MCP servers inherit that pipe, so a chatty one could fill it and
+  block its own tool call until the idle kill, and a daemonised grandchild
+  holding the pipe open made the post-exit read wait forever. stderr is now
+  drained while the CLI runs, keeping a bounded tail for the error message.
+- Codex: a parent turn that waits for its subagents to end had no bound at
+  all (a child terminal the observer missed held the chat busy until Stop);
+  the wait now re-reads the spawn tree every 60 seconds, prunes children the
+  app-server lists as ended, and ends as completed at the idle limit. A turn
+  waiting for the user's approval or answer no longer counts as idle (it was
+  killed after six hours and, from the thirtieth minute, appended an
+  idle-warning row every five seconds); the warning is now appended once per
+  silent stretch on every Codex turn.
+- Android: the running dot was cleared at the start of every run because the
+  pushed summary's agent-visible event type still named the previous turn's
+  end; it now reads the event type that includes turn starts.
+- Reviewed and left as they are, each with a user action that ends it: a run
+  waiting on a permission or question card (the card is visible and durable);
+  queued messages held after an explicit Stop (they show as paused with Send
+  now); a Force Send whose five-second stop times out leaves the predecessor
+  without a terminal row until the successor starts; a chat whose Claude Stop
+  recovery cannot commit rejects new messages with an error until the server
+  restarts. These are recorded for a later pass.
+- Verified with new tests: the ledger gap between runs, the awaiting-wake and
+  follow-up-replay graces, the Codex approval pause, the Codex child probe,
+  plus the client, runner, print, Codex runner and isolated Codex suites and
+  the mobile type check. Not exercised in a real app: the Codex child probe
+  and the print-transport stderr pressure (reproduced in reasoning only).
+  Availability: source; the hub and remotes need a restart, the Android
+  change ships with the next APK.
+
 ## 2026-10-07 — A background task the CLI dropped no longer keeps every later Claude run open (server)
 
 - A Claude chat on the Agent SDK transport showed its final answer but stayed

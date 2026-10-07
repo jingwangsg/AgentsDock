@@ -5265,7 +5265,9 @@ function applyPushedSessionSummary(scope: ConnectionScope, incoming: Session): v
     if (!changed) return {}
     // The running set follows the row so the health poll does not notify this turn end again.
     let activeSessionIds = state.activeSessionIds
-    if (incoming.latest_agent_event_type === 'turn_started' && !activeSessionIds.has(incoming.id)) activeSessionIds = new Set([...activeSessionIds, incoming.id])
+    // turn_started is not an agent-visible event: latest_agent_event_type still names the previous
+    // turn's end when a run starts, so the running set would be cleared at the start of every run.
+    if (incoming.latest_event_type === 'turn_started' && !activeSessionIds.has(incoming.id)) activeSessionIds = new Set([...activeSessionIds, incoming.id])
     else if (terminal && activeSessionIds.has(incoming.id)) { activeSessionIds = new Set(activeSessionIds); activeSessionIds.delete(incoming.id) }
     return { sessions, activeSessionIds, profiles: updateProfileRuntime(state.profiles, scope.profileId, { cachedUnreadCount: unreadCount(sessions) }) }
   })

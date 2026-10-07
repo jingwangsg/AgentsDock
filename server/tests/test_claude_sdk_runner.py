@@ -117,8 +117,10 @@ class FakeClaudePrintStream:
     async def readline(self) -> bytes:
         return self.chunks.popleft() if self.chunks else b""
 
-    async def read(self) -> bytes:
-        return b"".join(self.chunks)
+    async def read(self, size: int = -1) -> bytes:
+        data = b"".join(self.chunks)
+        self.chunks.clear()
+        return data
 
 
 class FakeClaudePrintProcess:

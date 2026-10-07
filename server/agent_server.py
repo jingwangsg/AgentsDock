@@ -1061,6 +1061,12 @@ HOST_MONITOR_INTERVAL_SECONDS = float(agentsdock_setting("HOST_MONITOR_INTERVAL_
 HOST_HEALTH_MAX_BYTES = int(agentsdock_setting("HOST_HEALTH_MAX_BYTES", str(20 * 1024 * 1024)))
 IDLE_WARN_SECONDS = int(agentsdock_setting("IDLE_WARN_SECONDS", "1800"))
 IDLE_KILL_SECONDS = int(agentsdock_setting("IDLE_KILL_SECONDS", "21600"))
+# While a Codex parent turn waits for its subagents to end, re-read the spawn
+# tree on this cadence: a child terminal the notification observer missed
+# would otherwise hold the chat busy with nothing running on Codex's side.
+CODEX_CHILD_CONTINUATION_PROBE_SECONDS = max(
+    5, int(agentsdock_setting("CODEX_CHILD_CONTINUATION_PROBE_SECONDS", "60")),
+)
 CLAUDE_SDK_PRE_ACK_TIMEOUT_SECONDS = max(
     30.0,
     float(agentsdock_setting("CLAUDE_SDK_PRE_ACK_TIMEOUT_SECONDS", "600")),
@@ -1132,6 +1138,10 @@ CURSOR_GUARD_TEARDOWN_GRACE_SECONDS = max(
 CURSOR_STDERR_TAIL_BYTES = max(
     4_096,
     int(agentsdock_setting("CURSOR_STDERR_TAIL_BYTES", str(64 * 1024))),
+)
+CLAUDE_PRINT_STDERR_TAIL_BYTES = max(
+    4_096,
+    int(agentsdock_setting("CLAUDE_PRINT_STDERR_TAIL_BYTES", str(64 * 1024))),
 )
 CURSOR_STDERR_DRAIN_TIMEOUT_SECONDS = max(
     0.1,
@@ -55364,6 +55374,23 @@ async def claude_run_has_pending_interaction(
         )
 
 
+async def codex_run_has_pending_interaction(
+    session_id: str,
+    thread_id: str,
+) -> bool:
+    """Return whether this Codex thread is waiting for the user's answer."""
+
+    async with CODEX_PENDING_INTERACTIONS_LOCK:
+        return any(
+            str(pending.get("session_id") or "") == session_id
+            and str(pending.get("thread_id") or "") == thread_id
+            and not pending.get("responded")
+            and isinstance(pending.get("future"), asyncio.Future)
+            and not pending["future"].done()
+            for pending in CODEX_PENDING_INTERACTIONS.values()
+        )
+
+
 async def update_claude_pending_session_metadata(session_id: str) -> None:
     async with CLAUDE_PENDING_INTERACTIONS_LOCK:
         count = sum(
@@ -65216,6 +65243,11 @@ async def run_claude_print(
         proc.stdin.write(prompt.encode())
         await proc.stdin.drain()
         proc.stdin.close()
+    # stdio MCP servers inherit the CLI's stderr; a pipe nobody reads fills
+    # and blocks them, and with them the tool call and the turn.
+    stderr_task = asyncio.create_task(drain_bounded_process_stream(
+        proc.stderr, limit_bytes=CLAUDE_PRINT_STDERR_TAIL_BYTES,
+    ))
 
     final_text = ""
     provider_id: str | None = None
@@ -65331,9 +65363,7 @@ async def run_claude_print(
         await terminate_process_tree(proc, grace=0.5)
         await clear_active_process(session_id, expected_run_id=run_id)
 
-    stderr = ""
-    if proc.stderr:
-        stderr = (await proc.stderr.read()).decode("utf-8", "replace").strip()
+    stderr = (await finish_bounded_process_stream(stderr_task)).decode("utf-8", "replace").strip()
     stopped = run_id in STOPPED_RUNS
     if not stopped and not terminal_result_received and not stream_error:
         stream_error = (
@@ -66653,6 +66683,18 @@ async def run_claude_sdk(
             provider_acknowledged
             and idle >= CLAUDE_SDK_IDLE_TIMEOUT_SECONDS
         ):
+            if getattr(current_handle, "awaiting_background_tasks", False) and await manager.release_awaiting_run(
+                session_id, run_id=current_run_id,
+            ):
+                # The model answered long ago; a background task that never
+                # ended is all that kept this run. End it with that answer and
+                # leave the task on the chat's connection.
+                logger.info(
+                    "Claude run released after idle timeout while background tasks keep running session=%s run=%s",
+                    session_id, current_run_id,
+                )
+                last_activity_monotonic = observed_at
+                return False
             stream_error = (
                 "Claude SDK produced no provider activity for "
                 f"{CLAUDE_SDK_IDLE_TIMEOUT_SECONDS:g}s."
@@ -73700,6 +73742,9 @@ async def run_codex_app_server(
                 )
                 last_activity = time.monotonic()
                 first_activity_seen = False
+                idle_warning_emitted = False
+                # The first probe runs at the first idle tick of a child wait.
+                child_wait_probe_at = 0.0
                 notification_task = asyncio.create_task(
                     next_sequenced_notification()
                 )
@@ -73710,7 +73755,7 @@ async def run_codex_app_server(
                     while not turn_completed:
                         if await reconcile_ambiguous_start():
                             break
-                        wait_timeout = None if waiting_for_child_continuation else 5.0
+                        wait_timeout = 5.0
                         if (
                             ambiguous_turn_start
                             and turn is not None
@@ -73751,7 +73796,65 @@ async def run_codex_app_server(
                                 last_activity = time.monotonic()
                                 first_activity_seen = True
                                 continue
+                            if await codex_run_has_pending_interaction(session_id, provider_id):
+                                # Codex is waiting for the user's approval or
+                                # answer on a visible card; that is not idleness.
+                                last_activity = time.monotonic()
+                                first_activity_seen = True
+                                continue
                             idle = time.monotonic() - last_activity
+                            if waiting_for_child_continuation:
+                                # Nothing runs on Codex's side: the parent turn
+                                # ended and AgentsDock sends the continuation
+                                # once the children have. A child terminal the
+                                # observer missed (archived window, replaced
+                                # manager, stale seed) must not hold the chat
+                                # busy forever, so the spawn tree is re-read.
+                                now = time.monotonic()
+                                list_descendants = getattr(manager, "list_descendant_threads", None)
+                                if now >= child_wait_probe_at and active_child_ids and callable(list_descendants):
+                                    child_wait_probe_at = now + CODEX_CHILD_CONTINUATION_PROBE_SECONDS
+                                    try:
+                                        descendants = await list_descendants(provider_id)
+                                    except Exception as exc:
+                                        descendants = []
+                                        logger.warning(
+                                            "codex child-continuation probe failed session=%s thread=%s error=%s",
+                                            session_id, provider_id, concise_error_message(exc),
+                                        )
+                                    ended = {
+                                        str(thread.get("id"))
+                                        for thread in (descendants if isinstance(descendants, list) else [])
+                                        if isinstance(thread, dict)
+                                        and str(thread.get("id") or "") in active_child_ids
+                                        and codex_child_status_from_thread(thread.get("status")) not in {None, "running"}
+                                    }
+                                    if ended:
+                                        logger.info(
+                                            "codex child-continuation probe found ended children session=%s thread=%s children=%s",
+                                            session_id, provider_id, sorted(ended),
+                                        )
+                                        active_child_ids.difference_update(ended)
+                                        if not active_child_ids:
+                                            child_continuation_changes.set()
+                                            continue
+                                if idle >= IDLE_WARN_SECONDS and not idle_warning_emitted:
+                                    await append_event(session_id, "idle_warning", {
+                                        "run_id": current_run_id,
+                                        "idle_seconds": int(idle),
+                                    })
+                                    idle_warning_emitted = True
+                                if idle >= IDLE_KILL_SECONDS:
+                                    # The parent turn did complete; only the
+                                    # children never reported. End as completed.
+                                    logger.warning(
+                                        "codex child-continuation wait exceeded the idle timeout session=%s run=%s children=%s",
+                                        session_id, current_run_id, sorted(active_child_ids),
+                                    )
+                                    terminal_status = "completed"
+                                    turn_completed = True
+                                    break
+                                continue
                             if (
                                 not first_activity_seen
                                 and idle >= CODEX_APP_SERVER_FIRST_ACTIVITY_TIMEOUT_SECONDS
@@ -73786,11 +73889,12 @@ async def run_codex_app_server(
                                         await turn.interrupt()
                                 terminal_status = "failed"
                                 break
-                            if idle >= IDLE_WARN_SECONDS:
+                            if idle >= IDLE_WARN_SECONDS and not idle_warning_emitted:
                                 await append_event(session_id, "idle_warning", {
                                     "run_id": current_run_id,
                                     "idle_seconds": int(idle),
                                 })
+                                idle_warning_emitted = True
                             if idle >= IDLE_KILL_SECONDS:
                                 terminal_error = "Codex app-server turn exceeded the idle timeout."
                                 if turn.turn_id:
@@ -73827,6 +73931,7 @@ async def run_codex_app_server(
                             )
                             last_activity = time.monotonic()
                             first_activity_seen = True
+                            idle_warning_emitted = False
                             async with logical_state_lock:
                                 completed = await handle_notification(notification)
                             if completed:

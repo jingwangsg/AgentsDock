@@ -2,10 +2,12 @@ import asyncio
 import gc
 import json
 import unittest
+from unittest.mock import patch
 from collections.abc import AsyncIterable, AsyncIterator
 from importlib.metadata import version
 from typing import Any
 
+import claude_sdk_client
 from claude_sdk_client import (
     CLAUDE_NON_DURABLE_SCHEDULER_TOOLS,
     CLAUDE_PROVIDER_MCP_SERVER_NAME,
@@ -2198,6 +2200,52 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit({"type": "result", "is_error": False, "result": "emulator is back"})
         result = await asyncio.wait_for(handle.wait_result(), 5)
         self.assertEqual(result["result"], "emulator is back")
+
+    async def test_a_task_completion_that_arrives_before_the_next_run_is_acknowledged_leaves_the_ledger(self) -> None:
+        first = await self.manager.start_run("chat-ledger-gap", "Start the job", run_id="run-1", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "system", "subtype": "task_started", "task_id": "job", "task_type": "local_bash"})
+        await client.emit({"type": "result", "is_error": False, "result": "started"})
+        for _ in range(50):
+            if first.awaiting_background_tasks:
+                break
+            await asyncio.sleep(0)
+        self.assertTrue(await self.manager.release_awaiting_run("chat-ledger-gap", run_id="run-1"))
+        self.assertEqual((await asyncio.wait_for(first.wait_result(), 5))["result"], "started")
+        # The job ends while the next run is queried but not yet acknowledged.
+        client.auto_ack = False
+        second = await self.manager.start_run("chat-ledger-gap", "Next", run_id="run-2", options={}, configuration_key="same")
+        await client.emit({"type": "system", "subtype": "task_notification", "task_id": "job", "status": "completed"})
+        await client.emit(replay_ack(second.correlation_id))
+        await client.emit({"type": "result", "is_error": False, "result": "next done"})
+        self.assertEqual((await asyncio.wait_for(second.wait_result(), 5))["result"], "next done")
+
+    async def test_a_run_whose_tasks_vanish_without_a_wake_ends_after_the_grace(self) -> None:
+        handle = await self.manager.start_run("chat-bg-vanished", "Poll", run_id="run-vanished", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "system", "subtype": "task_started", "task_id": "poll", "task_type": "local_bash"})
+        await client.emit({"type": "result", "is_error": False, "result": "polling"})
+        for _ in range(50):
+            if handle.awaiting_background_tasks:
+                break
+            await asyncio.sleep(0)
+        self.assertTrue(handle.awaiting_background_tasks)
+        with patch.object(claude_sdk_client, "CLAUDE_SDK_AWAITING_WAKE_GRACE_SECONDS", 0.05):
+            # The CLI dropped the shell: its snapshot omits it and no wake follows.
+            await client.emit({"type": "system", "subtype": "background_tasks_changed", "tasks": []})
+            self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "polling")
+
+    async def test_a_result_held_for_an_unreplayed_follow_up_is_delivered_after_the_grace(self) -> None:
+        handle = await self.manager.start_run("chat-steer-lost", "Render", run_id="run-lost", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "assistant", "text": "Rendering…"})
+        self.assertEqual((await asyncio.wait_for(handle.__anext__(), 5))["text"], "Rendering…")
+        client.auto_ack = False
+        self.assertTrue(await self.manager.steer("chat-steer-lost", run_id="run-lost", prompt="Also pong"))
+        with patch.object(claude_sdk_client, "CLAUDE_SDK_STEER_REPLAY_GRACE_SECONDS", 0.05):
+            # The turn ended before the CLI took the follow-up, and the CLI never replays it.
+            await client.emit({"type": "result", "is_error": False, "result": "first"})
+            self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "first")
 
     async def test_queued_message_releases_a_run_that_only_background_tasks_keep_open(self) -> None:
         awaited: list[tuple[str, str]] = []
