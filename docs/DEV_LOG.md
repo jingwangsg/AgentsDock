@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-10-07 — Desktop package 111 and Android build 55 (local package and APK)
+
+- Packages the entries below recorded since package 110 and build 54:
+  Settings → Server gets "Update & redeploy all"; the local server is named
+  "local"; Stop leaves background Claude agents running when the model is
+  idle and a failed health probe is named; the Canvas table of contents rests
+  at the right edge and slides out on hover. Each entry records its own
+  verification. The server-side parts (Stop by release, the stuck-run audit
+  bounds) take effect on a server once it is redeployed.
+  Availability: local package and APK.
+
 ## 2026-10-07 — The Canvas table of contents rests at the right edge and slides out when the pointer reaches it (desktop, source only)
 
 - With a mouse, the floating table of contents now rests off the right edge

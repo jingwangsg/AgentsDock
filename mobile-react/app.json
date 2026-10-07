@@ -26,7 +26,7 @@
     },
     "android": {
       "package": "com.zhengyiluo.agentsdock",
-      "versionCode": 54,
+      "versionCode": 55,
       "usesCleartextTraffic": true,
       "allowBackup": false,
       "softwareKeyboardLayoutMode": "resize",
