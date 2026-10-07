@@ -88796,6 +88796,24 @@ async def complete_working_directory(
 async def create_session(req: CreateSessionRequest) -> dict[str, Any]:
     provider_keys = local_session_ownership.provider_session_keys(req.model_dump(), DEFAULT_BACKEND)
     if provider_keys:
+        owner = next((
+            session for session in STORE.sessions.values()
+            if provider_keys & local_session_ownership.provider_session_keys(session, DEFAULT_BACKEND)
+        ), None)
+        if owner is not None:
+            # A second chat on the same provider conversation would drive one
+            # Codex thread or Claude session from two places; clients open the
+            # owner instead (2026-10-08: a manual resume of an owned thread
+            # created duplicates that looked like nothing had happened).
+            title = str(owner.get("title") or owner.get("id") or "").strip()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This conversation already belongs to the chat \u201c{title}\u201d"
+                    f"{' (archived)' if owner.get('archived') else ''}. "
+                    "Open that chat instead of creating a second one."
+                ),
+            )
         with local_history_import_guard():
             foreign_keys = await asyncio.to_thread(other_local_instance_provider_keys)
             if provider_keys & foreign_keys:

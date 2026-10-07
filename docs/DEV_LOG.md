@@ -1,5 +1,40 @@
 # Public development log
 
+## 2026-10-08 — Resume by session ID says so when the chat that owns it is already open, and the server refuses a second chat on one conversation (server, desktop, Android)
+
+- Typing the ID of a Codex thread (or Claude session) that an existing chat
+  already owns into Resume closed the dialog and showed nothing when that
+  owner was the chat already open: both clients "opened" the owner, which was
+  already on screen. When the client did not recognise the owner, the server
+  created a second chat bound to the same conversation (two chats driving one
+  Codex thread); only another AgentsServer instance's ownership was refused.
+  Found on 2026-10-08 with an oci_dev thread that belonged to the open chat.
+- Desktop and Android now keep the dialog open with "This session already
+  belongs to the chat that is open now, “title”." when the owner is the open
+  chat, and switch to the owner when it is another chat. The desktop dialog
+  matched owners only among the rows it had on hand, and the sidebar's summary
+  rows carry no provider IDs, so an owner that was not the open chat was never
+  found and the ID went to the create step; it now reads the full rows (as
+  Android already did) before deciding. The server answers `POST /api/sessions`
+  with 409 and the owner's title (and whether it is archived) when a provider
+  conversation is already bound to a chat on the same server; the dialogs show
+  that text inline.
+- Verified with new server tests (sibling owner refused and named, archived
+  owner named, unowned ID still creates), new desktop and Android dialog
+  tests (owner open → notice and no request; owner elsewhere, known only
+  from the full rows → switch without a create step; unowned ID → the agent
+  and directory fields after the full rows were read), the existing dialog
+  suites and type checks. Reproduced beforehand against an isolated server
+  with the built desktop app: the dialog closed and nothing changed, and with
+  another chat open the ID went to the create step. After the change, in the
+  built desktop app on that server: from another chat one submit switched to
+  the owner chat and closed the dialog with no new chat on the server; from
+  the owner chat the dialog stayed with the notice; a direct second binding
+  of the thread was refused with 409 naming the owner. Android not re-run in
+  the built app.
+  Availability: source; servers need a redeploy, the client change ships with
+  the next package and APK.
+
 ## 2026-10-07 — Remote tunnels compress, keep a separate connection for the live event streams, and notice a dead hop in 30 s (server, source only)
 
 - The hub's ssh tunnels to a remote server now ask ssh to compress the main

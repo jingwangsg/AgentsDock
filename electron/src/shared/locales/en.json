@@ -3166,5 +3166,6 @@
   "inferenceHub.configFile": "Config file",
   "inferenceHub.keyEnabled": "Enabled",
   "inferenceHub.remoteNoHub": "No local server is installed on this machine, so there are no remote servers to forward to.",
-  "inferenceHub.portSavedLocal": "Port saved."
+  "inferenceHub.portSavedLocal": "Port saved.",
+  "importChats.resume.alreadyOpen": "This session already belongs to the chat that is open now, “{title}”."
 }

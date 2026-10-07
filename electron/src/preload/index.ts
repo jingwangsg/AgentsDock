@@ -235,6 +235,7 @@ const api: AgentsDockAPI = {
     importHistory: (sessionId, force) => ipcRenderer.invoke('sessions:import-history', sessionId, force),
     reloadHistory: sessionId => ipcRenderer.invoke('sessions:reload-history', sessionId),
     listLocal: () => ipcRenderer.invoke('sessions:list-local'),
+    listWithProviderIds: () => ipcRenderer.invoke('sessions:list-with-provider-ids'),
     bulkImport: items => ipcRenderer.invoke('sessions:bulk-import', items),
     export: (sessionId, format) => ipcRenderer.invoke('sessions:export', sessionId, format)
   },

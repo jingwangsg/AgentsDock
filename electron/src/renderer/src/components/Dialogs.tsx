@@ -3086,6 +3086,9 @@ export function ImportChatsDialog() {
   const [resumeCwd, setResumeCwd] = useState('')
   const [resumeNeedsDetails, setResumeNeedsDetails] = useState(false)
   const [resumeNeedsChoice, setResumeNeedsChoice] = useState(false)
+  // The sidebar's summary rows carry no provider IDs; owners found through the
+  // full rows are kept here so the matches below can name them.
+  const [ownerRows, setOwnerRows] = useState<Session[]>([])
   const [resumeError, setResumeError] = useState<string | null>(null)
   const [resumingById, setResumingById] = useState(false)
 
@@ -3163,7 +3166,7 @@ export function ImportChatsDialog() {
       cwd: exactSession.cwd ?? null,
       sessionId: exactSession.id
     }]
-    const matches: ResumeByIdMatch[] = sessions
+    const matches: ResumeByIdMatch[] = [...ownerRows, ...sessions.filter(session => !ownerRows.some(owner => owner.id === session.id))]
       .filter(session => sessionProviderIds(session).includes(providerId))
       .map(session => ({
         key: `existing:${session.id}`,
@@ -3188,7 +3191,7 @@ export function ImportChatsDialog() {
       })
     }
     return matches
-  }, [candidates, resumeId, sessions])
+  }, [candidates, ownerRows, resumeId, sessions])
 
   const searching = query.trim().length > 0
   // One haystack per row (label, folder, provider) so a query such as
@@ -3308,6 +3311,11 @@ export function ImportChatsDialog() {
     try {
       if (match.kind === 'existing' && match.sessionId) {
         setResumingById(false)
+        if (match.sessionId === useAppStore.getState().selectedSessionId) {
+          // Opening the chat that is already open changes nothing on screen; say so.
+          setResumeError(t('importChats.resume.alreadyOpen', { title: match.label }))
+          return
+        }
         useAppStore.getState().setModal('importChats', false)
         await useAppStore.getState().selectSession(match.sessionId)
         return
@@ -3345,6 +3353,27 @@ export function ImportChatsDialog() {
       return
     }
     if (!resumeNeedsDetails) {
+      // No match among the rows on hand. The sidebar rows omit provider IDs, so an
+      // owner is only known once the full rows are read (2026-10-08: an owned thread
+      // went to the create step and the server made a second chat on it).
+      let owners: Session[] = []
+      try {
+        owners = (await window.agentsDock.sessions.listWithProviderIds()).filter(session => sessionProviderIds(session).includes(providerId))
+      } catch (error) {
+        setResumeError(message(error))
+        return
+      }
+      if (owners.length === 1) {
+        setOwnerRows(owners)
+        await resumeMatch({ key: `existing:${owners[0].id}`, kind: 'existing', backend: owners[0].backend, providerId, label: owners[0].title, cwd: owners[0].cwd ?? null, sessionId: owners[0].id })
+        return
+      }
+      if (owners.length > 1) {
+        setOwnerRows(owners)
+        setResumeNeedsChoice(true)
+        setResumeNeedsDetails(false)
+        return
+      }
       setResumeNeedsDetails(true)
       setResumeNeedsChoice(false)
       return
@@ -3401,6 +3430,7 @@ export function ImportChatsDialog() {
               setResumeNeedsDetails(false)
               setResumeNeedsChoice(false)
               setResumeError(null)
+              setOwnerRows([])
             }}
             aria-label={t("ui.Dialogs.ImportChatsDialog.session_id_cb9ac5c")}
             placeholder={t("ui.Dialogs.ImportChatsDialog.paste_a_claude_codex_or_cursor_session_id_70d374e")}

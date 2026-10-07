@@ -415,6 +415,8 @@ export interface AgentsDockAPI {
   }
   sessions: {
     list(): Promise<Session[]>
+    /** Full rows with provider IDs; the summary `list()` omits them. */
+    listWithProviderIds(): Promise<Session[]>
     create(input: CreateSessionInput): Promise<Session>
     resume(input: ResumeSessionInput): Promise<Session>
     update(sessionId: string, patch: UpdateSessionInput, expectedScope?: WorkspaceProfileScope): Promise<Session>

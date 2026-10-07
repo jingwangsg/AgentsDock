@@ -2824,6 +2824,15 @@ export class AppService {
     return session
   }
 
+  /** Resume by ID matches an owner by provider ID; the sidebar's summary rows do not carry one. */
+  async listSessionsWithProviderIds(): Promise<Session[]> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const sessions = await scope.client.sessionsWithProviderIds()
+    this.assertCurrentScope(scope)
+    return sessions
+  }
+
   async listLocalSessions(): Promise<LocalSessionCandidate[]> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)

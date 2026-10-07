@@ -301,6 +301,7 @@ export function registerIpc(
   handle('sessions:import-history', (sessionId, force) => service.importHistory(sessionId, force))
   handle('sessions:reload-history', sessionId => service.reloadHistory(sessionId))
   handle('sessions:list-local', () => service.listLocalSessions())
+  handle('sessions:list-with-provider-ids', () => service.listSessionsWithProviderIds())
   handle('sessions:export', (sessionId, format) => service.exportSession(sessionId, format))
   handle('sessions:bulk-import', items => service.bulkImportSessions(
     parseBulkImportSessionItems(items, LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT)

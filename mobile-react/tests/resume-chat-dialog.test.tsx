@@ -123,6 +123,18 @@ test('an ID that an AgentsDock chat already owns opens that chat without a reque
   assert.equal(calls.opens, 1)
 })
 
+test('an ID owned by the chat that is already open stays in the sheet with a notice', async () => {
+  useAppStore.setState({ selectedSessionId: 'chat-existing' } as never)
+  await render()
+  await type('resume-chat-id', 'thread-known')
+  await press('resume-chat-submit')
+  assert.deepEqual(calls.selects, [])
+  assert.deepEqual(calls.creates, [])
+  assert.equal(calls.closes, 0)
+  assert.match(text(), /already belongs to the chat that is open now/)
+  assert.match(text(), /Existing chat/)
+})
+
 test('an ID owned by a chat whose list row is a summary opens that chat instead of creating a second one', async () => {
   // The server's summary list omits provider IDs; only its full rows name the owner.
   useAppStore.setState({ sessions: [{ ...existing, codex_thread_id: undefined }] } as never)

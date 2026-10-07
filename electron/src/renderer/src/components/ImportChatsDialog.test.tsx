@@ -95,7 +95,7 @@ describe('ImportChatsDialog', () => {
     const bulkImport = vi.fn()
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     const user = userEvent.setup()
     render(<ImportChatsDialog />)
@@ -128,7 +128,7 @@ describe('ImportChatsDialog', () => {
     }])
     const selectSession = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(window, 'agentsDock', { configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI })
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI })
     useAppStore.setState({ refreshSessions: vi.fn().mockResolvedValue(undefined), selectSession })
     const user = userEvent.setup()
     render(<ImportChatsDialog />)
@@ -156,7 +156,7 @@ describe('ImportChatsDialog', () => {
     const selectSession = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     useAppStore.setState({ refreshSessions, selectSession })
     const user = userEvent.setup()
@@ -184,7 +184,7 @@ describe('ImportChatsDialog', () => {
     const selectSession = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, resume } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, resume, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     useAppStore.setState({ refreshSessions, selectSession })
     const user = userEvent.setup()
@@ -194,7 +194,8 @@ describe('ImportChatsDialog', () => {
     await user.type(screen.getByRole('textbox', { name: 'Session ID' }), 'external-thread-id')
     await user.click(screen.getByRole('button', { name: 'Resume' }))
 
-    expect(screen.getByRole('combobox', { name: 'Agent' })).toHaveValue('codex')
+    // The agent field appears once the full rows have confirmed that no chat owns the ID.
+    expect(await screen.findByRole('combobox', { name: 'Agent' })).toHaveValue('codex')
     await user.type(screen.getByRole('textbox', { name: 'Working directory' }), '/work/project')
     await user.click(screen.getByRole('button', { name: 'Resume' }))
 
@@ -207,6 +208,75 @@ describe('ImportChatsDialog', () => {
     expect(trackEvent).toHaveBeenCalledWith('chat_resumed')
     expect(useAppStore.getState().modals.importChats).toBe(false)
     expect(useAppStore.getState().modals.resume).toBe(false)
+  })
+
+  it('an ID owned by the chat that is already open stays in the dialog with a notice', async () => {
+    const listLocal = vi.fn().mockResolvedValue([])
+    const resume = vi.fn()
+    const selectSession = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { listLocal, resume } } as unknown as AgentsDockAPI
+    })
+    const owner = { id: 'owner-chat', title: 'dataset browser', backend: 'codex', folder: 'General', cwd: '/work', codex_thread_id: 'thread-known' }
+    useAppStore.setState({ sessions: [owner] as never, selectedSessionId: 'owner-chat', selectSession })
+    const user = userEvent.setup()
+    render(<ImportChatsDialog />)
+
+    await screen.findByText('No un-imported local chats found.')
+    await user.type(screen.getByRole('textbox', { name: 'Session ID' }), 'thread-known')
+    await user.click(screen.getByRole('button', { name: 'Resume' }))
+
+    expect(await screen.findByText('This session already belongs to the chat that is open now, “dataset browser”.')).toBeInTheDocument()
+    expect(selectSession).not.toHaveBeenCalled()
+    expect(resume).not.toHaveBeenCalled()
+    expect(useAppStore.getState().modals.importChats).toBe(true)
+  })
+
+  it('an ID owned by another chat opens that chat instead of creating a second one', async () => {
+    const listLocal = vi.fn().mockResolvedValue([])
+    const resume = vi.fn()
+    const selectSession = vi.fn().mockResolvedValue(undefined)
+    // The sidebar rows are summaries without provider IDs; only the full rows name the owner.
+    const owner = { id: 'owner-chat', title: 'dataset browser', backend: 'codex', folder: 'General', cwd: '/work' }
+    const other = { id: 'other-chat', title: 'Other', backend: 'claude', folder: 'General', cwd: '/work' }
+    const listWithProviderIds = vi.fn().mockResolvedValue([{ ...owner, codex_thread_id: 'thread-known' }, other])
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { listLocal, resume, listWithProviderIds } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({ sessions: [owner, other] as never, selectedSessionId: 'other-chat', selectSession })
+    const user = userEvent.setup()
+    render(<ImportChatsDialog />)
+
+    await screen.findByText('No un-imported local chats found.')
+    await user.type(screen.getByRole('textbox', { name: 'Session ID' }), 'thread-known')
+    await user.click(screen.getByRole('button', { name: 'Resume' }))
+
+    await waitFor(() => expect(selectSession).toHaveBeenCalledWith('owner-chat'))
+    expect(listWithProviderIds).toHaveBeenCalledTimes(1)
+    expect(resume).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Agent/)).not.toBeInTheDocument()
+    expect(useAppStore.getState().modals.importChats).toBe(false)
+  })
+
+  it('an ID nobody owns asks for the agent and directory only after the full rows were checked', async () => {
+    const listLocal = vi.fn().mockResolvedValue([])
+    const listWithProviderIds = vi.fn().mockResolvedValue([{ id: 'other-chat', title: 'Other', backend: 'claude', folder: 'General', cwd: '/work', claude_session_id: 'elsewhere' }])
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { listLocal, listWithProviderIds } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({ sessions: [{ id: 'other-chat', title: 'Other', backend: 'claude', folder: 'General', cwd: '/work' }] as never, selectedSessionId: 'other-chat' })
+    const user = userEvent.setup()
+    render(<ImportChatsDialog />)
+
+    await screen.findByText('No un-imported local chats found.')
+    await user.type(screen.getByRole('textbox', { name: 'Session ID' }), 'thread-new')
+    await user.click(screen.getByRole('button', { name: 'Resume' }))
+
+    await waitFor(() => expect(listWithProviderIds).toHaveBeenCalledTimes(1))
+    expect(useAppStore.getState().modals.importChats).toBe(true)
   })
 
   it('does not call local import routes without API 15 and the version-1 capability', async () => {
@@ -237,7 +307,7 @@ describe('ImportChatsDialog', () => {
     const bulkImport = vi.fn().mockResolvedValue(failures)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     const user = userEvent.setup()
     render(<ImportChatsDialog />)
@@ -323,7 +393,7 @@ describe('ImportChatsDialog', () => {
     const bulkImport = vi.fn().mockResolvedValue(outcome)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     const user = userEvent.setup()
     render(<ImportChatsDialog />)
@@ -349,7 +419,7 @@ describe('ImportChatsDialog', () => {
     const bulkImport = vi.fn().mockResolvedValue(outcome)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     const user = userEvent.setup()
     render(<ImportChatsDialog />)
@@ -383,7 +453,7 @@ describe('ImportChatsDialog', () => {
     const bulkImport = vi.fn().mockResolvedValue(outcome)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     const user = userEvent.setup()
     render(<ImportChatsDialog />)
@@ -409,7 +479,7 @@ describe('ImportChatsDialog', () => {
     const bulkImport = vi.fn(() => pending.promise)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     const user = userEvent.setup()
     render(<ImportChatsDialog />)
@@ -462,7 +532,7 @@ describe('ImportChatsDialog', () => {
     const bulkImport = vi.fn(() => pending.promise)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     const user = userEvent.setup()
     render(<ImportChatsDialog />)
@@ -501,7 +571,7 @@ describe('ImportChatsDialog', () => {
     const bulkImport = vi.fn().mockResolvedValue(outcome)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     const user = userEvent.setup()
     render(<ImportChatsDialog />)
@@ -532,7 +602,7 @@ describe('ImportChatsDialog', () => {
     const bulkImport = vi.fn(() => pending.promise)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     const user = userEvent.setup()
     render(<ImportChatsDialog />)
@@ -588,7 +658,7 @@ describe('ImportChatsDialog', () => {
     const selectSession = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
-      value: { sessions: { listLocal, bulkImport } } as unknown as AgentsDockAPI
+      value: { sessions: { listLocal, bulkImport, listWithProviderIds: vi.fn().mockResolvedValue([]) } } as unknown as AgentsDockAPI
     })
     useAppStore.setState({ refreshSessions, selectSession })
     const user = userEvent.setup()

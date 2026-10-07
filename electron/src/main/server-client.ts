@@ -950,6 +950,8 @@ export class AgentServerClient {
     })
   }
   async sessions(): Promise<Session[]> { return (await this.get<{ sessions: Session[] }>('/api/sessions?summary=true')).sessions }
+  /** Full rows carry each chat's provider IDs, which the summary list omits. */
+  async sessionsWithProviderIds(): Promise<Session[]> { return (await this.get<{ sessions: Session[] }>('/api/sessions')).sessions }
   async surfaces(): Promise<Surface[]> { return (await this.get<{ surfaces: Surface[] }>('/api/surfaces')).surfaces }
   async createSurface(input: CreateSurfaceInput): Promise<Surface> { return (await this.post<{ surface: Surface }>('/api/surfaces', input)).surface }
   async updateSurface(surfaceId: string, patch: UpdateSurfaceInput): Promise<Surface> {

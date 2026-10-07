@@ -261,6 +261,11 @@ function ScopedResumeChatDialog({ visible, onClose, onOpened, connection, active
   const resumeMatch = async (match: ResumeByIdMatch) => {
     if (activeOperationEpoch.current !== null) return
     if (match.kind === 'existing' && match.sessionId) {
+      if (useAppStore.getState().selectedSessionId === match.sessionId) {
+        // Opening the chat that is already open changes nothing on screen; say so.
+        setResumeError(`This session already belongs to the chat that is open now, “${match.label}”.`)
+        return
+      }
       openChat(match.sessionId)
       return
     }
