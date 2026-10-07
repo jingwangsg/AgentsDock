@@ -1,5 +1,19 @@
 # Public development log
 
+## 2026-10-07 — Desktop package 110 and Android build 53 (local package and APK)
+
+- Packages the five entries below, recorded since package 109 and build 52:
+  a message sent while Claude works no longer stops its command; a remote
+  server's SSH host and install directory can be edited; editing a message
+  after stopping Claude rewinds to that message; Canvas previews get a
+  floating table of contents; the mobile app can resume a provider session or
+  import CLI chats. Each entry records its own verification. The server-side
+  parts take effect on a server once it is redeployed.
+- Not yet exercised in the built apps: pressing Send now on a queued message
+  while Claude runs a command (accepted against the server with the real
+  Claude CLI only).
+  Availability: local package and APK.
+
 ## 2026-10-07 — The mobile app can resume a provider session or import CLI chats from the server (Android and iOS source)
 
 - The desktop sidebar's Resume button opens Import Chat: resume one Claude,
