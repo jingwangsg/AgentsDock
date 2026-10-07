@@ -2130,6 +2130,12 @@ export interface RemoteServerDeployInput {
   name?: string
 }
 
+/** A new place for one of the hub's remotes; without an install dir a new host takes its default one. */
+export interface RemoteServerMoveInput {
+  sshHost: string
+  installDir?: string
+}
+
 /** Registers an install another hub deployed; the hub uploads nothing and never restarts it. */
 export interface RemoteServerAttachInput {
   sshHost: string

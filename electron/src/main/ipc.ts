@@ -253,6 +253,11 @@ export function registerIpc(
   handleWithEvent('remote-servers:attach', (event, input) => service.attachRemoteServerViaHub(input, progress => {
     if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
   }))
+  // The add form's channel: the edit form shows a move's log the same way, and a move holds the hub's one
+  // deploy slot, so no add runs beside it.
+  handleWithEvent('remote-servers:move', (event, profileId, input) => service.moveHubRemote(profileId, input, progress => {
+    if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
+  }))
   handle('remote-servers:cancel', () => service.cancelRemoteDeploy())
   handle('remote-servers:remove', profileId => service.removeHubRemote(profileId))
   // Its own progress channel: an add-server deploy's log must not receive a redeploy's lines.

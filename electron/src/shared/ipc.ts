@@ -77,6 +77,7 @@ import type {
   QueuedTurn,
   RemoteServerAttachInput,
   RemoteServerDeployInput,
+  RemoteServerMoveInput,
   ResumeSessionInput,
   RuntimeCatalog,
   SendTurnInput,
@@ -383,6 +384,7 @@ export interface AgentsDockAPI {
     attach(input: RemoteServerAttachInput): Promise<PublicServerProfile>
     cancel(): Promise<void>
     remove(profileId: string): Promise<void>
+    move(profileId: string, input: RemoteServerMoveInput): Promise<void>
     redeploy(profileId: string, force: boolean): Promise<{ redeployed: boolean; running: number | null }>
   }
   /** The NV Inference Hub proxy on this machine: its config and LaunchAgent, plus the hub's reverse forward of its port. */

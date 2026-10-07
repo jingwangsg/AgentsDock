@@ -41,6 +41,32 @@
   Availability: source; servers need a redeploy, and the desktop and Android
   timeline change ships with their next package and APK.
 
+## 2026-10-07 — A remote server's SSH host and install directory can be edited (desktop)
+
+- The Edit form of a server in Settings → Server offered only the local name.
+  For servers the local hub deploys over SSH it now also shows the SSH host,
+  prefilled, and the install directory. An empty install directory keeps the
+  current one; with a new host it uses that host's default. Saving a new host
+  or directory asks the hub to move the server: the hub deploys AgentsServer
+  at the new location, this server connects to the new install, and the form
+  shows the deploy log. Chats stay with the previous install, which keeps
+  running. If the deploy fails, the hub already points the server at the new
+  location, and the error says that Redeploy retries there. The local
+  server's own address is not editable.
+- The hub already supported this move (`PATCH /api/admin/remote-servers/{id}`);
+  the desktop client now calls it. No server change.
+- Verified with new desktop tests: the client's request, a move through the
+  service whose deploy fails, the edit form, and Save after an add whose
+  switch failed, which no longer starts a move. The type check passes.
+  Accepted against an isolated hub: the desktop client's PATCH was accepted,
+  an unchanged host returned no job, and a move to an unresolvable host
+  updated the hub's registry and returned the deploy log and the SSH error.
+  In the built app with an isolated profile on the local hub, the form showed
+  the SSH host and install directory for remotes and only the name for the
+  local server, and the new IPC call returned the service's rejection for the
+  local server. Not exercised: a completed move to a reachable host, and
+  Cancel during a move. Availability: not yet packaged.
+
 ## 2026-10-07 — A standalone job's run chat stays out of the sidebar until it is opened or archived (desktop package 109, Android build 52)
 
 - When a standalone scheduled job fired while its chat was busy, the run chat

@@ -87,6 +87,7 @@ import type {
   RemoteServerAttachInput,
   RemoteServerDeployInput,
   RemoteServerDeployJob,
+  RemoteServerMoveInput,
   ResumeSessionInput,
   RuntimeCatalog,
   ServerRestartRequest,
@@ -940,6 +941,13 @@ export class AgentServerClient {
   }
   startRemoteRedeploy(remoteId: string): Promise<{ job_id: string }> {
     return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}/redeploy`, { method: 'POST' })
+  }
+  /** Same id, new host or install dir: the hub deploys there and reports the job, or null when nothing moved. */
+  moveRemoteServer(remoteId: string, input: RemoteServerMoveInput): Promise<{ job_id: string | null }> {
+    return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ ssh_host: input.sshHost, install_dir: input.installDir })
+    })
   }
   async sessions(): Promise<Session[]> { return (await this.get<{ sessions: Session[] }>('/api/sessions?summary=true')).sessions }
   async surfaces(): Promise<Surface[]> { return (await this.get<{ surfaces: Surface[] }>('/api/surfaces')).surfaces }
@@ -2620,7 +2628,7 @@ export class AgentServerClient {
     const target = new URL(configurationURL(configuration, path))
     const server = new URL(configuration.baseURL)
     const serverPrefix = server.pathname === '/' ? '' : server.pathname
-    const method = securePeerMethod(init.method ?? 'GET', ['GET', 'POST', 'PUT', 'DELETE'])
+    const method = securePeerMethod(init.method ?? 'GET', ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
     if (!isPrivilegedNativeControlTarget(target, server, serverPrefix, method)) {
       throw new Error('Privileged native control route is invalid.')
     }
@@ -3226,7 +3234,7 @@ function multipartFileBody(
   })())
 }
 
-type SecurePeerMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'HEAD'
+type SecurePeerMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD'
 
 interface SecurePeerNodeRequest {
   method: SecurePeerMethod
@@ -3374,7 +3382,7 @@ function isPrivilegedNativeControlTarget(
   if (path === '/api/admin/remote-servers/deploy') return !target.search && method === 'POST'
   if (path === '/api/admin/remote-servers/attach') return !target.search && method === 'POST'
   if (path === '/api/admin/remote-servers/order') return !target.search && method === 'PUT'
-  if (/^\/api\/admin\/remote-servers\/[A-Za-z0-9_-]{1,128}$/.test(path)) return !target.search && method === 'DELETE'
+  if (/^\/api\/admin\/remote-servers\/[A-Za-z0-9_-]{1,128}$/.test(path)) return !target.search && (method === 'DELETE' || method === 'PATCH')
   if (/^\/api\/admin\/remote-servers\/[A-Za-z0-9_-]{1,128}\/redeploy$/.test(path)) return !target.search && method === 'POST'
   if (path === '/api/admin/remote-servers') return !target.search && method === 'GET'
   return !target.search && method === 'POST' && (

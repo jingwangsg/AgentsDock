@@ -9424,6 +9424,33 @@ describe('server profile lifecycle', () => {
     await expect(service.redeployHubRemote(undefined as unknown as string, true, () => undefined)).rejects.toThrow('Unknown server profile.')
   })
 
+  it('moves a hub remote through the hub, and its profile follows the new host even when the deploy fails', async () => {
+    const moved = { ...hubRemote('r1'), ssh_host: 'oci@new-cluster' }
+    const hub = Object.assign(fakeClient(), {
+      moveRemoteServer: vi.fn(async () => ({ job_id: 'job-1' })),
+      listRemoteServers: vi.fn(async () => ({ servers: [moved] })),
+      remoteDeployStatus: vi.fn(async () => ({
+        job_id: 'job-1', phase: 'connect', done: true, error: 'No space left on device', server: null,
+        log: [{ phase: 'connect', message: 'Probing oci@new-cluster…' }]
+      }))
+    })
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [fakeClient(), fakeClient()],
+      [DEFAULT_SERVER_URL]: [hub]
+    })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const remote = settings.addProfile({ name: 'r1', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1`, sshHost: 'r1.example' })
+    const progress: string[] = []
+
+    await expect(service.moveHubRemote(remote.id, { sshHost: 'oci@new-cluster', installDir: '/lustre/agentsdock' }, value => progress.push(value.message)))
+      .rejects.toThrow('No space left on device The hub already points this server at the new place; Redeploy retries the deploy there.')
+    expect(hub.moveRemoteServer).toHaveBeenCalledWith('r1', { sshHost: 'oci@new-cluster', installDir: '/lustre/agentsdock' })
+    expect(progress).toEqual(['Probing oci@new-cluster…'])
+    expect(settings.getProfile(remote.id)?.sshHost).toBe('oci@new-cluster')
+    expect(hub.dispose).toHaveBeenCalledOnce()
+    await expect(service.moveHubRemote('a', { sshHost: 'elsewhere' }, () => undefined)).rejects.toThrow('Only servers the hub manages can be moved.')
+  })
+
   it('adds a remote through the hub while another server is active', async () => {
     const hub = Object.assign(fakeClient(), {
       startRemoteDeploy: vi.fn(async () => ({ job_id: 'job-1' })),

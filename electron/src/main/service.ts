@@ -103,6 +103,7 @@ import type {
   RemoteServerAttachInput,
   RemoteServerDeployInput,
   RemoteServerDeployJob,
+  RemoteServerMoveInput,
   QueuedTurn,
   ResumeSessionInput,
   RuntimeCatalog,
@@ -1750,6 +1751,44 @@ export class AppService {
     }
     this.requestInactiveProfileHealthSweep()
     return { redeployed: true, running: 0 }
+  }
+
+  /**
+   * Server list "Edit" with a new SSH host or install dir: the hub moves one of its remotes under the same id
+   * and deploys there (server/remote_servers.py); chats stay with the previous install. The new install's
+   * identity is adopted like any identity change behind the hub. Cancel stops it as it stops an add.
+   */
+  async moveHubRemote(
+    profileId: string,
+    input: RemoteServerMoveInput,
+    onProgress: (value: ServerSetupProgress) => void
+  ): Promise<void> {
+    const hub = this.hubProfile()
+    // An undefined id would fall back to the active profile in SettingsStore.
+    if (typeof profileId !== 'string' || !this.settings.getProfile(profileId)) throw new Error('Unknown server profile.')
+    const serverUrl = this.settings.serverUrl(profileId)
+    if (!hub || !isHubRemoteUrl(hub.serverUrl, serverUrl)) throw new Error('Only servers the hub manages can be moved.')
+    if (this.remoteDeploy) throw new Error('A remote server deployment is already running.')
+    // The hub profile's own token: a rotated hub token is not copied into existing remote profiles.
+    const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+    try {
+      const remoteId = serverUrl.slice(`${normalizeServerURL(hub.serverUrl)}/api/remote/`.length)
+      const { job_id: jobId } = await client.moveRemoteServer(remoteId, input)
+      // No job: the hub already has this host and install dir.
+      if (!jobId) return
+      this.remoteDeploy = { client, jobId, cancelled: false }
+      const job = await this.followHubJob(client, jobId, onProgress)
+      // The hub moved its entry before deploying, so the profile follows even a failed deploy. A reconcile
+      // in flight may have listed the hub before the move; joining it would keep the old host.
+      await this.hubReconcile?.catch(() => undefined)
+      await this.reconcileHubRemotes({ profileId: hub.id, serverUrl: hub.serverUrl, client }, () => true)
+      // Saving the same place again would change nothing on the hub.
+      if (job.error) throw new Error(`${job.error} The hub already points this server at the new place; Redeploy retries the deploy there.`)
+    } finally {
+      if (this.remoteDeploy?.client === client) this.remoteDeploy = null
+      client.dispose()
+    }
+    this.requestInactiveProfileHealthSweep()
   }
 
   async updateServer(profileId: string, patch: UpdateServerProfilePatch): Promise<PublicServerProfile> {

@@ -386,6 +386,8 @@
   "composer.providerCommands.retry": "重试",
   "serverProfile.localNameHint": "仅用作本机应用中的名称；不会重命名 Team Network 中的服务端。",
   "serverProfile.nameOnThisMac": "这台 Mac 上的名称",
+  "serverProfile.installDirUnchanged": "留空不变；换主机时用新主机的默认目录",
+  "serverProfile.moveHint": "保存新的 SSH 主机或安装目录后，会在新位置部署 AgentsServer 并改连新安装。对话留在原安装中，原安装继续运行。",
   "serverUpdate.install": "安装 {version}",
   "serverUpdate.retry": "重试更新（{version}）",
   "serverUpdate.retryWhenIdle": "空闲时重试更新（{version}）",

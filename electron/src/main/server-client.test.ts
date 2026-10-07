@@ -2740,6 +2740,22 @@ describe('AgentServerClient live stream', () => {
     expect(calls).toEqual([{ method: 'POST', url: '/api/admin/remote-servers/abc123def456/redeploy' }])
   })
 
+  it('moves a remote through the hub admin route with the snake_case body', async () => {
+    const calls: Array<{ method: string; url: string; body: string }> = []
+    await withLocalHTTPServer(async (request, response) => {
+      calls.push({ method: request.method ?? '', url: request.url ?? '', body: await incomingBody(request) })
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify({ job_id: 'job-3' }))
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'chat-secret')
+      await expect(client.moveRemoteServer('abc123def456', { sshHost: 'oci@new-cluster' })).resolves.toEqual({ job_id: 'job-3' })
+    })
+
+    expect(calls.map(call => [call.method, call.url])).toEqual([['PATCH', '/api/admin/remote-servers/abc123def456']])
+    // Without an install dir the hub picks the new host's default.
+    expect(JSON.parse(calls[0].body)).toEqual({ ssh_host: 'oci@new-cluster' })
+  })
+
   it('rejects a non-200 response from the Team Hub host-enable control', async () => {
     await withLocalHTTPServer((_request, response) => {
       response.statusCode = 201

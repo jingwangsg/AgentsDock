@@ -81,6 +81,7 @@ describe('ServerManagement', () => {
   const remoteAttach = vi.fn()
   const remoteCancel = vi.fn()
   const remoteRemove = vi.fn()
+  const remoteMove = vi.fn()
   const remoteRedeploy = vi.fn()
   const pairingUrl = vi.fn()
   const copyToken = vi.fn()
@@ -97,6 +98,7 @@ describe('ServerManagement', () => {
     remoteAttach.mockReset().mockResolvedValue(gb300)
     remoteCancel.mockReset().mockResolvedValue(undefined)
     remoteRemove.mockReset().mockResolvedValue(undefined)
+    remoteMove.mockReset().mockResolvedValue(undefined)
     remoteRedeploy.mockReset()
     pairingUrl.mockReset().mockResolvedValue('http://nvmac.tail46daa8.ts.net:7850')
     copyToken.mockReset().mockResolvedValue(true)
@@ -109,7 +111,7 @@ describe('ServerManagement', () => {
       configurable: true,
       value: {
         servers: { list, update, remove, reorder },
-        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove, redeploy: remoteRedeploy },
+        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove, move: remoteMove, redeploy: remoteRedeploy },
         hub: { pairingUrl, copyToken, startLocalServer }
       } as unknown as AgentsDockAPI
     })
@@ -163,6 +165,22 @@ describe('ServerManagement', () => {
     expect(remoteDeploy).not.toHaveBeenCalled()
     expect(useAppStore.getState().activeProfileId).toBe('gb300')
     expect(screen.queryByRole('button', { name: 'Add & switch' })).not.toBeInTheDocument()
+  })
+
+  it('does not move a just-added remote when Save follows a failed switch', async () => {
+    list.mockResolvedValue([hub, gb300])
+    useAppStore.setState({ profiles: [hub], activeProfileId: hub.id })
+    switchServer.mockResolvedValueOnce(false)
+    const user = userEvent.setup()
+    render(<ServerManagement addRequest={1} />)
+
+    await user.type(screen.getByLabelText('SSH host'), 'nv_gb300')
+    await user.click(screen.getByRole('button', { name: 'Add & switch' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not switch to it')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull())
+    expect(remoteMove).not.toHaveBeenCalled()
   })
 
   it('cancels an in-flight deployment through the hub', async () => {
@@ -473,6 +491,39 @@ describe('ServerManagement', () => {
 
     await waitFor(() => expect(update).toHaveBeenCalledWith('alpha', { name: 'Renamed Alpha' }))
     expect(switchServer).not.toHaveBeenCalled()
+  })
+
+  it('moves a hub remote only when its edit form gets a new SSH host or install directory', async () => {
+    useAppStore.setState({ profiles: [hub, gb300], activeProfileId: hub.id })
+    list.mockResolvedValue([hub, gb300])
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+
+    await user.click(screen.getByRole('button', { name: 'Edit GB300' }))
+    expect(screen.getByLabelText('SSH host')).toHaveValue('nv_gb300')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    // Nothing moved: the remote stays where it is.
+    await waitFor(() => expect(screen.queryByLabelText('SSH host')).toBeNull())
+    expect(remoteMove).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Edit GB300' }))
+    await user.clear(screen.getByLabelText('SSH host'))
+    await user.type(screen.getByLabelText('SSH host'), 'oci@new-cluster')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(remoteMove).toHaveBeenCalledExactlyOnceWith('gb300', { sshHost: 'oci@new-cluster', installDir: undefined }))
+    await waitFor(() => expect(screen.queryByLabelText('SSH host')).toBeNull())
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('shows no SSH host or install directory when editing the local server', async () => {
+    useAppStore.setState({ profiles: [hub, gb300], activeProfileId: hub.id })
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+
+    await user.click(screen.getByRole('button', { name: 'Edit This Mac' }))
+    expect(screen.getByLabelText('Name on this Mac')).toHaveValue('This Mac')
+    expect(screen.queryByLabelText('SSH host')).toBeNull()
   })
 
   it('keeps an active identity reset pending until the guarded store switch completes', async () => {
