@@ -27,7 +27,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 from urllib.parse import parse_qsl, urlencode
 
 import httpx
@@ -1563,12 +1563,40 @@ def register_remote_server_routes(
                 or (request.method == "GET" and DOWNLOAD_PATH_RE.fullmatch(path) is not None))
         port = manager.bulk_port(server) if bulk else server.local_port
         url = f"http://127.0.0.1:{port}/{path}" + (f"?{query}" if query else "")
+        body_sent = asyncio.Event()
         content = None
         if request.method not in ("GET", "HEAD") and (request.headers.get("content-length") not in (None, "0") or "transfer-encoding" in request.headers):
-            content = request.stream()
+            async def body() -> AsyncIterator[bytes]:
+                async for chunk in request.stream():
+                    yield chunk
+                body_sent.set()
+            content = body()
+        else:
+            body_sent.set()
+
+        async def client_left() -> None:
+            # The body owns the receive channel until it has gone upstream.
+            await body_sent.wait()
+            while (await request.receive())["type"] != "http.disconnect":
+                pass
+
+        # The upstream request lives only as long as its client. The read timeout is
+        # None, so a remote that accepts and never answers (a frozen server behind its
+        # ssh forward) would otherwise pin one hub socket per abandoned request.
         upstream_request = manager.http.build_request(request.method, url, headers=headers, content=content)
+        sending = asyncio.ensure_future(manager.http.send(upstream_request, stream=True))
+        leaving = asyncio.ensure_future(client_left())
         try:
-            upstream = await manager.http.send(upstream_request, stream=True)
+            await asyncio.wait((sending, leaving), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            leaving.cancel()
+            answered = sending.done()
+            if not answered:
+                sending.cancel()  # closes its upstream connection
+        if not answered:
+            return Response(status_code=499)
+        try:
+            upstream = sending.result()
         except ClientDisconnect:
             # The client dropped its own request body mid-way (the desktop abandons an
             # upload whose chat closed). Nobody is left to receive an answer; 499 is

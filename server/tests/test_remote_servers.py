@@ -1222,6 +1222,46 @@ time.sleep(30)
 
         asyncio.run(main())
 
+    def test_hub_proxy_closes_the_upstream_request_when_its_client_leaves(self) -> None:
+        # A frozen remote: its ssh forward accepts the connection, the server never answers.
+        # The hub kept one upstream socket per abandoned request (clients retry their polls),
+        # until it ran out of file descriptors and stopped accepting anyone.
+        async def main() -> None:
+            manager, _remote, _dead, hub_port, close = await hub_with_fake(self.tmp_path)
+            expected_tail = b""
+            arrived, upstream_closed = asyncio.Event(), asyncio.Event()
+
+            async def frozen_remote(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+                seen = b""
+                while chunk := await reader.read(65536):
+                    seen += chunk
+                    if seen.endswith(b"\r\n\r\n" + expected_tail):
+                        arrived.set()
+                upstream_closed.set()
+                writer.close()
+
+            frozen_server = await asyncio.start_server(frozen_remote, "127.0.0.1", 0)
+            frozen = make_server(id="f0f0f0f0f0f0", name="frozen", local_port=frozen_server.sockets[0].getsockname()[1])
+            manager.servers[frozen.id] = frozen
+            try:
+                with self.assertNoLogs("uvicorn.error", level="ERROR"):
+                    for head, expected_tail in ((f"GET /api/remote/{frozen.id}/api/health HTTP/1.1\r\n", b""),
+                                                (f"POST /api/remote/{frozen.id}/api/sessions/sess_1/turns HTTP/1.1\r\nContent-Length: 8\r\n", b"body-end")):
+                        arrived.clear()
+                        upstream_closed.clear()
+                        _reader, writer = await asyncio.open_connection("127.0.0.1", hub_port)
+                        writer.write(f"{head}Host: hub\r\nX-AgentsDock-Token: {HUB_TOKEN}\r\n\r\n".encode() + expected_tail)
+                        await writer.drain()
+                        await asyncio.wait_for(arrived.wait(), 5)
+                        writer.close()
+                        await writer.wait_closed()
+                        await asyncio.wait_for(upstream_closed.wait(), 2)
+            finally:
+                frozen_server.close()
+                await close()
+
+        asyncio.run(main())
+
     def test_hub_pool_forgets_idle_upstream_connections_before_uvicorn_does(self) -> None:
         # A remote AgentsServer runs uvicorn with its default idle keep-alive. The hub
         # must drop idle pooled connections well before that timer fires, otherwise a

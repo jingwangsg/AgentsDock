@@ -1,5 +1,32 @@
 # Public development log
 
+## 2026-10-07 — The hub no longer runs out of file descriptors when a remote stops answering (server)
+
+- When a remote AgentsServer stopped answering while its ssh forward still
+  accepted connections, every request the hub proxied to it waited for a
+  response with no read deadline, and kept waiting after the client gave up.
+  The clients' periodic polls pinned about nine more upstream sockets a
+  minute; after 23 minutes the hub reached its 256-descriptor limit, stopped
+  accepting connections and could not open its databases, so local chats and
+  the other remotes became unreachable as well.
+- A proxied request now lives only as long as its client. Once the request
+  body has been forwarded, the hub watches for the client's disconnect; if it
+  comes before the remote answers, the hub cancels the upstream request, which
+  closes its connection. Responses that have started streaming are unchanged.
+- Verified with a new regression test (an upstream that accepts and never
+  answers: after the client leaves, a GET and a POST with a body each close
+  their upstream connection; on main the connection stays open) and the
+  remote proxy test modules (45 and 77 pass). Accepted against isolated
+  servers built from main and from this change, with a remote whose port
+  accepts and never answers: 30 requests abandoned after 0.3 s left 30 open
+  upstream connections on main and none with the change, and main's shutdown
+  then had to cancel 30 hung handlers. Through the changed server, ordinary
+  traffic to an answering remote (GET with a query, a 70 KB upload, a JSON
+  POST, a streamed response, HEAD) returned the expected statuses and bodies.
+  The desktop app was not driven; its requests reach the hub the same way and
+  close their connection at the client deadline. Server only; not deployed.
+  The hub needs a restart to pick it up.
+
 ## 2026-10-07 — Android offers "New Cursor chat" only on a host whose Cursor CLI is ready (Android build 51)
 
 - A folder's menu on Android listed "New Cursor chat" on every server, because
