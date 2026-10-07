@@ -16,6 +16,19 @@ export function sessionSection(session: Session): string {
   return session.archived ? 'Archived' : session.pinned ? 'Pinned' : session.folder?.trim() || 'General'
 }
 
+/**
+ * A chat that a standalone scheduled job opened because its own chat was busy. It is reached from
+ * the job card in the chat that scheduled it, and archived when the run ends, so the sidebar lists
+ * it only while it is the open chat or once archived.
+ */
+export function isHiddenRunChat(session: Pick<Session, 'id' | 'archived' | 'scheduled_job_run'>, selectedSessionId: string | null | undefined): boolean {
+  return Boolean(session.scheduled_job_run) && !session.archived && session.id !== selectedSessionId
+}
+
+export function sidebarVisibleSessions(sessions: Session[], selectedSessionId: string | null | undefined): Session[] {
+  return sessions.filter(session => !isHiddenRunChat(session, selectedSessionId))
+}
+
 export function orderedSessionSections(
   sessions: Session[],
   folderOrder: string[],

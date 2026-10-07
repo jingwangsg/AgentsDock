@@ -994,6 +994,7 @@
   "timeline.job.bundledHistory.other": "Showing the {count} recent runs bundled with this chat. Update the server to load all {total} previous runs.",
   "timeline.job.historical": "schedule no longer exists · ",
   "timeline.job.openRunChat": "Open run chat",
+  "timeline.job.runningInOwnChat": "Running in its own chat · Open",
   "timeline.job.previousRuns": "Previous runs {count}",
   "timeline.minimap.agentTurn": "Agent turn",
   "timeline.minimap.noPreview": "No text preview",

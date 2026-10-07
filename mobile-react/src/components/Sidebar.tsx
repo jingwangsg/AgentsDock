@@ -8,7 +8,7 @@ import { useAppStore } from '../store/useAppStore'
 import { radius, usePalette } from '../theme'
 import type { Backend, Session, Surface, SurfaceKind, TimelineSearchResult } from '../types'
 import { backendLabel, formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
-import { compareSessions, orderedSessionSections, resolveSidebarDrop, sessionSection } from '../lib/session-order'
+import { sidebarVisibleSessions, compareSessions, orderedSessionSections, resolveSidebarDrop, sessionSection } from '../lib/session-order'
 import { readyChatBackends } from '../lib/runtime-catalog'
 import { promptSurfaceRename, surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { sessionNeedsProviderInteraction, sessionPendingInteractionCount } from '../lib/claude-controls'
@@ -166,10 +166,11 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     }
     const matchedByContent = new Set(contentResults.keys())
     const clean = query.trim().toLowerCase()
+    const visible = sidebarVisibleSessions(sessions, selected)
     const filtered = clean
-      ? sessions.filter(session => session.title.toLowerCase().includes(clean) || matchedByContent.has(session.id))
+      ? visible.filter(session => session.title.toLowerCase().includes(clean) || matchedByContent.has(session.id))
           .sort((a, b) => Number(b.title.toLowerCase().includes(clean)) - Number(a.title.toLowerCase().includes(clean)))
-      : sessions
+      : visible
     const sections = orderedSessionSections(filtered, folderOrder, true, !clean)
     // Tabs are not searched. A folder holding only tabs is still listed, ahead of Archived.
     if (!clean) {
@@ -200,7 +201,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
         ])),
       ]
     })
-  }, [collapsed, folderOrder, query, searchResults, sessions, surfaces])
+  }, [collapsed, folderOrder, query, searchResults, sessions, surfaces, selected])
   const openSessionRow = useCallback((session: Session, result?: TimelineSearchResult) => {
     if (!sessionScopeIsCurrent(profileScope, session.id) || openingSearchResult.current) return
     dismissSearchKeyboard()

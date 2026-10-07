@@ -994,6 +994,7 @@
   "timeline.job.bundledHistory.other": "显示此会话附带的最近 {count} 次运行。更新服务端以加载全部 {total} 次历史运行。",
   "timeline.job.historical": "定时任务已不存在 · ",
   "timeline.job.openRunChat": "打开运行会话",
+  "timeline.job.runningInOwnChat": "正在独立运行 · 打开",
   "timeline.job.previousRuns": "之前的运行 {count} 次",
   "timeline.minimap.agentTurn": "Agent 轮次",
   "timeline.minimap.noPreview": "无文本预览",

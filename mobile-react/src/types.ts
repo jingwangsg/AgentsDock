@@ -413,6 +413,8 @@ export interface Session {
   pinned?: boolean | null
   pinned_at?: string | null
   archived?: boolean | null
+  /** Present on a chat started by one standalone scheduled-job run; names the job and the chat that scheduled it. */
+  scheduled_job_run?: { job_id: string; session_id: string } | null
   archived_at?: string | null
   sort_order?: number | null
   created_at?: string | null
@@ -991,6 +993,8 @@ export interface Event {
   status?: JsonValue
   job_status?: string | null
   job_status_seq?: number | null
+  /** Chat a standalone scheduled-job run executes in; the run's job card links to it. */
+  run_session_id?: string | null
   job_status_type?: string | null
   job_status_run_id?: string | null
   job_run_status?: string | null

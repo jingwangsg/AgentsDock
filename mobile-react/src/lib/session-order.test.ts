@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Session } from '../types'
-import { orderedSessionSections, rememberedFolderOrder, resolveSidebarDrop, type SidebarDropRow } from './session-order'
+import { orderedSessionSections, rememberedFolderOrder, resolveSidebarDrop, sidebarVisibleSessions, type SidebarDropRow } from './session-order'
 
 function session(id: string, folder = 'General'): Session {
   return { id, title: id, folder, backend: 'codex' } as Session
@@ -114,4 +114,12 @@ test('dragging a folder header reorders folders and keeps Pinned and Archived ou
   assert.deepEqual(resolveSidebarDrop(dropped(rows, 4, 2), 2, sessions, ['Work', 'General']), { kind: 'folder-order', order: ['General', 'Work'] })
   // Landing inside its own neighbourhood leaves the folder order as it was.
   assert.equal(resolveSidebarDrop(dropped(rows, 2, 3), 3, sessions, ['Work', 'General']), null)
+})
+
+test('a standalone job run chat is listed only while it is open or once archived', () => {
+  const parent = session('parent', 'Research')
+  const running = { ...session('run-live', 'Research'), scheduled_job_run: { job_id: 'job-1', session_id: 'parent' } } as Session
+  const finished = { ...session('run-done', 'Research'), archived: true, scheduled_job_run: { job_id: 'job-1', session_id: 'parent' } } as Session
+  assert.deepEqual(sidebarVisibleSessions([parent, running, finished], null).map(value => value.id), ['parent', 'run-done'])
+  assert.deepEqual(sidebarVisibleSessions([parent, running, finished], 'run-live').map(value => value.id), ['parent', 'run-live', 'run-done'])
 })

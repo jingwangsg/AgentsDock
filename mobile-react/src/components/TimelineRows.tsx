@@ -587,6 +587,8 @@ function JobRowView({ row, sessionId, onReview, fontScale }: { row: Extract<Time
   const presentation = useMemo(() => jobResultPresentation(latest), [latest])
   const latestStatusSource = useMemo(() => latestJobStatusEvent(row.events) ?? latest, [latest, row.events])
   const latestStatus = useMemo(() => jobRunStatus(latestStatusSource), [latestStatusSource])
+  // A run that opened its own chat (the parent was busy): that chat stays out of the sidebar until archived, so this is its door.
+  const runSessionId = String(latestStatusSource.run_session_id || latestSource.run_session_id || '').trim()
   const statusSpecificRunId = String(
     latestStatusSource.job_status_run_id
     || latestStatusSource.job_latest_status_run_id
@@ -732,6 +734,7 @@ function JobRowView({ row, sessionId, onReview, fontScale }: { row: Extract<Time
         ? <Text selectable style={[styles.jobStructuredText, { color: colors.text }]}>{presentation.detail}</Text>
         : <MarkdownContent value={presentation.detail} fontScale={fontScale} />
       : null}
+    {runSessionId ? <Pressable testID={`job-open-run-chat-${jobId ?? latestSource.id}`} accessibilityRole="button" accessibilityLabel={latestStatus.tone === 'running' ? 'Running in its own chat. Open run chat' : 'Open run chat'} onPress={() => void useAppStore.getState().selectSession(runSessionId, profileGeneration)} style={styles.jobHistoryToggle}><ChevronRight size={14} color={colors.blue} /><Text style={[styles.jobHistoryAction, { color: colors.blue }]}>{latestStatus.tone === 'running' ? 'Running in its own chat · Open' : 'Open run chat'}</Text></Pressable> : null}
     {latestRunTraceRow ? <TraceRowView row={latestRunTraceRow} sessionId={sessionId} onReview={onReview} fontScale={fontScale} anchorSeq={latestRunTraceAnchor} includeCommentary /> : null}
     {canLoadHistory ? <View style={[styles.jobHistory, { borderTopColor: colors.border }]}>
       <Pressable

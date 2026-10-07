@@ -73,7 +73,7 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const folderOrder = useAppStore(state => state.folderOrder)
   const collapsed = useAppStore(state => state.collapsedFolders)
   const archivedCollapsed = useAppStore(state => state.archivedCollapsed)
-  const chatCount = sessions.filter(session => !session.archived).length
+  const chatCount = sessions.filter(session => !session.archived && !isHiddenRunChat(session, selectedId)).length
   const [dragging, setDragging] = useState<{ id: string; label: string; type: 'session' | 'folder' } | null>(null)
   const [drop, setDrop] = useState<DropIndicator | null>(null)
   const dropRef = useRef<DropIndicator | null>(null)
@@ -84,7 +84,7 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const sidebarScrollingUntil = useRef(0)
   const sidebarScrollTimer = useRef<number | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: SIDEBAR_LONG_PRESS }))
-  const sections = useMemo(() => buildSections(sessions, folderOrder, '', undefined, surfaces), [sessions, folderOrder, surfaces, getLocale()])
+  const sections = useMemo(() => buildSections(sessions, folderOrder, '', undefined, surfaces, selectedId), [sessions, folderOrder, surfaces, selectedId, getLocale()])
   const computedFolders = useMemo(() => sidebarFolders(sessions, folderOrder), [folderOrder, sessions])
   const stableFolders = useRef(computedFolders)
   if (!stringArraysEqual(stableFolders.current, computedFolders)) stableFolders.current = computedFolders
@@ -529,8 +529,17 @@ function MenuItem({ icon: Icon, label, onSelect, danger, disabled, title }: { ic
   return <ContextMenu.Item className={`menu-item ${danger ? 'danger' : ''}`} disabled={disabled} title={title} onSelect={onSelect}><Icon size={14} />{label}</ContextMenu.Item>
 }
 
-export function buildSections(sessions: Session[], folderOrder: string[], query: string, historySessionIds: Set<string> = new Set(), surfaces: Surface[] = []): Section[] {
-  const filtered = rankSessionsForSearch(sessions, query, historySessionIds)
+/**
+ * A chat that a standalone scheduled job opened because its own chat was busy. It is reached from
+ * the job card in the chat that scheduled it, and archived when the run ends, so the sidebar lists
+ * it only while it is the open chat or once archived.
+ */
+export function isHiddenRunChat(session: Pick<Session, 'id' | 'archived' | 'scheduled_job_run'>, selectedSessionId: string | null | undefined): boolean {
+  return Boolean(session.scheduled_job_run) && !session.archived && session.id !== selectedSessionId
+}
+
+export function buildSections(sessions: Session[], folderOrder: string[], query: string, historySessionIds: Set<string> = new Set(), surfaces: Surface[] = [], selectedSessionId: string | null = null): Section[] {
+  const filtered = rankSessionsForSearch(sessions.filter(session => !isHiddenRunChat(session, selectedSessionId)), query, historySessionIds)
   if (query.trim()) return filtered.length ? [{ id: 'search', title: t("ui.Sidebar.buildSections.matches_98abff2"), sessions: filtered, surfaces: [], kind: 'search' }] : []
   const pinned = filtered.filter(session => session.pinned && !session.archived)
   const archived = filtered.filter(session => session.archived)

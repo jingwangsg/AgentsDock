@@ -1,5 +1,28 @@
 # Public development log
 
+## 2026-10-07 — A standalone job's run chat stays out of the sidebar until it is opened or archived (desktop package 109, Android build 52)
+
+- When a standalone scheduled job fired while its chat was busy, the run chat
+  it opened appeared in the sidebar as an ordinary chat for the minutes it
+  ran, then moved to Archived. The chat's job card already said the run was in
+  a new chat, on desktop with an "Open run chat" link; Android had no link.
+- Both sidebars now list such a run chat only while it is the open chat or
+  once it is archived; the folder counts follow. The job card is its door: on
+  desktop and Android it reads "Running in its own chat · Open" while the run
+  is running and "Open run chat" afterwards, and opening it shows the chat
+  with its sidebar row. Nothing changes server-side: the run still executes in
+  its own chat and is archived when it ends.
+- Verified with the desktop sidebar test (a live run chat is listed only while
+  selected, an archived one under Archived, search follows the same rule), the
+  timeline row and localization tests, the mobile session-order test (new
+  case), the sidebar, scheduled-job and Android contract tests, and both type
+  checks. Accepted against an isolated server with real Codex: while the
+  parent ran a long command and the job's run chat ran, the built desktop app
+  and the Android emulator showed no row for the run chat, the parent's card
+  showed "Running in its own chat · Open", opening it showed the chat and its
+  row, and after the run ended the chat appeared under Archived.
+  Availability: local package and APK.
+
 ## 2026-10-07 — A server keeps answering while its secure-peer database waits on a stalled disk (server)
 
 - Two remotes stopped answering every request when the network filesystem
