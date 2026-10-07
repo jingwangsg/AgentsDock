@@ -2182,6 +2182,23 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["result"], "weights downloaded")
         self.assertEqual(handle.background_task_receipts[0]["status"], "completed")
 
+    async def test_a_task_the_cli_no_longer_lists_stops_holding_the_run_open(self) -> None:
+        handle = await self.manager.start_run(
+            "chat-bg-dropped", "Poll the emulator", run_id="bg-dropped-run", options={}, configuration_key="same",
+        )
+        client = self.factory.clients[-1]
+        await client.emit({
+            "type": "system", "subtype": "task_started",
+            "task_id": "poll-emulator", "task_type": "local_bash", "description": "Wait until the emulator responds",
+        })
+        # The CLI dropped the shell without a task_notification; its next snapshot omits the task.
+        await client.emit({"type": "system", "subtype": "background_tasks_changed", "tasks": [
+            {"task_id": "review-agent", "task_type": "local_agent", "description": "Review", "status": "completed"},
+        ]})
+        await client.emit({"type": "result", "is_error": False, "result": "emulator is back"})
+        result = await asyncio.wait_for(handle.wait_result(), 5)
+        self.assertEqual(result["result"], "emulator is back")
+
     async def test_queued_message_releases_a_run_that_only_background_tasks_keep_open(self) -> None:
         awaited: list[tuple[str, str]] = []
 

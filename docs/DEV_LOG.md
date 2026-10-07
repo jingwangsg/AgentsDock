@@ -1,5 +1,25 @@
 # Public development log
 
+## 2026-10-07 — A background task the CLI dropped no longer keeps every later Claude run open (server)
+
+- A Claude chat on the Agent SDK transport showed its final answer but stayed
+  "working" for a long time, and each earlier run of that chat had ended only
+  when the next message arrived. Cause: a background shell started at the end
+  of one turn was dropped by the CLI when the next message arrived; the CLI's
+  next task snapshot no longer listed it, but it never sent a completion
+  notification, and the server's in-flight task ledger removed a task only on
+  such a notification. The stale entry made the server treat every later
+  Result on that connection as intermediate, so runs waited for a task that
+  no longer existed (bounded only by the six-hour idle limit).
+- The server now reconciles its ledger with each task snapshot the CLI sends:
+  a task the snapshot no longer lists, or lists as finished, no longer holds
+  the run open. Tasks that are still listed behave as before.
+- Verified with a new SDK client test (a dropped task followed by a Result
+  ends the run) and the client and background-release test modules. Found on
+  the local hub with the chat's event log: one task of seventy never reported
+  completion and vanished from the snapshot taken thirty seconds later.
+  Availability: source; the hub and remotes pick it up on their next restart.
+
 ## 2026-10-07 — Desktop package 110 and Android build 53 (local package and APK)
 
 - Packages the five entries below, recorded since package 109 and build 52:

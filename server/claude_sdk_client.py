@@ -3054,6 +3054,21 @@ class ClaudeSDKSupervisor:
             # leave the parent idle.
             active._awaiting_background_tasks = False
         active._observe_background_task(command.message)
+        if subtype == "background_tasks_changed":
+            # The CLI's snapshot is its ledger. A task it no longer lists ended
+            # without a task_notification (seen 2026-10-07: a background shell
+            # dropped when the next message arrived), and it must not keep
+            # this run, or every later run on this connection, open.
+            data = _message_field(command.message, "data", {})
+            tasks = _message_field(command.message, "tasks") or (
+                data.get("tasks") if isinstance(data, dict) else None
+            )
+            self._inflight_tasks &= {
+                str(task.get("task_id") or "")
+                for task in (tasks if isinstance(tasks, list) else [])
+                if isinstance(task, dict)
+                and str(task.get("status") or "") not in _TERMINAL_TASK_STATUSES
+            }
         if task_id:
             if subtype == "task_started" and task_type in _DEFERRING_TASK_TYPES:
                 self._inflight_tasks.add(task_id)
