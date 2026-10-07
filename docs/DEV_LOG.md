@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-07 — The Canvas table of contents rests at the right edge and slides out when the pointer reaches it (desktop, source only)
+
+- With a mouse, the floating table of contents now rests off the right edge
+  of the preview, leaving a 6px strip that still shows the current section's
+  accent bar. Moving the pointer to the right edge level with the strip
+  (within 16px of the edge) slides the panel out to where it sat before. It
+  slides back 300ms after the pointer moves above or below the panel, more
+  than 10px to its left, or off the Canvas page; coming back within those
+  300ms keeps it out. Tabbing onto an entry also slides it out until focus
+  leaves. Clicking an entry with the mouse leaves no focus on it, so later
+  key presses do not hold the panel out. The header button still turns it
+  off entirely.
+- The Android app shares the page script. The resting position applies only
+  where the primary pointer can hover, so touch screens keep the panel open
+  as before.
+- Verified with a DOM test of the page script (the edge beside the strip, the
+  edge above it, a pointer that stops ahead of the sliding panel, a brief
+  stray, the close delay, leaving the page, a hidden panel), which fails on
+  the previous script; the Android page and contract tests (both apps still
+  carry the same script); and the desktop type check. Accepted in the built
+  desktop app against an isolated server (20 checks): the resting strip and
+  its accent bar, sliding out at the edge and on the strip, clicking an entry
+  and pressing keys afterwards, closing once the pointer is over the report,
+  no change at the edge above or below the strip, a pointer stopping ahead of
+  the slide, wheel scrolling at rest, Tab focus, the element picker, and both
+  themes. Pointer input was dispatched through CDP. A window-level CDP move
+  into the chat gives the canvas page no leave event, so leaving the page
+  straight from the open panel was checked with a move dispatched on the
+  canvas frame outside its bounds. A real-cursor attempt at that path was
+  disturbed by other pointer input on the test machine, so it remains
+  unverified with a real cursor. Not exercised in the Android app.
+  Availability: source only.
+
 ## 2026-10-07 — Stop leaves background Claude agents running when the model is idle; a failed health probe is named (desktop and server source)
 
 - Server: Stop on a Claude chat whose model has already answered and is only

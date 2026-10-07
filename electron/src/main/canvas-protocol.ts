@@ -136,6 +136,8 @@ export const COMMENT_PINS_SCRIPT = `
  * edge that marks the section in view and scrolls to a heading when its entry is
  * clicked. The host decides whether it shows (`show`); the page draws it only for
  * two or more headings and reports whether it has them whenever the headings change.
+ * With a mouse it rests as a strip at the edge and slides out when the pointer
+ * reaches the edge beside it; touch screens keep it open.
  * Identical in mobile-react/src/lib/canvas-page.ts.
  */
 export const TOC_SCRIPT = `
@@ -153,6 +155,10 @@ export const TOC_SCRIPT = `
       + 'button.active{color:var(--canvas-accent);border-left-color:var(--canvas-accent)}'
       // Translucent where color-mix exists; a var() inside an unsupported color-mix would leave no background at all.
       + '@supports (background:color-mix(in srgb,red,red)){nav{background:color-mix(in srgb,var(--canvas-background) 55%,transparent);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}}'
+      // Where a mouse can hover, the panel rests moved right by its width + 6px: 12px from the edge, that leaves a 6px
+      // strip showing the current entry's accent bar. .open, set below, slides it out. :focus-visible, not :focus-within,
+      // so keyboard focus brings it out but focus from a mouse press does not hold it out.
+      + '@media (hover:hover) and (pointer:fine){nav{transform:translate(calc(100% + 6px),-50%);transition:transform .18s ease}nav.open,nav:has(:focus-visible){transform:translateY(-50%)}}'
       + '@media (pointer:coarse){button{padding-top:8px;padding-bottom:8px}}</style><nav hidden></nav>';
     const nav = shadow.querySelector('nav');
     // Hidden while the user picks an element to comment on, so a pick never lands on the table of contents.
@@ -192,7 +198,11 @@ export const TOC_SCRIPT = `
           button.textContent = button.title = norm(heading.textContent);
           button.style.paddingLeft = (12 + (Number(heading.tagName[1]) - topLevel) * 12) + 'px';
           // By index: a re-render can replace a heading element without changing its level or text, which keeps these buttons.
-          button.addEventListener('click', () => headings[index].scrollIntoView({ block: 'start', behavior: 'smooth' }));
+          button.addEventListener('click', event => {
+            // A mouse click (detail > 0) leaves no focus behind: the next key press would make the entry :focus-visible.
+            if (event.detail) button.blur();
+            headings[index].scrollIntoView({ block: 'start', behavior: 'smooth' });
+          });
           return button;
         });
         nav.replaceChildren(...buttons);
@@ -206,6 +216,25 @@ export const TOC_SCRIPT = `
     new MutationObserver(schedule).observe(root, { subtree: true, childList: true, characterData: true });
     window.addEventListener('scroll', () => { if (!nav.hidden) schedule(); }, { passive: true });
     schedule();
+    // Out while the pointer is level with the panel and at most 10px left of it: at rest that includes the edge beside
+    // the strip, so the 6px strip itself need not be hit. Back 300ms after the pointer leaves that area, so a brief
+    // stray on the way to an entry keeps it out.
+    let closing = 0;
+    const slideBack = () => {
+      if (!closing && nav.classList.contains('open')) closing = setTimeout(() => { closing = 0; nav.classList.remove('open'); }, 300);
+    };
+    // Capture phase: a report handler that stops propagation cannot hide moves from it.
+    document.addEventListener('mousemove', event => {
+      // 0x0 while hidden or under the element picker's display:none, so never inside: it shows again at rest.
+      const { left, top, bottom, height } = nav.getBoundingClientRect();
+      // Once out, measure from where it slides to (offsetLeft ignores the transform): a pointer that stopped ahead of
+      // the sliding panel gets no further move when the panel arrives under it.
+      const start = nav.classList.contains('open') ? nav.offsetLeft : left;
+      if (height && event.clientX >= start - 10 && event.clientY >= top && event.clientY <= bottom) { clearTimeout(closing); closing = 0; nav.classList.add('open'); }
+      else slideBack();
+    }, true);
+    // A pointer that leaves the page sends no further moves.
+    document.addEventListener('mouseout', event => { if (!event.relatedTarget) slideBack(); }, true);
     return { show(next) { visible = !!next; schedule(); } };
   })();
 `

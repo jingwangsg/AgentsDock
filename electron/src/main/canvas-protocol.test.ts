@@ -165,4 +165,70 @@ describe('floating table of contents in the canvas page', () => {
       document.body.innerHTML = ''
     }
   })
+
+  it('slides out while the pointer is at the edge beside its resting strip and back once the pointer leaves', async () => {
+    document.body.innerHTML = '<div id="root"><h1>Report</h1><h2>Loss</h2></div>'
+    const html = buildCanvasPage({ shell: '<!--CANVAS_SCRIPTS-->', vendor: '', javascript: '', state: {}, theme })
+    const shim = Buffer.from(html.match(/base64,([^"]+)/)![1], 'base64').toString('utf8')
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => frames.push(callback))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const posted = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    try {
+      new Function(shim)()
+      window.dispatchEvent(new MessageEvent('message', { data: { source: 'agentsdock-canvas-host', call: 'set-toc', args: [true] } }))
+      await Promise.resolve()
+      while (frames.length) frames.shift()!(0)
+      const nav = document.querySelector('agentsdock-toc')!.shadowRoot!.querySelector('nav')!
+      expect(nav.hidden).toBe(false)
+      // jsdom has no layout. On a 1024px page the panel measures as its 6px strip at the right edge until it has slid
+      // (the transform), and its slid-out place starts at x=780 (offsetLeft).
+      let rect = { left: 1018, top: 300, bottom: 360, height: 60 }
+      vi.spyOn(nav, 'getBoundingClientRect').mockImplementation(() => rect as DOMRect)
+      Object.defineProperty(nav, 'offsetLeft', { value: 780 })
+      const move = (clientX: number, clientY: number) => document.body.dispatchEvent(new MouseEvent('mousemove', { clientX, clientY, bubbles: true }))
+      const isOpen = () => nav.classList.contains('open')
+
+      // The edge above the strip, or level with it but further in, leaves it at rest.
+      move(1020, 200)
+      move(900, 330)
+      expect(isOpen()).toBe(false)
+      // 6px left of the strip: within the 10px margin.
+      move(1012, 330)
+      expect(isOpen()).toBe(true)
+
+      // Still mid-slide: a pointer that stops where the panel is heading keeps it out.
+      move(800, 330)
+      vi.advanceTimersByTime(300)
+      expect(isOpen()).toBe(true)
+      // A brief stray to the left keeps it out, staying away slides it back.
+      move(700, 330)
+      vi.advanceTimersByTime(200)
+      move(800, 330)
+      vi.advanceTimersByTime(300)
+      expect(isOpen()).toBe(true)
+      move(700, 330)
+      vi.advanceTimersByTime(300)
+      expect(isOpen()).toBe(false)
+
+      // Leaving the page from the edge slides it back too.
+      move(1012, 330)
+      document.body.dispatchEvent(new MouseEvent('mouseout', { relatedTarget: null, bubbles: true }))
+      vi.advanceTimersByTime(300)
+      expect(isOpen()).toBe(false)
+
+      // Hidden, or under the element picker, it measures 0x0: the page's top row is not level with it, and a panel
+      // left out slides back, so it shows again at rest.
+      move(1012, 330)
+      rect = { left: 0, top: 0, bottom: 0, height: 0 }
+      move(0, 0)
+      vi.advanceTimersByTime(300)
+      expect(isOpen()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+      posted.mockRestore()
+      document.body.innerHTML = ''
+    }
+  })
 })
