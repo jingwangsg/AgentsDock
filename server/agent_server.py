@@ -94238,6 +94238,37 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                     # next turn resumes into the forked provider session.
                     sess["fork_from"] = claude_provider_id
                     sess["fork_resume_session_at"] = claude_cutoff
+                    # The fork keeps only the history before the cutoff, and the
+                    # eviction below retires the process that ran these tasks.
+                    pending = sess.get(CLAUDE_BACKGROUND_SESSION_FIELD)
+                    if isinstance(pending, dict) and isinstance(pending.get("tasks"), list):
+                        started_in_prefix: set[str] = set()
+                        started_in_removed: set[str] = set()
+                        for index, event in enumerate(events):
+                            raw = event.get("raw") if event.get("type") == "raw_event" else None
+                            if not isinstance(raw, str) or '"task_started"' not in raw:
+                                continue
+                            try:
+                                frame = json.loads(raw)
+                            except ValueError:
+                                continue
+                            if isinstance(frame, dict) and frame.get("subtype") == "task_started" and frame.get("task_id"):
+                                (started_in_prefix if index < target_index else started_in_removed).add(str(frame["task_id"]))
+                        # A task started only in the removed turns is not in that
+                        # history, so the model must not receive its receipt. A
+                        # subagent's task can log task_started again after an
+                        # interim completion; one started before the cutoff stays.
+                        removed_only_task_ids = started_in_removed - started_in_prefix
+                        tasks = [
+                            # No process tracks a task reported as running any more.
+                            {**task, "status": "tracking_lost"} if task.get("status") == "running" else task
+                            for task in pending["tasks"]
+                            if isinstance(task, dict) and str(task.get("task_id") or "") not in removed_only_task_ids
+                        ]
+                        if tasks or pending.get("overflow_count"):
+                            sess[CLAUDE_BACKGROUND_SESSION_FIELD] = {**pending, "tasks": tasks}
+                        else:
+                            sess.pop(CLAUDE_BACKGROUND_SESSION_FIELD, None)
                 elif provider_rewind == "codex_reset":
                     if CODEX_THREAD_SESSION_INDEX.get(codex_thread_id) == session_id:
                         CODEX_THREAD_SESSION_INDEX.pop(codex_thread_id, None)
@@ -94253,8 +94284,10 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                 await STORE.save(durable=True)
                 if backend == BACKEND_CLAUDE and CLAUDE_SDK_MANAGER is not None:
                     # A connected Claude process keeps the options it started with, so
-                    # only a new one resumes at the cutoff (or starts afresh).
-                    await CLAUDE_SDK_MANAGER.evict(session_id)
+                    # only a new one resumes at the cutoff (or starts afresh). Forced:
+                    # ensure_session_idle_for_rewind left no turn, but a side question
+                    # or usage read can still hold the process; that read then fails.
+                    await CLAUDE_SDK_MANAGER.evict(session_id, force=True)
                 return summary
 
             summary = await finish_despite_caller_cancellation(perform_rewind())

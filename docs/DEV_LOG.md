@@ -1,5 +1,49 @@
 # Public development log
 
+## 2026-10-08 — After a rewind, a new message keeps Claude's process, its session and its background agents (server, source only)
+
+- In a Claude chat rewound while background-task receipts were still to be
+  reported to the model, the second message after the rewind replaced the
+  chat's Claude process. Background agents of the old process kept running
+  without a way to ask for permission, so their tool calls were rejected and
+  they stopped; their results never reached the chat. The new process
+  resumed from the rewind point again, under a new session ID, so the model
+  no longer had the turn it had just answered. Found on 2026-10-08 in a
+  remote chat whose two agents disappeared when the user sent a follow-up.
+- Cause: the first turn after a rewind runs in a fork, which Claude answers
+  under a new session ID. The server's background-task reconciliation hook
+  expected the ID the process resumed from, never matched, and stayed bound;
+  the next message then replaced the process to clear it, and the new
+  process started with the options of the fork turn.
+- The reconciliation hook and the pending-mail hint hook now expect the
+  session ID Claude reports for the process, so both also work in a forked
+  chat. A binding left unused no longer replaces the process: Claude runs
+  that hook before it echoes the prompt (measured with Claude Code 2.1.293),
+  so a prompt it has already echoed cannot call it later. A replacement
+  process starts from the chat's current resume target. A rewind also
+  removes, from the pending reconciliation, tasks that only the removed
+  turns started, and reports the kept ones that were running as no longer
+  tracked, since the rewind ends the process that ran them. The rewind now
+  ends that process even when a side question or a usage read still holds it
+  (that read then fails); before, the rewind left such a process connected.
+- Verified with the Claude, rewind and queue suites and new unit tests, each
+  failing on the previous build: an unmatched hook keeps the process and its
+  agent; a forked process matches both hooks under the ID Claude reports; a
+  new process starts with the latest options, its permission callbacks bound
+  to the chat; a rewind drops only the removed turns' tasks and ends a
+  process a read still holds (unit test only). Through the
+  HTTP API of isolated servers with the real Claude CLI, the same script
+  against the previous build and this one: rewind, a fork turn that starts a
+  background agent, then a new message. Before: a second Claude process
+  started, the session ID changed, the new session lacked the fork turn, the
+  agent's tool call was rejected and its completion never reached the chat.
+  After: one process, one session that contains the fork turn, the agent
+  finished inside the new turn and the model reported its result. A rewind
+  past a turn that started a background task kept that task in the pending
+  reconciliation before and drops it now. Not exercised: the desktop and
+  Android apps and a hub-proxied remote server.
+  Availability: source; servers need a redeploy.
+
 ## 2026-10-08 — Resume by session ID says so when the chat that owns it is already open, and the server refuses a second chat on one conversation (server, desktop, Android)
 
 - Typing the ID of a Codex thread (or Claude session) that an existing chat

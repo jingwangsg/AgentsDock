@@ -745,6 +745,13 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(first.background_task_reconciliation_consumed)
         await old_client.emit({"type": "result", "terminal_reason": "aborted_tools"})
         await asyncio.wait_for(collect(first), 5)
+        # An ended run no longer forces a new process; end this one so the check
+        # below that an old process's hook cannot consume a new query still applies.
+        await old_client.emit(StopAsyncIteration)
+        for _ in range(50):
+            if old_client.disconnected:
+                break
+            await asyncio.sleep(0)
         second = await self.manager.start_run("chat-hooks", "same prompt", run_id="second",
             options=options, configuration_key="same", background_task_reconciliation=reconciliation)
         new_client = self.factory.clients[-1]
@@ -988,7 +995,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit({"type": "result", "result": "done"})
         await asyncio.wait_for(collect(handle), 5)
 
-    async def test_command_discovery_reconnects_an_idle_pending_hook(self) -> None:
+    async def test_command_discovery_keeps_the_connection_after_an_unused_reconciliation_hook(self) -> None:
         options = {
             "cwd": "/tmp",
             "hooks": claude_background_tracking_hooks(),
@@ -1019,28 +1026,29 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await first_client.emit({"type": "result", "result": "done"})
         await asyncio.wait_for(collect(first), 5)
 
+        # The run's hook never fired. Its prompt was answered, so no late call can
+        # come, and discovery has no reason to replace the process.
         _info, current_generation = await self.manager.get_server_info(
             "pending-reconciliation-chat",
             options=options,
             configuration_key="config-a",
         )
-        self.assertNotEqual(current_generation, first_generation)
-        self.assertEqual(len(self.factory.clients), 2)
+        self.assertEqual(current_generation, first_generation)
+        self.assertEqual(len(self.factory.clients), 1)
         second = await self.manager.start_run(
             "pending-reconciliation-chat",
             "/review staged files",
-            run_id="run-command-after-reconnect",
+            run_id="run-command-on-same-process",
             options=options,
             configuration_key="config-a",
             validated_provider_command_name="review",
             expected_provider_command_generation=current_generation,
         )
-        second_client = self.factory.clients[1]
         self.assertIn(
             ("query", "/review staged files", {}),
-            second_client.calls,
+            first_client.calls,
         )
-        await second_client.emit({"type": "result", "result": "done"})
+        await first_client.emit({"type": "result", "result": "done"})
         await asyncio.wait_for(collect(second), 5)
 
     async def test_validated_local_command_rejects_changed_generation_before_query(self) -> None:
@@ -2242,6 +2250,106 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit({"type": "result", "is_error": False, "result": "done"})
         self.assertEqual((await asyncio.wait_for(second.wait_result(), 5))["result"], "done")
         self.assertFalse(second.released)
+
+    async def test_an_unmatched_reconciliation_hook_keeps_the_connection_and_its_agents(self) -> None:
+        # 2026-10-08: the hook of a forked turn never matched, and the next message retired the
+        # connection that still ran two background agents. Claude runs UserPromptSubmit before it
+        # replays the prompt (measured, CLI 2.1.293), so an ended run's hook can no longer fire.
+        options = {"hooks": claude_background_tracking_hooks(), "resume": "provider"}
+        first = await self.manager.start_run("chat-unmatched", "Resume agents", run_id="run-1",
+            options=options, configuration_key="same",
+            background_task_reconciliation={"tasks": [{"task_id": "prior", "task_type": "local_agent",
+                                                       "owner_run_id": "prior-run", "status": "tracking_lost"}]})
+        client = self.factory.clients[-1]
+        hook = client.options["hooks"]["UserPromptSubmit"][0].hooks[0]
+        self.assertEqual(await hook({"hook_event_name": "UserPromptSubmit", "prompt": "Resume agents",
+                                     "session_id": "other"}, None, {}), {})
+        await client.emit({"type": "system", "subtype": "task_started", "task_id": "agent", "task_type": "local_agent"})
+        await client.emit({"type": "result", "is_error": False, "result": "agents running"})
+        for _ in range(50):
+            if first.awaiting_background_tasks:
+                break
+            await asyncio.sleep(0)
+        self.assertTrue(await self.manager.release_awaiting_run("chat-unmatched", run_id="run-1"))
+        await asyncio.wait_for(first.wait_result(), 5)
+
+        await self.manager.get_server_info("chat-unmatched", options=options, configuration_key="same")
+        second = await self.manager.start_run("chat-unmatched", "How is it going?", run_id="run-2",
+            options=options, configuration_key="same")
+        self.assertEqual(len(self.factory.clients), 1)
+        self.assertFalse(client.disconnected)
+        await client.emit({"type": "system", "subtype": "task_notification", "task_id": "agent", "status": "completed"})
+        await client.emit({"type": "result", "is_error": False, "result": "agent finished"})
+        self.assertEqual((await asyncio.wait_for(second.wait_result(), 5))["result"], "agent finished")
+
+    async def test_a_forked_connection_expects_the_session_id_claude_reports(self) -> None:
+        # A fork gets its session id from Claude; the source id the process resumed from never
+        # appears in its hooks (measured, CLI 2.1.293).
+        reconciliation = {"tasks": [{"task_id": "prior", "task_type": "local_agent",
+                                     "owner_run_id": "prior-run", "status": "tracking_lost"}]}
+        first = await self.manager.start_run("chat-forked", "Continue", run_id="run-1",
+            options={"hooks": claude_background_tracking_hooks(), "resume": "source", "fork_session": True},
+            configuration_key="same", background_task_reconciliation=reconciliation)
+        client = self.factory.clients[-1]
+        hook = client.options["hooks"]["UserPromptSubmit"][0].hooks[0]
+        delivered = await hook({"hook_event_name": "UserPromptSubmit", "prompt": "Continue",
+                                "session_id": "forked"}, None, {})
+        self.assertIn("additionalContext", delivered.get("hookSpecificOutput", {}))
+        await client.emit({"type": "result", "is_error": False, "result": "done", "session_id": "forked"})
+        await asyncio.wait_for(first.wait_result(), 5)
+
+        second = await self.manager.start_run("chat-forked", "Again", run_id="run-2",
+            options={"hooks": claude_background_tracking_hooks(), "resume": "forked"},
+            configuration_key="same", background_task_reconciliation=reconciliation)
+        self.assertEqual(await hook({"hook_event_name": "UserPromptSubmit", "prompt": "Again",
+                                     "session_id": "source"}, None, {}), {})
+        delivered = await hook({"hook_event_name": "UserPromptSubmit", "prompt": "Again",
+                                "session_id": "forked"}, None, {})
+        self.assertIn("additionalContext", delivered.get("hookSpecificOutput", {}))
+        await client.emit({"type": "result", "is_error": False, "result": "done", "session_id": "forked"})
+        await asyncio.wait_for(second.wait_result(), 5)
+
+    async def test_a_forked_connection_delivers_the_mail_hint_under_the_new_session_id(self) -> None:
+        handle = await self.manager.start_run("chat-forked-mail", "Continue", run_id="run-1",
+            options={"hooks": claude_background_tracking_hooks(), "resume": "source", "fork_session": True},
+            configuration_key="same", pending_mail_hint=lambda: "Pending replies are available in the inbox.")
+        client = self.factory.clients[-1]
+        hook = client.options["hooks"]["PostToolUse"][0].hooks[0]
+        await client.emit({"type": "assistant", "session_id": "forked", "content": [
+            {"type": "tool_use", "id": "tool-one", "name": "Read", "input": {}}]})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        result = await hook({"hook_event_name": "PostToolUse", "session_id": "forked",
+                             "tool_use_id": "tool-one", "tool_name": "Read"}, "tool-one", {})
+        self.assertIn("additionalContext", result.get("hookSpecificOutput", {}))
+
+    async def test_a_new_process_starts_with_the_latest_options(self) -> None:
+        # A live process keeps the options it started with; once it is gone, the next one must not
+        # resume from a rewind's fork point the chat has already moved past.
+        bound_owners: list[str] = []
+        def can_use_tool(*_args: Any) -> None:
+            return None
+        can_use_tool._agentsdock_bind_owner = bound_owners.append
+        first = await self.manager.start_run("chat-options", "Fork turn", run_id="run-1",
+            options={"resume": "source", "fork_session": True}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "result", "is_error": False, "result": "forked"})
+        await asyncio.wait_for(first.wait_result(), 5)
+        await self.manager.get_server_info("chat-options", options={"resume": "forked", "can_use_tool": can_use_tool},
+                                           configuration_key="same")
+        # The process exits after the chat's options arrived; calling the supervisor directly
+        # stands in for a caller that reaches the actor without a manager refresh.
+        await client.emit(StopAsyncIteration)
+        for _ in range(50):
+            if client.disconnected:
+                break
+            await asyncio.sleep(0)
+        supervisor = self.manager._supervisors["chat-options"]
+        await supervisor.get_side_question_client(expected_provider_id="forked")
+        replacement = self.factory.clients[-1]
+        self.assertIsNot(replacement, client)
+        self.assertEqual(replacement.options["resume"], "forked")
+        self.assertNotIn("fork_session", replacement.options)
+        self.assertEqual(bound_owners, [supervisor.ownership_token])
 
     async def test_a_run_whose_tasks_vanish_without_a_wake_ends_after_the_grace(self) -> None:
         handle = await self.manager.start_run("chat-bg-vanished", "Poll", run_id="run-vanished", options={}, configuration_key="same")

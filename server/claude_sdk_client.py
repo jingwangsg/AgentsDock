@@ -1562,6 +1562,8 @@ class ClaudeSDKSupervisor:
             raise ValueError("chat_id is required")
         self.chat_id = clean_chat_id
         self.options = options
+        # The chat's current options, for the next process this actor starts.
+        self.next_options: Any = None
         self.configuration_key = str(configuration_key)
         self.ownership_token = f"claudeowner_{uuid.uuid4().hex}"
         bind_permission_owner(self.options, self.ownership_token)
@@ -1599,6 +1601,9 @@ class ClaudeSDKSupervisor:
         self._inflight_tasks: set[str] = set()
         self._background_reconciliation_hook: _BackgroundReconciliationHook | None = None
         self._pending_mail_hint_hook: _PendingMailHintHook | None = None
+        # The session the connected process is in, as Claude reports it: a fork
+        # answers under a new id, not the one it resumed (CLI 2.1.293).
+        self._provider_session_id: str | None = None
         self._generation = 0
         self._closed = False
         self._connected = False
@@ -2043,6 +2048,9 @@ class ClaudeSDKSupervisor:
         return set(self._late_connect_cleanup_tasks)
 
     async def _new_client(self) -> ClaudeSDKClientProtocol:
+        if self.next_options is not None:
+            self.options, self.next_options = self.next_options, None
+            bind_permission_owner(self.options, self.ownership_token)
         client: ClaudeSDKClientProtocol | None = None
         try:
             client_options, background_hook = _connection_background_hook(self.options)
@@ -2088,6 +2096,12 @@ class ClaudeSDKSupervisor:
         self._generation += 1
         self._client = client
         self._connected = True
+        # A fork's id is unknown until Claude reports it; until then the hooks
+        # match on the prompt alone.
+        options = self.options
+        fork = options.get("fork_session") if isinstance(options, dict) else getattr(options, "fork_session", False)
+        resume = options.get("resume") if isinstance(options, dict) else getattr(options, "resume", None)
+        self._provider_session_id = None if fork else _receipt_field(resume)
         self._connection_retired = asyncio.Event()
         self._last_used_at = time.monotonic()
         generation = self._generation
@@ -2308,11 +2322,6 @@ class ClaudeSDKSupervisor:
                     )
                 )
             return
-        if self._background_reconciliation_hook is not None and self._background_reconciliation_hook.pending is not None:
-            # UserPromptSubmit has no query UUID. If a prior submission never
-            # reached its hook, reconnect instead of rebinding a late callback
-            # (possibly with identical prompt text) to the replacement query.
-            await self._disconnect_current_client()
         try:
             client = await self._ensure_client()
         except Exception as exc:
@@ -2384,12 +2393,12 @@ class ClaudeSDKSupervisor:
         )
         background_hook = self._background_reconciliation_hook
         mail_hook = self._pending_mail_hint_hook
+        provider_id = command.query_session_id
+        if provider_id is None or provider_id == "default":
+            provider_id = self._provider_session_id
         if mail_hook is not None:
             mail_hook.retire()
             if callable(command.pending_mail_hint):
-                provider_id = command.query_session_id
-                if provider_id is None or provider_id == "default":
-                    provider_id = self.options.get("resume") if isinstance(self.options, dict) else getattr(self.options, "resume", None)
                 generation = self._generation
                 mail_hook.bind(
                     handle, command.pending_mail_hint, _receipt_field(provider_id),
@@ -2397,9 +2406,9 @@ class ClaudeSDKSupervisor:
                     and self._generation == generation and self._pending_mail_hint_hook is mail_hook,
                 )
         if background_hook is not None and command.background_task_reconciliation is not None:
-            provider_id = command.query_session_id
-            if provider_id is None or provider_id == "default":
-                provider_id = self.options.get("resume") if isinstance(self.options, dict) else getattr(self.options, "resume", None)
+            # Rebinding on the same process is safe: Claude calls UserPromptSubmit
+            # before it replays a prompt (CLI 2.1.293), so a prompt an earlier run
+            # saw replayed cannot call this hook later.
             background_hook.bind(
                 handle,
                 command.prompt,
@@ -2730,13 +2739,6 @@ class ClaudeSDKSupervisor:
         }
 
     async def _server_info_operation(self) -> tuple[dict[str, Any], str]:
-        background_hook = self._background_reconciliation_hook
-        if (
-            not self.is_active
-            and background_hook is not None
-            and background_hook.pending is not None
-        ):
-            await self._disconnect_current_client()
         client = await self._ensure_client()
         getter = getattr(client, "get_server_info", None)
         if not callable(getter):
@@ -2788,8 +2790,10 @@ class ClaudeSDKSupervisor:
             return
         try:
             if not self.connected and command.expected_provider_id is not None:
-                resume = (self.options.get("resume") if isinstance(self.options, dict)
-                          else getattr(self.options, "resume", None))
+                # The process started below uses next_options when set.
+                options = self.next_options if self.next_options is not None else self.options
+                resume = (options.get("resume") if isinstance(options, dict)
+                          else getattr(options, "resume", None))
                 if not resume or resume != command.expected_provider_id:
                     raise ClaudeSDKUnavailable(
                         "The native Claude conversation is not available to resume"
@@ -3063,6 +3067,9 @@ class ClaudeSDKSupervisor:
     async def _handle_received(self, command: _ReceivedMessage) -> None:
         if command.generation != self._generation:
             return
+        session_id = _receipt_field(_message_field(command.message, "session_id"))
+        if session_id is not None:
+            self._provider_session_id = session_id
         if _message_type(command.message) in {"ratelimitevent", "rate_limit_event"} and self._usage_observer is not None:
             generation = self.control_generation
             if generation is not None:
@@ -3529,16 +3536,10 @@ class ClaudeSDKSupervisorManager:
             )
             self._supervisors[chat_id] = supervisor
         else:
-            # A disconnected actor has no live provider state. Refresh its
-            # lazy reconnect options so a newly persisted resume/fork binding
-            # is honored after a stream failure without changing the stable
-            # process-configuration key used by healthy persistent clients.
-            if not supervisor.connected and not supervisor.is_active:
-                supervisor.options = options
-                bind_permission_owner(
-                    supervisor.options,
-                    supervisor.ownership_token,
-                )
+            # A live process keeps the options its callbacks are bound to. The
+            # next one starts from the chat's current resume target, never from
+            # a rewind's fork point the chat has since moved past.
+            supervisor.next_options = options
             self._supervisors.move_to_end(chat_id)
         return supervisor, old_to_close
 

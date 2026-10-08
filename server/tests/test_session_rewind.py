@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import agent_server as server
+from claude_sdk_client import ClaudeSDKSupervisorManager
+from tests.test_claude_sdk_client import FakeFactory
 
 
 # A Claude auto-compaction row: it has no parent, so the resumed chain stops here.
@@ -602,7 +604,67 @@ class RewindEditTests(RewindFixture):
         with self.claude_transcript(), patch.object(server, "CLAUDE_SDK_MANAGER", manager):
             result = await server.rewind_session("chat", rewind_request())
         self.assertEqual(result["provider_rewind"], "claude_fork")
-        manager.evict.assert_awaited_once_with("chat")
+        manager.evict.assert_awaited_once_with("chat", force=True)
+
+    async def test_a_claude_rewind_retires_a_process_that_a_read_still_holds(self) -> None:
+        # A side question or a usage read can hold an idle chat's process. Left
+        # connected, it would run the next turn without the fork the rewind set up.
+        self.chat()
+        factory = FakeFactory()
+        manager = ClaudeSDKSupervisorManager(client_factory=factory, max_clients=4, idle_ttl_seconds=None)
+        self.addAsyncCleanup(manager.close_all)
+        await manager.get_server_info("chat", options={}, configuration_key="same")
+        manager._pins["chat"] = 1  # stands in for a usage read in flight
+        with self.claude_transcript(), patch.object(server, "CLAUDE_SDK_MANAGER", manager):
+            result = await server.rewind_session("chat", rewind_request())
+        self.assertEqual(result["provider_rewind"], "claude_fork")
+        self.assertTrue(factory.clients[0].disconnected)
+
+    def chat_with_background_tasks(self, receipts: list[dict]) -> dict:
+        def started(run_id: str, task_id: str) -> dict:
+            raw = {"type": "system", "subtype": "task_started", "task_id": task_id, "task_type": "local_agent"}
+            return {"id": f"started-{run_id}-{task_id}", "type": "raw_event", "run_id": run_id, "backend": "claude",
+                    "ts": "2026-09-08T10:02:10Z", "raw": json.dumps(raw)}
+        # events()[7] is the "third" turn_started that rewind_request targets.
+        kept, removed = self.events()[:7], self.events()[7:]
+        events = [*kept[:4], started("second", "kept-agent"), *kept[4:], removed[0],
+                  started("third", "removed-agent"), started("third", "kept-agent"), *removed[1:]]
+        for seq, event in enumerate(events, start=1):
+            event["seq"] = seq
+        sess = self.chat(latest_event_seq=len(events), latest_agent_event_seq=len(events),
+                         last_read_agent_event_seq=len(events))
+        server.events_path("chat").write_text(
+            "".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        sess[server.CLAUDE_BACKGROUND_SESSION_FIELD] = {
+            "version": 1, "provider_session_id": "claude-parent", "reconciliation_id": "reconcile_1",
+            "tasks": receipts, "overflow_count": 0,
+        }
+        return sess
+
+    async def test_a_claude_rewind_forgets_the_background_tasks_of_the_removed_turns(self) -> None:
+        # The fork keeps the history before the cutoff. A task only the removed turns started is not
+        # in it, and the rewind retires the process that tracked the others (2026-10-08).
+        receipt = {"task_type": "local_agent", "owner_run_id": "third", "provider_session_id": "claude-parent"}
+        sess = self.chat_with_background_tasks([
+            {**receipt, "task_id": "kept-agent", "status": "running"},
+            {**receipt, "task_id": "removed-agent", "status": "running"},
+            {**receipt, "task_id": "unlogged-agent", "status": "completed"},
+        ])
+        with self.claude_transcript():
+            result = await server.rewind_session("chat", rewind_request(expected_latest_seq=13))
+        self.assertEqual(result["provider_rewind"], "claude_fork")
+        pending = sess[server.CLAUDE_BACKGROUND_SESSION_FIELD]
+        self.assertEqual([(task["task_id"], task["status"]) for task in pending["tasks"]],
+                         [("kept-agent", "tracking_lost"), ("unlogged-agent", "completed")])
+        self.assertEqual((pending["provider_session_id"], pending["reconciliation_id"]), ("claude-parent", "reconcile_1"))
+
+    async def test_a_claude_rewind_drops_a_checkpoint_left_with_no_tasks(self) -> None:
+        sess = self.chat_with_background_tasks([
+            {"task_id": "removed-agent", "task_type": "local_agent", "status": "running", "owner_run_id": "third"},
+        ])
+        with self.claude_transcript():
+            await server.rewind_session("chat", rewind_request(expected_latest_seq=13))
+        self.assertNotIn(server.CLAUDE_BACKGROUND_SESSION_FIELD, sess)
 
     def imported_batch(self) -> list[dict]:
         return [
