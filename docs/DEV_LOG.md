@@ -1,5 +1,18 @@
 # Public development log
 
+## 2026-10-09 — Android build 59 (local APK)
+
+- Packages the entry above recorded since build 58: browser tabs load every
+  page through the selected server's network. The server side of that entry
+  takes effect once a server is redeployed; against a server without it the
+  tab keeps the previous localhost-only routing. No desktop package: the
+  desktop app is unchanged since package 114.
+- The APK is signed with the project debug keystore (SHA-256 fac61745…) and
+  reports versionCode 59. Checks run before packaging: the Android type
+  check, the browser routing acceptance on an emulator recorded in the entry
+  above, and the mobile version pins. Not exercised: installing on a phone.
+  Availability: local APK.
+
 ## 2026-10-09 — Android browser tabs load every page through the selected server's network (server and Android source)
 
 - An Android browser tab loaded pages from the phone's own network; only
