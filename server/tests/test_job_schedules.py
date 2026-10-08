@@ -4383,5 +4383,52 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(store._scheduler_task)
 
 
+class ClaudeJobTransportTests(unittest.IsolatedAsyncioTestCase):
+    """A Claude job hosted by its chat runs on the chat's SDK process.
+
+    The one-shot print process forbids background Bash, disables the Agent
+    tool and kills its shells when the reply ends (2026-10-08, a 10-minute
+    job). The job turn now carries the same capability a user's message
+    carries; standalone runs and other backends are unchanged.
+    """
+
+    async def run_job(self, *, backend: str, context_mode: str) -> list[str]:
+        store = agent_server.JobStore()
+        store.jobs["job_check"] = {
+            "id": "job_check",
+            "session_id": "source",
+            "title": "progress check",
+            "prompt": "check progress",
+            "chat_references": [],
+            "schedule_kind": "interval",
+            "context_mode": context_mode,
+            "enabled": False,
+            "run_count": 0,
+        }
+        start_turn = AsyncMock(return_value={"run_id": "run_check"})
+        with (
+            patch.object(agent_server.STORE, "sessions", {"source": {"id": "source", "backend": backend}}),
+            patch.object(agent_server, "BUSY_SESSIONS", set()),
+            patch.object(agent_server, "start_turn", start_turn),
+            patch.object(store, "mark_ran", new_callable=AsyncMock),
+            patch.object(store, "save", new_callable=AsyncMock),
+            patch.object(agent_server, "append_event", new_callable=AsyncMock),
+        ):
+            await store.run_job("job_check")
+        return list(start_turn.await_args.args[1].client_capabilities)
+
+    async def test_a_chat_hosted_claude_job_uses_the_interactive_sdk(self) -> None:
+        capabilities = await self.run_job(backend=agent_server.BACKEND_CLAUDE, context_mode="chat")
+        self.assertEqual(capabilities, [agent_server.CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY])
+
+    async def test_standalone_and_codex_jobs_are_unchanged(self) -> None:
+        for backend, context_mode in (
+            (agent_server.BACKEND_CLAUDE, "standalone"),
+            (agent_server.BACKEND_CODEX, "chat"),
+        ):
+            with self.subTest(backend=backend, context_mode=context_mode):
+                self.assertEqual(await self.run_job(backend=backend, context_mode=context_mode), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1405,6 +1405,37 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("agent_cross_chat_routes", actions)
 
+    async def test_native_steer_keeps_the_running_turns_exact_durable_routes(self) -> None:
+        # 2026-10-08: a chat with a permanent route pair could never steer, so
+        # Send now interrupted the turn and the CLI killed its agents.
+        snapshot = [self.route("a")]
+        selected = {
+            "prompt": "follow-up",
+            "provider_cross_chat_route_snapshot": snapshot,
+        }
+        self.assertTrue(
+            agent_server.provider_route_snapshots_match_for_native_steer(snapshot, snapshot)
+        )
+        actions, _jobs_access = agent_server.native_steer_provider_actions(
+            "source", selected, active_route_snapshot=snapshot,
+        )
+        self.assertIn("agent_cross_chat_routes", actions)
+        changed_revision = [dict(self.route("a"), revision="rev_" + "b" * 32)]
+        second = self.route("b", alias="other", target="target2")
+        for active in ([], [second], changed_revision, [self.route("a"), second]):
+            with self.subTest(active=active):
+                self.assertFalse(
+                    agent_server.provider_route_snapshots_match_for_native_steer(active, snapshot)
+                )
+                with self.assertRaises(agent_server.NativeSteerHandoffError):
+                    agent_server.native_steer_provider_actions(
+                        "source", selected, active_route_snapshot=active,
+                    )
+        # The running turn holds a route the message no longer carries.
+        self.assertFalse(
+            agent_server.provider_route_snapshots_match_for_native_steer(snapshot, [])
+        )
+
     async def test_admin_crud_uses_revision_cas_for_revoke(self) -> None:
         audit = AsyncMock()
         save = AsyncMock()

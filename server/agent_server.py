@@ -1092,6 +1092,12 @@ CLAUDE_SDK_IDLE_WARN_SECONDS = max(
     1.0,
     min(float(IDLE_WARN_SECONDS), CLAUDE_SDK_IDLE_TIMEOUT_SECONDS / 2),
 )
+# A question card nobody answers: after this long its recommended option (or
+# the first) is taken, so an unattended turn, a job's for instance, continues.
+CLAUDE_QUESTION_UNANSWERED_FALLBACK_SECONDS = max(
+    0.0,
+    float(agentsdock_setting("CLAUDE_QUESTION_UNANSWERED_FALLBACK_SECONDS", "600")),
+)
 # A Codex app-server notification can be silently dropped if it arrives for a
 # subscription that already closed (see _route_notification in
 # codex_app_server.py) - the turn then waits forever with zero visible
@@ -7657,28 +7663,6 @@ def effective_claude_permission_mode(sess: dict[str, Any]) -> str:
     )
 
 
-def active_claude_permission_mode(
-    session_id: str,
-    active: dict[str, Any] | None,
-) -> str:
-    """Return the Claude mode frozen when the current turn was admitted.
-
-    Session settings may be edited during a turn for use by the next turn.
-    Permission callbacks for the current turn must not consult that newer
-    value, because switching to bypassPermissions would otherwise broaden an
-    already-running provider process.
-    """
-
-    captured = str((active or {}).get("claude_permission_mode") or "")
-    if captured in CLAUDE_PERMISSION_MODES:
-        return captured
-    # Compatibility for an in-memory owner created by an older development
-    # build. New turns always carry the captured field below.
-    return effective_claude_permission_mode(
-        STORE.sessions.get(session_id) or {}
-    )
-
-
 def effective_cursor_permission_mode(sess: dict[str, Any]) -> str:
     """Return one canonical headless Cursor permission mode."""
 
@@ -13437,6 +13421,30 @@ class JobStore:
                 chat_references=chat_references,
                 redact_target_detail=True,
             )
+            context_mode = job_context_mode(job)
+            client_capabilities = (
+                [CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY]
+                if chat_references
+                else []
+            )
+            if (
+                context_mode == "chat"
+                and str(
+                    job.get("backend")
+                    or (parent_session or {}).get("backend")
+                    or DEFAULT_BACKEND
+                ) == BACKEND_CLAUDE
+            ):
+                # A run hosted by its chat uses the chat's interactive SDK
+                # process, like a message the user sends there: background
+                # Bash is tracked and the Agent tool stays available. The
+                # one-shot print process forbids both and kills its shells
+                # when the reply ends. Approvals never wait for the user and
+                # an unanswered question falls back to its recommended option,
+                # so the unattended turn cannot block.
+                client_capabilities.append(
+                    CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY
+                )
             req = TurnRequest(
                 prompt=job["prompt"],
                 file_ids=[],
@@ -13445,15 +13453,10 @@ class JobStore:
                 job_id=jid,
                 job_title=str(job.get("title") or jid),
                 job_scheduled_run_at=scheduled_run_at,
-                client_capabilities=(
-                    [CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY]
-                    if chat_references
-                    else []
-                ),
+                client_capabilities=client_capabilities,
                 chat_references=chat_references,
                 team_references=team_references,
             )
-            context_mode = job_context_mode(job)
             run_session_id = session_id
             parent_busy = False
             if context_mode == "standalone":
@@ -21773,6 +21776,39 @@ def provider_route_snapshot_allows_native_steer(value: Any) -> bool:
     )
 
 
+def provider_route_snapshots_match_for_native_steer(
+    active_value: Any,
+    selected_value: Any,
+) -> bool:
+    """Whether the message's durable routes let it join the running turn.
+
+    Route-free and ambient-only snapshots on both sides always do. Durable
+    routes do only when the message carries exactly the routes the running
+    turn already holds (same ids, revisions, targets and actions). Any other
+    difference needs a fresh run with its own authority. The steer's
+    authority is projected to live routes like a fresh run's, so a route that
+    is not live at use time still fails closed.
+    """
+
+    if provider_route_snapshot_allows_native_steer(
+        active_value
+    ) and provider_route_snapshot_allows_native_steer(selected_value):
+        return True
+
+    def identity(route: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            route.get("route_id"), route.get("revision"),
+            route.get("target_session_id"), route.get("route_kind"),
+            tuple(route.get("actions") or ()),
+        )
+
+    active_routes = normalized_provider_cross_chat_route_snapshot(active_value)
+    selected_routes = normalized_provider_cross_chat_route_snapshot(selected_value)
+    return bool(active_routes) and sorted(
+        identity(route) for route in active_routes
+    ) == sorted(identity(route) for route in selected_routes)
+
+
 def provider_team_mail_strict_command(
     purpose: Any,
     prompt: Any,
@@ -21855,8 +21891,14 @@ def team_reference_requests_skill_publish(references: list[TeamReference]) -> bo
 def native_steer_provider_actions(
     source_session_id: str,
     selected: dict[str, Any],
+    *,
+    active_route_snapshot: Any = None,
 ) -> tuple[set[str], str]:
-    """Return the helper ceiling for a route-free or ambient-only steer."""
+    """Return the helper ceiling for a steer that adds no route authority.
+
+    ``active_route_snapshot`` is the running turn's scoped snapshot; the
+    message may keep exactly those durable routes.
+    """
 
     route_snapshot = scoped_provider_cross_chat_route_snapshot(
         selected.get("provider_cross_chat_route_snapshot"),
@@ -21871,7 +21913,9 @@ def native_steer_provider_actions(
         or selected.get("team_references")
         or selected.get("cross_chat_obligation_ids")
         or selected.get("cross_chat_exchange_ids")
-        or not provider_route_snapshot_allows_native_steer(route_snapshot)
+        or not provider_route_snapshots_match_for_native_steer(
+            active_route_snapshot, route_snapshot,
+        )
         or normalized_secure_peer_route_snapshots(
             selected.get("secure_peer_route_snapshots")
         )
@@ -21910,9 +21954,19 @@ async def issue_native_steer_provider_authority(
     """Issue a fresh authority without mutating the steering user message."""
 
     del backend
+    # CURRENT_TURNS still holds the turn this message joins; promotion
+    # replaces it only after the provider has taken the message.
+    steered_turn = CURRENT_TURNS.get(source_session_id) or {}
     actions, _jobs_access = native_steer_provider_actions(
         source_session_id,
         selected,
+        active_route_snapshot=scoped_provider_cross_chat_route_snapshot(
+            steered_turn.get("provider_cross_chat_route_snapshot"),
+            purpose=steered_turn.get("purpose"),
+            provider_context_mode=str(
+                steered_turn.get("provider_context_mode") or "chat"
+            ),
+        ),
     )
     team_mail_route_snapshot = (
         team_mail_grants.snapshot(selected.get("provider_team_mail_route_snapshot"))
@@ -21930,6 +21984,15 @@ async def issue_native_steer_provider_authority(
         selected.get("provider_cross_chat_route_snapshot"),
         purpose=selected.get("purpose"),
     )
+    if not provider_route_snapshot_allows_native_steer(provider_route_snapshot):
+        # Durable routes reach the authority only while live, as for a fresh
+        # run; the gate above admitted them because the steered turn holds
+        # the same ones.
+        provider_route_snapshot = provider_cross_chat_route_snapshot_for_authority(
+            provider_route_snapshot,
+            [],
+            source_session_id=source_session_id,
+        )
     authority_path = await issue_cross_chat_capability(
         source_session_id,
         candidate_run_id,
@@ -24939,11 +25002,9 @@ async def _run_queued_turn_now_once(
                     and (
                         goal_followup or (
                             not interrupted_turn_blockers
-                            and provider_route_snapshot_allows_native_steer(
-                                interrupted_turn.get("provider_cross_chat_route_snapshot")
-                            )
-                            and provider_route_snapshot_allows_native_steer(
-                                selected.get("provider_cross_chat_route_snapshot")
+                            and provider_route_snapshots_match_for_native_steer(
+                                interrupted_turn.get("provider_cross_chat_route_snapshot"),
+                                selected.get("provider_cross_chat_route_snapshot"),
                             )
                         )
                     )
@@ -25019,10 +25080,9 @@ async def _run_queued_turn_now_once(
                             str(value) for value in selected.get("client_capabilities") or []
                         },
                         queued_claude_runtime_matches_active(session_id, selected, active_turn),
-                        provider_route_snapshot_allows_native_steer(
-                            interrupted_turn.get("provider_cross_chat_route_snapshot")
-                        ) and provider_route_snapshot_allows_native_steer(
-                            selected.get("provider_cross_chat_route_snapshot")
+                        provider_route_snapshots_match_for_native_steer(
+                            interrupted_turn.get("provider_cross_chat_route_snapshot"),
+                            selected.get("provider_cross_chat_route_snapshot"),
                         ),
                         interrupted_turn_blockers,
                     )
@@ -25201,18 +25261,35 @@ async def _run_queued_turn_now_once(
             if active_turn.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK
             else ""
         )
-        stop_result = await stop_turn(
-            session_id,
-            expected_run_id=claude_sdk_stop_run_id or None,
-            emit_event=False,
-            schedule_queue=False,
-            require_provider_turn_ready=True,
-            cascade_codex_subagents=False,
-            cascade_claude_subagents=False,
-            hard_terminalize_on_timeout=bool(claude_sdk_stop_run_id),
-            pause_queued_turns_on_stop=False,
-            preserve_active_goal=True,
+        live_background_tasks = (
+            claude_live_background_task_count(session_id)
+            if claude_sdk_stop_run_id
+            else 0
         )
+        if live_background_tasks:
+            # Interrupting would kill the agents and shells the process still
+            # tracks; the message waits for the turn instead (Stop ends them).
+            logger.info(
+                "Claude Force Send left the turn running: %d live background task(s) "
+                "session=%s queued_id=%s",
+                live_background_tasks, session_id, queued_id,
+            )
+            # Shaped like stop_turn's result; "pending" is what the deferral
+            # below reads.
+            stop_result = {"ok": True, "stopped": False, "pending": True}
+        else:
+            stop_result = await stop_turn(
+                session_id,
+                expected_run_id=claude_sdk_stop_run_id or None,
+                emit_event=False,
+                schedule_queue=False,
+                require_provider_turn_ready=True,
+                cascade_codex_subagents=False,
+                cascade_claude_subagents=False,
+                hard_terminalize_on_timeout=bool(claude_sdk_stop_run_id),
+                pause_queued_turns_on_stop=False,
+                preserve_active_goal=True,
+            )
         # A pending interrupt has not released the provider slot. Promoting it
         # would publish "Starting" and leave an unbounded BUSY waiter behind.
         deferred = bool(
@@ -25233,7 +25310,19 @@ async def _run_queued_turn_now_once(
                 queue_items.insert(insert_at, selected)
                 QUEUED_TURNS[session_id] = deque(queue_items)
                 remaining = len(queue_items)
-            if stop_result.get("pending"):
+            if live_background_tasks:
+                message = (
+                    f"Claude is still running {live_background_tasks} background "
+                    "task(s) (agents or shells) in this chat. Send now did not "
+                    "interrupt them; this message stays queued until the turn "
+                    "ends. Press Stop to end them."
+                )
+            elif stop_result.get("run_already_released"):
+                message = (
+                    "Claude has already answered; the run is closing and its "
+                    "background work keeps running. This message starts next."
+                )
+            elif stop_result.get("pending"):
                 message = (
                     "Stop is still finishing. This message remains queued; "
                     "try Force Send again shortly."
@@ -55370,7 +55459,7 @@ def public_claude_interaction(pending: dict[str, Any]) -> dict[str, Any]:
         "method": pending["method"],
         "params": pending["params"],
         "created_at": pending["created_at"],
-        "auto_resolution_ms": None,
+        "auto_resolution_ms": pending.get("auto_resolution_ms"),
     }
 
 
@@ -55654,19 +55743,11 @@ async def handle_claude_tool_permission(
                 return PermissionResultDeny(
                     message="AgentsDock could not safely route this permission request.",
                 )
-
-            # The SDK normally shadows can_use_tool in bypassPermissions mode,
-            # but the callback itself is not proof that approval is required.
-            # Honor the current persisted mode at the ownership fence so an
-            # unexpected callback cannot manufacture a desktop approval card.
-            # Explicit AskUserQuestion interactions remain user-facing questions.
-            if (
-                tool_name != "AskUserQuestion"
-                and active_claude_permission_mode(
-                    session_id,
-                    active,
-                ) == "bypassPermissions"
-            ):
+            # Approvals never wait for the user: every tool request other than
+            # a question is allowed, in every chat and in job turns. The chat's
+            # permission mode still shapes the CLI's own behavior (plan mode,
+            # acceptEdits); only the ask-the-user step is gone.
+            if tool_name != "AskUserQuestion":
                 return PermissionResultAllow(updated_input=dict(input_data))
 
             method = claude_interaction_method(tool_name)
@@ -55750,6 +55831,11 @@ async def handle_claude_tool_permission(
                 "resolution": "dismissed",
                 "original_input": dict(input_data),
                 "session_permission_suggestions": session_suggestions,
+                "auto_resolution_ms": (
+                    int(CLAUDE_QUESTION_UNANSWERED_FALLBACK_SECONDS * 1000)
+                    if CLAUDE_QUESTION_UNANSWERED_FALLBACK_SECONDS > 0
+                    else None
+                ),
             }
             async with CLAUDE_PENDING_INTERACTIONS_LOCK:
                 if len(CLAUDE_PENDING_INTERACTIONS) < MAX_CODEX_PENDING_INTERACTIONS:
@@ -55782,7 +55868,57 @@ async def handle_claude_tool_permission(
             "claude_interaction_requested",
             {"interaction": public_claude_interaction(pending)},
         )
-        response = await asyncio.shield(pending["future"])
+        fallback_ms = pending.get("auto_resolution_ms")
+        if fallback_ms is None:
+            response = await asyncio.shield(pending["future"])
+        else:
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.shield(pending["future"]),
+                    timeout=max(0.001, fallback_ms / 1000),
+                )
+            except asyncio.TimeoutError:
+                # Nobody answered in time: take each question's recommended
+                # option (the CLI marks it "(Recommended)" in the label), or
+                # its first, so the turn continues unattended.
+                fallback: dict[str, Any] = {"answers": {}}
+                for question in pending["params"].get("questions") or []:
+                    if not isinstance(question, dict):
+                        continue
+                    labels = [
+                        str(option["label"])
+                        for option in question.get("options") or []
+                        if isinstance(option, dict) and option.get("label")
+                    ]
+                    if not labels:
+                        continue
+                    recommended = [
+                        label for label in labels if "recommend" in label.lower()
+                    ]
+                    chosen = (
+                        recommended
+                        if recommended and bool(question.get("multiSelect"))
+                        else [recommended[0] if recommended else labels[0]]
+                    )
+                    fallback["answers"][str(question.get("id") or "")] = {
+                        "answers": chosen,
+                    }
+                async with CLAUDE_PENDING_INTERACTIONS_LOCK:
+                    won = (
+                        not pending.get("responded")
+                        and not pending["future"].done()
+                    )
+                    if won:
+                        pending["responded"] = True
+                        pending["resolution"] = "auto_resolved"
+                        pending["future"].set_result(fallback)
+                if won:
+                    logger.info(
+                        "Claude question answered with its recommended option after %gs "
+                        "session=%s interaction=%s",
+                        fallback_ms / 1000, session_id, interaction_id,
+                    )
+                response = fallback if won else await asyncio.shield(pending["future"])
         # The UI response can race Stop, Delete, a native steering handoff, or
         # supervisor replacement after the card was rendered. Revalidate the
         # exact owner/run immediately before returning an allow decision so a
@@ -57335,6 +57471,21 @@ async def release_claude_run_for_queued_turn(session_id: str, run_id: str | None
             session_id, active_run_id,
         )
     return released
+
+
+def claude_live_background_task_count(session_id: str) -> int:
+    """Agents and shells the chat's Claude process still tracks.
+
+    Interrupting or disconnecting that process ends them. Paths a message or
+    housekeeping can trigger check this and leave the process alone; only an
+    explicit Stop, Delete, Rewind or Reload may end them.
+    """
+
+    manager = CLAUDE_SDK_MANAGER
+    counter = getattr(manager, "inflight_task_count", None)
+    if manager is None or not callable(counter):
+        return 0
+    return counter(session_id)
 
 
 async def close_claude_sdk_manager() -> None:
@@ -66235,7 +66386,6 @@ async def run_claude_sdk(
         "provider_effort": str(sess.get("effort") or ""),
         # Freeze process policy for the lifetime of this provider turn. The
         # persisted session value may change concurrently for the next turn.
-        "claude_permission_mode": effective_claude_permission_mode(sess),
         "configuration_key": configuration_key,
         "provider_session_id": resume_provider_id,
         "provider_turn_ready": False,
@@ -66478,6 +66628,7 @@ async def run_claude_sdk(
     deadline_clock_was_paused = False
     provider_acknowledged = initial_provider_ready
     idle_warning_emitted = False
+    live_tasks_deferred_timeout_logged = False
     manifest_watch_task: asyncio.Task[Any] | None = asyncio.create_task(
         watch_manifest_artifacts(
             session_id,
@@ -66622,6 +66773,7 @@ async def run_claude_sdk(
         nonlocal deadline_clock_checked_monotonic
         nonlocal deadline_clock_was_paused
         nonlocal idle_warning_emitted
+        nonlocal live_tasks_deferred_timeout_logged
         nonlocal stream_error
         nonlocal retire_supervisor
         nonlocal delivery_unknown
@@ -66717,6 +66869,17 @@ async def run_claude_sdk(
                 )
                 last_activity_monotonic = observed_at
                 return False
+            if claude_live_background_task_count(session_id):
+                # Retiring the process would kill the agents and shells it
+                # still tracks; wait instead (Stop ends them).
+                if not live_tasks_deferred_timeout_logged:
+                    live_tasks_deferred_timeout_logged = True
+                    logger.warning(
+                        "Claude SDK idle timeout deferred while background tasks run session=%s run=%s",
+                        session_id, current_run_id,
+                    )
+                last_activity_monotonic = observed_at
+                return False
             stream_error = (
                 "Claude SDK produced no provider activity for "
                 f"{CLAUDE_SDK_IDLE_TIMEOUT_SECONDS:g}s."
@@ -66732,6 +66895,8 @@ async def run_claude_sdk(
         if (
             CLAUDE_SDK_TURN_TIMEOUT_SECONDS > 0
             and elapsed >= CLAUDE_SDK_TURN_TIMEOUT_SECONDS
+            # Same reason as the idle timeout above.
+            and not claude_live_background_task_count(session_id)
         ):
             stream_error = (
                 "Claude SDK exceeded the absolute turn timeout of "
@@ -68050,6 +68215,20 @@ async def run_claude(
                 session_id,
                 run_id,
                 "Claude provider commands require the interactive Agent SDK transport.",
+            )
+            return
+        live_background_tasks = claude_live_background_task_count(session_id)
+        if live_background_tasks:
+            # Evicting the SDK process for a one-shot print turn would kill
+            # the agents and shells it still tracks.
+            await finish_claude_sdk_start_failure(
+                session_id,
+                run_id,
+                (
+                    f"This chat's Claude process is still running {live_background_tasks} "
+                    "background task(s); a compatibility turn would end them. Use an "
+                    "interactive client or wait for them to finish."
+                ),
             )
             return
         # A compatibility print turn advances the same provider conversation
@@ -98194,6 +98373,8 @@ async def stop_turn(
     native_control_interrupt_reserved = False
     native_claude_interrupt_reserved = False
     claude_run_released = False
+    # A release this Stop did not perform: the run is already closing.
+    claude_run_already_released = False
     transition_ready: asyncio.Event | None = None
     owned_tasks: list[asyncio.Task[Any]] = []
     stopping_run_id: str | None = None
@@ -98246,7 +98427,17 @@ async def stop_turn(
                 ),
             )
         if active:
-            if require_provider_turn_ready and not (
+            if (
+                active.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK
+                and getattr(active.get("claude_sdk_run"), "released", False) is True
+            ):
+                # release_awaiting_run already ended this run with the model's
+                # answer; its runner is closing it and the background agents
+                # and shells stay on the chat's process. Nothing is left to
+                # stop: an interrupt is a no-op and the hard-terminalize
+                # fallback would evict that process with them.
+                claude_run_already_released = True
+            elif require_provider_turn_ready and not (
                 active.get("transport") == CODEX_TRANSPORT_APP_SERVER
                 and active.get("codex_child_continuation_waiting") is True
                 and isinstance(active.get("codex_child_continuation_stop"), asyncio.Event)
@@ -98463,6 +98654,20 @@ async def stop_turn(
             if retry_required:
                 schedule_claude_stop_fence_retry(session_id)
 
+    if claude_run_already_released:
+        if pause_queued_successors:
+            await pause_queued_turns_after_explicit_stop(session_id)
+        return {
+            "ok": True,
+            "stopped": False,
+            # pending: Force Send re-queues the message; the key picks its notice.
+            "pending": True,
+            "run_already_released": True,
+            "message": (
+                "Claude has already answered; the run is closing and its "
+                "background work keeps running."
+            ),
+        }
     if deferred:
         return {
             "ok": True,

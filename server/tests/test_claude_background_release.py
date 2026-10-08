@@ -76,19 +76,27 @@ class StopReleasesWaitingRunTests(unittest.IsolatedAsyncioTestCase):
     while children are still running.
     """
 
-    async def stop(self, *, awaiting: bool, released: bool | Exception = True) -> dict:
+    async def stop(
+        self, *, awaiting: bool, released: bool | Exception = True, already_released: bool = False,
+    ) -> dict:
         manager = AsyncMock()
         manager.release_awaiting_run = AsyncMock(
             side_effect=released if isinstance(released, Exception) else None, return_value=released,
         )
         interrupt = AsyncMock(return_value=True)
         fence = AsyncMock(return_value=agent_server.empty_subagent_stop_result())
+        evict = AsyncMock(return_value=True)
         active = {
             "run_id": "run_parent",
             "backend": agent_server.BACKEND_CLAUDE,
             "transport": agent_server.CLAUDE_TRANSPORT_AGENT_SDK,
             "provider_turn_ready": True,
-            "claude_sdk_run": SimpleNamespace(run_id="run_parent", awaiting_background_tasks=awaiting),
+            # hard-terminalize evicts only a token-owned process; the already
+            # released run below must never reach it.
+            "claude_sdk_owner_token": "owner",
+            "claude_sdk_run": SimpleNamespace(
+                run_id="run_parent", awaiting_background_tasks=awaiting, released=already_released,
+            ),
         }
         with (
             patch.object(agent_server.STORE, "sessions", {SESSION: {"id": SESSION, "backend": agent_server.BACKEND_CLAUDE}}),
@@ -104,11 +112,15 @@ class StopReleasesWaitingRunTests(unittest.IsolatedAsyncioTestCase):
             patch.object(agent_server, "CLAUDE_SDK_MANAGER", manager),
             patch.object(agent_server, "interrupt_claude_sdk_run_bounded", interrupt),
             patch.object(agent_server, "stop_idle_claude_background_subagents_bounded", fence),
+            patch.object(agent_server, "evict_claude_sdk_chat", evict),
             patch.object(agent_server, "append_event", AsyncMock(return_value={})),
             patch.object(agent_server, "STOP_CONFIRM_TIMEOUT_SECONDS", 0.01),
         ):
             result = await agent_server.stop_turn(SESSION)
-        return {"result": result, "release": manager.release_awaiting_run, "interrupt": interrupt, "fence": fence}
+        return {
+            "result": result, "release": manager.release_awaiting_run, "interrupt": interrupt,
+            "fence": fence, "evict": evict, "active": active,
+        }
 
     async def test_a_waiting_run_is_released_and_its_children_are_left_running(self) -> None:
         probe = await self.stop(awaiting=True)
@@ -123,6 +135,19 @@ class StopReleasesWaitingRunTests(unittest.IsolatedAsyncioTestCase):
         probe["release"].assert_not_awaited()
         probe["interrupt"].assert_awaited_once()
         probe["fence"].assert_awaited_once()
+
+    async def test_a_released_run_is_left_to_close_without_interrupt_or_eviction(self) -> None:
+        # 2026-10-08: Send now 0.4 s after a release found the run still
+        # closing, waited 5 s, then evicted the process and its two agents.
+        probe = await self.stop(awaiting=False, already_released=True)
+        self.assertFalse(probe["result"]["stopped"])
+        self.assertTrue(probe["result"]["pending"])
+        self.assertTrue(probe["result"]["run_already_released"])
+        probe["release"].assert_not_awaited()
+        probe["interrupt"].assert_not_awaited()
+        probe["fence"].assert_not_awaited()
+        probe["evict"].assert_not_awaited()
+        self.assertNotIn("stop_requested", probe["active"])
 
     async def test_a_release_that_returns_false_falls_back_to_the_interrupt(self) -> None:
         probe = await self.stop(awaiting=True, released=False)

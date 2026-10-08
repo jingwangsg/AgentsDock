@@ -2452,6 +2452,46 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
             await client.emit({"type": "result", "is_error": False, "result": "first"})
             self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "first")
 
+    async def test_a_cli_abort_that_delivers_a_follow_up_keeps_the_run_and_its_agents(self) -> None:
+        # 2026-10-08: the CLI aborted its own turn to deliver a "now" follow-up
+        # (a subagent's Bash could not be moved). The aborted Result ended the
+        # run and disconnected the client; the agent's next tool call was denied.
+        handle = await self.manager.start_run("chat-abort-steer", "Work", run_id="run-abort", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "system", "subtype": "task_started", "task_id": "agent-1", "task_type": "local_agent"})
+        self.assertEqual((await asyncio.wait_for(handle.__anext__(), 5))["subtype"], "task_started")
+        client.auto_ack = False
+        self.assertTrue(await self.manager.steer("chat-abort-steer", run_id="run-abort", prompt="beta please"))
+        correlation_id = client.query_envelopes[-1][0]["uuid"]
+        await client.emit({"type": "result", "is_error": False, "terminal_reason": "aborted_tools", "result": ""})
+        await asyncio.sleep(0.05)
+        self.assertFalse(handle.done)
+        self.assertFalse(client.disconnected)
+        self.assertEqual(self.manager.inflight_task_count("chat-abort-steer"), 1)
+        await client.emit({"type": "user", "uuid": correlation_id, "isReplay": True, "content": "beta please"})
+        await client.emit({"type": "assistant", "text": "beta"})
+        self.assertEqual((await asyncio.wait_for(handle.__anext__(), 5))["text"], "beta")
+        await client.emit({"type": "result", "is_error": False, "result": "beta"})
+        for _ in range(50):
+            if handle.awaiting_background_tasks:
+                break
+            await asyncio.sleep(0)
+        # The agent still runs, so this Result is deferred; the run is intact.
+        self.assertTrue(handle.awaiting_background_tasks)
+        self.assertFalse(client.disconnected)
+
+    async def test_an_aborted_result_after_a_requested_interrupt_still_ends_the_run(self) -> None:
+        handle = await self.manager.start_run("chat-abort-stop", "Work", run_id="run-stop", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "system", "subtype": "task_started", "task_id": "agent-1", "task_type": "local_agent"})
+        self.assertEqual((await asyncio.wait_for(handle.__anext__(), 5))["subtype"], "task_started")
+        client.auto_ack = False
+        self.assertTrue(await self.manager.steer("chat-abort-stop", run_id="run-stop", prompt="late"))
+        self.assertTrue(await self.manager.interrupt("chat-abort-stop", run_id="run-stop"))
+        await client.emit({"type": "result", "is_error": False, "terminal_reason": "aborted_tools", "result": ""})
+        self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["terminal_reason"], "aborted_tools")
+        self.assertTrue(client.disconnected)
+
     async def test_queued_message_releases_a_run_that_only_background_tasks_keep_open(self) -> None:
         awaited: list[tuple[str, str]] = []
 
@@ -3676,6 +3716,73 @@ class ClaudeSDKBackgroundTrackingHookTests(unittest.IsolatedAsyncioTestCase):
             matcher.hooks == [reject_nondurable_scheduler_hook]
             for matcher in matchers[2:]
         ))
+
+
+class LiveBackgroundTasksKeepTheProcessTests(unittest.IsolatedAsyncioTestCase):
+    """A process that still tracks agents or shells is left alone by housekeeping.
+
+    2026-10-08: disconnecting the chat's process kills them. Idle TTL, LRU
+    overflow and a changed configuration (model, effort, runtime) must not
+    replace such a process; only Stop, Delete or Rewind end them.
+    """
+
+    async def asyncSetUp(self) -> None:
+        self.factory = FakeFactory()
+        self.manager = ClaudeSDKSupervisorManager(
+            client_factory=self.factory, max_clients=1, idle_ttl_seconds=0.01,
+        )
+
+    async def asyncTearDown(self) -> None:
+        await self.manager.close_all()
+
+    async def released_run_with_live_agent(self, chat: str = "live") -> Any:
+        handle = await self.manager.start_run(chat, "Work", run_id="r1", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "system", "subtype": "task_started", "task_id": "agent-1", "task_type": "local_agent"})
+        await client.emit({"type": "result", "result": "launched"})
+        for _ in range(200):
+            if handle.awaiting_background_tasks:
+                break
+            await asyncio.sleep(0)
+        self.assertTrue(handle.awaiting_background_tasks)
+        self.assertTrue(await self.manager.release_awaiting_run(chat, run_id="r1"))
+        await asyncio.wait_for(collect(handle), 5)
+        self.assertEqual(self.manager.inflight_task_count(chat), 1)
+        return client
+
+    async def test_idle_ttl_and_overflow_skip_a_chat_with_live_tasks(self) -> None:
+        client = await self.released_run_with_live_agent()
+        await asyncio.sleep(0.05)
+        self.assertEqual(await self.manager.evict_idle(), [])
+        other = await self.manager.start_run("other", "Hi", run_id="o1", options={}, configuration_key="same")
+        await self.factory.clients[-1].emit({"type": "result", "result": "ok"})
+        await asyncio.wait_for(collect(other), 5)
+        self.assertNotIn("live", await self.manager.evict_idle())
+        self.assertTrue(self.manager.is_loaded("live"))
+        await client.emit({"type": "system", "subtype": "task_notification", "task_id": "agent-1", "status": "completed"})
+        for _ in range(200):
+            if self.manager.inflight_task_count("live") == 0:
+                break
+            await asyncio.sleep(0)
+        self.assertEqual(self.manager.inflight_task_count("live"), 0)
+        await asyncio.sleep(0.05)
+        self.assertIn("live", await self.manager.evict_idle())
+
+    async def test_a_changed_configuration_reports_live_tasks_instead_of_replacing(self) -> None:
+        client = await self.released_run_with_live_agent()
+        with self.assertRaises(ClaudeSDKConfigurationConflict) as caught:
+            await self.manager.start_run("live", "Again", run_id="r2", options={}, configuration_key="other-model")
+        self.assertIn("1 background task(s) are still running", str(caught.exception))
+        self.assertTrue(self.manager.is_loaded("live"))
+        self.assertEqual(self.manager.inflight_task_count("live"), 1)
+        handle = await self.manager.start_run("live", "Again", run_id="r2", options={}, configuration_key="same")
+        self.assertIs(self.factory.clients[-1], client)
+        await client.emit({"type": "system", "subtype": "task_notification", "task_id": "agent-1", "status": "completed"})
+        await client.emit({"type": "result", "result": "done"})
+        await asyncio.wait_for(collect(handle), 5)
+        self.assertEqual(self.manager.inflight_task_count("live"), 0)
+        await self.manager.start_run("live", "New model", run_id="r3", options={}, configuration_key="other-model")
+        self.assertIsNot(self.factory.clients[-1], client)
 
 
 if __name__ == "__main__":

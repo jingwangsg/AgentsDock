@@ -32,6 +32,7 @@ FUNCTIONS = {
     "normalized_provider_cross_chat_routes",
     "normalized_provider_cross_chat_route_snapshot",
     "provider_route_snapshot_allows_native_steer",
+    "provider_route_snapshots_match_for_native_steer",
 }
 
 
@@ -175,6 +176,8 @@ class GoalFollowupAdmissionTests(unittest.IsolatedAsyncioTestCase):
             "force_send_conflict_detail": Mock(side_effect=lambda *_args, **kwargs: kwargs),
             "queued_codex_runtime_matches_active": Mock(return_value=True),
             "queued_claude_runtime_matches_active": Mock(return_value=False),
+            "claude_live_background_task_count": Mock(return_value=0),
+            "logger": SimpleNamespace(info=Mock()),
             "provider_route_snapshot_allows_native_steer": Mock(
                 side_effect=self.ns["provider_route_snapshot_allows_native_steer"],
             ),
@@ -471,6 +474,32 @@ class GoalFollowupAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 self.selected["provider_cross_chat_route_snapshot"] = saved_route_snapshots()
                 self.selected[field] = value
                 await self.assert_rejected()
+
+    async def test_claude_force_send_leaves_a_turn_with_live_background_tasks_running(self):
+        # 2026-10-08: a message that cannot steer (here a model change) used
+        # to interrupt the turn, and the CLI killed its background agents.
+        self.session.pop("codex_goal")
+        self.session["backend"] = "claude"
+        self.active.pop("codex_native_operation_kind")
+        self.active.update({
+            "backend": "claude", "transport": self.ns["CLAUDE_TRANSPORT_AGENT_SDK"],
+            "claude_sdk_run": SimpleNamespace(run_id="run-1", released=False),
+        })
+        self.current.pop("purpose")
+        self.selected.update({"backend": "claude", "client_capabilities": ["claude_sdk_interactive_v1"]})
+        self.ns["claude_live_background_task_count"] = Mock(return_value=2)
+        self.ns["CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY"] = "claude_sdk_interactive_v1"
+        events = AsyncMock(return_value={})
+        self.ns["append_event"] = events
+        result = await self.ns["_run_queued_turn_now_once"]("chat", "q-followup", require_native=False)
+        self.assertTrue(result["deferred"])
+        self.assertFalse(result["interrupted"])
+        self.assertIn("2 background task(s)", result["message"])
+        self.assertEqual(events.await_args.args[1], "turn_deferred")
+        self.forbidden["stop_turn"].assert_not_called()
+        self.forbidden["prepare_steered_turn"].assert_not_called()
+        self.assertEqual([row["queued_id"] for row in self.ns["QUEUED_TURNS"]["chat"]], ["q-before", "q-followup", "q-after"])
+        self.assertNotIn("chat", self.ns["RUN_NOW_TURNS"])
 
     async def test_saved_routes_still_require_ordinary_non_goal_authority_replacement(self):
         self.session.pop("codex_goal")

@@ -105,6 +105,8 @@ class NativeGoalSteerTests(unittest.IsolatedAsyncioTestCase):
             "codex_goal_time_budget_is_exhausted": lambda session: bool(session.get("codex_goal_time_budget_exhausted")),
             "codex_goal_time_budget_remaining": lambda session: None,
             "provider_route_snapshot_allows_native_steer": lambda value: not value,
+            "provider_route_snapshots_match_for_native_steer": lambda active, selected: not active and not selected,
+            "claude_live_background_task_count": lambda chat: 0,
             "normalized_provider_cross_chat_route_snapshot": lambda value: value or [],
             "queued_codex_runtime_matches_active": lambda *args: True,
             "build_user_provider_prompt": lambda chat, prompt, files: prompt,

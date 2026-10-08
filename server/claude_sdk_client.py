@@ -1179,6 +1179,9 @@ class ClaudeSDKRunHandle:
         self._background_task_reconciliation_consumed = False
         self._background_reconciliation_progress_observed = False
         self._background_reconciliation_aborted = False
+        # Set only when this server asked the CLI to interrupt; an aborted
+        # Result without it is the CLI's own doing (see _handle_result).
+        self._interrupt_requested = False
         self._awaiting_background_tasks = False
         self._released = False
         self._deferred_result: Any = None
@@ -1649,6 +1652,17 @@ class ClaudeSDKSupervisor:
     @property
     def is_active(self) -> bool:
         return self.active_run_id is not None or self._pending_goal_clear is not None
+
+    @property
+    def inflight_task_count(self) -> int:
+        """Agents/shells the CLI still tracks on this connection.
+
+        They outlive the run that started them, and disconnecting the process
+        kills them. Housekeeping and configuration changes leave such a
+        process alone; only an explicit Stop, Delete, Rewind or Reload ends
+        them.
+        """
+        return len(self._inflight_tasks)
 
     @property
     def connected(self) -> bool:
@@ -2511,6 +2525,7 @@ class ClaudeSDKSupervisor:
         command.generation = generation
         self._pending_goal_clear = command
         active._background_reconciliation_aborted = True
+        active._interrupt_requested = True
 
         async def clear_frame() -> AsyncIterator[dict[str, Any]]:
             yield {
@@ -2637,6 +2652,7 @@ class ClaudeSDKSupervisor:
                 )
             return
         active._background_reconciliation_aborted = True
+        active._interrupt_requested = True
         try:
             await client.interrupt()
         except Exception as exc:
@@ -3205,9 +3221,20 @@ class ClaudeSDKSupervisor:
             # runner cannot mistake it for the terminal response.
             had_inflight_tasks = bool(self._inflight_tasks)
             forced_run_end = _result_forces_run_end(command.message)
-            if active._unconfirmed_steer_ids and not forced_run_end:
+            # An abort this server did not ask for: the CLI ended its own turn
+            # to deliver a "now" follow-up because the running tool could not
+            # be moved (a subagent's Bash). It sends this Result before it
+            # replays the follow-up, so the steer id is still unconfirmed here.
+            cli_own_abort = (
+                forced_run_end
+                and not active._interrupt_requested
+                and not _message_field(command.message, "is_error", False)
+            )
+            if active._unconfirmed_steer_ids and (not forced_run_end or cli_own_abort):
                 # This Result ended the turn before the CLI took an injected
                 # follow-up; the CLI replays and answers it next, in this run.
+                # Ending the run here would disconnect the client and kill the
+                # agents it still tracks.
                 if active._result_after_steer is None:
                     self._schedule_wait_grace(
                         active.run_id, "steer_replay",
@@ -3341,6 +3368,7 @@ class ClaudeSDKSupervisor:
         client = self._client
         if active is not None and not active.done and client is not None:
             active._background_reconciliation_aborted = True
+            active._interrupt_requested = True
             with suppress(Exception):
                 await client.interrupt()
         self._fail_active(
@@ -3549,6 +3577,14 @@ class ClaudeSDKSupervisorManager:
             if supervisor.is_active or self._pins.get(chat_id, 0):
                 raise ClaudeSDKConfigurationConflict(
                     f"Claude SDK chat {chat_id} is active with another configuration"
+                )
+            if supervisor.inflight_task_count:
+                # Replacing the process would kill the agents and shells it
+                # still tracks. Report it instead; Stop ends them explicitly.
+                raise ClaudeSDKConfigurationConflict(
+                    f"{supervisor.inflight_task_count} background task(s) are still "
+                    "running on this chat's Claude process; the new model, effort or "
+                    "runtime applies after they finish or after Stop."
                 )
             self._supervisors.pop(chat_id, None)
             old_to_close = supervisor
@@ -4141,6 +4177,14 @@ class ClaudeSDKSupervisorManager:
             and not supervisor.closed
         )
 
+    def inflight_task_count(self, chat_id: str) -> int:
+        """Agents/shells still tracked on the chat's live connection."""
+
+        supervisor = self._supervisors.get(str(chat_id))
+        if supervisor is None or supervisor.closed or not supervisor.connected:
+            return 0
+        return supervisor.inflight_task_count
+
     def usage_generation(self, chat_id: str, *, run_id: str | None = None) -> str | None:
         """Identify the existing native owner without connecting or issuing RPCs."""
         supervisor = self._supervisors.get(str(chat_id))
@@ -4197,7 +4241,8 @@ class ClaudeSDKSupervisorManager:
         return True
 
     async def evict_idle(self, *, exclude: set[str] | None = None) -> list[str]:
-        """Apply TTL and LRU limits without ever evicting an active/pinned chat."""
+        """Apply TTL and LRU limits; never evict an active or pinned chat, or one
+        whose process still tracks background tasks."""
 
         self._bind_loop()
         assert self._lock is not None
@@ -4211,6 +4256,7 @@ class ClaudeSDKSupervisorManager:
                 if (
                     chat_id not in excluded
                     and not supervisor.is_active
+                    and not supervisor.inflight_task_count
                     and not self._pins.get(chat_id, 0)
                 )
             ]

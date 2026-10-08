@@ -1,5 +1,81 @@
 # Public development log
 
+## 2026-10-08 — A message never ends Claude's background agents: Send now, model changes, jobs, housekeeping (server, source)
+
+- Cause: a chat held a permanent route pair, so every Send now failed the
+  native-steer route check and interrupted the turn instead. That interrupt
+  reached a run a queued message had released 0.4 s earlier, waited 5 s for a
+  transition that run could no longer signal, and evicted the chat's Claude
+  process. The CLI then rejected every tool call of the two running agents,
+  which ended with "I stopped as asked", and the next process reported the
+  chat's background shells as lost.
+- Paths that interrupt, evict or replace a chat's Claude process fall into
+  two groups: explicit user actions (Stop on a working model, Delete, Rewind,
+  Reload, server shutdown) and everything else. The second group now checks
+  the process's live agents and shells first:
+  - Native steer also accepts a message whose durable route snapshot equals
+    the running turn's (same route ids, revisions, targets and actions); its
+    authority is projected to live routes like a fresh run's. Route-free and
+    ambient-only steers are unchanged; any other difference still requires a
+    fresh run.
+  - A Send now that cannot steer (a changed model or effort, a slash command,
+    chat or team references) no longer interrupts a turn whose process runs
+    agents or shells. The message stays queued, the deferral says how many
+    background tasks are running, and Stop remains the way to end them.
+  - An aborted Result that arrives while an injected follow-up is unconfirmed,
+    and that this server did not request, is held like the ordinary
+    pre-replay Result. The CLI aborts its own turn to deliver a "now" message
+    when a running tool cannot be moved (a subagent's Bash), then replays and
+    answers the follow-up in the same run. Ending the run on that Result
+    disconnected the client and orphaned the agents, whose next tool call was
+    denied.
+  - Stop or Send now on a run already released to a queued message returns
+    pending instead of interrupting and evicting the process; an explicit
+    Stop still pauses the queue.
+  - A model, effort or runtime change while the process still runs tasks is
+    reported instead of silently replacing the process. Idle-TTL and LRU
+    eviction skip such a process, the idle and absolute turn timeouts wait
+    while it runs tasks, and a compatibility print turn refuses to evict it.
+  - A Claude job hosted by its chat (context mode "chat") requests the
+    interactive SDK transport, so its turn runs on the chat's process with
+    tracked background Bash and the Agent tool available, like a message the
+    user sends there. The one-shot print process told the model never to use
+    `run_in_background` and, with a runtime environment, disabled the Agent
+    tool. Standalone runs and Codex jobs are unchanged.
+- Claude permission policy: tool approvals never wait for the user. Every
+  request other than a question is allowed in every chat, in job turns too;
+  the chat's permission mode still reaches the CLI (plan mode, acceptEdits),
+  only the approval card is gone, and the mode frozen at turn start is no
+  longer consulted. Questions (AskUserQuestion) still reach the desktop and
+  mobile cards, which now show a countdown; a question nobody answers within
+  10 minutes (`CLAUDE_QUESTION_UNANSWERED_FALLBACK_SECONDS`) is answered
+  with the option labelled "(Recommended)", or the first option, and the
+  card resolves as "auto_resolved". Codex approvals are unchanged.
+- Verified with unit tests for each guard, the isolated Send now suites, the
+  runner, client, jobs, routes and handoff modules, and the server test
+  shards (remaining failures are the documented pre-existing ones).
+- Real-CLI A/B on an isolated authenticated server with the incident's route
+  shape (a pair created by an @ grant), three scenarios: a mid-tool Send now,
+  a Send now 0.3 s after a queued message released the run, and a Send now
+  with a model change. Unmodified server: each started a new CLI process and
+  the agent stopped with a rejected tool call. This change: no new process,
+  the agent completed, and the message was steered, deferred to the queue, or
+  deferred with the live-task notice respectively. A manually run job used
+  the SDK transport and its background Bash completed inside the run (print
+  before).
+- The permission policy was exercised on a real CLI in a default-mode chat
+  with the fallback set to 20 s: a Bash call ran without an approval card,
+  the question card appeared with the countdown, resolved as "auto_resolved"
+  after 20 s, and the model continued with the recommended option.
+- Not exercised on a real CLI: Stop inside a released run's closing window
+  and the model-change refusal (unit tests only). A deferred message whose model differs from the running process
+  starts only after the background tasks end, and fails with that reason if
+  they are still running. A task the CLI drops without a terminal frame keeps
+  counting as live until the next message's task snapshot or an explicit
+  Stop. Why the remote run took 7 s to close after its release is not
+  explained. Not deployed to any remote.
+  Availability: source only; takes effect when a server is redeployed.
+
 ## 2026-10-08 — Desktop package 112 and Android build 56 (local package and APK)
 
 - Packages the client parts of the entries below recorded since package 111

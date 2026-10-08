@@ -417,8 +417,8 @@ class PermissionDuringStartManager(SequencedClaudeManager):
                 else getattr(options, "can_use_tool")
             )
             permission_task = asyncio.create_task(callback(
-                "Bash",
-                {"command": "pwd"},
+                "AskUserQuestion",
+                {"questions": [{"question": "Continue?", "header": "Go", "options": [{"label": "yes"}, {"label": "no"}], "multiSelect": False}]},
                 {"tool_use_id": f"permission-{call_number}"},
             ))
             self.permission_requested.set()
@@ -2073,6 +2073,34 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         sdk.assert_not_awaited()
         print_runner.assert_awaited_once()
 
+    async def test_print_compatibility_refuses_to_evict_a_process_with_live_tasks(self) -> None:
+        # 2026-10-08: the print path evicted the SDK process first, which
+        # killed the agents and shells it still tracked.
+        sdk = AsyncMock()
+        print_runner = AsyncMock()
+        evict = AsyncMock(return_value=True)
+        failure = AsyncMock()
+        with (
+            patch.object(agent_server, "run_claude_sdk", sdk),
+            patch.object(agent_server, "run_claude_print", print_runner),
+            patch.object(agent_server, "evict_claude_sdk_chat", evict),
+            patch.object(agent_server, "claude_live_background_task_count", return_value=2),
+            patch.object(agent_server, "finish_claude_sdk_start_failure", failure),
+        ):
+            await agent_server.run_claude(
+                "chat-claude",
+                "run-claude",
+                "Prompt",
+                dict(self.session),
+                Path(self.cwd) / ".manifest.json",
+                interactive_agent_sdk=False,
+            )
+        sdk.assert_not_awaited()
+        print_runner.assert_not_awaited()
+        evict.assert_not_awaited()
+        failure.assert_awaited_once()
+        self.assertIn("2 background task(s)", failure.await_args.args[2])
+
     async def test_print_fallback_retires_sdk_and_preserves_resume_identity(self) -> None:
         session = {
             **self.session,
@@ -2590,6 +2618,94 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         append_event.assert_not_awaited()
         update_metadata.assert_not_awaited()
 
+    async def test_approvals_are_allowed_in_every_permission_mode(self) -> None:
+        # Approvals never wait for the user (2026-10-08 policy); the chat's
+        # mode still reaches the CLI, only the card is gone.
+        self.session["claude_permission_mode"] = "default"
+        manager = FakeClaudeManager()
+        manager.active_run_id = "run-claude"
+        agent_server.CLAUDE_SDK_MANAGER = manager
+        agent_server.ACTIVE = {
+            "chat-claude": {
+                "run_id": "run-claude",
+                "backend": agent_server.BACKEND_CLAUDE,
+                "transport": agent_server.CLAUDE_TRANSPORT_AGENT_SDK,
+                "interactive_agent_sdk": True,
+                "stop_requested": False,
+                "claude_sdk_owner_token": manager.owner_token,
+                "claude_permission_run_id": "run-claude",
+                "claude_permissions_open": True,
+            }
+        }
+        append_event = AsyncMock(return_value={})
+        with patch.dict(sys.modules, fake_claude_sdk_modules()), patch.object(
+            agent_server, "append_event", append_event,
+        ):
+            for tool_name, input_data in (
+                ("Bash", {"command": "rm -rf build"}),
+                ("Edit", {"file_path": "/tmp/a.py", "old_string": "a", "new_string": "b"}),
+                ("ExitPlanMode", {"plan": "Proceed"}),
+            ):
+                with self.subTest(tool_name=tool_name):
+                    result = await agent_server.handle_claude_tool_permission(
+                        "chat-claude", tool_name, input_data,
+                        {"tool_use_id": f"tool-{tool_name}"}, owner_token=manager.owner_token,
+                    )
+                    self.assertIsInstance(result, FakePermissionResultAllow)
+                    self.assertEqual(result.updated_input, input_data)
+        self.assertFalse(agent_server.CLAUDE_PENDING_INTERACTIONS)
+        append_event.assert_not_awaited()
+
+    async def test_an_unanswered_question_takes_the_recommended_option(self) -> None:
+        # The card still reaches the user; after the fallback delay the
+        # "(Recommended)" option (or the first) answers it, so an unattended
+        # turn such as a job's continues.
+        manager = FakeClaudeManager()
+        manager.active_run_id = "run-claude"
+        agent_server.CLAUDE_SDK_MANAGER = manager
+        agent_server.ACTIVE = {
+            "chat-claude": {
+                "run_id": "run-claude",
+                "backend": agent_server.BACKEND_CLAUDE,
+                "transport": agent_server.CLAUDE_TRANSPORT_AGENT_SDK,
+                "interactive_agent_sdk": True,
+                "stop_requested": False,
+                "claude_sdk_owner_token": manager.owner_token,
+                "claude_permission_run_id": "run-claude",
+                "claude_permissions_open": True,
+            }
+        }
+        append_event = AsyncMock(return_value={})
+        with patch.dict(sys.modules, fake_claude_sdk_modules()), patch.object(
+            agent_server, "append_event", append_event,
+        ), patch.object(
+            agent_server, "update_claude_pending_session_metadata", AsyncMock(),
+        ), patch.object(
+            agent_server, "CLAUDE_QUESTION_UNANSWERED_FALLBACK_SECONDS", 0.05,
+        ):
+            result = await asyncio.wait_for(agent_server.handle_claude_tool_permission(
+                "chat-claude",
+                "AskUserQuestion",
+                {"questions": [
+                    {"question": "Which path?", "header": "Path", "multiSelect": False,
+                     "options": [{"label": "Rebuild everything (Recommended)"}, {"label": "Skip"}]},
+                    {"question": "Also lint?", "header": "Lint", "multiSelect": False,
+                     "options": [{"label": "No"}, {"label": "Yes"}]},
+                ]},
+                {"tool_use_id": "tool-question"},
+                owner_token=manager.owner_token,
+            ), 5)
+        self.assertIsInstance(result, FakePermissionResultAllow)
+        self.assertEqual(
+            result.updated_input["answers"],
+            {"Which path?": "Rebuild everything (Recommended)", "Also lint?": "No"},
+        )
+        requested = [call for call in append_event.await_args_list if call.args[1] == "claude_interaction_requested"]
+        self.assertEqual(requested[0].args[2]["interaction"]["auto_resolution_ms"], 50)
+        resolved = [call for call in append_event.await_args_list if call.args[1] == "claude_interaction_resolved"]
+        self.assertEqual(resolved[0].args[2]["resolution"], "auto_resolved")
+        self.assertFalse(agent_server.CLAUDE_PENDING_INTERACTIONS)
+
     async def test_permission_mode_runtime_contract_and_public_session(self) -> None:
         self.session["claude_permission_mode"] = "acceptEdits"
         with patch.object(
@@ -2679,13 +2795,6 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             "bypassPermissions",
         )
         update.assert_awaited_once()
-        self.assertEqual(
-            agent_server.active_claude_permission_mode(
-                "chat-claude",
-                agent_server.ACTIVE["chat-claude"],
-            ),
-            "default",
-        )
 
     async def test_permission_mode_store_persists_and_null_resets(self) -> None:
         self.session["claude_permission_mode"] = "default"
@@ -3734,7 +3843,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             await agent_server.resolve_claude_interaction(
                 "chat-claude",
                 interaction_id,
-                {"decision": "accept"},
+                {"answers": {"question_1": {"answers": ["yes"]}}},
             )
             await asyncio.wait_for(runner, 5)
 
@@ -4057,7 +4166,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             await agent_server.resolve_claude_interaction(
                 "chat-claude",
                 interaction_id,
-                {"decision": "accept"},
+                {"answers": {"question_1": {"answers": ["yes"]}}},
             )
             steer_result = await asyncio.wait_for(steer_future, 5)
             candidate_records = [
@@ -4870,6 +4979,35 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             if call.args[1] == "idle_warning"
         ]
         self.assertEqual(len(idle_warnings), 1)
+        self.assertTrue(any(
+            call.args[1] == "error"
+            and "no provider activity" in call.args[2]["message"]
+            for call in append_event.await_args_list
+        ))
+        runtime_failure.assert_called_once()
+
+    async def test_idle_timeout_waits_while_background_tasks_are_alive(self) -> None:
+        # 2026-10-08: retiring the process on a silent model would kill the
+        # agents and shells it still tracks.
+        handle = FakeClaudeRun([{"type": "AssistantMessage"}])
+        counts = iter([1, 1, 1])
+        live = Mock(side_effect=lambda _chat: next(counts, 0))
+        with patch.object(agent_server, "claude_live_background_task_count", live), \
+                self.assertLogs("agents-server", level="WARNING") as logs:
+            manager, append_event, append_finished, runtime_failure = (
+                await self._run_sdk_timeout_case(
+                    handle,
+                    pre_ack_timeout=1.0,
+                    post_ack_timeout=1.0,
+                    turn_timeout=1.0,
+                    idle_warn=0.01,
+                    idle_timeout=0.03,
+                )
+            )
+        # Three idle deadlines passed with tasks alive before the fourth retired the run.
+        self.assertGreaterEqual(live.call_count, 4)
+        self.assertEqual(sum("idle timeout deferred while background tasks run" in line for line in logs.output), 1)
+        self.assertEqual(manager.evict_calls, [("chat-claude", True)])
         self.assertTrue(any(
             call.args[1] == "error"
             and "no provider activity" in call.args[2]["message"]
@@ -6877,8 +7015,8 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             callback = asyncio.create_task(
                 agent_server.handle_claude_tool_permission(
                     "chat-claude",
-                    "Bash",
-                    {"command": "pwd"},
+                    "AskUserQuestion",
+                    {"questions": [{"question": "Continue?", "header": "Go", "options": [{"label": "yes"}, {"label": "no"}], "multiSelect": False}]},
                     {"tool_use_id": "tool-1"},
                     owner_token=manager.owner_token,
                 )
@@ -7136,8 +7274,8 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             callback = asyncio.create_task(
                 agent_server.handle_claude_tool_permission(
                     "chat-claude",
-                    "Bash",
-                    {"command": "pwd"},
+                    "AskUserQuestion",
+                    {"questions": [{"question": "Continue?", "header": "Go", "options": [{"label": "yes"}, {"label": "no"}], "multiSelect": False}]},
                     {"tool_use_id": "tool-stop-race"},
                     owner_token=manager.owner_token,
                 )
@@ -7156,7 +7294,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             await agent_server.resolve_claude_interaction(
                 "chat-claude",
                 interaction_id,
-                {"decision": "accept"},
+                {"answers": {"question_1": {"answers": ["yes"]}}},
             )
             result = await asyncio.wait_for(callback, 5)
 
