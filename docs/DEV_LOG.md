@@ -1,5 +1,22 @@
 # Public development log
 
+## 2026-10-08 — Goal buttons are hidden until the card is expanded (mobile, source)
+
+- The Codex goal card now hides Pause/Resume, Edit and Clear by default.
+  Its existing header disclosure shows the details and the buttons together;
+  closing it hides both. The objective summary, elapsed time and token usage
+  remain visible when collapsed.
+- Verified the 15 goal component checks and 18 mobile Codex contract checks,
+  the TypeScript check, Android production JavaScript export and native debug
+  build. The default-hidden regression fails with the previous condition.
+- Exercised Android 0.1.1 build 55 in an isolated headless emulator against
+  AgentsServer 1.0.7-beta.11 with a stored paused-goal fixture: initial collapse,
+  repeated expansion/collapse, opening and closing Edit, cancelling Clear,
+  both themes and phone width. These used real app/server requests; provider
+  goal mutations and the native iOS UI were not exercised. The native build
+  used the working tree based on `3daeab5f`.
+  Availability: source only; no server update is required.
+
 ## 2026-10-08 — A slash command sent while Claude answers a finished background task gets its own result, and Send now records why it did not steer (server, source only)
 
 - When a background task ended while no run was open, Claude started a turn

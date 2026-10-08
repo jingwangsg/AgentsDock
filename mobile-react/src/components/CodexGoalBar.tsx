@@ -100,7 +100,7 @@ export function CodexGoalBar() {
             : view.message}</Text>
       </ScrollView> : null}
       {error || actionError || clearError ? <Text testID="codex-goal-error" accessibilityRole="alert" style={[styles.help, { color: colors.red }]}>{actionError ?? clearError ?? error}</Text> : null}
-      {goalsSupported && goalsEnabled ? <View style={styles.actions}>
+      {expanded && goalsSupported && goalsEnabled ? <View style={styles.actions}>
         {view.canPause || goal.status === 'paused' ? <GoalAction
           testID="codex-goal-toggle"
           label={view.canPause ? 'Pause' : 'Resume'}

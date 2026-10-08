@@ -44,7 +44,7 @@ beforeEach(() => {
 })
 afterEach(async () => { for (const tree of mounted.splice(0)) await act(async () => tree.unmount()) })
 
-test('Pause is single-flight and applies the returned snapshot before stale refreshes settle', async () => {
+test('goal actions start collapsed and Pause applies the returned snapshot before stale refreshes settle', async () => {
   const staleRead = deferred<CodexRuntimeSnapshot>()
   const freshRead = deferred<CodexRuntimeSnapshot>()
   const save = deferred<CodexGoalSnapshot>()
@@ -52,6 +52,16 @@ test('Pause is single-flight and applies the returned snapshot before stale refr
   let reads = 0
   setTestClient({ codexRuntime: () => ++reads === 1 ? Promise.resolve(runtime()) : reads === 2 ? staleRead.promise : freshRead.promise, setCodexGoal: async (id, input) => { assert.equal(id, 'chat-a'); inputs.push(input); return save.promise } })
   const tree = await mount()
+  assert.equal(node(tree, 'codex-goal-details').props.accessibilityState.expanded, false)
+  assert.equal(contents(node(tree, 'codex-goal-objective')), goal.objective)
+  assert.match(contents(node(tree, 'codex-goal-progress')), /elapsed.*tokens/)
+  for (const id of ['codex-goal-toggle', 'codex-goal-edit', 'codex-goal-clear']) assert.equal(nodes(tree, id).length, 0)
+  await press(tree, 'codex-goal-details')
+  assert.equal(node(tree, 'codex-goal-details').props.accessibilityState.expanded, true)
+  for (const id of ['codex-goal-toggle', 'codex-goal-edit', 'codex-goal-clear']) assert.equal(nodes(tree, id).length, 1)
+  await press(tree, 'codex-goal-details')
+  for (const id of ['codex-goal-toggle', 'codex-goal-edit', 'codex-goal-clear']) assert.equal(nodes(tree, id).length, 0)
+  await press(tree, 'codex-goal-details')
   await act(async () => { void context.refresh() })
   const tap = node(tree, 'codex-goal-toggle').props.onPress
   await act(async () => { tap(); tap() })
@@ -73,6 +83,7 @@ test('Resume sends only status; Clear requires confirmation and rejects duplicat
   let cleared = 0
   setTestClient({ codexRuntime: async () => value, setCodexGoal: async (_id, input) => { inputs.push(input); value = runtime({ ...goal, status: 'active' }); return { goal: value.goal, time_budget_seconds: 600 } }, clearCodexGoal: async () => { cleared++; value = { ...runtime(null), time_budget_seconds: null }; return { goal: null, time_budget_seconds: null } } })
   const tree = await mount()
+  await press(tree, 'codex-goal-details')
   assert.equal(node(tree, 'codex-goal-toggle').props.accessibilityLabel, 'Resume goal')
   await press(tree, 'codex-goal-toggle')
   assert.deepEqual(inputs, [{ status: 'active' }])
@@ -147,6 +158,7 @@ test('server configuration immediately disables actions and ignores other server
   let writes = 0
   setTestClient({ codexRuntime: () => ++reads === 1 ? Promise.resolve(runtime()) : read.promise, setCodexGoal: async () => { writes++; return { goal, time_budget_seconds: 600 } } })
   const tree = await mount()
+  await press(tree, 'codex-goal-details')
   await act(async () => announceCodexGoalsConfigurationChanged('another-profile', 1, false))
   assert.equal(nodes(tree, 'codex-goal-toggle').length, 1)
   await act(async () => announceCodexGoalsConfigurationChanged('profile-a', 1, false))
@@ -174,12 +186,15 @@ test('late goal mutation results cannot replace the newly selected server snapsh
   const save = deferred<CodexGoalSnapshot>()
   setTestClient({ codexRuntime: async () => runtime(), setCodexGoal: () => save.promise })
   const tree = await mount()
+  await press(tree, 'codex-goal-details')
   await press(tree, 'codex-goal-toggle')
   const otherGoal = { ...goal, objective: 'Other server goal', status: 'blocked' as const }
   await act(async () => { setTestClient({ codexRuntime: async () => runtime(otherGoal) }); useAppStore.setState({ activeProfileId: 'profile-b', profileGeneration: 2 }) })
   await act(async () => save.resolve({ goal: { ...goal, status: 'paused' }, time_budget_seconds: 600 }))
   assert.equal(contents(node(tree, 'codex-goal-objective')), 'Other server goal')
   assert.equal(contents(node(tree, 'codex-goal-state')), 'Goal blocked')
+  assert.equal(node(tree, 'codex-goal-details').props.accessibilityState.expanded, false)
+  assert.equal(nodes(tree, 'codex-goal-edit').length, 0)
 })
 
 test('Clear confirmation cannot delete a replacement goal or another selected server goal', async () => {
@@ -187,6 +202,7 @@ test('Clear confirmation cannot delete a replacement goal or another selected se
   let clears = 0
   setTestClient({ codexRuntime: async () => value, clearCodexGoal: async () => { clears++; return { goal: null, time_budget_seconds: null } } })
   const tree = await mount()
+  await press(tree, 'codex-goal-details')
   await press(tree, 'codex-goal-clear')
   value = runtime({ ...goal, objective: 'Replacement goal', createdAt: 100 })
   await act(async () => { await context.refresh() })
@@ -205,6 +221,7 @@ test('blocked, budget-limited and complete goals show honest states without a re
   let value = runtime({ ...goal, status: 'blocked' })
   setTestClient({ codexRuntime: async () => value })
   const tree = await mount()
+  await press(tree, 'codex-goal-details')
   for (const [status, label] of [['blocked', 'Goal blocked'], ['budgetLimited', 'Budget limited'], ['complete', 'Goal complete']] as const) {
     value = runtime({ ...goal, status })
     await act(async () => { await context.refresh() })
@@ -233,6 +250,7 @@ test('direct Edit opens the goal editor and refreshes the current chat', async (
   let reads = 0
   setTestClient({ codexRuntime: async () => { reads++; return runtime({ ...goal, status: 'paused' }) } })
   const tree = await mount()
+  await press(tree, 'codex-goal-details')
   const before = reads
   await press(tree, 'codex-goal-edit')
   assert.equal(nodes(tree, 'codex-goal-editor').length, 1)
@@ -246,6 +264,7 @@ test('explicitly unsupported goals stay read-only and unavailable runtime action
   let writes = 0
   setTestClient({ codexRuntime: async () => value, setCodexGoal: async () => { writes++; return { goal, time_budget_seconds: 600 } } })
   const tree = await mount()
+  await press(tree, 'codex-goal-details')
   await act(async () => useAppStore.setState({ health: { ...health, capabilities: { codex_controls: { available: true, version: 1, interactive_client_capability: 'codex_interactive_v1', features: { goals: false } } } } as Health }))
   assert.equal(contents(node(tree, 'codex-goal-state')), 'Goals unavailable')
   assert.equal(nodes(tree, 'codex-goal-toggle').length, 0)
@@ -264,6 +283,7 @@ test('a late pre-reconnect failure cannot clear a newer mutation or report a sta
   let writes = 0
   setTestClient({ codexRuntime: async () => runtime(), setCodexGoal: () => ++writes === 1 ? first.promise : second.promise })
   const tree = await mount()
+  await press(tree, 'codex-goal-details')
   await press(tree, 'codex-goal-toggle')
   await act(async () => useAppStore.setState({ connected: false }))
   await act(async () => useAppStore.setState({ connected: true }))
