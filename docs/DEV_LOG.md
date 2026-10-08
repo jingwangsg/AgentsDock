@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-08 — Restart the local server from its row in Settings → Server (desktop source)
+
+- The local server's row gets a Restart icon unless the row shows the server
+  offline; Start still replaces it then. Restart asks launchd to restart the
+  server's LaunchAgent and waits until a new server instance answers. This is
+  the restart step of "Update & redeploy all", without its redeploys and CLI
+  updates. If chats are running, the row shows how many will stop, or that
+  they could not be counted, and offers "Restart anyway". While a restart
+  runs, the other server actions are disabled, and the app refuses a second
+  restart or "Update & redeploy all" until it ends.
+- The existing "Restart server" in the connection panel is unchanged. It needs
+  a server installed as a managed user service, so it is unavailable for a
+  LaunchAgent that runs a source checkout.
+- Source: uncommitted tree on 5b9b30b3. Server: AgentsServer 1.0.7-beta.11;
+  no server update is required.
+- Checks run: Electron type check; `service`, `ServerManagement`, `ipc`,
+  `ipc-channels`, `local-hub`, preload and i18n tests. The new tests fail when
+  any one of these is removed: the running-chat check for an unreadable count,
+  the refusal of a second restart or of "Update & redeploy all" during one,
+  the disabled server actions during a restart, the hidden Start while the
+  restarting server is down, and the disabled "Restart anyway" while a remote
+  redeploys. Production build.
+- Isolated native app (built app, isolated user data, window on the real
+  display) against the live local server, in English and Chinese: the button
+  appears on the local row only, a click shows the running-chat count the
+  server reports, Cancel clears it, a second click asks again, and the server
+  kept its instance id and process throughout.
+- Acceptance of the restart itself is pending: "Restart anyway" was not
+  clicked against the live local server, because it would stop its running
+  chats. Not observed in the app: the row while the server is down, the
+  "Restarted." result, and the reconnection afterwards. Availability: source
+  only.
+
 ## 2026-10-08 — Desktop package 112 and Android build 56 (local package and APK)
 
 - Packages the client parts of the entries below recorded since package 111

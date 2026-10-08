@@ -9540,6 +9540,43 @@ describe('server profile lifecycle', () => {
     ])
   })
 
+  it('restarts the hub only after its running chats are confirmed, one restart at a time', async () => {
+    let instance = 'boot-1'
+    let reachable = true
+    const hub = fakeClient({
+      health: async () => {
+        if (!reachable) throw new Error('connect ECONNREFUSED 127.0.0.1:7850')
+        return { ok: true, active: ['chat-1'], server_instance_id: instance }
+      }
+    })
+    // Upper bound: the restart also starts background health probes of every profile.
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [fakeClient(), fakeClient()],
+      [DEFAULT_SERVER_URL]: Array(8).fill(hub)
+    })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    let finishRestart = () => {}
+    vi.mocked(startLocalServerAgent).mockReset().mockImplementation(() => new Promise<void>(resolve => {
+      finishRestart = () => { instance = 'boot-2'; resolve() }
+    }))
+
+    // A count that cannot be read is not zero.
+    reachable = false
+    await expect(service.restartLocalHub(false)).resolves.toEqual({ restarted: false, running: null })
+    reachable = true
+    await expect(service.restartLocalHub(false)).resolves.toEqual({ restarted: false, running: 1 })
+    expect(startLocalServerAgent).not.toHaveBeenCalled()
+
+    const restart = service.restartLocalHub(true)
+    await vi.waitFor(() => expect(startLocalServerAgent).toHaveBeenCalledExactlyOnceWith(true))
+    // A second kickstart -k would stop the server the first one started.
+    await expect(service.restartLocalHub(true)).rejects.toThrow('The local server is already restarting.')
+    await expect(service.updateAndRedeployAll(true, () => undefined)).rejects.toThrow('The local server is already restarting.')
+    finishRestart()
+    await expect(restart).resolves.toEqual({ restarted: true, running: 0 })
+    expect(startLocalServerAgent).toHaveBeenCalledOnce()
+  })
+
   it('moves a hub remote through the hub, and its profile follows the new host even when the deploy fails', async () => {
     const moved = { ...hubRemote('r1'), ssh_host: 'oci@new-cluster' }
     const hub = Object.assign(fakeClient(), {
