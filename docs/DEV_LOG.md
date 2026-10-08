@@ -1,5 +1,41 @@
 # Public development log
 
+## 2026-10-09 — Android browser tabs load every page through the selected server's network (server and Android source)
+
+- An Android browser tab loaded pages from the phone's own network; only
+  localhost went through the tab's port tunnel to the server. A page on a
+  host that only the server's network can resolve or reach (an intranet name
+  behind a VPN the Mac is on and the phone is not) failed on the phone while
+  it opened on the desktop.
+- The tab's tunnel now carries every page: the server's port tunnel accepts a
+  `host` query parameter for browser tabs (a DNS name or IP literal, which the
+  server resolves and dials; a chat's tunnel still reaches the server's
+  loopback only), and the Android module points the app's web views at its
+  SOCKS5 listener for all hosts, so host names reach the server unresolved.
+  The server's own address stays direct, since the app's other web views talk
+  to it, unless that address is itself a loopback literal (adb reverse), so a
+  page's localhost is the server's as on the desktop. On a WebView without
+  proxy override, every page loads from the phone, as before. The server
+  advertises the host-naming tunnel as `browser_tunnel_hosts_v1`; against a
+  server without it the tab keeps the previous behaviour, localhost through
+  the tunnel and every other page from the phone, instead of having the old
+  server dial its own loopback for a page meant for another host.
+- Exposure: the listener on the phone's 127.0.0.1 has no authentication, so
+  while a browser tab is on screen another app on the same phone that finds
+  its port can reach any host the server's network reaches, not only the
+  server's loopback ports as before. The tunnel itself still requires the
+  server token.
+- Verified with the server tunnel tests, the Android type check, and the
+  rebuilt APK on an emulator against an isolated server with the server
+  token: an intranet HTTP page, an HTTPS page and the server's own localhost
+  each opened through tunnels the server logged with the named host. Against
+  a server without the capability, the same build loaded an external page
+  from the phone and still tunnelled localhost. Not exercised: a phone off the
+  server's network (the emulator shares the Mac's), and iOS, which has no
+  native module.
+  Availability: source only; takes effect in the next Android build and when
+  a server is redeployed.
+
 ## 2026-10-09 — Desktop package 114 and Android build 58 (local package and APK)
 
 - Packages the entry above recorded since package 113 and build 57: the

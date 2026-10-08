@@ -14,6 +14,7 @@ import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -28,14 +29,18 @@ private const val READ_CHUNK_BYTES = 64 * 1024
 private const val SEND_HIGH_WATER_BYTES = 1024 * 1024L
 private val IPV4_LITERAL = Regex("""\d{1,3}(\.\d{1,3}){3}""")
 
-/** Where loopback connections go: one browser tab's port tunnel on the selected server. */
-data class TunnelRoute(val tabId: String, val tunnelPrefix: String, val token: String)
+/**
+ * Where connections go: one browser tab's port tunnel on the selected server. `allHosts`
+ * when that server dials a named host; otherwise only loopback destinations are carried.
+ */
+data class TunnelRoute(val tabId: String, val tunnelPrefix: String, val token: String, val allHosts: Boolean)
 
 /**
- * A SOCKS4/SOCKS5 listener on 127.0.0.1 that carries each CONNECT to a loopback
- * destination over the server's port tunnel: one WebSocket per TCP connection,
- * raw bytes both ways, the destination port kept. The web view is configured to
- * send only loopback hosts here; any other destination is refused, never dialed.
+ * A SOCKS4/SOCKS5 listener on 127.0.0.1 that carries each CONNECT over the server's
+ * port tunnel: one WebSocket per TCP connection, raw bytes both ways, the destination
+ * port kept. A loopback destination is the server's own localhost; any other host is
+ * named to the server, which resolves and dials it, when the route allows that. Nothing
+ * is dialed from the phone; a destination the route excludes is refused.
  */
 class LoopbackSocksProxy(private val http: OkHttpClient) {
   @Volatile var route: TunnelRoute? = null
@@ -73,14 +78,15 @@ class LoopbackSocksProxy(private val http: OkHttpClient) {
       val output = client.getOutputStream()
       val request = readConnectRequest(input, output) ?: return
       val route = route
-      if (route == null || !isLoopback(request.host)) {
+      if (route == null || !(route.allHosts || isLoopback(request.host))) {
         request.reply(output, granted = false)
         return
       }
+      val hostQuery = if (isLoopback(request.host)) "" else "?host=${URLEncoder.encode(request.host, "UTF-8")}"
       val bridge = TunnelBridge(client)
       val tunnel = http.newWebSocket(
         Request.Builder()
-          .url("${route.tunnelPrefix}${request.port}/tunnel/ws")
+          .url("${route.tunnelPrefix}${request.port}/tunnel/ws$hostQuery")
           .header("Sec-WebSocket-Protocol", "$TUNNEL_PROTOCOL, $TOKEN_PROTOCOL_PREFIX${route.token.encodeUtf8().base64Url().trimEnd('=')}")
           .build(),
         bridge,

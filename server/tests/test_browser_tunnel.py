@@ -2,6 +2,8 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from fastapi.testclient import TestClient
+
 import agent_server
 from tests.test_port_tunnel import DuplexWebSocket, RecordingWebSocket, authenticated_protocols
 
@@ -55,6 +57,61 @@ class BrowserTunnelTests(unittest.IsolatedAsyncioTestCase):
                     await agent_server.session_port_tunnel("browser_test", port, socket)
                 self.assertEqual(socket.calls[-1][1], code)
                 self.assertEqual(connection.await_count, 0 if port == "0" else 1)
+
+    async def test_browser_tab_names_a_host_for_the_server_to_resolve_and_dial(self) -> None:
+        hosts = (
+            ("intranet.example.", "intranet.example"),  # trailing dot dropped
+            ("my_host.corp", "my_host.corp"),  # Chromium accepts underscores in names
+            ("[fd00::2]", "fd00::2"),  # bracketed IPv6 literal
+            ("192.0.2.7", "192.0.2.7"),
+        )
+        for named, dialed in hosts:
+            with self.subTest(host=named):
+                socket = RecordingWebSocket(authenticated_protocols())
+                connection = AsyncMock(side_effect=ConnectionRefusedError("test host refuses"))
+                with patch.object(agent_server, "AGENT_TOKEN", "server-token"), \
+                     patch.object(agent_server, "SURFACES", {"browser_test": {"kind": "browser"}}), \
+                     patch.object(agent_server, "PORT_TUNNELS", agent_server.PortTunnelRegistry()), \
+                     patch.object(agent_server.asyncio, "open_connection", connection):
+                    await agent_server.session_port_tunnel("browser_test", "80", socket, host=named)
+                self.assertEqual(connection.await_args.kwargs, {"host": dialed, "port": 80})
+                self.assertEqual(socket.calls[-1][1], 4502)
+
+    async def test_only_a_browser_tab_names_a_host_and_only_a_well_formed_one(self) -> None:
+        connection = AsyncMock()
+        cases = (
+            ("browser_test", "bad host"),  # space
+            ("browser_test", "-x.example"),  # label starts with a hyphen
+            ("browser_test", "a" * 254),  # longer than a DNS name
+            ("browser_test", "http://x"),  # a URL, not a host
+            ("browser_test", ""),  # ?host= with no value
+            ("chat", "intranet.example"),  # a chat never names a host
+        )
+        with patch.object(agent_server, "AGENT_TOKEN", "server-token"), \
+             patch.object(agent_server, "SURFACES", {"browser_test": {"kind": "browser"}}), \
+             patch.dict(agent_server.STORE.sessions, {"chat": {"id": "chat"}}), \
+             patch.object(agent_server, "PORT_TUNNELS", agent_server.PortTunnelRegistry()), \
+             patch.object(agent_server.asyncio, "open_connection", connection):
+            for session_id, host in cases:
+                with self.subTest(session=session_id, host=host):
+                    socket = RecordingWebSocket(authenticated_protocols())
+                    await agent_server.session_port_tunnel(session_id, "8265", socket, host=host)
+                    self.assertEqual(socket.calls[-1][1], 4400)
+        connection.assert_not_awaited()
+
+    def test_the_route_binds_host_from_the_query_string(self) -> None:
+        connection = AsyncMock(side_effect=ConnectionRefusedError("test host refuses"))
+        with patch.object(agent_server, "AGENT_TOKEN", "server-token"), \
+             patch.object(agent_server, "SURFACES", {"browser_test": {"kind": "browser"}}), \
+             patch.object(agent_server, "PORT_TUNNELS", agent_server.PortTunnelRegistry()), \
+             patch.object(agent_server.asyncio, "open_connection", connection), \
+             TestClient(agent_server.app).websocket_connect(
+                 "/api/sessions/browser_test/ports/443/tunnel/ws?host=%5Bfd00%3A%3A2%5D",
+                 subprotocols=list(authenticated_protocols()),
+             ) as socket:
+            closed = socket.receive()
+        self.assertEqual((closed["type"], closed["code"]), ("websocket.close", 4502))
+        self.assertEqual(connection.await_args.kwargs, {"host": "fd00::2", "port": 443})
 
     async def test_deleting_a_browser_retires_its_connections(self) -> None:
         registry = agent_server.PortTunnelRegistry()

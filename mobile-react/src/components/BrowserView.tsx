@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 import WebView, { type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview'
 import { ArrowLeft, ArrowRight, RotateCw } from 'lucide-react-native'
-import { releaseBrowserLoopback, routeBrowserLoopback } from 'agentsdock-browser-loopback'
+import { releaseBrowserRouting, routeBrowserThroughServer } from 'agentsdock-browser-loopback'
 import { browserAddressURL } from '../lib/surfaces'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
@@ -34,21 +34,29 @@ export function BrowserView({ surface }: { surface: Surface }) {
   const [uri, setUri] = useState(surface.url ?? '')
   const [address, setAddress] = useState(surface.url ?? '')
   const [history, setHistory] = useState({ canGoBack: false, canGoForward: false })
-  // localhost is the selected server, as on the desktop; the page waits until that routing is in place.
-  const [loopback, setLoopback] = useState<'pending' | 'routed' | 'unavailable'>('pending')
+  // Pages load through the selected server's network, its localhost included as on the desktop;
+  // the page waits until that routing is in place. A server that cannot dial a named host gets
+  // localhost only, as before.
+  const allHosts = useAppStore(state => state.health?.capabilities?.browser_tunnel_hosts_v1?.available === true)
+  const [routing, setRouting] = useState<'pending' | 'routed' | 'unavailable'>('pending')
   useEffect(() => {
     let current = true
     const tunnel = new URL(client.url(`/api/sessions/${encodeURIComponent(surface.id)}/ports/`))
+    // The server's own address stays direct: the app's other web views load from it. Not when it is a
+    // loopback literal (adb reverse): a page's localhost must stay the server's, as on the desktop.
+    // Read from the string: React Native's URL.hostname stops at the first colon of an IPv6 literal.
+    const serverHost = tunnel.toString().match(/^https?:\/\/(?:[^@/]+@)?(\[[^\]]+\]|[^:/?#]+)/)?.[1] ?? ''
+    const directHosts = serverHost && !/^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/i.test(serverHost) ? [serverHost] : []
     tunnel.protocol = tunnel.protocol === 'https:' ? 'wss:' : 'ws:'
     const token = client.authHeaders()['X-ZenithDock-Token'] ?? ''
-    routeBrowserLoopback(surface.id, tunnel.toString(), token)
-      .then(routed => { if (current) setLoopback(routed ? 'routed' : 'unavailable') })
-      .catch(() => { if (current) setLoopback('unavailable') })
+    routeBrowserThroughServer(surface.id, tunnel.toString(), token, directHosts, allHosts)
+      .then(routed => { if (current) setRouting(routed ? 'routed' : 'unavailable') })
+      .catch(() => { if (current) setRouting('unavailable') })
     return () => {
       current = false
-      void releaseBrowserLoopback(surface.id)
+      void releaseBrowserRouting(surface.id)
     }
-  }, [surface.id])
+  }, [surface.id, allHosts])
   const navigated = (state: WebViewNavigation) => {
     setHistory({ canGoBack: state.canGoBack, canGoForward: state.canGoForward })
     if (!state.url || state.url === 'about:blank') return
@@ -69,7 +77,7 @@ export function BrowserView({ surface }: { surface: Surface }) {
     const next = browserAddressURL(address)
     if (next) setUri(next)
   }
-  const localhostOnPhone = loopback === 'unavailable' && /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:|\/|$)/i.test(uri)
+  const localhostOnPhone = routing === 'unavailable' && /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:|\/|$)/i.test(uri)
   return <View style={styles.root}>
     <View style={[styles.toolbar, { borderColor: colors.border, backgroundColor: colors.background }]}>
       <IconButton icon={ArrowLeft} size={16} label="Back" disabled={!history.canGoBack} onPress={() => view.current?.goBack()} />
@@ -94,7 +102,7 @@ export function BrowserView({ surface }: { surface: Surface }) {
     {localhostOnPhone
       ? <Text style={[styles.notice, { color: colors.muted, borderColor: colors.border }]}>This phone's web view cannot reach the server's localhost; localhost here is the phone.</Text>
       : null}
-    {uri && loopback !== 'pending'
+    {uri && routing !== 'pending'
       ? <WebView
           ref={view}
           source={{ uri }}

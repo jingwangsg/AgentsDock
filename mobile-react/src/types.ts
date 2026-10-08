@@ -1530,6 +1530,7 @@ export interface HealthCapabilities {
   remote_servers_v1?: RemoteServersCapability
   side_questions?: { available: boolean; version: number; backends: string[]; max_question_chars?: number; native_context?: boolean; sync?: boolean }
   background_activity_v1?: { available: boolean }
+  browser_tunnel_hosts_v1?: { available: boolean }
   [key: string]: JsonValue | InteractiveProviderCapability | CursorBackendCapability | ScheduledJobsCapability | AgentEmergencyAlertsCapability | ProviderJobsAccessControlCapability | AgentTeamMailCapability | CrossChatHandoffsCapability | TeamHubV1Capability | ServerUpdatesCapability | WorkingDirectoryCompletionCapability | RemoteServersCapability | SessionRewindCapability | LocalProviderCommandsCapability | undefined
 }
 

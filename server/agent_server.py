@@ -6652,7 +6652,7 @@ def port_tunnel_websocket_authorized(ws: WebSocket) -> bool:
 
 
 def canonical_port_tunnel_port(value: Any, minimum_port: int = PORT_TUNNEL_MIN_PORT) -> int:
-    """Validate the only network destination a tunnel caller may choose."""
+    """Validate the destination port a tunnel caller may choose."""
 
     raw = str(value or "")
     if not re.fullmatch(r"[0-9]{1,5}", raw):
@@ -6664,6 +6664,23 @@ def canonical_port_tunnel_port(value: Any, minimum_port: int = PORT_TUNNEL_MIN_P
             f"{PORT_TUNNEL_MAX_PORT}"
         )
     return port
+
+
+def canonical_port_tunnel_host(value: Any) -> str:
+    """Validate the host a browser tab's tunnel names: a DNS name or IP literal the server resolves and dials."""
+
+    raw = str(value or "").strip().rstrip(".")
+    if not raw or len(raw) > 253:
+        raise ValueError("host must be a DNS name or IP literal")
+    literal = raw[1:-1] if raw.startswith("[") and raw.endswith("]") else raw
+    try:
+        return str(ipaddress.ip_address(literal))
+    except ValueError:
+        pass
+    # Shape only, as Chromium accepts a name (underscores included); a browser tab may dial any host.
+    if re.fullmatch(r"(?!-)[A-Za-z0-9_-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9_-]{1,63}(?<!-))*", raw) is None:
+        raise ValueError("host must be a DNS name or IP literal")
+    return raw
 
 
 class CreateSessionRequest(BaseModel):
@@ -84242,6 +84259,8 @@ async def health() -> dict[str, Any]:
                 "max_client_frame_bytes": PORT_TUNNEL_MAX_CLIENT_FRAME_BYTES,
                 **port_tunnel_status,
             },
+            # A browser tab's tunnel may name its host (`?host=`); a server without this dials its loopback.
+            "browser_tunnel_hosts_v1": {"available": bool(AGENT_TOKEN)},
             "opencode_backend": {
                 # ``available`` advertises the server contract. Runtime
                 # readiness is reported independently by
@@ -99785,8 +99804,13 @@ async def session_port_tunnel(
     session_id: str,
     port: str,
     ws: WebSocket,
+    host: str | None = None,
 ) -> None:
-    """Run an authenticated loopback proxy owned by a chat or browser tab."""
+    """Run an authenticated TCP proxy owned by a chat or browser tab.
+
+    A chat's tunnel reaches the server's loopback only. A browser tab's pages
+    load through the server's network, so its tunnel may also name the host.
+    """
 
     browser = session_id.startswith("browser_")
 
@@ -99818,6 +99842,12 @@ async def session_port_tunnel(
         return
     try:
         target_port = canonical_port_tunnel_port(port, 1 if browser else PORT_TUNNEL_MIN_PORT)
+        if host is None:
+            target_host = PORT_TUNNEL_LOOPBACK_HOST
+        elif browser:
+            target_host = canonical_port_tunnel_host(host)
+        else:
+            raise ValueError("only a browser tab's tunnel may name a host")
     except ValueError as exc:
         await reject_before_accept(PORT_TUNNEL_CLOSE_INVALID_REQUEST, str(exc))
         return
@@ -99874,7 +99904,7 @@ async def session_port_tunnel(
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(
-                    host=PORT_TUNNEL_LOOPBACK_HOST,
+                    host=target_host,
                     port=target_port,
                 ),
                 timeout=PORT_TUNNEL_CONNECT_TIMEOUT_SECONDS,
@@ -99882,19 +99912,20 @@ async def session_port_tunnel(
         except asyncio.TimeoutError:
             await close_once(
                 PORT_TUNNEL_CLOSE_UNREACHABLE,
-                "Loopback service connection timed out",
+                "Destination connection timed out",
             )
             return
         except OSError as exc:
             logger.info(
-                "port tunnel loopback connect failed session=%r port=%d error=%s",
+                "port tunnel connect failed session=%r host=%r port=%d error=%s",
                 session_id,
+                target_host,
                 target_port,
                 concise_error_message(exc),
             )
             await close_once(
                 PORT_TUNNEL_CLOSE_UNREACHABLE,
-                "No loopback service is reachable on this port",
+                "No service is reachable at the destination",
             )
             return
 
@@ -99919,9 +99950,10 @@ async def session_port_tunnel(
 
         proxy_opened = True
         logger.info(
-            "authenticated session-lifecycle-scoped loopback proxy opened "
-            "session=%r port=%d",
+            "authenticated session-lifecycle-scoped proxy opened "
+            "session=%r host=%r port=%d",
             session_id,
+            target_host,
             target_port,
         )
         result = await bridge_port_tunnel(ws, reader, writer)
@@ -99930,13 +99962,14 @@ async def session_port_tunnel(
     except WebSocketDisconnect:
         pass
     except (ConnectionError, BrokenPipeError):
-        await close_once(1011, "Loopback service connection was lost")
+        await close_once(1011, "Destination connection was lost")
     except asyncio.TimeoutError:
         await close_once(1011, "Port tunnel backpressure timed out")
     except Exception as exc:
         logger.warning(
-            "port tunnel failed session=%r port=%d error=%s",
+            "port tunnel failed session=%r host=%r port=%d error=%s",
             session_id,
+            target_host,
             target_port,
             concise_error_message(exc),
         )
@@ -99952,9 +99985,10 @@ async def session_port_tunnel(
         await close_once(1000, "Port tunnel closed")
         if proxy_opened:
             logger.info(
-                "authenticated session-lifecycle-scoped loopback proxy closed "
-                "session=%r port=%d close_code=%d",
+                "authenticated session-lifecycle-scoped proxy closed "
+                "session=%r host=%r port=%d close_code=%d",
                 session_id,
+                target_host,
                 target_port,
                 websocket_close_code or 1000,
             )
