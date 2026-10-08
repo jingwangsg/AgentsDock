@@ -1,5 +1,23 @@
 # Public development log
 
+## 2026-10-08 — Desktop package 113 and Android build 57 (local package and APK)
+
+- Packages the entries above recorded since package 112 and build 56: the
+  local server's Restart row in Settings → Server (desktop) and the sidebar
+  long-press fix (Android; the APK now carries the pnpm patch for
+  react-native-draggable-flatlist). The server entries since then (a message
+  never ends Claude's background agents, the Claude permission policy,
+  chat-hosted jobs on the chat's SDK process) take effect once a server is
+  redeployed.
+- The pkg's app passes `codesign --verify --deep --strict` (ad-hoc signature,
+  CFBundleVersion 113); the APK is signed with the project debug keystore
+  (SHA-256 fac61745…) and reports versionCode 57. Checks run before
+  packaging: Electron type check; the service, ServerManagement and IPC
+  tests; the mobile version and sidebar pins. Not exercised: installing
+  either package on a device, and the Restart row's "Restart anyway" against
+  a live server (see its entry).
+  Availability: local package and APK.
+
 ## 2026-10-08 — Restart the local server from its row in Settings → Server (desktop source)
 
 - The local server's row gets a Restart icon unless the row shows the server
