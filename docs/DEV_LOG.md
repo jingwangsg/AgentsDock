@@ -1,5 +1,19 @@
 # Public development log
 
+## 2026-10-09 — Desktop package 114 and Android build 58 (local package and APK)
+
+- Packages the entry above recorded since package 113 and build 57: the
+  background-activity chip for a Claude chat's agents and shells (desktop and
+  Android), and the zh-CN wording of the Resume already-open notice (desktop).
+  The server side of that entry takes effect once a server is redeployed.
+- The pkg's app passes `codesign --verify --deep --strict` (ad-hoc signature,
+  CFBundleVersion 114); the APK is signed with the project debug keystore
+  (SHA-256 fac61745…) and reports versionCode 58. Checks run before
+  packaging: both type checks, the desktop chip and locale catalog tests, the
+  Android chip component test, and the mobile version pins. Not exercised:
+  installing either package on a device.
+  Availability: local package and APK.
+
 ## 2026-10-08 — The background-activity chip lists a Claude chat's agents and shells (server, desktop and Android source)
 
 - While a Claude chat's background agents or shells kept running after the
