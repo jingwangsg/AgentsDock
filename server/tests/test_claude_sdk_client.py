@@ -1051,6 +1051,80 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await first_client.emit({"type": "result", "result": "done"})
         await asyncio.wait_for(collect(second), 5)
 
+    async def start_command_during_unowned_turn(self, chat: str, *frames: dict[str, Any]) -> Any:
+        _info, generation = await self.manager.get_server_info(chat, options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        client.auto_ack = False
+        for frame in frames:
+            await client.emit(frame)
+        for _ in range(20):
+            await asyncio.sleep(0)
+        return await self.manager.start_run(chat, "/review staged files", run_id="run-command",
+            options={}, configuration_key="same", validated_provider_command_name="review",
+            expected_provider_command_generation=generation)
+
+    async def test_a_command_sent_during_an_unowned_turn_waits_for_its_result(self) -> None:
+        # A background task that ends while no run is open wakes Claude for a turn of its own. A
+        # command sent meanwhile runs after that turn (measured, CLI 2.1.293), not inside it.
+        command = await self.start_command_during_unowned_turn(
+            "chat-wake", {"type": "system", "subtype": "init"},
+            {"type": "assistant", "content": [{"type": "text", "text": "The task finished."}]})
+        client = self.factory.clients[-1]
+        await client.emit({"type": "assistant", "content": [{"type": "text", "text": "Still checking it."}]})
+        await client.emit({"type": "result", "result": "Noted the finished task."})
+        # Like /compact, a command can emit frames before its echo.
+        compacting = {"type": "system", "subtype": "status", "status": "compacting"}
+        await client.emit(compacting)
+        await client.emit(replay_ack(command.correlation_id))
+        await client.emit({"type": "result", "result": "Reviewed.", "local_command": "review"})
+        delivered = await asyncio.wait_for(collect(command), 5)
+        self.assertEqual((await command.wait_result())["result"], "Reviewed.")
+        self.assertIn(compacting, delivered)
+        self.assertNotIn("Still checking it.", json.dumps(delivered))
+
+    async def test_a_command_claude_takes_before_the_unowned_turn_keeps_its_result(self) -> None:
+        # A command Claude takes before the turn it was notified of: its own frames carry the
+        # local-command fields.
+        command = await self.start_command_during_unowned_turn(
+            "chat-wake-first", {"type": "system", "subtype": "task_notification", "task_id": "job", "status": "completed"})
+        client = self.factory.clients[-1]
+        await client.emit({"type": "assistant", "local_command_run": {"command": "review", "args": "staged files"},
+                           "content": [{"type": "text", "text": "Reviewed."}]})
+        await client.emit({"type": "result", "result": "Reviewed.", "local_command": "review"})
+        await asyncio.wait_for(collect(command), 5)
+        self.assertEqual((await command.wait_result())["result"], "Reviewed.")
+
+    async def test_a_command_sent_after_a_task_notification_waits_for_the_woken_turn(self) -> None:
+        # The notification arrives before the woken turn's first frame; a command sent in
+        # between still runs after that turn.
+        command = await self.start_command_during_unowned_turn(
+            "chat-notified", {"type": "system", "subtype": "task_notification", "task_id": "job", "status": "completed"})
+        client = self.factory.clients[-1]
+        await client.emit({"type": "assistant", "content": [{"type": "text", "text": "The task finished."}]})
+        await client.emit({"type": "result", "result": "Noted the finished task."})
+        await client.emit(replay_ack(command.correlation_id))
+        await client.emit({"type": "result", "result": "Reviewed."})
+        await asyncio.wait_for(collect(command), 5)
+        self.assertEqual((await command.wait_result())["result"], "Reviewed.")
+
+    async def test_a_command_sent_after_the_unowned_turn_ended_starts_at_once(self) -> None:
+        first = await self.start_command_during_unowned_turn("chat-wake-ended", {"type": "system", "subtype": "init"})
+        client = self.factory.clients[-1]
+        await client.emit({"type": "result", "result": "Noted the finished task."})
+        await client.emit(replay_ack(first.correlation_id))
+        await client.emit({"type": "result", "result": "Reviewed."})
+        await asyncio.wait_for(collect(first), 5)
+        _info, generation = await self.manager.get_server_info("chat-wake-ended", options={}, configuration_key="same")
+        second = await self.manager.start_run("chat-wake-ended", "/review staged files", run_id="run-second",
+            options={}, configuration_key="same", validated_provider_command_name="review",
+            expected_provider_command_generation=generation)
+        compacting = {"type": "system", "subtype": "status", "status": "compacting"}
+        await client.emit(compacting)
+        await client.emit({"type": "result", "result": "Reviewed again.", "local_command": "review"})
+        delivered = await asyncio.wait_for(collect(second), 5)
+        self.assertIn(compacting, delivered)
+        self.assertEqual((await second.wait_result())["result"], "Reviewed again.")
+
     async def test_validated_local_command_rejects_changed_generation_before_query(self) -> None:
         _info, generation = await self.manager.get_server_info(
             "generation-chat",

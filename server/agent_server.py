@@ -24900,6 +24900,16 @@ async def _run_queued_turn_now_once(
                     else "native_steer_queue"
                 )
                 native_steer_queue = active_turn.get(native_steer_queue_key)
+                # Read once: the decision below and its fallback log must agree.
+                interrupted_turn_blockers = [key for key in (
+                    "chat_references", "team_references", "cross_chat_obligation_ids",
+                    "cross_chat_exchange_ids", "cross_chat_envelope_id", "cross_chat_exchange_id",
+                    "cross_chat_exchange_leg_id",
+                ) if interrupted_turn.get(key)]
+                if interrupted_turn.get("skill_selection") is not None:
+                    interrupted_turn_blockers.append("skill_selection")
+                if interrupted_turn.get("purpose") in CROSS_CHAT_DELIVERY_PURPOSES:
+                    interrupted_turn_blockers.append("purpose")
                 native_steer = bool(
                     (
                         active_turn.get("provider_turn_ready")
@@ -24928,16 +24938,7 @@ async def _run_queued_turn_now_once(
                     # not replace the original turn's references or command.
                     and (
                         goal_followup or (
-                            interrupted_turn.get("skill_selection") is None
-                            and interrupted_turn.get("purpose")
-                            not in CROSS_CHAT_DELIVERY_PURPOSES
-                            and not interrupted_turn.get("chat_references")
-                            and not interrupted_turn.get("team_references")
-                            and not interrupted_turn.get("cross_chat_obligation_ids")
-                            and not interrupted_turn.get("cross_chat_exchange_ids")
-                            and not interrupted_turn.get("cross_chat_envelope_id")
-                            and not interrupted_turn.get("cross_chat_exchange_id")
-                            and not interrupted_turn.get("cross_chat_exchange_leg_id")
+                            not interrupted_turn_blockers
                             and provider_route_snapshot_allows_native_steer(
                                 interrupted_turn.get("provider_cross_chat_route_snapshot")
                             )
@@ -25004,6 +25005,27 @@ async def _run_queued_turn_now_once(
                     # explicit Stop cannot interleave between interruption and
                     # promotion of this queued message.
                     raise NonNativeForceSendRequiresLifecycleLock
+                if not native_steer and active_turn.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK:
+                    # Not steering interrupts the running turn and its command;
+                    # nothing else records which input ruled steering out.
+                    logger.info(
+                        "Claude Force Send interrupts instead of steering session=%s queued_id=%s "
+                        "turn_ready=%s steer_queue=%s async_delivery=%s plain=%s backend=%s "
+                        "interactive_client=%s same_runtime=%s routes_allow=%s interrupted_turn_blockers=%s",
+                        session_id, queued_id, bool(active_turn.get("provider_turn_ready")),
+                        native_steer_queue is not None, selected_async,
+                        codex_goal_steer_selection_is_plain(selected), selected_backend,
+                        CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY in {
+                            str(value) for value in selected.get("client_capabilities") or []
+                        },
+                        queued_claude_runtime_matches_active(session_id, selected, active_turn),
+                        provider_route_snapshot_allows_native_steer(
+                            interrupted_turn.get("provider_cross_chat_route_snapshot")
+                        ) and provider_route_snapshot_allows_native_steer(
+                            selected.get("provider_cross_chat_route_snapshot")
+                        ),
+                        interrupted_turn_blockers,
+                    )
                 if native_steer:
                     # Provider-side fencing happens after this item leaves the
                     # live deque. Preserve its exact durable position so crash

@@ -1172,6 +1172,7 @@ class ClaudeSDKRunHandle:
         self.accepted_at: float | None = None
         self._acknowledged = False
         self._acknowledged_event = asyncio.Event()
+        self._sent_during_unowned_turn = False
         self._background_tasks: OrderedDict[str, dict[str, str]] = OrderedDict()
         self._background_task_overflow_count = 0
         self._background_task_reconciliation: dict[str, Any] | None = None
@@ -1604,6 +1605,8 @@ class ClaudeSDKSupervisor:
         # The session the connected process is in, as Claude reports it: a fork
         # answers under a new id, not the one it resumed (CLI 2.1.293).
         self._provider_session_id: str | None = None
+        # Claude works on a turn no run owns, e.g. one a background task woke.
+        self._unowned_turn_open = False
         self._generation = 0
         self._closed = False
         self._connected = False
@@ -2159,6 +2162,7 @@ class ClaudeSDKSupervisor:
         self._cancel_ack_timeout()
         # The ledger belongs to this process; a fresh one has no tasks.
         self._inflight_tasks.clear()
+        self._unowned_turn_open = False
         if self._pending_mail_hint_hook is not None:
             self._pending_mail_hint_hook.retire()
             self._pending_mail_hint_hook = None
@@ -2467,11 +2471,16 @@ class ClaudeSDKSupervisor:
             await self._disconnect_current_client()
             return
         if raw_provider_command:
-            # Claude local slash commands do not replay the submitted UUID.
-            # Open the receive gate only after query delivery succeeds; any
-            # messages queued by the receiver are actor-serialized behind this
-            # point and will then belong to this exact accepted command.
-            handle._mark_acknowledged_without_replay()
+            # Claude local slash commands do not replay the submitted UUID, so
+            # the receive gate opens once query delivery succeeds; frames the
+            # receiver queued are actor-serialized behind this point.
+            if self._unowned_turn_open:
+                # Except during a turn no run owns: Claude takes the command
+                # after that turn (measured, CLI 2.1.293), and _handle_received
+                # opens the gate.
+                handle._sent_during_unowned_turn = True
+            else:
+                handle._mark_acknowledged_without_replay()
         handle._mark_accepted()
         if not raw_provider_command:
             self._schedule_ack_timeout(handle)
@@ -3125,6 +3134,15 @@ class ClaudeSDKSupervisor:
             self._inflight_tasks.discard(task_id)
         active = self._active_run
         if active is None or active.done:
+            # A finished background task's notification, or the turn's first
+            # frames, mean Claude works on a turn no run owns until its Result.
+            # Subagent frames neither start nor end one.
+            if not _message_field(command.message, "parent_tool_use_id"):
+                if self._is_result_message(command.message):
+                    self._unowned_turn_open = False
+                elif (subtype in {"init", "task_notification"}
+                      or _message_type(command.message) in {"assistant", "assistantmessage"}):
+                    self._unowned_turn_open = True
             return
         self._last_used_at = time.monotonic()
         if not active.acknowledged:
@@ -3140,10 +3158,26 @@ class ClaudeSDKSupervisor:
             if active._acknowledge(command.message):
                 self._cancel_ack_timeout()
                 return
-            # The persistent stream may contain resumed-session output from
-            # before this query. Nothing owns the new run until its exact UUID
-            # is replayed by the CLI.
-            return
+            if self._is_result_message(command.message) and not _message_field(command.message, "parent_tool_use_id"):
+                # No run owned the turn this Result ends. An acknowledged run's
+                # own Result leaves the flag: a turn Claude was notified of can
+                # still follow it.
+                self._unowned_turn_open = False
+            if not active._sent_during_unowned_turn:
+                # The persistent stream may contain resumed-session output from
+                # before this query. Nothing owns the new run until its exact UUID
+                # is replayed by the CLI.
+                return
+            if not (_message_field(command.message, "local_command_run")
+                    or _message_field(command.message, "local_command")):
+                # A frame of the turn Claude was in when the command arrived; its
+                # Result ends that turn, and Claude takes the command next.
+                if self._is_result_message(command.message):
+                    active._mark_acknowledged_without_replay()
+                return
+            # Claude took the command before that turn started: this frame is
+            # the command's own.
+            active._mark_acknowledged_without_replay()
         elif _is_matching_replay_ack(command.message, active.correlation_id):
             # A duplicate acknowledgment is protocol metadata, never a second
             # user bubble.

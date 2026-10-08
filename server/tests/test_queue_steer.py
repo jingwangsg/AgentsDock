@@ -3218,6 +3218,7 @@ class RunQueuedTurnNowTests(unittest.IsolatedAsyncioTestCase):
             "provider_turn_ready": True,
         }
         with (
+            self.assertLogs("agents-server", level="INFO") as logs,
             patch.object(agent_server, "stop_turn", AsyncMock(return_value={"stopped": True})) as stop,
             patch.object(agent_server, "append_durable_event", AsyncMock(return_value={})),
             patch.object(agent_server, "schedule_steered_turn_slot_waiter") as waiter,
@@ -3225,6 +3226,9 @@ class RunQueuedTurnNowTests(unittest.IsolatedAsyncioTestCase):
             result = await run_queued_turn_now("chat-1", "queued-steer")
         self.assertTrue(result["ok"])
         self.assertTrue(result["interrupted"])
+        # The run offers no steer queue, so the log names it as what ruled steering out.
+        self.assertEqual(len([line for line in logs.output if "interrupts instead of steering" in line]), 1)
+        self.assertIn("steer_queue=False", "\n".join(logs.output))
         self.assertTrue(stop.await_args.kwargs["hard_terminalize_on_timeout"])
         self.assertEqual(stop.await_args.kwargs["expected_run_id"], "run-original")
         waiter.assert_called_once_with("chat-1", "queued-steer")

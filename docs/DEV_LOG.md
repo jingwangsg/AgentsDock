@@ -1,5 +1,36 @@
 # Public development log
 
+## 2026-10-08 — A slash command sent while Claude answers a finished background task gets its own result, and Send now records why it did not steer (server, source only)
+
+- When a background task ended while no run was open, Claude started a turn
+  of its own (a woken turn). A slash command sent during the woken turn
+  counted as started at once, so the woken turn's reply and result were shown
+  as the command's, and the command's own output was lost. Claude takes such
+  a command only after the woken turn (measured with Claude Code 2.1.293).
+- The server now notes when Claude is in a woken turn, from the task's
+  notification until that turn's result. A command sent then collects
+  Claude's output only after that result, or from its own echo or
+  local-command output if Claude takes it before the woken turn starts.
+- When Send now cannot steer a message into a running Claude turn, it
+  interrupts the turn and the command it is running. The server now logs
+  which input ruled out steering. On 2026-10-08 a follow-up in a remote chat
+  interrupted a running Bash command this way; attempts to reproduce it on
+  the same code all steered without interrupting, so its cause is still
+  open.
+- Verified with the Claude, rewind and queue suites and new unit tests: a
+  command sent during a woken turn, or after its notification, ends with its
+  own result and keeps the frames it emits before its echo; the next command
+  after a woken turn starts at once; a command Claude takes first keeps its
+  local result; a fallback logs one line that names the missing steer
+  channel. Through the HTTP API of isolated servers with the real Claude CLI:
+  a project command that replies ECHOED, sent while the woken turn ran a
+  foreground command, ended with the woken turn's reply before and with
+  ECHOED now; a steer that carried another model logged `same_runtime=False`.
+  Not exercised with the real CLI: /compact during a woken turn, a command
+  Claude takes before the woken turn; also not exercised: the desktop and
+  Android apps and a hub-proxied remote server.
+  Availability: source; servers need a redeploy.
+
 ## 2026-10-08 — After a rewind, a new message keeps Claude's process, its session and its background agents (server, source only)
 
 - In a Claude chat rewound while background-task receipts were still to be
