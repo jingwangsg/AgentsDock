@@ -1,5 +1,17 @@
 # Public development log
 
+## 2026-10-09 — Android build 60 (local APK)
+
+- Packages the entries above recorded since build 59: the background-activity
+  chip lists a Claude chat's shells only, and a subagent that outlives its
+  turn stays in the activity strip while it runs. The server side of the chip
+  entry takes effect once a server is redeployed. No desktop package.
+- The APK is signed with the project debug keystore (SHA-256 fac61745…) and
+  reports versionCode 60. Checks run before packaging: the Android type
+  check, the component, contract and parser tests named in those entries,
+  and the mobile version pins. Not exercised: installing on a phone.
+  Availability: local APK.
+
 ## 2026-10-09 — Android keeps showing a subagent that outlives its turn (Android source)
 
 - On Android, the activity strip under the timeline listed only the latest
