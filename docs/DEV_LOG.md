@@ -1,5 +1,44 @@
 # Public development log
 
+## 2026-10-08 — A long press on a sidebar row at the list edge opens its menu instead of drifting, and every release in place opens the menu (mobile, source)
+
+- Reported: on Android, after expanding a folder, a long press on a tab row
+  made the row drift away and never opened its menu.
+- Cause, reproduced on an emulator against an isolated server: three
+  behaviours of react-native-draggable-flatlist 4.0.3 around a row that is
+  lifted but not yet moved. A row lifted within 30 dp of the list's top or
+  bottom edge auto-scrolled the list at once: the row drifted while the
+  finger stayed still, its placeholder index changed, which cancels the menu,
+  and a release dropped it elsewhere; in the reproduction a tab at the end of
+  one folder landed in the next folder. A row lifted while cut off by the list
+  edge was pulled into view at once, so its placeholder moved one slot up and
+  a release in place dropped it there. A release in place changes no data, so
+  the library never reset its drag state: the next lift of another row
+  reported the previous row's placeholder index as a change and lost its
+  menu, and the list kept the previous drag's scroll target, so a later drag
+  to the edge did not auto-scroll. Expanding a folder puts its last rows at
+  the edge, which is why the failure looked tied to expanding.
+- Fix: a pnpm patch for react-native-draggable-flatlist 4.0.3
+  (`mobile-react/patches/`). The list's own auto-scroll and the pull into
+  view wait for an active pan gesture, i.e. the finger has moved the row, and
+  a release in place resets the drag state. Two side effects: a row cut off
+  by the edge is pulled into view at the first movement instead of at the
+  lift, and the list no longer scrolls while a dropped row springs into its
+  slot. The outer scroll of a nested list is unchanged. Sidebar code is
+  unchanged; a source pin in `mobile-react/tests/sidebar-selection.test.mjs`
+  fails if the patch or its registration is removed.
+- Verified on a Pixel Fold emulator (Android 15, sideload build 56 with the
+  worktree's Hermes bundle swapped in) against an isolated server holding
+  three folders of six chats and two tabs each. Before the patch a long press
+  on the last visible tab scrolled the list, moved the tab into the next
+  folder and opened no menu. After it, with the folder collapsed and expanded
+  again, long presses on an edge row, a tab, a row cut off by the edge, a
+  middle row and a second press on the same row each opened their menu with
+  no row movement, and a long press followed by a drag to the bottom edge
+  still auto-scrolled and dropped. Mobile type check and the sidebar pin
+  tests pass. Not exercised on a physical device or on iOS; no Android build
+  was produced. Availability: source only, no server update is required;
+  takes effect in the next Android build.
 ## 2026-10-08 — A message never ends Claude's background agents: Send now, model changes, jobs, housekeeping (server, source)
 
 - Cause: a chat held a permanent route pair, so every Send now failed the

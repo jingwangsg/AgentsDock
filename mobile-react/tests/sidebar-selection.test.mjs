@@ -126,6 +126,21 @@ test('a long press lifts a chat or folder for dragging and still opens its menu 
   assert.match(source, /onPlaceholderIndexChange=\{\(\) => \{ liftedMenu\.current = null \}\}/)
 })
 
+test('the draggable-flatlist patch is registered: a lifted row stays put until the pan gesture moves it, and a release in place resets the drag', () => {
+  // Unpatched, a row lifted within 30 dp of the list edge (a long press on the last
+  // visible row) scrolled the list at once: the row drifted, its menu was cancelled
+  // and a release dropped it elsewhere.
+  const workspace = fs.readFileSync(path.resolve('pnpm-workspace.yaml'), 'utf8')
+  assert.match(workspace, /react-native-draggable-flatlist@4\.0\.3: patches\/react-native-draggable-flatlist@4\.0\.3\.patch/)
+  const patch = fs.readFileSync(path.resolve('patches/react-native-draggable-flatlist@4.0.3.patch'), 'utf8')
+  assert.match(patch, /^\+\s+const dragIsMoving = panGestureState\.value === GestureState\.ACTIVE;$/m)
+  assert.match(patch, /^\+\s+cellIsActive &&\n\+\s+dragIsMoving\n/m)
+  // Before the finger moves, a lifted row cut off by the edge is not constrained into view either.
+  assert.match(patch, /^\+\s+isTouchActiveNative\.value &&\n\+\s+panGestureState\.value === GestureState\.ACTIVE\n\+\s+\? constrained - activeCellOffset\.value/m)
+  // A release in place resets the drag state, or the next lift reports a stale placeholder change and loses its menu.
+  assert.match(patch, /^\+\s+if \(from === to\) reset\(\);$/m)
+})
+
 test('a refused drop is drawn once, then undone, and a held order lasts only for its rows', () => {
   // draggable-flatlist resets a dropped row only when the key order changes.
   assert.match(source, /setDropped\(\{ base: rows, data, refused: !drop \}\)\s*if \(!drop\) return/)

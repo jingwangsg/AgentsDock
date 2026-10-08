@@ -1,0 +1,78 @@
+diff --git a/src/components/DraggableFlatList.tsx b/src/components/DraggableFlatList.tsx
+index 7c88afc..607e9aa 100644
+--- a/src/components/DraggableFlatList.tsx
++++ b/src/components/DraggableFlatList.tsx
+@@ -231,6 +231,11 @@ function DraggableFlatListInner<T>(props: DraggableFlatListProps<T>) {
+       onDragEnd?.({ from, to, data: newData });
+ 
+       setActiveKey(null);
++      // Only a move changes the data, and the data-change check above is what
++      // then calls reset(). After a release in place activeIndexAnim would stay
++      // set: the next lift reports the stale spacer index as a placeholder
++      // change and useAutoScroll keeps the previous drag's scroll target.
++      if (from === to) reset();
+     }
+   );
+ 
+diff --git a/src/context/animatedValueContext.tsx b/src/context/animatedValueContext.tsx
+index c62360d..650c551 100644
+--- a/src/context/animatedValueContext.tsx
++++ b/src/context/animatedValueContext.tsx
+@@ -122,9 +122,14 @@ function useSetupAnimatedValues<T>() {
+ 
+     // Only constrain the touch position while the finger is on the screen. This allows the active cell
+     // to snap above/below the fold once let go, if the drag ends at the top/bottom of the screen.
+-    const constrainedBase = isTouchActiveNative.value
+-      ? constrained - activeCellOffset.value
+-      : touchPositionDiff.value;
++    // Before the finger moves, an active cell cut off by the list edge would
++    // otherwise be constrained into view at once, which changes the placeholder
++    // and turns a release in place into a drop.
++    const constrainedBase =
++      isTouchActiveNative.value &&
++      panGestureState.value === GestureState.ACTIVE
++        ? constrained - activeCellOffset.value
++        : touchPositionDiff.value;
+ 
+     // Make sure item is constrained to the boundaries of the scrollview
+     return Math.min(
+diff --git a/src/hooks/useAutoScroll.tsx b/src/hooks/useAutoScroll.tsx
+index d3add83..be60e16 100644
+--- a/src/hooks/useAutoScroll.tsx
++++ b/src/hooks/useAutoScroll.tsx
+@@ -4,6 +4,7 @@ import {
+   useDerivedValue,
+   useSharedValue,
+ } from "react-native-reanimated";
++import { State as GestureState } from "react-native-gesture-handler";
+ import { DEFAULT_PROPS, SCROLL_POSITION_TOLERANCE } from "../constants";
+ import { useProps } from "../context/propsContext";
+ import { useAnimatedValues } from "../context/animatedValueContext";
+@@ -24,6 +25,7 @@ export function useAutoScroll() {
+     activeCellSize,
+     hoverOffset,
+     activeIndexAnim,
++    panGestureState,
+   } = useAnimatedValues();
+ 
+   const hoverScreenOffset = useDerivedValue(() => {
+@@ -84,8 +86,18 @@ export function useAutoScroll() {
+     const isEdgeDisabled = topDisabled || bottomDisabled;
+ 
+     const cellIsActive = activeIndexAnim.value >= 0;
++    // A cell made active by a long press inside the threshold has not moved
++    // yet: scrolling now would carry it away from the finger and change its
++    // placeholder.
++    const dragIsMoving = panGestureState.value === GestureState.ACTIVE;
+ 
+-    return hasScrolledToTarget && isAtEdge && !isEdgeDisabled && cellIsActive;
++    return (
++      hasScrolledToTarget &&
++      isAtEdge &&
++      !isEdgeDisabled &&
++      cellIsActive &&
++      dragIsMoving
++    );
+   }, []);
+ 
+   function scrollToInternal(offset: number) {
