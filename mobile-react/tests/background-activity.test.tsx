@@ -37,15 +37,22 @@ test('the header chip lists background terminals, stops one after confirmation a
   assert.equal(tree!.root.findAll(node => node.props.testID === 'background-activity').length, 1)
 })
 
-test('stays hidden, without asking, for a Claude chat and on a server without it', async () => {
+test("lists a Claude chat's agents and shells as background tasks, without a stop", async () => {
+  setTestClient({ backgroundActivity: async () => [{ id: 'a1', command: 'Review the diff' }] })
+  resetComponentStore({ sessions: [{ id: 'chat-a', title: 'Research', backend: 'claude' }] as never, health: { ok: true, capabilities: { background_activity_v1: { available: true } } } as never })
+  await act(async () => { tree = create(<BackgroundActivityButton sessionId="chat-a" />) })
+  const chip = tree!.root.findByProps({ testID: 'background-activity' })
+  assert.equal(chip.props.accessibilityLabel, 'Background tasks: 1 running')
+  await act(async () => { chip.props.onPress() })
+  assert.match(texts(), /Background tasks.*Review the diff/)
+  assert.equal(tree!.root.findAll(node => String(node.props.accessibilityLabel ?? '').startsWith('Stop ')).length, 0, 'the SDK cannot end one task')
+})
+
+test('stays hidden, without asking, on a server without it', async () => {
   let asked = false
   setTestClient({ backgroundActivity: async () => { asked = true; return [shell] } })
-  for (const [backend, capabilities] of [['claude', { background_activity_v1: { available: true } }], ['codex', {}]] as const) {
-    resetComponentStore({ sessions: [{ id: 'chat-a', title: 'Research', backend }] as never, health: { ok: true, capabilities } as never })
-    await act(async () => { tree = create(<BackgroundActivityButton sessionId="chat-a" />) })
-    assert.equal(tree!.toJSON(), null)
-    await act(async () => { tree!.unmount() })
-    tree = null
-  }
+  resetComponentStore({ sessions: [{ id: 'chat-a', title: 'Research', backend: 'codex' }] as never, health: { ok: true, capabilities: {} } as never })
+  await act(async () => { tree = create(<BackgroundActivityButton sessionId="chat-a" />) })
+  assert.equal(tree!.toJSON(), null)
   assert.equal(asked, false)
 })

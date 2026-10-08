@@ -509,8 +509,8 @@ def _connection_mail_hint_hook(options: Any) -> tuple[Any, _PendingMailHintHook 
     return cloned, installed
 
 
-def _task_lifecycle_fields(message: Any) -> tuple[str, str, str, str]:
-    """Return the bounded task fields needed to identify a run boundary.
+def _task_lifecycle_fields(message: Any) -> tuple[str, str, str, str, str]:
+    """Return the bounded task fields needed to identify a run boundary and list the task.
 
     Agent SDK 0.2.130 exposes task lifecycle frames as typed ``SystemMessage``
     subclasses while test/compatibility adapters use dictionaries.  Keep this
@@ -531,7 +531,10 @@ def _task_lifecycle_fields(message: Any) -> tuple[str, str, str, str]:
         patch = _message_field(message, "patch", data.get("patch"))
         if isinstance(patch, dict):
             status = str(patch.get("status") or "")
-    return subtype, task_id, task_type, status
+    description = str(
+        _message_field(message, "description") or data.get("description") or ""
+    )
+    return subtype, task_id, task_type, status, description
 
 
 def _result_forces_run_end(message: Any) -> bool:
@@ -1265,7 +1268,7 @@ class ClaudeSDKRunHandle:
                 self._inflight_tool_uses.discard(tool_id)
 
     def _observe_background_task(self, message: Any) -> None:
-        subtype, task_id, task_type, status = _task_lifecycle_fields(message)
+        subtype, task_id, task_type, status, _ = _task_lifecycle_fields(message)
         if subtype not in {"task_started", "task_updated", "task_notification"} or not task_id:
             return
         data = _message_field(message, "data", {})
@@ -1602,7 +1605,8 @@ class ClaudeSDKSupervisor:
         self._grace_tasks: set[asyncio.Task[None]] = set()
         self._active_run: ClaudeSDKRunHandle | None = None
         self._pending_goal_clear: _ClearGoal | None = None
-        self._inflight_tasks: set[str] = set()
+        # Task id -> description, for the agents and shells the CLI still tracks.
+        self._inflight_tasks: dict[str, str] = {}
         self._background_reconciliation_hook: _BackgroundReconciliationHook | None = None
         self._pending_mail_hint_hook: _PendingMailHintHook | None = None
         # The session the connected process is in, as Claude reports it: a fork
@@ -1663,6 +1667,11 @@ class ClaudeSDKSupervisor:
         them.
         """
         return len(self._inflight_tasks)
+
+    @property
+    def inflight_tasks(self) -> list[tuple[str, str]]:
+        """(task id, description) of each task behind inflight_task_count."""
+        return list(self._inflight_tasks.items())
 
     @property
     def connected(self) -> bool:
@@ -3125,7 +3134,7 @@ class ClaudeSDKSupervisor:
         # and that frame must still leave the ledger. Only removals happen
         # here: a resumed session replays old task_started frames before the
         # acknowledgment, and those tasks are not running.
-        subtype, task_id, task_type, status = _task_lifecycle_fields(
+        subtype, task_id, task_type, status, description = _task_lifecycle_fields(
             command.message
         )
         if subtype == "background_tasks_changed":
@@ -3137,17 +3146,19 @@ class ClaudeSDKSupervisor:
             tasks = _message_field(command.message, "tasks") or (
                 data.get("tasks") if isinstance(data, dict) else None
             )
-            self._inflight_tasks &= {
+            listed = {
                 str(task.get("task_id") or "")
                 for task in (tasks if isinstance(tasks, list) else [])
                 if isinstance(task, dict)
                 and str(task.get("status") or "") not in _TERMINAL_TASK_STATUSES
             }
+            for ended in self._inflight_tasks.keys() - listed:
+                del self._inflight_tasks[ended]
         elif task_id and (
             subtype == "task_notification"
             or (subtype == "task_updated" and status in _TERMINAL_TASK_STATUSES)
         ):
-            self._inflight_tasks.discard(task_id)
+            self._inflight_tasks.pop(task_id, None)
         active = self._active_run
         if active is None or active.done:
             # A finished background task's notification, or the turn's first
@@ -3273,7 +3284,7 @@ class ClaudeSDKSupervisor:
             active._awaiting_background_tasks = False
         active._observe_background_task(command.message)
         if subtype == "task_started" and task_id and task_type in _DEFERRING_TASK_TYPES:
-            self._inflight_tasks.add(task_id)
+            self._inflight_tasks[task_id] = description
         if (
             active._awaiting_background_tasks
             and not self._inflight_tasks
@@ -4184,6 +4195,14 @@ class ClaudeSDKSupervisorManager:
         if supervisor is None or supervisor.closed or not supervisor.connected:
             return 0
         return supervisor.inflight_task_count
+
+    def inflight_tasks(self, chat_id: str) -> list[tuple[str, str]]:
+        """(task id, description) of each task behind inflight_task_count."""
+
+        supervisor = self._supervisors.get(str(chat_id))
+        if supervisor is None or supervisor.closed or not supervisor.connected:
+            return []
+        return supervisor.inflight_tasks
 
     def usage_generation(self, chat_id: str, *, run_id: str | None = None) -> str | None:
         """Identify the existing native owner without connecting or issuing RPCs."""

@@ -8,14 +8,15 @@ import { usePalette } from '../theme'
 import { Text } from './AppText'
 import { SheetCloseButton } from './ui'
 
-// Codex has no push when a background terminal exits, so a listed one is re-checked on this interval.
+// Codex has no push when a background terminal exits, and a Claude task starts mid-turn without one; listed items, and a running Claude turn, are re-checked on this interval.
 const RECHECK_MS = 15_000
 
-/** Header chip for a Codex chat's background terminals, which keep running outside the turn. */
+/** Header chip for what keeps running for a chat outside its turn: Codex background terminals, or the agents and shells Claude still tracks. */
 export function BackgroundActivityButton({ sessionId }: { sessionId: string }) {
   const colors = usePalette()
-  const available = useAppStore(state => state.sessions.find(session => session.id === sessionId)?.backend === 'codex'
-    && state.health?.capabilities?.background_activity_v1?.available === true)
+  const backend = useAppStore(state => state.sessions.find(session => session.id === sessionId)?.backend)
+  const isClaude = backend === 'claude'
+  const available = useAppStore(state => (backend === 'codex' || isClaude) && state.health?.capabilities?.background_activity_v1?.available === true)
   const connected = useAppStore(state => state.connected)
   const profileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
@@ -37,11 +38,12 @@ export function BackgroundActivityButton({ sessionId }: { sessionId: string }) {
   useEffect(() => setItems([]), [load])
   // `running`: a Codex background terminal starts during a turn and is listed from its end.
   useEffect(load, [load, running])
+  // A Claude task starts mid-turn and keeps the turn open, so a Claude turn is re-checked too.
   useEffect(() => {
-    if (!items.length) return
+    if (!items.length && !(isClaude && running)) return
     const timer = setInterval(load, RECHECK_MS)
     return () => clearInterval(timer)
-  }, [items, load])
+  }, [items, isClaude, running, load])
 
   const stop = (item: BackgroundActivityItem) => Alert.alert(`Stop “${item.command || item.id}”?`, undefined, [
     { text: 'Cancel', style: 'cancel' },
@@ -58,8 +60,9 @@ export function BackgroundActivityButton({ sessionId }: { sessionId: string }) {
   ])
 
   if (!items.length) return null
+  const title = isClaude ? 'Background tasks' : 'Background terminals'
   return <>
-    <Pressable testID="background-activity" accessibilityRole="button" accessibilityLabel={`Background terminals: ${items.length} running`} onPress={() => setOpen(true)} hitSlop={6}
+    <Pressable testID="background-activity" accessibilityRole="button" accessibilityLabel={`${title}: ${items.length} running`} onPress={() => setOpen(true)} hitSlop={6}
       style={[styles.chip, { backgroundColor: colors.raised }]}>
       <ActivityIndicator size="small" color={colors.blue} />
       <Text style={[styles.chipText, { color: colors.text }]}>{items.length}</Text>
@@ -67,15 +70,16 @@ export function BackgroundActivityButton({ sessionId }: { sessionId: string }) {
     <Modal visible={open} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} onRequestClose={() => setOpen(false)}>
       <SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <Text style={[styles.title, { color: colors.text }]}>Background terminals</Text>
-          <SheetCloseButton label="Close background terminals" onPress={() => setOpen(false)} />
+          <Text style={[styles.title, { color: colors.text }]}>{title}</Text>
+          <SheetCloseButton label={`Close ${title.toLowerCase()}`} onPress={() => setOpen(false)} />
         </View>
         <ScrollView contentContainerStyle={styles.list}>
           {items.map(item => <View key={item.id} style={[styles.item, { borderColor: colors.border }]}>
             <Text selectable style={[styles.command, { color: colors.text }]} numberOfLines={3}>{item.command || item.id}</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel={`Stop ${item.command || item.id}`} disabled={stopping !== null} onPress={() => stop(item)} hitSlop={8}>
+            {/* The Claude SDK has no call that ends one task. */}
+            {!isClaude && <Pressable accessibilityRole="button" accessibilityLabel={`Stop ${item.command || item.id}`} disabled={stopping !== null} onPress={() => stop(item)} hitSlop={8}>
               {stopping === item.id ? <ActivityIndicator size="small" color={colors.red} /> : <Text style={[styles.stop, { color: colors.red }]}>Stop</Text>}
-            </Pressable>
+            </Pressable>}
           </View>)}
         </ScrollView>
       </SafeAreaView>

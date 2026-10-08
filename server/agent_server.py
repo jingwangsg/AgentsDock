@@ -92655,14 +92655,15 @@ async def _post_codex_shell_command_locked(
 
 @app.get("/api/sessions/{session_id}/background-activity")
 async def get_background_activity(session_id: str) -> dict[str, Any]:
-    """What keeps running for a chat outside its turn: its Codex background terminals.
-
-    Claude has none to list: AgentsDock refuses background Bash in SDK mode
-    (_UNTRACKED_BACKGROUND_REASON), and print mode's CLI exits with its shells.
-    """
+    """What keeps running for a chat outside its turn: its Codex background
+    terminals, or the agents and shells its Claude process still tracks."""
     session = STORE.sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Chat not found")
+    if session.get("backend") == BACKEND_CLAUDE:
+        # Listed only; post_background_activity_stop refuses them.
+        tasks = CLAUDE_SDK_MANAGER.inflight_tasks(session_id) if CLAUDE_SDK_MANAGER is not None else []
+        return {"items": [{"id": task_id, "command": description} for task_id, description in tasks]}
     loaded = loaded_codex_thread(session)
     try:
         terminals = await loaded[0].list_background_terminals(loaded[1]) if loaded else []
@@ -92677,6 +92678,9 @@ async def post_background_activity_stop(session_id: str, body: BackgroundActivit
     session = STORE.sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Chat not found")
+    if session.get("backend") == BACKEND_CLAUDE:
+        # The SDK has no call that ends one task.
+        return {"stopped": False}
     loaded = loaded_codex_thread(session)
     try:
         # Codex scopes the process id to this thread.

@@ -41,10 +41,27 @@ describe('BackgroundActivityButton', () => {
     expect(list).toHaveBeenCalledTimes(3)
   })
 
-  it('stays hidden, without asking, on a server without it and for a Claude chat', () => {
-    const { container, unmount } = render(<BackgroundActivityButton session={{ ...session, backend: 'claude' }} />)
-    expect(container).toBeEmptyDOMElement()
-    unmount()
+  it("lists a Claude chat's agents and shells without a stop, re-checking while its turn runs", async () => {
+    // shouldAdvanceTime: waitFor and findByRole poll on real time; only the 15 s interval is advanced by hand.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      list.mockResolvedValue([])
+      useAppStore.setState({ activeSessionIds: new Set(['chat-a']) })
+      const { container } = render(<BackgroundActivityButton session={{ ...session, backend: 'claude' }} />)
+      await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
+      expect(container).toBeEmptyDOMElement()
+      // The task started after the turn's first check; the next interval finds it.
+      list.mockResolvedValue([{ id: 'a1', command: 'Review the diff' }])
+      await act(() => vi.advanceTimersByTimeAsync(15_000))
+      fireEvent.click(await screen.findByRole('button', { name: 'Background tasks: 1 running' }))
+      expect(screen.getByText('Review the diff')).toBeVisible()
+      expect(screen.queryByRole('button', { name: /^Stop / })).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stays hidden, without asking, on a server without it', () => {
     useAppStore.setState({ health: { ok: true, capabilities: {} } })
     expect(render(<BackgroundActivityButton session={session} />).container).toBeEmptyDOMElement()
     expect(list).not.toHaveBeenCalled()

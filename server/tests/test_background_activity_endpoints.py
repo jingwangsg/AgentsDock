@@ -1,4 +1,5 @@
-"""Background activity: a loaded Codex thread's background terminals, listed and stopped without starting Codex."""
+"""Background activity: a loaded Codex thread's background terminals, listed and stopped without starting Codex;
+the agents and shells a Claude chat's process still tracks, listed."""
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -37,6 +38,19 @@ class BackgroundActivityEndpointTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as missing:
             await agent_server.get_background_activity("missing-chat")
         self.assertEqual(missing.exception.status_code, 404)
+
+    async def test_lists_a_claude_process_tasks_and_refuses_a_stop(self):
+        manager = SimpleNamespace(inflight_tasks=Mock(return_value=[("b1", "Download the weights"), ("a1", "Review the diff")]))
+        with patch.dict(agent_server.STORE.sessions, {"chat": {"id": "chat", "backend": "claude"}}), \
+                patch.object(agent_server, "CLAUDE_SDK_MANAGER", manager):
+            self.assertEqual(await agent_server.get_background_activity("chat"),
+                {"items": [{"id": "b1", "command": "Download the weights"}, {"id": "a1", "command": "Review the diff"}]})
+            manager.inflight_tasks.assert_called_once_with("chat")
+            # The SDK has no call that ends one task.
+            self.assertEqual(await agent_server.post_background_activity_stop("chat", agent_server.BackgroundActivityStopRequest(id="b1")), {"stopped": False})
+        with patch.dict(agent_server.STORE.sessions, {"chat": {"id": "chat", "backend": "claude"}}), \
+                patch.object(agent_server, "CLAUDE_SDK_MANAGER", None):
+            self.assertEqual(await agent_server.get_background_activity("chat"), {"items": []})
 
 
 if __name__ == "__main__":

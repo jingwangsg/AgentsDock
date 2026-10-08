@@ -191,6 +191,7 @@
   "ui.sessionSubagents.unsupported": "This provider version does not support a per-chat limit.",
   "ui.sessionSubagents.notAcknowledged": "The server did not confirm this limit. Update AgentsServer and try again.",
   "backgroundActivity.title": "Background terminals",
+  "backgroundActivity.tasksTitle": "Background tasks",
   "backgroundActivity.count": "{count} running",
   "backgroundActivity.stop": "Stop",
   "backgroundActivity.confirmStop": "Confirm stop",

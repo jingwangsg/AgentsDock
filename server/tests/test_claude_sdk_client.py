@@ -2257,6 +2257,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await asyncio.wait_for(handle.__anext__(), 5), progress)
         self.assertFalse(handle.done)
         self.assertEqual(handle.background_task_receipts[0]["status"], "running")
+        self.assertEqual(self.manager.inflight_tasks("chat-bg-bash"), [("bash-still-running", "Download the weights")])
         await client.emit({
             "type": "system", "subtype": "task_notification",
             "task_id": "bash-still-running", "status": "completed",
@@ -2265,6 +2266,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         result = await asyncio.wait_for(handle.wait_result(), 5)
         self.assertEqual(result["result"], "weights downloaded")
         self.assertEqual(handle.background_task_receipts[0]["status"], "completed")
+        self.assertEqual(self.manager.inflight_tasks("chat-bg-bash"), [])
 
     async def test_a_task_the_cli_no_longer_lists_stops_holding_the_run_open(self) -> None:
         handle = await self.manager.start_run(
@@ -2282,6 +2284,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit({"type": "result", "is_error": False, "result": "emulator is back"})
         result = await asyncio.wait_for(handle.wait_result(), 5)
         self.assertEqual(result["result"], "emulator is back")
+        self.assertEqual(self.manager.inflight_tasks("chat-bg-dropped"), [])
 
     async def test_a_task_completion_that_arrives_before_the_next_run_is_acknowledged_leaves_the_ledger(self) -> None:
         first = await self.manager.start_run("chat-ledger-gap", "Start the job", run_id="run-1", options={}, configuration_key="same")

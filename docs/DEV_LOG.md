@@ -1,5 +1,30 @@
 # Public development log
 
+## 2026-10-08 — The background-activity chip lists a Claude chat's agents and shells (server, desktop and Android source)
+
+- While a Claude chat's background agents or shells kept running after the
+  model had answered, the app showed only the ordinary "running" state, and
+  nothing once the run was released: the header chip rendered for Codex
+  chats only, and the background-activity endpoint listed nothing for a
+  Claude chat.
+- The endpoint now returns, for a Claude chat, the agents and shells the
+  chat's Claude process still tracks, each under the description the CLI
+  reported when it started. The desktop and Android chip shows them as
+  "Background tasks" (Codex chats keep "Background terminals"), without a
+  per-item Stop: the SDK has no call that ends one task. A Claude task starts
+  mid-turn and keeps the turn open, so the chip re-checks every 15 s while a
+  Claude turn runs, as it already did while anything was listed; Codex chats
+  are polled as before.
+- Verified with the server endpoint and SDK client tests, the desktop and
+  Android component tests, type checks on both apps, and a real-CLI run on an
+  isolated server: a 40 s background shell was listed under its description
+  from the moment it started until its completion woke the model and the
+  run ended, after which the list was empty; a second shell stayed listed
+  after Stop released the run that waited for it, and left the list when it
+  ended on its own. Not exercised in the built desktop or Android app.
+  Availability: source only; takes effect in the next desktop package and
+  Android build, and when a server is redeployed.
+
 ## 2026-10-08 — Desktop package 113 and Android build 57 (local package and APK)
 
 - Packages the entries above recorded since package 112 and build 56: the
