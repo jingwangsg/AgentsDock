@@ -3171,5 +3171,5 @@
   "inferenceHub.keyEnabled": "已启用",
   "inferenceHub.remoteNoHub": "本机没有安装本地服务端，因此没有需要转发的远程服务器。",
   "inferenceHub.portSavedLocal": "端口已保存。",
-  "importChats.resume.alreadyOpen": "这个会话已属于当前打开的聊天“{title}”。"
+  "importChats.resume.alreadyOpen": "这个会话已属于当前打开的对话“{title}”。"
 }
