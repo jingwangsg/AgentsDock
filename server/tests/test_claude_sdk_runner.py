@@ -193,10 +193,12 @@ class FakeClaudeManager:
         self.context_usage_calls: list[tuple[str, str | None]] = []
         self.loaded = True
         self.steer_calls: list[tuple[str, str, str]] = []
+        self.steer_deliver_now: bool | None = None
         self.steer_result: bool | BaseException = False
 
-    async def steer(self, chat_id: str, *, run_id: str, prompt: str) -> bool:
+    async def steer(self, chat_id: str, *, run_id: str, prompt: str, deliver_now: bool = True) -> bool:
         self.steer_calls.append((chat_id, run_id, prompt))
+        self.steer_deliver_now = deliver_now
         if isinstance(self.steer_result, BaseException):
             raise self.steer_result
         return self.steer_result
@@ -5663,7 +5665,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch.object(agent_server, name, value))
         return stack
 
-    async def _put_follow_up(self) -> asyncio.Future[dict[str, object]]:
+    async def _put_follow_up(self, **request: object) -> asyncio.Future[dict[str, object]]:
         for _ in range(500):
             active = agent_server.ACTIVE.get("chat-claude") or {}
             if active.get("native_steer_queue") is not None:
@@ -5674,8 +5676,40 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             "selected": {"queued_id": "queued-next", "prompt": "Steer", "file_ids": []},
             "remaining": 0,
             "future": steer_future,
+            **request,
         })
         return steer_future
+
+    async def test_a_message_sent_while_claude_works_joins_the_turn_as_a_queued_frame(self) -> None:
+        first = FakeClaudeRun()
+        manager = FakeClaudeManager(first)
+        manager.steer_result = True
+        append_event = AsyncMock(return_value={})
+        append_finished = AsyncMock(return_value={})
+
+        with self._run_claude_sdk_patches(manager, append_event, append_finished):
+            runner = asyncio.create_task(agent_server.run_claude_sdk(
+                "chat-claude",
+                "run-claude",
+                "Prompt",
+                dict(self.session),
+                Path(self.cwd) / ".manifest.json",
+                provider_runtime_env={"AGENTSDOCK_CHAT_ID": "chat-claude"},
+            ))
+            # Enter, not Send now: the frame waits for the running tool instead of moving it.
+            steer_future = await self._put_follow_up(deliver_now=False)
+            steer_result = await asyncio.wait_for(steer_future, 5)
+            await first.messages.put({
+                "type": "result",
+                "result": "pong",
+                "session_id": "provider-1",
+                "terminal_reason": "end_turn",
+            })
+            await asyncio.wait_for(runner, 5)
+
+        self.assertIs(manager.steer_deliver_now, False)
+        self.assertTrue(steer_result["native_steer"])
+        self.assertEqual(first.interrupt_calls, 0)
 
     async def test_follow_up_is_injected_into_the_working_turn_without_interrupt(self) -> None:
         first = FakeClaudeRun()

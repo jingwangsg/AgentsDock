@@ -18571,9 +18571,7 @@ async def enqueue_turn(
     if not still_busy:
         schedule_next_queued_turn(session_id)
     else:
-        # A Claude run whose model is idle while background tasks run ends now
-        # so this message starts; the tasks keep running. Other runs stay busy.
-        asyncio.create_task(release_claude_run_for_queued_turn(session_id))
+        asyncio.create_task(steer_or_release_for_queued_turn(session_id, queued_id))
     return {
         "queued": True,
         "queued_id": queued_id,
@@ -24687,6 +24685,9 @@ def deferred_force_send_response_for_client(
 async def _run_queued_turn_now_and_release(
     session_id: str,
     queued_id: str,
+    *,
+    deliver_now: bool = True,
+    steer_only: bool = False,
 ) -> dict[str, Any]:
     result: dict[str, Any] | None = None
     uncertain_error: dict[str, Any] | None = None
@@ -24701,10 +24702,14 @@ async def _run_queued_turn_now_and_release(
                 session_id,
                 queued_id,
                 require_native=True,
+                deliver_now=deliver_now,
+                steer_only=steer_only,
             )
         except NonNativeForceSendRequiresLifecycleLock:
             async with session_lifecycle_lock(session_id):
-                result = await _run_queued_turn_now_once(session_id, queued_id)
+                result = await _run_queued_turn_now_once(
+                    session_id, queued_id, deliver_now=deliver_now, steer_only=steer_only,
+                )
         return result
     except NativeSteerHandoffError as exc:
         if exc.safe_to_requeue:
@@ -24821,6 +24826,12 @@ async def _run_queued_turn_now_once(
     queued_id: str,
     *,
     require_native: bool = False,
+    # Send now moves a running tool to the background; False (Enter) lets the
+    # frame wait for the tool to return.
+    deliver_now: bool = True,
+    # Unlike require_native (retry under the lifecycle lock, then interrupt),
+    # a message that cannot join the turn returns to the queue.
+    steer_only: bool = False,
 ) -> dict[str, Any]:
     if session_id not in STORE.sessions:
         raise HTTPException(status_code=404, detail="session not found")
@@ -25019,9 +25030,17 @@ async def _run_queued_turn_now_once(
                     and (
                         goal_followup or (
                             not interrupted_turn_blockers
-                            and provider_route_snapshots_match_for_native_steer(
-                                interrupted_turn.get("provider_cross_chat_route_snapshot"),
-                                selected.get("provider_cross_chat_route_snapshot"),
+                            # Claude Code queues a mid-turn message into the
+                            # session whatever the chat's routes are, and a
+                            # plain message carries no new grant. The Codex
+                            # lane still needs the message's durable routes
+                            # to equal the running turn's.
+                            and (
+                                active_turn.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK
+                                or provider_route_snapshots_match_for_native_steer(
+                                    interrupted_turn.get("provider_cross_chat_route_snapshot"),
+                                    selected.get("provider_cross_chat_route_snapshot"),
+                                )
                             )
                         )
                     )
@@ -25056,6 +25075,31 @@ async def _run_queued_turn_now_once(
                         )
                     )
                 )
+                if (
+                    not native_steer
+                    and active_turn.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK
+                    and not goal_followup
+                    and (steer_only or not require_native)
+                ):
+                    # Nothing else records which input ruled steering out. Send
+                    # now logs on its lifecycle-locked retry, as before.
+                    logger.info(
+                        "Claude %s instead of steering session=%s queued_id=%s "
+                        "turn_ready=%s steer_queue=%s async_delivery=%s plain=%s backend=%s "
+                        "interactive_client=%s same_runtime=%s interrupted_turn_blockers=%s",
+                        "follow-up stays queued" if steer_only else "Force Send interrupts",
+                        session_id, queued_id, bool(active_turn.get("provider_turn_ready")),
+                        native_steer_queue is not None, selected_async,
+                        codex_goal_steer_selection_is_plain(selected), selected_backend,
+                        CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY in {
+                            str(value) for value in selected.get("client_capabilities") or []
+                        },
+                        queued_claude_runtime_matches_active(session_id, selected, active_turn),
+                        interrupted_turn_blockers,
+                    )
+                if steer_only and not native_steer:
+                    # Not a Send now: the message waits in the queue as before.
+                    return {"ok": False, "deferred": True, "native_steer": False}
                 if goal_followup and not native_steer:
                     unsupported_input = not codex_goal_steer_selection_is_plain(selected)
                     raise HTTPException(
@@ -25083,26 +25127,6 @@ async def _run_queued_turn_now_once(
                     # explicit Stop cannot interleave between interruption and
                     # promotion of this queued message.
                     raise NonNativeForceSendRequiresLifecycleLock
-                if not native_steer and active_turn.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK:
-                    # Not steering interrupts the running turn and its command;
-                    # nothing else records which input ruled steering out.
-                    logger.info(
-                        "Claude Force Send interrupts instead of steering session=%s queued_id=%s "
-                        "turn_ready=%s steer_queue=%s async_delivery=%s plain=%s backend=%s "
-                        "interactive_client=%s same_runtime=%s routes_allow=%s interrupted_turn_blockers=%s",
-                        session_id, queued_id, bool(active_turn.get("provider_turn_ready")),
-                        native_steer_queue is not None, selected_async,
-                        codex_goal_steer_selection_is_plain(selected), selected_backend,
-                        CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY in {
-                            str(value) for value in selected.get("client_capabilities") or []
-                        },
-                        queued_claude_runtime_matches_active(session_id, selected, active_turn),
-                        provider_route_snapshots_match_for_native_steer(
-                            interrupted_turn.get("provider_cross_chat_route_snapshot"),
-                            selected.get("provider_cross_chat_route_snapshot"),
-                        ),
-                        interrupted_turn_blockers,
-                    )
                 if native_steer:
                     # Provider-side fencing happens after this item leaves the
                     # live deque. Preserve its exact durable position so crash
@@ -25158,6 +25182,8 @@ async def _run_queued_turn_now_once(
                 "phase": "queued",
                 "accepted_event": asyncio.Event(),
                 "owner_task": owner_task,
+                "deliver_now": deliver_now,
+                "steer_only": steer_only,
                 "expected_provider_turn_id": (
                     str(active_turn.get("provider_turn_id") or "")
                     if active_turn.get("provider_turn_ready") else ""
@@ -57453,6 +57479,75 @@ async def claude_sdk_manager() -> ClaudeSDKSupervisorManager:
         return manager
 
 
+# One follow-up joins a chat's turn at a time; the next waits for its handoff
+# instead of colliding with it.
+FOLLOW_UP_STEER_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+async def steer_or_release_for_queued_turn(session_id: str, queued_id: str) -> None:
+    """Let a message sent while a run works reach the model as its CLI would.
+
+    A Claude turn takes the message as a queued frame, as Claude Code does
+    when the user types while it works: the CLI hands it to the model at its
+    next step (when the running tool returns, or at once while the model only
+    waits for background tasks) and nothing is interrupted. A message that
+    cannot join (another runtime, a provider command, new chat access) stays
+    queued, and a Claude run that only background tasks keep open is released
+    for it. Codex turns are unchanged.
+    """
+    async with ACTIVE_LOCK:
+        transport = (ACTIVE.get(session_id) or {}).get("transport")
+    # load-bearing: the admission below would also steer a Codex turn whose
+    # routes match; only this guard keeps Codex on queue-order delivery.
+    if transport == CLAUDE_TRANSPORT_AGENT_SDK:
+        async with FOLLOW_UP_STEER_LOCKS.setdefault(session_id, asyncio.Lock()):
+            async with QUEUE_LOCK:
+                head = next(iter(QUEUED_TURNS.get(session_id) or ()), None)
+            # Only the head of the queue may join: an earlier message that
+            # could not join keeps its place ahead of this one. Deliveries
+            # (a purpose) are never steered.
+            if head is not None and head.get("queued_id") == queued_id and not head.get("purpose"):
+                try:
+                    result = await _run_queued_turn_now_and_release(
+                        session_id, queued_id, deliver_now=False, steer_only=True,
+                    )
+                    if result.get("native_steer"):
+                        return
+                except HTTPException as exc:
+                    detail = exc.detail.get("message", exc.detail) if isinstance(exc.detail, dict) else exc.detail
+                    logger.info(
+                        "Claude follow-up stays queued session=%s queued_id=%s: %s",
+                        session_id, queued_id, detail,
+                    )
+                except NativeSteerHandoffError as exc:
+                    if exc.delivery_uncertain:
+                        # The frame may have reached the CLI; the message is not
+                        # sent again. Say so where the user sent it.
+                        logger.warning(
+                            "Claude follow-up delivery is uncertain session=%s queued_id=%s: %s",
+                            session_id, queued_id, concise_error_message(exc),
+                        )
+                        await append_event(session_id, "turn_deferred", {
+                            "queued_id": queued_id,
+                            "message": (
+                                "This message may already have reached Claude and was not "
+                                "sent again. Check the reply before sending it once more."
+                            ),
+                            "remaining": 0,
+                        })
+                        return
+                    logger.info(
+                        "Claude follow-up stays queued session=%s queued_id=%s: %s",
+                        session_id, queued_id, concise_error_message(exc),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Claude follow-up steer failed session=%s queued_id=%s: %s",
+                        session_id, queued_id, concise_error_message(exc),
+                    )
+    await release_claude_run_for_queued_turn(session_id)
+
+
 async def release_claude_run_for_queued_turn(session_id: str, run_id: str | None = None) -> bool:
     """Let a queued message through a Claude run that only background tasks keep open.
 
@@ -67051,6 +67146,7 @@ async def run_claude_sdk(
                     try:
                         if not await manager.steer(
                             session_id, run_id=current_run_id, prompt=request_prompt,
+                            deliver_now=bool(request.get("deliver_now", True)),
                         ):
                             declined = "no acknowledged live turn to steer"
                     except Exception as exc:
@@ -67096,7 +67192,7 @@ async def run_claude_sdk(
                             delivery_uncertain=True,
                         ))
                     continue
-                if not logical_transition_allowed:
+                if not logical_transition_allowed or request.get("steer_only"):
                     logger.info(
                         "Claude follow-up returns to the queue session=%s run=%s: %s",
                         session_id, current_run_id, declined,

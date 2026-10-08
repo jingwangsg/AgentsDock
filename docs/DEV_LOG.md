@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-09 — A message sent while Claude works joins the turn, as in Claude Code (server, source)
+
+- Sending while a Claude turn ran queued the message until the whole turn
+  ended. Send now also refused to inject when the chat's cross-chat routes
+  differed from the running turn's (a chat-hosted job turn holds none), so
+  during a job turn in a chat with a durable route it was deferred although
+  the model could have taken the message. Claude Code has no such wait: a
+  message typed while it works is queued into the session and read when the
+  running tool returns (Enter), or at once after the tool is moved to the
+  background (Ctrl+Enter).
+- A plain message (text or attachments, same model, effort and runtime, no
+  provider command, no new chat or team access) sent while a Claude turn
+  works now joins that turn as a queued frame: the model reads it when the
+  running tool returns, or immediately while it only waits for background
+  tasks, and nothing is interrupted. Send now keeps injecting with the running
+  tool moved to the background. Neither needs the message's routes to equal
+  the running turn's; the plainness rule already excludes new grants, and the
+  turn keeps its own authority (the message's routes are not applied to it).
+  Messages join in order: only the head of the queue may join, so one that
+  could not join keeps its place ahead of later ones. A message that cannot
+  join stays queued for the next turn, and a Claude run that only background
+  tasks keep open is released for it as before. A message joining such a
+  waiting run that the CLI never takes ends the run with the model's stored
+  reply after the replay grace, as a Send now does. Codex turns are
+  unchanged.
+- Verified with the SDK client, runner and Send now admission tests, the
+  steering, queue and route suites, and a real-CLI run on an isolated server:
+  a message sent 4 s into a 40 s foreground Bash call was steered within a
+  second, the call ran to completion unmoved, the reply quoted the message,
+  and the chat had one run. Not exercised: a chat with a durable route (unit
+  tests only) and the Codex lane.
+  Availability: source only; takes effect when a server is redeployed.
+
 ## 2026-10-09 — Android build 60 (local APK)
 
 - Packages the entries above recorded since build 59: the background-activity

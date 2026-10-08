@@ -2600,6 +2600,38 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit({"type": "result", "is_error": False, "result": "done"})
         self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "done")
 
+    async def test_a_follow_up_sent_with_enter_is_not_marked_now_while_a_tool_runs(self) -> None:
+        handle = await self.manager.start_run("chat-steer-queued", "Render", run_id="run-queued", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_wait", "name": "Bash", "input": {"command": "sleep 40"}},
+        ]}})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        # Claude Code's Enter: the CLI queues the frame and the model reads it when the call returns; the call is not moved.
+        self.assertTrue(await self.manager.steer("chat-steer-queued", run_id="run-queued", prompt="also check the logs", deliver_now=False))
+        frame = client.query_envelopes[-1][0]
+        self.assertNotIn("priority", frame)
+        self.assertNotIn("origin", frame)
+        await client.emit({"type": "result", "is_error": False, "result": "done"})
+        self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "done")
+
+    async def test_a_follow_up_the_cli_never_takes_ends_a_waiting_run_with_the_stored_result(self) -> None:
+        handle = await self.manager.start_run("chat-steer-waiting", "Start the job", run_id="run-waiting", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "system", "subtype": "task_started", "task_id": "job", "task_type": "local_bash"})
+        await client.emit({"type": "result", "is_error": False, "result": "started"})
+        for _ in range(50):
+            if handle.awaiting_background_tasks:
+                break
+            await asyncio.sleep(0)
+        self.assertTrue(handle.awaiting_background_tasks)
+        # The CLI drops the frame (no replay): the run must not stay open for it.
+        client.auto_ack = False
+        with patch.object(claude_sdk_client, "CLAUDE_SDK_STEER_REPLAY_GRACE_SECONDS", 0.2):
+            self.assertTrue(await self.manager.steer("chat-steer-waiting", run_id="run-waiting", prompt="and the logs?", deliver_now=False))
+            result = await asyncio.wait_for(handle.wait_result(), 5)
+        self.assertEqual(result["result"], "started")
+
     async def test_a_result_that_ends_the_turn_before_the_replay_keeps_the_run_open_for_the_answer(self) -> None:
         handle = await self.manager.start_run("chat-steer-race", "Render", run_id="run-race", options={}, configuration_key="same")
         client = self.factory.clients[-1]

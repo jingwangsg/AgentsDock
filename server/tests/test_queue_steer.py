@@ -2512,6 +2512,8 @@ class RunQueuedTurnNowTests(unittest.IsolatedAsyncioTestCase):
             _queued_id: str,
             *,
             require_native: bool = False,
+            deliver_now: bool = True,
+            steer_only: bool = False,
         ) -> dict[str, object]:
             if require_native:
                 raise agent_server.NonNativeForceSendRequiresLifecycleLock

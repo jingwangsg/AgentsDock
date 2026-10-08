@@ -891,9 +891,11 @@ tool with `run_in_background` starts a background subagent. The CLI tracks
 both as tasks (`local_bash`, `local_agent`); the server keeps the run open
 after the model's turn ends until every such task reports completion, the CLI
 then wakes the model inside the same run, and the run ends with its final
-reply. A message queued while the run is in that waiting state ends the run
-with the model's own reply and starts at once; the tasks stay alive on the
-chat's CLI connection and their completion wakes the model inside the new run.
+reply. A plain message sent while the run is in that waiting state joins it
+and the model reads it at once; one that cannot join ends the run with the
+model's own reply and starts at once. Either way the tasks stay alive on the
+chat's CLI connection and their completion wakes the model inside whichever
+run is open.
 Stop interrupts the CLI, which kills every background task, agents included;
 that is CLI behaviour and the only way to end such a run early. Shells
 detached with `nohup`, `disown`, `setsid` or `&` are still refused by a
@@ -902,22 +904,28 @@ transport the CLI closes its input with the reply and kills background shells
 five seconds later, so those turns are told to keep required work in the
 foreground.
 
-Send now, unlike automatic queue delivery, injects a message into the working
-turn, as Claude Code's own composer does: the running tool and any background
-tasks finish, the model reads the message at its next step, and the run keeps
-its owner, authority and run id. If the turn ends before the CLI has taken the
+A message sent while a Claude turn works joins that turn, as typing into
+Claude Code's composer does: the CLI queues it and the model reads it at its
+next step, when the running tool returns, or at once while the model only
+waits for background tasks. Nothing is interrupted and the run keeps its
+owner, authority and run id. Send now is Claude Code's Ctrl+Enter: the same
+injection, but a running tool is moved to the background so the model reads
+the message immediately. If the turn ends before the CLI has taken the
 message, the run stays open and the CLI answers it in the same run. The
 timeline records `turn_steered` with `native_steer` and
 `provider_user_authored` on that run, which every consumer
 of the event log (queue recovery, rewind, history search, summaries, forks,
 exports, the shared-chat transcript) treats as a delivered user message, as it
 treats a Codex goal follow-up. This lane takes a plain text or attachment
-message on the same model, effort and runtime; a message with a provider
-command, a purpose or new chat or team references, or one that changes the
-model or effort, still stops the run and starts its own, and a run that
-started without provider authority still falls back to the logical-run
-replacement. If the CLI cannot take the message because the run is already
-stopping, the message returns to the queue and Send now reports the deferral.
+message on the same model, effort and runtime, whatever cross-chat routes the
+chat or the running turn holds; the turn keeps its own authority, the
+message's routes are not applied to it. A message with a provider command, a
+purpose or new chat or team references, or one that changes the model or
+effort, stays queued for the next turn. Send now on such a message still
+stops the run and starts its own, and a run that started without provider
+authority still falls back to the logical-run replacement. If the CLI cannot
+take the message because the run is already stopping, the message returns to
+the queue and Send now reports the deferral.
 If the frame was written but never confirmed, the message is not sent again,
 Send now reports the uncertain delivery, and the chat's CLI process is retired
 when the run ends.

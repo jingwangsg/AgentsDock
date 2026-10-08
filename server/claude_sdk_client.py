@@ -1445,6 +1445,10 @@ class _Steer:
     run_id: str
     prompt: str
     response: asyncio.Future[bool]
+    # Claude Code's Ctrl+Enter: a running tool is moved to the background so
+    # the model reads the message at once. Otherwise it waits for the tool, as
+    # a message typed into the composer does.
+    deliver_now: bool = True
 
 
 @dataclass
@@ -1768,20 +1772,22 @@ class ClaudeSDKSupervisor:
         await self._commands.put(_Interrupt(run_id=run_id, response=response))
         return await asyncio.shield(response)
 
-    async def steer(self, *, run_id: str, prompt: str) -> bool:
+    async def steer(self, *, run_id: str, prompt: str, deliver_now: bool = True) -> bool:
         """Send a follow-up into the active run, as Claude Code's composer does.
 
         The CLI queues the message and the model reads it at its next step;
-        the running tool and background tasks are untouched and the run keeps
-        its owner. Returns False when there is no acknowledged run to steer;
-        raises ClaudeSDKQueryError when the write could not be bounded, so the
-        frame may or may not have reached the CLI.
+        with `deliver_now` a running tool is moved to the background so that
+        step comes at once (Claude Code's Send now), otherwise the message
+        waits for the tool to return (Enter). Background tasks are untouched
+        and the run keeps its owner. Returns False when there is no
+        acknowledged run to steer; raises ClaudeSDKQueryError when the write
+        could not be bounded, so the frame may or may not have reached the CLI.
         """
 
         loop = self._ensure_actor()
         response: asyncio.Future[bool] = loop.create_future()
         assert self._commands is not None
-        await self._commands.put(_Steer(run_id=run_id, prompt=prompt, response=response))
+        await self._commands.put(_Steer(run_id=run_id, prompt=prompt, response=response, deliver_now=deliver_now))
         return await asyncio.shield(response)
 
     async def release_awaiting_run(self, *, run_id: str | None = None) -> bool:
@@ -2587,7 +2593,7 @@ class ClaudeSDKSupervisor:
         # 2026-10-07). "now" lets the CLI background the call and deliver.
         frames = _query_message_stream(
             command.prompt, correlation_id,
-            deliver_now=bool(active._inflight_tool_uses),
+            deliver_now=command.deliver_now and bool(active._inflight_tool_uses),
         )
         try:
             if active._query_session_id is None:
@@ -2605,6 +2611,14 @@ class ClaudeSDKSupervisor:
             if isinstance(exc, asyncio.CancelledError):
                 raise
             return
+        if active._awaiting_background_tasks and active._deferred_result is not None and active._result_after_steer is None:
+            # The model was idle with its Result deferred for background tasks.
+            # Should the CLI never take this frame, the run must still end:
+            # that Result is the answer the replay grace falls back to.
+            active._result_after_steer = active._deferred_result
+            self._schedule_wait_grace(
+                active.run_id, "steer_replay", CLAUDE_SDK_STEER_REPLAY_GRACE_SECONDS,
+            )
         # The model has new work; a run that was only waiting on background
         # tasks is active again.
         active._awaiting_background_tasks = False
@@ -3747,7 +3761,7 @@ class ClaudeSDKSupervisorManager:
             return False
         return await supervisor.interrupt(run_id=run_id)
 
-    async def steer(self, chat_id: str, *, run_id: str, prompt: str) -> bool:
+    async def steer(self, chat_id: str, *, run_id: str, prompt: str, deliver_now: bool = True) -> bool:
         """Inject a follow-up into a chat's active run without interrupting it; see the supervisor."""
 
         self._bind_loop()
@@ -3756,7 +3770,7 @@ class ClaudeSDKSupervisorManager:
             supervisor = self._supervisors.get(str(chat_id))
         if supervisor is None:
             return False
-        return await supervisor.steer(run_id=run_id, prompt=prompt)
+        return await supervisor.steer(run_id=run_id, prompt=prompt, deliver_now=deliver_now)
 
     async def release_awaiting_run(self, chat_id: str, *, run_id: str | None = None) -> bool:
         """End a chat's run that only background tasks keep open; see the supervisor."""
