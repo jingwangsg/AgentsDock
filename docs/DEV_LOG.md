@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-10-08 — Desktop package 112 and Android build 56 (local package and APK)
+
+- Packages the client parts of the entries below recorded since package 111
+  and build 55: Resume by session ID opens the chat that owns the
+  conversation (desktop and Android) and, on Android, the goal card's
+  buttons are hidden until it is expanded. The server entries since then
+  (a message reaches Claude while it waits in a command, remote tunnel
+  changes, the Resume ownership check, rewind keeps Claude's process, slash
+  commands after a background task) take effect once a server is redeployed.
+  Availability: local package and APK.
+
 ## 2026-10-08 — Goal buttons are hidden until the card is expanded (mobile, source)
 
 - The Codex goal card now hides Pause/Resume, Edit and Clear by default.
