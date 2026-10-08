@@ -313,6 +313,22 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       stop?.()
     }
   }
+  // The hub row's Restart. Its work is kind 'redeploy', like Update & redeploy all's restart step, so remote
+  // Redeploys stay disabled while the hub restarts; `busy` disables the other row actions, as for Start.
+  const restartHub = async (profile: PublicServerProfile, force: boolean) => {
+    noteRow(profile.id, { kind: 'redeploy', working: true, text: t('updateAll.restarting') })
+    setBusy(`restart:${profile.id}`)
+    try {
+      const { restarted, running } = await window.agentsDock.hub.restartLocalServer(force)
+      noteRow(profile.id, restarted
+        ? { kind: 'redeploy', text: t('hub.restarted') }
+        : { kind: 'redeploy', confirm: true, text: running === null ? t('hub.redeployUnchecked') : t('hub.redeployRunning', { count: running }) })
+    } catch (error) {
+      noteRow(profile.id, { kind: 'redeploy', failed: true, text: cleanIPCError(errorMessage(error)) })
+    } finally {
+      setBusy(null)
+    }
+  }
   const updateCli = async (profile: PublicServerProfile, backend: 'claude' | 'codex') => {
     noteRow(profile.id, { kind: 'cli', working: true, text: t('runtimeUpdate.updating') })
     try {
@@ -395,6 +411,8 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         const details = [profile.serverIdentity ? t("ui.ServerManagement.identity_96fbbb0", { "id": String(profile.serverIdentity) }) : '', profile.serverVersion ? `AgentsServer ${profile.serverVersion}` : ''].filter(Boolean).join(' · ')
         const removableActive = current && hub !== null && isHubRemote(profile.serverUrl)
         const starting = busy === `start:${profile.id}`
+        // The row reads offline while the restarting hub is down; it keeps Restart's spinner instead of offering Start.
+        const restarting = busy === `restart:${profile.id}`
         const hubDown = profile.id === hub?.id && (profile.connectionState === 'offline' || profile.connectionState === 'retrying')
         const work = rowWork[profile.id]
         return <SortableServerRow key={profile.id} profile={profile} pinned={profile.id === hub?.id} disabled={Boolean(busy)} className={`server-management-row${current ? ' active' : ''}`}>
@@ -407,15 +425,17 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
             </small>}
             {work && <div className="server-management-work">
               <small className={work.failed ? 'server-management-error' : ''} role={work.failed ? 'alert' : 'status'}>{work.text}</small>
-              {/* Apart from the Redeploy icon, so a double click there cannot confirm. */}
+              {/* Apart from the Redeploy and Restart icons, so a double click there cannot confirm. */}
               {work.confirm && <>
-                <button type="button" className="danger-button compact" onClick={() => void redeploy(profile, true)}>{t('hub.redeployAnyway')}</button>
+                {profile.id === hub?.id
+                  ? <button type="button" className="danger-button compact" disabled={updateAllBlocked} onClick={() => void restartHub(profile, true)}>{t('hub.restartAnyway')}</button>
+                  : <button type="button" className="danger-button compact" disabled={updateAllBlocked} onClick={() => void redeploy(profile, true)}>{t('hub.redeployAnyway')}</button>}
                 <button type="button" className="quiet-button" onClick={() => noteRow(profile.id, null)}>{t('editor.cancel')}</button>
               </>}
             </div>}
           </div>
           <div className="server-management-actions">
-            {(hubDown || starting) && <button type="button" className="quiet-button" aria-label={t('hub.startLabel', { server: profile.name })} disabled={Boolean(busy)} onClick={() => void startHub(profile.id)}>{starting && <LoaderCircle className="spin" size={12} />} {starting ? t('hub.starting') : t('hub.start')}</button>}
+            {(hubDown || starting) && !restarting && <button type="button" className="quiet-button" aria-label={t('hub.startLabel', { server: profile.name })} disabled={Boolean(busy)} onClick={() => void startHub(profile.id)}>{starting && <LoaderCircle className="spin" size={12} />} {starting ? t('hub.starting') : t('hub.start')}</button>}
             {!current && <button type="button" className="quiet-button" aria-label={working ? t("ui.ServerManagement.switching_to_e7437c0", { "server": String(profile.name) }) : t("ui.ServerManagement.use_367b9be", { "server": String(profile.name) })} disabled={Boolean(busy) || Boolean(switchingProfileId)} onClick={() => void activate(profile.id)}>{working && <LoaderCircle className="spin" size={12} />} {working ? t("ui.ServerManagement.switching_b7b9fbf") : t("ui.ServerManagement.use_c36d819")}</button>}
             <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.edit_966e044", { "server": String(profile.name) })} disabled={Boolean(busy)} onClick={() => beginEdit(profile)}><Pencil size={13} /></button>
             <DropdownMenu.Root>
@@ -436,6 +456,14 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
               title={t('hub.redeployTitle')}
               disabled={Boolean(busy) || redeploying || work?.working}
               onClick={() => void redeploy(profile, false)}
+            >{work?.kind === 'redeploy' && work.working ? <LoaderCircle className="spin" size={12} /> : <RotateCw size={13} />}</button>}
+            {profile.id === hub?.id && (!hubDown || restarting) && <button
+              type="button"
+              className="icon-button"
+              aria-label={t('hub.restartLabel', { server: profile.name })}
+              title={t('hub.restartTitle')}
+              disabled={updateAllBlocked}
+              onClick={() => void restartHub(profile, false)}
             >{work?.kind === 'redeploy' && work.working ? <LoaderCircle className="spin" size={12} /> : <RotateCw size={13} />}</button>}
             {profile.sshHost && <button
               type="button"

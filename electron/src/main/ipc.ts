@@ -271,6 +271,7 @@ export function registerIpc(
   handle('hub:adopt-local-token', () => service.retryLocalHubToken())
   handle('hub:pairing-url', () => localHubPairingUrl())
   handle('hub:start-local-server', () => service.startLocalHub())
+  handle('hub:restart-local-server', force => service.restartLocalHub(force === true))
   handle('hub:copy-token', () => service.copyHubToken())
 
   const inferenceProxy = new InferenceProxyManager()

@@ -88,6 +88,7 @@ describe('ServerManagement', () => {
   const pairingUrl = vi.fn()
   const copyToken = vi.fn()
   const startLocalServer = vi.fn()
+  const restartLocalServer = vi.fn()
   const switchServer = vi.fn()
 
   beforeEach(() => {
@@ -107,6 +108,7 @@ describe('ServerManagement', () => {
     pairingUrl.mockReset().mockResolvedValue('http://nvmac.tail46daa8.ts.net:7850')
     copyToken.mockReset().mockResolvedValue(true)
     startLocalServer.mockReset().mockResolvedValue(undefined)
+    restartLocalServer.mockReset()
     switchServer.mockReset().mockImplementation(async (profileId: string) => {
       useAppStore.setState(state => ({ activeProfileId: profileId, profileGeneration: state.profileGeneration + 1 }))
       return true
@@ -116,7 +118,7 @@ describe('ServerManagement', () => {
       value: {
         servers: { list, update, remove, reorder },
         remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove, move: remoteMove, redeploy: remoteRedeploy, updateAll: remoteUpdateAll },
-        hub: { pairingUrl, copyToken, startLocalServer },
+        hub: { pairingUrl, copyToken, startLocalServer, restartLocalServer },
         events: { on: (name: string, listener: (value: ServerUpdateAllProgress) => void) => {
           if (name !== 'remote-servers:update-all-progress') return () => undefined
           progressListeners.add(listener)
@@ -260,6 +262,41 @@ describe('ServerManagement', () => {
     expect(await screen.findByText('Redeployed.')).toBeInTheDocument()
   })
 
+  it('restarts the local server from its row, asking first when its chats are running', async () => {
+    let finish: () => void = () => {}
+    restartLocalServer.mockImplementation(async (force: boolean) => force
+      ? new Promise(resolve => { finish = () => resolve({ restarted: true, running: 0 }) })
+      : { restarted: false, running: 2 })
+    let finishRedeploy: () => void = () => {}
+    remoteRedeploy.mockImplementation(() => new Promise(resolve => { finishRedeploy = () => resolve({ redeployed: true, running: 0 }) }))
+    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: osmo.id })
+    const user = userEvent.setup()
+    const { rerender } = render(<ServerManagement />)
+    expect(screen.queryByRole('button', { name: 'Restart OSMO' })).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'Restart This Mac' }))
+    expect(await screen.findByText('2 running chats will stop.')).toBeInTheDocument()
+    expect(restartLocalServer).toHaveBeenCalledExactlyOnceWith(false)
+    // A remote's redeploy is a hub job the restart would end.
+    await user.click(screen.getByRole('button', { name: 'Redeploy OSMO' }))
+    expect(screen.getByRole('button', { name: 'Restart anyway' })).toBeDisabled()
+    act(() => finishRedeploy())
+    expect(await screen.findByText('Redeployed.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Restart anyway' }))
+    await waitFor(() => expect(restartLocalServer).toHaveBeenLastCalledWith(true))
+
+    // The restart ends hub jobs, and the hub reads offline while it is down: nothing else starts, and no Start appears.
+    expect(screen.getByRole('button', { name: 'Redeploy OSMO' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Update & redeploy all' })).toBeDisabled()
+    act(() => useAppStore.setState({ profiles: [{ ...hub, connectionState: 'retrying' as const }, osmo] }))
+    rerender(<ServerManagement />)
+    expect(screen.queryByRole('button', { name: 'Start This Mac' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Restart This Mac' })).toBeDisabled()
+
+    act(() => finish())
+    expect(await screen.findByText('Restarted.')).toBeInTheDocument()
+  })
+
   it('updates and redeploys all servers after confirming their running chats, showing each server\'s step', async () => {
     let finish: () => void = () => {}
     const emit = (value: ServerUpdateAllProgress) => act(() => progressListeners.forEach(listener => listener(value)))
@@ -371,7 +408,7 @@ describe('ServerManagement', () => {
     expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
   })
 
-  it('offers Start only while the local server is down and shows why a start failed', async () => {
+  it('offers Start only while the local server is down and Restart only while it is up, and shows why a start failed', async () => {
     const down = { ...hub, connectionState: 'offline' as const, lastConnectionError: 'fetch failed' }
     useAppStore.setState({ profiles: [down, osmo], activeProfileId: hub.id })
     startLocalServer.mockRejectedValueOnce(new Error('No AgentsServer LaunchAgent in /Users/me/Library/LaunchAgents'))
@@ -379,6 +416,7 @@ describe('ServerManagement', () => {
     const { rerender } = render(<ServerManagement />)
 
     expect(screen.queryByRole('button', { name: 'Start OSMO' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Restart This Mac' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Start This Mac' }))
     expect(await screen.findByText('No AgentsServer LaunchAgent in /Users/me/Library/LaunchAgents')).toBeInTheDocument()
 
@@ -389,6 +427,7 @@ describe('ServerManagement', () => {
     act(() => useAppStore.setState({ profiles: [hub, osmo] }))
     rerender(<ServerManagement />)
     expect(screen.queryByRole('button', { name: 'Start This Mac' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restart This Mac' })).toBeInTheDocument()
   })
 
   it('reveals and focuses the editor when Add server is clicked directly', async () => {

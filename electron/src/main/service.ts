@@ -424,6 +424,8 @@ export class AppService {
   private remoteDeploy: { client: AgentServerClient; jobId: string; cancelled: boolean } | null = null
   /** The renderer disables the button during a run, but another window, or this one after a reload, does not. */
   private updatingAll = false
+  /** Same reason as `updatingAll`: a second `kickstart -k` would stop the server the first one started. */
+  private restartingHub = false
   private pendingProfileAuthorityNamespaces = new Map<string, string[]>()
   private windows = new Set<BrowserWindow>()
   private focusedSessionId: string | null = null
@@ -1758,6 +1760,58 @@ export class AppService {
   }
 
   /**
+   * Hub row "Restart": launchd restarts the hub on the server code on disk. The restart stops the chats running on
+   * the hub, so without `force` it returns their count instead (null: could not be checked). Unlike the connection
+   * panel's `restartServer`, which needs a managed-service install, this also restarts a LaunchAgent that runs a
+   * source checkout.
+   */
+  async restartLocalHub(force: boolean): Promise<{ restarted: boolean; running: number | null }> {
+    const hub = this.hubProfile()
+    if (!hub) throw new Error('Restart needs the local server.')
+    if (this.restartingHub) throw new Error('The local server is already restarting.')
+    // The restart would end either of them.
+    if (this.updatingAll) throw new Error('Update & redeploy all is already running.')
+    if (this.remoteDeploy) throw new Error('A remote server deployment is already running.')
+    this.restartingHub = true
+    try {
+      if (!force) {
+        const probe = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+        const running = await probe.health().then(health => health.active?.length ?? 0, () => null)
+        probe.dispose()
+        if (running !== 0) return { restarted: false, running }
+      }
+      await this.restartHubAndAwaitNewInstance(hub)
+    } finally {
+      this.restartingHub = false
+    }
+    appLog('hub', 'restarted the local server LaunchAgent')
+    // As after Start: every profile re-checks now instead of on the next poll.
+    if (this.hubProfile()?.id === this.activeProfileId) await this.runBackgroundRefresh(this.captureScope())
+    this.requestInactiveProfileHealthSweep()
+    return { restarted: true, running: 0 }
+  }
+
+  private async restartHubAndAwaitNewInstance(hub: PublicServerProfile): Promise<void> {
+    const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+    try {
+      const instanceId = () => client.health().then(health => health.server_instance_id ?? null, () => null)
+      const previous = await instanceId()
+      await startLocalServerAgent(true)
+      // Only a new instance id proves the restart: the stopping process may still answer. Two minutes, as the hub
+      // gives a redeployed remote.
+      const deadline = Date.now() + 120_000
+      for (;;) {
+        const current = await instanceId()
+        if (current !== null && current !== previous) break
+        if (Date.now() > deadline) throw new Error('The local server did not come back within 2 minutes of its restart.')
+        await new Promise(resolve => setTimeout(resolve, 1_000))
+      }
+    } finally {
+      client.dispose()
+    }
+  }
+
+  /**
    * Server list "Update & redeploy all": launchd restarts the hub on the server code on disk, the hub redeploys
    * each of its remotes from it, and Claude Code and Codex update on all of them. The restarts stop running
    * chats, so without `force` it stops at the servers that have some (null: could not be checked) and returns them.
@@ -1769,6 +1823,7 @@ export class AppService {
     const hub = this.hubProfile()
     if (!hub) throw new Error('Update & redeploy all needs the local server.')
     if (this.updatingAll) throw new Error('Update & redeploy all is already running.')
+    if (this.restartingHub) throw new Error('The local server is already restarting.')
     // The hub restart would end it.
     if (this.remoteDeploy) throw new Error('A remote server deployment is already running.')
     this.updatingAll = true
@@ -1787,23 +1842,7 @@ export class AppService {
       }
 
       onProgress({ profileId: hub.id, step: 'restart' })
-      const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
-      try {
-        const instanceId = () => client.health().then(health => health.server_instance_id ?? null, () => null)
-        const previous = await instanceId()
-        await startLocalServerAgent(true)
-        // Only a new instance id proves the restart: the stopping process may still answer. Two minutes, as the hub
-        // gives a redeployed remote.
-        const deadline = Date.now() + 120_000
-        for (;;) {
-          const current = await instanceId()
-          if (current !== null && current !== previous) break
-          if (Date.now() > deadline) throw new Error('The local server did not come back within 2 minutes of its restart.')
-          await new Promise(resolve => setTimeout(resolve, 1_000))
-        }
-      } finally {
-        client.dispose()
-      }
+      await this.restartHubAndAwaitNewInstance(hub)
       appLog('hub', 'restarted the local server LaunchAgent for update & redeploy all')
 
       const updateClis = async (profile: PublicServerProfile, redeployError?: string) => {

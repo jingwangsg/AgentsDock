@@ -410,6 +410,8 @@ export interface AgentsDockAPI {
     pairingUrl(): Promise<string | null>
     /** Starts the local server's LaunchAgent and resolves once 127.0.0.1:7850 accepts connections. */
     startLocalServer(): Promise<void>
+    /** Restarts the local server's LaunchAgent; without `force`, a server with running chats is left alone and their count returned (null when they could not be counted). */
+    restartLocalServer(force: boolean): Promise<{ restarted: boolean; running: number | null }>
     /** Copies the hub token to the clipboard inside the main process. */
     copyToken(): Promise<boolean>
   }
