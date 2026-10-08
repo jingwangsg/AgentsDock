@@ -30,10 +30,11 @@ test('streamed subagent_state feeds the slice, never the timeline, and a rewind 
   assert.match(store, /if \(existing && existing\.seq >= event\.seq\) continue/)
 })
 
-test('the snapshot is fetched on open and turn end, and polled every 5 s only while the open chat is active', () => {
+test('the snapshot is fetched on open and turn end, and polled every 5 s while the open chat is active or a child of it still runs', () => {
   assert.match(store, /const SUBAGENT_POLL_MS = 5_000/)
   assert.match(store, /void get\(\)\.refreshFiles\(sessionId\)\n\s*void get\(\)\.refreshSubagents\(sessionId\)/)
-  assert.match(store, /const wanted = sessionId && state\.connected && state\.activeSessionIds\.has\(sessionId\) \? sessionId : null/)
+  assert.match(store, /const liveChild = sessionId \? subagentsFromEvents\(Object\.values\(state\.subagentsBySession\[sessionId\] \?\? \{\}\)\)\.some\(isSubagentActive\) : false/)
+  assert.match(store, /const wanted = sessionId && state\.connected && \(state\.activeSessionIds\.has\(sessionId\) \|\| liveChild\) \? sessionId : null/)
   assert.match(store, /if \(ended === sessionId\) void state\.refreshSubagents\(ended\)/)
   assert.match(store, /if \(NativeAppState\.currentState === 'active'\) void useAppStore\.getState\(\)\.refreshSubagents\(wanted\)/)
   // No overlapping requests: a pending refresh is returned, not duplicated.
@@ -43,7 +44,7 @@ test('the snapshot is fetched on open and turn end, and polled every 5 s only wh
 test('the strip appends the running count and names; rows spin while active and fold into a summary after the turn', () => {
   assert.match(lib, /` · \$\{count\} \$\{count === 1 \? 'subagent' : 'subagents'\} running \(\$\{activeSubagentNames\.slice\(0, 2\)\.join\(', '\)\}\)`/)
   assert.match(bar, /runActivityLabel\(activity, active, now, subagents\.filter\(isSubagentActive\)\.map\(subagentDisplayName\)\)/)
-  assert.match(bar, /\.filter\(agent => agent\.runId === runId\)/, 'only the latest turn\'s subagents are listed')
+  assert.match(bar, /\.filter\(agent => agent\.runId === runId \|\| isSubagentActive\(agent\)\)/, 'the latest turn\'s subagents, plus an earlier turn\'s still running')
   assert.match(bar, /\{subagents\.length \? <SubagentRows agents=\{subagents\} now=\{now\} runLive=\{label\.live\} \/> : null\}/)
   assert.match(rows, /\{active \? <ActivityIndicator size="small" color=\{colors\.blue\} \/>/)
   assert.match(rows, /agent\.status === 'completed' \? <Check /)

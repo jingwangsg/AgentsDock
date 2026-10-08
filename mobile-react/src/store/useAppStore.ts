@@ -52,6 +52,7 @@ import type {
 import { AgentServerClient, AgentServerClientDisposedError, AgentServerClientUnvalidatedError, ServerError, WebSocketConnectionError } from '../api/AgentServerClient'
 import { errorMessage, normalizeServerURL } from '../lib/format'
 import { reconcileHealthActiveSessions } from '../lib/active-sessions'
+import { isSubagentActive, subagentsFromEvents } from '../lib/subagents'
 import { isServerSetupRequired, shouldAutoConnectServer } from '../lib/first-launch'
 import { SNAPSHOT_CACHE_VERSION, shouldReplaceCachedTimeline, snapshotLatestSeq } from '../lib/history'
 import { crossChatQueueRefreshSessionId, isUserQueuedTurn, queuedDeliverySkipIdentity, queuedMoveCrossesDeliveryBarrier, queuedTurnHasEarlierDeliveryBarrier, resolveNewQueuedTurn, updateQueuedTurns } from '../lib/queue'
@@ -4757,9 +4758,12 @@ useAppStore.subscribe((state, previous) => {
     state.selectedSessionId === previous.selectedSessionId
     && state.activeSessionIds === previous.activeSessionIds
     && state.connected === previous.connected
+    && state.subagentsBySession === previous.subagentsBySession
   ) return
   const sessionId = state.selectedSessionId
-  const wanted = sessionId && state.connected && state.activeSessionIds.has(sessionId) ? sessionId : null
+  // A child outlives its turn (a Claude background agent, a Codex collaborator); the poll follows it.
+  const liveChild = sessionId ? subagentsFromEvents(Object.values(state.subagentsBySession[sessionId] ?? {})).some(isSubagentActive) : false
+  const wanted = sessionId && state.connected && (state.activeSessionIds.has(sessionId) || liveChild) ? sessionId : null
   if (subagentPoll?.sessionId === wanted) return
   if (subagentPoll) {
     clearInterval(subagentPoll.timer)

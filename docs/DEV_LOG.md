@@ -1,5 +1,20 @@
 # Public development log
 
+## 2026-10-09 — Android keeps showing a subagent that outlives its turn (Android source)
+
+- On Android, the activity strip under the timeline listed only the latest
+  turn's subagents, and the 5 s subagent poll ran only while the chat's turn
+  was active. A Claude background agent or a Codex collaborator that was
+  still running after its turn ended (after Stop, or after a later message
+  started a new turn) therefore vanished from the strip, although it kept
+  running; the desktop keeps such rows under the turn that spawned them.
+- The strip now lists the latest turn's subagents plus any earlier turn's
+  subagent that is still running, and the poll continues while one runs, so
+  its completion is seen and the rows fold at the right time.
+- Verified with the Android contract tests and type check. Not exercised in
+  a built app.
+  Availability: source only; takes effect in the next Android build.
+
 ## 2026-10-09 — The background-activity chip lists a Claude chat's shells only (server, desktop and Android source)
 
 - The chip added on 2026-10-08 listed a Claude chat's background agents as

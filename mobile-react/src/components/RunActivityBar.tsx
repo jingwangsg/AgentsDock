@@ -31,7 +31,9 @@ export function RunActivityBar({ sessionId }: { sessionId: string }) {
     if (!runId) return []
     const owner = backend === 'claude' || backend === 'codex' ? backend : undefined
     return subagentsFromEvents([...events, ...Object.values(subagentStates)], owner)
-      .filter(agent => agent.runId === runId)
+      // This turn's children, plus an earlier turn's child still running: a Claude background
+      // agent or a Codex collaborator outlives the turn that spawned it, and a Stop.
+      .filter(agent => agent.runId === runId || isSubagentActive(agent))
       // Spawn order, like the CLI's Task rows; the session-wide list is newest-first.
       .sort((a, b) => Date.parse(a.startedAt || '0') - Date.parse(b.startedAt || '0'))
   }, [backend, events, subagentStates])
