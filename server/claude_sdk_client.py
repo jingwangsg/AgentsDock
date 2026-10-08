@@ -1605,8 +1605,8 @@ class ClaudeSDKSupervisor:
         self._grace_tasks: set[asyncio.Task[None]] = set()
         self._active_run: ClaudeSDKRunHandle | None = None
         self._pending_goal_clear: _ClearGoal | None = None
-        # Task id -> description, for the agents and shells the CLI still tracks.
-        self._inflight_tasks: dict[str, str] = {}
+        # Task id -> (task type, description), for the agents and shells the CLI still tracks.
+        self._inflight_tasks: dict[str, tuple[str, str]] = {}
         self._background_reconciliation_hook: _BackgroundReconciliationHook | None = None
         self._pending_mail_hint_hook: _PendingMailHintHook | None = None
         # The session the connected process is in, as Claude reports it: a fork
@@ -1669,9 +1669,9 @@ class ClaudeSDKSupervisor:
         return len(self._inflight_tasks)
 
     @property
-    def inflight_tasks(self) -> list[tuple[str, str]]:
-        """(task id, description) of each task behind inflight_task_count."""
-        return list(self._inflight_tasks.items())
+    def inflight_tasks(self) -> list[tuple[str, str, str]]:
+        """(task id, task type, description) of each task behind inflight_task_count."""
+        return [(task_id, task_type, description) for task_id, (task_type, description) in self._inflight_tasks.items()]
 
     @property
     def connected(self) -> bool:
@@ -3284,7 +3284,7 @@ class ClaudeSDKSupervisor:
             active._awaiting_background_tasks = False
         active._observe_background_task(command.message)
         if subtype == "task_started" and task_id and task_type in _DEFERRING_TASK_TYPES:
-            self._inflight_tasks[task_id] = description
+            self._inflight_tasks[task_id] = (task_type, description)
         if (
             active._awaiting_background_tasks
             and not self._inflight_tasks
@@ -4196,8 +4196,8 @@ class ClaudeSDKSupervisorManager:
             return 0
         return supervisor.inflight_task_count
 
-    def inflight_tasks(self, chat_id: str) -> list[tuple[str, str]]:
-        """(task id, description) of each task behind inflight_task_count."""
+    def inflight_tasks(self, chat_id: str) -> list[tuple[str, str, str]]:
+        """(task id, task type, description) of each task behind inflight_task_count."""
 
         supervisor = self._supervisors.get(str(chat_id))
         if supervisor is None or supervisor.closed or not supervisor.connected:

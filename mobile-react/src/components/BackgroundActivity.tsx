@@ -11,7 +11,7 @@ import { SheetCloseButton } from './ui'
 // Codex has no push when a background terminal exits, and a Claude task starts mid-turn without one; listed items, and a running Claude turn, are re-checked on this interval.
 const RECHECK_MS = 15_000
 
-/** Header chip for what keeps running for a chat outside its turn: Codex background terminals, or the agents and shells Claude still tracks. */
+/** Header chip for what keeps running for a chat outside its turn: Codex background terminals, or Claude's background shells (its agents have subagent rows). */
 export function BackgroundActivityButton({ sessionId }: { sessionId: string }) {
   const colors = usePalette()
   const backend = useAppStore(state => state.sessions.find(session => session.id === sessionId)?.backend)
@@ -60,7 +60,7 @@ export function BackgroundActivityButton({ sessionId }: { sessionId: string }) {
   ])
 
   if (!items.length) return null
-  const title = isClaude ? 'Background tasks' : 'Background terminals'
+  const title = isClaude ? 'Background shells' : 'Background terminals'
   return <>
     <Pressable testID="background-activity" accessibilityRole="button" accessibilityLabel={`${title}: ${items.length} running`} onPress={() => setOpen(true)} hitSlop={6}
       style={[styles.chip, { backgroundColor: colors.raised }]}>

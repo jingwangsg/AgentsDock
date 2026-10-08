@@ -1,5 +1,17 @@
 # Public development log
 
+## 2026-10-09 — The background-activity chip lists a Claude chat's shells only (server, desktop and Android source)
+
+- The chip added on 2026-10-08 listed a Claude chat's background agents as
+  well as its shells. Agents already have their own rows under the activity
+  strip, as in a Codex chat, so the chip now lists background shells only,
+  under "Background shells"; agents and workflows are left to those rows.
+- Verified with the server endpoint and SDK client tests, the desktop and
+  Android component tests, and type checks on both apps. Not exercised in a
+  built app.
+  Availability: source only; takes effect in the next desktop package and
+  Android build, and when a server is redeployed.
+
 ## 2026-10-09 — Android build 59 (local APK)
 
 - Packages the entry above recorded since build 58: browser tabs load every

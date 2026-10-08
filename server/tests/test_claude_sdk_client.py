@@ -2257,7 +2257,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await asyncio.wait_for(handle.__anext__(), 5), progress)
         self.assertFalse(handle.done)
         self.assertEqual(handle.background_task_receipts[0]["status"], "running")
-        self.assertEqual(self.manager.inflight_tasks("chat-bg-bash"), [("bash-still-running", "Download the weights")])
+        self.assertEqual(self.manager.inflight_tasks("chat-bg-bash"), [("bash-still-running", "local_bash", "Download the weights")])
         await client.emit({
             "type": "system", "subtype": "task_notification",
             "task_id": "bash-still-running", "status": "completed",

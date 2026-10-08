@@ -41,7 +41,7 @@ describe('BackgroundActivityButton', () => {
     expect(list).toHaveBeenCalledTimes(3)
   })
 
-  it("lists a Claude chat's agents and shells without a stop, re-checking while its turn runs", async () => {
+  it("lists a Claude chat's background shells without a stop, re-checking while its turn runs", async () => {
     // shouldAdvanceTime: waitFor and findByRole poll on real time; only the 15 s interval is advanced by hand.
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
@@ -51,10 +51,10 @@ describe('BackgroundActivityButton', () => {
       await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
       expect(container).toBeEmptyDOMElement()
       // The task started after the turn's first check; the next interval finds it.
-      list.mockResolvedValue([{ id: 'a1', command: 'Review the diff' }])
+      list.mockResolvedValue([{ id: 'b1', command: 'Download the weights' }])
       await act(() => vi.advanceTimersByTimeAsync(15_000))
-      fireEvent.click(await screen.findByRole('button', { name: 'Background tasks: 1 running' }))
-      expect(screen.getByText('Review the diff')).toBeVisible()
+      fireEvent.click(await screen.findByRole('button', { name: 'Background shells: 1 running' }))
+      expect(screen.getByText('Download the weights')).toBeVisible()
       expect(screen.queryByRole('button', { name: /^Stop / })).not.toBeInTheDocument()
     } finally {
       vi.useRealTimers()

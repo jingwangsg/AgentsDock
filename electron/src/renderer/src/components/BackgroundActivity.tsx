@@ -9,7 +9,7 @@ import { useAppStore } from '../store/app-store'
 // Codex has no push when a background terminal exits, and a Claude task starts mid-turn without one; listed items, and a running Claude turn, are re-checked on this interval.
 const RECHECK_MS = 15_000
 
-/** Header chip for what keeps running for a chat outside its turn: Codex background terminals, or the agents and shells Claude still tracks. */
+/** Header chip for what keeps running for a chat outside its turn: Codex background terminals, or Claude's background shells (its agents have subagent rows). */
 export function BackgroundActivityButton({ session }: { session: Session }) {
   useLocale()
   const isClaude = session.backend === 'claude'
@@ -57,7 +57,7 @@ export function BackgroundActivityButton({ session }: { session: Session }) {
   }
 
   if (!items.length) return null
-  const title = t(isClaude ? 'backgroundActivity.tasksTitle' : 'backgroundActivity.title')
+  const title = t(isClaude ? 'backgroundActivity.shellsTitle' : 'backgroundActivity.title')
   const label = t('backgroundActivity.count', { count: items.length })
   return <Popover.Root onOpenChange={open => { if (!open) { setConfirmId(null); setError(null) } }}>
     <Popover.Trigger asChild>

@@ -37,14 +37,14 @@ test('the header chip lists background terminals, stops one after confirmation a
   assert.equal(tree!.root.findAll(node => node.props.testID === 'background-activity').length, 1)
 })
 
-test("lists a Claude chat's agents and shells as background tasks, without a stop", async () => {
-  setTestClient({ backgroundActivity: async () => [{ id: 'a1', command: 'Review the diff' }] })
+test("lists a Claude chat's background shells, without a stop", async () => {
+  setTestClient({ backgroundActivity: async () => [{ id: 'b1', command: 'Download the weights' }] })
   resetComponentStore({ sessions: [{ id: 'chat-a', title: 'Research', backend: 'claude' }] as never, health: { ok: true, capabilities: { background_activity_v1: { available: true } } } as never })
   await act(async () => { tree = create(<BackgroundActivityButton sessionId="chat-a" />) })
   const chip = tree!.root.findByProps({ testID: 'background-activity' })
-  assert.equal(chip.props.accessibilityLabel, 'Background tasks: 1 running')
+  assert.equal(chip.props.accessibilityLabel, 'Background shells: 1 running')
   await act(async () => { chip.props.onPress() })
-  assert.match(texts(), /Background tasks.*Review the diff/)
+  assert.match(texts(), /Background shells.*Download the weights/)
   assert.equal(tree!.root.findAll(node => String(node.props.accessibilityLabel ?? '').startsWith('Stop ')).length, 0, 'the SDK cannot end one task')
 })
 
