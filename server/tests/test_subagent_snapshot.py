@@ -178,6 +178,20 @@ class ClaudeSubagentSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(command_secret, serialized)
         self.assertNotIn(output_secret, serialized)
 
+    def test_a_reconciled_background_shell_is_not_a_subagent(self) -> None:
+        events = [
+            self.event(1, "turn_started", run_id="run-1", prompt="go"),
+            self.event(2, "claude_background_tasks_reconciled", run_id="run-1", backend="claude", provider_session_id="provider-1", reconciliation_id="r1", overflow_count=0, tasks=[
+                {"task_id": "shell-1", "task_type": "local_bash", "status": "running", "owner_run_id": "run-1", "provider_session_id": "provider-1"},
+                {"task_id": "agent-1", "task_type": "local_agent", "status": "running", "owner_run_id": "run-1", "provider_session_id": "provider-1"},
+            ]),
+        ]
+        self.write_events(events)
+        snapshot = agent_server.build_claude_subagent_snapshot(self.session_id, 20)
+        # The shell belongs to the header's background-activity chip; only the agent is a subagent row.
+        self.assertEqual([state["subagent_id"] for state in snapshot["subagents"]], ["agent-1"])
+        self.assertEqual(snapshot["subagents"][0]["subagent_kind"], "local_agent")
+
     def test_recovers_orphan_progress_and_notification_but_ignores_local_bash(self) -> None:
         events = [
             self.raw(1, {

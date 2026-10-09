@@ -1,5 +1,17 @@
 # Public development log
 
+## 2026-10-09 — Background shells are no longer listed as subagents (server, source)
+
+- The subagent rows under a Claude chat's activity strip showed "Claude
+  background task · local_bash" entries: the subagent snapshot folded every
+  task in a background-task reconciliation receipt into a row, shells
+  included, although the task frames for shells are skipped. A shell is not a
+  subagent; the chat header's background-activity chip lists it.
+- The snapshot now skips shell receipts; agent receipts are folded as before.
+  Rows already persisted in a chat's history keep showing.
+- Verified with the subagent snapshot tests. Not exercised in a built app.
+  Availability: source only; takes effect when a server is redeployed.
+
 ## 2026-10-09 — A message sent while Claude works joins the turn, as in Claude Code (server, source)
 
 - Sending while a Claude turn ran queued the message until the whole turn

@@ -33097,6 +33097,11 @@ def _build_claude_subagent_snapshot_locked(session_id: str, limit: int) -> dict[
                         event.get("tasks"), run_id=run_id,
                         provider_session_id=event.get("provider_session_id"),
                     ):
+                        # A background shell is not a subagent: the chat header's
+                        # background-activity chip lists it, as its task frames
+                        # are skipped below.
+                        if receipt["task_type"] == "local_bash":
+                            continue
                         _, previous = find(run_id, receipt["task_id"], receipt.get("tool_use_id", ""))
                         state = ensure(
                             event, task_id=receipt["task_id"],
