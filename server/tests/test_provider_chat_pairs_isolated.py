@@ -121,6 +121,8 @@ class ChatPairTests(unittest.IsolatedAsyncioTestCase):
             "ensure_session_not_deleting": lambda sid: None,
             "admin_provider_cross_chat_route": lambda sid, route: route,
             "append_agent_handoff_route_audit": AsyncMock(),
+            # enqueue_turn calls this to join a message to a working Claude turn; the harness only needs the name to resolve.
+            "steer_or_release_for_queued_turn": AsyncMock(),
             "retire_revoked_provider_route_deliveries": self.retired,
             "LOCAL_CROSS_CHAT_DELIVERY_PURPOSE": "cross_chat_handoff_delivery",
             "SECURE_PEER_DELIVERY_PURPOSE": "secure_peer_handoff_delivery",
