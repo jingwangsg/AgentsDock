@@ -177,6 +177,30 @@ describe('server-owned side chat', () => {
     expect(controller.snapshot(scope, session.id).exchanges[0].state).toBe('cancelled')
   })
 
+  it('a lost acknowledgement shows no error and keeps the draft cleared while the server answers', async () => {
+    const { api, controller } = fixture()
+    await controller.refresh(scope, session.id)
+    api.submit.mockRejectedValue(new Error('The operation was aborted due to timeout'))
+    controller.setDraft(scope, session.id, 'Slow link question')
+    const send = controller.send(scope, session)
+    const request = api.submit.mock.calls[0][2]
+    api.read.mockResolvedValue(chat(1, { request_id: request.request_id, question: request.question, status: 'running', answer: undefined }))
+    await send
+    expect(controller.snapshot(scope, session.id)).toMatchObject({ pending: request.request_id, draft: '', error: null })
+    expect(controller.snapshot(scope, session.id).exchanges.map(item => item.state)).toEqual(['pending'])
+  })
+
+  it('gives an unconfirmed question back to the draft when the reconcile read fails too', async () => {
+    const { api, controller } = fixture()
+    await controller.refresh(scope, session.id)
+    api.submit.mockRejectedValue(new Error('The operation was aborted due to timeout'))
+    api.read.mockRejectedValue(new Error('Connection failed'))
+    controller.setDraft(scope, session.id, 'Unconfirmed question')
+    await controller.send(scope, session)
+    expect(controller.snapshot(scope, session.id)).toMatchObject({ pending: null, draft: 'Unconfirmed question', exchanges: [] })
+    expect(controller.snapshot(scope, session.id).error).toMatch(/timeout/)
+  })
+
   it('restores an unaccepted question to the local draft without retrying submission', async () => {
     const { api, controller } = fixture()
     await controller.refresh(scope, session.id)

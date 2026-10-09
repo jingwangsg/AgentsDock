@@ -1,5 +1,21 @@
 # Public development log
 
+## 2026-10-10 — Side chat keeps a question pending when only its acknowledgement was lost (desktop source)
+
+- On a slow or flapping proxied link the server could accept a side question
+  and start answering while the desktop's 30-second request timed out. The
+  panel then showed "The side question timed out before an answer arrived"
+  until the next reconcile read, although the answer arrived seconds later
+  (seen on a Sky-proxied remote: accepted 04:47:41, answered 04:48:01).
+- The question now stays pending and one reconcile read decides: a question
+  the server has stays pending until its answer arrives; a question the server
+  never received returns to the draft with the error. When that read fails too,
+  the server's state is unknown and the question returns to the draft as well.
+  Nothing is resent.
+- Verified with the side-chat controller tests (new cases: lost acknowledgement
+  with the question running on the server; submit and reconcile both failing;
+  the unaccepted case is unchanged).
+
 ## 2026-10-10 — A message that joins a scheduled-job run turns it into an ordinary turn (desktop and Android source)
 
 - Both timelines fold every event of a scheduled-job run into the job card

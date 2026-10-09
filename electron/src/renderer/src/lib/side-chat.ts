@@ -198,12 +198,19 @@ export class SideChatController {
       if (this.epoch !== epoch || !this.current(scope)) return
       this.optimistic.delete(key)
       const error = cause instanceof Error ? cause.message : String(cause)
-      this.update(scope, session.id, state => ({ ...state, pending: null,
-        exchanges: state.exchanges.map(item => item.id === requestId && item.state === 'pending' ? { ...item, state: 'error', error } : item) }))
-      // The acknowledgement can be lost after server acceptance. Reconcile
-      // once instead of resending and risking a duplicate provider request.
+      // The acknowledgement can be lost after server acceptance: on a slow
+      // proxied link the 202 arrives after the request timeout while the answer
+      // is already under way. Keep the question pending until one reconcile
+      // read says whether the server has it; resending could duplicate it.
       await this.refresh(scope, session.id)
-      if (this.epoch === epoch && this.current(scope) && !this.snapshot(scope, session.id).exchanges.some(item => item.id === requestId)) {
+      if (this.epoch !== epoch || !this.current(scope)) return
+      const after = this.snapshot(scope, session.id)
+      if (after.error === 'side_chat_sync_failed') {
+        // The read failed too, so the server's state is unknown: give the text
+        // back rather than leave a question that may never have been sent pending.
+        this.update(scope, session.id, state => ({ ...state, pending: null, draft: state.draft || question, error,
+          exchanges: state.exchanges.filter(item => item.id !== requestId) }))
+      } else if (!after.exchanges.some(item => item.id === requestId)) {
         this.update(scope, session.id, state => ({ ...state, draft: state.draft || question, error }))
       }
     } finally {
