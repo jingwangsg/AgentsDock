@@ -2121,7 +2121,7 @@ describe('projectTimeline', () => {
     })
   })
 
-  it('keeps a scheduled-run goal budget marker outside the job card', () => {
+  it('keeps a scheduled-run goal budget marker as its own row, not inside the running turn', () => {
     const items = projectTimeline([
       event(1, 'turn_started', {
         run_id: 'job-run',
@@ -2136,13 +2136,14 @@ describe('projectTimeline', () => {
       })
     ], [])
 
+    // The run is still running, so it is an ordinary turn; the marker stays its own row.
     expect(items.map(item => item.key)).toEqual([
-      'job:job-1',
+      'turn:job-run',
       'codex:goal-budget'
     ])
     expect(items[0]).toMatchObject({
-      kind: 'job',
-      events: [{ id: 'event-1' }]
+      kind: 'turn',
+      user: { id: 'event-1' }
     })
     expect(items[1]).toMatchObject({
       kind: 'system',
@@ -2729,14 +2730,32 @@ describe('projectTimeline', () => {
     expect(card?.kind === 'job' && card.latestStatus?.type).toBe('turn_finished')
     expect(items.filter(item => item.kind === 'turn').every(item => item.kind === 'turn' && item.finishedAt)).toBe(true)
 
-    // Live: the run was already folded into its card when the message arrived; one rebuild.
+    // Live: the running run is already an ordinary turn, so the message joins it incrementally.
     const live = new TimelineProjector([])
     expect(live.append(source.slice(0, 3))).toBe(true)
-    expect(live.items.map(item => item.kind)).toEqual(['job'])
-    expect(live.append(source.slice(3))).toBe(false)
-    const rebuilt = new TimelineProjector([])
-    expect(rebuilt.append(source)).toBe(true)
-    expect(renderTimelineItems(rebuilt.items)).toEqual(rows)
+    expect(live.items.map(item => item.kind)).toEqual(['turn', 'job'])
+    expect(live.append(source.slice(3))).toBe(true)
+    expect(renderTimelineItems(live.items)).toEqual(rows)
+  })
+
+  it('shows a running scheduled-job run as an ordinary turn and folds it into the card when it ends', () => {
+    const run = { run_id: 'run-job-2', backend: 'claude' as const, purpose: 'scheduled_job', job_id: 'job-2', job_title: 'Progress check' }
+    const live = [
+      event(1, 'turn_started', { ...run, prompt: '10-minute progress check' }),
+      event(2, 'job_ran', { run_id: 'run-job-2', job_id: 'job-2', job_title: 'Progress check', message: 'Scheduled job ran: Progress check' }),
+      event(3, 'reasoning_summary', { run_id: 'run-job-2', backend: 'claude', text: 'Checking replays' })
+    ]
+    const running = renderTimelineItems(projectTimeline(live, []))
+    expect(running.flatMap(row => row.kind === 'message' && row.role === 'user' ? [messageItemText(row)] : [])).toEqual(['10-minute progress check'])
+    expect(running.filter(row => row.kind === 'job').map(row => row.kind === 'job' ? row.events.map(value => value.type) : [])).toEqual([['job_ran']])
+
+    const finished = [...live, event(4, 'turn_finished', { ...run, result_text: 'All replays passed.' })]
+    const projector = new TimelineProjector([])
+    expect(projector.append(live)).toBe(true)
+    expect(projector.append(finished.slice(3))).toBe(false) // the end of an unjoined run folds it: one rebuild
+    const folded = projectTimeline(finished, [])
+    expect(folded.map(item => item.kind)).toEqual(['job'])
+    expect(folded[0].kind === 'job' && folded[0].latestStatus?.type).toBe('turn_finished')
   })
 
   it('does not regress a cancelled scheduled run to running on a late job marker', () => {
@@ -3014,8 +3033,9 @@ describe('projectTimeline', () => {
       job_timeline_group_id: 'server-job-group-a'
     })])).toBe(true)
 
-    expect(projector.items).toHaveLength(1)
-    expect(projector.items[0]).toMatchObject({
+    // The running run is its own turn; the card the job_ran marker opens takes the server group.
+    expect(projector.items.map(item => item.kind)).toEqual(['turn', 'job'])
+    expect(projector.items[1]).toMatchObject({
       kind: 'job', id: 'server-job-group-a', key: 'server-job-group-a',
       timelineGroupId: 'server-job-group-a'
     })

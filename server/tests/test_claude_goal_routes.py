@@ -48,7 +48,7 @@ def load_routes():
         "append_event": AsyncMock(),
         "CLAUDE_GOAL_PROJECTIONS": {}, "CLAUDE_GOAL_PATHS": {}, "CLAUDE_GOAL_LOCKS": {},
         "CLAUDE_GOAL_PENDING": {}, "ACTIVE": {}, "ACTIVE_LOCK": asyncio.Lock(),
-        "CURRENT_TURNS": {}, "STEERING_WAIT_TASKS": {},
+        "CURRENT_TURNS": {}, "STEERING_WAIT_TASKS": {}, "SCHEDULED_JOB_STOP_HOLDS": set(),
         "run_queued_turn_now": AsyncMock(return_value={"ok": True}),
         "ensure_session_not_deleting": lambda session_id: None,
         "start_turn": AsyncMock(return_value={"run_id": "new-run"}),

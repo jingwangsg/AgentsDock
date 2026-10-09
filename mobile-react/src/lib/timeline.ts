@@ -149,10 +149,16 @@ interface JobProjectionAssignment {
  */
 function jobProjectionAssignments(events: readonly Event[]): Map<Event, JobProjectionAssignment> {
   const ordered = [...events].sort((left, right) => left.seq - right.seq)
-  // Every run a user message joined (native steer). It only changes the projection of
-  // job runs below: their own events render as an ordinary turn from the run's start,
-  // the job_* events stay on the card, and the run's end still settles the card's status.
-  const userJoinedRuns = new Set(ordered.filter(isNativeSteerEvent).map(event => event.run_id!.trim()))
+  // Runs a user message joined (native steer); these never fold back into the card.
+  const joinedRuns = new Set(ordered.filter(isNativeSteerEvent).map(event => event.run_id!.trim()))
+  const terminalRuns = new Set(ordered.filter(event => event.type === 'turn_finished' || event.type === 'turn_stopped').map(event => event.run_id?.trim() || ''))
+  // Scheduled-job runs shown as ordinary turns: still running, or joined by a user
+  // message. Their own events render as a turn from the run's start, the job_* events
+  // stay on the card, and a joined run's end still settles the card's status.
+  const unfoldedRuns = new Set(ordered
+    .filter(event => event.type === 'turn_started' && (event.purpose === 'scheduled_job' || event.job_id?.trim() || event.job?.id?.trim()))
+    .map(event => event.run_id?.trim() || '')
+    .filter(runId => runId && (!terminalRuns.has(runId) || joinedRuns.has(runId))))
   const occurrenceByEvent = new Map<Event, Map<string, string>>()
   const currentOccurrenceByRun = new Map<string, { key: string; started: boolean }>()
   for (const event of ordered) {
@@ -196,7 +202,7 @@ function jobProjectionAssignments(events: readonly Event[]): Map<Event, JobProje
     const groupId = event.job_timeline_group_id?.trim() || ''
     if (jobId && groupId) jobByExplicitGroup.set(groupId, jobId)
     for (const runId of jobLinkedRunIds(event)) {
-      if (userJoinedRuns.has(runId)) continue
+      if (unfoldedRuns.has(runId)) continue
       const occurrence = occurrenceByEvent.get(event)?.get(runId) || runId
       if (jobId) jobByOccurrence.set(occurrence, jobId)
       if (groupId) groupByOccurrence.set(occurrence, groupId)
@@ -223,7 +229,7 @@ function jobProjectionAssignments(events: readonly Event[]): Map<Event, JobProje
       || isHandoffDigestEvent(event)
       || event.type.startsWith('cross_chat_')
       || isAsyncCrossChatMessage(event)
-    const joinedContent = userJoinedRuns.has(runId) && !jobs.has(event.type)
+    const joinedContent = unfoldedRuns.has(runId) && !jobs.has(event.type)
     const statusOnly = joinedContent && Boolean(explicitJobId) && (event.type === 'turn_finished' || event.type === 'turn_stopped')
     const jobId = topLevel || (joinedContent && !statusOnly)
       ? ''

@@ -1,5 +1,33 @@
 # Public development log
 
+## 2026-10-10 — Stop holds a chat's scheduled jobs; a running scheduled run shows as a turn (server, desktop and Android source)
+
+- Stop ended the run, and a chat-hosted scheduled job restarted the same
+  work seconds later (measured 7 s and 32 s after two Stops in one chat), so
+  Stop looked broken. A user's Stop, or Clear & stop, now holds the scheduled
+  jobs hosted in that chat: the scheduler defers them with "you stopped this
+  chat; the job resumes after your next message or when you edit a job here"
+  (one `job_deferred` row on the card) until the user sends a message or
+  edits any job in the chat. Manual runs and standalone-chat jobs are not
+  held. The hold lives in memory; a server restart lifts it.
+- A scheduled run that is still running renders as an ordinary turn in both
+  apps (prompt row labelled "Scheduled Job", then tools, subagents and the
+  model's text), so its progress is visible instead of folded under "Show
+  details", where the model's replies were counted among the thinking
+  updates. It folds into the job card when it ends unjoined; a run a user
+  message joined stays a turn. On reload the server now delivers a running
+  run's start and its latest reasoning and tool anchors with the card, so the
+  client can show it as a live turn and stream into it. The timeline index
+  keeps a joined run's content from the user's message on as an ordinary
+  turn; the card keeps the events before the message, still counts the run,
+  and its status follows the run's end.
+- Verified with the scheduler admission tests (hold, manual bypass,
+  standalone bypass), the index and semantic-page tests (joined run on
+  reload, live run start, existing job segmentation), the projection tests
+  of both apps (running run as a turn, fold on completion, joined run) and
+  the type checks. Not exercised: a live chat through the apps against a
+  redeployed server. Availability: source only.
+
 ## 2026-10-10 — Side chat keeps a question pending when only its acknowledgement was lost (desktop source)
 
 - On a slow or flapping proxied link the server could accept a side question
@@ -31,10 +59,9 @@
   is rebuilt once; a message arriving with the run's own events is
   incremental.
 - Verified with the projection tests of both apps (joined run, card status,
-  live rebuild parity) and the type checks. Not covered: the server's
-  semantic history pages still assign the whole run to the job card, so a
-  reload or a chat opened from history shows the joined run folded again
-  until the page builder learns the same rule.
+  live append parity) and the type checks. The server's reload path was added
+  the same day; see the entry above, which also supersedes the rebuild note:
+  a running run is already a turn, so a message joins it incrementally.
 
 ## 2026-10-10 — The Claude goal bar follows Claude's own answer to a clear (server source)
 

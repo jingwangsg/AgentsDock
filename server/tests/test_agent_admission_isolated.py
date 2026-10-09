@@ -16,7 +16,7 @@ FUNCTIONS = {
 SETTINGS = {
     "MAX_ACTIVE_AGENT_RUNS", "JOB_MAX_ACTIVE_RUNS",
     "MIN_START_AVAILABLE_MEM_MB", "JOB_MIN_AVAILABLE_MEM_MB",
-    "JOB_CHAT_BUSY_DETAIL",
+    "JOB_CHAT_BUSY_DETAIL", "JOB_STOPPED_BY_USER_DETAIL",
 }
 
 
@@ -49,6 +49,7 @@ def load_admission(env=None):
         "CODEX_GOALS_RECONFIGURING": False,
         "DEFAULT_BACKEND": "claude", "BACKEND_CODEX": "codex",
         "SERVER_MAINTENANCE_SESSIONS": set(), "CLAUDE_STOP_FENCE_SESSIONS": set(),
+        "SCHEDULED_JOB_STOP_HOLDS": set(),
         "stop_cleanup_in_progress": lambda _: False,
     }
     exec(ADMISSION_CODE, ns)
@@ -204,6 +205,15 @@ class AgentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         ns = load_admission({"AGENTSDOCK_JOB_MAX_ACTIVE_RUNS": "100"})
         self.assertIsNone(await ns["turn_start_blocker"]())
         self.assertIn("100 active", await ns["scheduled_job_blocker"]("new-cron"))
+
+    async def test_a_held_chat_defers_its_scheduled_runs_but_not_manual_or_standalone_ones_until_released(self):
+        ns = load_admission()
+        ns["SCHEDULED_JOB_STOP_HOLDS"].add("held-chat")
+        self.assertEqual(await ns["scheduled_job_blocker"]("held-chat"), ns["JOB_STOPPED_BY_USER_DETAIL"])
+        self.assertIsNone(await ns["scheduled_job_blocker"]("held-chat", manual=True))
+        self.assertIsNone(await ns["scheduled_job_blocker"]("held-chat", standalone=True))
+        ns["SCHEDULED_JOB_STOP_HOLDS"].discard("held-chat")
+        self.assertIsNone(await ns["scheduled_job_blocker"]("held-chat"))
 
 
 if __name__ == "__main__":

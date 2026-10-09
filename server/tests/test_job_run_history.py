@@ -1223,6 +1223,52 @@ class JobRunHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.session_id, agent_server.TIMELINE_INDEX_CACHE)
         self.assertEqual(agent_server.TIMELINE_INDEX_LOCKS, {})
 
+    def test_a_user_message_joining_a_scheduled_run_is_an_ordinary_turn_on_reload(self) -> None:
+        common = {"run_id": "joined-run", "purpose": "scheduled_job", "job_id": "job-1", "job_title": "Progress check"}
+        self.write_events([
+            self.event(1, "turn_started", prompt="10-minute progress check", **common),
+            self.event(2, "job_ran", message="Scheduled job ran: Progress check", **common),
+            self.event(3, "reasoning_summary", text="Checking replays", run_id="joined-run"),
+            self.event(4, "turn_steered", prompt="Also add the prevention rule", run_id="joined-run",
+                       native_steer=True, provider_user_authored=True),
+            self.event(5, "assistant_text", text="Noted, adding the rule.", run_id="joined-run"),
+            self.event(6, "turn_finished", result_text="Noted, adding the rule.", **common),
+        ])
+
+        page = agent_server.read_semantic_timeline_page(self.session_id, limit=10, tail=True)
+
+        # The card keeps what came before the message; the message and the reply are an ordinary turn.
+        steer = next(event for event in page["events"] if event["type"] == "turn_steered")
+        self.assertNotIn("job_timeline_group_id", steer)
+        reply = next(event for event in page["events"] if event["type"] == "assistant_text")
+        self.assertNotIn("job_timeline_group_id", reply)
+        summary = next(event for event in page["events"] if event["type"] == "job_summary")
+        self.assertEqual(summary["job_run_count"], 1)
+        self.assertEqual(summary["job_latest_status"], "completed")
+        self.assertEqual(page["semantic_total"], 2)  # the card and the joined turn
+
+    def test_a_running_scheduled_run_is_delivered_with_its_start(self) -> None:
+        common = {"run_id": "live-run", "purpose": "scheduled_job", "job_id": "job-1", "job_title": "Progress check"}
+        self.write_events([
+            self.event(1, "turn_started", prompt="10-minute progress check", **common),
+            self.event(2, "job_ran", message="Scheduled job ran: Progress check", **common),
+            self.event(3, "reasoning_summary", text="Checking replays", run_id="live-run"),
+            self.event(4, "tool_started", run_id="live-run", tool={"name": "Bash", "input": {"command": "ls"}}),
+        ])
+
+        page = agent_server.read_semantic_timeline_page(self.session_id, limit=10, tail=True)
+        started = [event for event in page["events"] if event["type"] == "turn_started"]
+        self.assertEqual([event["run_id"] for event in started], ["live-run"])
+        self.assertEqual(started[0]["job_id"], "job-1")
+        # Its latest reasoning and tool anchors come along while it runs.
+        self.assertEqual(sorted(event["type"] for event in page["events"] if event["type"] in {"reasoning_summary", "tool_started"}), ["reasoning_summary", "tool_started"])
+
+        # Once the run ends, the card alone represents it again.
+        with agent_server.events_path(self.session_id).open("a", encoding="utf-8") as destination:
+            destination.write(json.dumps(self.event(5, "turn_finished", result_text="Done", **common)) + "\n")
+        page = agent_server.read_semantic_timeline_page(self.session_id, limit=10, tail=True)
+        self.assertEqual([event["type"] for event in page["events"] if event["type"] in {"turn_started", "reasoning_summary", "tool_started"}], [])
+
     def history_events(self) -> list[dict[str, object]]:
         events: list[dict[str, object]] = [
             self.event(

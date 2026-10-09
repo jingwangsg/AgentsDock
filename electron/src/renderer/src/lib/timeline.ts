@@ -282,8 +282,10 @@ export class TimelineProjector {
   private readonly startedJobOccurrences = new Set<string>()
   private readonly jobSegmentCountById = new Map<string, number>()
   private readonly jobByRun = new Map<string, string>()
-  /** Scheduled-job runs a user message joined (native steer); shown as ordinary turns. */
-  private readonly userJoinedRuns = new Set<string>()
+  /** Scheduled-job runs shown as ordinary turns: still running, or joined by a user message. */
+  private readonly unfoldedRuns = new Set<string>()
+  /** Subset of unfoldedRuns a user message joined; these never fold back into the card. */
+  private readonly joinedRuns = new Set<string>()
   private readonly jobTitles = new Map<string, string>()
   private readonly digestById = new Map<string, SystemItem>()
   private readonly codexLifecycleByKey = new Map<string, SystemItem>()
@@ -369,16 +371,33 @@ export class TimelineProjector {
     if (!events.length) return true
     if (!this.rememberCrossChatDeliveryAliases(events)) return false
 
-    // A user message steered into a scheduled-job run makes that run the
-    // conversation: its own events render as an ordinary turn from its start
-    // and only the job_* events stay on the card. A run a previous append
-    // already folded needs one rebuild; a steer arriving in the same batch as
-    // the run's own events does not.
+    // A scheduled-job run is an ordinary turn while it runs and stays one once
+    // a user message joins it; only the job_* events sit on the card. It folds
+    // into the card when it ends unjoined. Folding, or joining a run a previous
+    // append already folded, needs one rebuild; a steer or an end arriving in
+    // the same batch as the run's start does not.
+    const terminalRuns = new Set<string>()
+    const steeredRuns = new Set<string>()
     for (const event of events) {
       const runId = event.run_id?.trim() || ''
-      if (!runId || !isNativeSteerEvent(event) || this.userJoinedRuns.has(runId)) continue
-      if (this.jobByRun.has(runId) || this.latestJobById.has(runId)) return false
-      this.userJoinedRuns.add(runId)
+      if (!runId) continue
+      if (event.type === 'turn_finished' || event.type === 'turn_stopped') terminalRuns.add(runId)
+      if (isNativeSteerEvent(event)) steeredRuns.add(runId)
+    }
+    for (const runId of steeredRuns) {
+      if (this.joinedRuns.has(runId)) continue
+      if (!this.unfoldedRuns.has(runId) && (this.jobByRun.has(runId) || this.latestJobById.has(runId))) return false
+      this.joinedRuns.add(runId)
+      this.unfoldedRuns.add(runId)
+    }
+    for (const event of events) {
+      const runId = event.run_id?.trim() || ''
+      if (!runId || event.type !== 'turn_started' || this.unfoldedRuns.has(runId)) continue
+      if (event.purpose !== 'scheduled_job' && !event.job_id?.trim() && !event.job?.id?.trim()) continue
+      if (!terminalRuns.has(runId)) this.unfoldedRuns.add(runId)
+    }
+    for (const runId of terminalRuns) {
+      if (this.unfoldedRuns.has(runId) && !this.joinedRuns.has(runId)) return false
     }
 
     // A late job link can retroactively turn an already-projected ordinary
@@ -389,7 +408,7 @@ export class TimelineProjector {
       const jobId = event.job_id?.trim() || event.job?.id?.trim() || ''
       if (!jobId) continue
       for (const runId of jobLinkedRunIds(event)) {
-        if (this.userJoinedRuns.has(runId)) continue
+        if (this.unfoldedRuns.has(runId)) continue
         const priorFallback = this.latestJobById.has(runId)
         if (!this.jobByRun.has(runId) && (this.turnByRun.has(runId) || priorFallback)) return false
       }
@@ -403,7 +422,7 @@ export class TimelineProjector {
       if (title) this.jobTitles.set(jobId, title)
       // Explicit server job ownership also appears on metadata-light output
       // and job_summary pages without purpose or a retained start event.
-      for (const runId of jobLinkedRunIds(event)) if (!this.userJoinedRuns.has(runId)) this.jobByRun.set(runId, jobId)
+      for (const runId of jobLinkedRunIds(event)) if (!this.unfoldedRuns.has(runId)) this.jobByRun.set(runId, jobId)
     }
 
     const initialProjection = this.itemsValue.length === 0
@@ -501,8 +520,8 @@ export class TimelineProjector {
     }
     if (event.type === 'provider_session') this.rememberRootProviderThread(event)
     if (isLeakedChildCompaction(event, this.expectedRootThreadForCompaction(event))) return
-    const userJoined = this.userJoinedRuns.has(event.run_id || '')
-    const transitionJobId = userJoined ? '' : String(
+    const unfolded = this.unfoldedRuns.has(event.run_id || '')
+    const transitionJobId = unfolded ? '' : String(
       event.job_id
       || event.job?.id
       || (event.run_id ? this.jobByRun.get(event.run_id) : '')
@@ -656,9 +675,10 @@ export class TimelineProjector {
     }
 
     const explicitJobId = event.job_id?.trim() || event.job?.id?.trim() || ''
-    // The joined run's end still settles the card's status; its content stays in the turn.
-    if (userJoined && explicitJobId && (event.type === 'turn_finished' || event.type === 'turn_stopped')) this.appendJobEvent(event, explicitJobId)
-    const jobId = userJoined && !jobTypes.has(event.type) ? '' : explicitJobId || this.jobByRun.get(event.run_id || '') || (
+    // An unfolded run that ends here is a joined one (an unjoined end forced a rebuild in
+    // append); its end still settles the card's status while its content stays in the turn.
+    if (unfolded && explicitJobId && (event.type === 'turn_finished' || event.type === 'turn_stopped')) this.appendJobEvent(event, explicitJobId)
+    const jobId = unfolded && !jobTypes.has(event.type) ? '' : explicitJobId || this.jobByRun.get(event.run_id || '') || (
       jobTypes.has(event.type) || event.purpose === 'scheduled_job'
         ? event.run_id || `job-${event.seq}`
         : ''

@@ -1547,6 +1547,21 @@ assert(
   joinedJobCards.length === 1 && joinedJobCards[0].kind === 'job' && joinedJobCards[0].events.map(value => value.type).join() === 'job_ran,turn_finished',
   `the card keeps the job_* events and the run's end for its status, received ${joinedJobCards.map(row => row.kind === 'job' ? row.events.map(value => value.type).join() : '').join('|')}`,
 )
+const liveJob = [
+  event(230, 'turn_started', { run_id: 'live-job', backend: 'claude', purpose: 'scheduled_job', job_id: 'job-2', job_title: 'Progress check', prompt: '10-minute progress check' }),
+  event(231, 'job_ran', { run_id: 'live-job', job_id: 'job-2', job_title: 'Progress check', message: 'Scheduled job ran: Progress check' }),
+  event(232, 'reasoning_summary', { run_id: 'live-job', text: 'Checking replays' }),
+]
+const liveJobRows = projectTimeline(liveJob, [])
+assert(
+  liveJobRows.filter(row => row.kind === 'message' && row.role === 'user').map(rowText).join('|') === '10-minute progress check',
+  `a running scheduled run shows as an ordinary turn, received ${liveJobRows.map(row => row.kind).join()}`,
+)
+const foldedJobRows = projectTimeline([...liveJob, event(233, 'turn_finished', { run_id: 'live-job', backend: 'claude', purpose: 'scheduled_job', job_id: 'job-2', result_text: 'All replays passed.' })], [])
+assert(
+  foldedJobRows.filter(row => row.kind === 'message').length === 0 && foldedJobRows.filter(row => row.kind === 'job').length === 1,
+  `an ended, unjoined scheduled run folds into the card, received ${foldedJobRows.map(row => row.kind).join()}`,
+)
 
 const checkpointRows = projectTimeline([
   event(210, 'turn_started', { run_id: 'cp-run', prompt: 'Edit files' }),

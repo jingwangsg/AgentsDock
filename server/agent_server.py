@@ -5697,7 +5697,7 @@ ARTIFACT_PUBLICATION_LOCK_STRIPES = tuple(asyncio.Lock() for _ in range(64))
 TIMELINE_PIN_LOCK_STRIPES = tuple(asyncio.Lock() for _ in range(64))
 TIMELINE_INDEX_CACHE_MAX = int(agentsdock_setting("TIMELINE_INDEX_CACHE_MAX", "24"))
 TIMELINE_INDEX_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
-TIMELINE_INDEX_PROJECTION_VERSION = 7
+TIMELINE_INDEX_PROJECTION_VERSION = 8
 # Retained as a compatibility/testing surface; synchronization uses the fixed
 # stripe pool below so deleted-session churn cannot leak one lock per chat.
 TIMELINE_INDEX_LOCKS: dict[str, threading.Lock] = {}
@@ -13092,13 +13092,15 @@ class JobStore:
             else:
                 clear_job_update_park(job)
             job["next_run_at"] = now + max(delay, 5)
+            previous_reason = job.get("last_defer_reason")
             job["last_deferred_at"] = now_iso()
             job["last_defer_reason"] = reason
             last_emit = float(job.get("_last_defer_event_at") or 0)
+            # A Stop hold lasts until the user acts; one row says so, not one per retry.
             if reason != JOB_CHAT_BUSY_DETAIL and (
                 JOB_DEFER_EVENT_MIN_SECONDS <= 0
                 or now - last_emit >= JOB_DEFER_EVENT_MIN_SECONDS
-            ):
+            ) and not (reason == JOB_STOPPED_BY_USER_DETAIL and previous_reason == reason):
                 job["_last_defer_event_at"] = now
                 emit_event = True
                 event_job = public_job(job)
@@ -14524,6 +14526,11 @@ SERVER_MAINTENANCE_SESSIONS: set[str] = set()
 # owned until a later explicit Stop can complete the audit marker. This blocks
 # managed restart admission without pretending the evicted process is alive.
 CLAUDE_STOP_FENCE_SESSIONS: set[str] = set()
+# Chats whose user pressed Stop (or Clear & stop) since their last message. A
+# chat-hosted scheduled job must not restart the work seconds later; the hold
+# lifts with the user's next message or an edit of any job in the chat. Not persisted.
+SCHEDULED_JOB_STOP_HOLDS: set[str] = set()
+JOB_STOPPED_BY_USER_DETAIL = "you stopped this chat; the job resumes after your next message or when you edit a job here"
 # A durable stop marker can fail after the Claude supervisor is already gone.
 # Keep one bounded, observable retry owner per chat instead of requiring the
 # user to press Stop again to release update/turn admission.
@@ -34450,6 +34457,15 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
         if can_append
         else set()
     )
+    # Scheduled runs a user message joined: run id -> [start seq, end seq] spans
+    # (end -1 while the run goes on). Inside a span the run's content is an
+    # ordinary turn; the card keeps what came before. A run id a provider reuses
+    # gets one span per joined firing.
+    joined_runs: dict[str, list[list[int]]] = (
+        cached.get("joined_runs") or {}
+        if can_append
+        else {}
+    )
     internal_status_run_ids: set[str] = (
         cached.get("internal_status_run_ids") or set()
         if can_append
@@ -35173,12 +35189,21 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                 )
                 continue
 
+            is_run_content = bool(run_id) and event_type not in TIMELINE_INDEX_JOB_TYPES
+            if (
+                is_run_content and resolved_job_id and is_native_steer_event(event)
+                and not scheduled_run_joined_at(joined_runs, run_id, seq)
+            ):
+                joined_runs.setdefault(run_id, []).append([seq, -1])
+            joined_content = is_run_content and scheduled_run_joined_at(joined_runs, run_id, seq)
+            if joined_content and event_type in {"turn_finished", "turn_stopped"}:
+                joined_runs[run_id][-1][1] = seq
             if (
                 event_type in TIMELINE_INDEX_JOB_TYPES
                 or event.get("purpose") == "scheduled_job"
                 or event.get("job_id")
                 or (run_id and run_id in job_by_run)
-            ):
+            ) and not joined_content:
                 job = event.get("job") if isinstance(event.get("job"), dict) else {}
                 job_id = str(
                     event.get("job_id")
@@ -35633,6 +35658,7 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
         "run_history_key_by_occurrence": run_history_key_by_occurrence,
         "current_run_history_key": current_run_history_key,
         "fork_internal_run_ids": fork_internal_run_ids,
+        "joined_runs": joined_runs,
         "internal_status_run_ids": internal_status_run_ids,
         "durable_child_codex_thread_ids": durable_child_codex_thread_ids,
         "visible_count": visible_count,
@@ -35967,6 +35993,10 @@ def new_semantic_job_state(landmark: dict[str, Any]) -> dict[str, Any]:
         # visibly discoverable immediately after a chat reload.
         "latest_run_reasoning": None,
         "latest_run_tool": None,
+        # The latest run's start while it has no terminal event: a reload must
+        # let clients show a running scheduled turn, not only its card.
+        "latest_run_started_event": None,
+        "latest_run_ended": False,
         "title": str(landmark.get("title") or "Scheduled job"),
         "job": None,
     }
@@ -36041,9 +36071,15 @@ def add_semantic_job_event(
             state["latest_run_extras"] = deque(maxlen=SEMANTIC_TIMELINE_JOB_EXTRA_LIMIT)
             state["latest_run_reasoning"] = None
             state["latest_run_tool"] = None
+            state["latest_run_started_event"] = None
+            state["latest_run_ended"] = False
         state["latest_run_seq"] = seq
     if run_id == state.get("latest_run_id"):
         event_type = str(event.get("type") or "")
+        if event_type == "turn_started":
+            state["latest_run_started_event"] = event
+        elif event_type in {"turn_finished", "turn_stopped", "job_finished", "job_error"}:
+            state["latest_run_ended"] = True
         if event_type == "reasoning_summary" or (event_type == "reasoning_text" and state["latest_run_reasoning"] is None):
             state["latest_run_reasoning"] = event
         elif event_type in {"tool_started", "tool_finished"}:
@@ -36253,6 +36289,16 @@ def is_native_steer_event(event: dict[str, Any]) -> bool:
     )
 
 
+def scheduled_run_joined_at(
+    joined_runs: dict[str, list[list[int]]], run_id: str, seq: int,
+) -> bool:
+    """Whether ``seq`` of run ``run_id`` lies in a span a user message joined (end -1: still open)."""
+    return any(
+        start <= seq and (end < 0 or seq <= end)
+        for start, end in joined_runs.get(run_id, ())
+    )
+
+
 def semantic_timeline_event_is_display(event: dict[str, Any]) -> bool:
     event_type = str(event.get("type") or "")
     if timeline_index_is_error(event):
@@ -36397,6 +36443,7 @@ def collect_semantic_timeline_events(
     goal_native_turn_key_by_seq: dict[int, str],
     fork_internal_run_ids: set[str],
     internal_status_run_ids: set[str],
+    joined_runs: dict[str, list[list[int]]],
     event_limit: int,
     history_repair_window=None,
     repair_seq_bounds: tuple[int, int] | None = None,
@@ -36560,6 +36607,22 @@ def collect_semantic_timeline_events(
                     or explicit_job_id
                 ):
                     job_id = explicit_job_id or run_id or f"job-{seq}"
+                if (
+                    job_id and event_type not in TIMELINE_INDEX_JOB_TYPES
+                    and scheduled_run_joined_at(joined_runs, run_id, seq)
+                ):
+                    # At or after the user message that joined this scheduled run,
+                    # its content is an ordinary turn, as in the timeline index.
+                    if event_type in {"turn_finished", "turn_stopped"} and explicit_job_id:
+                        # The run's end still settles the card's status and ends its live start.
+                        status_key = job_timeline_group_by_run.get(run_id) or f"job:{explicit_job_id}"
+                        if status_key in selected_jobs:
+                            add_semantic_job_event(
+                                selected_jobs[status_key],
+                                client_safe_event(event),
+                                attempt_id=current_job_attempt_by_run.get(run_id),
+                            )
+                    job_id = None
                 if codex_lifecycle_key:
                     key = codex_lifecycle_key
                 elif job_id:
@@ -36712,20 +36775,27 @@ def collect_semantic_timeline_events(
             state = selected_jobs[key]
             representatives = list(state["representatives"].values())
             standalone = list(state["standalone"])
-            retain_interrupted_trace_anchor = (
+            live_run_start = (
+                state.get("latest_run_started_event")
+                if not state.get("latest_run_ended") else None
+            )
+            # A stopped run and a still-running run both surface their latest
+            # reasoning/tool anchor on reload.
+            retain_latest_run_anchors = (
                 str(state.get("latest_status") or "") == "stopped"
+                or live_run_start is not None
             )
             extras = [
                 *list(state["latest_run_extras"]),
                 *(
                     [state["latest_run_reasoning"]]
-                    if retain_interrupted_trace_anchor
+                    if retain_latest_run_anchors
                     and isinstance(state.get("latest_run_reasoning"), dict)
                     else []
                 ),
                 *(
                     [state["latest_run_tool"]]
-                    if retain_interrupted_trace_anchor
+                    if retain_latest_run_anchors
                     and isinstance(state.get("latest_run_tool"), dict)
                     else []
                 ),
@@ -36743,9 +36813,14 @@ def collect_semantic_timeline_events(
                 [semantic_job_summary_event(session_id, state)],
                 [],
                 [
-                    event
-                    for event in optional
-                    if str(event.get("type") or "") in SEMANTIC_TIMELINE_ESSENTIAL_DETAIL_TYPES
+                    # A still-running latest run is delivered with its start,
+                    # so a client can show it as a live turn and stream into it.
+                    *([live_run_start] if isinstance(live_run_start, dict) else []),
+                    *(
+                        event
+                        for event in optional
+                        if str(event.get("type") or "") in SEMANTIC_TIMELINE_ESSENTIAL_DETAIL_TYPES
+                    ),
                 ],
                 [
                     event
@@ -37028,6 +37103,7 @@ def read_semantic_timeline_page(
         internal_status_run_ids = set(
             cached.get("internal_status_run_ids") or ()
         )
+        joined_runs = {run_id: [list(span) for span in spans] for run_id, spans in (cached.get("joined_runs") or {}).items()}
         records_by_key = cached.get("by_key") or {}
         landmarks = index.get("landmarks") or []
         total = len(landmarks)
@@ -37111,6 +37187,7 @@ def read_semantic_timeline_page(
         goal_native_turn_key_by_seq=goal_native_turn_key_by_seq,
         fork_internal_run_ids=fork_internal_run_ids,
         internal_status_run_ids=internal_status_run_ids,
+        joined_runs=joined_runs,
         history_repair_window=history_repair_window,
         repair_seq_bounds=(
             max(after, min((int(item.get("_semantic_original_start_seq") or 0)
@@ -53822,6 +53899,8 @@ async def scheduled_job_blocker(
                 )
             if stop_cleanup_in_progress(session_id):
                 return "chat is finishing an explicit Stop"
+            if session_id in SCHEDULED_JOB_STOP_HOLDS and not manual:
+                return JOB_STOPPED_BY_USER_DETAIL
             if session_id in BUSY_SESSIONS:
                 return JOB_CHAT_BUSY_DETAIL
         active_count = len(BUSY_SESSIONS)
@@ -75072,6 +75151,16 @@ async def _start_turn_locked(
             if (live := live_provider_chat_mailbox_route(session_id, route)) is not None
             and live.get("pair_id")]
     secure_route_snapshots: list[dict[str, Any]] = []
+    if req.purpose is None and req.skill_selection is None:
+        # A turn without a purpose or a provider command is the user's own
+        # message: it lifts this chat's Stop hold on scheduled jobs.
+        SCHEDULED_JOB_STOP_HOLDS.discard(session_id)
+    if (
+        req.purpose == "scheduled_job" and not scheduled_job_manual_run
+        and provider_context_mode == "chat" and session_id in SCHEDULED_JOB_STOP_HOLDS
+    ):
+        # Stop can land between the scheduler's blocker check and this admission.
+        raise TransientAdmissionWait(status_code=409, detail=JOB_STOPPED_BY_USER_DETAIL)
     team_mail_route_snapshot = (
         team_mail_grants.snapshot(accepted_team_mail_route_snapshot)
         if accepted_team_mail_route_snapshot is not None
@@ -91774,6 +91863,8 @@ async def delete_claude_goal(session_id: str) -> dict[str, Any]:
             except ClaudeSDKSupervisorError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             cleared_live = True
+            # Clear & stop interrupts the work: hold this chat's scheduled jobs like Stop does.
+            SCHEDULED_JOB_STOP_HOLDS.add(session_id)
             # Raw SDK result field; the run path has the same text as result_text.
             await mark_claude_goal_cleared(session_id, str(receipt.get("result") or ""))
     if not cleared_live:
@@ -93379,6 +93470,7 @@ async def delete_session(session_id: str) -> dict[str, Any]:
                     # blocker.
                     CLAUDE_STOP_FENCE_SESSIONS.discard(session_id)
                     SERVER_MAINTENANCE_SESSIONS.discard(session_id)
+                    SCHEDULED_JOB_STOP_HOLDS.discard(session_id)
                     CLAUDE_STOP_FENCE_ATTEMPT_LOCKS.pop(session_id, None)
                 await retire_session_port_tunnels(
                     session_id,
@@ -98084,6 +98176,8 @@ async def run_explicit_stop_operation(
     admission/delete/restart fence until its session-wide effects are finished.
     """
 
+    # Lifted by the user's next message or a job edit; see SCHEDULED_JOB_STOP_HOLDS.
+    SCHEDULED_JOB_STOP_HOLDS.add(session_id)
     stop_task = asyncio.create_task(
         stop_turn(
             session_id,
@@ -99699,6 +99793,7 @@ async def update_job(job_id: str, req: UpdateJobRequest) -> dict[str, Any]:
             req.model_dump(exclude_unset=True),
             expected_session_id=session_id,
         )
+    SCHEDULED_JOB_STOP_HOLDS.discard(session_id)
     return {"job": public_job(job)}
 
 
@@ -99710,6 +99805,7 @@ async def update_session_job(session_id: str, job_id: str, req: UpdateJobRequest
             req.model_dump(exclude_unset=True),
             expected_session_id=session_id,
         )
+    SCHEDULED_JOB_STOP_HOLDS.discard(session_id)
     return {"job": public_job(job)}
 
 
