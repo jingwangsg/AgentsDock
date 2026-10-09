@@ -1525,6 +1525,28 @@ const plainSteerRows = projectTimeline([
   event(207, 'turn_steered', { run_id: 'plain-run', prompt: 'Nudge', native_steer: true }),
 ], [])
 assert(plainSteerRows.filter(row => row.kind === 'message' && row.role === 'user').length === 1, 'a non-goal steer does not open a user slice')
+// A user message steered into a scheduled-job run makes that run an ordinary turn; only job_* events stay on the card.
+const joinedJobRows = projectTimeline([
+  event(220, 'turn_started', { run_id: 'job-run', backend: 'claude', purpose: 'scheduled_job', job_id: 'job-1', job_title: 'Progress check', prompt: '10-minute progress check' }),
+  event(221, 'job_ran', { run_id: 'job-run', job_id: 'job-1', job_title: 'Progress check', message: 'Scheduled job ran: Progress check' }),
+  event(222, 'reasoning_summary', { run_id: 'job-run', text: 'Checking replays' }),
+  event(223, 'turn_steered', { run_id: 'job-run', backend: 'claude', prompt: 'Also add the prevention rule', native_steer: true, provider_user_authored: true }),
+  event(224, 'assistant_text', { run_id: 'job-run', text: 'Noted, adding the rule.' }),
+  event(225, 'turn_finished', { run_id: 'job-run', backend: 'claude', purpose: 'scheduled_job', job_id: 'job-1', result_text: 'Noted, adding the rule.' }),
+], [])
+assert(
+  joinedJobRows.filter(row => row.kind === 'message' && row.role === 'user').map(rowText).join('|') === '10-minute progress check|Also add the prevention rule',
+  `a job run the user joined shows its start and the message as user rows, received ${joinedJobRows.filter(row => row.kind === 'message' && row.role === 'user').map(rowText).join('|')}`,
+)
+assert(
+  joinedJobRows.filter(row => row.kind === 'message' && row.role === 'assistant').map(rowText).join('|') === 'Noted, adding the rule.',
+  'the output after the message is an ordinary assistant row',
+)
+const joinedJobCards = joinedJobRows.filter(row => row.kind === 'job')
+assert(
+  joinedJobCards.length === 1 && joinedJobCards[0].kind === 'job' && joinedJobCards[0].events.map(value => value.type).join() === 'job_ran,turn_finished',
+  `the card keeps the job_* events and the run's end for its status, received ${joinedJobCards.map(row => row.kind === 'job' ? row.events.map(value => value.type).join() : '').join('|')}`,
+)
 
 const checkpointRows = projectTimeline([
   event(210, 'turn_started', { run_id: 'cp-run', prompt: 'Edit files' }),

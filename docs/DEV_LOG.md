@@ -1,5 +1,25 @@
 # Public development log
 
+## 2026-10-10 — A message that joins a scheduled-job run turns it into an ordinary turn (desktop and Android source)
+
+- Both timelines fold every event of a scheduled-job run into the job card
+  by run ownership. A user message steered into such a run (Enter while the
+  run works) was folded into the card's details together with the model's
+  reply, and so was the rest of the run; in a chat whose job prompt made
+  every run hours long, most messages landed there.
+- From the moment a user message joins a job run, that run renders as an
+  ordinary turn from its start: the job prompt as a row labelled "Scheduled
+  Job", the message as a user row, tools, subagents and replies as usual.
+  The job_* lifecycle events stay on the card, and the run's end still
+  settles the card's status. On the desktop a run already folded into a card
+  is rebuilt once; a message arriving with the run's own events is
+  incremental.
+- Verified with the projection tests of both apps (joined run, card status,
+  live rebuild parity) and the type checks. Not covered: the server's
+  semantic history pages still assign the whole run to the job card, so a
+  reload or a chat opened from history shows the joined run folded again
+  until the page builder learns the same rule.
+
 ## 2026-10-10 — The Claude goal bar follows Claude's own answer to a clear (server source)
 
 - The goal bar is AgentsDock's view of Claude Code's native `/goal`: a Stop

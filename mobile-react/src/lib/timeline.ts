@@ -138,6 +138,8 @@ function jobLinkedRunIds(event: Event): string[] {
 interface JobProjectionAssignment {
   jobId: string
   groupKey: string
+  /** The event settles the card's status but belongs to an ordinary turn (a run the user joined). */
+  statusOnly?: boolean
 }
 
 /**
@@ -147,6 +149,10 @@ interface JobProjectionAssignment {
  */
 function jobProjectionAssignments(events: readonly Event[]): Map<Event, JobProjectionAssignment> {
   const ordered = [...events].sort((left, right) => left.seq - right.seq)
+  // Every run a user message joined (native steer). It only changes the projection of
+  // job runs below: their own events render as an ordinary turn from the run's start,
+  // the job_* events stay on the card, and the run's end still settles the card's status.
+  const userJoinedRuns = new Set(ordered.filter(isNativeSteerEvent).map(event => event.run_id!.trim()))
   const occurrenceByEvent = new Map<Event, Map<string, string>>()
   const currentOccurrenceByRun = new Map<string, { key: string; started: boolean }>()
   for (const event of ordered) {
@@ -190,6 +196,7 @@ function jobProjectionAssignments(events: readonly Event[]): Map<Event, JobProje
     const groupId = event.job_timeline_group_id?.trim() || ''
     if (jobId && groupId) jobByExplicitGroup.set(groupId, jobId)
     for (const runId of jobLinkedRunIds(event)) {
+      if (userJoinedRuns.has(runId)) continue
       const occurrence = occurrenceByEvent.get(event)?.get(runId) || runId
       if (jobId) jobByOccurrence.set(occurrence, jobId)
       if (groupId) groupByOccurrence.set(occurrence, groupId)
@@ -216,7 +223,11 @@ function jobProjectionAssignments(events: readonly Event[]): Map<Event, JobProje
       || isHandoffDigestEvent(event)
       || event.type.startsWith('cross_chat_')
       || isAsyncCrossChatMessage(event)
-    const jobId = topLevel ? '' : explicitJobId || jobByOccurrence.get(occurrence) || (event.purpose === 'scheduled_job' ? runId : '')
+    const joinedContent = userJoinedRuns.has(runId) && !jobs.has(event.type)
+    const statusOnly = joinedContent && Boolean(explicitJobId) && (event.type === 'turn_finished' || event.type === 'turn_stopped')
+    const jobId = topLevel || (joinedContent && !statusOnly)
+      ? ''
+      : explicitJobId || jobByOccurrence.get(occurrence) || (event.purpose === 'scheduled_job' ? runId : '')
     if (!jobId) {
       const boundaryKey = providerInteractionAuditKey(event)
         || codexLifecycleSemanticKey(event)
@@ -249,7 +260,7 @@ function jobProjectionAssignments(events: readonly Event[]): Map<Event, JobProje
     for (const linkedRunId of jobLinkedRunIds(event)) {
       groupByOccurrence.set(occurrenceByEvent.get(event)?.get(linkedRunId) || linkedRunId, groupKey)
     }
-    assignments.set(event, { jobId, groupKey })
+    assignments.set(event, statusOnly ? { jobId, groupKey, statusOnly } : { jobId, groupKey })
     if (!createdKeys.has(groupKey)) {
       createdKeys.add(groupKey)
       latestCreatedKey = groupKey
@@ -591,7 +602,7 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
         jobRows.set(groupKey, row)
         items.push(row)
       }
-      continue
+      if (!jobAssignment.statusOnly) continue
     }
     // Lifecycle notices without message text still need a visible row.
     if (

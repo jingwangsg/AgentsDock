@@ -220,7 +220,7 @@ function MessageRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRo
     <View style={[styles.messageWrap, row.role === 'user' && styles.userAlign]}>
       <View style={[styles.message, row.role === 'user' ? { backgroundColor: colors.user, borderColor: colors.border, borderWidth: 1, borderRadius: 6 } : { backgroundColor: 'transparent', borderColor: 'transparent' }]}>
         <View style={styles.metaRow}>
-          <Text style={[styles.author, { color: colors.muted }]} numberOfLines={1}>{row.role === 'user' ? 'You' : 'Assistant'}</Text>
+          <Text style={[styles.author, { color: colors.muted }]} numberOfLines={1}>{row.role === 'user' ? event.purpose === 'scheduled_job' ? 'Scheduled Job' : 'You' : 'Assistant'}</Text>
           <Text style={[styles.time, { color: colors.muted }]} numberOfLines={1}>{formatDateTime(event.ts)}</Text>
           <View style={styles.metaSpacer} />
           {feedback ? <Text testID={`message-action-feedback-${event.id}`} style={[styles.feedback, { color: feedback.includes('failed') ? colors.red : colors.green }]} numberOfLines={1}>{feedback}</Text> : null}

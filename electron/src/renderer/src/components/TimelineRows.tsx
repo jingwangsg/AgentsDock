@@ -78,7 +78,7 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
     }
     const pinItem: PinnedItem = {
       id: pinId, sessionId, kind: 'message', eventId: primary.id,
-      title: role === 'user' ? collaborator ? 'Collaborator' : 'You' : 'Assistant', body: text, subtitle: formatTime(event.ts), createdAt: Date.now()
+      title: role === 'user' ? primary.purpose === 'scheduled_job' ? 'Scheduled Job' : collaborator ? 'Collaborator' : 'You' : 'Assistant', body: text, subtitle: formatTime(event.ts), createdAt: Date.now()
     }
     await window.agentsDock.pins.put(requirePinnedItemsScope(profileScope), pinItem)
     window.dispatchEvent(new CustomEvent('agentsdock:pins-changed', { detail: sessionId }))
@@ -95,7 +95,7 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
     >
       <div className="message-surface">
         <header>
-          <span>{role === 'user' ? t(collaborator ? 'chatShare.collaborator' : 'timeline.ui.you') : primary.purpose === 'handoff_digest' ? t('timeline.ui.digest') : t('timeline.ui.assistant')}</span>
+          <span>{role === 'user' ? t(primary.purpose === 'scheduled_job' ? 'timeline.ui.scheduledJob' : collaborator ? 'chatShare.collaborator' : 'timeline.ui.you') : primary.purpose === 'handoff_digest' ? t('timeline.ui.digest') : t('timeline.ui.assistant')}</span>
           {item.pending
             ? <span className="message-pending-status" role="status">{pendingBusy && <span className="activity-ring" aria-hidden="true" />}{t(item.pendingPhase === 'submitted' ? 'timeline.status.submitted' : 'timeline.status.submitting')}</span>
             : <time>{formatTime(event.ts)}</time>}

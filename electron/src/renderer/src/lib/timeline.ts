@@ -282,6 +282,8 @@ export class TimelineProjector {
   private readonly startedJobOccurrences = new Set<string>()
   private readonly jobSegmentCountById = new Map<string, number>()
   private readonly jobByRun = new Map<string, string>()
+  /** Scheduled-job runs a user message joined (native steer); shown as ordinary turns. */
+  private readonly userJoinedRuns = new Set<string>()
   private readonly jobTitles = new Map<string, string>()
   private readonly digestById = new Map<string, SystemItem>()
   private readonly codexLifecycleByKey = new Map<string, SystemItem>()
@@ -367,6 +369,18 @@ export class TimelineProjector {
     if (!events.length) return true
     if (!this.rememberCrossChatDeliveryAliases(events)) return false
 
+    // A user message steered into a scheduled-job run makes that run the
+    // conversation: its own events render as an ordinary turn from its start
+    // and only the job_* events stay on the card. A run a previous append
+    // already folded needs one rebuild; a steer arriving in the same batch as
+    // the run's own events does not.
+    for (const event of events) {
+      const runId = event.run_id?.trim() || ''
+      if (!runId || !isNativeSteerEvent(event) || this.userJoinedRuns.has(runId)) continue
+      if (this.jobByRun.has(runId) || this.latestJobById.has(runId)) return false
+      this.userJoinedRuns.add(runId)
+    }
+
     // A late job link can retroactively turn an already-projected ordinary
     // turn into a scheduled-job run. That rare transition needs one rebuild;
     // ordinary live tail traffic remains strictly incremental.
@@ -375,6 +389,7 @@ export class TimelineProjector {
       const jobId = event.job_id?.trim() || event.job?.id?.trim() || ''
       if (!jobId) continue
       for (const runId of jobLinkedRunIds(event)) {
+        if (this.userJoinedRuns.has(runId)) continue
         const priorFallback = this.latestJobById.has(runId)
         if (!this.jobByRun.has(runId) && (this.turnByRun.has(runId) || priorFallback)) return false
       }
@@ -388,7 +403,7 @@ export class TimelineProjector {
       if (title) this.jobTitles.set(jobId, title)
       // Explicit server job ownership also appears on metadata-light output
       // and job_summary pages without purpose or a retained start event.
-      for (const runId of jobLinkedRunIds(event)) this.jobByRun.set(runId, jobId)
+      for (const runId of jobLinkedRunIds(event)) if (!this.userJoinedRuns.has(runId)) this.jobByRun.set(runId, jobId)
     }
 
     const initialProjection = this.itemsValue.length === 0
@@ -486,7 +501,8 @@ export class TimelineProjector {
     }
     if (event.type === 'provider_session') this.rememberRootProviderThread(event)
     if (isLeakedChildCompaction(event, this.expectedRootThreadForCompaction(event))) return
-    const transitionJobId = String(
+    const userJoined = this.userJoinedRuns.has(event.run_id || '')
+    const transitionJobId = userJoined ? '' : String(
       event.job_id
       || event.job?.id
       || (event.run_id ? this.jobByRun.get(event.run_id) : '')
@@ -640,7 +656,9 @@ export class TimelineProjector {
     }
 
     const explicitJobId = event.job_id?.trim() || event.job?.id?.trim() || ''
-    const jobId = explicitJobId || this.jobByRun.get(event.run_id || '') || (
+    // The joined run's end still settles the card's status; its content stays in the turn.
+    if (userJoined && explicitJobId && (event.type === 'turn_finished' || event.type === 'turn_stopped')) this.appendJobEvent(event, explicitJobId)
+    const jobId = userJoined && !jobTypes.has(event.type) ? '' : explicitJobId || this.jobByRun.get(event.run_id || '') || (
       jobTypes.has(event.type) || event.purpose === 'scheduled_job'
         ? event.run_id || `job-${event.seq}`
         : ''

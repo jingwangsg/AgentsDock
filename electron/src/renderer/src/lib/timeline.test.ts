@@ -2710,6 +2710,35 @@ describe('projectTimeline', () => {
     ])
   })
 
+  it('turns a scheduled-job run into an ordinary turn once a user message joins it', () => {
+    const source = [
+      event(1, 'turn_started', { run_id: 'run-job-1', backend: 'claude', purpose: 'scheduled_job', job_id: 'job-1', job_title: 'Progress check', prompt: '10-minute progress check' }),
+      event(2, 'job_ran', { run_id: 'run-job-1', job_id: 'job-1', job_title: 'Progress check', message: 'Scheduled job ran: Progress check' }),
+      event(3, 'reasoning_summary', { run_id: 'run-job-1', backend: 'claude', text: 'Checking replays' }),
+      event(4, 'turn_steered', { run_id: 'run-job-1', backend: 'claude', prompt: 'Also add the prevention rule', native_steer: true, provider_user_authored: true }),
+      event(5, 'assistant_text', { run_id: 'run-job-1', backend: 'claude', text: 'Noted, adding the rule.' }),
+      event(6, 'turn_finished', { run_id: 'run-job-1', backend: 'claude', purpose: 'scheduled_job', job_id: 'job-1', result_text: 'Noted, adding the rule.' })
+    ]
+    const items = projectTimeline(source, [])
+    const rows = renderTimelineItems(items)
+    expect(rows.flatMap(row => row.kind === 'message' && row.role === 'user' ? [messageItemText(row)] : [])).toEqual(['10-minute progress check', 'Also add the prevention rule'])
+    expect(rows.flatMap(row => row.kind === 'message' && row.role === 'assistant' ? [messageItemText(row)] : [])).toEqual(['Noted, adding the rule.'])
+    // The card keeps the job_* events and the run's end (compacted to the best event per run); none of the run's content.
+    const card = items.find(item => item.kind === 'job')
+    expect(card?.kind === 'job' && card.events.map(value => value.type)).toEqual(['turn_finished'])
+    expect(card?.kind === 'job' && card.latestStatus?.type).toBe('turn_finished')
+    expect(items.filter(item => item.kind === 'turn').every(item => item.kind === 'turn' && item.finishedAt)).toBe(true)
+
+    // Live: the run was already folded into its card when the message arrived; one rebuild.
+    const live = new TimelineProjector([])
+    expect(live.append(source.slice(0, 3))).toBe(true)
+    expect(live.items.map(item => item.kind)).toEqual(['job'])
+    expect(live.append(source.slice(3))).toBe(false)
+    const rebuilt = new TimelineProjector([])
+    expect(rebuilt.append(source)).toBe(true)
+    expect(renderTimelineItems(rebuilt.items)).toEqual(rows)
+  })
+
   it('does not regress a cancelled scheduled run to running on a late job marker', () => {
     const items = projectTimeline([
       event(1, 'turn_started', {
