@@ -20,6 +20,15 @@ test('chat taps on both platforms stay on a plain native press target', () => {
   assert.doesNotMatch(source, /<MenuView[^>]*>\{pressableRow\}<\/MenuView>/)
 })
 
+test('folder headers show their chats\' status dots between the title and the count', () => {
+  // One dot per kind present (waiting, running, unread), so a collapsed folder still says where to look.
+  // The dots come from renderItem: the rows memo must not depend on `active` (it changes every health poll
+  // and the rows' identity holds a dropped order).
+  assert.match(source, /<FolderHeader\s*item=\{item\}\s*status=\{query\.trim\(\) \? \[\] : folderStatusKinds\(item\.sessions, active\)\}/)
+  assert.match(source, /\{item\.title\}<\/Text>\s*\{status\.map\(kind => <View key=\{kind\} style=\{\[styles\.headerStatusDot, \{ backgroundColor: kind === 'waiting' \? colors\.orange : kind === 'running' \? colors\.green : colors\.blue \}\]\} \/>\)\}\s*<Text style=\{\[styles\.count/)
+  assert.match(source, /\}, \[collapsed, folderOrder, query, searchResults, sessions, surfaces, selected\]\)/)
+})
+
 test('Android chat and folder actions open from a long press on a collapsed sibling anchor', () => {
   assert.match(source, /<View style=\{styles\.sessionShell\}>\{pressableRow\}<MenuView ref=\{menu\} testID=\{`chat-actions-\$\{session\.id\}`\}/)
   assert.match(source, /<View style=\{styles\.folderHeaderShell\}>\{header\}<MenuView ref=\{menu\} testID=\{`folder-actions-\$\{item\.folder\}`\}/)

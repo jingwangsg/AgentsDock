@@ -349,12 +349,28 @@ function SurfaceRow({ surface, selected }: { surface: Surface; selected: boolean
   )
 }
 
+type FolderStatusKind = 'emergency' | 'attention' | 'running' | 'unread'
+
+/** The status dots a folder header shows for its chats, one per kind present, highest priority first, so a collapsed folder still says where to look. */
+export function folderStatusKinds(sessions: Session[], activeSessionIds: ReadonlySet<string>): FolderStatusKind[] {
+  const kinds = new Set<FolderStatusKind>()
+  for (const session of sessions) {
+    if (activeEmergencyAlert(session)) kinds.add('emergency')
+    if (session.codex_needs_user_action || session.claude_needs_user_action) kinds.add('attention')
+    if (activeSessionIds.has(session.id)) kinds.add('running')
+    if (sessionUnread(session)) kinds.add('unread')
+  }
+  return (['emergency', 'attention', 'running', 'unread'] as const).filter(kind => kinds.has(kind))
+}
+
 function FolderHeader({ section, collapsed, drop, onToggle, suppressClick, folders }: {
   section: Section; collapsed: boolean; drop: DropIndicator | null; onToggle: () => void; suppressClick: (id: string) => boolean; folders: string[]
 }) {
   useLocale()
   const health = useAppStore(state => state.health)
   const runtimeCatalog = useAppStore(state => state.runtimeCatalog)
+  const activeSessionIds = useAppStore(state => state.activeSessionIds)
+  const statusKinds = section.kind === 'search' ? [] : folderStatusKinds(section.sessions, activeSessionIds)
   const id = `folder:${section.title}`
   const draggable = useDraggable({ id, disabled: section.kind !== 'folder', data: { type: 'folder', label: section.title } })
   const indicator = drop?.id === id && drop.placement === 'inside' ? 'drop-inside' : ''
@@ -363,7 +379,9 @@ function FolderHeader({ section, collapsed, drop, onToggle, suppressClick, folde
       <button onClick={() => { if (!suppressClick(id)) onToggle() }} {...draggable.listeners} {...draggable.attributes}>
         {section.kind !== 'search' && (collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />)}
         {section.kind === 'pinned' ? <Pin size={11} /> : section.kind === 'archived' ? <Archive size={11} /> : section.kind === 'search' ? <Search size={11} /> : <Folder size={11} />}
-        <span>{section.title}</span><small>{section.sessions.length}</small>
+        <span>{section.title}</span>
+        {statusKinds.map(kind => <span key={kind} className={`status-dot ${kind}`} aria-hidden="true" />)}
+        <small>{section.sessions.length}</small>
       </button>
     </div>
   )

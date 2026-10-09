@@ -1,5 +1,22 @@
 # Public development log
 
+## 2026-10-10 — Folder headers show their chats' status dots (desktop and Android source)
+
+- A chat's status dot (unread, running, waiting for you, emergency) sat only
+  on the chat row, so with folders collapsed the server selector's unread
+  badge gave no hint which folder to open.
+- Each folder header now shows one dot per status kind present among its
+  chats, between the folder name and the chat count, in the row colours
+  (green for running, which the desktop row shows as a spinner), highest
+  priority first: emergency, waiting for you, running, unread on the desktop;
+  waiting for you, running, unread on Android (the kinds its rows show).
+  Pinned and Archived follow the same rule; headers of a search do not. The
+  Android header's accessibility label names the kinds.
+- Verified with a desktop sidebar test (helper and rendered header dots), the
+  Android sidebar contract test and both type checks. Not exercised: the
+  apps on a device. Availability: source only; next desktop package and
+  Android build.
+
 ## 2026-10-10 — Desktop package 116 and Android build 61 (local package and APK)
 
 - Package the entries above recorded since package 115 and Android build 60:

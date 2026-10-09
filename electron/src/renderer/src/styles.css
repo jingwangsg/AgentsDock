@@ -590,6 +590,9 @@ body.column-resizing { cursor: col-resize; user-select: none; }
 .status-dot { width: var(--space-3); height: var(--space-3); border-radius: var(--radius-circle); flex: 0 0 auto; background: var(--accent); }
 .status-dot.attention { width: 8px; height: 8px; background: var(--amber); box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber), transparent 80%); }
 .status-dot.emergency { width: 9px; height: 9px; background: #ff625d; box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger), transparent 68%); transform: translateZ(0); will-change: opacity, transform; animation: emergency-chat-pulse 1.6s ease-in-out infinite; }
+.status-dot.running { background: var(--green); }
+/* Header dots are all 6px: the halo variants keep their colour and pulse at the row's size, not their own. */
+.section-header .status-dot.status-dot { flex: 0 0 auto; width: 6px; height: 6px; }
 .backend-mark { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-compact); overflow: hidden; }
 .backend-mark img { position: relative; z-index: 1; width: 100%; height: 100%; object-fit: contain; }
 .backend-fallback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #a7a7a4; }

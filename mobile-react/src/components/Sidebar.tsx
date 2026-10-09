@@ -24,7 +24,8 @@ import { IconButton } from './ui'
 import { ServerProfileSelector, type ServerProfileListItem } from './ServerProfiles'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 
-type Row = { kind: 'header'; key: string; title: string; folder: string; count: number } | { kind: 'session'; key: string; session: Session; searchResult?: TimelineSearchResult } | { kind: 'surface'; key: string; surface: Surface }
+type FolderStatusKind = 'waiting' | 'running' | 'unread'
+type Row = { kind: 'header'; key: string; title: string; folder: string; count: number; sessions: Session[] } | { kind: 'session'; key: string; session: Session; searchResult?: TimelineSearchResult } | { kind: 'surface'; key: string; surface: Surface }
 
 type ProfileScope = {
   activeProfileId: string | null
@@ -186,7 +187,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
       const values = section.sessions
       const tabs = clean ? [] : surfaces.filter(surface => surface.folder === folder)
       return [
-        { kind: 'header', key: `header:${folder}`, title: folder, folder, count: values.length + tabs.length },
+        { kind: 'header', key: `header:${folder}`, title: folder, folder, count: values.length + tabs.length, sessions: values },
         ...((collapsed.has(folder) && !clean ? [] : [
           ...values.map(session => ({
             kind: 'session' as const,
@@ -492,6 +493,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
         contentContainerStyle={styles.list}
         renderItem={({ item, drag }) => <ScaleDecorator activeScale={1.03}>{item.kind === 'header' ? <FolderHeader
           item={item}
+          status={query.trim() ? [] : folderStatusKinds(item.sessions, active)}
           profileScope={profileScope}
           collapsed={collapsed.has(item.folder)}
           backends={chatBackends}
@@ -565,8 +567,23 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   )
 }
 
-function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canMoveDown, onDismissKeyboard, onLift, onToggle, onMove, onNewChat, onNewSurface, onRename, onDelete }: {
+// The status dots a folder header shows for its chats, one per kind present, highest priority
+// first, so a collapsed folder still says where to look. Computed at render, not in the rows
+// memo: `active` changes on every health poll and the rows' identity holds a dropped order.
+function folderStatusKinds(sessions: Session[], active: ReadonlySet<string>): FolderStatusKind[] {
+  const kinds = new Set<FolderStatusKind>()
+  for (const session of sessions) {
+    if (sessionNeedsProviderInteraction(session)) kinds.add('waiting')
+    if (active.has(session.id)) kinds.add('running')
+    if (isUnread(session)) kinds.add('unread')
+  }
+  return (['waiting', 'running', 'unread'] as const).filter(kind => kinds.has(kind))
+}
+const FOLDER_STATUS_LABEL: Record<FolderStatusKind, string> = { waiting: 'waiting for you', running: 'agent running', unread: 'unread messages' }
+
+function FolderHeader({ item, status, profileScope, collapsed, backends, canMoveUp, canMoveDown, onDismissKeyboard, onLift, onToggle, onMove, onNewChat, onNewSurface, onRename, onDelete }: {
   item: Extract<Row, { kind: 'header' }>
+  status: FolderStatusKind[]
   profileScope: ProfileScope
   collapsed: boolean
   backends: Backend[]
@@ -622,7 +639,7 @@ function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canM
   }
   const header = <Pressable
     accessibilityRole="button"
-    accessibilityLabel={`${collapsed ? 'Expand' : 'Collapse'} ${item.title}`}
+    accessibilityLabel={`${collapsed ? 'Expand' : 'Collapse'} ${item.title}${status.length ? `, ${status.map(kind => FOLDER_STATUS_LABEL[kind]).join(', ')}` : ''}`}
     accessibilityHint={hasMenu ? 'Long press for folder actions.' : undefined}
     onPress={() => { onDismissKeyboard(); onToggle() }}
     onLongPress={!hasMenu ? undefined : () => onLift(Platform.OS === 'ios' ? openActionSheet : () => menu.current?.show())}
@@ -631,6 +648,7 @@ function FolderHeader({ item, profileScope, collapsed, backends, canMoveUp, canM
   >
     {collapsed ? <ChevronRight size={13} color={colors.muted} /> : <ChevronDown size={13} color={colors.muted} />}
     <Text style={[styles.headerText, { color: colors.muted }]}>{item.title}</Text>
+    {status.map(kind => <View key={kind} style={[styles.headerStatusDot, { backgroundColor: kind === 'waiting' ? colors.orange : kind === 'running' ? colors.green : colors.blue }]} />)}
     <Text style={[styles.count, { color: colors.muted }]}>{item.count}</Text>
   </Pressable>
   if (!hasMenu || Platform.OS === 'ios') return header
@@ -960,6 +978,7 @@ const styles = StyleSheet.create({
   header: { minHeight: 44, paddingHorizontal: 5, flexDirection: 'row', alignItems: 'center', gap: 4 },
   headerInShell: { flex: 1 },
   headerText: { flex: 1, fontSize: 11, fontWeight: '700' },
+  headerStatusDot: { width: 6, height: 6, borderRadius: 3 },
   count: { fontSize: 10 },
   sessionShell: { minHeight: 51, flexDirection: 'row', alignItems: 'stretch' },
   dragHandle: { width: 24, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center', marginLeft: 2 },
