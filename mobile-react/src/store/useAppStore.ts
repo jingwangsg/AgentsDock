@@ -562,7 +562,7 @@ interface AppState {
    * whichever server is active, then reconciles the hub's registry into profiles. Resolves to the new profile id.
    */
   deployHubRemoteServer(
-    input: { mode: 'deploy' | 'attach'; sshHost: string; installDir?: string; name?: string },
+    input: { mode: 'deploy' | 'attach'; sshHost: string; installDir?: string; name?: string; password?: string },
     onProgress: (entry: RemoteServerDeployLogEntry) => void,
   ): Promise<string>
   cancelHubDeploy(): Promise<void>
@@ -867,7 +867,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // The hub profile's own token: a changed hub token is not copied into existing remote profiles.
     const client = new AgentServerClient(hubURL, await loadProfileToken(hub.id, hub.credentialVersion))
     try {
-      const request = { ssh_host: input.sshHost, install_dir: input.installDir, name: input.name }
+      const request = { ssh_host: input.sshHost, install_dir: input.installDir, name: input.name, password: input.password }
       const started = await (input.mode === 'attach' ? client.startRemoteAttach(request) : client.startRemoteDeploy(request))
       const state = { client, jobId: started.job_id, cancelled: false }
       hubDeployInFlight = state

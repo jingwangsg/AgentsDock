@@ -104,9 +104,11 @@ test('remotes are reconciled from the hub registry; deploy works from any server
   // Opening the deploy editor closes the edit draft, so a deploy never reuses
   // it (which would put the hub's address in the deployed field).
   assert.match(source, /const openDeploy = \(\) => \{\s*if \(busy \|\| deployBusy\) return\s*setDraft\(null\)/)
-  // Deploy sends only ssh_host/install_dir/name to the store action; it never
+  // Deploy sends only ssh_host/install_dir/name and the one-time password to the store action; it never
   // constructs a serverUrl or accessToken client-side (the hub's deploy job
   // reports the proxy path, and the reconcile reuses the hub's own token).
-  assert.match(source, /onDeployRemote\(\s*\{ mode: deployDraft\.mode, sshHost: deployDraft\.sshHost\.trim\(\), installDir: deployDraft\.installDir\.trim\(\) \|\| undefined, name: deployDraft\.name\.trim\(\) \|\| undefined \}/)
+  assert.match(source, /onDeployRemote\(\s*\{ mode: deployDraft\.mode, sshHost: deployDraft\.sshHost\.trim\(\), installDir: deployDraft\.installDir\.trim\(\) \|\| undefined, name: deployDraft\.name\.trim\(\) \|\| undefined, password: deployDraft\.password \|\| undefined \}/)
+  // The password field masks what is typed.
+  assert.match(source, /testID="remote-deploy-password"[\s\S]*?secureTextEntry/)
   assert.doesNotMatch(source, /deployDraft\.(token|accessToken)/)
 })

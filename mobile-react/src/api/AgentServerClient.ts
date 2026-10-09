@@ -354,12 +354,12 @@ export class AgentServerClient {
   remoteServers(): Promise<{ servers: RemoteServer[] }> {
     return this.request('/api/admin/remote-servers', {}, 30_000, false, 'native-control')
   }
-  startRemoteDeploy(input: { ssh_host: string; install_dir?: string; name?: string }): Promise<{ job_id: string }> {
+  startRemoteDeploy(input: { ssh_host: string; install_dir?: string; name?: string; password?: string }): Promise<{ job_id: string }> {
     return this.request('/api/admin/remote-servers/deploy', {
       method: 'POST', body: JSON.stringify(input),
     }, 30_000, false, 'native-control')
   }
-  startRemoteAttach(input: { ssh_host: string; install_dir?: string; name?: string }): Promise<{ job_id: string }> {
+  startRemoteAttach(input: { ssh_host: string; install_dir?: string; name?: string; password?: string }): Promise<{ job_id: string }> {
     return this.request('/api/admin/remote-servers/attach', {
       method: 'POST', body: JSON.stringify(input),
     }, 30_000, false, 'native-control')

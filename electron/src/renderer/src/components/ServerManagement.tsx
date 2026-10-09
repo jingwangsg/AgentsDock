@@ -20,6 +20,8 @@ interface ServerDraft {
   sshHost: string
   installDir: string
   mode: 'deploy' | 'attach'
+  /** Only for adding: the hub installs its SSH key with it once and keeps nothing. */
+  password: string
   resetServerIdentity: boolean
 }
 
@@ -29,6 +31,7 @@ const emptyDraft = (): ServerDraft => ({
   sshHost: '',
   installDir: '~/.agentsdock-server',
   mode: 'deploy',
+  password: '',
   resetServerIdentity: false
 })
 
@@ -112,7 +115,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   }, [draft])
 
   const beginEdit = (profile: PublicServerProfile) => {
-    openEditor({ profileId: profile.id, name: profile.name, sshHost: profile.sshHost ?? '', installDir: '', mode: 'deploy', resetServerIdentity: false })
+    openEditor({ profileId: profile.id, name: profile.name, sshHost: profile.sshHost ?? '', installDir: '', mode: 'deploy', password: '', resetServerIdentity: false })
     setConfirmRemoveId(null)
   }
 
@@ -142,7 +145,8 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     setDeployProgress([])
     let added = false
     try {
-      const input = { sshHost: host, installDir: draft.installDir.trim() || undefined, name: draft.name.trim() || undefined }
+      // The password goes untrimmed: spaces can be part of it.
+      const input = { sshHost: host, installDir: draft.installDir.trim() || undefined, name: draft.name.trim() || undefined, password: draft.password || undefined }
       const profile = draft.mode === 'attach'
         ? await window.agentsDock.remoteServers.attach(input)
         : await window.agentsDock.remoteServers.deploy(input)
@@ -513,6 +517,8 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         </div>
         <label><span>{t('sshTunnel.host')}</span><div className="input-with-icon"><Server size={14} /><input ref={nameInputRef} value={draft.sshHost} disabled={busy === 'deploy'} onChange={event => updateDraft({ sshHost: event.target.value })} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void deploy() } }} placeholder="osmo_9000 or user@host" autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} /></div></label>
         <p className="field-hint">{t(draft.mode === 'attach' ? 'sshTunnel.attachHint' : 'sshTunnel.hostHint')}</p>
+        <label><span>{t('sshTunnel.password')}</span><input type="password" value={draft.password} disabled={busy === 'deploy'} onChange={event => updateDraft({ password: event.target.value })} autoComplete="off" /></label>
+        <p className="field-hint">{t('sshTunnel.passwordHint')}</p>
         <label><span>{t('sshTunnel.installDir')}</span><input value={draft.installDir} disabled={busy === 'deploy'} onChange={event => updateDraft({ installDir: event.target.value })} title={t('sshTunnel.installDirHint')} autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} /></label>
         <label><span>{t('serverProfile.nameOnThisMac')}</span><input value={draft.name} disabled={busy === 'deploy'} onChange={event => updateDraft({ name: event.target.value })} placeholder={draft.sshHost.trim() || t("ui.ServerManagement.ServerManagement.production_home_mac_lab_b241246")} title={t('serverProfile.localNameHint')} /></label>
       </>}

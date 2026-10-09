@@ -22,9 +22,10 @@ import shlex
 import shutil
 import socket
 import tarfile
+import tempfile
 import time
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
@@ -34,7 +35,7 @@ import httpx
 import websockets
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect
 from websockets.asyncio.client import connect as websocket_connect
@@ -243,6 +244,8 @@ class RemoteDeployRequest(BaseModel):
     install_dir: str = DEFAULT_INSTALL_DIR
     name: str | None = None
     port: int = 0  # 0 = let the host pick (or keep an existing install's port)
+    # Used once to install this hub's SSH key on the host; never stored (see RemoteServerManager._install_key).
+    password: str | None = Field(default=None, repr=False)
 
     _host = field_validator("ssh_host")(classmethod(lambda cls, value: validate_ssh_host(value)))
     _dir = field_validator("install_dir")(classmethod(lambda cls, value: validate_remote_dir(value)))
@@ -259,6 +262,8 @@ class RemoteAttachRequest(BaseModel):
     ssh_host: str
     install_dir: str = DEFAULT_INSTALL_DIR
     name: str | None = None
+    # Same one-time use as RemoteDeployRequest.password.
+    password: str | None = Field(default=None, repr=False)
 
     _host = field_validator("ssh_host")(classmethod(lambda cls, value: validate_ssh_host(value)))
     _dir = field_validator("install_dir")(classmethod(lambda cls, value: validate_remote_dir(value)))
@@ -575,6 +580,46 @@ async def start_remote_server(server: RemoteServer) -> None:
         raise RuntimeError("start.sh did not finish within 120s.")
     if proc.returncode != 0:
         raise RuntimeError(last_line(output.decode("utf-8", "replace")) or f"start.sh exited {proc.returncode}")
+
+
+async def hub_public_key(route: SSHRoute) -> str:
+    """This hub's public key for the host: the first identity `ssh -G` resolves with a .pub file, else its ed25519 key (derived or generated)."""
+
+    proc = await asyncio.create_subprocess_exec(
+        ssh_binary(), *route.options, "-G", route.destination,
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=route.env,
+    )
+    output, _ = await asyncio.wait_for(proc.communicate(), 30)
+    # ssh -G leaves percent tokens (%d, %u, …) of an ssh_config IdentityFile unexpanded.
+    identities = [Path(os.path.expanduser(line.split(None, 1)[1].strip()))
+                  for line in output.decode("utf-8", "replace").splitlines()
+                  if line.startswith("identityfile ") and "%" not in line]
+    if not identities:
+        raise RuntimeError("ssh resolved no identity file for the host.")
+    for identity in identities:
+        public = identity.with_name(identity.name + ".pub")
+        if public.exists():
+            return public.read_text("utf-8").strip()
+    identity = next((candidate for candidate in identities if candidate.name == "id_ed25519"), identities[0])
+    if identity.exists():
+        # A private key without its .pub: derive it rather than let ssh-keygen stop at "Overwrite?".
+        keygen = await asyncio.create_subprocess_exec(
+            "ssh-keygen", "-y", "-f", str(identity),
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        public_key, error = await asyncio.wait_for(keygen.communicate(), 60)
+        if keygen.returncode != 0:
+            raise RuntimeError(f"ssh-keygen failed: {error.decode('utf-8', 'replace').strip() or keygen.returncode}")
+        return public_key.decode("utf-8").strip()
+    identity.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    keygen = await asyncio.create_subprocess_exec(
+        "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(identity), "-C", "agentsdock-hub",
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _, error = await asyncio.wait_for(keygen.communicate(), 60)
+    if keygen.returncode != 0:
+        raise RuntimeError(f"ssh-keygen failed: {error.decode('utf-8', 'replace').strip() or keygen.returncode}")
+    return identity.with_name(identity.name + ".pub").read_text("utf-8").strip()
 
 
 class SSHConnectionLost(RuntimeError):
@@ -1290,8 +1335,13 @@ class RemoteServerManager:
                 if install_dir == DEFAULT_INSTALL_DIR:
                     install_dir = default_install_dir(ssh_host)
 
+            if request is not None and request.password and ssh_host.startswith(("oci@", "osmo@")):
+                raise RuntimeError("oci@ and osmo@ targets are reached through the cluster CLI; leave the password empty.")
             job.progress("connect", f"Probing {ssh_host}…")
             route = await ssh_route(ssh_host)
+            if request is not None and request.password:
+                job.progress("connect", f"Installing this hub's SSH key on {ssh_host} with the password…")
+                await self._install_key(job, route, request.password)
             probe_lines = await self._run_ssh(job, route, [*remote_shell_args(route.destination), install_dir], stdin=PROBE_SCRIPT.read_bytes(), idle_timeout=60)
             probe = parse_probe(probe_lines)
             if attach and not probe.get("existing_port"):
@@ -1368,6 +1418,45 @@ class RemoteServerManager:
                 with suppress(ProcessLookupError):
                     job.proc.kill()
             job.proc = None
+
+    async def _install_key(self, job: DeployJob, route: SSHRoute, password: str) -> None:
+        """Append this hub's public key to the host's authorized_keys, authenticating once with the password.
+
+        Every other ssh here (probe, upload, bootstrap, the tunnels) runs with BatchMode and
+        needs key authentication. The password reaches ssh through an SSH_ASKPASS helper that
+        reads a 0600 file in a private temporary directory, never argv or the job log.
+        """
+        public_key = await hub_public_key(route)
+        with tempfile.TemporaryDirectory(prefix="agentsdock-askpass-") as directory:
+            password_file = Path(directory, "password")
+            password_file.write_text(password + "\n", "utf-8")
+            password_file.chmod(0o600)
+            askpass = Path(directory, "askpass.sh")
+            askpass.write_text(f"#!/bin/sh\ncat {shlex.quote(str(password_file))}\n", "utf-8")
+            askpass.chmod(0o700)
+            # Without a tty, ssh (8.4+) consults SSH_ASKPASS only when forced.
+            env = {**route.env, "SSH_ASKPASS": str(askpass), "SSH_ASKPASS_REQUIRE": "force"}
+            # One quoted argument: ssh joins its arguments with spaces for the remote shell.
+            command = shlex.quote("umask 077 && mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys")
+            try:
+                await self._run_ssh(
+                    job, replace(route, env=env),
+                    # The command line wins over the user's ssh_config: no BatchMode, password and
+                    # keyboard-interactive on, one prompt per method so a wrong password is not retried.
+                    ["-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new", *NO_MULTIPLEX, "-o", "BatchMode=no",
+                     "-o", "PubkeyAuthentication=no", "-o", "PasswordAuthentication=yes", "-o", "KbdInteractiveAuthentication=yes",
+                     "-o", "NumberOfPasswordPrompts=1", route.destination, command],
+                    # The leading blank line keeps the key off an unterminated last line; sshd skips blank lines.
+                    stdin=b"\n" + public_key.encode("utf-8") + b"\n", idle_timeout=60,
+                )
+            except SSHConnectionLost as exc:
+                detail = str(exc)
+                if detail.endswith("(publickey)."):
+                    raise RuntimeError(f"{route.destination} does not accept passwords; install a key there by hand.") from None
+                if "Permission denied" in detail:
+                    raise RuntimeError(f"{route.destination} did not accept the password.") from None
+                raise RuntimeError(f"Could not install the SSH key on {route.destination}: {detail}") from None
+        job.progress("connect", "SSH key installed; the password is not kept.")
 
     async def _run_ssh(self, job: DeployJob, route: SSHRoute, args: list[str], *, stdin: bytes, idle_timeout: float,
                        on_line: Callable[[str], None] | None = None) -> list[str]:

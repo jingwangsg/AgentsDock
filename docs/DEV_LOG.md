@@ -1,5 +1,31 @@
 # Public development log
 
+## 2026-10-09 — Add server takes a password for hosts without the hub's SSH key (server, desktop and Android source)
+
+- Deploying or attaching a server needed a host that `ssh <host>` reached
+  with a key; a host that only knew a password failed at the probe with
+  "Permission denied (publickey,password)", and the form had no way to supply
+  one.
+- The Add server form on the desktop and on Android has an optional password
+  field. The hub uses it once, before the probe, to append its own public key
+  (the first identity `ssh -G <host>` resolves that has a public key, else a
+  new ed25519 key) to the host's `authorized_keys`; the password reaches ssh
+  through an `SSH_ASKPASS` helper reading a 0600 file in a private temporary
+  directory, never argv, the job log or the registry, and is dropped when the
+  step ends. Everything after that, and every later tunnel, keeps using the
+  key, appended on its own line. A wrong password fails that step with "did
+  not accept the password"; a host that takes no passwords is reported as such.
+  Cluster targets (`oci@…`, `osmo@…`) reject a password.
+- Verified with the remote-server tests (the password step runs first and
+  only there, the request's repr hides it, a cluster target refuses it, key
+  reuse and generation), the desktop form test and type check, and the
+  Android type check; on this Mac, ssh with a deliberately wrong password
+  through the askpass helper reached the host's password prompt and was
+  refused there, so the mechanism is exercised end to end short of a correct
+  password. Not exercised: a real deploy with a correct password.
+  Availability: source only; takes effect in the next desktop package and
+  Android build, and when the hub is redeployed.
+
 ## 2026-10-09 — Desktop package 115 (local package)
 
 - Packages the desktop entry recorded since package 114: the background-activity

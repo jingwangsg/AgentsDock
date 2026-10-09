@@ -75,7 +75,7 @@ export interface ServerProfilesManagerProps extends CommonServerProfileProps {
   /** True when a saved server is a hub (advertises remote_servers_v1); remote servers are added through it from any server. */
   hubAvailable?: boolean
   onDeployRemote?: (
-    input: { mode: 'deploy' | 'attach'; sshHost: string; installDir?: string; name?: string },
+    input: { mode: 'deploy' | 'attach'; sshHost: string; installDir?: string; name?: string; password?: string },
     onProgress: (entry: RemoteDeployProgressEntry) => void,
   ) => Awaitable<CreatedProfile>
   onCancelDeploy?: () => Awaitable<void>
@@ -202,7 +202,7 @@ export function ServerProfilesManager({
   const [tested, setTested] = useState<ServerConnectionTestResult | null>(null)
   const [feedback, setFeedback] = useState<{ tone: 'error' | 'success' | 'neutral'; message: string } | null>(null)
   const testLease = useRef(0)
-  const [deployDraft, setDeployDraft] = useState<{ mode: 'deploy' | 'attach'; sshHost: string; installDir: string; name: string } | null>(null)
+  const [deployDraft, setDeployDraft] = useState<{ mode: 'deploy' | 'attach'; sshHost: string; installDir: string; name: string; password: string } | null>(null)
   const [deployBusy, setDeployBusy] = useState(false)
   const [deployProgress, setDeployProgress] = useState<RemoteDeployProgressEntry[]>([])
   const [deployError, setDeployError] = useState<string | null>(null)
@@ -262,7 +262,7 @@ export function ServerProfilesManager({
     setDraft(null)
     setDeployError(null)
     setDeployProgress([])
-    setDeployDraft({ mode: 'deploy', sshHost: '', installDir: '~/.agentsdock-server', name: '' })
+    setDeployDraft({ mode: 'deploy', sshHost: '', installDir: '~/.agentsdock-server', name: '', password: '' })
   }
   const closeDeployEditor = () => {
     if (deployBusy) return
@@ -275,8 +275,9 @@ export function ServerProfilesManager({
     setDeployError(null)
     setDeployProgress([])
     try {
+      // The password goes untrimmed: spaces can be part of it.
       const created = await onDeployRemote(
-        { mode: deployDraft.mode, sshHost: deployDraft.sshHost.trim(), installDir: deployDraft.installDir.trim() || undefined, name: deployDraft.name.trim() || undefined },
+        { mode: deployDraft.mode, sshHost: deployDraft.sshHost.trim(), installDir: deployDraft.installDir.trim() || undefined, name: deployDraft.name.trim() || undefined, password: deployDraft.password || undefined },
         entry => { if (lease === deployLease.current) setDeployProgress(current => [...current.slice(-49), entry]) },
       )
       if (lease !== deployLease.current) return
@@ -675,6 +676,21 @@ export function ServerProfilesManager({
         placeholderTextColor={colors.muted}
         style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
       />
+
+      <FieldLabel text="Password (optional)" />
+      <TextInput
+        testID="remote-deploy-password"
+        accessibilityLabel="Password (optional)"
+        value={deployDraft.password}
+        onChangeText={password => setDeployDraft(current => current ? { ...current, password } : current)}
+        editable={!deployBusy}
+        secureTextEntry
+        autoCapitalize="none"
+        autoCorrect={false}
+        placeholderTextColor={colors.muted}
+        style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
+      />
+      <Text style={[styles.help, { color: colors.muted }]}>If the host asks for a password, the hub uses it once to install the hub's SSH key there; it is not stored.</Text>
 
       <FieldLabel text="Install directory" />
       <TextInput

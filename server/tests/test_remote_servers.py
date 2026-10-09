@@ -39,14 +39,27 @@ REMOTE_TOKEN = "remote-token-" + "r" * 40
 # host.json and logs each call's full argv, its SSL_CERT_FILE, and ``tail``, the part
 # after ``bash -s --`` (None for a plain remote command such as the upload's ``cat >``).
 FAKE_SSH = r'''#!{python}
-import json, os, sys
+import json, os, subprocess, sys
 state = {state!r}
 argv = sys.argv[1:]
+if "-G" in argv:  # ssh -G: the resolved configuration, with ssh_config percent tokens left as is
+    print("identityfile ~/.ssh/id_rsa\nidentityfile %d/.ssh/id_%u\nidentityfile ~/.ssh/id_ed25519")
+    sys.exit(0)
 stdin = sys.stdin.buffer.read()
 tail = argv[argv.index("--") + 1:] if "--" in argv else None
+# A password step offers it through an askpass helper; the fake runs the helper like ssh would.
+askpass = os.environ.get("SSH_ASKPASS")
+password = subprocess.run([askpass, "password:"], capture_output=True, text=True).stdout.strip() if askpass else None
 with open(os.path.join(state, "calls.jsonl"), "a") as log:
     log.write(json.dumps(dict(tail=tail, command=None if tail is not None else argv[-1], argv=argv, ca=os.environ.get("SSL_CERT_FILE"),
-                              stdin_head=stdin[:120].decode("utf-8", "replace"))) + "\n")
+                              stdin_head=stdin[:120].decode("utf-8", "replace"), password=password,
+                              askpass_require=os.environ.get("SSH_ASKPASS_REQUIRE"))) + "\n")
+if password == "wrong":  # the host refuses the password
+    print(argv[-2] + ": Permission denied (publickey,password).")
+    sys.exit(255)
+if password == "keys-only":  # the host takes no passwords at all
+    print(argv[-2] + ": Permission denied (publickey).")
+    sys.exit(255)
 host = json.load(open(os.path.join(state, "host.json")))
 if tail is not None and len(tail) == 1:  # probe: bash -s -- <install_dir>
     print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=host["existing_port"])))
@@ -535,6 +548,59 @@ with socket.socket() as listener:
             return job
 
         return manager, asyncio.run(main())
+
+    def test_a_password_installs_the_hubs_key_once_before_the_probe(self) -> None:
+        calls = self.fake_host(existing_port=None)
+        self.enterContext(mock.patch.object(rs, "hub_public_key", mock.AsyncMock(return_value="ssh-ed25519 AAAAtest hub")))
+        request = rs.RemoteDeployRequest(ssh_host="dev@build-host", password="hunter2")
+        assert "hunter2" not in repr(request)
+        manager, job = self.run_job(request)
+        assert job.done and job.error is None, job.log
+        sessions = [json.loads(line) for line in calls.read_text().splitlines()]
+        # The key install comes first, authenticates with the password from the askpass helper, and no other session sees it.
+        install = sessions[0]
+        assert install["tail"] is None and "BatchMode=yes" not in install["argv"] and install["askpass_require"] == "force"
+        assert {"BatchMode=no", "PubkeyAuthentication=no", "PasswordAuthentication=yes", "NumberOfPasswordPrompts=1"} <= set(install["argv"])
+        assert install["command"] == "'umask 077 && mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'"
+        assert install["stdin_head"] == "\nssh-ed25519 AAAAtest hub\n" and install["password"] == "hunter2"
+        assert "hunter2" not in json.dumps(install["argv"]) and "hunter2" not in install["stdin_head"]
+        assert all(session["password"] is None for session in sessions[1:]) and sessions[1]["tail"] == ["~/.agentsdock-server"]
+        messages = [entry["message"] for entry in job.log]
+        assert any(message.startswith("Installing this hub's SSH key on dev@build-host") for message in messages)
+        assert "hunter2" not in json.dumps(job.view(None))
+
+    def test_a_refused_password_fails_the_key_install_with_the_hosts_reason(self) -> None:
+        self.fake_host(existing_port=None)
+        self.enterContext(mock.patch.object(rs, "hub_public_key", mock.AsyncMock(return_value="ssh-ed25519 AAAAtest hub")))
+        _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="dev@build-host", password="wrong"))
+        assert job.error == "dev@build-host did not accept the password."
+        _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="dev@build-host", password="keys-only"))
+        assert job.error == "dev@build-host does not accept passwords; install a key there by hand."
+
+    def test_a_cluster_target_rejects_a_password(self) -> None:
+        self.fake_host(existing_port=None)
+        with mock.patch.object(rs, "ssh_route", mock.AsyncMock(return_value=rs.SSHRoute([], "root@wf", {}))):
+            _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="osmo@wf", password="hunter2"))
+        assert job.error == "oci@ and osmo@ targets are reached through the cluster CLI; leave the password empty."
+
+    def test_hub_public_key_uses_the_resolved_identity_or_generates_one(self) -> None:
+        self.fake_host(existing_port=None)
+        home = self.tmp_path / "home"
+        home.mkdir()
+        with mock.patch.dict(os.environ, {"HOME": str(home)}):
+            # No public key yet: an ed25519 key is generated, preferred over the id_rsa and the %-token entries.
+            generated = asyncio.run(rs.hub_public_key(rs.SSHRoute([], "build-host", dict(os.environ))))
+            assert generated.startswith("ssh-ed25519 ") and generated.endswith(" agentsdock-hub")
+            assert (home / ".ssh" / "id_ed25519.pub").read_text().strip() == generated
+            # The first resolved identity with a public key is reused, never regenerated.
+            (home / ".ssh" / "id_rsa.pub").write_text("ssh-rsa AAAAexisting me\n")
+            assert asyncio.run(rs.hub_public_key(rs.SSHRoute([], "build-host", dict(os.environ)))) == "ssh-rsa AAAAexisting me"
+            # A private key whose .pub is missing is read back, not overwritten.
+            (home / ".ssh" / "id_rsa.pub").unlink()
+            (home / ".ssh" / "id_ed25519.pub").unlink()
+            derived = asyncio.run(rs.hub_public_key(rs.SSHRoute([], "build-host", dict(os.environ))))
+            assert derived.split()[:2] == generated.split()[:2]
+            assert (home / ".ssh" / "id_ed25519").exists() and not (home / ".ssh" / "id_ed25519.pub").exists()
 
     def test_attach_registers_the_existing_install_without_uploading_or_restarting(self) -> None:
         calls = self.fake_host(existing_port=7860)

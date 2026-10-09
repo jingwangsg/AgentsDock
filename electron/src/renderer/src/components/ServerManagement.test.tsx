@@ -156,6 +156,19 @@ describe('ServerManagement', () => {
     expect(screen.queryByRole('button', { name: 'Add & switch' })).not.toBeInTheDocument()
   })
 
+  it('sends the typed password with the deploy so the hub can install its SSH key', async () => {
+    list.mockResolvedValue([hub, osmo, gb300])
+    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })
+    const user = userEvent.setup()
+    render(<ServerManagement addRequest={1} />)
+
+    await user.type(screen.getByLabelText('SSH host'), 'dev@build-host')
+    await user.type(screen.getByLabelText('Password (optional)'), 'hunter2')
+    await user.click(screen.getByRole('button', { name: 'Add & switch' }))
+
+    await waitFor(() => expect(remoteDeploy).toHaveBeenCalledWith({ sshHost: 'dev@build-host', installDir: '~/.agentsdock-server', name: undefined, password: 'hunter2' }))
+  })
+
   it('attaches an existing remote through the hub instead of deploying, then switches to it', async () => {
     list.mockResolvedValue([hub, osmo, gb300])
     useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })

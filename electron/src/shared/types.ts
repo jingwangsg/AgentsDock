@@ -2143,6 +2143,8 @@ export interface RemoteServerDeployInput {
   sshHost: string
   installDir?: string
   name?: string
+  /** Used once by the hub to install its SSH key on the host; never stored. */
+  password?: string
 }
 
 /** A new place for one of the hub's remotes; without an install dir a new host takes its default one. */
@@ -2156,6 +2158,8 @@ export interface RemoteServerAttachInput {
   sshHost: string
   installDir?: string
   name?: string
+  /** Same one-time use as RemoteServerDeployInput.password. */
+  password?: string
 }
 
 export interface RemoteServerDeployLogEntry {

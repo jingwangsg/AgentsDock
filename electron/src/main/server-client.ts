@@ -918,13 +918,13 @@ export class AgentServerClient {
   startRemoteDeploy(input: RemoteServerDeployInput): Promise<{ job_id: string }> {
     return this.privilegedNativeRequest('/api/admin/remote-servers/deploy', {
       method: 'POST',
-      body: JSON.stringify({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name })
+      body: JSON.stringify({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name, password: input.password })
     })
   }
   startRemoteAttach(input: RemoteServerAttachInput): Promise<{ job_id: string }> {
     return this.privilegedNativeRequest('/api/admin/remote-servers/attach', {
       method: 'POST',
-      body: JSON.stringify({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name })
+      body: JSON.stringify({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name, password: input.password })
     })
   }
   remoteDeployStatus(jobId: string): Promise<RemoteServerDeployJob> {
