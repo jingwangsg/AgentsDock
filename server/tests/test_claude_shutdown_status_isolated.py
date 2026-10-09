@@ -15,7 +15,7 @@ from claude_sdk_client import ClaudeSDKSupervisorClosed
 SOURCE = (Path(__file__).resolve().parents[1] / "agent_server.py")
 
 
-def load_probe(path, *, shutting_down, previous_error=None, result=None, projection_error=False,
+def load_probe(path, *, shutting_down, previous_error=None, result=None,
                handle=None, stopped_runs=frozenset({"unrelated-run"})):
     tree = ast.parse(SOURCE.read_text())
     runner = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_claude_sdk")
@@ -34,7 +34,6 @@ async def probe(error, late_shutdown=False):
     session_id = "isolated-chat"
     stream_error = previous_error
     result_details = initial_result
-    projection_error_run_ids = {current_run_id} if initial_projection_error else set()
     shutdown_interrupted_run_ids = set()
     retire_supervisor = False
     cancelled_error = None
@@ -69,7 +68,6 @@ if late_shutdown:
         "SERVER_SHUTTING_DOWN": shutting_down,
         "STOPPED_RUNS": set(stopped_runs), "RUN_METADATA": {}, "probe_handle": handle,
         "previous_error": previous_error, "initial_result": result,
-        "initial_projection_error": projection_error,
         "concise_error_message": str, "clean_assistant_text": str,
         "suppress": suppress, "asyncio": asyncio, "BACKEND_CLAUDE": "claude",
         "CLAUDE_TRANSPORT_AGENT_SDK": "agent_sdk",
@@ -145,12 +143,11 @@ class ClaudeShutdownStatusTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(path=path):
                 await self.check_case(path, ClaudeSDKSupervisorClosed("supervisor was closed"), shutting_down=False, late_shutdown=True, stopped=False)
 
-    async def test_prior_stream_provider_or_projection_failure_is_not_hidden(self):
+    async def test_prior_stream_or_provider_failure_is_not_hidden(self):
         for options in (
             {"previous_error": "earlier failure"},
             {"result": {"error": "provider failed"}},
             {"result": {"is_error": True}},
-            {"projection_error": True},
         ):
             for path in ("iterator", "outer"):
                 with self.subTest(path=path, options=options):

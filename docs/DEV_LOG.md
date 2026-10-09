@@ -1,5 +1,28 @@
 # Public development log
 
+## 2026-10-09 — A Claude API error mid-turn no longer marks the chat as failed (server source)
+
+- While a Claude turn runs, the CLI can report an API error frame ("API Error:
+  The response stopped arriving. The response above may be incomplete.", with
+  `error` set to `server_error`) and then carry on with the turn, as Claude Code
+  does.
+  AgentsServer recorded every such frame as a run `error` event and remembered
+  the run as failed: the desktop composer showed "Latest chat error · Claude
+  assistant error: server_error" for the rest of the turn (seen on a turn that
+  then ran for six more hours), the turn would have finished with exit code 1,
+  and the provider health would have recorded a failure for a turn that
+  succeeded.
+- The frame's text still appears in the chat as the model's own line; the
+  `error` event and the failed-run bookkeeping are gone. A turn that really
+  fails still says so through its Result (`is_error`, the "API Error …" result
+  text) or through a stream failure, which produce the error row and the
+  health failure as before.
+- Verified with a new unit test (an API error frame projects only its text),
+  the isolated shutdown-status test, and the Claude SDK runner and compaction
+  tests. Not exercised: a live API error during a turn. Availability: source
+  only; takes effect once a server is redeployed. A banner already shown for a
+  running turn stays until that chat's next turn, because the event is durable.
+
 ## 2026-10-09 — Add server takes a password for hosts without the hub's SSH key (server, desktop and Android source)
 
 - Deploying or attaching a server needed a host that `ssh <host>` reached

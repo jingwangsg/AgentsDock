@@ -66057,7 +66057,6 @@ async def project_claude_sdk_message(
     current_tools: dict[str, dict[str, Any]],
     changed_paths: set[str],
     tool_activity_run_ids: set[str] | None = None,
-    error_run_ids: set[str] | None = None,
     compaction_state: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Project one typed SDK message into the existing durable timeline."""
@@ -66134,15 +66133,11 @@ async def project_claude_sdk_message(
     if message_type == "AssistantMessage":
         assistant_error = str(claude_sdk_field(message, "error") or "")
         if assistant_error:
-            if error_run_ids is not None:
-                error_run_ids.add(run_id)
-            await append_event(session_id, "error", {
-                "run_id": run_id,
-                "backend": BACKEND_CLAUDE,
-                "transport": CLAUDE_TRANSPORT_AGENT_SDK,
-                "message": f"Claude assistant error: {assistant_error}",
-                **run_event_metadata(run_id),
-            })
+            # An API error frame ("API Error: …" with ``error`` such as server_error) is a
+            # notice, not the turn's failure: Claude Code goes on with the turn after it, and
+            # a turn that does fail says so in its Result. Its text is projected below like any
+            # other assistant text.
+            logger.info("Claude run %s reported an API error (%s); the Result decides whether the turn failed", run_id, assistant_error)
         content = claude_sdk_field(message, "content", [])
         for block in content if isinstance(content, list) else []:
             block_type = claude_sdk_type(block)
@@ -66722,7 +66717,6 @@ async def run_claude_sdk(
             and str(provider_command.native.get("name") or "") == "compact"
         ),
     }
-    projection_error_run_ids: set[str] = set()
     changed_paths: set[str] = set()
     seen_artifacts: set[str] = set()
     provider_id = str(resume_provider_id or "")
@@ -66767,7 +66761,6 @@ async def run_claude_sdk(
                 stream_error
                 or (result_details or {}).get("error")
                 or (result_details or {}).get("is_error")
-                or current_run_id in projection_error_run_ids
             )
         )
         if shutdown_interrupted:
@@ -67353,7 +67346,6 @@ async def run_claude_sdk(
                     current_tools=current_tools,
                     changed_paths=changed_paths,
                     tool_activity_run_ids=tool_activity_run_ids,
-                    error_run_ids=projection_error_run_ids,
                     compaction_state=compaction_state,
                 )
                 if projected_result is None:
@@ -67866,9 +67858,6 @@ async def run_claude_sdk(
                 previous_result_text = clean_assistant_text(
                     str(previous_result_details.get("result_text") or "")
                 )
-                previous_projection_error = (
-                    previous_run_id in projection_error_run_ids
-                )
                 previous_empty_error = claude_empty_turn_failure_message(
                     prompt=previous_prompt,
                     result_text=previous_result_text,
@@ -67880,7 +67869,6 @@ async def run_claude_sdk(
                     existing_error=bool(
                         previous_result_details.get("error")
                         or previous_result_details.get("is_error")
-                        or previous_projection_error
                     ),
                     local_command_result=bool(
                         previous_result_details.get("local_command")
@@ -67894,20 +67882,13 @@ async def run_claude_sdk(
                         "message": previous_empty_error,
                         **previous_metadata,
                     })
-                if previous_empty_error or previous_projection_error:
-                    record_runtime_failure(
-                        BACKEND_CLAUDE,
-                        previous_empty_error or "Claude assistant error",
-                    )
+                if previous_empty_error:
+                    record_runtime_failure(BACKEND_CLAUDE, previous_empty_error)
                 await append_turn_finished_event(session_id, {
                     "run_id": previous_run_id,
                     "backend": BACKEND_CLAUDE,
                     "transport": CLAUDE_TRANSPORT_AGENT_SDK,
-                    "exit_code": (
-                        1
-                        if previous_empty_error or previous_projection_error
-                        else 0
-                    ),
+                    "exit_code": 1 if previous_empty_error else 0,
                     "result_text": previous_result_text,
                     **previous_metadata,
                 })
@@ -68175,7 +68156,6 @@ async def run_claude_sdk(
             str((result_details or {}).get("result_text") or "")
         )
         result_error = str((result_details or {}).get("error") or "")
-        projection_error = current_run_id in projection_error_run_ids
         if compaction_state.get("open_id"):
             # The run ended (stop, stream failure, or a result without a
             # boundary) while Claude was still compacting.
@@ -68196,7 +68176,6 @@ async def run_claude_sdk(
                 stream_error
                 or result_error
                 or (result_details or {}).get("is_error")
-                or projection_error
             ),
             local_command_result=bool(
                 (result_details or {}).get("local_command")
@@ -68233,17 +68212,10 @@ async def run_claude_sdk(
         if (
             stream_error
             or (result_details or {}).get("is_error")
-            or projection_error
             or empty_result_error
         ):
             if not stopped:
-                record_runtime_failure(
-                    BACKEND_CLAUDE,
-                    stream_error
-                    or result_error
-                    or empty_result_error
-                    or "Claude assistant error",
-                )
+                record_runtime_failure(BACKEND_CLAUDE, stream_error or result_error or empty_result_error)
         elif not stopped:
             record_runtime_success(BACKEND_CLAUDE)
         with suppress(Exception):
@@ -68278,7 +68250,6 @@ async def run_claude_sdk(
                         else 1 if (
                             stream_error
                             or result_error
-                            or projection_error
                             or empty_result_error
                         ) else 0
                     ),
