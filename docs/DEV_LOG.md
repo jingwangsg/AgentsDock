@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-10-10 — Desktop package 117 and Android build 62 (local package and APK)
+
+- Package the entry above recorded since package 116 and Android build 61:
+  folder headers show their chats' status dots. Nothing server-side.
+- The pkg is unsigned like every local package, built with the fuses
+  re-signing flag and reports CFBundleVersion 117; the APK is signed with the
+  project debug keystore (SHA-256 fac61745…) and reports versionCode 62.
+  Checks run before packaging: both type checks, the sidebar tests named in
+  that entry and the version pins. Not exercised: installing on a phone or
+  Mac. Availability: local package and APK.
+
 ## 2026-10-10 — Folder headers show their chats' status dots (desktop and Android source)
 
 - A chat's status dot (unread, running, waiting for you, emergency) sat only
