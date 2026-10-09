@@ -1,5 +1,22 @@
 # Public development log
 
+## 2026-10-10 — Desktop package 116 and Android build 61 (local package and APK)
+
+- Package the entries above recorded since package 115 and Android build 60:
+  the Add server password field; a message that joins a scheduled-job run
+  turns it into an ordinary turn; a running scheduled run shows as a turn
+  and folds when it ends; the side chat keeps a question pending when only
+  its acknowledgement was lost (desktop). The server sides of those entries,
+  the goal bar fix, the mid-turn API error fix and the Stop hold take effect
+  once a server is redeployed.
+- The pkg is unsigned like every local package, built with the fuses
+  re-signing flag and reports CFBundleVersion 116; the APK is signed with the
+  project debug keystore (SHA-256 fac61745…) and reports versionCode 61.
+  Checks run before packaging: the desktop and Android type checks, the
+  timeline, side-chat and component tests named in those entries, and the
+  version pins. Not exercised: installing on a phone or Mac.
+  Availability: local package and APK.
+
 ## 2026-10-10 — Stop holds a chat's scheduled jobs; a running scheduled run shows as a turn (server, desktop and Android source)
 
 - Stop ended the run, and a chat-hosted scheduled job restarted the same
