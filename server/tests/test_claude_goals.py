@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
-from claude_goals import ClaudeGoalProjection, is_claude_synthetic_no_response, MAX_GOAL_RECORD_BYTES
+from claude_goals import ClaudeGoalProjection, _timestamp_ms, is_claude_synthetic_no_response, MAX_GOAL_RECORD_BYTES
 
 
 SESSION = "8a865fcc-fc32-4373-9524-7cc8e62cfbc2"
@@ -90,6 +90,38 @@ class ClaudeGoalProjectionTests(unittest.TestCase):
         self.assertEqual(projection.goal["status"], "cleared")
         self.assertNotIn("iterations", projection.goal)
         self.assertNotIn("last_reason", projection.goal)
+
+    def test_claudes_clear_answer_ends_the_visible_goal_until_newer_native_evidence(self):
+        # 2026-10-09: fresh processes answered "/goal clear" with "No goal set" while the
+        # transcript's last record kept the bar active; the bar must follow Claude's answer.
+        answered_at = _timestamp_ms("2026-09-22T23:45:02.051Z")
+        projection = ClaudeGoalProjection(SESSION)
+        projection.consume(record(sentinel=True))
+        projection.consume(record(second=1, reason="Only STAGE1 exists"))
+        self.assertTrue(projection.mark_cleared(answered_at))
+        self.assertEqual(projection.goal, {"condition": "Reply STAGE2", "status": "cleared", "set_at": projection.goal["set_at"]})
+        self.assertFalse(projection.mark_cleared(answered_at))
+        # Records older than the answer, replayed by a transcript rewrite or a re-read, stay cleared.
+        self.assertFalse(projection.consume(record(second=1, reason="Only STAGE1 exists")))
+        projection.reset(SESSION)
+        projection.consume(record(sentinel=True))
+        self.assertEqual(projection.goal["status"], "cleared")
+        # A newer evaluator record proves a process enforces the goal again.
+        self.assertTrue(projection.consume(record(second=3, reason="Still only STAGE1")))
+        self.assertEqual(projection.goal["status"], "active")
+        self.assertEqual(projection.goal["last_reason"], "Still only STAGE1")
+        # Native records after the answer take over: a clear ends it, a new set starts over.
+        projection.consume(record(met=True, sentinel=True, second=4))
+        self.assertEqual(projection.goal["status"], "cleared")
+        self.assertFalse(projection.consume(record(second=5, reason="late evaluator")))
+        projection.consume(record(sentinel=True, second=6))
+        self.assertEqual(projection.goal["status"], "active")
+        # The marker survives a same-session reset; a different provider session starts without it.
+        self.assertTrue(projection.mark_cleared(_timestamp_ms("2026-09-22T23:45:07.051Z")))
+        projection.reset(SESSION)
+        self.assertIsNotNone(projection.clear_answered_at)
+        projection.reset(FORK)
+        self.assertIsNone(projection.clear_answered_at)
 
     def test_resumed_native_evaluator_count_is_not_a_historical_total(self):
         projection = ClaudeGoalProjection(SESSION)

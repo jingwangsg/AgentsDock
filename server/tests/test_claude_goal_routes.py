@@ -5,7 +5,9 @@ import ast
 import asyncio
 import json
 from pathlib import Path
+import re
 import tempfile
+import time
 from types import SimpleNamespace
 from typing import Any
 import unittest
@@ -20,16 +22,18 @@ from claude_sdk_client import ClaudeSDKSupervisorError
 
 
 def load_routes():
-    names = {"refresh_claude_goal", "require_claude_goal_session",
+    names = {"refresh_claude_goal", "require_claude_goal_session", "mark_claude_goal_cleared",
              "start_claude_goal_command", "put_claude_goal", "delete_claude_goal"}
     source = (Path(__file__).resolve().parents[1] / "agent_server.py")
     tree = ast.parse(source.read_text(), filename=str(source))
     selected = [node for node in tree.body
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
-                or isinstance(node, ast.ClassDef) and node.name == "ClaudeGoalRequest"]
+                or isinstance(node, ast.ClassDef) and node.name == "ClaudeGoalRequest"
+                or isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id == "CLAUDE_GOAL_CLEARED_ANSWER" for target in node.targets)]
     ns = {
         "__name__": __name__, "app": FastAPI(), "Any": Any, "Path": Path,
-        "asyncio": asyncio, "BaseModel": BaseModel, "Field": Field,
+        "asyncio": asyncio, "BaseModel": BaseModel, "Field": Field, "re": re, "time": time,
         "HTTPException": HTTPException, "ClaudeSDKSupervisorError": ClaudeSDKSupervisorError,
         "ClaudeGoalProjection": ClaudeGoalProjection,
         "BACKEND_CLAUDE": "claude", "DEFAULT_BACKEND": "claude",
@@ -56,7 +60,8 @@ def load_routes():
     ns["discover_session_provider_commands"] = AsyncMock(return_value=(
         {"support": {"available": True}}, inventory))
     ns["claude_runtime_snapshot"] = AsyncMock(return_value={"available": True, "goal": None})
-    ns["claude_sdk_manager"] = AsyncMock(return_value=SimpleNamespace(clear_goal=AsyncMock()))
+    ns["claude_sdk_manager"] = AsyncMock(return_value=SimpleNamespace(
+        clear_goal=AsyncMock(return_value=({"result": "Goal cleared: Reply STAGE2", "local_command": "goal"}, "generation-1"))))
     exec(compile(ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[])), str(source), "exec"), ns)
     return ns
 
@@ -157,6 +162,29 @@ class ClaudeGoalRouteTests(unittest.IsolatedAsyncioTestCase):
         manager = self.ns["claude_sdk_manager"].return_value
         manager.clear_goal.assert_awaited_once_with("chat", run_id="exact-active-run")
         self.ns["start_turn"].assert_not_awaited()
+
+    async def test_clear_answer_ends_the_projected_goal_and_other_answers_leave_it(self):
+        # The transcript still says active (a fresh process did not restore the goal, or the
+        # clear record was never written); Claude's answer to the clear decides the bar.
+        projection = ClaudeGoalProjection("provider-session")
+        projection.consume({"type": "attachment", "sessionId": "provider-session", "isSidechain": False,
+                            "uuid": "0b8d2d6e-7a3b-4b2e-9a37-2a2fd1ec9c11", "timestamp": "2026-10-09T15:48:41.345Z",
+                            "attachment": {"type": "goal_status", "condition": "Finish yam v2", "met": False, "sentinel": True}})
+        self.ns["CLAUDE_GOAL_PROJECTIONS"]["chat"] = projection
+        self.ns["ACTIVE"]["chat"] = {"transport": "agent-sdk", "run_id": "exact-active-run"}
+        manager = self.ns["claude_sdk_manager"].return_value
+        manager.clear_goal.return_value = ({"result": "No goal set", "local_command": "goal"}, "generation-1")
+        response = await self.client.delete("/api/sessions/chat/claude/goal")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(projection.goal["status"], "cleared")
+        self.ns["append_event"].assert_awaited_once_with("chat", "claude_goal_changed", {})
+        # A native set newer than the answer starts over; any other answer leaves the projection alone.
+        projection.consume({"type": "attachment", "sessionId": "provider-session", "isSidechain": False,
+                            "uuid": "4f1c0d7e-0d1f-4c1a-8f6e-1c7e8a2b9d20", "timestamp": "2999-01-01T00:00:00.000Z",
+                            "attachment": {"type": "goal_status", "condition": "Finish yam v2", "met": False, "sentinel": True}})
+        manager.clear_goal.return_value = ({"result": "Goal active: Finish yam v2", "local_command": "goal"}, "generation-1")
+        await self.client.delete("/api/sessions/chat/claude/goal")
+        self.assertEqual(projection.goal["status"], "active")
 
     async def test_idle_clear_uses_native_command_and_invalid_sessions_never_send(self):
         response = await self.client.delete("/api/sessions/chat/claude/goal")

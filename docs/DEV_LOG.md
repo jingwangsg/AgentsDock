@@ -1,5 +1,29 @@
 # Public development log
 
+## 2026-10-10 — The Claude goal bar follows Claude's own answer to a clear (server source)
+
+- The goal bar is AgentsDock's view of Claude Code's native `/goal`: a Stop
+  hook that keeps the model from ending a turn until an evaluator accepts
+  the condition. AgentsServer read the goal only from the transcript's
+  `goal_status` records. Two things made that stale: a fresh CLI process
+  answered `/goal clear` with "No goal set" because it had not restored the
+  goal (measured on a 218 MB, compacted transcript: fresh processes restored
+  it in 1 of 10 tries), and a live clear's record can be lost when the
+  process ends right after answering. The bar stayed active for hours and
+  the goal was re-set by hand ten times over two days, while the chat's clear
+  button left the bar unchanged.
+- Claude's answer to a clear now updates the projected goal at once: "No goal
+  set" or "Goal cleared" marks it cleared, whether it came from the live
+  clear receipt or from a clear command turn, and the answer is kept even
+  while the transcript scan is still catching up. Records older than that
+  answer cannot revive it (rewrites and re-reads stay cleared); a newer
+  evaluator record does, because it proves a process enforces the goal
+  again; a newer native set or clear record takes over.
+- Verified with the projection unit tests and the isolated goal route tests
+  (answer folds the goal, other answers leave it alone). Not changed: the CLI
+  restore itself. Availability: source only; takes effect once a server is
+  redeployed.
+
 ## 2026-10-09 — A Claude API error mid-turn no longer marks the chat as failed (server source)
 
 - While a Claude turn runs, the CLI can report an API error frame ("API Error:

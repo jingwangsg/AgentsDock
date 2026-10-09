@@ -49,13 +49,27 @@ class ClaudeGoalProjection:
     A native set sentinel establishes the goal. Evaluator and clear records
     update that exact condition; unrelated sessions/sidechains cannot establish
     or finish it. A fork starts empty until its own native set evidence arrives.
-    No failure, pause, or success is inferred from a result/assistant message.
+    No failure, pause, or success is inferred from a result/assistant message,
+    with one exception: Claude's own answer to ``/goal clear`` (mark_cleared). A
+    process that answers "No goal set" enforces nothing, whatever the last record
+    says; a process may end right after answering "Goal cleared", before its
+    clear record is written. Records older than that answer cannot revive the
+    goal (a re-read replays them); a newer evaluator record can, because it
+    proves a process enforces the goal again; a newer native set or clear record
+    takes over.
     """
+
+    clear_answered_at: int | None
 
     def __init__(self, provider_session_id: str):
         self.reset(provider_session_id)
 
     def reset(self, provider_session_id: str) -> None:
+        # refresh() resets and re-reads the same transcript when the file is replaced
+        # or truncated; the replayed records predate Claude's clear answer and must
+        # stay cleared. A different provider session (a fork) starts without the marker.
+        if str(provider_session_id) != getattr(self, "provider_session_id", None):
+            self.clear_answered_at = None
         self.provider_session_id = str(provider_session_id)
         self.goal: dict[str, Any] | None = None
         self.offset = 0
@@ -98,12 +112,21 @@ class ClaudeGoalProjection:
         ):
             return False
         previous = self.goal
+        cleared_at = self.clear_answered_at
+        # A native set or clear record newer than the answer supersedes it.
+        if sentinel and cleared_at is not None and timestamp > cleared_at:
+            self.clear_answered_at = cleared_at = None
         if sentinel and not met:
             goal = {"condition": condition, "status": "active", "set_at": timestamp}
         else:
             if previous is None or previous["condition"] != condition:
                 return False
-            if not sentinel and previous["status"] != "active":
+            # A newer evaluator record proves a process enforces the goal again.
+            revived_by_newer_evaluator = (
+                not sentinel and previous["status"] == "cleared"
+                and cleared_at is not None and timestamp > cleared_at
+            )
+            if not sentinel and previous["status"] != "active" and not revived_by_newer_evaluator:
                 return False
             goal = dict(previous)
             goal["status"] = "cleared" if sentinel else "achieved" if met else "active"
@@ -122,10 +145,26 @@ class ClaudeGoalProjection:
                         goal[public] = value
                     else:
                         goal.pop(public, None)
+        # A record older than the answer (a re-read, a late write) cannot revive the goal.
+        if goal["status"] == "active" and cleared_at is not None and timestamp <= cleared_at:
+            goal = {"condition": goal["condition"], "status": "cleared", "set_at": goal["set_at"]}
         self._seen.append(event_id)
         self._last_timestamp = timestamp
         self.goal = goal
         return goal != previous
+
+    def mark_cleared(self, at_ms: int) -> bool:
+        """Record that Claude answered a clear at ``at_ms`` (the caller matched the text); return whether the visible goal changed.
+
+        The marker is kept even while no goal is visible yet (a scan still catching
+        up): the records it then reads are older than the answer and stay cleared.
+        """
+        self.clear_answered_at = at_ms
+        goal = self.goal
+        if not goal or goal["status"] != "active":
+            return False
+        self.goal = {"condition": goal["condition"], "status": "cleared", "set_at": goal["set_at"]}
+        return True
 
     def refresh(
         self, path: str | Path, *, provider_session_id: str | None = None,

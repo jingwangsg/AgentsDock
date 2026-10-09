@@ -68121,6 +68121,9 @@ async def run_claude_sdk(
         # provider, not an app-owned continuation loop, decides when to finish.
         with suppress(Exception):
             await refresh_claude_goal(session_id, provider_id=provider_id)
+            # A /goal command turn: Claude's answer, not the transcript, decides the bar.
+            if (result_details or {}).get("local_command") == "goal":
+                await mark_claude_goal_cleared(session_id, str((result_details or {}).get("result_text") or ""))
             if (CLAUDE_GOAL_PENDING.get(session_id) or {}).get("run_id") == current_run_id:
                 CLAUDE_GOAL_PENDING.pop(session_id, None)
                 await append_event(session_id, "claude_goal_changed", {})
@@ -91639,6 +91642,27 @@ async def refresh_claude_goal(
         return dict(goal) if goal else None
 
 
+CLAUDE_GOAL_CLEARED_ANSWER = re.compile(r"^(?:No goal set|Goal cleared\b)")
+
+
+async def mark_claude_goal_cleared(session_id: str, answer: str) -> None:
+    """Fold Claude's answer to ``/goal clear`` into the projected goal.
+
+    A fresh process does not always restore the transcript's goal (on 2026-10-09
+    a 218 MB compacted session answered "No goal set" while its transcript's last
+    record kept the goal active), and a process may end before its clear record
+    is written. The answer is Claude's own statement, so the goal bar follows it
+    instead of waiting for a record.
+    """
+    if not CLAUDE_GOAL_CLEARED_ANSWER.match(answer.strip()):
+        return
+    async with CLAUDE_GOAL_LOCKS.setdefault(session_id, asyncio.Lock()):
+        projection = CLAUDE_GOAL_PROJECTIONS.get(session_id)
+        changed = projection is not None and projection.mark_cleared(int(time.time() * 1000))
+    if changed:
+        await append_event(session_id, "claude_goal_changed", {})
+
+
 def require_claude_goal_session(session_id: str) -> dict[str, Any]:
     session = STORE.sessions.get(session_id)
     if not session:
@@ -91734,6 +91758,8 @@ async def put_claude_goal(session_id: str, req: ClaudeGoalRequest) -> dict[str, 
 @app.delete("/api/sessions/{session_id}/claude/goal")
 async def delete_claude_goal(session_id: str) -> dict[str, Any]:
     require_claude_goal_session(session_id)
+    # The projection must exist for Claude's answer to land on it (first goal call after a restart).
+    await refresh_claude_goal(session_id, notify=False)
     cleared_live = False
     # Serialize with ordinary turn admission while the native priority command
     # interrupts the current turn and returns its separate clear receipt.
@@ -91744,10 +91770,12 @@ async def delete_claude_goal(session_id: str) -> dict[str, Any]:
         if active.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK:
             manager = await claude_sdk_manager()
             try:
-                await manager.clear_goal(session_id, run_id=str(active.get("run_id") or ""))
+                receipt, _generation = await manager.clear_goal(session_id, run_id=str(active.get("run_id") or ""))
             except ClaudeSDKSupervisorError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             cleared_live = True
+            # Raw SDK result field; the run path has the same text as result_text.
+            await mark_claude_goal_cleared(session_id, str(receipt.get("result") or ""))
     if not cleared_live:
         await start_claude_goal_command(session_id, "clear")
     await refresh_claude_goal(session_id)
