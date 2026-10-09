@@ -1,5 +1,18 @@
 # Public development log
 
+## 2026-10-09 — Desktop package 115 (local package)
+
+- Packages the desktop entry recorded since package 114: the background-activity
+  chip lists a Claude chat's shells only, under "Background shells". The
+  server entries since then (a message sent while Claude works joins the
+  turn, shells are not subagent rows) take effect once a server is
+  redeployed. No Android build: build 60 already carries the chip change.
+- The pkg's app passes `codesign --verify --deep --strict` (ad-hoc signature,
+  CFBundleVersion 115). Checks run before packaging: the desktop type check
+  and the chip and locale catalog tests recorded in that entry. Not
+  exercised: installing the package.
+  Availability: local package.
+
 ## 2026-10-09 — Background shells are no longer listed as subagents (server, source)
 
 - The subagent rows under a Claude chat's activity strip showed "Claude
