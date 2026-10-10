@@ -22,6 +22,18 @@ class EchoWebSocket extends EventTarget {
   }
 }
 
+/** Answers a request with `size` bytes and then closes, as a server sending `Connection: close` does. */
+class PageWebSocket extends EchoWebSocket {
+  constructor(private readonly size: number) { super() }
+  send() {
+    for (let sent = 0; sent < this.size; sent += 64 * 1024) {
+      this.dispatchEvent(new MessageEvent('message', { data: new ArrayBuffer(64 * 1024) }))
+    }
+    // A real WebSocket fires close in a later task than the last message.
+    setTimeout(() => this.close(), 0)
+  }
+}
+
 const proxies: BrowserProxy[] = []
 const sockets: Socket[] = []
 afterEach(() => {
@@ -29,13 +41,13 @@ afterEach(() => {
   for (const proxy of proxies.splice(0)) proxy.dispose()
 })
 
-async function connectProxy() {
+async function connectProxy(createRemote: () => EventTarget = () => new EchoWebSocket()) {
   const proxy = new BrowserProxy()
   proxies.push(proxy)
   const ports: number[] = []
   const config = await proxy.start('browser_test', port => {
     ports.push(port)
-    return new EchoWebSocket() as unknown as WebSocket
+    return createRemote() as unknown as WebSocket
   })
   const port = Number(new URL(config.proxyRules).port)
   const socket = createConnection(port, '127.0.0.1')
@@ -90,6 +102,29 @@ describe('BrowserProxy', () => {
       expect(ports).toEqual([])
       socket.destroy()
     } finally { server.close() }
+  })
+
+  it('delivers the whole response to a slow reader when the remote closes right after the last byte', async () => {
+    // Larger than the 4 MB the tunnel used to hold for a slow reader.
+    const size = 8 * 1024 * 1024
+    const { socket } = await connectProxy(() => new PageWebSocket(size))
+    let response = once(socket, 'data')
+    socket.write(Buffer.from([5, 1, 0]))
+    await response
+    response = once(socket, 'data')
+    socket.write(Buffer.from([5, 1, 0, 1, 127, 0, 0, 1, 0, 80]))
+    expect((await response)[0][1]).toBe(0)
+
+    socket.pause()
+    socket.write('GET / HTTP/1.0\r\n\r\n')
+    // Let the whole response and the close reach the tunnel before the reader takes anything.
+    await new Promise(resolve => setTimeout(resolve, 200))
+    let received = 0
+    socket.on('data', data => { received += data.length })
+    const ended = once(socket, 'end')
+    socket.resume()
+    await ended
+    expect(received).toBe(size)
   })
 
   it('closes existing sockets on disposal', async () => {

@@ -1,5 +1,58 @@
 # Public development log
 
+## 2026-10-11 — Browser tabs load large pages through port tunnels in full (server and desktop source)
+
+- A dashboard in a browser tab on a hub-proxied remote showed "Could not
+  load …: -354" (ERR_CONTENT_LENGTH_MISMATCH) and never finished loading:
+  each load ended 100-300 KB short of its Content-Length. Three causes, each
+  measured:
+  - uvicorn 0.51 closes the TCP connection immediately after the server's
+    WebSocket close frame, and Node's WebSocket, which the desktop's port
+    tunnels use, then drops the messages it has not processed yet. In a
+    minimal uvicorn app sending 5 MB, 0 of 20 transfers arrived whole (close
+    code 1006). From uvicorn 0.52.1 a server close waits for the client's
+    close frame (at most 10 s), and the server now runs uvicorn 0.54. That
+    release also changed send(): it waits while the write buffer is full,
+    and it raises once the client has left. The server's event and terminal
+    code assumes neither (2 s send timeouts, viewers served one after
+    another, closes in cleanup paths after the client left), so send()
+    keeps its 0.51 behavior. The close wait applies to every server
+    WebSocket.
+  - On the remote's normal close the desktop destroyed the local connection,
+    which dropped bytes still queued for a slow reader. It now ends the
+    connection after them; an ended connection still closes when its reader
+    closes, and stopping the tunnel closes it if the reader never does.
+  - The desktop closed a port tunnel once 4 MB waited for a slow local
+    reader. A browser tab stops reading while it renders, and a second
+    dashboard tab's loads failed on that bound. The WebSocket cannot pause the
+    remote, so the bound for that direction is now 128 MB.
+- Verified with new tests, each of which fails with its change reverted:
+  the server keeps the connection open until the client's close frame
+  (fails on uvicorn 0.51); a send does not wait for a client that stops
+  reading, and a close after the client left returns (both fail with
+  uvicorn 0.54's own protocol); a port tunnel delivers an 8 MB response that
+  the remote closes right after the last byte to a slow reader, directly and
+  through the browser proxy; a tunnel whose reader never reads or closes
+  still stops; a connection whose uploads the bridge had paused frees its
+  bridge once the reader closes. Desktop type check and the port tunnel,
+  proxy, service, server-client, IPC and preload tests pass. Through an
+  isolated hub on the same remote, Node's WebSocket received the 5.4 MB page
+  whole in 6 of 6 fetches (unpatched hub: 1 of 3). A desktop build from this
+  source with an isolated profile against that hub opened the dashboard tab
+  and reloaded it three times: every load received exactly its
+  Content-Length and finished without the -354 error, and the second
+  dashboard tab finished loading. Source: 037ee919 (server) and the desktop
+  commit after it.
+- Limit: the 10 s wait starts when the close frame is queued. A client on a
+  slow direct link that is still receiving more than 10 s of queued data
+  then can lose the tail as before; a local hub's clients should not be
+  affected, since they are on loopback.
+- Not exercised: an installed desktop package, and the user's own hub and
+  remotes (not restarted or redeployed).
+- Availability: source. The hub and each remote need their server
+  environment synced (`uv sync --frozen`) and a restart; the desktop changes
+  ship with the next desktop package.
+
 ## 2026-10-11 — Import Chat works on a server whose home directory it does not own (server source)
 
 - On OSMO-hosted remotes the server runs as root with its home directory on

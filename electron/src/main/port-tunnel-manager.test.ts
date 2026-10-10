@@ -311,6 +311,80 @@ describe('PortTunnelManager', () => {
     await expect(connectOutcome(forwarded.localPort)).resolves.toBe('refused')
   })
 
+  it('delivers every byte the remote sent before a normal close to a slow local reader', async () => {
+    const manager = new PortTunnelManager()
+    managers.push(manager)
+    const remote = new FakeWebSocket()
+    const forwarded = await manager.start('chat-a', 7007, undefined, () => remote as unknown as WebSocket)
+    const local = await openLocalConnection(forwarded.localPort)
+    local.pause()
+    await eventually(() => remote.listeners.has('open'))
+    remote.open()
+
+    // A page larger than 4 MB from a server answering with `Connection: close`, which ends the
+    // tunnel right after the last byte.
+    const size = 8 * 1024 * 1024
+    for (let sent = 0; sent < size; sent += 64 * 1024) remote.message(new ArrayBuffer(64 * 1024))
+    // Messages are written on a microtask; a real WebSocket fires close in a later task.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    remote.close(1000)
+
+    let received = 0
+    local.on('data', data => { received += data.length })
+    const ended = new Promise(resolve => local.once('end', resolve))
+    local.resume()
+    await ended
+    expect(received).toBe(size)
+    expect(manager.list()).toEqual([expect.objectContaining({ state: 'open', error: null })])
+  })
+
+  it('stops a tunnel whose local reader never reads or closes after a normal remote close', async () => {
+    const manager = new PortTunnelManager()
+    managers.push(manager)
+    const remote = new FakeWebSocket()
+    const forwarded = await manager.start('chat-a', 7007, undefined, () => remote as unknown as WebSocket)
+    const local = await openLocalConnection(forwarded.localPort)
+    // A frozen tab: it takes nothing and never closes.
+    local.pause()
+    await eventually(() => remote.listeners.has('open'))
+    remote.open()
+    remote.message(new ArrayBuffer(64 * 1024))
+    // Messages are written on a microtask; a real WebSocket fires close in a later task.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    remote.close(1000)
+
+    await manager.stop('chat-a', 7007)
+  }, 2000)
+
+  it('frees the bridge of a connection whose uploads it had paused once the reader closes after a normal remote close', async () => {
+    const manager = new PortTunnelManager()
+    managers.push(manager)
+    const remotes: FakeWebSocket[] = []
+    const forwarded = await manager.start('chat-a', 7007, undefined, () => {
+      const remote = new FakeWebSocket()
+      remotes.push(remote)
+      return remote as unknown as WebSocket
+    })
+    for (let index = 0; index < PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL; index += 1) {
+      const local = await openLocalConnection(forwarded.localPort)
+      await eventually(() => remotes.length === index + 1)
+      const remote = remotes[index]
+      remote.open()
+      // Above the 1 MB high-water mark, so the bridge pauses the local socket with bytes unread.
+      remote.bufferedAmount = 2 * 1024 * 1024
+      local.write(Buffer.alloc(64 * 1024))
+      await eventually(() => remote.sent.length > 0)
+      local.write(Buffer.alloc(256 * 1024))
+      remote.close(1000)
+      local.end()
+      await onceClosed(local)
+    }
+
+    // Every earlier reader has closed, so the tunnel still takes a connection.
+    await openLocalConnection(forwarded.localPort)
+    await eventually(() => remotes.length === PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL + 1)
+  })
+
   it.each([4401, 4404, 4409])('disposes the entire forward after fatal remote close code %i', async code => {
     const manager = new PortTunnelManager()
     managers.push(manager)

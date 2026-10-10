@@ -9,6 +9,10 @@ export const PORT_TUNNEL_MAX_BRIDGES_GLOBAL = 64
 export const PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL = 16
 
 const MAX_PENDING_BYTES = 4 * 1024 * 1024
+// The WebSocket cannot pause the remote, so bytes a slow local reader has not taken stay in the
+// socket's write buffer. A browser tab stops reading while it renders; a dashboard tab's loads failed
+// on a 4 MB bound. Worst case is PORT_TUNNEL_MAX_BRIDGES_GLOBAL times this.
+const MAX_LOCAL_WRITABLE_BYTES = 128 * 1024 * 1024
 const WEBSOCKET_HIGH_WATER_BYTES = 1024 * 1024
 const WEBSOCKET_LOW_WATER_BYTES = 256 * 1024
 const BACKPRESSURE_POLL_MS = 10
@@ -244,14 +248,16 @@ export class PortTunnelManager {
     let finish: (closeLocal?: boolean, closeRemote?: boolean) => void = (closeLocal = true, closeRemote = true): void => {
       if (closed) return
       closed = true
-      tunnel.bridges.delete(bridge)
       if (closeLocal && !localSocket.destroyed) localSocket.destroy()
       if (closeRemote && remoteSocket && remoteSocket.readyState < 2) {
         remoteSocket.close(1000, 'Local connection closed')
       }
     }
-    const bridge: TunnelBridge = { close: () => finish() }
+    // A socket ended after the remote's close stays registered until it closes, so stopping the
+    // tunnel still destroys it instead of waiting on a reader that never closes.
+    const bridge: TunnelBridge = { close: () => { finish(); localSocket.destroy() } }
     tunnel.bridges.add(bridge)
+    localSocket.once('close', () => tunnel.bridges.delete(bridge))
 
     try {
       remoteSocket = tunnel.createRemoteSocket()
@@ -290,7 +296,6 @@ export class PortTunnelManager {
       if (connectTimer) clearTimeout(connectTimer)
       backpressureTimer = null
       connectTimer = null
-      tunnel.bridges.delete(bridge)
       pending.length = 0
       pendingBytes = 0
       if (closeLocal && !localSocket.destroyed) localSocket.destroy()
@@ -380,7 +385,7 @@ export class PortTunnelManager {
           }
           return
         }
-        if (localSocket.writableLength + bytes.byteLength > MAX_PENDING_BYTES) {
+        if (localSocket.writableLength + bytes.byteLength > MAX_LOCAL_WRITABLE_BYTES) {
           this.markError(tunnel, 'Port tunnel closed because the local connection could not keep up.')
           finish()
           return
@@ -409,7 +414,12 @@ export class PortTunnelManager {
           this.markError(tunnel, `Remote port tunnel closed${reason ? `: ${reason}` : '.'}`)
         }
       }
-      finish(true, false)
+      // end(), not destroy(): the remote's last bytes may still sit in the write buffer behind a
+      // slow reader, and destroy() discards them. resume() lets the reader's FIN arrive even if
+      // sendRemote paused the socket.
+      const normalClose = event.code === 1000 || event.code === 1001
+      if (normalClose && !closed && !localSocket.destroyed) localSocket.end().resume()
+      finish(!normalClose, false)
     })
   }
 
