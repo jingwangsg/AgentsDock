@@ -25,7 +25,7 @@ const chatScreen = read('src/components/ChatScreen.tsx')
 
 test('Android release identity, LAN access, keyboard resize, icon, and notification metadata are explicit', () => {
   assert.equal(config.android.package, 'com.zhengyiluo.agentsdock')
-  assert.equal(config.android.versionCode, 62)
+  assert.equal(config.android.versionCode, 63)
   assert.equal(config.android.usesCleartextTraffic, true)
   assert.equal(config.android.allowBackup, false)
   assert.equal(config.android.softwareKeyboardLayoutMode, 'resize')

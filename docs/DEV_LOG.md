@@ -1,5 +1,18 @@
 # Public development log
 
+## 2026-10-10 — Desktop package 118 and Android build 63 (local package and APK)
+
+- Package the entries recorded since package 117 and Android build 62: the
+  Canvas Markdown component and report guide, and Android's "Update &
+  redeploy all" with the hub job behind it. The pkg carries the new server
+  code; the Android button needs a hub running it.
+- The pkg is unsigned like every local package, built with the fuses
+  re-signing flag and reports CFBundleVersion 118; the APK is signed with the
+  project debug keystore (SHA-256 fac61745…) and reports versionCode 63.
+  Checks run before packaging: both type checks, the server, Canvas and
+  remote-server tests named in those entries and the version pins. Not
+  exercised: installing on a phone or Mac. Availability: local package and APK.
+
 ## 2026-10-10 — Android gets "Update & redeploy all"; the hub runs it as one job (server and Android source)
 
 - The desktop's Settings → Server "Update & redeploy all" restarts the local
