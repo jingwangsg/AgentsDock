@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-11 — Browser-tab port tunnels get their own hub connection to a remote (server source)
+
+- A hub reaches each remote over separate ssh connections: main (API),
+  stream (live events), bulk (file bodies) and, when configured, inference.
+  Port tunnels for browser tabs (dashboards and web apps on the remote) rode
+  on main. A dashboard page pulls megabytes at once, and ssh lets up to 2 MB
+  per channel queue ahead of everything else on its connection, so the chats'
+  requests waited behind each page load. On an OSMO-hosted remote reached
+  through `osmo workflow exec --raw`, the OSMO router also closes a websocket
+  whose keepalive pong waits 20 s, which ended the whole main tunnel
+  ("client_loop: send disconnect: Broken pipe"). Port tunnels now take a
+  fourth connection per remote ("surface", compressed like main and stream).
+  A burst can still close that connection on a slow link; the hub reconnects
+  it and only the browser tabs reload. Terminals stay on main.
+- Measured on an OSMO-hosted remote through an isolated hub: ten rounds of
+  four abrupt 5 MB dashboard loads while `/api/health` went through the main
+  tunnel every 2 s. Main-branch hub: 21 polls, median 0.70 s, max 12.91 s.
+  With the split: 26 polls, median 0.77 s, max 1.01 s. No tunnel restarted
+  in either run. With two independent ssh connections under the same load,
+  the loaded connection's websocket ping round trip reached 23.7 s while the
+  other stayed at 1.1 s, so the queue belongs to the connection, not the link.
+- Verified with the remote server tests (new routing case: port tunnels take
+  the surface tunnel, terminals and event streams do not; tunnel creation,
+  ports, compression and removal include it) and in the installed desktop
+  app (build 118) with an isolated profile against an isolated hub running
+  this source: opened a remote's dashboard tab with a mouse click and
+  reloaded it; the page rendered, and per-tunnel byte counters put the
+  reload's ~1.1 MB (compressed) on the surface tunnel and 91 KB of chat
+  traffic on main. The dashboard tab's "Could not load …: -354" notice also
+  appears with the main-branch hub; it is not caused by this change.
+- Availability: server source; takes effect when the hub restarts. Remote
+  servers need no redeploy.
+
 ## 2026-10-11 — Mobile edits a hub remote as the desktop does: SSH host and install directory (mobile source)
 
 - On Android and iOS, Edit on a server the hub proxies offered only the name,

@@ -856,9 +856,9 @@ if "-N" in sys.argv:
         async def main() -> None:
             await manager.start()
             try:
-                # Two servers, each with its main, bulk and stream tunnel, plus one git rewrite.
+                # Two servers, each with its main, bulk, stream and surface tunnel, plus one git rewrite.
                 for _ in range(200):
-                    if calls.exists() and len(calls.read_text().splitlines()) == 7:
+                    if calls.exists() and len(calls.read_text().splitlines()) == 9:
                         return
                     await asyncio.sleep(0.05)
                 self.fail("tunnels did not start")
@@ -871,9 +871,9 @@ if "-N" in sys.argv:
         [oci] = [argv for argv in tunnels if argv[-2] == f"127.0.0.1:{oci_port}:127.0.0.1:7850"]
         # Before the tunnel's own options, so ExitOnForwardFailure=no wins over its =yes.
         assert oci[:9] == ["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x", "-R", "12052:git.example:12051", "-o", "ExitOnForwardFailure=no", "-N"]
-        # The bulk and stream tunnels must not claim the site forward's remote port a second time.
+        # The bulk, stream and surface tunnels must not claim the site forward's remote port a second time.
         oci_others = [argv for argv in tunnels if argv[-1] == "sky-cluster" and argv is not oci]
-        assert len(oci_others) == 2 and all(argv[:5] == ["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x", "-N"] for argv in oci_others)
+        assert len(oci_others) == 3 and all(argv[:5] == ["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x", "-N"] for argv in oci_others)
         assert all("-R" not in argv for argv in tunnels if argv[-1] == "plain-host")
         # Once connected, git on the host is pointed at the forward, in the server's HOME.
         [rewrite] = [argv for argv in records if "-N" not in argv]
@@ -909,9 +909,9 @@ if "-N" in sys.argv:
         async def main() -> None:
             await manager.start()
             try:
-                # Two servers, each with its main, bulk, stream and inference tunnel, plus the oci@ site forward's git rewrite.
+                # Two servers, each with its main, bulk, stream, surface and inference tunnel, plus the oci@ site forward's git rewrite.
                 for _ in range(200):
-                    if calls.exists() and len(calls.read_text().splitlines()) == 9:
+                    if calls.exists() and len(calls.read_text().splitlines()) == 11:
                         break
                     await asyncio.sleep(0.05)
                 else:
@@ -919,7 +919,8 @@ if "-N" in sys.argv:
                 assert set(manager.inference_tunnels) == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
                 # No -L, so no local port to keep free for it.
                 assert manager._reserved_ports() == {oci_port, plain_port} | {
-                    tunnel.server.local_port for tunnel in [*manager.bulk_tunnels.values(), *manager.stream_tunnels.values()]}
+                    tunnel.server.local_port for tunnel in [*manager.bulk_tunnels.values(), *manager.stream_tunnels.values(),
+                                                            *manager.surface_tunnels.values()]}
                 plain_inference = manager.inference_tunnels["bbbbbbbbbbbb"]
                 await manager.remove("bbbbbbbbbbbb")
                 assert "bbbbbbbbbbbb" not in manager.inference_tunnels and plain_inference.status["state"] == "stopped"
@@ -931,9 +932,9 @@ if "-N" in sys.argv:
         tunnels = [argv for argv in records if "-N" in argv]
         inference = [argv for argv in tunnels if "-L" not in argv]
         forwards = [argv for argv in tunnels if "-L" in argv]
-        assert len(inference) == 2 and len(forwards) == 6
+        assert len(inference) == 2 and len(forwards) == 8
         # Every host, not only oci@, gets the forward, on a connection that carries nothing else;
-        # the main, bulk and stream tunnels must not claim the remote port too.
+        # the main, bulk, stream and surface tunnels must not claim the remote port too.
         for argv in inference:
             assert ("-R", "20001:127.0.0.1:20001") in zip(argv, argv[1:]) and argv.count("-R") == 1
         assert sorted(argv[-1] for argv in inference) == ["plain-host", "sky-cluster"]
@@ -966,7 +967,7 @@ time.sleep(30)
             await manager.start()
             try:
                 for _ in range(200):
-                    if calls.exists() and len(calls.read_text().splitlines()) == 3:
+                    if calls.exists() and len(calls.read_text().splitlines()) == 4:
                         return
                     await asyncio.sleep(0.05)
                 self.fail("tunnels did not start")
@@ -1005,12 +1006,12 @@ time.sleep(30)
         async def main() -> dict:
             await manager.start()
             try:
-                # The running workflow starts its main, upload and stream tunnels; the ended one never reaches ssh.
+                # The running workflow starts its main, upload, stream and surface tunnels; the ended one never reaches ssh.
                 for _ in range(200):
                     running = manager.tunnel_status("aaaaaaaaaaaa")
                     ended = manager.tunnel_status("bbbbbbbbbbbb")
                     if (running["state"] == "connected" and ended["state"] == "reconnecting"
-                            and calls.exists() and len(calls.read_text().splitlines()) == 3):
+                            and calls.exists() and len(calls.read_text().splitlines()) == 4):
                         return ended
                     await asyncio.sleep(0.05)
                 self.fail(f"tunnels did not settle: {running} {ended}")
@@ -1364,11 +1365,37 @@ time.sleep(30)
                 manager.stream_tunnels[remote.id] = rs.Tunnel(remote.model_copy(update={"local_port": stream_port}), None, role="stream")
                 for path in ("sessions/sess_1/events?after=0&visible=true", "session-summaries/events", "emergency-alerts/events"):
                     assert await identity_of(path) == "stream-tunnel", path
-                # Port tunnels and other sockets stay on the main tunnel.
+                # Port tunnels never take the stream tunnel.
                 assert await identity_of("sessions/browser_1/ports/20003/tunnel/ws") == "fake-remote"
             finally:
                 await close()
                 await stop(stream_server, stream_task)
+
+        asyncio.run(main())
+
+    def test_browser_surface_port_tunnels_take_the_remotes_surface_tunnel(self) -> None:
+        async def main() -> None:
+            manager, remote, _dead, hub_port, close = await hub_with_fake(self.tmp_path)
+            surface_server, surface_task, surface_port = await serve(fake_upstream(identity="surface-tunnel"))
+            base = f"ws://127.0.0.1:{hub_port}/api/remote/{remote.id}/api"
+            headers = {"X-AgentsDock-Token": HUB_TOKEN}
+
+            async def identity_of(path: str) -> str:
+                async with websocket_connect(f"{base}/{path}", additional_headers=headers) as ws:
+                    return json.loads(await ws.recv())["identity"]
+
+            try:
+                # A hub that manages no tunnels keeps port tunnels on the main tunnel.
+                assert await identity_of("sessions/browser_1/ports/20003/tunnel/ws") == "fake-remote"
+                # Never started: only its port matters here.
+                manager.surface_tunnels[remote.id] = rs.Tunnel(remote.model_copy(update={"local_port": surface_port}), None, role="surface")
+                assert await identity_of("sessions/browser_1/ports/20003/tunnel/ws") == "surface-tunnel"
+                # Terminals and event streams stay off it.
+                assert await identity_of("sessions/sess_1/terminal/ws") == "fake-remote"
+                assert await identity_of("sessions/sess_1/events?after=0") == "fake-remote"
+            finally:
+                await close()
+                await stop(surface_server, surface_task)
 
         asyncio.run(main())
 
@@ -1393,29 +1420,34 @@ time.sleep(30)
             await manager.start()
             try:
                 for _ in range(200):
-                    if calls.exists() and len(calls.read_text().splitlines()) == 3:
+                    if calls.exists() and len(calls.read_text().splitlines()) == 4:
                         break
                     await asyncio.sleep(0.05)
                 bulk = manager.bulk_tunnels[server.id]
                 stream = manager.stream_tunnels[server.id]
-                assert len({server.local_port, bulk.server.local_port, stream.server.local_port}) == 3
+                surface = manager.surface_tunnels[server.id]
+                ports = (server.local_port, bulk.server.local_port, stream.server.local_port, surface.server.local_port)
+                assert len(set(ports)) == 4
                 assert manager.bulk_port(server) == bulk.server.local_port
                 assert manager.stream_port(server) == stream.server.local_port
-                assert {bulk.server.local_port, stream.server.local_port} <= manager._reserved_ports()
-                # The registry keeps the one port clients may see; the bulk and stream ports are this process's business.
+                assert manager.surface_port(server) == surface.server.local_port
+                assert set(ports[1:]) <= manager._reserved_ports()
+                # The registry keeps the one port clients may see; the other ports are this process's business.
                 assert rs.load_registry(manager.path) == [server]
                 argv = [json.loads(line) for line in calls.read_text().splitlines()]
                 forwards = {args[-2]: args for args in argv}
-                assert sorted(forwards) == sorted(f"127.0.0.1:{port}:127.0.0.1:7850" for port in (server.local_port, bulk.server.local_port, stream.server.local_port))
-                # JSON tunnels compress, the file-body tunnel does not.
+                assert sorted(forwards) == sorted(f"127.0.0.1:{port}:127.0.0.1:7850" for port in ports)
+                # JSON and web page tunnels compress, the file-body tunnel does not.
                 assert "-C" in forwards[f"127.0.0.1:{server.local_port}:127.0.0.1:7850"]
                 assert "-C" in forwards[f"127.0.0.1:{stream.server.local_port}:127.0.0.1:7850"]
+                assert "-C" in forwards[f"127.0.0.1:{surface.server.local_port}:127.0.0.1:7850"]
                 assert "-C" not in forwards[f"127.0.0.1:{bulk.server.local_port}:127.0.0.1:7850"]
                 # Without AGENTSDOCK_INFERENCE_PROXY_PORT there is nothing to reverse forward.
                 assert manager.inference_tunnels == {}
                 await manager.remove(server.id)
                 assert server.id not in manager.bulk_tunnels and bulk.status["state"] == "stopped"
                 assert server.id not in manager.stream_tunnels and stream.status["state"] == "stopped"
+                assert server.id not in manager.surface_tunnels and surface.status["state"] == "stopped"
             finally:
                 await manager.stop()
 
