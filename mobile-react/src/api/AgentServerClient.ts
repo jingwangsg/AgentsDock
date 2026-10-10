@@ -377,6 +377,12 @@ export class AgentServerClient {
   reorderRemoteServers(ids: string[]): Promise<void> {
     return this.request('/api/admin/remote-servers/order', { method: 'PUT', body: JSON.stringify({ ids }) }, 30_000, false, 'native-control')
   }
+  /** Same id, new host or install dir (an omitted field stays): the hub deploys there and reports the job, or null when nothing moved. */
+  moveRemoteServer(remoteId: string, input: { ssh_host?: string; install_dir?: string }): Promise<{ job_id: string | null }> {
+    return this.request(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, {
+      method: 'PATCH', body: JSON.stringify(input),
+    }, 30_000, false, 'native-control')
+  }
   startRemoteRedeploy(remoteId: string): Promise<{ job_id: string }> {
     return this.request(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}/redeploy`, { method: 'POST' }, 30_000, false, 'native-control')
   }

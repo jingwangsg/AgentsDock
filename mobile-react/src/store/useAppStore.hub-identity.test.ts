@@ -20,10 +20,18 @@ const healthDown = new Set<string>()
 let requiredToken: string | null = null
 const remoteTokens: string[] = []
 const removeRequests: string[] = []
-// Once set, the hub advertises its remote registry; a held listing answers with what the hub had on arrival.
+// Once set, the hub advertises its remote registry; the next listing is held and answers with what the hub had on arrival.
 let hubRemotes: string[] | null = null
 let holdListing: Promise<void> | null = null
+let failNextListing = false
 let listings = 0
+// The SSH host the hub lists for a remote (its id unless moved), the bodies of the moves it received, and how
+// the move's job ends: with `hold` it runs until cancelled.
+const sshHosts: Record<string, string> = {}
+const moveRequests: unknown[] = []
+let moveJob: { error: string | null; hold: boolean } = { error: null, hold: false }
+let moveJobPolls = 0
+const cancelRequests: string[] = []
 
 function mockServer(route: (path: string) => { key: string; path: string } | null): Server {
   return createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -38,21 +46,48 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
     if (requiredToken && target.key !== 'direct' && presented !== requiredToken) return reply(401, { detail: 'invalid token' })
     if (target.path === '/api/health') {
       if (healthDown.has(target.key)) return reply(502, { detail: 'remote_unreachable' })
-      const capabilities = target.key === 'hub' && hubRemotes ? { capabilities: { remote_servers_v1: { available: true } } } : {}
+      const capabilities = target.key === 'hub' && hubRemotes ? { capabilities: { remote_servers_v1: { available: true, ids: hubRemotes } } } : {}
       let instance = instances[target.key]
       if (target.key === 'hub' && staleHubInstanceAnswers > 0) { staleHubInstanceAnswers -= 1; instance = 'hub-instance-1' }
       return reply(200, { ok: true, server_identity: identities[target.key], server_instance_id: instance, server_version: 'hub-identity-test', api_contract_version: 8, active_sessions: [], active: running[target.key] ?? [], ...capabilities })
     }
     if (request.method === 'GET' && target.path === '/api/admin/remote-servers') {
-      const listed = (hubRemotes ?? []).map(id => ({ id, name: id, ssh_host: id, install_dir: '', remote_port: 0, local_port: 0, created_at: '2026-09-30T10:00:00Z', proxy_path: `/api/remote/${id}`, tunnel: null }))
+      const listed = (hubRemotes ?? []).map(id => ({ id, name: id, ssh_host: sshHosts[id] ?? id, install_dir: '', remote_port: 0, local_port: 0, created_at: '2026-09-30T10:00:00Z', proxy_path: `/api/remote/${id}`, tunnel: null }))
       listings += 1
-      return void (holdListing ?? Promise.resolve()).then(() => reply(200, { servers: listed }))
+      if (failNextListing) {
+        failNextListing = false
+        return reply(500, { detail: 'registry unavailable' })
+      }
+      const hold = holdListing
+      holdListing = null
+      return void (hold ?? Promise.resolve()).then(() => reply(200, { servers: listed }))
     }
     if (request.method === 'DELETE' && target.path === '/api/admin/remote-servers/r1') {
       removeRequests.push(target.key)
       hubRemotes = hubRemotes?.filter(id => id !== 'r1') ?? null
       response.writeHead(204)
       return response.end()
+    }
+    if (request.method === 'PATCH' && target.path === '/api/admin/remote-servers/r1') {
+      let body = ''
+      request.on('data', chunk => { body += chunk })
+      request.on('end', () => {
+        const move = JSON.parse(body) as { ssh_host?: string }
+        moveRequests.push(move)
+        if (move.ssh_host) sshHosts.r1 = move.ssh_host
+        reply(200, { server: null, job_id: 'job-move' })
+      })
+      return
+    }
+    if (target.path === '/api/admin/remote-servers/deploy/job-move') {
+      moveJobPolls += 1
+      const done = !moveJob.hold
+      return reply(200, { job_id: 'job-move', phase: done ? 'complete' : 'upload', done, error: done ? moveJob.error : null, server: null, log: [{ phase: 'upload', message: 'Uploading to the new host' }] })
+    }
+    if (request.method === 'POST' && target.path === '/api/admin/remote-servers/deploy/job-move/cancel') {
+      cancelRequests.push('job-move')
+      moveJob = { error: 'Deployment cancelled.', hold: false }
+      return reply(200, { cancelled: true })
     }
     if (request.method === 'POST' && target.path === '/api/admin/remote-servers/r1/redeploy') {
       redeployRequests.push('r1')
@@ -153,8 +188,9 @@ try {
   globalThis.setInterval = ((handler: () => void, delay?: number) => { if (delay === 60_000) refreshTick = handler; return 1 }) as unknown as typeof setInterval
   const { useAppStore } = await import('./useAppStore')
   const remoteProfile = () => useAppStore.getState().profiles.find(value => value.id === 'remote')
-  const savedIdentity = async (id: string) => (JSON.parse(await AsyncStorage.getItem('agentsdock.react.settings.v2') ?? '{}') as StoredProfileSettings)
-    .profiles.find(value => value.id === id)?.serverIdentity
+  const savedProfile = async (id: string) => (JSON.parse(await AsyncStorage.getItem('agentsdock.react.settings.v2') ?? '{}') as StoredProfileSettings)
+    .profiles.find(value => value.id === id)
+  const savedIdentity = async (id: string) => (await savedProfile(id))?.serverIdentity
 
   // The active remote was moved: the hub now routes r1 to a fresh install.
   identities.r1 = 'remote-new'
@@ -246,6 +282,60 @@ try {
   catalogAvailable = true
   refreshTick!()
   await waitFor(() => useAppStore.getState().runtime !== null, 'a missing catalog was not loaded again')
+
+  // While a remote is active, the inactive hub's probe mirrors its registry, as on the desktop: the remote's row
+  // shows the SSH host the hub reaches it by instead of the proxy address. A failed listing raises no banner over
+  // the server in use and is read again by the next probe.
+  hubRemotes = ['r1']
+  failNextListing = true
+  await useAppStore.getState().probeInactiveProfiles()
+  assert.equal(remoteProfile()?.sshHost, undefined)
+  assert.equal(useAppStore.getState().error, null)
+  // Edit with a new SSH host: the hub moves r1 there under the same id, so the same profile follows it. A
+  // registry list the hub sent before the move must not put the old host back.
+  let releaseListing!: () => void
+  holdListing = new Promise(resolve => { releaseListing = resolve })
+  const listedBeforeMove = listings
+  const probing = useAppStore.getState().probeInactiveProfiles()
+  await waitFor(() => listings > listedBeforeMove, 'the probe did not read the hub registry again')
+  const moveProgress: string[] = []
+  await useAppStore.getState().moveHubRemote('remote', { sshHost: 'user@new-host' }, entry => moveProgress.push(entry.message))
+  assert.deepEqual(moveRequests, [{ ssh_host: 'user@new-host' }])
+  assert.deepEqual(moveProgress, ['Uploading to the new host'])
+  releaseListing()
+  await probing
+  assert.equal(remoteProfile()?.sshHost, 'user@new-host')
+  assert.equal(remoteProfile()?.serverURL, `${hubURL}/api/remote/r1`)
+  assert.equal((await savedProfile('remote'))?.sshHost, 'user@new-host')
+  // The stale list did not count as a mirror; once one completes, unchanged ids are not read again.
+  await useAppStore.getState().probeInactiveProfiles()
+  const mirroredAt = listings
+  await useAppStore.getState().probeInactiveProfiles()
+  assert.equal(listings, mirroredAt)
+  // A failed deploy has already moved the hub's entry: the profile follows, and the error points to Redeploy.
+  moveJob = { error: 'Could not reach the new host.', hold: false }
+  await assert.rejects(useAppStore.getState().moveHubRemote('remote', { sshHost: 'user@newer-host' }, () => undefined),
+    /Could not reach the new host\. The hub already points this server at the new place/)
+  assert.equal(remoteProfile()?.sshHost, 'user@newer-host')
+  // Cancel reaches the hub job the move follows.
+  moveJob = { error: null, hold: true }
+  const polls = moveJobPolls
+  const cancelled = assert.rejects(useAppStore.getState().moveHubRemote('remote', { installDir: '/data/agentsdock' }, () => undefined), /Deployment cancelled/)
+  await waitFor(() => moveJobPolls > polls, 'the move did not follow its job')
+  await useAppStore.getState().cancelHubDeploy()
+  await cancelled
+  assert.deepEqual(cancelRequests, ['job-move'])
+  assert.deepEqual(moveRequests.at(-1), { install_dir: '/data/agentsdock' })
+  moveJob = { error: null, hold: false }
+  await assert.rejects(useAppStore.getState().moveHubRemote('direct', { sshHost: 'elsewhere' }, () => undefined), /Only servers the hub manages/)
+  // The hub dropped the active remote: its profile stays while it is in use, and the probe keeps reading the registry.
+  hubRemotes = []
+  await useAppStore.getState().probeInactiveProfiles()
+  assert.ok(remoteProfile())
+  const keptAt = listings
+  await useAppStore.getState().probeInactiveProfiles()
+  assert.ok(listings > keptAt)
+  hubRemotes = null
 
   // The hub's token was rotated on the server: the old copy the active remote holds now gets 401. A new hub
   // token entered in the app reaches the hub's remotes and the active remote reconnects with it, while a

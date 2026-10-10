@@ -84,6 +84,9 @@ assert(displayServerProfileName(hub) === 'local', 'a loopback hub saved under it
 assert(profileHostSubtitle(hub) === null, 'Local must not be repeated as a subtitle')
 assert(displayServerProfileName({ ...hub, name: 'Home Mac' }) === 'Home Mac', 'a user-chosen hub name is kept')
 assert(profileHostSubtitle({ ...hub, name: 'Home Mac' }) === 'Local', 'a named hub shows Local as its host')
+const hubRemote = { ...alpha, name: 'gpu box', serverUrl: 'http://hub.test:7850/api/remote/r1', sshHost: 'user@gpu-box' }
+assert(profileHostSubtitle(hubRemote) === 'user@gpu-box', 'a hub remote shows its SSH host')
+assert(profileHostSubtitle({ ...hubRemote, sshHost: undefined }) === null, 'a hub remote never shows the proxy address')
 assert(serverProfileHost('http://nvmac.tail46daa8.ts.net:7850') === 'nvmac.tail46daa8.ts.net:7850', 'remote hosts keep their address')
 assert(unreadCountLabel(100) === '99+', 'unread badge must stay compact')
 assert(requiresIdentityResetConfirmation({ ...alpha, lastConnectionError: 'Server identity changed from server-alpha to server-new.' }), 'identity changes must require confirmation')

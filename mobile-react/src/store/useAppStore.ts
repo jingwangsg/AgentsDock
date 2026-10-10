@@ -169,7 +169,7 @@ const LIVE_EVENT_REFRESH_DEBOUNCE_MS = 500
 let pendingSessionRowRefresh: { scope: ConnectionScope; sessionIds: Set<string>; timer: ReturnType<typeof setTimeout> } | null = null
 let pendingJobsRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let quickCreateSessionInFlight: { scope: ConnectionScope; promise: Promise<boolean> } | null = null
-/** The hub deploy `deployHubRemoteServer` is currently polling, if any; lets cancelHubDeploy reach both the poll loop and the server-side job. */
+/** The hub job `deployHubRemoteServer` or `moveHubRemote` is currently polling, if any; lets cancelHubDeploy reach both the poll loop and the server-side job. */
 let hubDeployInFlight: { client: AgentServerClient; jobId: string; cancelled: boolean } | null = null
 
 /**
@@ -573,6 +573,12 @@ interface AppState {
    */
   redeployHubRemote(profileId: string, force: boolean, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<{ redeployed: boolean; running: number | null }>
   /**
+   * Server list "Edit" with a new SSH host or install dir, whichever server is active: the hub moves the remote
+   * under the same id and deploys there (server/remote_servers.py); chats stay with the previous install. The
+   * new install's identity is adopted like any identity change behind the hub. Cancel stops it as it stops an add.
+   */
+  moveHubRemote(profileId: string, input: { sshHost?: string; installDir?: string }, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<void>
+  /**
    * Server list "Update & redeploy all", whichever server is active: the hub redeploys its remotes, updates
    * Claude Code and Codex on every server, then restarts itself. The restarts stop running chats, so without
    * `force` it changes nothing and resolves to the servers that have some (`running` null: could not be
@@ -842,19 +848,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     for (let index = 0; index < inactive.length; index += 2) {
       await Promise.all(inactive.slice(index, index + 2).map(async profile => {
         let patch: Parameters<typeof updateProfileRuntime>[2]
+        let remoteIds: string | null = null
+        let token = ''
         try {
-          const health = await probeServerHealth(profile.serverURL, await loadProfileToken(profile.id, profile.credentialVersion))
+          token = await loadProfileToken(profile.id, profile.credentialVersion)
+          const health = await probeServerHealth(profile.serverURL, token)
           // A changed identity is settled when the server is selected, not by a background check;
           // until then the row shows its cached state, not the new server's.
           patch = profile.serverIdentity && health.server_identity !== profile.serverIdentity
             ? { connectionState: 'cached' }
             : { connectionState: 'online', lastConnectionError: null, serverVersion: healthVersion(health) }
+          const remotes = health.capabilities?.remote_servers_v1
+          if (patch.connectionState === 'online' && remotes?.available && remotes.ids && profile.id === hubProfile(get())?.id) {
+            remoteIds = remotes.ids.join(' ')
+          }
         } catch (error) {
           patch = { connectionState: 'offline', lastConnectionError: errorMessage(error) }
         }
         set(state => state.activeProfileId === profile.id ? {} : {
           profiles: updateProfileRuntime(state.profiles, profile.id, { ...patch, lastConnectionCheckedAt: Date.now() }),
         })
+        // A remote added or removed on the hub while another server is active must show in the server list, as on
+        // the desktop. The first pass after launch also brings each remote's SSH host. Once the hub is selected, its
+        // own connection mirrors the registry instead. Until a pass mirrors everything, the next probe tries again.
+        if (remoteIds !== null && remoteIds !== lastHubRemoteIds) {
+          const hubURL = normalizeServerURL(profile.serverURL)
+          const client = new AgentServerClient(hubURL, token)
+          const mirrored = await reconcileHubRegistry({ profileId: profile.id, serverURL: hubURL, client }, () => get().activeProfileId !== profile.id, set, get, true)
+            .finally(() => client.dispose())
+          if (mirrored) lastHubRemoteIds = remoteIds
+        }
       }))
     }
   },
@@ -917,6 +940,34 @@ export const useAppStore = create<AppState>((set, get) => ({
     return { redeployed: true, running: 0 }
   },
 
+  async moveHubRemote(profileId, input, onProgress) {
+    const profile = get().profiles.find(value => value.id === profileId)
+    const remoteId = profile ? hubProxyRemoteId(profile.serverURL) : null
+    const hubURL = profile ? hubProxyBaseURL(profile.serverURL) : null
+    const hub = hubURL ? get().profiles.find(value => normalizeServerURL(value.serverURL) === hubURL) : undefined
+    if (!remoteId || !hubURL || !hub) throw new Error('Only servers the hub manages can be moved.')
+    if (hubDeployInFlight) throw new Error('A remote server deployment is already running.')
+    // The hub profile's own token: a changed hub token is not copied into existing remote profiles.
+    const client = new AgentServerClient(hubURL, await loadProfileToken(hub.id, hub.credentialVersion))
+    try {
+      const { job_id: jobId } = await client.moveRemoteServer(remoteId, { ssh_host: input.sshHost, install_dir: input.installDir })
+      // A registry list fetched before the move would put the old host back.
+      hubRegistryEdits += 1
+      // No job: the hub already has this host and install dir.
+      if (!jobId) return
+      hubDeployInFlight = { client, jobId, cancelled: false }
+      const job = await followHubJob(client, jobId, onProgress)
+      // The hub moved its entry before deploying, so the profile follows even a failed deploy.
+      await reconcileHubRegistry({ profileId: hub.id, serverURL: hubURL, client }, () => true, set, get)
+      // Saving the same place again starts no job on the hub, so the message points to Redeploy.
+      if (job.error) throw new Error(`${job.error} The hub already points this server at the new place; Redeploy retries the deploy there.`)
+    } finally {
+      if (hubDeployInFlight?.client === client) hubDeployInFlight = null
+      client.dispose()
+    }
+    void get().probeInactiveProfiles()
+  },
+
   async updateAndRedeployAll(force, onProgress) {
     const hub = hubProfile(get())
     if (!hub) throw new Error('Update & redeploy all needs the hub; connect to it once first.')
@@ -973,7 +1024,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  /** Stops the poll loop in `deployHubRemoteServer` and asks the hub to cancel the job. Silently a no-op with nothing running. */
+  /** Stops the poll loop in `deployHubRemoteServer` or `moveHubRemote` and asks the hub to cancel the job. Silently a no-op with nothing running. */
   async cancelHubDeploy() {
     const state = hubDeployInFlight
     if (!state) return
@@ -4214,8 +4265,10 @@ async function probeServerHealth(serverURL: string, token: string): Promise<Heal
   }
 }
 
-// Bumped by removeServerProfile and reorderServerProfiles: a registry list fetched before the edit is stale.
+// Bumped by removeServerProfile, reorderServerProfiles and moveHubRemote: a registry list fetched before the edit is stale.
 let hubRegistryEdits = 0
+/** The inactive hub's remote ids at its last complete mirror (probeInactiveProfiles); null until one after launch. */
+let lastHubRemoteIds: string | null = null
 
 /**
  * Mirrors the hub registry while the hub itself is the active server. A proxied
@@ -4238,37 +4291,47 @@ async function reconcileHubRemoteServers(
 /**
  * Mirrors the hub's remote-server registry into saved profiles: each
  * `/api/remote/{id}` the hub reports gets a profile carrying the hub's token,
- * and proxied profiles the hub no longer lists are dropped.
+ * saved remotes take the hub's SSH host for them, and proxied profiles the hub
+ * no longer lists are dropped, except the active one. Resolves to whether the
+ * registry is now fully mirrored. `quiet` keeps a failure off the error banner.
  */
 async function reconcileHubRegistry(
   hubScope: { profileId: string; serverURL: string; client: AgentServerClient },
   isCurrent: () => boolean,
   set: (value: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
   get: () => AppState,
-): Promise<void> {
+  quiet = false,
+): Promise<boolean> {
   const edits = hubRegistryEdits
   let remotes: RemoteServer[]
   try {
     remotes = (await hubScope.client.remoteServers()).servers
   } catch (error) {
-    if (isCurrent() && !isClientGoneError(error)) set({ error: errorMessage(error) })
-    return
+    if (!quiet && isCurrent() && !isClientGoneError(error)) set({ error: errorMessage(error) })
+    return false
   }
   try {
-    await withProfileMutation(async () => {
-      // A list fetched before a removal or reorder here would recreate the remote or undo the drag; the next refresh reconciles.
-      if (!isCurrent() || edits !== hubRegistryEdits) return
+    return await withProfileMutation(async () => {
+      // A list fetched before a removal, reorder or move here would recreate the remote, undo the drag or restore the old host; the next refresh reconciles.
+      if (!isCurrent() || edits !== hubRegistryEdits) return false
       const stored = storedProfiles(get().profiles)
-      const { create, removeIds } = reconcileHubProfiles(stored, hubScope.serverURL, remotes)
-      if (!create.length && !removeIds.length && !hubRemoteProfileOrder(stored, hubScope.serverURL, remotes)) return
+      const { create, update, removeIds } = reconcileHubProfiles(stored, hubScope.serverURL, remotes)
+      // Runs while a remote is active too (a deploy, a move, the inactive hub's probe); the active profile is
+      // never removed under the user, as on the desktop.
+      const removed = new Set(removeIds.filter(id => id !== get().activeProfileId))
+      const complete = removed.size === removeIds.length
+      if (!create.length && !update.length && !removed.size && !hubRemoteProfileOrder(stored, hubScope.serverURL, remotes)) return complete
       const hub = stored.find(profile => profile.id === hubScope.profileId)
       const hubToken = hub ? await loadProfileToken(hub.id, hub.credentialVersion) : ''
       // No health probe and no identity: a remote whose tunnel is down must
       // still get its profile; acceptHealthIdentity pins it on the first switch.
       const created = create.map(entry => createStoredServerProfile({ ...entry, serverConfigured: true }, createProfileId()))
-      const removed = new Set(removeIds)
+      const sshHosts = new Map(update.map(entry => [entry.id, entry.sshHost]))
       for (const profile of created) await saveProfileToken(profile.id, profile.credentialVersion, hubToken)
-      const merged = [...stored.filter(profile => !removed.has(profile.id)), ...created]
+      const merged = [
+        ...stored.filter(profile => !removed.has(profile.id)).map(profile => ({ ...profile, sshHost: sshHosts.get(profile.id) ?? profile.sshHost })),
+        ...created,
+      ]
       const order = hubRemoteProfileOrder(merged, hubScope.serverURL, remotes)
       const profiles = order ? order.map(id => merged.find(profile => profile.id === id)!) : merged
       try {
@@ -4284,15 +4347,20 @@ async function reconcileHubRegistry(
         throw error
       }
       set(state => {
-        const current = [...state.profiles.filter(profile => !removed.has(profile.id)), ...created.map(profile => publicProfile(profile, Boolean(hubToken)))]
+        const current = [
+          ...state.profiles.filter(profile => !removed.has(profile.id)).map(profile => ({ ...profile, sshHost: sshHosts.get(profile.id) ?? profile.sshHost })),
+          ...created.map(profile => publicProfile(profile, Boolean(hubToken))),
+        ]
         return { profiles: profiles.map(({ id }) => current.find(profile => profile.id === id)!) }
       })
       for (const profile of stored) {
         if (removed.has(profile.id)) void deleteProfileToken(profile.id, profile.credentialVersion).catch(() => undefined)
       }
+      return complete
     })
   } catch (error) {
-    if (isCurrent()) set({ error: errorMessage(error) })
+    if (!quiet && isCurrent()) set({ error: errorMessage(error) })
+    return false
   }
 }
 
@@ -4582,6 +4650,7 @@ function storedProfiles(profiles: readonly PublicServerProfile[]): StoredServerP
     credentialVersion: profile.credentialVersion,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
+    ...(profile.sshHost ? { sshHost: profile.sshHost } : {}),
   }))
 }
 

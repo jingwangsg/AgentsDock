@@ -171,19 +171,25 @@ assertEqual(hubProxyRemoteId('http://h:7850'), null)
 
 const hubURL = 'http://nvmac.tail46daa8.ts.net:7850'
 const hubProfile = { id: 'hub', serverURL: hubURL }
-const savedRemote = { id: 'remote-aaa', serverURL: `${hubURL}/api/remote/aaa` }
+const savedRemote = { id: 'remote-aaa', serverURL: `${hubURL}/api/remote/aaa`, sshHost: 'osmo_9000' }
 const staleRemote = { id: 'remote-zzz', serverURL: `${hubURL}/api/remote/zzz` }
 const otherHubRemote = { id: 'other-hub-remote', serverURL: 'http://other.example:7850/api/remote/aaa' }
-const registered = [{ name: 'osmo', proxy_path: '/api/remote/aaa' }, { name: 'lab', proxy_path: '/api/remote/bbb' }]
+const registered = [{ name: 'osmo', proxy_path: '/api/remote/aaa', ssh_host: 'osmo_9000' }, { name: 'lab', proxy_path: '/api/remote/bbb', ssh_host: 'lab' }]
 // Creates the missing remote, removes the unregistered proxied profile of this
 // hub, and leaves the hub itself and another hub's proxied profile alone.
 assertEqual(reconcileHubProfiles([hubProfile, savedRemote, staleRemote, otherHubRemote], hubURL, registered), {
-  create: [{ name: 'lab', serverURL: `${hubURL}/api/remote/bbb` }],
+  create: [{ name: 'lab', serverURL: `${hubURL}/api/remote/bbb`, sshHost: 'lab' }],
+  update: [],
   removeIds: ['remote-zzz'],
 })
 // A trailing slash or uppercase host on the hub URL still matches saved profiles.
-assertEqual(reconcileHubProfiles([hubProfile, savedRemote], 'NVMAC.tail46daa8.ts.net:7850/', [registered[0]]), { create: [], removeIds: [] })
-assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [registered[0]]), { create: [], removeIds: [] })
+assertEqual(reconcileHubProfiles([hubProfile, savedRemote], 'NVMAC.tail46daa8.ts.net:7850/', [registered[0]]), { create: [], update: [], removeIds: [] })
+assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [registered[0]]), { create: [], update: [], removeIds: [] })
+// A remote moved on the hub (same id, new SSH host), or saved before profiles kept the host, follows the hub.
+assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [{ ...registered[0], ssh_host: 'osmo@new-host' }]),
+  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo@new-host' }], removeIds: [] })
+assertEqual(reconcileHubProfiles([hubProfile, { id: 'remote-aaa', serverURL: savedRemote.serverURL }], hubURL, [registered[0]]),
+  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo_9000' }], removeIds: [] })
 
 // Remotes take the registry's order in the places they already hold; the hub and other profiles stay put.
 assertEqual(

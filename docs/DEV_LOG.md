@@ -1,5 +1,46 @@
 # Public development log
 
+## 2026-10-11 — Mobile edits a hub remote as the desktop does: SSH host and install directory (mobile source)
+
+- On Android and iOS, Edit on a server the hub proxies offered only the name,
+  the hub's proxy address (`…/api/remote/<id>`) and an access token, so a
+  remote could not be pointed at a new host. The editor for such a server now
+  has the desktop's fields: name, SSH host and install directory. Saving a new
+  SSH host or install directory asks the hub to move the remote under the same
+  id (`PATCH /api/admin/remote-servers/<id>`, only the changed fields) and
+  shows the hub's deploy log; Cancel stops the hub's job, as in Add server.
+  The profile keeps its id, and the new install's identity is adopted as after
+  any change behind the hub. A failed deploy reports that the hub already
+  points the server at the new place, as on the desktop. The hub's own
+  profile, and a remote whose hub is not saved on the device, keep the address
+  and token fields.
+- Server rows and the server picker show a remote's SSH host instead of the
+  proxy address. The app keeps each remote's SSH host from the hub's
+  registry. While a remote is the active server, the background probe of the
+  inactive hub now reads the registry once after launch and whenever its
+  remote ids change, as the desktop does, so remotes added or removed
+  elsewhere also appear without first switching to the hub. A failed read
+  shows no error banner and is retried by the next probe. The active profile
+  is never removed by this; a list the hub sent before a move is discarded.
+- Verified with the server-profile tests (registry diff with SSH host
+  updates; picker subtitle), the hub store harness over HTTP (a failed
+  background read raises no banner and is retried; a move sends the PATCH,
+  follows the job and keeps the same profile; a list from before the move is
+  discarded; a failed deploy still moves the profile; Cancel reaches the hub
+  job; an active remote the hub dropped is kept), a rendered editor test (no
+  address, token or Test connection for a remote; a new host moves it; an
+  install directory alone does not resend the host; a drag-reorder is not
+  taken for a move; a blank name keeps the name; an unknown host does not
+  block a rename; a remote without its hub keeps the address form) and the
+  mobile type check. On the Android emulator with a sideload build against an
+  isolated hub: the remote row and editor showed the SSH host; a rename sent
+  no PATCH; Save with a new host sent the PATCH, the deploy log appeared, the
+  hub's real deploy error for the unreachable test host was shown, and the
+  row followed the hub to the new host under the same id; Cancel during the
+  next deploy reached the hub's cancel route and showed "Deployment
+  cancelled.". Not exercised: a move that completes a deploy (no reachable
+  test SSH host) and iOS.
+
 ## 2026-10-11 — Side chat keeps its history across server switches; older history pages are kept in memory (desktop source)
 
 - On a hub-proxied remote behind a slow, flapping link the side chat looked

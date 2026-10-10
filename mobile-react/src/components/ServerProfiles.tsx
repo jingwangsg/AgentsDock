@@ -81,6 +81,8 @@ export interface ServerProfilesManagerProps extends CommonServerProfileProps {
   ) => Awaitable<CreatedProfile>
   onCancelDeploy?: () => Awaitable<void>
   onRedeployRemote: (profileId: string, force: boolean, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<{ redeployed: boolean; running: number | null }>
+  /** Edit with a new SSH host or install dir: the hub moves the remote there under the same id, as on the desktop. */
+  onMoveRemote: (profileId: string, input: { sshHost?: string; installDir?: string }, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<void>
   onUpdateCli: (profileId: string, backend: 'claude' | 'codex') => Promise<string>
   /** Settings → Servers "Update & redeploy all" on the hub, as on the desktop; resolves to the servers with running chats when `force` is false and some have any. */
   onUpdateAll?: (force: boolean, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<{ running: Array<ServerRunningChats & { name: string }>; failures: string | null }>
@@ -195,6 +197,7 @@ export function ServerProfilesManager({
   onDeployRemote,
   onCancelDeploy,
   onRedeployRemote,
+  onMoveRemote,
   onUpdateCli,
   onUpdateAll,
 }: ServerProfilesManagerProps) {
@@ -212,6 +215,9 @@ export function ServerProfilesManager({
   const [deployError, setDeployError] = useState<string | null>(null)
   const deployLease = useRef(0)
   const editedProfile = useMemo(() => profiles.find(profile => profile.id === draft?.profileId) ?? null, [draft?.profileId, profiles])
+  // A remote of a hub saved here is edited as on the desktop: name, SSH host and install dir; the hub owns its
+  // address and token. A remote whose hub is not saved here keeps the address form.
+  const hubRemote = Boolean(editedProfile && profiles.some(profile => normalizeServerURL(profile.serverUrl) === hubProxyBaseURL(editedProfile.serverUrl)))
   const duplicateProfile = useMemo(
     () => findProfileByIdentity(profiles, tested?.server_identity, draft?.profileId),
     [draft?.profileId, profiles, tested?.server_identity],
@@ -221,7 +227,8 @@ export function ServerProfilesManager({
     && tested?.server_identity
     && tested.server_identity !== editedProfile.serverIdentity,
   )
-  const identityResetRequired = Boolean(editedProfile?.serverIdentity && (
+  // A hub remote's new identity is adopted on its next connection (acceptHealthIdentity in the store); nothing to confirm.
+  const identityResetRequired = Boolean(!hubRemote && editedProfile?.serverIdentity && (
     draft?.resetServerIdentity
     || testedIdentityChanged
     || requiresIdentityResetConfirmation(editedProfile)
@@ -238,6 +245,8 @@ export function ServerProfilesManager({
   ))
   const updateTestMissing = Boolean(updateConnectionChanged && !tested?.server_identity?.trim())
   const identityResetUnconfirmed = Boolean(testedIdentityChanged && !draft?.resetServerIdentity)
+  // A remote whose SSH host is not mirrored yet can still be renamed; a known host cannot be cleared.
+  const sshHostMissing = hubRemote && Boolean(editedProfile?.sshHost) && !draft?.sshHost.trim()
 
   const invalidateTest = () => {
     testLease.current += 1
@@ -253,6 +262,7 @@ export function ServerProfilesManager({
     if (busy) return
     invalidateTest()
     setDeployDraft(null)
+    setDeployProgress([])
     setDraft(editServerProfileDraft(profile))
   }
   const closeEditor = () => {
@@ -297,7 +307,7 @@ export function ServerProfilesManager({
     }
   }
   const cancelDeploy = async () => {
-    if (!deployBusy || !onCancelDeploy) return
+    if (!onCancelDeploy) return
     try { await onCancelDeploy() } catch { /* best effort; the poll loop still stops locally */ }
   }
 
@@ -358,8 +368,22 @@ export function ServerProfilesManager({
     setFeedback(null)
     try {
       if (duplicateProfile) throw new Error(`This connection belongs to the existing “${duplicateProfile.name}” profile.`)
-      const patch = buildUpdateServerProfileInput(editedProfile, draft, tested?.server_identity)
+      // A blank name keeps a remote's name: buildUpdateServerProfileInput would name it after its address, the hub's host.
+      const name = draft.name.trim() || editedProfile.name
+      const patch = hubRemote
+        ? (name === editedProfile.name ? {} : { name })
+        : buildUpdateServerProfileInput(editedProfile, draft, tested?.server_identity)
       if (Object.keys(patch).length) await onUpdateProfile(editedProfile.id, patch)
+      const sshHost = draft.sshHost.trim()
+      const installDir = draft.installDir.trim() || undefined
+      // Only a changed host is sent: the saved one can be stale (moved from another device), and the hub would move it back.
+      const hostChanged = sshHost !== (editedProfile.sshHost ?? '')
+      if (hubRemote && (hostChanged || installDir)) {
+        // 'deploy' makes Cancel stop the hub's job, as in the add form.
+        setBusy('deploy')
+        setDeployProgress([])
+        await onMoveRemote(editedProfile.id, { sshHost: hostChanged ? sshHost : undefined, installDir }, entry => setDeployProgress(current => [...current.slice(-49), entry]))
+      }
       testLease.current += 1
       setTested(null)
       setDraft(null)
@@ -564,7 +588,7 @@ export function ServerProfilesManager({
       <View style={styles.editorHeader}>
         <View style={styles.editorHeaderCopy}>
           <Text style={[styles.editorTitle, { color: colors.text }]}>{`Edit ${editedProfile?.name || 'server'}`}</Text>
-          <Text style={[styles.help, { color: colors.muted }]}>Credentials remain in the device secure store.</Text>
+          <Text style={[styles.help, { color: colors.muted }]}>{hubRemote ? 'Your hub reaches this server over SSH and keeps its address and token.' : 'Credentials remain in the device secure store.'}</Text>
         </View>
         <IconButton icon={X} disabled={Boolean(busy)} onPress={closeEditor} label="Close server editor" />
       </View>
@@ -582,6 +606,43 @@ export function ServerProfilesManager({
         style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
       />
 
+      {hubRemote ? <>
+        <FieldLabel text="SSH host" />
+        <TextInput
+          testID="server-profile-ssh-host"
+          accessibilityLabel="SSH host"
+          value={draft.sshHost}
+          onChangeText={sshHost => updateDraft({ sshHost })}
+          editable={!busy}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="osmo_9000 or user@host"
+          placeholderTextColor={colors.muted}
+          style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
+        />
+        <FieldLabel text="Install directory" />
+        <TextInput
+          testID="server-profile-install-dir"
+          accessibilityLabel="Install directory"
+          value={draft.installDir}
+          onChangeText={installDir => updateDraft({ installDir })}
+          editable={!busy}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="Leave empty to keep it; a new host uses its default"
+          placeholderTextColor={colors.muted}
+          style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
+        />
+        <Text style={[styles.help, { color: colors.muted }]}>Saving a new SSH host or install directory deploys AgentsServer there and connects to the new install. Chats stay with the previous install, which keeps running.</Text>
+        {deployProgress.length ? <View style={styles.deployLog}>
+          {deployProgress.slice(-10).map((entry, index) => <Text
+            key={`${entry.phase}-${deployProgress.length - 10 + index}`}
+            style={[styles.deployLogLine, { color: colors.muted }]}
+            numberOfLines={2}
+          >{entry.message}</Text>)}
+        </View> : null}
+      </> : null}
+      {hubRemote ? null : <>
       <FieldLabel text="Server address" />
       <TextInput
         testID="server-profile-url"
@@ -624,6 +685,7 @@ export function ServerProfilesManager({
           onValueChange={clearAccessToken => updateDraft({ clearAccessToken, accessToken: '' }, true)}
         />
       </View> : null}
+      </>}
 
       {identityResetRequired ? <View style={[styles.identityWarning, { backgroundColor: `${colors.orange}14`, borderColor: `${colors.orange}55` }]}>
         <View style={styles.switchRow}>
@@ -655,19 +717,23 @@ export function ServerProfilesManager({
       {updateTestMissing ? <Text style={[styles.help, { color: colors.orange }]}>Test this exact connection before saving address, access-token, or identity changes.</Text> : null}
 
       <View style={styles.editorActions}>
-        <SecondaryButton
+        {hubRemote ? null : <SecondaryButton
           icon={Wifi}
           label={busy === 'test' ? 'Testing…' : 'Test connection'}
           disabled={Boolean(busy) || !draft.serverUrl.trim()}
           busy={busy === 'test'}
           onPress={() => { void testConnection() }}
-        />
+        />}
         <View style={styles.actionSpacer} />
-        <SecondaryButton label="Cancel" disabled={Boolean(busy)} onPress={closeEditor} />
+        <SecondaryButton
+          label="Cancel"
+          disabled={busy === 'deploy' ? !onCancelDeploy : Boolean(busy)}
+          onPress={() => { if (busy === 'deploy') void cancelDeploy(); else closeEditor() }}
+        />
         <PrimaryButton
-          label={busy === 'save' ? 'Saving…' : 'Save'}
-          disabled={Boolean(busy) || !draft.serverUrl.trim() || Boolean(duplicateProfile) || updateTestMissing || identityResetUnconfirmed}
-          busy={busy === 'save'}
+          label={busy === 'deploy' ? 'Deploying…' : busy === 'save' ? 'Saving…' : 'Save'}
+          disabled={Boolean(busy) || !draft.serverUrl.trim() || sshHostMissing || Boolean(duplicateProfile) || updateTestMissing || identityResetUnconfirmed}
+          busy={busy === 'save' || busy === 'deploy'}
           onPress={() => { void save() }}
         />
       </View>
@@ -794,6 +860,8 @@ function ServerManagementRow({ profile, active, switching, disabled, removable, 
 }) {
   const colors = usePalette()
   const status = profileConnectionLabel(profile)
+  // A hub remote shows the SSH host it runs on, never the hub's proxy address.
+  const address = hubProxyRemoteId(profile.serverUrl) !== null ? profile.sshHost : profile.serverUrl
   const details = [profile.serverIdentity ? `Identity: ${profile.serverIdentity}` : '', profile.serverVersion ? `AgentsServer ${profile.serverVersion}` : ''].filter(Boolean).join(' · ')
   // An Alert, not MenuView: MenuView does not open inside this sheet's Modal on Android, and the
   // row has at most three actions, Android's Alert limit (tapping outside cancels there; iOS
@@ -811,7 +879,7 @@ function ServerManagementRow({ profile, active, switching, disabled, removable, 
         {active ? <View style={[styles.activeBadge, { backgroundColor: `${colors.blue}20` }]}><Text style={[styles.activeBadgeText, { color: colors.blue }]}>Active</Text></View> : null}
         {profile.cachedUnreadCount > 0 ? <ServerUnreadBadge count={profile.cachedUnreadCount} /> : null}
       </View>
-      <Text style={[styles.profileUrl, { color: colors.muted }]} numberOfLines={1}>{profile.serverUrl}</Text>
+      {address ? <Text style={[styles.profileUrl, { color: colors.muted }]} numberOfLines={1}>{address}</Text> : null}
       {profile.lastConnectionError ? <Text style={[styles.profileDetail, { color: profile.connectionState === 'degraded' ? colors.orange : colors.red }]} numberOfLines={2}>{profile.lastConnectionError}</Text> : details ? <Text style={[styles.profileDetail, { color: colors.muted }]} numberOfLines={1}>{details}</Text> : null}
       {work ? <Text accessibilityRole={work.failed ? 'alert' : undefined} style={[styles.profileDetail, { color: work.failed ? colors.red : colors.muted }]} numberOfLines={2}>{work.text}</Text> : null}
       {/* Under the name, not beside Use/Edit/More: a 375 pt row has no room for two more buttons. */}

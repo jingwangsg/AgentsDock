@@ -102,18 +102,29 @@ export function hubProxyBaseURL(serverURL: string): string | null {
  * Diffs the saved profiles against the hub's remote-server registry. Only
  * proxied profiles of this hub can be removed; existing names are never
  * rewritten, and profiles of other hubs or direct servers are untouched.
+ * A saved remote follows the hub's SSH host for it (a move or another device's edit).
  */
 export function reconcileHubProfiles(
-  profiles: readonly Pick<StoredServerProfile, 'id' | 'serverURL'>[],
+  profiles: readonly Pick<StoredServerProfile, 'id' | 'serverURL' | 'sshHost'>[],
   hubURL: string,
-  remotes: readonly Pick<RemoteServer, 'name' | 'proxy_path'>[],
-): { create: { name: string; serverURL: string }[]; removeIds: string[] } {
+  remotes: readonly Pick<RemoteServer, 'name' | 'proxy_path' | 'ssh_host'>[],
+): {
+  create: { name: string; serverURL: string; sshHost: string }[]
+  update: { id: string; sshHost: string }[]
+  removeIds: string[]
+} {
   const hub = normalizeServerURL(hubURL)
   const prefix = hub + HUB_PROXY_PREFIX
-  const registered = new Map(remotes.map(remote => [normalizeServerURL(hub + remote.proxy_path), remote.name]))
+  const registered = new Map(remotes.map(remote => [normalizeServerURL(hub + remote.proxy_path), remote]))
   const saved = new Set(profiles.map(profile => normalizeServerURL(profile.serverURL)))
   return {
-    create: [...registered].filter(([serverURL]) => !saved.has(serverURL)).map(([serverURL, name]) => ({ name, serverURL })),
+    create: [...registered]
+      .filter(([serverURL]) => !saved.has(serverURL))
+      .map(([serverURL, remote]) => ({ name: remote.name, serverURL, sshHost: remote.ssh_host })),
+    update: profiles.flatMap(profile => {
+      const remote = registered.get(normalizeServerURL(profile.serverURL))
+      return remote && remote.ssh_host !== profile.sshHost ? [{ id: profile.id, sshHost: remote.ssh_host }] : []
+    }),
     removeIds: profiles
       .filter(profile => {
         const serverURL = normalizeServerURL(profile.serverURL)
@@ -185,6 +196,7 @@ export function createStoredServerProfile(
     credentialVersion: DEFAULT_CREDENTIAL_VERSION,
     createdAt: timestamp,
     updatedAt: timestamp,
+    ...(input.sshHost ? { sshHost: input.sshHost } : {}),
   }
 }
 
@@ -353,6 +365,7 @@ function normalizeStoredServerProfile(value: unknown, timestamp: string, index: 
     credentialVersion: normalizeCredentialVersion(value.credentialVersion),
     createdAt,
     updatedAt: cleanTimestamp(value.updatedAt) || createdAt,
+    ...(typeof value.sshHost === 'string' && value.sshHost ? { sshHost: value.sshHost } : {}),
   }
 }
 

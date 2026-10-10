@@ -1,5 +1,5 @@
 import { normalizeServerURL } from './format'
-import { defaultProfileName, isLoopbackServerURL } from './server-profiles'
+import { defaultProfileName, hubProxyRemoteId, isLoopbackServerURL } from './server-profiles'
 
 export type ServerProfileConnectionState = 'online' | 'degraded' | 'connecting' | 'retrying' | 'offline' | 'cached'
 
@@ -19,6 +19,8 @@ export interface ServerProfileListItem {
   cachedUnreadCount: number
   lastConnectionError?: string | null
   serverVersion?: string | null
+  /** A hub remote's SSH host; its proxy address is never shown. */
+  sshHost?: string | null
 }
 
 export interface ServerProfileDraftValues {
@@ -28,6 +30,9 @@ export interface ServerProfileDraftValues {
   accessToken: string
   clearAccessToken: boolean
   resetServerIdentity: boolean
+  /** Hub remotes only: a new SSH host or install dir moves the remote there. */
+  sshHost: string
+  installDir: string
 }
 
 export interface ServerProfileTestInput {
@@ -73,6 +78,8 @@ export function editServerProfileDraft(profile: ServerProfileListItem): ServerPr
     accessToken: '',
     clearAccessToken: false,
     resetServerIdentity: false,
+    sshHost: profile.sshHost ?? '',
+    installDir: '',
   }
 }
 
@@ -105,8 +112,9 @@ export function displayServerProfileName(profile: Pick<ServerProfileListItem, 'n
   return /^(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[?::1\]?)(?::\d+)?$/i.test(name) ? 'local' : name
 }
 
-export function profileHostSubtitle(profile: Pick<ServerProfileListItem, 'name' | 'serverUrl' | 'serverIdentity'>): string | null {
-  const host = serverProfileHost(profile.serverUrl)
+export function profileHostSubtitle(profile: Pick<ServerProfileListItem, 'name' | 'serverUrl' | 'serverIdentity' | 'sshHost'>): string | null {
+  // A hub remote reads as the SSH host the hub reaches it by, never as the hub's proxy address.
+  const host = hubProxyRemoteId(profile.serverUrl) !== null ? profile.sshHost || null : serverProfileHost(profile.serverUrl)
   if (!host) return null
   const normalizedHost = host.toLocaleLowerCase()
   if (displayServerProfileName(profile).toLocaleLowerCase() === normalizedHost) return null

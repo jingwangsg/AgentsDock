@@ -327,6 +327,8 @@ export interface StoredServerProfile {
   credentialVersion: number
   createdAt: string
   updatedAt: string
+  /** A hub remote's SSH host, mirrored from the hub's registry: the server list shows it instead of the proxy address. */
+  sshHost?: string
 }
 
 /** Profile data that is safe to expose to the runtime and UI. */
@@ -373,6 +375,7 @@ export interface AddServerProfileInput {
   accessToken?: string | null
   serverIdentity?: string | null
   serverConfigured?: boolean
+  sshHost?: string
 }
 
 export interface UpdateServerProfileInput {
@@ -1335,6 +1338,7 @@ export interface RemoteServersCapability {
   admin_path: string
   ssh_available: boolean
   count: number
+  ids?: string[]
 }
 
 export interface SessionRewindCapability {
