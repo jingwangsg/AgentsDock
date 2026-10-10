@@ -205,6 +205,13 @@ class Registry:
                     names.add(child.name)
         return [Instance(name, self.home) for name in sorted(names, key=lambda name: (name != "default", name))]
 
+    def is_empty(self) -> bool:
+        """No path that instances() discovers from exists, not even a dangling link."""
+        default = Instance("default", self.home)
+        return not any(os.path.lexists(path) for path in (
+            self.file, default.service_file(), default.config / "env", self.home / ".config/agents-server-instances",
+        ))
+
     @contextmanager
     def locked(self):
         check_path(self.root, self.home)
