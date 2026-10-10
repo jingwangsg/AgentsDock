@@ -1,5 +1,33 @@
 # Public development log
 
+## 2026-10-11 — Import Chat works on a server whose home directory it does not own (server source)
+
+- On OSMO-hosted remotes the server runs as root with its home directory on
+  a shared filesystem owned by another user and writable by all. There,
+  Import Chat showed "Cannot verify chats already used by other local server
+  instances" instead of the local history list. Resume by session ID failed
+  with "Local history import is busy or unavailable". Before listing or
+  importing, the server reads the session indexes of other server instances
+  installed under the same home. Its path check rejects any directory under
+  that home that another user owns or anyone can write, so it failed before
+  it found that no such instance existed.
+- When none of the paths that installed instances are discovered from exists
+  (not even a dangling link), the server now has no other indexes to read. In
+  that case it serializes imports within its own process and creates nothing
+  under the home directory. When any installed instance exists, the existing
+  checks apply unchanged, and an unsafe path still fails closed.
+- Verified with the cross-instance import tests (new cases: a world-writable
+  `.config` without instances lists, resumes and locks without creating files;
+  with a registered instance or a planted link it still fails closed) and the
+  related import and installer tests. Ran the changed modules against the
+  real remote filesystem without touching the running server: empty
+  ownership set, nested import rejected, nothing created. In the desktop app
+  against two isolated servers sharing a home whose `.config` is mode 777:
+  the main-branch server showed the reported error in Import Chat and
+  refused Resume by session ID; the fixed server listed the chat, imported it
+  through the dialog, and resumed a second one by ID.
+- Availability: server source; a remote takes it after a redeploy.
+
 ## 2026-10-11 — Browser-tab port tunnels get their own hub connection to a remote (server source)
 
 - A hub reaches each remote over separate ssh connections: main (API),

@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import threading
 
 from server_instances import Registry, check_path, exclusive_lock, read_config, read_regular
 
@@ -19,6 +20,7 @@ PROVIDER_ID_FIELDS = {
 MAX_IMPORT_INDEX_BYTES = 64 * 1024 * 1024
 MAX_IMPORT_INDEX_TOTAL_BYTES = 128 * 1024 * 1024
 MAX_IMPORT_INSTANCES = 256
+PROCESS_IMPORT_LOCK = threading.Lock()
 
 
 def provider_session_keys(session: dict, default_backend: str = "claude") -> set[tuple[str, str]]:
@@ -42,6 +44,10 @@ def other_instance_provider_keys(current_state: Path, *, registry: Registry | No
     occur during discovery. Bad or unsafe indexes fail closed, not silently open.
     """
     registry = registry or Registry()
+    if registry.is_empty():
+        # Nothing installed can own an ID. Skipping check_path here keeps homes
+        # we do not own usable (osmo remotes: root, HOME on a shared mode-777 FS).
+        return set()
     instances = registry.instances()
     if len(instances) > MAX_IMPORT_INSTANCES:
         raise ValueError("Too many local instances to verify import ownership.")
@@ -84,6 +90,16 @@ def history_import_lock(*, registry: Registry | None = None):
     or crash. Older servers do not participate, so this is not a provider lock.
     """
     registry = registry or Registry()
+    if registry.is_empty():
+        # No installed instance shares the lock file, so serialize only this
+        # process's imports and create nothing under a home we may not own.
+        if not PROCESS_IMPORT_LOCK.acquire(blocking=False):
+            raise ValueError("Another import in this process owns the history import lock; no changes made.")
+        try:
+            yield
+        finally:
+            PROCESS_IMPORT_LOCK.release()
+        return
     check_path(registry.root, registry.home)
     registry.root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with exclusive_lock(registry.root / "history-import.lock"):

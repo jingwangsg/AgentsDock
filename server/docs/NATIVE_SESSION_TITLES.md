@@ -62,6 +62,9 @@ backported alongside naming rather than inferred from the release version:
 - Recheck cross-instance ownership for bulk import and manual resume, including
   `import_history: false`. A shared nonblocking lock serializes cooperating
   imports; unreadable/unsafe ownership indexes fail closed with a retryable error.
+  With no installed instance under the home, nothing is read and the lock is
+  in-process, so a home the server does not own (root on a shared mode-777
+  filesystem) stays usable.
   Fresh chats without an existing provider ID do not need that scan or lock.
 
 `local_session_ownership.py` holds the ownership index reader and import lock on

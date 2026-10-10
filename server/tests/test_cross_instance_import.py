@@ -157,14 +157,49 @@ class CrossInstanceIndexTests(ImportFixtures, unittest.TestCase):
                 self.keys()
 
     def test_import_guard_rejects_concurrency_and_releases_on_exception(self):
-        with self.assertRaisesRegex(RuntimeError, "synthetic"):
-            with instances.history_import_lock():
-                with self.assertRaisesRegex(ValueError, "Another process owns"):
+        # First without any installed instance (in-process lock), then with one
+        # (the shared lock file).
+        for installed in (False, True):
+            with self.subTest(installed=installed):
+                if installed:
+                    self.register(self.other, "installed")
+                with self.assertRaisesRegex(RuntimeError, "synthetic"):
                     with instances.history_import_lock():
-                        self.fail("concurrent import acquired ownership")
-                raise RuntimeError("synthetic")
+                        with self.assertRaisesRegex(ValueError, "Another .* owns"):
+                            with instances.history_import_lock():
+                                self.fail("concurrent import acquired ownership")
+                        raise RuntimeError("synthetic")
+                with instances.history_import_lock():
+                    pass
+                self.assertEqual(installed, (self.registry.root / "history-import.lock").exists())
+
+    def test_unowned_home_without_instances_creates_no_managed_paths(self):
+        # 2026-10-11 osmo remotes: root with HOME on a shared FS whose .config is
+        # mode 2777, so check_path rejects every managed path under HOME.
+        config = self.home / ".config"
+        config.mkdir()
+        config.chmod(0o777)
+        self.assertEqual(self.keys(), set())
         with instances.history_import_lock():
             pass
+        self.assertEqual(list(config.iterdir()), [])
+
+    def test_unowned_home_with_any_instance_path_fails_closed(self):
+        config = self.home / ".config"
+        for name, plant in (
+            ("registered", lambda: self.register(self.other, "installed")),
+            ("planted link", lambda: (config / "agents-server-instances").symlink_to(self.home / "missing")),
+        ):
+            with self.subTest(name):
+                config.mkdir(exist_ok=True)
+                config.chmod(0o755)
+                plant()
+                config.chmod(0o777)
+                with self.assertRaisesRegex(ValueError, "Unsafe managed path"):
+                    self.keys()
+                with self.assertRaisesRegex(ValueError, "Unsafe managed path"):
+                    with instances.history_import_lock():
+                        self.fail("unsafe home acquired the shared lock")
 
 
 class CrossInstanceImportEndpointTests(ImportFixtures, unittest.IsolatedAsyncioTestCase):
@@ -257,6 +292,16 @@ class CrossInstanceImportEndpointTests(ImportFixtures, unittest.IsolatedAsyncioT
             await agent_server.create_session(req)
         self.assertEqual(error.exception.status_code, 503)
         self.create.assert_not_awaited()
+
+    async def test_unowned_home_without_instances_lists_and_resumes(self):
+        (self.home / ".config").mkdir()
+        (self.home / ".config").chmod(0o777)
+        result = await agent_server.get_local_sessions(limit=10)
+        self.assertEqual(len(result["sessions"]), 2)
+        req = agent_server.CreateSessionRequest(backend="claude", provider_session_id="free")
+        with patch.object(agent_server, "create_session_with_history", AsyncMock(return_value={"session": {}})) as create:
+            self.assertEqual(await agent_server.create_session(req), {"session": {}})
+        create.assert_awaited_once_with(req)
 
 
 class ImportDiscoveryParityTests(ImportFixtures, unittest.IsolatedAsyncioTestCase):
