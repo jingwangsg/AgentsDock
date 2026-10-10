@@ -32,6 +32,8 @@ export function H2(props: Content): ReactElement;
 export function H3(props: Content): ReactElement;
 export function Text(props: Content & { size?: 'body' | 'small'; muted?: boolean; weight?: 'normal' | 'medium' }): ReactElement;
 export function Code(props: Content): ReactElement;
+/** Report prose from a Markdown string: headings, paragraphs, lists, fenced code, tables, quotes and links in the host's typography. `$…$` / `$$…$$` are shown as TeX source; write a literal dollar sign as `\$`. */
+export function Markdown(props: { source: string }): ReactElement;
 export function Link(props: { href: string; children: ReactNode }): ReactElement;
 export function Card(props: Content): ReactElement;
 export function CardHeader(props: { title: ReactNode; subtitle?: ReactNode; trailing?: ReactNode; style?: CSSProperties }): ReactElement;

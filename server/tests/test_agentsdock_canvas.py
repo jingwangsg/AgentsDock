@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,40 @@ VALID_SOURCE = (
 )
 
 needs_node = unittest.skipIf(shutil.which("node") is None, "node is not installed")
+
+CANVAS_IMPORTING_MARKDOWN = (
+    "import { Markdown, Stack } from '@zed/canvas';\n"
+    "export default function Report() { return <Stack><Markdown source={'# Title\\n\\nBody with **bold**.'} /></Stack>; }\n"
+)
+MARKDOWN_DOCUMENT = (
+    "# 回退诊断\n\n"
+    "先看 **RMS** 与 `rank`，公式 $\\|x\\|_2/\\sqrt{d}$ 见 [EDM2](https://arxiv.org/abs/2312.02696)。\n\n"
+    "- 第一步\n  - 子项 1\n  - 子项 2\n- 第二步\n\n"
+    "```python\nprint(1)\n```\n\n"
+    "| 指标 | 值 | 单位 |\n|:--|--:|:-:|\n| update RMS | 0.2 | 1 |\n\n"
+    "> 引用一行\n\n"
+    "$$\nL = a N^{-b}\n$$\n\n---\n\n结束。\n"
+)
+MARKDOWN_EDGE_CASES = {
+    "loose_list": "- a\n\n- b\n\n- c\n",
+    "year": "In the year\n2024. The model\n",
+    "fence": "```python title=x\nprint(1)\n```\nafter\n",
+    "sharp": "# F# and C#\n",
+    "nested_fence": "````markdown\n```\ninner\n```\n````\n",
+    "dollars": "costs \\$5 and $10 in snake_case_name\n",
+    "bold_italic": "***both*** and *one* end\n",
+    "pipe_rule": "a | b\n---\n",
+}
+# The bundle registers window/document listeners at load; these stubs let node run it without a DOM.
+NODE_DOM_STUB = """
+function element() { return { style: {}, dataset: {}, children: [], setAttribute() {}, removeAttribute() {}, getAttribute() { return null },
+  appendChild(child) { this.children.push(child); return child }, removeChild() {}, addEventListener() {}, removeEventListener() {},
+  querySelectorAll() { return [] }, querySelector() { return null }, closest() { return null },
+  getBoundingClientRect() { return { x: 0, y: 0, width: 0, height: 0 } }, textContent: '', innerHTML: '', classList: { add() {}, remove() {} } } }
+globalThis.window = globalThis; globalThis.addEventListener = () => {};
+globalThis.document = { ...element(), documentElement: element(), head: element(), body: element(), createElement: element,
+  createTextNode(text) { return { textContent: text } }, getElementById() { return element() } };
+"""
 
 
 class CanvasTests(unittest.TestCase):
@@ -147,6 +182,79 @@ class CanvasTests(unittest.TestCase):
         assert completed.returncode == 0, completed.stdout + completed.stderr
         assert completed.stdout.startswith("OK:")
 
+
+    def test_runtime_version_follows_the_runtime_files(self) -> None:
+        version = canvas.runtime_version()
+        assert version and len(version) == 64
+        runtime = self.tmp_path / "runtime"
+        shutil.copytree(canvas.RUNTIME_DIR, runtime, ignore=shutil.ignore_patterns("esbuild", "typescript", "types"))
+        with patch.object(canvas, "RUNTIME_DIR", runtime):
+            canvas.runtime_version.cache_clear()
+            assert canvas.runtime_version() == version
+            (runtime / "markdown.js").write_bytes(b"// changed\n")
+            canvas.runtime_version.cache_clear()
+            assert canvas.runtime_version() != version
+        canvas.runtime_version.cache_clear()
+
+    @needs_node
+    def test_canvas_importing_markdown_compiles_and_the_served_vendor_js_installs_it(self) -> None:
+        javascript, diagnostics, ran = canvas.compile_source(CANVAS_IMPORTING_MARKDOWN)
+        assert ran and diagnostics is None, diagnostics
+        assert '"Markdown"' in javascript
+        served = canvas.runtime_asset_bytes("vendor.js")
+        assert served.startswith((canvas.RUNTIME_DIR / "vendor.js").read_bytes())
+        assert served.endswith((canvas.RUNTIME_DIR / "markdown.js").read_bytes())
+        assert canvas.runtime_asset_bytes("shell.html") == (canvas.RUNTIME_DIR / "shell.html").read_bytes()
+        # WebKit before 16.4 rejects lookbehind at parse time, which would stop the whole bundle.
+        assert not re.search(rb"\(\?<[=!]", served)
+        # The served bytes run as one script, as the page loads them.
+        script = NODE_DOM_STUB + f"new Function(require('fs').readFileSync({json.dumps(str(canvas.RUNTIME_DIR / 'vendor.js'))}, 'utf8') + '\\n' + require('fs').readFileSync({json.dumps(str(canvas.RUNTIME_DIR / 'markdown.js'))}, 'utf8'))(); console.log(typeof globalThis.__zedCanvasModules['@zed/canvas'].Markdown);"
+        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+        assert completed.returncode == 0 and completed.stdout.strip() == "function", completed.stdout + completed.stderr
+
+    @needs_node
+    def test_markdown_parses_and_renders_each_block_kind_with_the_bundled_react(self) -> None:
+        script = NODE_DOM_STUB + f"""
+require({json.dumps(str(canvas.RUNTIME_DIR / 'vendor.js'))});
+const markdown = require({json.dumps(str(canvas.RUNTIME_DIR / 'markdown.js'))});
+const React = globalThis.__zedCanvasModules.react;
+const theme = {{ text: {{ primary: '#111', secondary: '#666', link: '#06c' }}, stroke: {{ primary: '#ccc', secondary: '#ddd' }} }};
+const blocks = markdown.parseMarkdown({json.dumps(MARKDOWN_DOCUMENT)});
+const tree = markdown.renderMarkdown(React, theme, blocks);
+const outline = node => typeof node === 'string' ? node : Array.isArray(node) ? node.map(outline)
+  : node == null ? null : {{ tag: node.type, children: React.Children.toArray(node.props.children).map(outline) }};
+const edge = Object.fromEntries(Object.entries({json.dumps(MARKDOWN_EDGE_CASES)}).map(([name, text]) => [name, markdown.parseMarkdown(text)]));
+console.log(JSON.stringify({{ blocks, outline: outline(tree).children, edge }}));
+"""
+        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        result = json.loads(completed.stdout)
+        blocks = result["blocks"]
+        assert [block["type"] for block in blocks] == ["heading", "paragraph", "list", "code", "table", "quote", "math", "rule", "paragraph"]
+        assert [node["type"] for node in blocks[1]["inlines"]] == ["text", "strong", "text", "code", "text", "math", "text", "link", "text"]
+        assert blocks[1]["inlines"][7]["href"] == "https://arxiv.org/abs/2312.02696"
+        assert [block["type"] for block in blocks[2]["items"][0]["blocks"]] == ["paragraph", "list"]
+        assert len(blocks[2]["items"][0]["blocks"][1]["items"]) == 2
+        assert blocks[3] == {"type": "code", "lang": "python", "text": "print(1)"}
+        assert blocks[4]["align"] == ["left", "right", "center"] and len(blocks[4]["rows"]) == 1
+        assert blocks[6]["text"] == "L = a N^{-b}"
+        assert [node["tag"] for node in result["outline"]] == ["h1", "p", "ul", "pre", "div", "blockquote", "pre", "hr", "p"]
+        paragraph = result["outline"][1]["children"]
+        assert paragraph[1]["tag"] == "strong" and paragraph[3]["tag"] == "code" and paragraph[7]["tag"] == "a"
+        assert result["outline"][2]["children"][0]["children"][1]["tag"] == "ul"
+
+        edge = result["edge"]
+        # Blank lines between items keep one list; a `1.` item interrupts a paragraph but "2024." does not.
+        assert [block["type"] for block in edge["loose_list"]] == ["list"] and len(edge["loose_list"][0]["items"]) == 3
+        assert [block["type"] for block in edge["year"]] == ["paragraph"]
+        # An info string with more than a word still closes at the fence; the heading keeps "C#"; a four-backtick block can show ```.
+        assert [block["type"] for block in edge["fence"]] == ["code", "paragraph"] and edge["fence"][0]["lang"] == "python"
+        assert edge["sharp"][0]["inlines"] == [{"type": "text", "text": "F# and C#"}]
+        assert edge["nested_fence"][0]["text"] == "```\ninner\n```"
+        # Prose dollars, snake_case and bold italic; "a | b" above a rule is not a table.
+        assert edge["dollars"][0]["inlines"] == [{"type": "text", "text": "costs $5 and $10 in snake_case_name"}]
+        assert [node["type"] for node in edge["bold_italic"][0]["inlines"]] == ["strong", "text", "em", "text"]
+        assert [block["type"] for block in edge["pipe_rule"]] == ["paragraph", "rule"]
 
 
 ANCHOR = {"canvas_id": "summary", "tag": "td", "text": "loss 2.41", "html": "<td>loss 2.41</td>"}

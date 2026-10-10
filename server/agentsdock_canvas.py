@@ -12,6 +12,7 @@ Also usable as a CLI for agents:  agentsdock_canvas.py check <file.canvas.tsx>
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import os
@@ -44,16 +45,38 @@ TAG_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 COMPILE_TIMEOUT_SECONDS = 180
 # The LEGAL file carries the bundled runtime's license notices into exported standalone pages.
 RUNTIME_ASSETS = {"vendor.js": "application/javascript", "vendor.js.LEGAL.txt": "text/plain", "shell.html": "text/html"}
+# Everything the served bundle, the compiler and the agent's guide depend on; runtime_version() digests them.
+RUNTIME_FILES = ("AUTHORING.md", "compile.cjs", "markdown.js", "modules.json", "sdk.d.ts", "shell.html", "vendor.js")
 AGENT_FILES = ("AUTHORING.md", "sdk.d.ts")
 
 
 # ---------------------------------------------------------------- runtime
 
+@functools.lru_cache(maxsize=1)
 def runtime_version() -> str | None:
+    """sha256 over RUNTIME_FILES (each name, then its bytes, in that order).
+
+    Clients cache shell.html and vendor.js per version and the build cache is
+    keyed on it, so a change to any runtime file must change the version; a
+    digest does that without a hand-maintained file. Cached for the process:
+    the files change only with a redeploy, which restarts the server.
+    """
+    digest = hashlib.sha256()
     try:
-        return (RUNTIME_DIR / "version").read_text(encoding="utf-8").strip() or None
+        for name in RUNTIME_FILES:
+            digest.update(name.encode("utf-8"))
+            digest.update((RUNTIME_DIR / name).read_bytes())
     except OSError:
         return None
+    return digest.hexdigest()
+
+
+def runtime_asset_bytes(asset: str) -> bytes:
+    # The SDK bundle has no source in this repository, so the Markdown component
+    # is plain JavaScript in markdown.js, appended to vendor.js when served:
+    # clients still fetch one script and key their caches on the runtime version.
+    parts = ("vendor.js", "markdown.js") if asset == "vendor.js" else (asset,)
+    return b"\n".join((RUNTIME_DIR / name).read_bytes() for name in parts)
 
 
 def node_binary() -> str | None:
@@ -161,8 +184,10 @@ def prompt_section(state_dir: Path, session_id: str, *, directory_label: str | N
     return (
         "## Canvas\n"
         f"This chat has a managed Canvas directory: {directory}\n"
-        "A Canvas is one standalone `<name>.canvas.tsx` React report that the user views beside the chat. "
-        "Create one only when the artifact itself is the deliverable (reports, comparisons, metrics, interactive explorations). "
+        "A Canvas is one standalone `<name>.canvas.tsx` interactive technical report that the user views beside the chat: "
+        "it holds the full text, as a written report does, with prose in the SDK's Markdown component and the key numbers "
+        "in one summary table; it is not a dashboard that links to the text elsewhere. "
+        "Create one only when the artifact itself is the deliverable (reports, tutorials, comparisons). "
         f"Before writing or editing a Canvas, read {directory / 'AUTHORING.md'} and the SDK declarations at {directory / 'sdk.d.ts'}. "
         "Import only from `@zed/canvas`, default-export the component, and embed the data directly. "
         f"After saving, run `{check} {directory}/<name>.canvas.tsx` and fix every reported error. "
@@ -633,10 +658,12 @@ def register_canvas_routes(
         if media_type is None:
             raise HTTPException(status_code=404, detail="unknown runtime asset")
         try:
-            data = await asyncio.to_thread((RUNTIME_DIR / asset).read_bytes)
+            data = await asyncio.to_thread(runtime_asset_bytes, asset)
         except OSError:
             raise HTTPException(status_code=404, detail="runtime asset missing") from None
-        return Response(content=data, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"})
+        # The URL carries no version and vendor.js now changes with markdown.js: an HTTP cache
+        # (the iOS fetch shares NSURLCache) must not hand a new runtime version the old body.
+        return Response(content=data, media_type=media_type, headers={"Cache-Control": "no-cache"})
 
 
 # ---------------------------------------------------------------- CLI

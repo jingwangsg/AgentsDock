@@ -1,5 +1,40 @@
 # Public development log
 
+## 2026-10-10 — Canvas reads as an interactive technical report; Markdown component (server source)
+
+- A Canvas asked to hold a tutorial came out as a poster: four short entries
+  behind a dropdown, Stat tiles and tables, while the 42,000-character text
+  went to a separate `.md` file the Canvas only linked. The authoring guide
+  described dashboards (Stat, Pill, Callout, "clear primary finding"), and the
+  SDK had no component for prose, so long text could only be hand-built from
+  `Text` elements.
+- The runtime gains a `Markdown` component (headings, paragraphs, nested
+  lists, fenced code, GFM tables, quotes, rules, inline code, emphasis, links
+  and bare URLs; `$…$` and `$$…$$` are shown as TeX source, no math renderer
+  is bundled) in the SDK's typography, implemented as plain JavaScript
+  appended to the served `vendor.js`, so the desktop and Android page assembly
+  and caches are unchanged. The authoring guide and the Canvas system prompt
+  now describe an interactive technical report: the complete text at report
+  granularity, prose in `Markdown`, the key numbers in one summary table with
+  value, unit and source, charts where a trend is the finding, no oversized
+  standalone numbers, Callout only for a caveat, Pill only for a status word,
+  Stat only for a requested dashboard, and no splitting the text into a
+  separate file with the Canvas as its index. The Canvas runtime version is
+  now a digest of the runtime files instead of a hand-set file, so a changed
+  bundle is refetched and cached builds recompile; the runtime asset route no
+  longer allows an hour of HTTP caching, since `vendor.js` changes with the
+  component.
+- Verified with the Canvas tests (a report importing `Markdown` type-checks
+  and compiles; the served bundle runs as one script and installs the
+  component and contains no lookbehind, which WebKit before 16.4 rejects; the
+  parser and renderer produce the expected blocks and element tree under node
+  with the bundle's React, including loose lists, fence info strings, nested
+  fences and prose dollar signs; the version follows the files) and by
+  rendering a report through the real page assembly in a headless Electron
+  window. Not exercised: a Canvas in the apps on a device. Availability:
+  source only; takes effect once a server is redeployed; an existing chat gets
+  the new guide and SDK types when its next turn builds the system prompt.
+
 ## 2026-10-10 — Desktop package 117 and Android build 62 (local package and APK)
 
 - Package the entry above recorded since package 116 and Android build 61:
