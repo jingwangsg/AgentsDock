@@ -2,10 +2,11 @@
 
 ## 2026-10-10 — Desktop package 118 and Android build 63 (local package and APK)
 
-- Package the entries recorded since package 117 and Android build 62: the
-  Canvas Markdown component and report guide, and Android's "Update &
-  redeploy all" with the hub job behind it. The pkg carries the new server
-  code; the Android button needs a hub running it.
+- Package the entries recorded since package 117 and Android build 62. The
+  APK carries Android's "Update & redeploy all"; its button needs a hub
+  running the new server, which the pkg does not bundle. The pkg has no
+  desktop source change since 117 (the Canvas Markdown component is served
+  by the server); it is built so the two numbers stay paired.
 - The pkg is unsigned like every local package, built with the fuses
   re-signing flag and reports CFBundleVersion 118; the APK is signed with the
   project debug keystore (SHA-256 fac61745…) and reports versionCode 63.
