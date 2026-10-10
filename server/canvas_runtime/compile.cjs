@@ -57,6 +57,8 @@ async function compile(source) {
 module.exports = { compile };
 if (require.main === module) {
   (async () => {
+    // A UTF-8 label can span two stdin chunks.
+    process.stdin.setEncoding('utf8');
     let source = '';
     for await (const chunk of process.stdin) source += chunk;
     try { process.stdout.write(await compile(source)); }

@@ -78,6 +78,19 @@ class CanvasTests(unittest.TestCase):
             second = canvas.build(path)
         assert second["javascript"] == first["javascript"]
 
+    @needs_node
+    def test_compiler_preserves_multibyte_unicode_in_large_source(self) -> None:
+        label = "中文标签" * 20000
+        source = (
+            "import { Text } from '@zed/canvas';\n"
+            f"export default function Report() {{ return <Text>{{{json.dumps(label, ensure_ascii=False)}}}</Text>; }}\n"
+        )
+        javascript, diagnostics, ran = canvas.compile_source(source)
+        self.assertTrue(ran)
+        self.assertIsNone(diagnostics)
+        self.assertEqual(javascript.lower().count("\\ufffd"), 0)
+        self.assertEqual(javascript.lower().count("\\u4e2d\\u6587\\u6807\\u7b7e"), 20000)
+
     def test_prompt_names_why_canvas_is_unavailable(self) -> None:
         with patch.object(canvas, "node_binary", lambda: None):
             section = canvas.prompt_section(self.tmp_path, "sess_1")
