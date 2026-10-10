@@ -226,6 +226,12 @@ const LEGACY_TIMELINE_EVENT_LIMIT = 480
 const LEGACY_BOUNDARY_BACKFILL_EVENT_LIMIT = 1_000
 const LEGACY_BOUNDARY_BACKFILL_MAX_PAGES = 4
 const HISTORY_AROUND_EVENT_LIMIT = 1_200
+// History older than the live tail only changes through a rewind, so pages of it are kept in memory:
+// a saved reading position revisited after a server switch, or scrolling back over a window just
+// read, costs no request. One 600-item page of a tool-heavy chat is about 1 MB; 24 pages hold a
+// dozen return visits.
+const HISTORICAL_PAGE_CACHE_ENTRIES = 24
+const RUN_TERMINAL_EVENT_TYPES = new Set(['turn_finished', 'turn_stopped', 'turn_aborted', 'history_imported'])
 
 function isAgentRouteRevisionConflict(error: unknown): boolean {
   if (!(error instanceof ServerError) || error.status !== 409) return false
@@ -495,6 +501,8 @@ export class AppService {
   private fileDownloads = new Map<string, Promise<string>>()
   private codexThreadLoads = new Map<string, Promise<CodexRuntimeSnapshot>>()
   private timelineIndexes = new Map<string, TimelineIndex>()
+  // Insertion order is recency: a hit re-inserts, eviction drops from the front.
+  private historicalPages = new Map<string, TimelinePage>()
   private terminalConnections = new Map<string, TerminalConnection>()
   private terminalLeases = new Map<string, number>()
   private readonly portTunnels: PortTunnelManager
@@ -3148,6 +3156,40 @@ export class AppService {
     }
   }
 
+  /** A semantic page outside the live tail, from memory when it was already read under the current history revision. */
+  private async historicalSemanticPage(
+    scope: ConnectionScope,
+    sessionId: string,
+    options: Omit<SessionPageOptions, 'pageMode'>
+  ): Promise<TimelinePage> {
+    // A rewind bumps the server's history revision; timeline reads and the live history_rewound
+    // event record it in the cache, and the session list carries it too. Keyed by it, a page read
+    // under an old revision is never returned again.
+    const revision = Math.max(
+      this.cache.timelineState(scope.namespace, sessionId)?.historyRevision ?? 0,
+      this.sessions.find(candidate => candidate.id === sessionId)?.history_revision ?? 0
+    )
+    const key = `${scope.namespace}:${sessionId}:${revision}:${options.before ?? ''}:${options.after ?? ''}:${options.limit ?? ''}:${options.tail ? 'tail' : ''}`
+    const cached = this.historicalPages.get(key)
+    if (cached) {
+      this.historicalPages.delete(key)
+      this.historicalPages.set(key, cached)
+      return cached
+    }
+    const page = await this.semanticTimelinePage(scope, sessionId, options)
+    // Rows older than a given seq only change through a rewind, but the server collects each
+    // selected turn to its current end: a page holding a run without its terminal event (still
+    // running) grows, and so does a forward page that reached the live tail; one with rows omitted
+    // beyond it will not.
+    const ended = new Set(page.events.filter(event => RUN_TERMINAL_EVENT_TYPES.has(event.type)).map(event => event.run_id?.trim()))
+    const settled = page.events.every(event => !event.run_id?.trim() || ended.has(event.run_id.trim()))
+      && (options.after === undefined || (page.semantic_omitted_after ?? 0) > 0)
+    if (!semanticAttemptSucceeded(page) || !settled) return page
+    this.historicalPages.set(key, page)
+    if (this.historicalPages.size > HISTORICAL_PAGE_CACHE_ENTRIES) this.historicalPages.delete(this.historicalPages.keys().next().value!)
+    return page
+  }
+
   private serverVersionForScope(scope: ConnectionScope): string | null {
     return this.cache.preference(scope.namespace, SERVER_VERSION_CACHE_KEY, null as string | null)
   }
@@ -3232,12 +3274,11 @@ export class AppService {
     const timeline = this.cache.timelineState(scope.namespace, sessionId)
     try {
       await this.ensureValidatedScope(scope)
-      const page = await this.semanticTimelinePage(scope, sessionId, {
-        before,
-        limit,
-        tail: true,
-        visible: true
-      })
+      const options = { before, limit, tail: true, visible: true }
+      // Live-tail pages go to the disk cache below; historical pages are memoized in memory instead.
+      const page = persistLiveCache
+        ? await this.semanticTimelinePage(scope, sessionId, options)
+        : await this.historicalSemanticPage(scope, sessionId, options)
       this.assertCurrentScope(scope)
       const nextBefore = timelinePageNextBefore(page)
       if (persistLiveCache) {
@@ -3296,10 +3337,10 @@ export class AppService {
     const olderLimit = Math.floor(boundedLimit / 2)
     const newerLimit = boundedLimit - olderLimit
     const [older, newer] = await Promise.all([
-      this.semanticTimelinePage(scope, sessionId, {
+      this.historicalSemanticPage(scope, sessionId, {
         before: anchorSeq, limit: olderLimit, tail: true, visible: true
       }),
-      this.semanticTimelinePage(scope, sessionId, {
+      this.historicalSemanticPage(scope, sessionId, {
         after: Math.max(0, anchorSeq - 1), limit: newerLimit, tail: false, visible: true
       })
     ])

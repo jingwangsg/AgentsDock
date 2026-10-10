@@ -268,18 +268,43 @@ describe('server-owned side chat', () => {
     expect(api.close).not.toHaveBeenCalled()
   })
 
-  it('does not display a previous credential owner on a new connection before reauthorization', async () => {
+  it('keeps a revisited server\'s history and draft while the reconnect read runs, and applies that read whatever it holds', async () => {
     const { api, controller } = fixture()
     api.read.mockResolvedValue(chat(2, {}))
     await controller.refresh(scope, session.id)
-    controller.setDraft(scope, session.id, 'Private unsent draft')
+    controller.setDraft(scope, session.id, 'Unsent draft')
+    // Every server switch bumps the generation: the same verified server shows its last state at once and stays typeable.
     useAppStore.setState({ profileGeneration: 9 })
     const next = { ...scope, profileGeneration: 9 }
-    expect(controller.snapshot(next, session.id)).toMatchObject({ exchanges: [], draft: '', pending: null, loading: true })
-    expect(controller.snapshot(next, session.id).revision).toBeUndefined()
-    api.read.mockResolvedValue(chat(0, undefined, 'other-owner-side'))
+    expect(controller.snapshot(next, session.id)).toMatchObject({ revision: 2, draft: 'Unsent draft', loading: false, connectionGeneration: 9 })
+    expect(controller.snapshot(next, session.id).exchanges[0].answer).toBe('First answer')
+    // A plain failure (timeout, dead link) keeps what was shown and offers a retry.
+    api.read.mockRejectedValue(new Error('timeout'))
     await controller.refresh(next, session.id)
-    expect(controller.snapshot(next, session.id)).toMatchObject({ sideChatId: 'other-owner-side', revision: 0, exchanges: [] })
+    expect(controller.snapshot(next, session.id)).toMatchObject({ revision: 2, draft: 'Unsent draft', error: 'side_chat_sync_failed' })
+    // The server keeps one conversation per credential: the new connection's first read may hold
+    // another owner's, with a lower revision, and replaces what was kept.
+    api.read.mockResolvedValue(chat(1, undefined, 'other-owner-side'))
+    await controller.refresh(next, session.id)
+    expect(controller.snapshot(next, session.id)).toMatchObject({ sideChatId: 'other-owner-side', revision: 1, exchanges: [], error: null })
+    // From then on a lower revision is a stale read again.
+    api.read.mockResolvedValue(chat(0, {}, 'side-a'))
+    await controller.refresh(next, session.id)
+    expect(controller.snapshot(next, session.id).sideChatId).toBe('other-owner-side')
+  })
+
+  it('clears a revisited server\'s history when its first read is refused', async () => {
+    const { api, controller } = fixture()
+    api.read.mockResolvedValue(chat(2, {}))
+    await controller.refresh(scope, session.id)
+    controller.setDraft(scope, session.id, 'Unsent draft')
+    useAppStore.setState({ profileGeneration: 9 })
+    const refused = { ...scope, profileGeneration: 9 }
+    // A refused read means these credentials no longer own the history: nothing of the previous connection stays visible.
+    api.read.mockRejectedValue(new Error('side_question_http_401: unauthorized'))
+    await controller.refresh(refused, session.id)
+    expect(controller.snapshot(refused, session.id)).toMatchObject({ exchanges: [], draft: '', pending: null, error: 'side_question_http_401: unauthorized' })
+    expect(controller.snapshot(refused, session.id).revision).toBeUndefined()
   })
 
   it('starts a fresh read after revisiting a server even if the old-generation read is still pending', async () => {

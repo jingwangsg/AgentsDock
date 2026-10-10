@@ -1,5 +1,43 @@
 # Public development log
 
+## 2026-10-11 — Side chat keeps its history across server switches; older history pages are kept in memory (desktop source)
+
+- On a hub-proxied remote behind a slow, flapping link the side chat looked
+  frozen after every server switch: each switch starts a new connection
+  generation, and the side chat controller dropped its snapshot on each one,
+  so coming back showed "Loading side chat…" with the composer disabled until
+  a round trip to the remote finished. The timeline, by contrast, paints from
+  its disk cache at once. The controller now keeps the history and draft of
+  the same verified server (its owner key carries the server identity) and
+  refreshes behind them. The server keeps one side conversation per
+  credential, so the new connection's first read is applied whatever it
+  holds; a read the server refuses (401/403) clears the panel; a plain failure
+  keeps what was shown and offers Retry. A changed server identity still
+  clears it through profile reconciliation.
+- Returning to a chat whose saved reading position lies outside the cached
+  live tail reloads a 1,200-item window around that position from the
+  server; with a tool-heavy history the older half alone was about 1 MB, and
+  every visit fetched the same page again. History older than the live tail
+  only changes through a rewind, so the main process now keeps such pages in
+  memory (24 pages; the least recently used is dropped first): the
+  saved-position restore, search and landmark landings and scrolling back
+  over a window just read cost no request the second time. Pages that still
+  grow are read every time: the forward half of a window that reached the
+  live tail, and any page holding a run that has not ended, since the server
+  collects a selected turn to its current end. A history revision bump
+  (rewind) keys the pages read under the old one out.
+- Verified with the side chat controller tests (new cases: history and draft
+  kept across a generation, a plain failure keeps them behind Retry, the
+  first read applied at a lower revision, a refused read clears) and the
+  existing panel tests, the service timeline tests (same around-window read
+  once with its live-tail half re-read, a deeper window read once, older-page
+  scroll served from memory, rewind re-reads, a page with an unfinished run
+  re-read) and the Electron type check. Not
+  exercised: the packaged app against the slow remote itself. Still fetched on
+  every visit: the delta since the cached tail, the timeline index when the
+  chat advanced, the subagent snapshot and the history bootstrap's first older
+  page.
+
 ## 2026-10-10 — Desktop package 118 and Android build 63 (local package and APK)
 
 - Package the entries recorded since package 117 and Android build 62. The

@@ -5092,6 +5092,59 @@ describe('semantic timeline paging', () => {
     expect(older.next_semantic_before).toBe(25)
   })
 
+  it('serves a historical page read again from memory until the history revision moves; a window at the live tail is re-read', async () => {
+    const client = fakeClient({
+      sessionPage: async (sessionId, options = {}) => ({
+        session: { id: sessionId, title: 'Remote title', backend: 'codex', history_revision: 1 },
+        events: [{
+          id: `page-${options.before ?? 'after'}-${options.after ?? ''}`, session_id: sessionId,
+          seq: options.after !== undefined ? options.after + 1 : (options.before ?? 1) - 1, type: 'assistant_text', ts: 'now', text: 'Older',
+          // The page before seq 60 holds a turn that has started but not ended.
+          ...(options.before === 60 ? { type: 'turn_started', run_id: 'live', prompt: 'Go' } : {})
+        }],
+        queued_turns: [],
+        has_more: true,
+        latest_seq: 100,
+        next_semantic_before: 25,
+        semantic_paging: true,
+        semantic_item_count: 1,
+        // A forward page from seq 74 ends at the live tail (nothing omitted after it); from 29 it does not.
+        semantic_omitted_after: (options.after ?? 100) < 50 ? 5 : 0
+      })
+    })
+    const { service, cache } = createProfileService(
+      { 'http://a.test:7850': [client] },
+      value => {
+        value.putSession('profile:a', { id: 'chat', title: 'Cached title', backend: 'codex' })
+        value.putTimelineState('profile:a', 'chat', true, 100, 2, 75, true, 1)
+      }
+    )
+    Object.assign(service, { validatedGeneration: 1 })
+
+    // A saved reading position restored after each server switch asks for the same window; only its
+    // forward half, which ends at the live tail and still grows, is read again.
+    await service.timelineAround('chat', 75, 40)
+    await service.timelineAround('chat', 75, 40)
+    expect(client.sessionPage.mock.calls.map(([, options]) => [options?.before ?? null, options?.after ?? null])).toEqual([
+      [75, null], [null, 74], [null, 74]
+    ])
+    // Deeper in history both halves have rows beyond them: the second landing makes no request.
+    await service.timelineAround('chat', 30, 40)
+    await service.timelineAround('chat', 30, 40)
+    expect(client.sessionPage).toHaveBeenCalledTimes(5)
+    // Scrolling back over the same older page makes no request either.
+    await service.historicalOlderTimeline('chat', 75, 20)
+    expect(client.sessionPage).toHaveBeenCalledTimes(5)
+    // A rewind raises the cached history revision; pages read under the old one are re-read.
+    cache.putTimelineState('profile:a', 'chat', true, 100, 2, 75, true, 2)
+    await service.historicalOlderTimeline('chat', 75, 20)
+    expect(client.sessionPage).toHaveBeenCalledTimes(6)
+    // A page holding a run that has not ended is collected to its current end, so it is read every time.
+    await service.historicalOlderTimeline('chat', 60, 20)
+    await service.historicalOlderTimeline('chat', 60, 20)
+    expect(client.sessionPage).toHaveBeenCalledTimes(8)
+  })
+
   it('keeps historical-window paging out of the persistent live-tail cache', async () => {
     const cachedSession: Session = { id: 'chat', title: 'Cached title', backend: 'codex' }
     const client = fakeClient({

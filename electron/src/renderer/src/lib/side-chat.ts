@@ -16,6 +16,8 @@ export interface SideChatSnapshot {
   sideChatId: string
   synced?: boolean
   connectionGeneration?: number
+  /** A new connection whose first read has not returned yet; that read is applied whatever it holds. */
+  unverified?: boolean
   revision?: number
   loading?: boolean
   lastRequestId?: string
@@ -65,10 +67,11 @@ export class SideChatController {
     this.scopes.set(key, scope)
     if (!this.snapshots.has(key)) this.snapshots.set(key, emptySnapshot())
     const snapshot = this.snapshots.get(key)!
-    // The same verified server can be revisited with changed credentials.
-    // Reauthorize history before displaying a previous connection's data.
+    // Every server switch bumps the connection generation. The key already carries the
+    // server identity, so the same server keeps its last history and draft and stays
+    // typeable while refresh() re-reads.
     if (snapshot.synced && snapshot.connectionGeneration !== scope.profileGeneration) {
-      this.snapshots.set(key, { ...emptySnapshot(), synced: true, loading: true, connectionGeneration: scope.profileGeneration })
+      this.snapshots.set(key, { ...snapshot, connectionGeneration: scope.profileGeneration, unverified: true })
       this.optimistic.delete(key)
     }
     return this.snapshots.get(key)!
@@ -143,8 +146,15 @@ export class SideChatController {
           const snapshot = await read(scope, sessionId)
           if (!current()) return
           this.applySynced(scope, sessionId, snapshot)
-        } catch {
-          if (current()) this.update(scope, sessionId, state => ({ ...state, loading: false, error: 'side_chat_sync_failed' }))
+        } catch (cause) {
+          if (!current()) return
+          const message = cause instanceof Error ? cause.message : String(cause)
+          // Main reports a server refusal as side_question_http_<status>. A 401/403 means these
+          // credentials no longer own the history, so none of it stays visible; any other failure
+          // keeps what was shown behind Retry.
+          this.update(scope, sessionId, state => /side_question_http_40[13]/.test(message)
+            ? { ...emptySnapshot(), synced: true, connectionGeneration: scope.profileGeneration, error: message }
+            : { ...state, loading: false, error: 'side_chat_sync_failed' })
           return
         }
       } while (record.dirty && current())
@@ -156,7 +166,10 @@ export class SideChatController {
   private applySynced(scope: SideQuestionScope, sessionId: string, chat: SyncedSideChat): void {
     const key = this.key(scope, sessionId)
     const before = this.snapshot(scope, sessionId)
-    if (chat.session_id !== sessionId || chat.revision < (before.revision ?? -1)) return
+    // Within one connection a lower revision is a stale read. The first read of a new connection
+    // is applied as is: the server keeps one conversation per credential, so it may now hold
+    // another owner's, with its own revision count.
+    if (chat.session_id !== sessionId || (!before.unverified && chat.revision < (before.revision ?? -1))) return
     const optimistic = this.optimistic.get(key)
     const exchanges: SideChatExchange[] = chat.exchanges.map(item => ({ id: item.request_id, question: item.question,
       answer: item.answer, state: item.status === 'running' ? 'pending' : item.status === 'completed' ? 'answered'
@@ -169,7 +182,7 @@ export class SideChatController {
       if (pending) exchanges.push(pending)
     }
     if (chat.side_chat_id !== before.sideChatId) this.historyPositions.delete(key)
-    this.update(scope, sessionId, state => ({ ...state, synced: true, loading: false, revision: chat.revision,
+    this.update(scope, sessionId, state => ({ ...state, synced: true, loading: false, unverified: false, revision: chat.revision,
       sideChatId: chat.side_chat_id, lastRequestId: chat.last_request_id ?? undefined, exchanges,
       pending: exchanges.find(item => item.state === 'pending')?.id ?? null, error: null,
       contextNote: chat.exchanges.findLast(item => item.context_note)?.context_note ?? '' }))
