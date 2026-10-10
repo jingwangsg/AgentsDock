@@ -13,7 +13,9 @@ dependencies = [
   "python-dateutil>=2.9,<3",
   "python-multipart>=0.0.20,<1",
   "tzdata>=2025.2",
-  "uvicorn>=0.34,<1",
+  # agent_server.WebSocketSendAsInUvicorn051Protocol relies on this version's sansio protocol;
+  # read its docstring before changing the range.
+  "uvicorn>=0.54,<0.55",
   "websockets>=13,<16",
 ]
 

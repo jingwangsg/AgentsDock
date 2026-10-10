@@ -75,6 +75,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.routing import Match
 from starlette.datastructures import Headers
 import uvicorn
+from uvicorn.protocols.websockets.websockets_sansio_impl import WebSocketsSansIOProtocol
 import websockets
 import team_mail_grants
 import chat_mailbox
@@ -101765,6 +101766,33 @@ def configure_server_logging(
     )
 
 
+class WebSocketSendAsInUvicorn051Protocol(WebSocketsSansIOProtocol):
+    """uvicorn's default WebSocket protocol, with send() behaving as it did in uvicorn 0.51.
+
+    uvicorn 0.52.1 made a server close wait for the client's close frame. The desktop's port tunnels
+    need that: Node's WebSocket drops the messages it has not processed when the connection closes
+    immediately after the server's close frame, and on 0.51 a 5.4 MB page ended 100-300 KB short
+    (close code 1006). The same release changed send() in two ways this server is not written for:
+    - It waits while the transport's write buffer is over its high-water mark. Event and terminal
+      sends assume a send never waits (2 s send timeouts, viewers served one after another), so a
+      slow remote link would cut event streams and stall terminals.
+    - It raises once the client is gone. Endpoints here send and close in cleanup paths after the
+      client left, where 0.51 dropped the message, and the code after such a close was skipped.
+      After the client's own close frame this also returns quietly where 0.51 raised; endpoints
+      here learn of that close from receive().
+    Drop each override once those sends handle the new behavior. Pinned by
+    tests/test_websocket_protocol.py.
+    """
+
+    def pause_writing(self) -> None:
+        pass
+
+    async def send(self, message: Any) -> None:
+        if self.disconnected:
+            return
+        await super().send(message)
+
+
 def main() -> int:
     global SERVER_BIND_ADDRESS, SERVER_PORT
     configure_server_logging(STATE_DIR)
@@ -101790,6 +101818,7 @@ def main() -> int:
         # preview does not support header-trusting proxy operation.
         proxy_headers=False,
         server_header=False,
+        ws=WebSocketSendAsInUvicorn051Protocol,
         # Without this uvicorn waits forever for open websockets/background
         # work after SIGTERM, and the restart watchdog is the only way out.
         timeout_graceful_shutdown=uvicorn_graceful_shutdown_seconds(),
