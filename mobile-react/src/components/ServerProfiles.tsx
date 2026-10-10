@@ -36,6 +36,7 @@ import {
 } from '../lib/server-profile-ui'
 import { hubProxyBaseURL, hubProxyRemoteId } from '../lib/server-profiles'
 import { errorMessage, normalizeServerURL } from '../lib/format'
+import type { ServerRunningChats } from '../types'
 import { usePalette } from '../theme'
 import { Text, TextInput } from './AppText'
 import { IconButton, SheetCloseButton } from './ui'
@@ -81,6 +82,8 @@ export interface ServerProfilesManagerProps extends CommonServerProfileProps {
   onCancelDeploy?: () => Awaitable<void>
   onRedeployRemote: (profileId: string, force: boolean, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<{ redeployed: boolean; running: number | null }>
   onUpdateCli: (profileId: string, backend: 'claude' | 'codex') => Promise<string>
+  /** Settings → Servers "Update & redeploy all" on the hub, as on the desktop; resolves to the servers with running chats when `force` is false and some have any. */
+  onUpdateAll?: (force: boolean, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<{ running: Array<ServerRunningChats & { name: string }>; failures: string | null }>
 }
 
 export interface ServerProfilesSheetProps extends ServerProfilesManagerProps {
@@ -193,6 +196,7 @@ export function ServerProfilesManager({
   onCancelDeploy,
   onRedeployRemote,
   onUpdateCli,
+  onUpdateAll,
 }: ServerProfilesManagerProps) {
   const colors = usePalette()
   const [draft, setDraft] = useState<ServerProfileDraftValues | null>(() => initialServerProfileDraft(initialMode, profiles, activeProfileId))
@@ -399,6 +403,28 @@ export function ServerProfilesManager({
 
   const noteRow = (profileId: string, work: RowWork | null) => setRowWork(({ [profileId]: _previous, ...rest }) => work ? { ...rest, [profileId]: work } : rest)
   const redeploying = Object.values(rowWork).some(work => work.kind === 'redeploy' && work.working)
+  const [updateAll, setUpdateAll] = useState<{ working: boolean; text: string; failed?: boolean } | null>(null)
+  const [updateAllLog, setUpdateAllLog] = useState<RemoteDeployProgressEntry[]>([])
+  const runUpdateAll = async (force: boolean) => {
+    if (!onUpdateAll) return
+    setUpdateAllLog([])
+    setUpdateAll({ working: true, text: 'Updating…' })
+    try {
+      const { running, failures } = await onUpdateAll(force, entry => setUpdateAllLog(current => [...current.slice(-5), entry]))
+      if (running.length) {
+        setUpdateAll(null)
+        const servers = running.map(server => `${server.name} (${server.running === null ? "couldn't check" : server.running})`).join(', ')
+        Alert.alert('Update & redeploy all?', `Running chats will stop on: ${servers}.`, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Update anyway', style: 'destructive', onPress: () => { void runUpdateAll(true) } },
+        ])
+        return
+      }
+      setUpdateAll(failures ? { working: false, failed: true, text: `Some steps failed: ${failures}` } : { working: false, text: 'Updated and restarted.' })
+    } catch (error) {
+      setUpdateAll({ working: false, failed: true, text: errorMessage(error) })
+    }
+  }
   const redeploy = async (profile: ServerProfileListItem, force: boolean) => {
     noteRow(profile.id, { kind: 'redeploy', working: true, text: 'Redeploying…' })
     try {
@@ -482,7 +508,7 @@ export function ServerProfilesManager({
       onDrag={drag}
       onRemove={() => confirmRemove(profile)}
       work={rowWork[profile.id] ?? null}
-      redeployDisabled={redeploying}
+      redeployDisabled={redeploying || Boolean(updateAll?.working)}
       onRedeploy={hubProxyRemoteId(profile.serverUrl) !== null ? () => { void redeploy(profile, false) } : undefined}
       onUpdateCli={() => chooseCli(profile)}
     />
@@ -500,8 +526,15 @@ export function ServerProfilesManager({
         <Text style={[styles.sectionTitle, { color: colors.text }]}>Servers</Text>
         <Text style={[styles.help, { color: colors.muted }]}>Remote servers registered on your hub appear here automatically.</Text>
       </View>
-      {hubAvailable ? <SecondaryButton icon={Plus} label="Add server" disabled={Boolean(busy) || deployBusy} onPress={openDeploy} /> : null}
+      {hubAvailable ? <SecondaryButton icon={Plus} label="Add server" disabled={Boolean(busy) || deployBusy || Boolean(updateAll?.working)} onPress={openDeploy} /> : null}
     </View>
+    {hubAvailable && onUpdateAll ? <View style={styles.updateAll}>
+      <SecondaryButton icon={RotateCw} label="Update & redeploy all" accessibilityLabel="Redeploy every remote server from the hub, update Claude Code and Codex on all of them, then restart the hub" busy={Boolean(updateAll?.working)} disabled={Boolean(busy) || deployBusy || redeploying || Boolean(updateAll?.working)} onPress={() => { void runUpdateAll(false) }} />
+      {updateAll ? <Text accessibilityRole={updateAll.failed ? 'alert' : undefined} style={[styles.help, { color: updateAll.failed ? colors.red : colors.muted }]}>{updateAll.text}</Text> : null}
+      {updateAllLog.length ? <View style={styles.deployLog}>
+        {updateAllLog.map((entry, index) => <Text key={`${entry.phase}-${index}`} style={[styles.deployLogLine, { color: colors.muted }]} numberOfLines={2}>{entry.message}</Text>)}
+      </View> : null}
+    </View> : null}
 
     <View style={[styles.profileList, { borderColor: colors.border }]}>
       {profiles.length ? <>
@@ -879,6 +912,7 @@ const styles = StyleSheet.create({
   managerContent: { width: '100%', maxWidth: 760, alignSelf: 'center', padding: 14, paddingBottom: 28, gap: 10 },
   managementHeading: { minHeight: 50, flexDirection: 'row', alignItems: 'center', gap: 10 },
   managementHeadingCopy: { flex: 1, minWidth: 0, gap: 3 },
+  updateAll: { gap: 6, paddingBottom: 10 },
   sectionTitle: { fontSize: 14, fontWeight: '800' },
   help: { fontSize: 11, lineHeight: 16 },
   profileList: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, overflow: 'hidden' },

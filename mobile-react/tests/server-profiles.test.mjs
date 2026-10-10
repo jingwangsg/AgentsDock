@@ -112,3 +112,15 @@ test('remotes are reconciled from the hub registry; deploy works from any server
   assert.match(source, /testID="remote-deploy-password"[\s\S]*?secureTextEntry/)
   assert.doesNotMatch(source, /deployDraft\.(token|accessToken)/)
 })
+
+test('Update & redeploy all runs on the hub from any server, asks first when chats are running, and waits for the hub to come back', () => {
+  assert.match(appShell, /onUpdateAll=\{updateAndRedeployAll\}/)
+  // Shown beside the hub's server list like the desktop's button; the whole flow is one hub job.
+  assert.match(source, /\{hubAvailable && onUpdateAll \? <View style=\{styles\.updateAll\}>\s*<SecondaryButton icon=\{RotateCw\} label="Update & redeploy all"/)
+  assert.match(source, /\{ text: 'Update anyway', style: 'destructive', onPress: \(\) => \{ void runUpdateAll\(true\) \} \}/)
+  // A poll that fails after the restart line was seen means the hub stopped before answering it; the store then waits.
+  assert.match(store, /if \(lastPhase !== 'restart'\) throw error/)
+  assert.match(client, /startHubUpdateAll\(force: boolean\)[\s\S]*?this\.request\('\/api\/admin\/remote-servers\/update-all', \{ method: 'POST', body: JSON\.stringify\(\{ force \}\) \}/)
+  // Only a new instance id proves the hub restarted; the stopping process may still answer.
+  assert.match(store, /if \(!job \|\| job\.restarting\) \{[\s\S]*?if \(current !== null && current !== before\) break/)
+})

@@ -11,6 +11,10 @@ const identities: Record<string, string> = { hub: 'server-hub', r1: 'remote-old'
 let catalogAvailable = true
 const running: Record<string, string[]> = {}
 const redeployRequests: string[] = []
+const updateAllRequests: boolean[] = []
+const instances: Record<string, string> = { hub: 'hub-instance-1', r1: 'r1-instance-1', direct: 'direct-instance-1' }
+// Health answers the hub's old instance id this many more times: the stopping process still answers.
+let staleHubInstanceAnswers = 0
 const healthDown = new Set<string>()
 // Set to the hub's current token once a test rotates it on the server; null accepts any token.
 let requiredToken: string | null = null
@@ -35,7 +39,9 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
     if (target.path === '/api/health') {
       if (healthDown.has(target.key)) return reply(502, { detail: 'remote_unreachable' })
       const capabilities = target.key === 'hub' && hubRemotes ? { capabilities: { remote_servers_v1: { available: true } } } : {}
-      return reply(200, { ok: true, server_identity: identities[target.key], server_version: 'hub-identity-test', api_contract_version: 8, active_sessions: [], active: running[target.key] ?? [], ...capabilities })
+      let instance = instances[target.key]
+      if (target.key === 'hub' && staleHubInstanceAnswers > 0) { staleHubInstanceAnswers -= 1; instance = 'hub-instance-1' }
+      return reply(200, { ok: true, server_identity: identities[target.key], server_instance_id: instance, server_version: 'hub-identity-test', api_contract_version: 8, active_sessions: [], active: running[target.key] ?? [], ...capabilities })
     }
     if (request.method === 'GET' && target.path === '/api/admin/remote-servers') {
       const listed = (hubRemotes ?? []).map(id => ({ id, name: id, ssh_host: id, install_dir: '', remote_port: 0, local_port: 0, created_at: '2026-09-30T10:00:00Z', proxy_path: `/api/remote/${id}`, tunnel: null }))
@@ -51,6 +57,24 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
     if (request.method === 'POST' && target.path === '/api/admin/remote-servers/r1/redeploy') {
       redeployRequests.push('r1')
       return reply(202, { job_id: 'job-1' })
+    }
+    if (request.method === 'POST' && target.path === '/api/admin/remote-servers/update-all') {
+      let body = ''
+      request.on('data', chunk => { body += chunk })
+      request.on('end', () => {
+        const force = Boolean((JSON.parse(body || '{}') as { force?: boolean }).force)
+        updateAllRequests.push(force)
+        const busy = [{ id: null, running: (running.hub ?? []).length }, { id: 'r1', name: 'r1', running: (running.r1 ?? []).length }].filter(server => server.running !== 0)
+        if (!force && busy.length) return reply(200, { running: busy })
+        reply(202, { job_id: 'job-all' })
+      })
+      return
+    }
+    if (target.path === '/api/admin/remote-servers/deploy/job-all') {
+      // The hub restarts as the job's last step: health reports the old instance once more, then the new one.
+      instances.hub = 'hub-instance-2'
+      staleHubInstanceAnswers = 1
+      return reply(200, { job_id: 'job-all', phase: 'restart', done: true, error: null, server: null, restarting: true, log: [{ phase: 'redeploy', message: 'r1: Uploading' }, { phase: 'restart', message: 'Restarting the hub…' }] })
     }
     if (target.path === '/api/admin/remote-servers/deploy/job-1') {
       return reply(200, { job_id: 'job-1', phase: 'complete', done: true, error: null, server: null, log: [{ phase: 'upload', message: 'Uploading' }, { phase: 'complete', message: 'Reachable' }] })
@@ -193,6 +217,17 @@ try {
   assert.deepEqual(redeployRequests, ['r1'])
   assert.deepEqual(progress, ['Uploading', 'Reachable'])
   await assert.rejects(useAppStore.getState().redeployHubRemote('direct', true, () => undefined), /Only servers the hub deployed/)
+  // Update & redeploy all is one hub job. Without force it reports the servers with running chats, the hub by
+  // its own name; with force it follows the job and resolves only once the hub answers as a new instance.
+  running.hub = ['chat-on-hub']
+  assert.deepEqual(await useAppStore.getState().updateAndRedeployAll(false, () => undefined),
+    { running: [{ id: null, name: 'hub', running: 1 }, { id: 'r1', name: 'r1', running: 1 }], failures: null })
+  const updateAllProgress: string[] = []
+  assert.deepEqual(await useAppStore.getState().updateAndRedeployAll(true, entry => updateAllProgress.push(entry.message)), { running: [], failures: null })
+  assert.deepEqual(updateAllRequests, [false, true])
+  assert.deepEqual(updateAllProgress, ['r1: Uploading', 'Restarting the hub…'])
+  assert.equal(staleHubInstanceAnswers, 0, 'the store must poll past the stopping process\'s answer')
+  running.hub = []
   assert.equal(await useAppStore.getState().updateServerCli('hub', 'codex'), 'codex-cli 9.9.9')
   identities.hub = 'server-replaced'
   await assert.rejects(useAppStore.getState().updateServerCli('hub', 'codex'), /different identity/)

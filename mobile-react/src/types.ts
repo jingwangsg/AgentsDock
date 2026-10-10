@@ -1316,6 +1316,15 @@ export interface RemoteServerDeployJob {
   error: string | null
   log: RemoteServerDeployLogEntry[]
   server: RemoteServer | null
+  /** Update & redeploy all: the hub is restarting; the client waits for a new server instance. */
+  restarting?: boolean
+}
+
+/** A server Update & redeploy all would interrupt: the hub (`id` null, named by the client) or one of its remotes, with its running chats (null: could not be checked). */
+export interface ServerRunningChats {
+  id: string | null
+  name?: string
+  running: number | null
 }
 
 export interface RemoteServersCapability {

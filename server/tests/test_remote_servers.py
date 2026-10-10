@@ -17,6 +17,7 @@ import tempfile
 import unittest
 import io
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import httpx
@@ -97,6 +98,13 @@ def fake_upstream(identity: str = "fake-remote") -> FastAPI:
             return await request.body()
         except ClientDisconnect:  # the hub dropped this connection along with its own client
             return b""
+
+    @app.post("/api/admin/runtimes/{backend}/update")
+    async def runtime_update(request: Request, backend: str) -> dict:
+        # The real route takes the remote's own token in this header and nothing else.
+        if dict(token_headers(request)).get("x-agentsdock-token") != REMOTE_TOKEN:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return {"output": "", "diagnostic": {"available": True, "version": f"{backend}-2.0"}}
 
     @app.api_route("/echo/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def echo(request: Request, rest: str) -> dict:
@@ -206,7 +214,18 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-async def hub_with_fake(tmp_path: Path, ws_authorized=lambda ws: True):
+def hub_hooks(**overrides):
+    """The hub-side callables Update & redeploy all needs; tests inspect the mocks."""
+    return SimpleNamespace(**{
+        "hub_running_chat_count": lambda: 0,
+        "hub_update_cli": mock.AsyncMock(side_effect=lambda backend: f"{backend}-hub-9.9"),
+        "hub_restart": mock.AsyncMock(return_value=None),
+        **overrides,
+    })
+
+
+async def hub_with_fake(tmp_path: Path, ws_authorized=lambda ws: True, hooks=None):
+    hooks = hooks or hub_hooks()
     upstream_server, upstream_task, upstream_port = await serve(fake_upstream())
     manager = rs.RemoteServerManager(tmp_path, source_dir=tmp_path, manage_tunnels=False)
     remote = make_server(local_port=upstream_port)
@@ -214,7 +233,8 @@ async def hub_with_fake(tmp_path: Path, ws_authorized=lambda ws: True):
     dead = make_server(id="deaddeaddead", name="dead", local_port=free_port())
     manager.servers[dead.id] = dead
     hub = FastAPI()
-    rs.register_remote_server_routes(hub, manager=manager, authorize_admin=lambda request: None, websocket_authorized=ws_authorized)
+    rs.register_remote_server_routes(hub, manager=manager, authorize_admin=lambda request: None, websocket_authorized=ws_authorized,
+                                     hub_running_chat_count=hooks.hub_running_chat_count, hub_update_cli=hooks.hub_update_cli, hub_restart=hooks.hub_restart)
     hub_server, hub_task, hub_port = await serve(hub)
 
     async def close() -> None:
@@ -300,7 +320,7 @@ class RemoteServerTests(unittest.TestCase):
         manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
         manager.servers["abcdef123456"] = make_server()
         hub = FastAPI()
-        rs.register_remote_server_routes(hub, manager=manager, authorize_admin=lambda request: None, websocket_authorized=lambda ws: True)
+        rs.register_remote_server_routes(hub, manager=manager, authorize_admin=lambda request: None, websocket_authorized=lambda ws: True, **vars(hub_hooks()))
         client = TestClient(hub)
         assert client.patch(f"{rs.ADMIN_PATH}/abcdef123456", json={"ssh_host": "-oProxyCommand=x"}).status_code == 422
         response = client.patch(f"{rs.ADMIN_PATH}/abcdef123456", json={"name": "lab"})
@@ -314,7 +334,7 @@ class RemoteServerTests(unittest.TestCase):
         manager.servers["fedcba654321"] = make_server(id="fedcba654321", name="new", local_port=7853)
         manager.servers["aaaaaa111111"] = make_server(id="aaaaaa111111", name="newer", local_port=7854)
         hub = FastAPI()
-        rs.register_remote_server_routes(hub, manager=manager, authorize_admin=lambda request: None, websocket_authorized=lambda ws: True)
+        rs.register_remote_server_routes(hub, manager=manager, authorize_admin=lambda request: None, websocket_authorized=lambda ws: True, **vars(hub_hooks()))
         client = TestClient(hub)
         # The client still holds a removed server's id and has not synced the two newest ones.
         assert client.put(f"{rs.ADMIN_PATH}/order", json={"ids": ["123456abcdef", "000000000000", "abcdef123456"]}).status_code == 204
@@ -1034,6 +1054,96 @@ time.sleep(30)
                 await close()
 
         asyncio.run(main())
+
+    def test_update_all_redeploys_each_remote_updates_every_cli_and_restarts_the_hub_last(self) -> None:
+        order: list[tuple[str, ...]] = []
+        hooks = hub_hooks(hub_running_chat_count=lambda: 2)
+        hooks.hub_update_cli.side_effect = lambda backend: order.append(("hub-cli", backend)) or f"{backend}-hub-9.9"
+        released = asyncio.Event()
+
+        async def restart() -> None:
+            order.append(("restart",))
+            await released.wait()  # holds the job open so the one-job-at-a-time rule can be checked
+            return None
+
+        hooks.hub_restart.side_effect = restart
+
+        async def fake_deploy(job, request, redeploy_id, keep_port=True):
+            order.append(("redeploy", redeploy_id))
+            job.progress("upload", "Uploading the server…")
+            if redeploy_id == "deaddeaddead":
+                job.error = "ssh exited 255"
+                job.progress("connect", job.error)
+            job.done = True
+
+        async def main() -> None:
+            manager, remote, dead, hub_port, close = await hub_with_fake(self.tmp_path, hooks=hooks)
+            attached = make_server(id="attachedatta", name="attached", local_port=free_port(), attached=True)
+            manager.servers[attached.id] = attached
+            real_update_cli = manager.update_cli
+
+            async def update_cli(server, backend):
+                order.append(("cli", server.id, backend))
+                # The reachable remote answers the real request; the others have no server behind their port.
+                return await real_update_cli(server, backend)
+
+            probes = mock.AsyncMock(side_effect=lambda server: {"active": ["c1"]} if server is remote else None)
+            try:
+                async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{hub_port}") as client:
+                    with mock.patch.object(manager, "_deploy", fake_deploy), mock.patch.object(manager, "update_cli", update_cli), \
+                            mock.patch.object(manager, "probe_health", probes):
+                        # Without force, the servers whose chats would stop are reported and nothing runs: the hub by
+                        # its own count, a remote by its health, an unreachable remote as unknown, an attached one never.
+                        blocked = await client.post("/api/admin/remote-servers/update-all", json={})
+                        assert blocked.status_code == 200 and blocked.json() == {"running": [
+                            {"id": None, "running": 2}, {"id": remote.id, "name": remote.name, "running": 1}, {"id": dead.id, "name": "dead", "running": None},
+                        ]}
+                        assert order == [] and probes.await_count == 2
+
+                        started = await client.post("/api/admin/remote-servers/update-all", json={"force": True})
+                        assert started.status_code == 202, started.text
+                        job = manager.jobs[started.json()["job_id"]]
+                        while ("restart",) not in order:
+                            await asyncio.sleep(0.01)
+                        # One job at a time, as for deploys.
+                        with self.assertRaises(rs.HTTPException):
+                            manager.start_deploy(None, redeploy_id=remote.id)
+                        released.set()
+                        await job.task
+                        view = (await client.get(f"/api/admin/remote-servers/deploy/{job.job_id}")).json()
+            finally:
+                await close()
+            assert order == [
+                ("redeploy", remote.id), ("cli", remote.id, "claude"), ("cli", remote.id, "codex"),
+                ("redeploy", dead.id), ("cli", dead.id, "claude"), ("cli", dead.id, "codex"),
+                ("cli", attached.id, "claude"), ("cli", attached.id, "codex"),
+                ("hub-cli", "claude"), ("hub-cli", "codex"), ("restart",),
+            ]
+            messages = [entry["message"] for entry in view["log"]]
+            assert f"{remote.name}: Uploading the server…" in messages and f"{remote.name}: Claude Code claude-2.0" in messages
+            assert "attached: attached from another hub, not redeployed." in messages and "hub: Codex codex-hub-9.9" in messages
+            assert messages[-1] == "Restarting the hub…" and view["phase"] == "restart" and view["done"] and view["restarting"]
+            # A remote's failures are reported; the hub still restarts.
+            assert view["error"].startswith("dead: ssh exited 255; dead: Claude Code: ") and "attached: Codex: " in view["error"]
+
+        asyncio.run(main())
+
+    def test_update_all_reports_a_hub_that_cannot_restart_itself(self) -> None:
+        hooks = hub_hooks(hub_restart=mock.AsyncMock(return_value="not run by launchd"))
+
+        async def main() -> str | None:
+            manager, _remote, _dead, hub_port, close = await hub_with_fake(self.tmp_path, hooks=hooks)
+            manager.servers.clear()
+            try:
+                async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{hub_port}") as client:
+                    job = manager.jobs[(await client.post("/api/admin/remote-servers/update-all", json={"force": True})).json()["job_id"]]
+                    await job.task
+                    assert not job.restarting
+                    return job.error
+            finally:
+                await close()
+
+        assert asyncio.run(main()) == "hub: not run by launchd"
 
     def test_hub_claude_token_reaches_the_bootstrap_on_stdin_only(self) -> None:
         calls = self.fake_host(existing_port=7860)

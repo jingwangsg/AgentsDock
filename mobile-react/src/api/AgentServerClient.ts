@@ -53,6 +53,7 @@ import type {
   QueuedRunNowResponse,
   QueuedTurn,
   RemoteServer,
+  ServerRunningChats,
   RemoteServerDeployJob,
   RuntimeCatalog,
   RuntimeDiagnostic,
@@ -378,6 +379,10 @@ export class AgentServerClient {
   }
   startRemoteRedeploy(remoteId: string): Promise<{ job_id: string }> {
     return this.request(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}/redeploy`, { method: 'POST' }, 30_000, false, 'native-control')
+  }
+  /** Update & redeploy all on the hub; without force, the servers with running chats come back instead of a job. */
+  startHubUpdateAll(force: boolean): Promise<{ job_id: string } | { running: ServerRunningChats[] }> {
+    return this.request('/api/admin/remote-servers/update-all', { method: 'POST', body: JSON.stringify({ force }) }, 30_000, false, 'native-control')
   }
   cancelServerUpdate(scheduleId: string): Promise<ServerUpdateStatus> {
     return this.post('/api/admin/update/cancel', { schedule_id: scheduleId })

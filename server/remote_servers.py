@@ -70,6 +70,10 @@ SSH_FORWARD_PROBE_INTERVAL = 10.0
 # (0.09 s on the host itself). A deploy waits DEPLOY_HEALTH_WAIT_SECONDS for the tunnel and a fresh server.
 HEALTH_REQUEST_TIMEOUT = 20.0
 DEPLOY_HEALTH_WAIT_SECONDS = 120.0
+# HTTP timeout for a remote's /api/admin/runtimes/{backend}/update: the remote itself stops the CLI
+# after 10 minutes (RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS), so its answer arrives before this fires.
+CLI_UPDATE_REQUEST_TIMEOUT = 11 * 60.0
+CLI_PRODUCT_NAMES = {"claude": "Claude Code", "codex": "Codex"}
 SSH_FORWARD_PROBE_TIMEOUT = 30.0
 SSH_FORWARD_PROBE_FAILURES = 3
 UPLOAD_CHUNK = 256 * 1024
@@ -902,11 +906,16 @@ class DeployJob:
     server: RemoteServer | None = None
     task: asyncio.Task[None] | None = None
     proc: asyncio.subprocess.Process | None = None
+    # Update & redeploy all: the hub is restarting, so the client waits for a new server instance.
+    restarting: bool = False
+    # Clients read new log entries by count, so a log that reaches its cap stops showing progress;
+    # update-all collects every remote's lines and gets a larger one.
+    log_limit: int = 500
 
     def progress(self, phase: str, message: str) -> None:
         self.phase = phase
         self.log.append({"phase": phase, "message": message, "at": now_iso()})
-        del self.log[:-500]
+        del self.log[:-self.log_limit]
 
     def view(self, tunnel: dict[str, Any] | None) -> dict[str, Any]:
         return {
@@ -916,7 +925,24 @@ class DeployJob:
             "error": self.error,
             "log": list(self.log),
             "server": public_view(self.server, tunnel) if self.server else None,
+            "restarting": self.restarting,
         }
+
+
+@dataclass(kw_only=True)
+class ChildDeployJob(DeployJob):
+    """One remote's redeploy inside an update-all job: its progress also lands in the parent's log, labelled."""
+
+    parent: DeployJob
+    label: str
+
+    def progress(self, phase: str, message: str) -> None:
+        super().progress(phase, message)
+        self.parent.progress(phase, f"{self.label}: {message}")
+
+
+class UpdateAllRequest(BaseModel):
+    force: bool = False
 
 
 def parse_probe(lines: list[str]) -> dict[str, Any]:
@@ -1311,6 +1337,102 @@ class RemoteServerManager:
     def job(self, job_id: str) -> DeployJob | None:
         return self.jobs.get(job_id)
 
+    # -- update all -----------------------------------------------------------
+
+    async def servers_with_running_chats(self, hub_running_count: int) -> list[dict[str, Any]]:
+        """Servers an update-all would interrupt: the hub and every remote it redeploys, with their running chat counts (None: unreachable).
+
+        The remotes are probed at once: a frozen remote holds its probe for HEALTH_REQUEST_TIMEOUT, and
+        the client's request has its own 30 s limit."""
+        running: list[dict[str, Any]] = [{"id": None, "running": hub_running_count}] if hub_running_count else []
+        redeployed = [server for server in self.servers.values() if not server.attached]
+        for server, health in zip(redeployed, await asyncio.gather(*(self.probe_health(server) for server in redeployed))):
+            count = len(health.get("active") or []) if health is not None else None
+            if count != 0:
+                running.append({"id": server.id, "name": server.name, "running": count})
+        return running
+
+    def start_update_all(self, *, hub_update_cli: Callable[[str], Awaitable[str]],
+                         hub_restart: Callable[[], Awaitable[str | None]]) -> DeployJob:
+        """One job: redeploy each remote and update its CLIs, update the hub's CLIs, then restart the hub.
+
+        The hub restarts last because this job runs inside it; the client sees the job finish, then
+        waits for a new server instance. `hub_update_cli(backend)` returns the version the update left
+        installed ("" if unknown); `hub_restart()` returns an error message when this process cannot
+        restart itself.
+        """
+        if any(job.task is not None and not job.task.done() for job in self.jobs.values()):
+            raise HTTPException(status_code=409, detail="A deployment or update is already running.")
+        job = DeployJob(job_id=secrets.token_hex(8), log_limit=5000)
+        self.jobs[job.job_id] = job
+        job.task = asyncio.create_task(self._update_all(job, hub_update_cli, hub_restart), name=f"remote-update-all:{job.job_id}")
+        return job
+
+    async def update_cli(self, server: RemoteServer, backend: str) -> str:
+        """Run the CLI's own update on a remote through its tunnel; returns the version it reports ("" if none)."""
+        response = await self.http.post(
+            f"http://127.0.0.1:{server.local_port}/api/admin/runtimes/{backend}/update",
+            headers={"X-AgentsDock-Token": server.token}, timeout=CLI_UPDATE_REQUEST_TIMEOUT,
+        )
+        if response.status_code != 200:
+            detail = ""
+            with suppress(ValueError):
+                detail = str((response.json() or {}).get("detail") or "")
+            raise RuntimeError(detail or f"HTTP {response.status_code}")
+        diagnostic = response.json().get("diagnostic") or {}
+        return str(diagnostic.get("version") or "")
+
+    async def _update_all(self, job: DeployJob, hub_update_cli: Callable[[str], Awaitable[str]],
+                          hub_restart: Callable[[], Awaitable[str | None]]) -> None:
+        failures: list[str] = []
+
+        async def update_clis(label: str, run: Callable[[str], Awaitable[str]]) -> None:
+            for backend, product in CLI_PRODUCT_NAMES.items():
+                job.progress("cli", f"{label}: updating {product}…")
+                try:
+                    version = await run(backend)
+                    job.progress("cli", f"{label}: {product} {version or 'updated'}")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - the job view carries the message
+                    detail = str(getattr(exc, "detail", None) or exc or exc.__class__.__name__)
+                    failures.append(f"{label}: {product}: {detail}")
+                    job.progress("cli", f"{label}: {product}: {detail}")
+
+        try:
+            for server in list(self.servers.values()):
+                if server.attached:
+                    job.progress("redeploy", f"{server.name}: attached from another hub, not redeployed.")
+                else:
+                    child = ChildDeployJob(job_id=f"{job.job_id}:{server.id}", parent=job, label=server.name)
+                    await self._deploy(child, None, server.id)
+                    # _deploy swallows its own cancellation; a cancelled update-all must not go on to the next server.
+                    task = asyncio.current_task()
+                    if task is not None and task.cancelling():
+                        raise asyncio.CancelledError
+                    if child.error:
+                        failures.append(f"{server.name}: {child.error}")
+                await update_clis(server.name, lambda backend, server=server: self.update_cli(server, backend))
+            await update_clis("hub", hub_update_cli)
+            job.progress("restart", "Restarting the hub…")
+            restart_error = await hub_restart()
+            if restart_error:
+                failures.append(f"hub: {restart_error}")
+                job.progress("restart", restart_error)
+            else:
+                job.restarting = True
+            if failures:
+                job.error = "; ".join(failures)
+        except asyncio.CancelledError:
+            job.error = "Update cancelled."
+            job.progress(job.phase, job.error)
+        except Exception as exc:  # noqa: BLE001 - the job view carries the message
+            job.error = str(exc) or exc.__class__.__name__
+            job.progress(job.phase, job.error)
+            logger.warning("update-all %s failed: %s", job.job_id, job.error)
+        finally:
+            job.done = True
+
     def cancel_job(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)
         if job is None or job.task is None or job.task.done():
@@ -1600,6 +1722,9 @@ def register_remote_server_routes(
     manager: RemoteServerManager,
     authorize_admin: Callable[[Request], None],
     websocket_authorized: Callable[[WebSocket], bool],
+    hub_running_chat_count: Callable[[], int],
+    hub_update_cli: Callable[[str], Awaitable[str]],
+    hub_restart: Callable[[], Awaitable[str | None]],
 ) -> None:
     @app.get(ADMIN_PATH)
     async def remote_servers_list(request: Request) -> dict[str, Any]:
@@ -1642,6 +1767,17 @@ def register_remote_server_routes(
         if manager.job(job_id) is None:
             raise HTTPException(status_code=404, detail="Unknown deployment job.")
         return {"cancelled": manager.cancel_job(job_id)}
+
+    @app.post(f"{ADMIN_PATH}/update-all")
+    async def remote_servers_update_all(request: Request, body: UpdateAllRequest) -> JSONResponse:
+        """Redeploy every remote, update the CLIs everywhere, restart the hub. Without force, servers with running chats stop it."""
+        authorize_admin(request)
+        if not body.force:
+            running = await manager.servers_with_running_chats(hub_running_chat_count())
+            if running:
+                return JSONResponse({"running": running})
+        job = manager.start_update_all(hub_update_cli=hub_update_cli, hub_restart=hub_restart)
+        return JSONResponse({"job_id": job.job_id}, status_code=202)
 
     @app.post(f"{ADMIN_PATH}/{{remote_id}}/redeploy", status_code=202)
     async def remote_servers_redeploy(request: Request, remote_id: str) -> dict[str, Any]:

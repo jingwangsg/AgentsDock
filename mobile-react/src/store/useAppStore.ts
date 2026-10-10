@@ -29,6 +29,7 @@ import type {
   QueuedTurn,
   RemoteServer,
   RemoteServerDeployJob,
+  ServerRunningChats,
   RemoteServerDeployLogEntry,
   RuntimeCatalog,
   ServerUpdateStatus,
@@ -571,6 +572,13 @@ interface AppState {
    * without `force` it only reports them: a count, or null when the remote could not be checked.
    */
   redeployHubRemote(profileId: string, force: boolean, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<{ redeployed: boolean; running: number | null }>
+  /**
+   * Server list "Update & redeploy all", whichever server is active: the hub redeploys its remotes, updates
+   * Claude Code and Codex on every server, then restarts itself. The restarts stop running chats, so without
+   * `force` it changes nothing and resolves to the servers that have some (`running` null: could not be
+   * checked); otherwise it resolves once the hub is back, with the steps that failed.
+   */
+  updateAndRedeployAll(force: boolean, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<{ running: Array<ServerRunningChats & { name: string }>; failures: string | null }>
   /** Server list "Update CLI" on any saved server; resolves with the CLI's last output line. */
   updateServerCli(profileId: string, backend: 'claude' | 'codex'): Promise<string>
   updateServerProfile(profileId: string, patch: UpdateServerProfileInput): Promise<void>
@@ -907,6 +915,43 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     void get().probeInactiveProfiles()
     return { redeployed: true, running: 0 }
+  },
+
+  async updateAndRedeployAll(force, onProgress) {
+    const hub = hubProfile(get())
+    if (!hub) throw new Error('Update & redeploy all needs the hub; connect to it once first.')
+    if (hubDeployInFlight) throw new Error('A remote server deployment is already running.')
+    const client = new AgentServerClient(normalizeServerURL(hub.serverURL), await loadProfileToken(hub.id, hub.credentialVersion))
+    try {
+      const instanceId = () => client.health().then(health => health.server_instance_id ?? null, () => null)
+      const before = await instanceId()
+      const started = await client.startHubUpdateAll(force)
+      if ('running' in started) return { running: started.running.map(server => ({ ...server, name: server.name ?? hub.name })), failures: null }
+      let lastPhase = ''
+      let job: RemoteServerDeployJob | null = null
+      try {
+        job = await followHubJob(client, started.job_id, entry => { lastPhase = entry.phase; onProgress(entry) })
+      } catch (error) {
+        // The hub kickstarts itself a few seconds after its job finishes; on a slow link the poll that would
+        // have read the finished job can arrive after the stop. The restart line was already seen, so wait.
+        if (lastPhase !== 'restart') throw error
+      }
+      if (!job || job.restarting) {
+        // Only a new instance id proves the restart: the stopping process may still answer. Two minutes: the
+        // same wait the hub allows a redeployed remote to come back.
+        const deadline = Date.now() + 120_000
+        for (;;) {
+          const current = await instanceId()
+          if (current !== null && current !== before) break
+          if (Date.now() > deadline) throw new Error('The hub did not come back within 2 minutes of its restart.')
+          await new Promise(resolve => setTimeout(resolve, 1_500))
+        }
+      }
+      void get().probeInactiveProfiles()
+      return { running: [], failures: job?.error ?? null }
+    } finally {
+      client.dispose()
+    }
   },
 
   async updateServerCli(profileId, backend) {

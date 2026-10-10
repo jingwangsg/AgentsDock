@@ -77205,8 +77205,8 @@ def official_server_release_tree() -> bool:
     return current == SERVER_ROOT
 
 
-def macos_launchd_owns_current_process() -> bool | None:
-    """Prove that the official launchd job owns this exact process.
+def macos_launchd_owns_current_process(label: str | None = None) -> bool | None:
+    """Prove that the launchd job ``label`` (default: the official one) owns this exact process.
 
     Returns ``None`` when the probe could not decide (launchctl timed out).
     """
@@ -77218,7 +77218,7 @@ def macos_launchd_owns_current_process() -> bool | None:
             [
                 "/bin/launchctl",
                 "print",
-                f"gui/{os.getuid()}/{server_instances.launchd_label(SERVER_INSTANCE_NAME)}",
+                f"gui/{os.getuid()}/{label or server_instances.launchd_label(SERVER_INSTANCE_NAME)}",
             ],
             stdin=subprocess.DEVNULL,
             text=True,
@@ -77242,6 +77242,29 @@ def macos_launchd_owns_current_process() -> bool | None:
         str(result.stdout or ""),
     )
     return launchd_pids == [str(os.getpid())]
+
+
+def hub_launchd_label() -> str | None:
+    """The launchd job that owns this process, whatever its label: the official service or a user's own LaunchAgent.
+
+    launchd puts the label in the job's environment as XPC_SERVICE_NAME; a pid match proves it is this process.
+    """
+    label = os.environ.get("XPC_SERVICE_NAME", "").strip()
+    return label if label and macos_launchd_owns_current_process(label) else None
+
+
+async def restart_hub_process() -> str | None:
+    """Ask launchd to restart this process (Update & redeploy all's last step); returns why it cannot."""
+    label = await asyncio.to_thread(hub_launchd_label)
+    if not label:
+        return "This server is not run by launchd, so it cannot restart itself; restart it by hand."
+    # kickstart -k sends this process SIGTERM. The detached shell outlives it, and its delay gives the
+    # client's next job poll (every 1.5 s, plus the link's latency) time to read the finished job.
+    subprocess.Popen(
+        ["/bin/sh", "-c", f"sleep 5; exec /bin/launchctl kickstart -k gui/{os.getuid()}/{shlex.quote(label)}"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+    return None
 
 
 def detect_managed_server_service_kind() -> str | None:
@@ -85653,9 +85676,22 @@ RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS = 600
 
 @app.post("/api/admin/runtimes/{backend}/update")
 async def update_runtime_cli(backend: Literal["claude", "codex"], request: Request):
-    """Run the CLI's own `update` with the binary and PATH this server's chats spawn."""
+    """Update CLI on this server: the per-row button, and the update-all job's remote step."""
 
     require_native_admin_control(request)
+    result = await run_runtime_cli_update(backend)
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+async def update_hub_cli(backend: str) -> str:
+    """Update & redeploy all's hub step: run the CLI's update here and return the version it left installed."""
+    result = await run_runtime_cli_update(backend)
+    return str((result["diagnostic"] or {}).get("version") or "")
+
+
+async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
+    """Run the CLI's own `update` with the binary and PATH this server's chats spawn."""
+
     if RUNTIME_CLI_UPDATE_LOCK.locked():
         raise HTTPException(409, "A CLI update is already running on this server.")
     async with RUNTIME_CLI_UPDATE_LOCK:
@@ -85664,6 +85700,8 @@ async def update_runtime_cli(backend: Literal["claude", "codex"], request: Reque
         if not executable:
             raise HTTPException(404, f"The {backend} CLI is not installed on this server.")
 
+        started: list[subprocess.Popen[str]] = []
+
         def run_update() -> tuple[int, str]:
             # One stream keeps the CLI's own order, so the tail ends with its result line.
             proc = subprocess.Popen(
@@ -85671,6 +85709,7 @@ async def update_runtime_cli(backend: Literal["claude", "codex"], request: Reque
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
                 start_new_session=True,
             )
+            started.append(proc)
             try:
                 output = proc.communicate(timeout=RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS)[0]
             except subprocess.TimeoutExpired:
@@ -85682,6 +85721,12 @@ async def update_runtime_cli(backend: Literal["claude", "codex"], request: Reque
 
         try:
             returncode, output = await asyncio.to_thread(run_update)
+        except asyncio.CancelledError:
+            # A cancelled update-all job must not leave an npm install racing the next update behind the released lock.
+            for proc in started:
+                with suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+            raise
         except subprocess.TimeoutExpired:
             raise HTTPException(500, f"`{backend} update` did not finish within {RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS / 60:g} minutes.") from None
         if backend == BACKEND_CODEX:
@@ -85692,7 +85737,7 @@ async def update_runtime_cli(backend: Literal["claude", "codex"], request: Reque
     # 500, not 502/504: those mean the hub could not reach this server, and clients treat them so.
     if returncode:
         raise HTTPException(500, f"`{backend} update` exited with {returncode}" + (f": {output}" if output else "."))
-    return JSONResponse({"output": output, "diagnostic": diagnostic}, headers={"Cache-Control": "no-store"})
+    return {"output": output, "diagnostic": diagnostic}
 
 
 CODEX_PROVIDER_SETTINGS_LOCK = asyncio.Lock()
@@ -100752,6 +100797,8 @@ agentsdock_canvas.register_canvas_routes(
 REMOTE_SERVERS = remote_servers.RemoteServerManager(STATE_DIR, source_dir=SERVER_ROOT)
 remote_servers.register_remote_server_routes(
     app, manager=REMOTE_SERVERS, authorize_admin=require_native_admin_control, websocket_authorized=websocket_authorized,
+    # Update & redeploy all: the hub's own running chats (as /api/health lists them), CLI updates and restart.
+    hub_running_chat_count=lambda: len(BUSY_SESSIONS), hub_update_cli=update_hub_cli, hub_restart=restart_hub_process,
 )
 
 

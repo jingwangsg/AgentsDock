@@ -1,5 +1,47 @@
 # Public development log
 
+## 2026-10-10 — Android gets "Update & redeploy all"; the hub runs it as one job (server and Android source)
+
+- The desktop's Settings → Server "Update & redeploy all" restarts the local
+  server through launchd on the same Mac, redeploys every remote from it and
+  updates Claude Code and Codex everywhere. A phone cannot run launchctl, so
+  Android had only per-server Redeploy and Update CLI.
+- The hub now offers the whole sequence as one job at
+  `POST /api/admin/remote-servers/update-all`: it redeploys each of its
+  remotes (attached ones are not redeployed, as before, but still get the CLI
+  updates), runs `claude update` and `codex update` on each remote through its
+  tunnel and on the hub itself, and restarts the hub last, since the job runs
+  inside it. The restart asks
+  launchd to kickstart the job that owns the server process: launchd names
+  that job in the process environment (`XPC_SERVICE_NAME`) and `launchctl
+  print` confirms the pid, so a hub run by any LaunchAgent, not only the
+  installer's service, can restart itself; a server not run by launchd ends
+  the job with "cannot restart itself; restart it by hand" after the other
+  steps. Without `force` the route returns the servers with running chats (the
+  hub by its own count, a redeployed remote by its health, probed at once, an
+  unreachable remote as unknown; attached remotes are left out since only
+  their tunnel blinks) and runs nothing. The job view gains `restarting`,
+  which tells a client to wait for a new server instance. One job at a time,
+  like deploys.
+- Android Settings → Servers shows the button under the heading when a hub is
+  saved, whichever server is active. Without force it asks "Running chats will
+  stop on: …" with "Update anyway", then follows the job's log in place, and
+  when the hub restarts it waits up to two minutes for a new server instance
+  id before reporting "Updated and restarted." or the steps that failed; a
+  poll lost to the restart itself is treated the same way. The desktop keeps
+  its own flow, which restarts the local server first.
+- Verified with the remote-server tests (blocked response and its counts, the
+  step order across two remotes and an attached one, a failing remote
+  reported while the hub still restarts, the one-job rule, a hub that cannot
+  restart, the real CLI update request against a fake remote), an isolated
+  test of the launchd ownership proof and the detached kickstart, the Android
+  type check, the Servers screen contract test and the hub store test (blocked
+  list with the hub's name, job followed, the stopping process's stale answer
+  skipped, new instance awaited). On this Mac's hub the process carries `XPC_SERVICE_NAME` and
+  `launchctl print` lists its pid, so the proof holds there; the restart
+  itself was not run. Not exercised: the button on a phone. Availability:
+  source only; needs a redeployed hub and the next Android build.
+
 ## 2026-10-10 — Canvas reads as an interactive technical report; Markdown component (server source)
 
 - A Canvas asked to hold a tutorial came out as a poster: four short entries
