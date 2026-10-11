@@ -53,8 +53,11 @@ if [ "$UNPACKED" = 1 ]; then
   command -v uv >/dev/null 2>&1 || { printf 'uv could not be installed.\n' >&2; exit 2; }
   # The server needs 3.11+ (tomllib) although pyproject still says >=3.10; without
   # the pin uv happily picks an older managed interpreter it finds on the host.
+  # The upper bound is the newest CPython the locked compiled packages (pydantic-core,
+  # cffi, rpds-py) ship wheels for: past it uv downloads the newest release and builds
+  # them from source, which fails on hosts without a compiler. Raise it with uv.lock.
   log "Preparing the Python runtime (uv sync)"
-  ( cd server && uv sync --frozen --quiet --python '>=3.11' )
+  ( cd server && uv sync --frozen --quiet --python '>=3.11,<3.15' )
 fi
 
 # Agent CLIs. Claude Code has a dependency-free installer; install it under the

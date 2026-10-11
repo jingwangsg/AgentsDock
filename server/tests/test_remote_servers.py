@@ -67,6 +67,9 @@ host = json.load(open(os.path.join(state, "host.json")))
 if tail is not None and len(tail) == 1:  # probe: bash -s -- <install_dir>
     print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=host["existing_port"])))
 elif tail is not None:  # bootstrap: bash -s -- <install_dir> <port> <home> [restart]
+    if host.get("bootstrap_failure"):  # the host's script prints these lines and fails
+        print("\n".join(host["bootstrap_failure"]))
+        sys.exit(1)
     print("[AgentsDock setup] Starting AgentsServer on port " + tail[1])
     print("AGENTSDOCK_SETUP_RESULT=" + json.dumps(dict(access_token=host["token"], remote_port=int(tail[1]), install_dir=tail[0], server_version="1.2.3")))
 '''
@@ -573,11 +576,11 @@ with socket.socket() as listener:
 
     # --- deploy jobs against a scripted host ----------------------------------
 
-    def fake_host(self, existing_port: int | None) -> Path:
+    def fake_host(self, existing_port: int | None, bootstrap_failure: list[str] | None = None) -> Path:
         """Point ssh at a script playing the host; returns the argv log it appends to."""
         state = self.tmp_path / "host"
         state.mkdir()
-        (state / "host.json").write_text(json.dumps({"token": REMOTE_TOKEN, "existing_port": existing_port}))
+        (state / "host.json").write_text(json.dumps({"token": REMOTE_TOKEN, "existing_port": existing_port, "bootstrap_failure": bootstrap_failure}))
         script = self.tmp_path / "ssh"
         script.write_text(FAKE_SSH.format(python=sys.executable, state=str(state)))
         script.chmod(0o700)
@@ -625,6 +628,24 @@ with socket.socket() as listener:
         assert job.error == "dev@build-host did not accept the password."
         _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="dev@build-host", password="keys-only"))
         assert job.error == "dev@build-host does not accept passwords; install a key there by hand."
+
+    def test_a_failed_bootstrap_step_logs_its_output_and_names_its_error(self) -> None:
+        # Seen live: uv built pydantic-core from source on a host without a compiler, and the
+        # job kept only uv's trailing hint line, so nothing said which package failed or why.
+        output = [
+            "[AgentsDock setup] Unpacking AgentsServer source",
+            "[AgentsDock setup] Preparing the Python runtime (uv sync)",
+            "error: Failed to build `pydantic-core==2.46.4`",
+            "  cause: Call to `maturin.build_wheel` failed (exit status: 1)",
+            "",
+            "         error: linker `cc` not found",
+            "hint: Build failures usually indicate a problem with the package or the build environment",
+        ]
+        self.fake_host(existing_port=None, bootstrap_failure=output)
+        _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="dev@build-host"))
+        assert job.error == "error: Failed to build `pydantic-core==2.46.4`"
+        messages = [entry["message"] for entry in job.log]
+        assert messages[-6:] == ["Preparing the Python runtime (uv sync)", *[line for line in output[2:] if line], job.error]
 
     def test_a_cluster_target_rejects_a_password(self) -> None:
         self.fake_host(existing_port=None)

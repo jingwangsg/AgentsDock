@@ -3576,6 +3576,8 @@ sync_release_dependencies() (
   # PEP 517 build subprocesses inherit uv's environment. Start from a narrow
   # allowlist so credentials and unrelated project selectors from the calling
   # desktop/tmux/service environment never enter third-party build hooks.
+  # The Python upper bound is the newest CPython the locked compiled packages ship
+  # wheels for; see remote_bootstrap.sh, and raise both together with uv.lock.
   env -i \
     HOME="$HOME" \
     LANG=C \
@@ -3584,7 +3586,7 @@ sync_release_dependencies() (
     UV_PROJECT_ENVIRONMENT="$STAGE_DIR/.venv" \
     "$UV_BIN" sync \
       --project "$STAGE_DIR" \
-      --python '>=3.10' \
+      --python '>=3.10,<3.15' \
       --no-dev \
       --quiet \
       --frozen

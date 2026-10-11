@@ -1,5 +1,27 @@
 # Public development log
 
+## 2026-10-11 — Remote deploys ask uv for a Python the lock has wheels for, and a failed install step shows its output (server)
+
+- Deploying to a fresh host failed in "Preparing the Python runtime (uv sync)"
+  (seen on an aarch64 AWS host with only Python 3.10 and no compiler): the uv
+  the bootstrap had just installed picked the newest managed CPython, 3.15,
+  for which the locked pydantic-core, cffi and rpds-py ship no wheels, so it
+  built them from source and failed for want of a C compiler. The hub's remote
+  bootstrap and `install.sh` now ask uv for a Python below 3.15; the bound is
+  the newest CPython the locked compiled packages have wheels for and moves
+  with `uv.lock`. Verified on that host: the previous command fails the same
+  way in a scratch copy, the bounded one syncs on CPython 3.14 and the server
+  modules import. The change ships in the next redeploy's tarball; the lock
+  is unchanged, so the hub's own environment needs no re-sync.
+- The deploy job kept only the last line a failed step printed (uv's "hint:
+  Build failures usually indicate…"), in the Edit dialog, the Redeploy row and
+  the job log. The failing step's own output, everything after the last
+  "[AgentsDock setup]" line, now goes into the job log, and the job error is
+  the step's first error line (uv's "Failed to build `<package>`") instead of
+  the line it ends with. This part runs in the hub, so it shows after a hub
+  restart. Not exercised in the real app: a failed deploy against a live host
+  through a restarted hub; the behaviour is pinned by a scripted-host test.
+
 ## 2026-10-11 — Desktop package 122 and Android build 66 (local package and APK)
 
 - Package the entries recorded since package 121 and Android build 65: `ssh

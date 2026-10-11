@@ -1955,6 +1955,16 @@ class RemoteServerManager:
             detail = next((line for line in reversed(lines) if line.strip() and not line.startswith((PROBE_PREFIX, RESULT_PREFIX))), "")
             if code == 255:
                 raise SSHConnectionLost(detail or "ssh exited 255")
+            # The host script failed in the step it announced last: what follows that
+            # "[AgentsDock setup]" line is the step's own output (uv's build error, a tar
+            # error, the server log tail). It goes into the job log, capped so the log, which
+            # clients read by count, stays under its own limit; the error names the step's
+            # first error line, e.g. uv's "Failed to build `<package>`", not the hint it ends with.
+            start = max((index + 1 for index, line in enumerate(lines) if line.startswith(SETUP_LOG_PREFIX)), default=0)
+            step = [line for line in lines[start:] if line.strip() and not line.startswith((PROBE_PREFIX, RESULT_PREFIX))]
+            for line in step[-200:]:
+                job.progress(job.phase, line)
+            detail = next((line for line in step if line.lstrip().lower().startswith(("error", "×"))), detail)
             raise RuntimeError(detail or f"ssh exited {code}")
         return lines
 
