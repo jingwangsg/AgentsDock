@@ -52,6 +52,67 @@
   route card on desktop. Not exercised on a device: the queued agent-message
   row (unit-tested) and a chat on another server (unit-tested resolver path).
 
+## 2026-10-11 — Agents name chats after the task: `chats title` (server source)
+
+- A chat created for a handoff was named after the first words of the
+  message, and nothing could change that but a manual rename. The chats
+  helper gets a `title` command: `chats title "<title>"` names the run's own
+  chat, and `chats title --route <route_id> "<title>"` names a chat the run
+  holds an instruction route to, such as the chat the composer created for its
+  handoff. The server stores the title with provenance `agent`: generated and
+  provider titles never replace it; a user's rename still does. Titles are one
+  line of at most 120 characters; control characters and a leading `@` are
+  dropped. A route to a chat on another server is refused until the hub relays
+  title changes.
+- The agent-facing guidance (the provider-tool description, the provider
+  actions prelude, and the wake prompt a chat gets for unread peer mail) names
+  the command and recommends keeping the title current for a chat the agent
+  created or works in: set it as soon as the task is clear and update it when
+  the work's focus changes, rather than leaving a stale title for long. Both
+  clients already show a chat's current title in the sidebar and in sent
+  `@Chat` chips, so no client change is needed.
+- Verification. Unit: chats helper tests (payload, bounds), agent route tests
+  (own chat, routed chat, refusals: reply-only route, unknown route, malformed
+  id, another server, empty title, a run without the grant, a chat without
+  routes; automatic titles stay off an agent title), the goal-resume and
+  prompt-size tests, the mailbox-wake tests. Real app: an isolated server with
+  a Claude chat that created a new agent and named both chats through the
+  helper; the desktop and Android sidebars showed the new titles, and the
+  named chat kept its title through a later Claude turn. Not exercised: titles
+  across servers (refused by design), iOS. Availability: server source; a
+  remote takes it after a redeploy.
+
+## 2026-10-11 — `Create new agent` can choose the agent (desktop + Android source)
+
+- The `Create new agent` dialog (desktop) and sheet (Android) get an `Agent`
+  row. Until now the new chat always ran on the backend of the chat it was
+  created from, so a Codex chat could not hand a task to a new Claude chat.
+  The row lists the backends that both start chats on this server and
+  receive `@Chat` handoffs, and defaults to the current chat's backend. The
+  model and reasoning effort lists follow the chosen backend's catalog: the
+  current chat's own backend keeps inheriting its model and effort, another
+  backend starts from that backend's server defaults. The description names
+  the chosen backend. A custom Codex endpoint carries over to a new Codex chat
+  only.
+- The picker row now appears whenever at least one such backend exists, not
+  only when the current chat's own backend receives handoffs: a Cursor chat
+  can create a Claude or Codex agent.
+- A draft saved before this change names no backend; it is kept and falls
+  back to the current chat's backend on send.
+- Verification. Unit: desktop composer tests (agent row default, a Codex chat
+  creating a Claude agent with Claude's models and server defaults, a Cursor
+  chat now offered the row), desktop and Android reference-helper tests
+  (stored backend kept, old draft shape accepted, unknown backend refused),
+  locale
+  tests, both type checks. Real app: both apps against an isolated
+  token-backed server; from a Codex chat each app created a new agent with
+  `Agent` set to Claude, model `opus` and effort `high`; the server created a
+  Claude chat with those values in the current chat's folder and working
+  directory,
+  the source turn referenced it, and the new Claude chat woke on the handoff
+  (on the desktop it answered the task). Not exercised: iOS, another server as
+  the target (path unchanged), a custom Codex endpoint as the source chat.
+  Availability: desktop and Android source.
 ## 2026-10-11 — `ssh <name>` reaches every hub remote, and a remote can be hidden from the server lists (server + desktop + Android source)
 
 - `ssh <server name>` from the hub's machine worked only for remotes whose

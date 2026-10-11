@@ -237,6 +237,7 @@ Current opaque-route helper endpoints:
 ```text
 GET  /api/agent/cross-chat/routes
 POST /api/agent/cross-chat/routes/{route_id}/handoffs
+POST /api/agent/cross-chat/title
 ```
 
 Action-specific compatibility and exchange-response endpoints:
@@ -272,7 +273,15 @@ agentsdock-chats send --route ROUTE_ID --message TEXT
 agentsdock-chats ask --route ROUTE_ID --message TEXT
 agentsdock-chats respond --exchange EXCHANGE_ID \
   --inbound-leg LEG_ID --message TEXT [--request-response]
+agentsdock-chats title [--route ROUTE_ID] TITLE
 ```
+
+`title` names the run's own chat or, with `--route`, the chat behind an
+instruction route (for example the chat the composer created for this run's
+handoff). The server stores it with provenance `agent`: generated and provider
+titles never replace it; a user's rename still does. Titles are one line of at
+most 120 characters. A route to a chat on another server is refused (409)
+until the hub relays title changes.
 
 `--target OPAQUE_HANDLE` remains accepted only when a legacy action-specific
 or secure delivery capability prints that exact command; it is not a chat ID

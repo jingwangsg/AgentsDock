@@ -54,6 +54,27 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                 agentsdock_chats.read_inbox(args)
             auth.assert_not_called()
 
+    def test_title_posts_the_collapsed_title_for_this_chat_or_a_route(self) -> None:
+        args = agentsdock_chats.parser().parse_args(["title", "  Fix   the login\nbug  "])
+        with patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                patch.object(agentsdock_chats, "post_json", return_value={"ok": True}) as post:
+            self.assertEqual(args.handler(args), {"ok": True})
+        self.assertEqual(post.call_args.args, ("/api/agent/cross-chat/title", {"title": "Fix the login bug"}, "capability"))
+        route = "route_" + "a" * 32
+        args = agentsdock_chats.parser().parse_args(["title", "--route", route, "Triage flaky tests"])
+        with patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                patch.object(agentsdock_chats, "post_json", return_value={"ok": True}) as post:
+            args.handler(args)
+        self.assertEqual(post.call_args.args[1], {"title": "Triage flaky tests", "route_id": route})
+        # Empty, over-long and mis-shaped arguments are refused before any request.
+        for arguments in (["title", "   "], ["title", "x" * 121], ["title", "--route", "not-a-route", "Name"]):
+            args = agentsdock_chats.parser().parse_args(arguments)
+            with patch.object(agentsdock_chats, "authority") as auth, patch.object(agentsdock_chats, "post_json") as post, \
+                    self.assertRaises(agentsdock_chats.CLIError):
+                args.handler(args)
+            auth.assert_not_called()
+            post.assert_not_called()
+
     def test_async_reply_parent_is_explicit_and_part_of_default_idempotency(self) -> None:
         route = "route_" + "a" * 32
         parents = ["handoff_" + "b" * 32, "handoff_" + "c" * 32]

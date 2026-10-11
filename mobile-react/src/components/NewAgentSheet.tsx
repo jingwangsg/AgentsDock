@@ -18,11 +18,13 @@ export interface NewAgentHosts {
 }
 
 /**
- * Where and with which runtime "Create new agent" makes its chat on send; the current
- * chat's values are the defaults. Page-sheet port of the desktop dialog.
+ * Where, on which agent and with which runtime "Create new agent" makes its chat on send;
+ * the current chat's values are the defaults. Page-sheet port of the desktop dialog.
  */
-export function NewAgentSheet({ hosts, backend, model, effort, folder, runtime, onCancel, onConfirm, onDidDismiss }: {
+export function NewAgentSheet({ hosts, backends, backend, model, effort, folder, runtime, onCancel, onConfirm, onDidDismiss }: {
   hosts: NewAgentHosts | null
+  /** Backends the chat may run on: this server's selectable ones that also receive handoffs. */
+  backends: Backend[]
   backend: Backend
   model: string | null | undefined
   effort: string | null | undefined
@@ -35,20 +37,28 @@ export function NewAgentSheet({ hosts, backend, model, effort, folder, runtime, 
 }) {
   const colors = usePalette()
   const open = hosts !== null
+  const [backendDraft, setBackendDraft] = useState(backend)
   const [serverIdentity, setServerIdentity] = useState<string | null>(null)
   const [folderDraft, setFolderDraft] = useState(folder)
   const [modelDraft, setModelDraft] = useState(model ?? '')
   const [effortDraft, setEffortDraft] = useState(effort ?? '')
+  // This chat's model and effort are defaults for its own backend only; another backend starts from its server defaults.
+  const selectBackend = (value: Backend) => {
+    setBackendDraft(value)
+    setModelDraft(value === backend ? model ?? '' : '')
+    setEffortDraft(value === backend ? effort ?? '' : '')
+  }
   // Each opening starts from the current chat's values, the inherited defaults.
+  // The candidate list is keyed by its contents: its identity follows every health poll.
   useEffect(() => {
     if (!open) return
+    // A chat on a backend without handoffs (Cursor) defaults to the first backend that has them.
+    selectBackend(backends.includes(backend) ? backend : (backends[0] ?? backend))
     setServerIdentity(null)
     setFolderDraft(folder)
-    setModelDraft(model ?? '')
-    setEffortDraft(effort ?? '')
-  }, [open, folder, model, effort])
-  const models = runtimeCatalogOptions(runtime, backend, 'models', modelDraft || null)
-  const efforts = backend === 'cursor' ? [] : runtimeEffortOptions(runtime, backend, modelDraft || null, effortDraft || null)
+  }, [open, backends.join(','), backend, folder, model, effort])
+  const models = runtimeCatalogOptions(runtime, backendDraft, 'models', modelDraft || null)
+  const efforts = backendDraft === 'cursor' ? [] : runtimeEffortOptions(runtime, backendDraft, modelDraft || null, effortDraft || null)
   const serverOptions = [
     { value: '', label: hosts?.localTag ? `This server · ${hosts.localTag}` : 'This server' },
     ...(hosts?.servers ?? []).map(server => ({ value: server.server_identity, label: server.name || 'Hub' })),
@@ -61,7 +71,9 @@ export function NewAgentSheet({ hosts, backend, model, effort, folder, runtime, 
         <SheetCloseButton testID="new-agent-sheet-close" label="Close new agent" onPress={onCancel} />
       </View>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={[styles.description, { color: colors.muted }]}>Sending creates a {backendLabel(backend)} chat for this task and hands it the message. On this server it shares this chat's working directory; on another server it starts in that server's default directory.</Text>
+        <Text style={[styles.description, { color: colors.muted }]}>Sending creates a {backendLabel(backendDraft)} chat for this task and hands it the message. On this server it shares this chat's working directory; on another server it starts in that server's default directory.</Text>
+        <Text style={[styles.section, styles.sectionGap, { color: colors.muted }]}>Agent</Text>
+        {backends.map(option => <OptionRow key={option} testID={`new-agent-backend-${option}`} option={{ value: option, label: backendLabel(option) }} selected={option === backendDraft} onPress={() => selectBackend(option)} />)}
         {hosts.servers.length ? <>
           <Text style={[styles.section, styles.sectionGap, { color: colors.muted }]}>Server</Text>
           {serverOptions.map(option => <OptionRow key={option.value || 'local'} testID={`new-agent-server-${option.value || 'local'}`} option={option} selected={(serverIdentity ?? '') === option.value} onPress={() => setServerIdentity(option.value || null)} />)}
@@ -81,7 +93,7 @@ export function NewAgentSheet({ hosts, backend, model, effort, folder, runtime, 
         <Text style={[styles.section, styles.sectionGap, { color: colors.muted }]}>Model</Text>
         {models.map(option => <OptionRow key={option.value || 'default'} testID={`new-agent-model-${option.value || 'default'}`} option={option} selected={option.value === modelDraft} onPress={() => {
           setModelDraft(option.value)
-          setEffortDraft(runtimeEffortAfterModelChange(runtime, backend, option.value || null, effortDraft || null) ?? '')
+          setEffortDraft(runtimeEffortAfterModelChange(runtime, backendDraft, option.value || null, effortDraft || null) ?? '')
         }} />)}
         {efforts.some(option => Boolean(option.value)) ? <>
           <Text style={[styles.section, styles.sectionGap, { color: colors.muted }]}>Reasoning</Text>
@@ -91,7 +103,7 @@ export function NewAgentSheet({ hosts, backend, model, effort, folder, runtime, 
           testID="new-agent-confirm"
           accessibilityRole="button"
           accessibilityLabel="Add @New agent"
-          onPress={() => onConfirm({ model: modelDraft || null, effort: effortDraft || null, server_identity: serverIdentity, folder: folderDraft.trim() || 'General' }, serverName)}
+          onPress={() => onConfirm({ backend: backendDraft, model: modelDraft || null, effort: effortDraft || null, server_identity: serverIdentity, folder: folderDraft.trim() || 'General' }, serverName)}
           style={({ pressed }) => [styles.confirm, { backgroundColor: colors.blue, opacity: pressed ? 0.7 : 1 }]}
         >
           <Text style={styles.confirmText}>Add @New agent</Text>
