@@ -602,21 +602,22 @@ describe('chat references', () => {
 
 describe('liveChatReferenceTitle', () => {
   const sessions = [{ id: 'source', title: 'Source' }, { id: 'alpha', title: 'Alpha plan' }]
+  const titleSource = (list = sessions) => ({ sessions: list, remoteChatTitles: {} })
   const reference = { session_id: 'alpha', display_title_snapshot: 'New agent' }
 
   it('shows the chat\'s current title while this server lists both chats', () => {
-    expect(liveChatReferenceTitle(reference, sessions, 'source')).toBe('Alpha plan')
+    expect(liveChatReferenceTitle(reference, titleSource(), 'source')).toBe('Alpha plan')
   })
 
   it('keeps the sent title for a remote chat, an unknown chat, a blank title, or another server\'s list', () => {
-    expect(liveChatReferenceTitle({ ...reference, target_kind: 'secure_peer' as const }, sessions, 'source')).toBe('New agent')
-    expect(liveChatReferenceTitle({ ...reference, session_id: 'gone' }, sessions, 'source')).toBe('New agent')
-    expect(liveChatReferenceTitle(reference, [{ id: 'source', title: 'Source' }, { id: 'alpha', title: ' ' }], 'source')).toBe('New agent')
-    expect(liveChatReferenceTitle(reference, sessions, 'elsewhere')).toBe('New agent')
+    expect(liveChatReferenceTitle({ ...reference, target_kind: 'secure_peer' as const }, titleSource(), 'source')).toBe('New agent')
+    expect(liveChatReferenceTitle({ ...reference, session_id: 'gone' }, titleSource(), 'source')).toBe('New agent')
+    expect(liveChatReferenceTitle(reference, titleSource([{ id: 'source', title: 'Source' }, { id: 'alpha', title: ' ' }]), 'source')).toBe('New agent')
+    expect(liveChatReferenceTitle(reference, titleSource(), 'elsewhere')).toBe('New agent')
   })
 
   it('keeps the sent title when the current one would not pass as a chip', () => {
-    expect(liveChatReferenceTitle(reference, [{ id: 'source', title: 'Source' }, { id: 'alpha', title: '@ops' }], 'source')).toBe('New agent')
-    expect(liveChatReferenceTitle(reference, [{ id: 'source', title: 'Source' }, { id: 'alpha', title: 'a\u0000b' }], 'source')).toBe('New agent')
+    expect(liveChatReferenceTitle(reference, titleSource([{ id: 'source', title: 'Source' }, { id: 'alpha', title: '@ops' }]), 'source')).toBe('New agent')
+    expect(liveChatReferenceTitle(reference, titleSource([{ id: 'source', title: 'Source' }, { id: 'alpha', title: 'a\u0000b' }]), 'source')).toBe('New agent')
   })
 })

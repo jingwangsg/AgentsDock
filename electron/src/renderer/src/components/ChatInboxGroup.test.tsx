@@ -15,6 +15,7 @@ const scope = { profileId: 'profile', profileGeneration: 1, serverIdentity: null
 const events: Event[] = [1, 2].map(number => ({ id: `event-${number}`, seq: number, session_id: 'recipient',
   ts: '2026-09-11T12:00:00Z', type: 'chat_conversation_message_received', conversation_mode: 'async_route_v1',
   delivery_mode: 'mailbox', inbox_state: 'unread', conversation_id: 'pair', message_id: `message-${number}`,
+  // The sent title differs from the store's current one, so the header proves it shows the current title.
   source_session_id: 'sender', source_title: 'Actual Sender', target_session_id: 'recipient',
   message_revision: 0, handoff_preview: `Preview ${number}`, handoff_body_truncated: true }))
 const group = () => renderTimelineItems(projectTimeline(events, []))[0] as SystemItem
@@ -24,6 +25,7 @@ beforeEach(() => {
   list.mockResolvedValue({ session_id: 'recipient', messages: [], next_cursor: '25', has_more: true,
     senders: [{ source_session_id: 'sender', source_title: 'Actual Sender', unread_count: 2 }] })
   useAppStore.setState({ activeProfileId: 'profile', profileGeneration: 1, profiles: [], selectedSessionId: 'recipient',
+    sessions: [{ id: 'sender', title: 'Renamed Sender', backend: 'codex' }],
     health: { ok: true, capabilities: { cross_chat_handoffs_v1: { available: true, required: false, message: '', action: null, features: { chat_mailbox_v1: true } } } } })
   Object.defineProperty(window, 'agentsDock', { configurable: true, value: { chatInbox: { list, remove }, handoffs: { get } } })
 })
@@ -32,11 +34,10 @@ describe('sender-grouped chat inbox', () => {
   it('opens the sender chat without expanding, loading, or acknowledging its mail', () => {
     const selectSession = vi.fn().mockResolvedValue(undefined)
     useAppStore.setState({ selectSession })
-    useAppStore.setState({ sessions: [{ id: 'sender', title: 'Renamed Sender', backend: 'codex' }] })
     render(<ChatInboxGroup item={group()} sessionId="recipient" profileScope={scope} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Actual Sender' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Renamed Sender' }))
     expect(selectSession).toHaveBeenCalledExactlyOnceWith('sender')
-    expect(screen.getByRole('button', { name: 'Actual Sender · 2 unread' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('button', { name: 'Renamed Sender · 2 unread' })).toHaveAttribute('aria-expanded', 'false')
     expect(list).not.toHaveBeenCalled()
     expect(get).not.toHaveBeenCalled()
     expect(remove).not.toHaveBeenCalled()
@@ -48,12 +49,12 @@ describe('sender-grouped chat inbox', () => {
       message_revision: 0, body: 'Full original body and exact tail.' })
     render(<ChatInboxGroup item={group()} sessionId="recipient" profileScope={scope} />)
     expect(list).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Actual Sender · 2 unread' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Renamed Sender · 2 unread' }))
     await waitFor(() => expect(list).toHaveBeenCalledExactlyOnceWith(scope, 'recipient', null, 25))
     fireEvent.click(screen.getAllByRole('button', { name: 'View message' })[0])
     expect(await screen.findByText('Full original body and exact tail.')).toBeInTheDocument()
     expect(get).toHaveBeenCalledExactlyOnceWith('message-1')
-    expect(screen.getByRole('button', { name: 'Actual Sender · 2 unread' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Renamed Sender · 2 unread' })).toBeInTheDocument()
     expect(remove).not.toHaveBeenCalled()
     expect(screen.queryByText('Send now')).not.toBeInTheDocument()
     expect(list).toHaveBeenCalledTimes(1)
@@ -62,7 +63,7 @@ describe('sender-grouped chat inbox', () => {
   it('does not delete another message on a mismatched receipt and never probes an older server', async () => {
     remove.mockResolvedValue({ ok: true, session_id: 'recipient', message_id: 'different-message', state: 'deleted' })
     const view = render(<ChatInboxGroup item={group()} sessionId="recipient" profileScope={scope} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Actual Sender · 2 unread' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Renamed Sender · 2 unread' }))
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
     fireEvent.click(screen.getAllByRole('button', { name: 'Delete message' })[0])
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete this message')
@@ -71,7 +72,7 @@ describe('sender-grouped chat inbox', () => {
     view.unmount(); list.mockClear()
     useAppStore.setState({ health: { ok: true } })
     render(<ChatInboxGroup item={group()} sessionId="recipient" profileScope={scope} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Actual Sender · 2 unread' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Renamed Sender · 2 unread' }))
     expect(list).not.toHaveBeenCalled()
     expect(screen.getByText('Update the server to manage inbox messages.')).toBeInTheDocument()
   })
@@ -86,7 +87,7 @@ describe('sender-grouped chat inbox', () => {
       message_revision: 2, message_edited_by_user: true, body: 'Immutable original source body.', target_body: body,
       body_sha256: bytesToHex(sha256(utf8ToBytes('Immutable original source body.'))) })
     render(<ChatInboxGroup item={item} sessionId="recipient" profileScope={scope} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Actual Sender · 1 unread' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Renamed Sender · 1 unread' }))
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
     fireEvent.click(screen.getByRole('button', { name: 'View message' }))
     expect(await screen.findByText(body)).toBeInTheDocument()

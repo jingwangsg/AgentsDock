@@ -136,7 +136,7 @@ describe('collectChatOutputs sources', () => {
     ]
     expect(collectChatOutputs(events, []).sources).toEqual([
       { kind: 'skill', label: 'review-pr', eventId: 'e2' },
-      { kind: 'chat_reference', label: 'Planning chat', eventId: 'e2' },
+      { kind: 'chat_reference', label: 'Planning chat', sessionId: 'other', eventId: 'e2' },
       { kind: 'attached_file', label: 'spec.md', eventId: 'e2' },
       { kind: 'attached_file', label: 'data.csv', eventId: 'e2' }
     ])

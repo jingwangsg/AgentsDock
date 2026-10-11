@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type {
-  AgentCrossChatRoutesSnapshot, AgentFile, Backend, BootstrapPayload, ChatReference, ChatSyncStatus, CreateSessionInput, Event, ForwardedPort, Health, Job, NativeFileRef, QueuedTurn, TeamReference,
+  AgentCrossChatRoutesSnapshot, AgentFile, Backend, BootstrapPayload, ChatReference, ChatSyncStatus, CreateSessionInput, CrossServerChats, Event, ForwardedPort, Health, Job, NativeFileRef, QueuedTurn, TeamReference,
   ProfileBootstrapPayload, ProfileConnectionEvent, ProfileNotificationRoute, ProviderCommandSelection, PublicServerProfile, RuntimeCatalog, Session, SessionSnapshot,
   ServerForceRestartConfirmation, SessionExportFormat, Surface, SurfaceKind, TimelinePage, UpdateServerProfilePatch, UpdateSurfaceInput, WorkspaceProfileScope
 } from '@shared/types'
@@ -36,6 +36,7 @@ import {
   supportedCrossChatTargetBackends,
   validChatReferences
 } from '../lib/chat-references'
+import { remoteChatTitlesFrom } from '../lib/live-chat-title'
 import {
   cancelPendingSteering,
   isSteeringCancellation,
@@ -196,6 +197,8 @@ interface AppState {
   syncError: string | null
   health: Health | null
   sessions: Session[]
+  /** See LiveChatTitleSource; filled by rememberRemoteChatTitles from the hub's chat list. */
+  remoteChatTitles: Record<string, string>
   jobs: Job[]
   runtimeCatalog: RuntimeCatalog | null
   forwardedPorts: ForwardedPort[]
@@ -272,6 +275,7 @@ interface AppState {
   removeUpload(fileId: string): void
   removeUploadForSession(sessionId: string, fileId: string): void
   refreshSessions(): Promise<void>
+  rememberRemoteChatTitles(servers: readonly CrossServerChats[]): void
   requestNewChat(preset?: { folder: string; backend: Backend }): Promise<void>
   updateSession(
     sessionId: string,
@@ -544,6 +548,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   syncError: null,
   health: null,
   sessions: [],
+  remoteChatTitles: {},
   jobs: [],
   runtimeCatalog: null,
   forwardedPorts: [],
@@ -2089,6 +2094,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...state.uploadsBySession,
       [id]: (state.uploadsBySession[id] ?? []).filter(file => file.id !== fileId)
     } }))
+  },
+  rememberRemoteChatTitles(servers) {
+    set(state => ({ remoteChatTitles: { ...state.remoteChatTitles, ...remoteChatTitlesFrom(servers) } }))
   },
   async refreshSessions() {
     if (get().switchingProfileId) return

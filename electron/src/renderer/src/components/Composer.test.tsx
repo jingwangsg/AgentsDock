@@ -2594,10 +2594,10 @@ describe('Composer', () => {
     setAsyncAgentQueue([agent, ordinary])
     render(<Composer />)
 
-    const row = screen.getByRole('status', { name: 'Research agent: Authenticated agent message' })
+    const row = screen.getByRole('status', { name: 'Renamed research agent: Authenticated agent message' })
     expect(row).toHaveClass('agent-message')
-    expect(within(row).getByText('Research agent')).toHaveClass('queue-agent-sender')
-    expect(within(row).queryByText('Renamed research agent')).not.toBeInTheDocument()
+    expect(within(row).getByText('Renamed research agent')).toHaveClass('queue-agent-sender')
+    expect(within(row).queryByText('Research agent')).not.toBeInTheDocument()
     expect(within(row).queryByText(/Cross-chat delivery/)).not.toBeInTheDocument()
     expect(within(row).getByRole('button', { name: 'Send now' })).toBeDisabled()
     expect(within(row).getByRole('button', { name: 'Edit' })).toBeDisabled()
@@ -2632,7 +2632,7 @@ describe('Composer', () => {
     window.agentsDock.queue = { update, list, runNow: vi.fn() } as unknown as AgentsDockAPI['queue']
     window.agentsDock.handoffs = { get: handoffGet } as unknown as AgentsDockAPI['handoffs']
     render(<Composer />)
-    const row = screen.getByText('KD Dev').closest('.queued-row') as HTMLElement
+    const row = screen.getByText('Renamed research agent').closest('.queued-row') as HTMLElement
     expect(row).toHaveClass('agent-message')
     expect(within(row).queryByText('Agent-authored same-server handoff')).not.toBeInTheDocument()
     expect(within(row).getByRole('button', { name: 'Send now' })).toBeEnabled()
@@ -2687,7 +2687,7 @@ describe('Composer', () => {
       queued_id: 'queued-agent', conversation_mode: 'async_route_v1', body: 'Actual older-server message body.' })
     window.agentsDock.handoffs = { get } as unknown as AgentsDockAPI['handoffs']
     render(<Composer />)
-    expect(screen.getByText('Message from KD Dev')).toBeVisible()
+    expect(screen.getByText('Message from Renamed research agent')).toBeVisible()
     expect(get).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Send now' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Edit' })).toBeDisabled()
@@ -2751,7 +2751,7 @@ describe('Composer', () => {
     expect(remove).not.toHaveBeenCalled()
     const row = screen.getByText('Authenticated agent message').closest('.queued-row') as HTMLElement
     expect(row).toHaveClass('agent-message', 'promoted')
-    expect(within(row).getByText('Research agent')).toBeVisible()
+    expect(within(row).getByText('Renamed research agent')).toBeVisible()
     expect(within(row).getByText('Starting…')).toBeVisible()
     expect(within(row).queryByRole('button')).not.toBeInTheDocument()
   })

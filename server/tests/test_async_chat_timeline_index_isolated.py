@@ -130,7 +130,7 @@ class AsyncChatTimelineIndexTests(unittest.TestCase):
         self.assertEqual(started[0], {
             "key": "cross-chat:handoff:handoff_one", "kind": "system", "start_seq": 8, "end_seq": 8,
             "title": "Message from Research agent", "preview": "Prepared message body", "meta": "",
-            "timestamp": "2026-09-10T10:00:08Z",
+            "timestamp": "2026-09-10T10:00:08Z", "counterpart_session_id": "sender", "direction": "incoming",
         })
         self.append(message(9, "delivered"))
         warm = deepcopy(self.index())
@@ -171,6 +171,7 @@ class AsyncChatTimelineIndexTests(unittest.TestCase):
         self.append(message(1, "registered", session_id="sender"), message(3, "queued", session_id="sender"))
         sent = self.index("sender")["landmarks"][0]
         self.assertEqual((sent["start_seq"], sent["title"]), (1, "Sent to Desktop agent"))
+        self.assertEqual((sent["counterpart_session_id"], sent["direction"]), ("recipient", "outgoing"))
         self.append(message(6, "started", session_id="sender", source_session_id="recipient", target_session_id="sender",
                             source_title="Desktop agent", target_title="Research agent",
                             handoff_id="handoff_reply", cross_chat_envelope_id="handoff_reply", message_id="handoff_reply"))

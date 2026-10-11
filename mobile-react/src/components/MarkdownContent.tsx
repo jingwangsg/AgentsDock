@@ -80,7 +80,7 @@ export function MarkdownContent({
   // Chips name their chat by its current title; the markers keep the sent text for positions.
   // One joined string: the selector returns a stable primitive, so only a title change re-renders.
   const liveTitles = useAppStore(state => prepared.markers
-    .map(marker => liveChatReferenceTitle(marker.reference, state.sessions, sourceSessionId))
+    .map(marker => liveChatReferenceTitle(marker.reference, state, sourceSessionId))
     .join('\u0000'))
   const titles = useMemo(() => liveTitles.split('\u0000'), [liveTitles])
   const defaultMathFontSize = scaleChatFont(compact ? 12 : 15.5, fontScale)

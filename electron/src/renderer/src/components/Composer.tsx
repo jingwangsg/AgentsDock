@@ -90,6 +90,7 @@ import {
   type SteeringScope
 } from '../lib/queue-actions'
 import { atomicReferenceKeyAction } from '../lib/composer-reference-keys'
+import { liveChatTitle } from '../lib/live-chat-title'
 import {
   atomicComposerReferenceCaret,
   insertTeamReference,
@@ -749,7 +750,11 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     if (!scope) return
     let current = true
     window.agentsDock.crossServer.chats(scope)
-      .then(snapshot => { if (current) setCrossServerSnapshot({ key: crossServerKey, servers: snapshot.servers, createChats: snapshot.create_chats === true }) })
+      .then(snapshot => {
+        // Outside the picker guard: these titles name chats everywhere, not just here.
+        useAppStore.getState().rememberRemoteChatTitles(snapshot.servers)
+        if (current) setCrossServerSnapshot({ key: crossServerKey, servers: snapshot.servers, createChats: snapshot.create_chats === true })
+      })
       .catch(() => undefined)
     return () => { current = false }
   }, [crossServerAvailable, crossServerKey, mentionOpen])
@@ -4212,7 +4217,7 @@ const QueueShelf = memo(function QueueShelf({
   return <div className="queue-shelf"><div className="queue-header"><div className="queue-label"><ListOrdered size={13} /><span>{t("ui.Composer.QueueShelf.queued_turns_580e983")}</span><b>{displayedCount}</b>{promotedCount > 0
     ? <small>{promotedCount === 1 ? t("ui.Composer.QueueShelf.1_starting_dc0a211") : t("ui.Composer.QueueShelf.starting_37f2a6b", { "count": String(promotedCount) })}</small>
     : pausedCount > 0 && <small>{pausedCount === displayedCount ? t("ui.Composer.QueueShelf.paused_e159b06") : t("ui.Composer.QueueShelf.paused_c123acb", { "count": String(pausedCount) })}</small>}</div></div><DndContext sensors={sensors} onDragOver={onDragOver} onDragEnd={onDragEnd}>
-    <div className="queue-list">{queuedTurnsInPositionOrder(turns).map(turn => <QueuedRow key={turn.queued_id} profileId={profileId} profileGeneration={profileGeneration} steeringScope={steeringScope} turn={turn} sourceSessionTitle={turn.source_session_id && !turn.source_title?.trim() ? sessions.find(session => session.id === turn.source_session_id)?.title : undefined} sessionId={sessionId} running={running} activeCodexGoal={activeCodexGoal} drop={drop} steeringPending={steeringPending} promotionPending={promotedCount > 0} runtimeError={queuedTurnRuntimeAdmissionError(turn, sourceSession, health, catalog)} crossChatFence={queuedTurnCrossChatFence(queueOrderTurns, turn.queued_id, mixedReorder, asyncControls)} blockingDelivery={turn.queued_id === firstFencedTurn?.queued_id ? hiddenBlockingDelivery : null} canSkipExactDelivery={exactQueuedDeliverySkipAvailable(health)} canSkipExactPeerDelivery={exactQueuedPeerDeliverySkipAvailable(health)} asyncControls={asyncControls} reorderable={isReorderableQueuedTurn(turn, mixedReorder)} moving={moving} onMove={direction => {
+    <div className="queue-list">{queuedTurnsInPositionOrder(turns).map(turn => <QueuedRow key={turn.queued_id} profileId={profileId} profileGeneration={profileGeneration} steeringScope={steeringScope} turn={turn} sessionId={sessionId} running={running} activeCodexGoal={activeCodexGoal} drop={drop} steeringPending={steeringPending} promotionPending={promotedCount > 0} runtimeError={queuedTurnRuntimeAdmissionError(turn, sourceSession, health, catalog)} crossChatFence={queuedTurnCrossChatFence(queueOrderTurns, turn.queued_id, mixedReorder, asyncControls)} blockingDelivery={turn.queued_id === firstFencedTurn?.queued_id ? hiddenBlockingDelivery : null} canSkipExactDelivery={exactQueuedDeliverySkipAvailable(health)} canSkipExactPeerDelivery={exactQueuedPeerDeliverySkipAvailable(health)} asyncControls={asyncControls} reorderable={isReorderableQueuedTurn(turn, mixedReorder)} moving={moving} onMove={direction => {
       const latestQueue = queuedTurnsInPositionOrder(useAppStore.getState().snapshots[sessionId]?.queuedTurns ?? queueOrderTurns)
       const index = latestQueue.findIndex(candidate => candidate.queued_id === turn.queued_id)
       const adjacent = latestQueue[index + (direction === 'down' ? 1 : -1)]
@@ -4476,11 +4481,11 @@ function QueuedAttachment({ profileId, profileGeneration, sessionId, fileId }: {
   return <span className="queue-attachment-file" title={name}><File size={12} aria-hidden="true" />{name}</span>
 }
 
-function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sourceSessionTitle, sessionId, running, activeCodexGoal, drop, steeringPending, promotionPending, runtimeError, crossChatFence, blockingDelivery, canSkipExactDelivery, canSkipExactPeerDelivery, asyncControls, reorderable, moving, onMove, onEdit }: { profileId: string | null; profileGeneration: number; steeringScope: SteeringScope; turn: QueuedTurn; sourceSessionTitle?: string; sessionId: string; running: boolean; activeCodexGoal: boolean; drop: { id: string; placement: 'before' | 'after' } | null; steeringPending: boolean; promotionPending: boolean; runtimeError: string | null; crossChatFence: QueuedTurnCrossChatFence; blockingDelivery: QueuedTurn | null; canSkipExactDelivery: boolean; canSkipExactPeerDelivery: boolean; asyncControls: boolean; reorderable: boolean; moving: boolean; onMove: (direction: 'up' | 'down') => void; onEdit: (body?: string) => void }) {
+function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sessionId, running, activeCodexGoal, drop, steeringPending, promotionPending, runtimeError, crossChatFence, blockingDelivery, canSkipExactDelivery, canSkipExactPeerDelivery, asyncControls, reorderable, moving, onMove, onEdit }: { profileId: string | null; profileGeneration: number; steeringScope: SteeringScope; turn: QueuedTurn; sessionId: string; running: boolean; activeCodexGoal: boolean; drop: { id: string; placement: 'before' | 'after' } | null; steeringPending: boolean; promotionPending: boolean; runtimeError: string | null; crossChatFence: QueuedTurnCrossChatFence; blockingDelivery: QueuedTurn | null; canSkipExactDelivery: boolean; canSkipExactPeerDelivery: boolean; asyncControls: boolean; reorderable: boolean; moving: boolean; onMove: (direction: 'up' | 'down') => void; onEdit: (body?: string) => void }) {
   useLocale()
   const openCodeSteeringBlocked = useAppStore(state => running && state.sessions.find(session => session.id === sessionId)?.backend === 'opencode')
   const agentMessage = isAsyncAgentQueuedTurn(turn)
-  const senderTitle = agentMessage ? turn.source_title?.trim() || sourceSessionTitle?.trim() || t('timeline.ui.unknownAgent') : null
+  const senderTitle = useAppStore(state => agentMessage ? liveChatTitle(state, turn.source_session_id, turn.source_title) || t('timeline.ui.unknownAgent') : null)
   const securePeerDelivery = isSecurePeerDeliveryQueuedTurn(turn)
   const deliveryBarrier = isQueuedDeliveryBarrier(turn)
   const scheduledJob = isScheduledJobQueuedTurn(turn)

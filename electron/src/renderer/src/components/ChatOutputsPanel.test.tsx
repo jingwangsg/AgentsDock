@@ -27,7 +27,7 @@ const summary: ChatOutputsSummary = {
     { kind: 'web_search', count: 1, eventId: 'search-ev' },
     { kind: 'web_fetch', count: 3, eventId: 'fetch-ev' },
     { kind: 'skill', label: 'review-pr', eventId: 'skill-ev' },
-    { kind: 'chat_reference', label: 'Planning chat', eventId: 'ref-ev' },
+    { kind: 'chat_reference', sessionId: 'planning', label: 'Planning chat', eventId: 'ref-ev' },
     { kind: 'attached_file', label: 'spec.md', eventId: 'file-ev' }
   ]
 }

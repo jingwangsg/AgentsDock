@@ -1,6 +1,7 @@
 import type { Backend, ChatReference, ChatReferenceAction, Health, NewAgentSettings, Session } from '@shared/types'
 import type { SecurePeerRemoteRoute } from '@shared/secure-peer'
 import { reconcileReferenceSpans } from './team-references'
+import { liveChatTitle, type LiveChatTitleSource } from './live-chat-title'
 
 export interface ChatMentionTrigger {
   kind: '@' | '/chat'
@@ -191,13 +192,13 @@ export function chatReferenceDisplayText(
  */
 export function liveChatReferenceTitle(
   reference: Pick<ChatReference, 'session_id' | 'display_title_snapshot' | 'target_kind'>,
-  sessions: readonly Pick<Session, 'id' | 'title'>[],
+  source: LiveChatTitleSource,
   sourceSessionId?: string
 ): string {
-  if (reference.target_kind !== undefined || !sourceSessionId || !sessions.some(session => session.id === sourceSessionId)) {
+  if (reference.target_kind !== undefined || !sourceSessionId || !source.sessions.some(session => session.id === sourceSessionId)) {
     return reference.display_title_snapshot
   }
-  const title = sessions.find(session => session.id === reference.session_id)?.title.trim()
+  const title = liveChatTitle(source, reference.session_id)
   // The same rules a snapshot passed: no leading @ (it would read as a Team Network
   // mention) and no control characters (the title selectors join on NUL).
   return title && !title.startsWith('@') && !/[\u0000-\u001f\u007f]/.test(title) ? title : reference.display_title_snapshot

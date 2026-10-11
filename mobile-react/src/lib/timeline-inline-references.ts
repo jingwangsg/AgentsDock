@@ -1,5 +1,6 @@
-import type { ChatReference, ChatReferenceAction, Event, Session } from '../types'
+import type { ChatReference, ChatReferenceAction, Event } from '../types'
 import { MAX_CHAT_REFERENCES } from './chat-references'
+import { liveChatTitle, type LiveChatTitleSource } from './live-chat-title'
 import { messageText } from './format'
 
 export interface InlineRouteSegment {
@@ -65,13 +66,13 @@ export function inlineRouteReferenceIsInteractive(reference: ChatReference): boo
  */
 export function liveChatReferenceTitle(
   reference: ChatReference,
-  sessions: readonly Pick<Session, 'id' | 'title'>[],
+  source: LiveChatTitleSource,
   sourceSessionId?: string,
 ): string {
-  if (timelineChatReferenceIsRemote(reference) || !sourceSessionId || !sessions.some(session => session.id === sourceSessionId)) {
+  if (timelineChatReferenceIsRemote(reference) || !sourceSessionId || !source.sessions.some(session => session.id === sourceSessionId)) {
     return reference.display_title_snapshot
   }
-  const title = sessions.find(session => session.id === reference.session_id)?.title.trim()
+  const title = liveChatTitle(source, reference.session_id)
   // The same rules a snapshot passed: no leading @ (it would read as a Team Network
   // mention) and no control characters (the title selectors join on NUL).
   return title && !title.startsWith('@') && cleanText(title) ? title : reference.display_title_snapshot

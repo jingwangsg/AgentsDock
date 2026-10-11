@@ -79,7 +79,7 @@ export const MarkdownContent = memo(function MarkdownContent({
   // Chips name their chat by its current title; the markers keep the sent text for positions.
   // One joined string: the selector returns a stable primitive, so only a title change re-renders.
   const liveTitles = useAppStore(state => preparedChatReferences.markers
-    .map(marker => marker.kind === 'chat' ? liveChatReferenceTitle(marker.reference, state.sessions, sessionId) : '')
+    .map(marker => marker.kind === 'chat' ? liveChatReferenceTitle(marker.reference, state, sessionId) : '')
     .join('\u0000'))
   const chatTitles = useMemo(() => liveTitles.split('\u0000'), [liveTitles])
   const normalized = useMemo(

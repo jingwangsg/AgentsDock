@@ -19,7 +19,7 @@ export type ChatSourceItem =
   | { kind: 'web_search'; count: number; eventId: string }
   | { kind: 'web_fetch'; count: number; eventId: string }
   | { kind: 'skill'; label: string; eventId: string }
-  | { kind: 'chat_reference'; label: string; eventId: string }
+  | { kind: 'chat_reference'; label: string; sessionId: string; eventId: string }
   | { kind: 'attached_file'; label: string; eventId: string }
 
 export interface ChatOutputsSummary {
@@ -126,7 +126,7 @@ export function collectChatOutputs(events: readonly Event[], canvases: readonly 
       if (skill && !skills.has(skill)) skills.set(skill, { kind: 'skill', label: skill, eventId: event.id })
       for (const reference of event.chat_references ?? []) {
         if (chatReferences.has(reference.session_id)) continue
-        chatReferences.set(reference.session_id, { kind: 'chat_reference', label: reference.display_title_snapshot, eventId: event.id })
+        chatReferences.set(reference.session_id, { kind: 'chat_reference', label: reference.display_title_snapshot, sessionId: reference.session_id, eventId: event.id })
       }
       for (const fileId of event.file_ids ?? []) {
         if (!attachedFiles.has(fileId)) attachedFiles.set(fileId, event.id)

@@ -16,6 +16,7 @@ import { orderedSessionSections } from '../lib/session-order'
 import { runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeSelectionError, selectableChatBackends } from '../lib/runtime-catalog'
 import { chatMentionTrigger, insertChatReference, parseStoredChatReferences, reconcileChatReferences, supportedCrossChatTargetBackends, type ChatMentionTrigger } from '../lib/chat-references'
 import { MAX_SCHEDULED_CHAT_REFERENCES, normalizeScheduledJobChatReferences, scheduledJobChatReferencesForWrite, scheduledJobRouteHintsAvailable } from '../lib/scheduled-job-chat-references'
+import { liveChatReferenceTitle } from '../lib/timeline-inline-references'
 import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { AppearanceMode, Backend, ChatReference, CreateJobInput, JobContextMode, JobScheduleKind, RuntimeOption, Session, TimelineSearchResult, UpdateJobInput } from '../types'
@@ -433,6 +434,8 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
   const [backend, setBackend] = useState<Backend>('codex')
   const [contextMode, setContextMode] = useState<JobContextMode>('chat')
   const [chatReferences, setChatReferences] = useState<ChatReference[]>([])
+  // One joined string: the selector returns a stable primitive, so only a title change re-renders.
+  const chipTitles = useAppStore(state => chatReferences.map(reference => liveChatReferenceTitle(reference, state, session?.id)).join('\u0000')).split('\u0000')
   const [jobMention, setJobMention] = useState<ChatMentionTrigger | null>(null)
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
@@ -743,14 +746,14 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
       multiline
       style={[styles.textarea, { color: colors.text, backgroundColor: colors.raised, borderColor: colors.border }]}
     />
-    {chatReferences.length ? <View style={styles.jobReferenceChips}>{chatReferences.map(reference => <Pressable
+    {chatReferences.length ? <View style={styles.jobReferenceChips}>{chatReferences.map((reference, index) => <Pressable
       key={`${reference.session_id}:${reference.source_text_start}`}
       accessibilityRole="button"
-      accessibilityLabel={`Remove scheduled route to ${reference.display_title_snapshot}`}
+      accessibilityLabel={`Remove scheduled route to ${chipTitles[index]}`}
       disabled={!scheduledRouteHintsSupported}
       onPress={() => revokeJobTarget(reference)}
       style={[styles.jobReferenceChip, { backgroundColor: colors.raised, borderColor: colors.border, opacity: scheduledRouteHintsSupported ? 1 : 0.65 }]}
-    ><Text style={{ color: colors.blue, fontSize: 11, fontWeight: '700' }}>@{reference.display_title_snapshot}</Text><Minus size={12} color={colors.muted} /></Pressable>)}</View> : null}
+    ><Text style={{ color: colors.blue, fontSize: 11, fontWeight: '700' }}>@{chipTitles[index]}</Text><Minus size={12} color={colors.muted} /></Pressable>)}</View> : null}
     {jobMention ? <View style={[styles.jobMentionPicker, { backgroundColor: colors.raised, borderColor: colors.border }]}>
       {targetCandidates.length ? targetCandidates.map(candidate => <Pressable
         key={candidate.id}

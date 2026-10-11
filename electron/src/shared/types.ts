@@ -2406,6 +2406,9 @@ export interface TimelineIndexLandmark {
   preview: string
   meta?: string | null
   timestamp?: string | null
+  /** Set together on a sent or received agent message: the other chat and which way the message went, so a client can retitle the landmark with that chat's current name. */
+  counterpart_session_id?: string | null
+  direction?: 'incoming' | 'outgoing' | null
 }
 
 export interface TimelineIndex {

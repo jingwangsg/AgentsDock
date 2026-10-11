@@ -1,5 +1,57 @@
 # Public development log
 
+## 2026-10-11 — Every displayed chat title follows the chat's current name (server + desktop + Android source)
+
+- A chat's name appeared in many places that kept the title recorded when the
+  event was written: the agent-mail cards ("To …" / "From …"), the grouped
+  inbox row, the exchange participants, the queued agent-message row, the
+  "Referenced chat" row of Outputs & sources, the conversation navigator's
+  hover title, Android's composer chip shelf and scheduled-job chips. After a
+  rename (by hand, by the title generator, or by an agent) those displays
+  still showed the old name.
+- Both apps now resolve every such display through one function per client,
+  `liveChatTitle`, keyed by how the server names a chat: its session id on
+  this server, or `<server identity>/<session id>` for a chat on another
+  server under the hub (the mailbox sender key). A chat this server lists
+  shows its current title from the chat list; a chat on another server shows
+  the title from the hub's chat list when the composer has loaded it (the
+  `@` picker and "Create new agent" do), kept in the store under its server
+  identity and session id; otherwise the recorded title stays as the
+  fallback. The inline `@Chat` chips, the sent-reference pills and the route
+  cards, live since the previous entry, go through the same function.
+- Bound on desktop: mail cards, inbox groups, legacy handoff cards, exchange
+  participants and message legs, the queued agent-message sender, Outputs &
+  sources "Referenced chat", the navigator popover, inline chips and pills.
+  Bound on Android: mail cards, handoff cards, exchange participants, the
+  queued agent-message sender, the composer chip shelf, scheduled-job route
+  chips, Outputs & sources "Referenced chat", inline chips and pills. The
+  server's timeline index now names the other chat on each message landmark
+  (`counterpart_session_id`, `direction`), so the navigator can relabel
+  landmarks outside the loaded window; the index rebuilds once (projection
+  version 9). Server-side parts take effect after the server is updated.
+- Left as recorded text, on purpose: the composer's own typed `@Title` text
+  and the desktop job-prompt mirror (they show what the user typed; the chip
+  beside them is live), a composer chip for a chat on another server (it
+  keeps the picked title until the message is sent), a pinned system row (a
+  bookmark of the row's text at pin time), and an imported delivery's sender
+  label (a label from the delivery wrapper with no chat id). A chat on another server whose title
+  changes after the hub chat list was loaded shows the recorded title until
+  the picker loads the list again.
+- Verification. Unit: the resolver (both clients), the chip title rules, the
+  navigator landmark title, the mail-card and inbox-group components, the
+  composer queue rows, Outputs & sources, and the server index test extended
+  with the new landmark fields; expectations that pinned the recorded title
+  now expect the current one. Real apps on one isolated server (desktop
+  build and Android sideload from this source, Claude as the sending agent):
+  a real `@Target` turn sent agent mail; renaming the target through the API
+  changed the open desktop timeline's "To Target one" card to "To Target
+  renamed" within 10 s with no reload, the Outputs & sources row and the
+  navigator popover with it, and the open Android timeline's "Sent to
+  Target one" card and `@Target one` chip followed; renaming the sender
+  changed the target chat's inbox group "Sender one · 1 message" and its
+  route card on desktop. Not exercised on a device: the queued agent-message
+  row (unit-tested) and a chat on another server (unit-tested resolver path).
+
 ## 2026-10-11 — Agents name chats after the task: `chats title` (server source)
 
 - A chat created for a handoff was named after the first words of the

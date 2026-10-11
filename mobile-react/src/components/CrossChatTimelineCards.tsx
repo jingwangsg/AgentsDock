@@ -6,6 +6,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, MessageSquareShare } from 'lu
 import type { AgentServerClient } from '../api/AgentServerClient'
 import { exactQueuedDeliverySkipAvailable } from '../lib/chat-references'
 import { formatDateTime, messageText } from '../lib/format'
+import { liveChatTitle } from '../lib/live-chat-title'
 import { liveChatReferenceTitle, timelineChatReferenceIsRemote, timelineChatReferenceKey } from '../lib/timeline-inline-references'
 import type {
   ChatReference,
@@ -155,7 +156,7 @@ export function ChatReferenceChips({
   )).join('|')
   // One joined string: the selector returns a stable primitive, so only a title change re-renders.
   const titles = useAppStore(state => unique
-    .map(reference => liveChatReferenceTitle(reference, state.sessions, sessionId))
+    .map(reference => liveChatReferenceTitle(reference, state, sessionId))
     .join('\u0000')).split('\u0000')
   const [openError, setOpenError] = useRecyclingState<string | null>(null, [profileGeneration, sessionId, identity])
   if (!unique.length) return null
@@ -227,9 +228,8 @@ function CrossChatMessageCardScoped({
   const targetId = latestExchangeString(lifecycle, value => value.target_session_id)
   const incoming = targetId === sessionId && sourceId !== sessionId
   const counterpartId = incoming ? sourceId : targetId
-  const currentTitle = useAppStore(state => state.sessions.find(value => value.id === counterpartId)?.title)
   const savedTitle = latestExchangeString(lifecycle, value => incoming ? value.source_title : value.target_title)
-  const counterpartTitle = savedTitle || currentTitle || 'Unknown agent'
+  const counterpartTitle = useAppStore(state => liveChatTitle(state, counterpartId, savedTitle)) || 'Unknown agent'
   const preview = latestExchangeString(lifecycle, value => value.handoff_preview)
   const bodyChars = latestExchangeNumber(lifecycle, value => value.handoff_body_chars)
   const truncated = latestExchangeBoolean(lifecycle, value => value.handoff_body_truncated) === true
@@ -355,11 +355,9 @@ function CrossChatHandoffCardScoped({ event, rowKey, sessionId, profileGeneratio
   const sourceId = event.source_session_id?.trim() || ''
   const targetId = event.target_session_id?.trim() || ''
   const counterpartId = sourceId === sessionId ? targetId : sourceId || targetId
-  const counterpart = useAppStore(state => state.sessions.find(session => session.id === counterpartId))
-  const counterpartTitle = counterpart?.title
-    || (sourceId === sessionId ? event.target_title : event.source_title)
+  const counterpartTitle = useAppStore(state => liveChatTitle(state, counterpartId, sourceId === sessionId ? event.target_title : event.source_title))
     || 'another chat'
-  const counterpartAvailable = Boolean(counterpart && !counterpart.archived)
+  const counterpartAvailable = useAppStore(state => state.sessions.some(candidate => candidate.id === counterpartId && !candidate.archived))
   const preview = event.handoff_preview?.trim() || ''
   const truncated = event.handoff_body_truncated === true
   const [open, setOpen] = useRecyclingState(false, [profileGeneration, rowKey, sessionId])
@@ -604,8 +602,10 @@ function CrossChatExchangeCardScoped({ event, events, rowKey, sessionId, profile
   // list; subscribing to the list itself re-rendered every card on every live
   // event of the open chat, while titles change only on rename or auto-title.
   const titles = useAppStore(useShallow(state => Object.fromEntries(state.sessions.map(candidate => [candidate.id, candidate.title]))))
-  const titleFor = (id: string, fallback: string) => titles[id]
-    || latestParticipantTitle(lifecycleEvents, id, requesterId, responderId)
+  const remoteChatTitles = useAppStore(state => state.remoteChatTitles)
+  // liveChatTitle takes the list shape; rebuilt from the title record so this card still re-renders only on a title change.
+  const titleSource = { sessions: Object.entries(titles).map(([id, title]) => ({ id, title })), remoteChatTitles }
+  const titleFor = (id: string, fallback: string) => liveChatTitle(titleSource, id, latestParticipantTitle(lifecycleEvents, id, requesterId, responderId))
     || fallback
   const requesterTitle = titleFor(requesterId, requesterId === sessionId ? 'This chat' : 'Requesting agent')
   const responderTitle = titleFor(responderId, responderId === sessionId ? 'This chat' : 'Responding agent')

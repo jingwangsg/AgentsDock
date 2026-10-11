@@ -11,6 +11,7 @@ import type { CodeReviewTarget } from '../lib/unified-diff'
 import { timelineCount } from '../lib/timeline-labels'
 import { useTransientClose } from '../lib/transient-close'
 import { requestOpenAgentFile } from '../lib/workspace-file-links'
+import { liveChatTitle } from '../lib/live-chat-title'
 import { useAppStore } from '../store/app-store'
 
 const COLLAPSED_SOURCE_ROWS = 6
@@ -20,6 +21,10 @@ export function ChatOutputsPanel({ sessionId, onClose }: { sessionId: string; on
   useLocale()
   const [summary, setSummary] = useState<ChatOutputsSummary | null>(null)
   const [allSources, setAllSources] = useState(false)
+  // Indexed like `sources` (`visibleSources` is a prefix of it). One joined string: the selector returns a stable primitive, so only a title change re-renders.
+  const chatTitles = useAppStore(state => (summary?.sources ?? [])
+    .map(item => item.kind === 'chat_reference' ? liveChatTitle(state, item.sessionId, item.label) : '')
+    .join('\u0000')).split('\u0000')
   const panelRef = useRef<HTMLDivElement>(null)
   const firstLoad = useRef(true)
   // The pointer-down that dismisses a row menu, or picks an item in its portal, must not also close this card.
@@ -109,7 +114,7 @@ export function ChatOutputsPanel({ sessionId, onClose }: { sessionId: string; on
       <section aria-label={t('chatOutputs.sources')}>
         <h3>{t('chatOutputs.sources')}</h3>
         {sources.length === 0 && <p className="chat-outputs-empty">{t('chatOutputs.noSources')}</p>}
-        {visibleSources.map(item => {
+        {visibleSources.map((item, index) => {
           switch (item.kind) {
             case 'mcp':
               return <Row key={`mcp:${item.label}`} icon={Plug} label={item.label} secondary={timelineCount('mcpUses', item.count)} onClick={() => findEvent(item.eventId)} />
@@ -120,7 +125,7 @@ export function ChatOutputsPanel({ sessionId, onClose }: { sessionId: string; on
             case 'skill':
               return <Row key={`skill:${item.label}`} icon={Sparkles} label={item.label} secondary={t('chatOutputs.skill')} onClick={() => findEvent(item.eventId)} />
             case 'chat_reference':
-              return <Row key={`chat:${item.eventId}:${item.label}`} icon={MessageSquare} label={item.label} secondary={t('chatOutputs.referencedChat')} onClick={() => findEvent(item.eventId)} />
+              return <Row key={`chat:${item.eventId}:${item.label}`} icon={MessageSquare} label={chatTitles[index] || item.label} secondary={t('chatOutputs.referencedChat')} onClick={() => findEvent(item.eventId)} />
             case 'attached_file':
               return <Row key={`file:${item.eventId}:${item.label}`} icon={Paperclip} label={item.label} secondary={t('chatOutputs.attachedFile')} onClick={() => findEvent(item.eventId)} />
           }
