@@ -894,7 +894,7 @@ export interface CrossServerPairInput {
   source_session_id: string
   target_server_identity: string
   target_session_id: string
-  /** The chip's title part; the pair's label on the source side must equal it for the user's delegation. */
+  /** The chip's title part, kept as the pair's label on the source side. */
   target_label?: string
 }
 

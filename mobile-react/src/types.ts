@@ -666,12 +666,25 @@ export interface ChatReference {
    * Absent for references to chats on the current AgentsServer. `cross_server`
    * names a chat on another server under the same hub: the composer pairs the
    * chats through the hub before sending and never sends this reference.
+   * `new_agent` is the composer's "Create new agent" placeholder: on send the
+   * composer creates the chat and replaces this with an ordinary reference.
    */
-  target_kind?: 'secure_peer' | 'cross_server'
+  target_kind?: 'secure_peer' | 'cross_server' | 'new_agent'
   target_server_identity?: string
   target_connection_id?: string
   target_route_id?: string
   target_route_revision?: string
+  /** Where (server, folder) and with which model and effort the composer creates the chat; present only with `new_agent`. */
+  new_agent?: NewAgentSettings
+}
+
+/** The composer's "Create new agent" placeholder: on send it creates the chat and replaces the chip's target. */
+export interface NewAgentSettings {
+  model: string | null
+  effort: string | null
+  /** Another server under the same hub; null for the chat's own server. */
+  server_identity: string | null
+  folder: string
 }
 
 /** One chat in a server's `/api/chats/search` list. */
@@ -696,6 +709,8 @@ export interface CrossServerChats {
 
 export interface CrossServerChatsSnapshot {
   servers: CrossServerChats[]
+  /** The hub creates chats on these servers (the composer's "Create new agent" on another server). */
+  create_chats?: boolean
 }
 
 export interface CrossServerPairInput {
@@ -703,6 +718,19 @@ export interface CrossServerPairInput {
   source_session_id: string
   target_server_identity: string
   target_session_id: string
+  /** The chip's title part; the pair's label on the source side must equal it for the user's delegation. */
+  target_label?: string
+}
+
+/** A chat the hub creates on one of its servers for the composer's "Create new agent"; the composer then pairs it. */
+export interface CrossServerChatInput {
+  server_identity: string
+  title: string
+  folder: string
+  cwd: string
+  backend: Backend
+  model: string | null
+  effort: string | null
 }
 
 /** Exact, user-selected Team Network recipient authority. Offsets are UTF-16. */

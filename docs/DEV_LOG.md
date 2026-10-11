@@ -76,6 +76,86 @@
   restarts (the aliases appear as its tunnels connect); remotes need no
   redeploy. The desktop and Android parts need new packages.
 
+## 2026-10-11 — A sent `@Chat` chip names its chat by the current title (desktop + Android source)
+
+- A sent message showed the name a chat had when the message was sent: after
+  `Create new agent` every history chip read `@New agent`, and a renamed chat
+  kept its old name in older messages. The chip now reads the chat's current
+  title whenever this server's chat list has both chats; the stored reference
+  is unchanged and keeps naming the chat by id. The route card under the
+  message and the read-only reference list follow the same rule. A chip for a
+  chat on another server keeps its sent text: a chat paired through the hub
+  leaves no reference on the turn (the chip is plain text in history), and a
+  secure-peer route never reveals its chat.
+- Same change: the new chat's derived title no longer ends in a space when the
+  72-character cut lands after one.
+- Verification. Unit: desktop reference-helper and Markdown renderer tests
+  (current title shown; sent title kept for a remote chat, an unknown chat, a
+  blank title and another server's list), the Android inline-reference test,
+  both type checks. Real app: both apps against the isolated server of the
+  Android entry below; renaming the created chat through the API changed the
+  chip in the open source chat on the desktop and on the emulator as soon as
+  the chat list carried the new name, without a reload. Not exercised: iOS.
+  Availability: desktop and Android source.
+
+## 2026-10-11 — `Create new agent` in the `@` picker on Android (Android source)
+
+- The Android composer's `@` picker gets the desktop's fixed `Create new
+  agent` row (first while the search is empty, ranked by its label otherwise;
+  shown when the server offers `@Chat` route hints and this chat's backend is
+  a handoff target). Choosing it closes the picker and opens a sheet with the
+  server, folder, model and reasoning effort, preset from the current chat; the
+  sheet's confirm inserts the `@New agent` chip (`@New agent · <server>` for
+  another server). Other servers are offered only when the hub's chat list
+  says it creates chats.
+- On send the composer creates the chat before the turn starts, named after
+  the task's first words: on the same server through the ordinary chat
+  creation call with this chat's working directory, on another server through
+  the hub's `POST /api/cross-server/chats`, then stores the chip as a
+  reference to the created chat, so the turn grants its route or the hub
+  pairs it under the chip's label (`target_label`) as the desktop does, and a
+  failed send keeps the created chat's chip. One new agent per message. No
+  server change.
+- Verification. Unit: the Android reference-helper test (insert, validate,
+  one per message, remote tag, rejection cases) and the type check. Real app:
+  the worktree's bundle in the sideload APK on an Android emulator, against an
+  isolated token-backed server on the development machine with real Claude
+  turns. Exercised:
+  the picker row, the sheet with its folder, model and reasoning lists preset
+  from the chat, the `@New agent · Created when sent` chip, chat creation in
+  the same folder and directory named after the task's first words, the turn's
+  reference to the created chat, and the route created on both chats. Not
+  exercised: another server (the isolated server has no hub remotes),
+  Codex-backed chats, iOS, and the failure paths; in both runs the source agent
+  answered the task itself instead of handing it over, so the new chat's first
+  turn was not observed on the device. Availability: Android source.
+
+## 2026-10-11 — A chat paired by the user's `@` stays delegated in later turns (server source)
+
+- An agent could message a chat the user had `@`-mentioned earlier, but the
+  message carried the user's instruction (`user_delegation`) only when the
+  current turn named that chat again. The receiving agent treats mail without
+  it as peer content, so a task handed on in a later turn was declined until
+  the user repeated the `@`. A pair exists only because the user picked one
+  of its two chats in the composer, so it now delegates on every later user
+  turn, from either side: each message the agent sends to the paired chat, on
+  one server or across servers, attaches the user's instruction from that
+  turn, and the receiving agent judges its scope. A turn without text, a
+  guest's turn on a shared chat, a steer, a scheduled job or a mailbox-wake
+  run still delegates nothing; a Canvas comment delegates the comment the
+  user typed, not the prompt built around it. The receiving-side rule is
+  unchanged. The
+  cross-server chip-text match is removed; the pair itself shows the user
+  chose the chat.
+- Verification. Unit: a pair delegates in a chip-less user turn, a plain route
+  does not, a non-user turn does not, and the cross-server rule. Real server:
+  an isolated server with two Claude chats; the first turn's `@Beta` handoff
+  and the second, chip-less turn's message both stored the user's instruction
+  with action `route`, and Beta's reply from its mailbox wake stored none. Not
+  exercised: mail between two servers, the desktop and Android apps, deployed
+  servers. Availability: server source; a deployed hub applies it after a
+  restart.
+
 ## 2026-10-11 — Desktop package 121 and Android build 65 (local package and APK)
 
 - Package the entry recorded since package 120 and Android build 64: a
@@ -172,9 +252,9 @@
   one: a chat whose first turn is a mailbox wake would otherwise be renamed
   by the provider's own title for that wake prompt (observed as "Unread peer
   mail inbox").
-- Android: the picker entry and dialog are not on the mobile app yet; follow-up.
+- Android: done the same day, see the entry above.
 - Follow-up the same day: the dialog's Chinese labels for the effort choice
-  used a term the locale catalog forbids; they now read "Reasoning 强度".
+  used a term the locale catalog forbids; they now read "思考强度".
 - Verification. Unit: desktop reference-helper and Composer tests for the
   picker entry, the dialog defaults, the created chat's request on the same
   server and through the hub, the sent references, and the entry withheld

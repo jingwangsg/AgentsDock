@@ -28,6 +28,7 @@ import type {
   ClaudeRuntimeSnapshot,
   ChatReference,
   CrossServerChatsSnapshot,
+  CrossServerChatInput,
   CrossServerPairInput,
   CanvasCommentAnchor,
   CanvasCommentInput,
@@ -980,6 +981,9 @@ export class AgentServerClient {
   }
   async createCrossServerPair(input: CrossServerPairInput): Promise<void> {
     await this.request('/api/cross-server/pairs', { method: 'POST', body: JSON.stringify(input) }, 30_000, false, 'standard', 'hub')
+  }
+  async createCrossServerChat(input: CrossServerChatInput): Promise<Session> {
+    return (await this.request<{ session: Session }>('/api/cross-server/chats', { method: 'POST', body: JSON.stringify(input) }, 30_000, false, 'standard', 'hub')).session
   }
   agentHandoffRoutes(sessionId: string): Promise<AgentCrossChatRoutesSnapshot> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/agent-handoff-routes`)

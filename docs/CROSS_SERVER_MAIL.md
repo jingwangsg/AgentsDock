@@ -37,16 +37,14 @@ remote servers a hub manages.
   was not paired with. A remote that reports the hub's or another server's
   identity is not relayed to or from.
 - The receiving server checks its own half of the pair before storing.
-- User delegation: the chip never reaches the sender's server, so its text
-  stands in for the admission-checked span a local `@Chat` chip carries. When
-  the sender's turn is the user's own and contains the paired chat's chip
-  (`@<title> · <server>`, or `@<title>` for a hub chat) as a whole token, the
-  sender's server attaches the user's instruction. If the turn also holds a
-  longer matching chip of another paired chat ("@Launch check" against a
-  peer titled "Launch"), only the longer one delegates. A hub peer titled
-  "Launch" still matches "@Launch check" when that chat is not paired. The
-  receiving server stores the instruction as that peer's attestation, so a hub
-  trusts its registered remotes to attest their users' turns.
+- User delegation: a pair exists only because a user picked one of its two
+  chats in the composer, so when the sender's turn is the user's own, the
+  sender's server attaches the user's instruction (that turn's text) to every
+  message sent to a paired chat, from either side of the pair and whether or
+  not the turn names the chat again. A turn without text attaches none. The
+  receiving server stores the instruction as that peer's attestation, so a
+  hub trusts its registered remotes to attest their users' turns; the
+  receiving agent judges the instruction's scope.
 
 ## Wire
 

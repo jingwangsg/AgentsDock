@@ -66,19 +66,6 @@ def peer_label(route: dict) -> str:
     return f"{title} · {route['peer_server_name']}" if route["peer_server_name"] else title
 
 
-def names_peer(text: str, route: dict) -> bool:
-    """Whether `text` holds the chip for the route's peer as a whole token.
-
-    The chip never reaches the sender's server (only the hub pairs it), so its
-    text in the user's own turn stands in for the span a local @Chat chip
-    carries. Like the composer's chip check, the token starts the text or
-    follows whitespace or an opening bracket, and ends the text or precedes
-    whitespace. A hub peer titled "Launch" also matches "@Launch check"."""
-    label = peer_label(route)
-    return bool(route["peer_title"].strip()) and re.search(
-        r"(?:^|(?<=[\s(\[{]))" + re.escape("@" + label) + r"(?=\s|$)", text) is not None
-
-
 # -- storage -------------------------------------------------------------------
 
 def initialize(connection: sqlite3.Connection) -> None:

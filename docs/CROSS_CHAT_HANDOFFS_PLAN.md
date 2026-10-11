@@ -16,10 +16,9 @@ exchanges remain deferred.
   server: `POST /api/sessions`; another server under the hub: the hub's
   `POST /api/cross-server/chats`), and the turn then carries an ordinary chip
   for it. A cross-server pair is installed under the chip's title part as its
-  label on the sending side (`New agent` here), because the chip text must
-  equal that label for the hub to delegate the user's instruction; an older
-  pair with a chat on the same server returns to that chat's real title. The
-  grant or pairing and the agent's handoff then work as for a picked chat.
+  label on the sending side (`New agent` here); an older pair with a chat on
+  the same server returns to that chat's real title. The grant or pairing and
+  the agent's handoff then work as for a picked chat.
 - `@Chat` is an optional target hint, not a delivery command. It never forwards
   the raw source prompt. The agent may prepare a one-way Send, start an
   asynchronous Ask, or make no cross-chat contact.
@@ -27,7 +26,9 @@ exchanges remain deferred.
   single-`@Chat` chip from a v2 client durably grants that directional
   source-to-target route; every later ordinary turn receives the source
   chat's current grants, so the agent can message such a chat again without
-  a new chip. A queued message edited before it runs keeps the grants it was
+  a new chip, and each message to such a chat attaches the user's instruction
+  from that turn (`user_delegation`); only the user's own turns delegate. A
+  queued message edited before it runs keeps the grants it was
   admitted with, re-checked against the chat's current grants; an edit never
   creates one. There is no ambient all-chat ceiling or required Inspector
   setup.

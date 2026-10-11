@@ -18,7 +18,7 @@ import { reasoningItemKey } from '../lib/timeline-reasoning-stream'
 import { useReasoningDisplay } from '../lib/reasoning-display'
 import { formatDuration, formatTime, titleCase } from '../lib/format'
 import { requirePinnedItemsScope } from '../lib/pinned-items'
-import { exactQueuedDeliverySkipAvailable } from '../lib/chat-references'
+import { exactQueuedDeliverySkipAvailable, liveChatReferenceTitle } from '../lib/chat-references'
 import { isSubagentActive, subagentDisplayName, subagentLogText, subagentStatusLabel, subagentsForRun, type SubagentActivity, type SubagentStatus } from '../lib/subagents'
 import { useAppStore } from '../store/app-store'
 import { MarkdownContent } from './MarkdownContent'
@@ -63,6 +63,10 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
         && !(reference.target_kind === 'secure_peer' && reference.action === 'instruction')
       ))
     : []
+  // One joined string: the selector returns a stable primitive, so only a title change re-renders.
+  const chatReferenceTitles = useAppStore(state => chatReferences
+    .map(reference => liveChatReferenceTitle(reference, state.sessions, sessionId))
+    .join('\u0000')).split('\u0000')
   const primary = events[0] ?? event
   const collaborator = role === 'user' && isSharedChatCollaborator(primary)
     && events.every(part => isSharedChatCollaborator(part) && part.shared_chat_id === primary.shared_chat_id)
@@ -116,7 +120,7 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
           />)}
         </div>
         {chatReferences.length > 0 && <div className="sent-chat-references" aria-label={t('timeline.ui.referencedChats')}>
-          {chatReferences.map(reference => {
+          {chatReferences.map((reference, index) => {
             const remote = reference.target_kind === 'secure_peer'
             const referenceLabel = (key: string, english: string) => remote ? english : t(key)
             return <button
@@ -131,7 +135,7 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
                   ? referenceLabel('timeline.ui.replyExpectedFrom', 'Reply expected from')
                   : reference.action === 'final_result'
                     ? referenceLabel('timeline.ui.finalResultTo', 'Final result to')
-                    : referenceLabel('timeline.ui.agentMaySendTo', 'Agent may send to')} <strong>{reference.display_title_snapshot}</strong>{remote ? ' · secure paired server' : ''}</span></button>
+                    : referenceLabel('timeline.ui.agentMaySendTo', 'Agent may send to')} <strong>{chatReferenceTitles[index]}</strong>{remote ? ' · secure paired server' : ''}</span></button>
           })}
         </div>}
         {role === 'user' && files.length > 0 && <div className="message-attachments"><MediaGrid files={files} sessionId={sessionId} profileScope={profileScope} compact /></div>}

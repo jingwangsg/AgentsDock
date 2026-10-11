@@ -1462,7 +1462,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         // the server's own first-line titles; a title may not begin with @.
         const withoutChips = [...outgoingReferences].sort((a, b) => b.source_text_start - a.source_text_start)
           .reduce((text, reference) => `${text.slice(0, reference.source_text_start)}${text.slice(reference.source_text_end)}`, outgoing)
-        const title = [...withoutChips.trim().split('\n', 1)[0].trim()].slice(0, 72).join('').replace(/^@+\s*/u, '') || NEW_AGENT_DISPLAY_TITLE
+        const title = [...withoutChips.trim().split('\n', 1)[0].trim()].slice(0, 72).join('').replace(/^@+\s*/u, '').trim() || NEW_AGENT_DISPLAY_TITLE
         const chat = { title, folder: settings.folder, backend: session.backend, model: settings.model, effort: settings.effort }
         let created: Session
         try {
@@ -1507,8 +1507,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         try {
           if (!scope || !serverIdentity) throw new Error(t('ui.composer.crossServer.unavailable'))
           for (const reference of crossServerReferences) {
-            // The pair's label on this side is the chip's title part: the user's instruction is
-            // delegated only when the chip text names that label, and a new agent's chip says
+            // The pair's label on this side is the chip's title part; a new agent's chip says
             // "New agent" whatever its chat is named.
             const server = crossServerMention?.servers.find(candidate => candidate.server_identity === reference.target_server_identity)
             const tag = server?.name ? ` · ${server.name}` : ''

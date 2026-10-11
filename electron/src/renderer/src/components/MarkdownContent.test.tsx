@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
-import type { PublicServerProfile } from '@shared/types'
+import type { PublicServerProfile, Session } from '@shared/types'
 import { useAppStore } from '../store/app-store'
 import { MarkdownContent } from './MarkdownContent'
 import SafeHtmlMarkdownContent from './SafeHtmlMarkdownContent'
@@ -36,7 +36,7 @@ describe('MarkdownContent', () => {
 
   afterEach(() => {
     cleanup()
-    useAppStore.setState({ profiles: [], activeProfileId: null, error: null })
+    useAppStore.setState({ profiles: [], activeProfileId: null, error: null, sessions: [] })
   })
 
   it('renders bold whose closing ** sits between CJK punctuation and a letter', () => {
@@ -261,6 +261,29 @@ describe('MarkdownContent', () => {
     expect(screen.getByText('input').closest('strong')).not.toBeNull()
     fireEvent.click(chip)
     expect(onChatReferenceClick).toHaveBeenCalledWith(expect.objectContaining({ session_id: 'chat-8' }))
+  })
+
+  it('names an inline route chip by the chat\'s current title', () => {
+    useAppStore.setState({ sessions: [
+      { id: 'chat-7', title: 'Source', backend: 'claude' },
+      { id: 'chat-8', title: 'Training plan', backend: 'claude' }
+    ] as Session[] })
+    const text = 'Ask @Training for input.'
+    const start = text.indexOf('@Training')
+    render(<MarkdownContent
+      text={text}
+      sessionId="chat-7"
+      inlineChatReferences={[{
+        session_id: 'chat-8', display_title_snapshot: 'Training',
+        source_text_start: start, source_text_end: start + '@Training'.length,
+        action: 'route'
+      }]}
+      onChatReferenceClick={vi.fn()}
+    />)
+
+    const chip = screen.getByRole('link', { name: 'Route hint for Training plan' })
+    expect(chip).toHaveTextContent('@Training plan')
+    expect(chip.closest('p')).toHaveTextContent('Ask @Training plan for input.')
   })
 
   it('keeps an invalid structured span and an @Chat inside code non-interactive', () => {

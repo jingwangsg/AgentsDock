@@ -3,6 +3,7 @@ import type {
   ChatReference,
   ChatReferenceAction,
   Health,
+  NewAgentSettings,
   Session,
 } from '../types'
 import { claudeInteractiveClientCapability } from './claude-controls'
@@ -15,6 +16,9 @@ export const ASYNC_CHAT_ROUTE_CLIENT_CAPABILITY = 'chat_conversation_async_route
 export const ROUTE_HINT_MENTIONS_CAPABILITY_VERSION = 7
 export const EXACT_QUEUED_DELIVERY_SKIP_CAPABILITY_VERSION = 9
 export const MAX_CHAT_REFERENCES = 16
+/** Client-only placeholder target of the composer's "Create new agent" entry. */
+export const NEW_AGENT_REFERENCE_ID = 'new-agent'
+export const NEW_AGENT_DISPLAY_TITLE = 'New agent'
 
 export function exactQueuedDeliverySkipAvailable(health: Health | null | undefined): boolean {
   const capability = health?.capabilities?.cross_chat_handoffs_v1
@@ -297,6 +301,23 @@ export function insertCrossServerChatReference(
 }
 
 /**
+ * The chat does not exist yet: the composer creates it on send and points this
+ * reference at it. A chat on another server is tagged like any remote chip and its
+ * pair is labelled "New agent" on this side, because the hub attaches the user's
+ * instruction to its mail only when the chip text names that label.
+ */
+export function insertNewAgentChatReference(
+  text: string,
+  trigger: ChatMentionTrigger,
+  settings: NewAgentSettings,
+  serverName = '',
+): InsertChatReferenceResult {
+  const title = serverName ? `${NEW_AGENT_DISPLAY_TITLE} · ${serverName}` : NEW_AGENT_DISPLAY_TITLE
+  const inserted = insertChatReference(text, trigger, { id: NEW_AGENT_REFERENCE_ID, title }, 'route')
+  return { ...inserted, reference: { ...inserted.reference, target_kind: 'new_agent', new_agent: { ...settings } } }
+}
+
+/**
  * Applies one contiguous native text edit. Any edit touching a chip's exact
  * text revokes its authority; edits before or after it shift/preserve safely.
  */
@@ -446,6 +467,7 @@ export function validChatReferences(
     if (text.slice(reference.source_text_start, reference.source_text_end) !== `@${reference.display_title_snapshot}`) continue
     if (occupied.some(([start, end]) => reference.source_text_start < end && reference.source_text_end > start)) continue
     if (reference.target_kind === 'cross_server' && !validCrossServerReferenceTarget(reference)) continue
+    if (reference.target_kind === 'new_agent' && !validNewAgentReferenceTarget(reference)) continue
     const authorityKey = reference.target_kind === 'cross_server'
       ? `cross_server\u0000${reference.target_server_identity}\u0000${reference.session_id}`
       : `${reference.session_id}\u0000${reference.action}`
@@ -487,6 +509,22 @@ function validCrossServerReferenceTarget(reference: ChatReference): boolean {
     && reference.target_connection_id === undefined
     && reference.target_route_id === undefined
     && reference.target_route_revision === undefined
+}
+
+function validNewAgentReferenceTarget(reference: ChatReference): boolean {
+  const settings = reference.new_agent
+  return reference.session_id === NEW_AGENT_REFERENCE_ID
+    && reference.action === 'route'
+    && reference.grant_intent === true
+    && reference.target_server_identity === undefined
+    && reference.target_connection_id === undefined
+    && reference.target_route_id === undefined
+    && reference.target_route_revision === undefined
+    && typeof settings === 'object' && settings !== null
+    && (settings.model === null || typeof settings.model === 'string')
+    && (settings.effort === null || typeof settings.effort === 'string')
+    && (settings.server_identity === null || (typeof settings.server_identity === 'string' && settings.server_identity.length <= 240))
+    && typeof settings.folder === 'string'
 }
 
 export function chatReferenceLabel(action: ChatReferenceAction): string {
