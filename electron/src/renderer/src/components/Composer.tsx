@@ -10,9 +10,9 @@ import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSe
 import { AlertTriangle, ArchiveRestore, ArrowDown, ArrowUp, CalendarClock, CheckCircle2, ChevronDown, Columns2, CornerDownRight, File, FolderOpen, Gauge, GitFork, Goal, GripVertical, Import, Info, ListOrdered, LoaderCircle, Mail, MessageSquarePlus, MessageSquareShare, MoreHorizontal, Network, Paperclip, Pencil, Plus, RadioTower, RotateCw, Send, Settings, Sparkles, Square, Trash2, X } from 'lucide-react'
 import { effectiveFileContentType } from '@shared/file-content-type'
 import { localSessionImportSupported } from '@shared/local-session-import'
-import type { AgentCrossChatRoute, AgentTeamMailRoute, AgentTeamMailRoutesSnapshot, AgentFile, ChatReference, ChatReferenceAction, ChatSearchTarget, CrossServerChats, Event as AgentEvent, Health, NativeFileRef, NewAgentSettings, ProviderCommand, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
+import type { AgentCrossChatRoute, AgentTeamMailRoute, AgentTeamMailRoutesSnapshot, AgentFile, Backend, ChatReference, ChatReferenceAction, ChatSearchTarget, CrossServerChats, Event as AgentEvent, Health, NativeFileRef, NewAgentSettings, ProviderCommand, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
 import { teamAllServersAliasAvailable, teamBulletinAliasAvailable, type TeamNetworkServer } from '@shared/team-network'
-import { chatBackendChoice, chatBackendSelection, codexCustomProviderAvailable, cursorBackendAvailable, cursorBackendUnavailableReason, runtimeCatalogOptions, runtimeDiagnosticFor, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, selectableChatBackendChoices } from '@shared/runtime-catalog'
+import { chatBackendChoice, chatBackendSelection, codexCustomProviderAvailable, cursorBackendAvailable, cursorBackendUnavailableReason, runtimeCatalogOptions, runtimeDiagnosticFor, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, selectableChatBackendChoices, selectableChatBackends } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
 import { backendLabel, formatBytes, runtimeLabel } from '../lib/format'
 import { CodexModelDiscovery } from './CodexModelDiscovery'
@@ -735,8 +735,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     && supportedChatActions.includes('route')
     && supportedTargetBackends.length > 0
   const crossServerAvailable = crossChatSupported && health?.capabilities?.cross_server_mail_v1?.available === true
-  // The new chat inherits this chat's backend, so that backend must be a handoff target.
-  const newAgentSupported = crossChatSupported && Boolean(session && supportedTargetBackends.includes(session.backend))
+  // The new chat may run on any backend this server starts that also receives handoffs; the dialog defaults to this chat's.
+  const newAgentBackends = useMemo(() => selectableChatBackends(health, catalog).filter(backend => supportedTargetBackends.includes(backend)), [healthRevision, supportedTargetBackends])
+  const newAgentSupported = crossChatSupported && newAgentBackends.length > 0
   const crossServerKey = `${activeProfileId}:${profileGeneration}:${serverIdentity ?? ''}`
   // The new-agent dialog lists the other servers too, so the request outlives the picker.
   const mentionOpen = mention !== null || newAgentTrigger !== null
@@ -786,8 +787,11 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     if (reference.target_kind === 'secure_peer') return false
     // Its chat lives on another server: the hub checks it when pairing at send.
     if (reference.target_kind === 'cross_server') return crossServerAvailable && currentRouteHintReference(draft, reference)
-    // Its chat is created at send; until then only this chat's backend can rule it out.
-    if (reference.target_kind === 'new_agent') return newAgentSupported && currentRouteHintReference(draft, reference)
+    // Its chat is created at send, on the draft's backend or (a draft saved before the agent could be chosen) this chat's.
+    if (reference.target_kind === 'new_agent') {
+      const backend = reference.new_agent?.backend ?? session?.backend
+      return Boolean(newAgentSupported && backend && newAgentBackends.includes(backend)) && currentRouteHintReference(draft, reference)
+    }
     const target = useAppStore.getState().sessions.find(candidate => candidate.id === reference.session_id)
     return Boolean(
       crossChatSupported
@@ -798,7 +802,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     )
   // The primitive revision subscribes only to referenced targets without
   // rerendering the composer for unrelated activity across hundreds of chats.
-  }, [crossChatSupported, crossServerAvailable, draft, newAgentSupported, referenceTargetsRevision, supportedTargetBackends])
+  }, [crossChatSupported, crossServerAvailable, draft, newAgentBackends, newAgentSupported, referenceTargetsRevision, session?.backend, supportedTargetBackends])
   const chatReferencesSupported = references.length === 0 || references.every(referenceSupported)
   const hasRemoteAgentReference = references.some(reference => reference.target_kind === 'secure_peer')
   const unsupportedAllServersReference = !teamAllServersSupported && hasAllServersReference(teamReferences)
@@ -1463,7 +1467,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         const withoutChips = [...outgoingReferences].sort((a, b) => b.source_text_start - a.source_text_start)
           .reduce((text, reference) => `${text.slice(0, reference.source_text_start)}${text.slice(reference.source_text_end)}`, outgoing)
         const title = [...withoutChips.trim().split('\n', 1)[0].trim()].slice(0, 72).join('').replace(/^@+\s*/u, '').trim() || NEW_AGENT_DISPLAY_TITLE
-        const chat = { title, folder: settings.folder, backend: session.backend, model: settings.model, effort: settings.effort }
+        // A draft saved before the agent could be chosen has no backend; the chat then takes this chat's.
+        const backend = settings.backend ?? session.backend
+        const chat = { title, folder: settings.folder, backend, model: settings.model, effort: settings.effort }
         let created: Session
         try {
           if (otherServer) {
@@ -1475,7 +1481,8 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
             created = await window.agentsDock.sessions.create({
               ...chat,
               cwd: session.cwd?.trim() || '',
-              ...(session.codex_provider === 'custom' ? { codex_provider: 'custom' as const } : {}),
+              // The custom Codex endpoint is this chat's own; it carries over to a Codex chat only.
+              ...(backend === 'codex' && session.backend === 'codex' && session.codex_provider === 'custom' ? { codex_provider: 'custom' as const } : {}),
               system_prompt: null
             })
             // load-bearing: the store refuses a same-server reference whose chat is not yet in its session list.
@@ -2380,6 +2387,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       <NewAgentDialog
         trigger={newAgentTrigger}
         session={session}
+        backends={newAgentBackends}
         servers={crossServerMention?.createChats ? crossServerMention.servers : []}
         localServerName={crossServerMention?.localTag ?? ''}
         onOpenChange={open => { if (!open) setNewAgentTrigger(null) }}
@@ -3117,10 +3125,11 @@ function composerCommandIcon(command: ComposerCommand) {
   }
 }
 
-/** Where and with which runtime "Create new agent" makes its chat on send; the current chat's values are the defaults. */
+/** Where, on which agent and with which runtime "Create new agent" makes its chat on send; the current chat's values are the defaults. */
 function NewAgentDialog({
   trigger,
   session,
+  backends,
   servers,
   localServerName,
   onOpenChange,
@@ -3128,6 +3137,8 @@ function NewAgentDialog({
 }: {
   trigger: ChatMentionTrigger | null
   session: Session
+  /** Backends the chat may run on: this server's selectable ones that also receive handoffs. */
+  backends: readonly Backend[]
   /** Other servers under the hub that can host the chat; empty when the hub cannot pair across servers. */
   servers: readonly CrossServerChats[]
   localServerName: string
@@ -3138,17 +3149,24 @@ function NewAgentDialog({
   const catalog = useAppStore(state => state.runtimeCatalog)
   const folderListId = `new-agent-folders-${useId().replace(/:/g, '')}`
   const open = trigger !== null
+  const [backend, setBackend] = useState<Backend>(session.backend)
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState('')
   const [serverIdentity, setServerIdentity] = useState<string | null>(null)
   const [folder, setFolder] = useState('')
+  // This chat's model and effort are defaults for its own backend only; another backend starts from its server defaults.
+  const selectBackend = (value: Backend) => {
+    setBackend(value)
+    setModel(value === session.backend ? session.model ?? '' : '')
+    setEffort(value === session.backend ? session.effort ?? '' : '')
+  }
   useEffect(() => {
     if (!open) return
-    setModel(session.model ?? '')
-    setEffort(session.effort ?? '')
+    // A chat on a backend without handoffs (Cursor) defaults to the first backend that has them.
+    selectBackend(backends.includes(session.backend) ? session.backend : (backends[0] ?? session.backend))
     setServerIdentity(null)
     setFolder(session.folder?.trim() || 'General')
-  }, [open, session.effort, session.folder, session.id, session.model])
+  }, [open, backends, session.backend, session.effort, session.folder, session.id, session.model])
   // Read once per opening: the always-mounted composer must not rerender on every chat update.
   const folders = useMemo(() => {
     if (!open) return []
@@ -3159,29 +3177,34 @@ function NewAgentDialog({
     const chats = servers.find(server => server.server_identity === serverIdentity)?.chats ?? []
     return [...new Set(chats.map(chat => chat.folder?.trim() || 'General'))].sort()
   }, [open, serverIdentity, servers])
-  const models = runtimeCatalogOptions(catalog, session.backend, 'models', model || null, session.codex_provider, session.codex_provider_catalog)
-  const efforts = runtimeEffortOptions(catalog, session.backend, model || null, effort || null, session.codex_provider, session.codex_provider_catalog)
-  const hasReasoning = session.backend !== 'cursor' && session.backend !== 'opencode' && efforts.some(option => Boolean(option.value))
+  // The custom Codex endpoint is this chat's own; it carries over to a Codex chat only.
+  const sourceCodexProvider = session.backend === 'codex' ? session.codex_provider : undefined
+  const codexProvider = backend === 'codex' ? sourceCodexProvider : undefined
+  const customCatalog = codexProvider === 'custom' ? session.codex_provider_catalog : undefined
+  const models = runtimeCatalogOptions(catalog, backend, 'models', model || null, codexProvider, customCatalog)
+  const efforts = runtimeEffortOptions(catalog, backend, model || null, effort || null, codexProvider, customCatalog)
+  const hasReasoning = backend !== 'cursor' && backend !== 'opencode' && efforts.some(option => Boolean(option.value))
   const selectModel = (value: string) => {
     setModel(value)
-    setEffort(runtimeEffortAfterModelChange(catalog, session.backend, value || null, effort || null, session.codex_provider, session.codex_provider_catalog) || '')
+    setEffort(runtimeEffortAfterModelChange(catalog, backend, value || null, effort || null, codexProvider, customCatalog) || '')
   }
   const serverName = servers.find(server => server.server_identity === serverIdentity)?.name ?? ''
   return <DialogShell
     open={open}
     onOpenChange={onOpenChange}
     title={t('ui.composer.newAgent.dialogTitle')}
-    description={t('ui.composer.newAgent.dialogDescription', { backend: backendLabel(session.backend, session.codex_provider) })}
+    description={t('ui.composer.newAgent.dialogDescription', { backend: backendLabel(backend, codexProvider) })}
   >
     <form className="dialog-form two-column-form" onSubmit={event => {
       event.preventDefault()
-      if (trigger) onConfirm(trigger, { model: model || null, effort: effort || null, server_identity: serverIdentity, folder: folder.trim() || 'General' }, serverName)
+      if (trigger) onConfirm(trigger, { backend, model: model || null, effort: effort || null, server_identity: serverIdentity, folder: folder.trim() || 'General' }, serverName)
     }}>
+      <label><span>{t('ui.composer.newAgent.agent')}</span><select value={backend} onChange={event => selectBackend(event.target.value as Backend)}>{backends.map(option => <option value={option} key={option}>{backendLabel(option, option === 'codex' ? sourceCodexProvider : undefined)}</option>)}</select></label>
       {servers.length > 0 && <label><span>{t('ui.composer.newAgent.server')}</span><select value={serverIdentity ?? ''} onChange={event => setServerIdentity(event.target.value || null)}>
         <option value="">{localServerName ? `${t('ui.composer.newAgent.thisServer')} · ${localServerName}` : t('ui.composer.newAgent.thisServer')}</option>
         {servers.map(server => <option value={server.server_identity} key={server.server_identity}>{server.name || t('ui.composer.newAgent.hub')}</option>)}
       </select></label>}
-      <label className={servers.length > 0 ? undefined : 'span-two'}><span>{t('ui.composer.newAgent.folder')}</span><input value={folder} onChange={event => setFolder(event.target.value)} list={folderListId} /><datalist id={folderListId}>{folders.map(item => <option key={item}>{item}</option>)}</datalist></label>
+      <label className={servers.length > 0 ? 'span-two' : undefined}><span>{t('ui.composer.newAgent.folder')}</span><input value={folder} onChange={event => setFolder(event.target.value)} list={folderListId} /><datalist id={folderListId}>{folders.map(item => <option key={item}>{item}</option>)}</datalist></label>
       <label className={hasReasoning ? undefined : 'span-two'}><span>{t('ui.composer.newAgent.model')}</span><select value={model} onChange={event => selectModel(event.target.value)}>{models.map(option => <option value={option.value} key={option.value || 'default'} disabled={option.locked}>{option.label}</option>)}</select></label>
       {hasReasoning && <label><span>{t('ui.composer.newAgent.reasoning')}</span><select value={effort} onChange={event => setEffort(event.target.value)}>{efforts.map(option => <option value={option.value} key={option.value || 'default'}>{option.label}</option>)}</select></label>}
       <footer className="span-two"><button type="button" className="quiet-button" onClick={() => onOpenChange(false)}>{t('ui.composer.newAgent.cancel')}</button><button className="primary-button">{t('ui.composer.newAgent.confirm')}</button></footer>

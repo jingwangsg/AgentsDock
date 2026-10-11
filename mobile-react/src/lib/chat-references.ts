@@ -521,6 +521,7 @@ function validNewAgentReferenceTarget(reference: ChatReference): boolean {
     && reference.target_route_id === undefined
     && reference.target_route_revision === undefined
     && typeof settings === 'object' && settings !== null
+    && (settings.backend === undefined || ['claude', 'codex', 'cursor'].includes(settings.backend))
     && (settings.model === null || typeof settings.model === 'string')
     && (settings.effort === null || typeof settings.effort === 'string')
     && (settings.server_identity === null || (typeof settings.server_identity === 'string' && settings.server_identity.length <= 240))
