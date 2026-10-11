@@ -4133,8 +4133,9 @@ exit 0
             shutil.copytree(ROOT / "agentsdock_team_hub", release / "agentsdock_team_hub")
             installed_python = release / ".venv" / "bin" / "python"
             installed_python.parent.mkdir(parents=True)
-            dependency_python = ROOT / ".venv" / "bin" / "python"
-            self.assertTrue(dependency_python.is_file(), "run the suite through uv")
+            # The suite's own interpreter has the dependencies; a checkout such
+            # as a worktree need not have a .venv of its own.
+            dependency_python = Path(sys.executable)
             self.write_executable(
                 installed_python,
                 f"#!/bin/sh\nexec '{dependency_python}' \"$@\"\n",

@@ -78,8 +78,9 @@ def load_projection():
     assert {node.name for node in selected} == FUNCTIONS
     # Module constants the selected functions read at call time.
     constants = [node for node in tree.body if isinstance(node, ast.Assign)
-                 and any(isinstance(target, ast.Name) and target.id == "OAI_MEM_CITATION_RE" for target in node.targets)]
-    assert len(constants) == 1
+                 and any(isinstance(target, ast.Name) and target.id in {"OAI_MEM_CITATION_RE", "SESSION_SUMMARY_PUSH_EVENT_TYPES"}
+                         for target in node.targets)]
+    assert len(constants) == 2
     module = ast.fix_missing_locations(ast.Module(body=[ast.ImportFrom(
         module="__future__", names=[ast.alias(name="annotations")], level=0,
     ), *constants, *selected], type_ignores=[]))
@@ -113,6 +114,7 @@ def load_projection():
         "strip_all_legacy_agentsdock_provider_authority_suffixes": lambda text, **kwargs: text,
         "session_provider_id": lambda session: session.get("codex_thread_id"),
         "logger": Mock(), "now_iso": lambda: "2026-09-10T00:00:00Z",
+        "broadcast_session_summary": AsyncMock(),
     }
     exec(compile(module, str(SOURCE), "exec"), namespace)
     return namespace

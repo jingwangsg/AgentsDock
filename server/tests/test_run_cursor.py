@@ -1855,8 +1855,12 @@ time.sleep(5)
                 ),
                 provider_context_mode="standalone",
             )
+            # finalize_owned_turn_finished releases the busy slot before it
+            # appends turn_finished; wait for the event too, not only the slot.
             for _ in range(500):
-                if self.session_id not in agent_server.BUSY_SESSIONS:
+                finished = any(event.get("run_id") == admitted["run_id"] and event.get("type") == "turn_finished"
+                               for event in self._read_events())
+                if finished and self.session_id not in agent_server.BUSY_SESSIONS:
                     break
                 await asyncio.sleep(0.01)
             else:

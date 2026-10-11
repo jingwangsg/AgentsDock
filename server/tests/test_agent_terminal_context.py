@@ -1,10 +1,12 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import agent_server
+import agentsdock_canvas
 
 
 def codex_developer_instructions(command: list[str]) -> str:
@@ -97,7 +99,12 @@ class AgentTerminalContextTests(unittest.TestCase):
             agent_server.PROVIDER_THREAD_INSTRUCTION_ADDENDUM.strip(),
             first_prompt,
         )
-        self.assertLess(len(first_prompt), 12_000)
+        # A budget for the static guidance. The interpreter and Canvas checker
+        # paths in it vary with the checkout, so they do not count. 12_500 since
+        # the Canvas report guidance (d48af178, about 1 KB) passed 12_000.
+        static = first_prompt.replace(sys.executable, "python").replace(
+            str(Path(agentsdock_canvas.__file__).resolve()), "agentsdock_canvas.py")
+        self.assertLess(len(static), 12_500)
 
     def test_claude_transcript_suppression_flag_only_affects_fresh_command(self) -> None:
         standalone = agent_server.build_claude_cmd(
