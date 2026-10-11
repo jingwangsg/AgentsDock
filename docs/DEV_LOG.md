@@ -1,5 +1,56 @@
 # Public development log
 
+## 2026-10-11 — Composer: `Create new agent` in the `@` picker hands a task to a new chat (desktop + server source)
+
+- Handing a task to a new agent took several steps: create a chat, name it,
+  move it to the right folder, pick its model, then go back and `@`-mention
+  it. The `@` picker now has a fixed `Create new agent` entry (first while the
+  query is empty; typing ranks it by its label like any chat). Choosing it
+  opens a small dialog with the server, folder, model and reasoning effort,
+  all preset from the current chat, and inserts an `@New agent` chip. The
+  entry appears when the server offers `@Chat` route hints and lists this
+  chat's backend as a handoff target, since the new chat inherits that backend.
+- On send the composer creates the chat before the turn starts, named after
+  the task's first words. On the same server it uses the ordinary chat
+  creation call and the current chat's working directory; the turn then
+  carries an ordinary chip for the created chat, so the route grant and the
+  agent's handoff work exactly as for a picked chat, including the user's
+  instruction attached to the mail. On another server under the hub, a new
+  hub call creates the chat over the existing cross-server mail relay, and
+  the composer then pairs it as it pairs a picked chat; the chat starts in
+  that server's default directory. The dialog offers other servers only when
+  the hub answers that it creates chats. One new agent per message.
+- Naming across servers. The hub attaches the user's instruction to
+  cross-server mail only when the chip text equals the paired chat's label and
+  server tag. Pairing therefore takes the chip's title part as the label on
+  the sending side (`New agent` for a new agent, the title the chip showed
+  for a picked chat), so a retry after a failed send keeps the label, and an
+  older pair with a chat on the same server goes back to that chat's real
+  title so one label names one chat; the label also follows the chat's title
+  once it writes back. The name itself is a plain title, not an automatic
+  one: a chat whose first turn is a mailbox wake would otherwise be renamed
+  by the provider's own title for that wake prompt (observed as "Unread peer
+  mail inbox").
+- Android: the picker entry and dialog are not on the mobile app yet; follow-up.
+- Verification. Unit: desktop reference-helper and Composer tests for the
+  picker entry, the dialog defaults, the created chat's request on the same
+  server and through the hub, the sent references, and the entry withheld
+  when the chat's backend cannot receive handoffs; server tests for the hub
+  call (creation, pairing under the chip label, refusal of an unknown server)
+  and the chat-list flag. Real app: the worktree's built desktop app against
+  an isolated hub with a registered isolated remote on this Mac, driven over
+  the debugging protocol with real Claude turns. Exercised: the picker entry,
+  the dialog with the remote listed, the chip, chat creation in the same
+  folder and directory, the source agent's handoff by mail, the new chat's
+  mailbox wake and work (it wrote the requested file), the instruction
+  attached to both mails (read from the mail ledger), and the same on the
+  remote with the chosen folder, the hub pairing, and the remote agent's
+  reply. Not exercised: deployed servers, Codex-backed chats, the Android
+  app, and the failure paths (creation refused, link lost mid-send).
+  Availability: desktop build and server source; same-server use works with
+  any server that offers `@Chat` route hints, another server needs the hub
+  redeployed.
+
 ## 2026-10-11 — Remote servers on SkyPilot AWS clusters: `aws@<cluster>` (server source)
 
 - Adding a remote server as `oci@<cluster>` for a SkyPilot cluster on AWS

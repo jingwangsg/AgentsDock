@@ -280,6 +280,7 @@ class End:
     async def install(self, route: dict) -> None: raise NotImplementedError
     async def uninstall(self, pair_id: str) -> None: raise NotImplementedError
     async def chats(self) -> list[dict]: raise NotImplementedError
+    async def create(self, chat: dict) -> dict: raise NotImplementedError
 
 
 class RemoteEnd(End):
@@ -335,6 +336,19 @@ class RemoteEnd(End):
     async def chats(self) -> list[dict]:
         data = await self._request("GET", "/api/chats/search", params={"limit": SEARCH_LIMIT}, timeout=SEARCH_TIMEOUT)
         return list(data.get("chats") or [])
+
+    async def create(self, chat: dict) -> dict:
+        try:
+            return dict((await self._request("POST", "/api/sessions", json=chat)).get("session") or {})
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 400:
+                raise
+            # A 400 is the server's own refusal (model, directory): its detail reaches the user
+            # as Refused; any other status stays a transport error (502 upstream).
+            detail = ""
+            with suppress(ValueError):
+                detail = str((exc.response.json() or {}).get("detail") or "")
+            raise Refused(detail or "HTTP 400") from exc
 
 
 class Relay:

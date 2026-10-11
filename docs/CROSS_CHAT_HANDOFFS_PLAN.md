@@ -9,6 +9,17 @@ exchanges remain deferred.
 - `@` is the primary composer shortcut; `/chat` opens the same picker.
 - A selection inserts one visible inline chip bound to the target's immutable
   route. Plain mention-like text is never routing authority.
+- The picker's fixed `Create new agent` entry (first while the query is empty)
+  hands the task to a chat that does not exist yet. Its dialog chooses the
+  server, folder, model and effort, all preset from the current chat; on send
+  the composer creates that chat, named after the task's first words (same
+  server: `POST /api/sessions`; another server under the hub: the hub's
+  `POST /api/cross-server/chats`), and the turn then carries an ordinary chip
+  for it. A cross-server pair is installed under the chip's title part as its
+  label on the sending side (`New agent` here), because the chip text must
+  equal that label for the hub to delegate the user's instruction; an older
+  pair with a chat on the same server returns to that chat's real title. The
+  grant or pairing and the agent's handoff then work as for a picked chat.
 - `@Chat` is an optional target hint, not a delivery command. It never forwards
   the raw source prompt. The agent may prepare a one-way Send, start an
   asynchronous Ask, or make no cross-chat contact.

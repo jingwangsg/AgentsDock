@@ -5433,6 +5433,141 @@ describe('Composer', () => {
     })))
   })
 
+  it('creates the chat for "Create new agent" on send with the dialog runtime and sends the turn to it', async () => {
+    const created = { id: 'chat-new', title: 'fix the login bug', backend: 'codex', folder: 'Research' } as Session
+    const create = vi.fn().mockResolvedValue(created)
+    const send = vi.fn().mockResolvedValue({ session: { id: 'chat-1', title: 'Chat', backend: 'codex' }, queued: false })
+    // The sidebar refresh the store runs after a chat is created; here it only lists the new chat.
+    const refreshSessions = vi.fn(async () => { useAppStore.setState(state => ({ sessions: [...state.sessions, created] })) })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        sessions: { create },
+        turns: { send }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-1', title: 'Chat', backend: 'codex', folder: 'Research', cwd: '/srv/app', model: 'gpt-5-codex', effort: 'medium' },
+        { id: 'chat-2', title: 'Training', backend: 'claude' }
+      ],
+      health: { ok: true, capabilities: { cross_chat_handoffs_v1: durableComposerCapability() } },
+      refreshSessions
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message')
+
+    await user.type(editor, '@')
+    const picker = await screen.findByRole('listbox', { name: 'Chats' })
+    const options = within(picker).getAllByRole('option')
+    expect(options[0]).toHaveTextContent('Create new agent')
+    expect(options[1]).toHaveTextContent('Training')
+    await user.click(options[0])
+
+    const dialog = await screen.findByRole('dialog', { name: 'New agent' })
+    expect(within(dialog).queryByRole('combobox', { name: 'Server' })).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('combobox', { name: 'Folder' })).toHaveValue('Research')
+    expect(within(dialog).getByRole('combobox', { name: 'Model' })).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Add @New agent' }))
+
+    expect(screen.queryByRole('dialog', { name: 'New agent' })).not.toBeInTheDocument()
+    expect(editor).toHaveValue('@New agent ')
+    expect(useAppStore.getState().chatReferencesBySession['chat-1']).toEqual([{
+      session_id: 'new-agent', display_title_snapshot: 'New agent', source_text_start: 0, source_text_end: 10,
+      action: 'route', grant_intent: true, target_kind: 'new_agent',
+      new_agent: { model: 'gpt-5-codex', effort: 'medium', server_identity: null, folder: 'Research' }
+    }])
+    await user.type(editor, 'fix the login bug')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith({
+      title: 'fix the login bug', folder: 'Research', cwd: '/srv/app',
+      backend: 'codex', model: 'gpt-5-codex', effort: 'medium', system_prompt: null
+    }))
+    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'chat-1',
+      prompt: '@New agent fix the login bug',
+      chatReferences: [{
+        session_id: 'chat-new', display_title_snapshot: 'New agent', source_text_start: 0, source_text_end: 10,
+        action: 'route', grant_intent: true
+      }]
+    })))
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers no new agent when this chat\'s backend cannot receive handoffs', async () => {
+    useAppStore.setState({
+      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'cursor' }, { id: 'chat-2', title: 'Training', backend: 'claude' }],
+      health: { ok: true, capabilities: { cross_chat_handoffs_v1: durableComposerCapability() } }
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+    await user.type(screen.getByPlaceholderText('Message'), '@')
+    const picker = await screen.findByRole('listbox', { name: 'Chats' })
+    expect(within(picker).getAllByRole('option').map(option => option.textContent)).toEqual([expect.stringContaining('Training')])
+  })
+
+  it('creates the new agent on another server through the hub, pairs it under the chip label, and sends without a chip for the server', async () => {
+    const chats = vi.fn().mockResolvedValue({
+      servers: [
+        { server_identity: 'server-a', name: '', chats: [] },
+        { server_identity: 'srv-l40', name: 'gpu-box', chats: [{ id: 'r1', title: 'Remote', folder: 'Lab', backend: 'claude', cross_chat_handoff_supported: true }] }
+      ],
+      create_chats: true
+    } satisfies CrossServerChatsSnapshot)
+    const createChat = vi.fn().mockResolvedValue({ id: 'remote-new', title: 'triage flaky tests', backend: 'codex' })
+    const pair = vi.fn()
+    const send = vi.fn().mockResolvedValue({ session: { id: 'chat-1', title: 'Chat', backend: 'codex' }, queued: false })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        agentRoutes: { list: vi.fn().mockResolvedValue({ routes: [], max_routes: 16 }) },
+        crossServer: { chats, pair, createChat },
+        turns: { send }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      activeProfileId: 'profile-a', profileGeneration: 7, connected: true,
+      profiles: [{ id: 'profile-a', name: 'Server', serverIdentity: 'server-a' } as PublicServerProfile],
+      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'codex', folder: 'Research', cwd: '/srv/app', model: 'gpt-5-codex', effort: 'medium' }],
+      health: { ok: true, capabilities: {
+        cross_chat_handoffs_v1: durableComposerCapability(),
+        cross_server_mail_v1: { available: true, required: false, message: '', action: null }
+      } }
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message')
+
+    await user.type(editor, '@')
+    await user.click(await screen.findByRole('option', { name: /Create new agent/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'New agent' })
+    await user.selectOptions(await within(dialog).findByRole('combobox', { name: 'Server' }), 'srv-l40')
+    const folder = within(dialog).getByRole('combobox', { name: 'Folder' })
+    await user.clear(folder)
+    await user.type(folder, 'Lab')
+    await user.click(within(dialog).getByRole('button', { name: 'Add @New agent' }))
+
+    expect(editor).toHaveValue('@New agent · gpu-box ')
+    await user.type(editor, 'triage flaky tests')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => expect(createChat).toHaveBeenCalledWith(expect.anything(), {
+      title: 'triage flaky tests', folder: 'Lab', backend: 'codex', model: 'gpt-5-codex', effort: 'medium',
+      server_identity: 'srv-l40', cwd: ''
+    }))
+    await waitFor(() => expect(pair).toHaveBeenCalledWith(expect.anything(), {
+      source_server_identity: 'server-a', source_session_id: 'chat-1',
+      target_server_identity: 'srv-l40', target_session_id: 'remote-new', target_label: 'New agent'
+    }))
+    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'chat-1', prompt: '@New agent · gpu-box triage flaky tests', chatReferences: []
+    })))
+  })
+
   it('blocks a seventeenth chat reference with an explicit picker limit', async () => {
     const targetSessions = Array.from({ length: 16 }, (_, index) => ({
       id: `target-${index}`, title: `Target${index}`, backend: 'codex' as const

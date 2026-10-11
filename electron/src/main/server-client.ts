@@ -34,6 +34,7 @@ import type {
   TeamReference,
   ChatSearchSnapshot,
   CrossServerChatsSnapshot,
+  CrossServerChatInput,
   CrossServerPairInput,
   CreateAgentCrossChatRouteInput,
   CrossChatExchange,
@@ -1520,6 +1521,10 @@ export class AgentServerClient {
 
   crossServerChats(): Promise<CrossServerChatsSnapshot> {
     return this.get('/api/cross-server/chats')
+  }
+
+  async createCrossServerChat(input: CrossServerChatInput): Promise<Session> {
+    return (await this.post<{ session: Session }>('/api/cross-server/chats', input)).session
   }
 
   async createCrossServerPair(input: CrossServerPairInput): Promise<void> {

@@ -101209,6 +101209,9 @@ class LocalCrossServerEnd(cross_server_mail.End):
     async def chats(self) -> list[dict]:
         return (await search_chats(q="", limit=cross_server_mail.SEARCH_LIMIT, exclude_session_id=None))["chats"]
 
+    async def create(self, chat: dict) -> dict:
+        return (await create_session(CreateSessionRequest(**chat)))["session"]
+
 
 LOCAL_CROSS_SERVER_END = LocalCrossServerEnd()
 
@@ -101259,6 +101262,10 @@ class CrossServerPairRequest(BaseModel):
     source_session_id: str = Field(min_length=1, max_length=128)
     target_server_identity: str = Field(min_length=1, max_length=96)
     target_session_id: str = Field(min_length=1, max_length=128)
+    # The chip's title part as the composer shows it. The source chat's route label must
+    # equal it for the user's instruction to be delegated (cross_server_mail.names_peer);
+    # the composer's "Create new agent" chip says "New agent" whatever the chat is named.
+    target_label: str | None = Field(default=None, max_length=240)
 
 
 # Server-to-server: only the hub that registered this server holds its token.
@@ -101330,11 +101337,43 @@ async def list_cross_server_chats() -> dict[str, Any]:
     """Chats on the hub and on every reachable remote that supports cross-server mail."""
     ends = list(CROSS_SERVER_RELAY.ends().values())
     results = await asyncio.gather(*(end.chats() for end in ends), return_exceptions=True)
-    return {"servers": [
-        {"server_identity": end.identity, "name": end.name, "chats": chats}
-        # An unreachable server is left out: only live servers' chats can be picked.
-        for end, chats in zip(ends, results) if not isinstance(chats, BaseException)
-    ]}
+    return {
+        "servers": [
+            {"server_identity": end.identity, "name": end.name, "chats": chats}
+            # An unreachable server is left out: only live servers' chats can be picked.
+            for end, chats in zip(ends, results) if not isinstance(chats, BaseException)
+        ],
+        # Always true here: a hub older than POST /api/cross-server/chats omits it, and
+        # the composer then offers "Create new agent" on no other server.
+        "create_chats": True,
+    }
+
+
+class CrossServerChatRequest(BaseModel):
+    server_identity: str = Field(min_length=1, max_length=96)
+    title: str = Field(min_length=1, max_length=240)
+    folder: str | None = Field(default=None, max_length=240)
+    cwd: str | None = Field(default=None, max_length=4096)
+    backend: str | None = Field(default=None, max_length=32)
+    model: str | None = Field(default=None, max_length=256)
+    effort: str | None = Field(default=None, max_length=64)
+
+
+@app.post("/api/cross-server/chats")
+async def create_cross_server_chat(req: CrossServerChatRequest) -> dict[str, Any]:
+    """Create a chat on a server under this hub; the composer's "Create new agent" then pairs it like a picked chat."""
+    end = CROSS_SERVER_RELAY.ends().get(req.server_identity)
+    if end is None:
+        raise HTTPException(status_code=409, detail="that server is unreachable or does not support cross-server mail")
+    try:
+        session = await end.create(req.model_dump(exclude={"server_identity"}, exclude_none=True))
+    except HTTPException:
+        raise
+    except cross_server_mail.Refused as exc:
+        raise refused_as_http(exc) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"could not create the chat: {concise_error_message(exc)}") from exc
+    return {"session": session}
 
 
 @app.post("/api/cross-server/pairs")
@@ -101381,7 +101420,7 @@ async def create_cross_server_pair(req: CrossServerPairRequest) -> dict[str, Any
             await source_end.install({
                 "route_id": halves[one], "pair_id": pair["pair_id"], "session_id": one[1],
                 "peer_server_identity": other[0], "peer_server_name": target_end.name,
-                "peer_session_id": other[1], "peer_title": target_chat["title"],
+                "peer_session_id": other[1], "peer_title": req.target_label or target_chat["title"],
             })
         except Exception as exc:
             if existing is not None:
@@ -101393,6 +101432,22 @@ async def create_cross_server_pair(req: CrossServerPairRequest) -> dict[str, Any
             if isinstance(exc, cross_server_mail.Refused):
                 raise refused_as_http(exc) from exc
             raise HTTPException(status_code=502, detail=f"could not pair the chats: {concise_error_message(exc)}") from exc
+        if req.target_label:
+            # A chip label must name one chat: an older pair of the source chat with a chat
+            # on the same server goes back to that chat's real title, since every new agent's
+            # chip says "New agent" and two routes under one label would delegate to neither.
+            for older in await CROSS_CHAT.cross_server_call("pairs_for", one[0], one[1]):
+                members = {(older["a_server_identity"], older["a_session_id"]): older["a_route_id"],
+                           (older["b_server_identity"], older["b_session_id"]): older["b_route_id"]}
+                peer = next((member for member in members if member != one), None)
+                if older["pair_id"] == pair["pair_id"] or peer is None or peer[0] != other[0]:
+                    continue
+                with suppress(Exception):
+                    await source_end.install({
+                        "route_id": members[one], "pair_id": older["pair_id"], "session_id": one[1],
+                        "peer_server_identity": peer[0], "peer_server_name": target_end.name,
+                        "peer_session_id": peer[1], "peer_title": (await target_end.describe(peer[1]))["title"],
+                    })
     return {"pair": pair, "created": existing is None}
 
 
