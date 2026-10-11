@@ -54,7 +54,9 @@ class SessionSummaryTests(unittest.TestCase):
         summary_bytes = len(JSONResponse({"sessions": summaries}).body)
         full_bytes = len(JSONResponse({"sessions": full_sessions}).body)
 
-        self.assertLess(summary_bytes, 150_000)
+        # 160_000 since history_revision (c7ec9fdb) took the 182 rows past
+        # 150_000; the ratio below is the guard that scales with the list.
+        self.assertLess(summary_bytes, 160_000)
         self.assertLess(summary_bytes, full_bytes * 0.05)
 
 

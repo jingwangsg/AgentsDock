@@ -674,18 +674,20 @@ class UpdateRunnerTests(unittest.TestCase):
     def test_installer_timeout_includes_log_tail_and_stops_process(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with self.assertRaisesRegex(RuntimeError, r"timed out after 0.08 seconds: started"):
+            # The child must print before the timeout; under load a Python
+            # start alone took longer than the former 0.08 s.
+            with self.assertRaisesRegex(RuntimeError, r"timed out after 2 seconds: started"):
                 update_runner.run_installer(
                     [
                         sys.executable,
                         "-c",
-                        "import time; print('started', flush=True); time.sleep(5)",
+                        "import time; print('started', flush=True); time.sleep(30)",
                     ],
                     cwd=root,
                     status_path=root / "server-update.json",
                     log_path=root / "server-update.log",
                     version="1.2.3",
-                    timeout_seconds=0.08,
+                    timeout_seconds=2,
                     heartbeat_seconds=0.02,
                 )
 

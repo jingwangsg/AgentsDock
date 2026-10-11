@@ -21,7 +21,7 @@ FUNCTIONS = {
     "timeline_index_is_error", "timeline_index_is_native_steer_transition_stop",
     "timeline_index_retire_native_steer_turn", "timeline_index_codex_lifecycle_key",
     "scheduled_job_run_status", "scheduled_job_status_should_replace", "scheduled_job_output_rank",
-    "scheduled_job_occurrence_key", "job_run_history_event_snapshot", "bounded_job_history_text",
+    "scheduled_job_occurrence_key", "scheduled_run_joined_at", "job_run_history_event_snapshot", "bounded_job_history_text",
     "is_client_visible_event", "collect_semantic_timeline_events", "read_semantic_timeline_page",
     "semantic_timeline_landmark_anchor", "semantic_timeline_ordinary_candidates",
     "semantic_timeline_event_identity", "semantic_timeline_event_is_display",

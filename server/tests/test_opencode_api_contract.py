@@ -620,11 +620,15 @@ class OpenCodeApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
         second_cwd = Path(self.tempdir.name) / "second-workspace"
         second_cwd.mkdir()
-        second = await self._create_session(
-            provider_session_id=SESSION,
-            import_history=False,
-            cwd=str(second_cwd),
-        )
+        # Creation now refuses a second chat on one provider conversation
+        # (832b2f4e). A wrapper made before that still exists, so the turn-time
+        # provider lock tested below remains the defense; build one directly.
+        duplicate = await self.client.post("/api/sessions", json={
+            "backend": "opencode", "cwd": str(second_cwd), "provider_session_id": SESSION, "import_history": False,
+        })
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        second = await self._create_session(import_history=False, cwd=str(second_cwd))
+        agent_server.STORE.sessions[second]["opencode_session_id"] = agent_server.STORE.sessions[first]["opencode_session_id"]
         started = asyncio.Event()
         release = asyncio.Event()
 
