@@ -737,6 +737,32 @@ assert(
   'assistant and media rows must retain stable run-scoped keys',
 )
 
+const republishedTranscript = (id: string, seq: number, size: number): AgentFile => ({ id, filename: 'transcript.txt', source_path: '/work/transcript.txt', size, seq })
+const republishedUpload: AgentFile = { id: 'republished-upload', filename: 'transcript.txt', source_path: '/work/transcript.txt', seq: 2 }
+const republishedRows = projectTimeline([
+  event(1, 'turn_started', { run_id: 'run-republish', prompt: 'Transcribe it', file_ids: [republishedUpload.id] }),
+  event(2, 'file_uploaded', { run_id: 'run-republish', file: republishedUpload }),
+  event(3, 'artifact_created', { run_id: 'run-republish', artifact: republishedTranscript('t1', 3, 24) }),
+  event(4, 'artifact_created', { run_id: 'run-republish', artifact: { id: 'n1', filename: 'note.txt', seq: 4 } }),
+  event(5, 'artifact_created', { run_id: 'run-republish', artifact: { id: 'report', filename: 'report.pdf', source_path: '/work/report.pdf', seq: 5 } }),
+  event(6, 'artifact_created', { run_id: 'run-republish', artifact: republishedTranscript('t2', 6, 97) }),
+  event(7, 'artifact_created', { run_id: 'run-republish', artifact: { id: 'n2', filename: 'note.txt', seq: 7 } }),
+  event(8, 'artifact_created', { run_id: 'run-republish', artifact: republishedTranscript('t3', 8, 215) }),
+  event(9, 'turn_finished', { run_id: 'run-republish', result_text: 'Done.' }),
+], [republishedUpload])
+const republishedMedia = republishedRows.find(row => row.kind === 'media')
+assert(republishedMedia?.kind === 'media', 'expected a media row for the republished outputs')
+assert(
+  republishedMedia.files.map(file => file.id).join(',') === 't3,n2,report,n1',
+  'output files must show one entry per republished source path, the newest first, and never collapse pathless files',
+)
+assert(republishedMedia.files[0].size === 215, 'the kept entry must be the newest copy')
+const republishedUser = republishedRows.find(row => row.kind === 'message' && row.role === 'user')
+assert(
+  republishedUser?.kind === 'message' && republishedUser.files.map(file => file.id).join(',') === republishedUpload.id,
+  'a user upload from the same path must stay on the user message',
+)
+
 const lateOutputFile: AgentFile = { id: 'late-output-file', filename: 'late-answer.mp4', seq: 5 }
 const lateArtifactRows = projectTimeline([
   event(1, 'turn_started', { run_id: 'run-artifact-owner', prompt: 'Render the first result' }),

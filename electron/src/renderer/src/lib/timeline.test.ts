@@ -3453,6 +3453,33 @@ describe('projectTimeline', () => {
     expect(new Set(rows.map(row => row.key)).size).toBe(rows.length)
   })
 
+  it('shows one output file per republished source path, the newest first, and never collapses uploads or pathless files', () => {
+    const transcript = (id: string, seq: number, size: number): AgentFile => ({
+      id, filename: 'transcript.txt', content_type: 'text/plain', source_path: '/work/transcript.txt', size, seq
+    })
+    const upload: AgentFile = { id: 'upload-1', filename: 'transcript.txt', source_path: '/work/transcript.txt', content_type: 'text/plain', seq: 2 }
+    const pathless = (id: string, seq: number): AgentFile => ({ id, filename: 'note.txt', content_type: 'text/plain', seq })
+    const report: AgentFile = { id: 'report', filename: 'report.pdf', content_type: 'application/pdf', source_path: '/work/report.pdf', seq: 5 }
+    const rows = renderTimelineItems(projectTimeline([
+      event(1, 'turn_started', { run_id: 'run-1', prompt: 'Transcribe it', file_ids: [upload.id] }),
+      event(2, 'file_uploaded', { file: upload }),
+      event(3, 'artifact_created', { run_id: 'run-1', artifact: transcript('t1', 3, 24) }),
+      event(4, 'artifact_created', { run_id: 'run-1', artifact: pathless('n1', 4) }),
+      event(5, 'artifact_created', { run_id: 'run-1', artifact: report }),
+      event(6, 'artifact_created', { run_id: 'run-1', artifact: transcript('t2', 6, 97) }),
+      event(7, 'artifact_created', { run_id: 'run-1', artifact: pathless('n2', 7) }),
+      event(8, 'artifact_created', { run_id: 'run-1', artifact: transcript('t3', 8, 215) }),
+      event(9, 'turn_finished', { run_id: 'run-1', result_text: 'Done.' })
+    ], [upload]))
+    const media = rows.filter(row => row.kind === 'media')
+    expect(media).toHaveLength(1)
+    const files = media[0].kind === 'media' ? media[0].files : []
+    expect(files.map(file => file.id)).toEqual(['t3', 'n2', 'report', 'n1'])
+    expect(files[0].size).toBe(215)
+    const user = rows.find(row => row.kind === 'message' && row.role === 'user')
+    expect(user?.kind === 'message' ? user.files.map(file => file.id) : []).toEqual(['upload-1'])
+  })
+
   it('binds uploaded inputs only to their referenced user turn and does not duplicate them as output media', () => {
     const file: AgentFile = { id: 'input-image', filename: 'question.png', content_type: 'application/octet-stream' }
     const rows = renderTimelineItems(projectTimeline([
