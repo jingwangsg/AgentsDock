@@ -261,13 +261,17 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     && supportedChatActions.includes('route')
     && supportedTargetBackends.length > 0
   const crossServerAvailable = crossChatSupported && health?.capabilities?.cross_server_mail_v1?.available === true
-  // The new chat inherits this chat's backend, so that backend must be a handoff target.
-  const newAgentSupported = crossChatSupported && Boolean(backend && supportedTargetBackends.includes(backend))
+  // The new chat may run on any backend this server starts that also receives handoffs; the sheet defaults to this chat's.
+  const newAgentBackends = useMemo(() => selectableChatBackends(health).filter(candidate => supportedTargetBackends.includes(candidate)), [health, supportedTargetBackends])
+  const newAgentSupported = crossChatSupported && newAgentBackends.length > 0
   const referenceSupported = useCallback((reference: ChatReference): boolean => {
     // Paired through the hub at send time; its target lives on another server.
     if (reference.target_kind === 'cross_server') return crossServerAvailable
-    // Its chat is created at send; until then only this chat's backend can rule it out.
-    if (reference.target_kind === 'new_agent') return newAgentSupported
+    // Its chat is created at send, on the draft's backend or (a draft saved before the agent could be chosen) this chat's.
+    if (reference.target_kind === 'new_agent') {
+      const created = reference.new_agent?.backend ?? backend
+      return Boolean(newAgentSupported && created && newAgentBackends.includes(created))
+    }
     const target = useAppStore.getState().sessions.find(candidate => candidate.id === reference.session_id)
     return Boolean(
       crossChatSupported
@@ -277,7 +281,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       && !target.archived
       && supportedTargetBackends.includes(target.backend)
     )
-  }, [crossChatSupported, crossServerAvailable, health, newAgentSupported, requestReplySupportedForSource, supportedTargetBackends])
+  }, [backend, crossChatSupported, crossServerAvailable, health, newAgentBackends, newAgentSupported, requestReplySupportedForSource, supportedTargetBackends])
   const referencesSupported = references.length === 0 || references.every(referenceSupported)
   const teamMentionsSupported = teamMessagesAvailable(health)
   const teamReferencesSupported = teamReferences.every(reference => teamReferenceContractSupported(health, reference))
@@ -871,7 +875,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         const withoutChips = [...outgoingReferences].sort((a, b) => b.source_text_start - a.source_text_start)
           .reduce((text, reference) => `${text.slice(0, reference.source_text_start)}${text.slice(reference.source_text_end)}`, currentDraft)
         const title = [...withoutChips.trim().split('\n', 1)[0].trim()].slice(0, 72).join('').replace(/^@+\s*/u, '').trim() || NEW_AGENT_DISPLAY_TITLE
-        const chat = { title, folder: settings.folder, backend: sourceSession.backend, model: settings.model, effort: settings.effort }
+        // A draft saved before the agent could be chosen has no backend; the chat then takes this chat's.
+        const chat = { title, folder: settings.folder, backend: settings.backend ?? sourceSession.backend, model: settings.model, effort: settings.effort }
         let created: Session
         try {
           if (otherServer) {
@@ -1425,6 +1430,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       /> : null}
       {!welcome && backend && sourceSession ? <NewAgentSheet
         hosts={newAgentSheet}
+        backends={newAgentBackends}
         backend={backend}
         model={model}
         effort={effort}

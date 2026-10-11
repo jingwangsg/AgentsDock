@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Health } from '@shared/types'
+import type { Backend, Health, NewAgentSettings } from '@shared/types'
 import {
   agentCrossChatRoutesAvailable,
   agentCrossChatRoutesSupported,
@@ -559,7 +559,7 @@ describe('chat references', () => {
   })
 
   it('keeps the "Create new agent" placeholder as one route hint until the composer creates the chat', () => {
-    const settings = { model: 'gpt-5-codex', effort: 'high', server_identity: null, folder: 'Research' }
+    const settings: NewAgentSettings = { backend: 'codex', model: 'gpt-5-codex', effort: 'high', server_identity: null, folder: 'Research' }
     const inserted = insertNewAgentChatReference('ask @cre', chatMentionTrigger('ask @cre', 8)!, settings)
     expect(inserted.text).toBe('ask @New agent ')
     expect(inserted.reference).toEqual({
@@ -587,7 +587,12 @@ describe('chat references', () => {
       action: 'route' as const, grant_intent: true as const, target_kind: 'new_agent' as const,
       new_agent: { model: null, effort: null, server_identity: null, folder: 'General' }
     }
+    // A draft saved before the agent could be chosen names no backend and is kept; an unknown backend is not.
     expect(validChatReferences(text, [marker], 'source-chat')).toEqual([marker])
+    expect(parseStoredChatReferences([marker], text, 'source-chat')).toEqual([marker])
+    const claude = { ...marker, new_agent: { ...marker.new_agent, backend: 'claude' as const } }
+    expect(parseStoredChatReferences([claude], text, 'source-chat')).toEqual([claude])
+    expect(validChatReferences(text, [{ ...marker, new_agent: { ...marker.new_agent, backend: 'gemini' as Backend } }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...marker, grant_intent: undefined }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...marker, new_agent: undefined }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...marker, session_id: 'sess_real' }], 'source-chat')).toEqual([])

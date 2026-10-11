@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import type { ChatReference, Health } from '../types'
+import type { Backend, ChatReference, Health, NewAgentSettings } from '../types'
 import {
   caretAfterTextChange,
   chatMentionAction,
@@ -281,7 +281,7 @@ assert.deepEqual(parseStoredChatReferences([crossServerBase], crossServerText, '
 assert.equal(localChatReferenceContractSupported(hardenedV7, { ...crossServer.reference, grant_intent: true }), false)
 
 // "Create new agent" is one placeholder chip per message until the composer creates the chat on send.
-const newAgentSettings = { model: 'gpt-5-codex', effort: 'high', server_identity: null, folder: 'Research' }
+const newAgentSettings: NewAgentSettings = { backend: 'codex', model: 'gpt-5-codex', effort: 'high', server_identity: null, folder: 'Research' }
 const newAgent = insertNewAgentChatReference('ask @cre', chatMentionTrigger('ask @cre', 8)!, newAgentSettings)
 assert.equal(newAgent.text, 'ask @New agent ')
 assert.deepEqual(newAgent.reference, {
@@ -297,9 +297,12 @@ const remoteNewAgent = insertNewAgentChatReference('@', chatMentionTrigger('@', 
 assert.equal(remoteNewAgent.text, '@New agent · osmo_dev_l40 ')
 assert.equal(insertNewAgentChatReference('@', chatMentionTrigger('@', 1)!, { ...newAgentSettings, server_identity: 'srv-hub' }, '').text, '@New agent ')
 // A marker without grant intent, settings, the placeholder id, or with remote route fields is refused.
+// A draft saved before the agent could be chosen names no backend and is kept.
 const newAgentText = '@New agent'
 const newAgentBase: ChatReference = { session_id: NEW_AGENT_REFERENCE_ID, display_title_snapshot: 'New agent', source_text_start: 0, source_text_end: newAgentText.length, action: 'route', grant_intent: true, target_kind: 'new_agent', new_agent: { model: null, effort: null, server_identity: null, folder: 'General' } }
 assert.deepEqual(validChatReferences(newAgentText, [newAgentBase], 'source-chat'), [newAgentBase])
+assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: { ...newAgentBase.new_agent!, backend: 'claude' } }], 'source-chat').map(reference => reference.new_agent?.backend), ['claude'])
+assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: { ...newAgentBase.new_agent!, backend: 'gemini' as Backend } }], 'source-chat'), [])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, grant_intent: undefined }], 'source-chat'), [])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: undefined }], 'source-chat'), [])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, session_id: 'sess_real' }], 'source-chat'), [])

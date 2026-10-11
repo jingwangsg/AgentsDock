@@ -468,9 +468,10 @@ function canonicalChatReference(reference: ChatReference, preserveGrantIntent = 
     return { ...common, target_kind: 'cross_server', target_server_identity: reference.target_server_identity }
   }
   if (reference.target_kind === 'new_agent' && reference.new_agent) {
-    // Copies the validated fields only; a stored draft may carry more.
-    const { model, effort, server_identity, folder } = reference.new_agent
-    return { ...common, target_kind: 'new_agent', new_agent: { model, effort, server_identity, folder } }
+    // Copies the validated fields only; a stored draft may carry more. A draft saved before the
+    // agent could be chosen keeps its key set (no `backend: undefined`).
+    const { backend, model, effort, server_identity, folder } = reference.new_agent
+    return { ...common, target_kind: 'new_agent', new_agent: { ...(backend !== undefined ? { backend } : {}), model, effort, server_identity, folder } }
   }
   return reference.target_kind === 'secure_peer' ? {
     ...common,
@@ -548,6 +549,7 @@ function validNewAgentReferenceTarget(reference: ChatReference): boolean {
     && reference.target_route_id === undefined
     && reference.target_route_revision === undefined
     && typeof settings === 'object' && settings !== null
+    && (settings.backend === undefined || ['claude', 'codex', 'cursor', 'opencode'].includes(settings.backend))
     && (settings.model === null || typeof settings.model === 'string')
     && (settings.effort === null || typeof settings.effort === 'string')
     && (settings.server_identity === null || (typeof settings.server_identity === 'string' && settings.server_identity.length <= 240))

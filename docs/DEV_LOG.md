@@ -1,5 +1,37 @@
 # Public development log
 
+## 2026-10-11 — `Create new agent` can choose the agent (desktop + Android source)
+
+- The `Create new agent` dialog (desktop) and sheet (Android) get an `Agent`
+  row. Until now the new chat always ran on the backend of the chat it was
+  created from, so a Codex chat could not hand a task to a new Claude chat.
+  The row lists the backends that both start chats on this server and
+  receive `@Chat` handoffs, and defaults to the current chat's backend. The
+  model and reasoning effort lists follow the chosen backend's catalog: the
+  current chat's own backend keeps inheriting its model and effort, another
+  backend starts from that backend's server defaults. The description names
+  the chosen backend. A custom Codex endpoint carries over to a new Codex chat
+  only.
+- The picker row now appears whenever at least one such backend exists, not
+  only when the current chat's own backend receives handoffs: a Cursor chat
+  can create a Claude or Codex agent.
+- A draft saved before this change names no backend; it is kept and falls
+  back to the current chat's backend on send.
+- Verification. Unit: desktop composer tests (agent row default, a Codex chat
+  creating a Claude agent with Claude's models and server defaults, a Cursor
+  chat now offered the row), desktop and Android reference-helper tests
+  (stored backend kept, old draft shape accepted, unknown backend refused),
+  locale
+  tests, both type checks. Real app: both apps against an isolated
+  token-backed server; from a Codex chat each app created a new agent with
+  `Agent` set to Claude, model `opus` and effort `high`; the server created a
+  Claude chat with those values in the current chat's folder and working
+  directory,
+  the source turn referenced it, and the new Claude chat woke on the handoff
+  (on the desktop it answered the task). Not exercised: iOS, another server as
+  the target (path unchanged), a custom Codex endpoint as the source chat.
+  Availability: desktop and Android source.
+
 ## 2026-10-11 — A sent `@Chat` chip names its chat by the current title (desktop + Android source)
 
 - A sent message showed the name a chat had when the message was sent: after

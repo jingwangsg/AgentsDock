@@ -746,6 +746,8 @@ export interface ChatReference {
 }
 
 export interface NewAgentSettings {
+  /** Absent in a draft saved before the agent could be chosen; the composer then uses the source chat's backend. */
+  backend?: Backend
   model: string | null
   effort: string | null
   /** Another server under the same hub; null for the chat's own server. */
