@@ -1,5 +1,19 @@
 # Public development log
 
+## 2026-10-11 — Desktop package 121 and Android build 65 (local package and APK)
+
+- Package the entry recorded since package 120 and Android build 64: a
+  turn's files show one entry per republished path, newest first (desktop
+  and Android). That entry is Android's only change since build 64; both
+  numbers move so the pair stays matched.
+- The pkg is unsigned like every local package, built with the fuses
+  re-signing flag and reports CFBundleVersion 121; the APK is signed with the
+  project debug keystore (SHA-256 fac61745…) and reports versionCode 65.
+  Checks run before packaging: both type checks, the desktop timeline,
+  Markdown, media grid and locale tests, the Android contract and timeline
+  tests, and the version pins. Not exercised: installing on a phone or Mac.
+  Availability: local package and APK.
+
 ## 2026-10-11 — A turn's files show one entry per republished path, newest first (desktop + Android source)
 
 - An agent that publishes the same file again as it grows (a transcript it
