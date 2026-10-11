@@ -65,3 +65,34 @@ export function shiftedTimelineFirstItemIndex(
   }
   return current
 }
+
+export interface VirtualListCoverage {
+  /** paddingTop / paddingBottom: space the list reserves for rows not mounted above / below the rendered ones. */
+  paddingTop: number
+  paddingBottom: number
+  clientHeight: number
+  /** Rendered row edges relative to the viewport top. */
+  rows: ReadonlyArray<{ top: number; bottom: number }>
+}
+
+// Mid-scroll the mounted rows can trail the viewport edge by a few pixels for
+// a frame; a gap this large that survives a re-check means the list stopped
+// tracking the viewport. (Header, footer and short chats are excluded by the
+// padding checks below, not by this.)
+const VIRTUAL_LIST_GAP_PX = 64
+
+/**
+ * Report reserved-but-unmounted space showing in the viewport: the rendered
+ * rows end a gap above the viewport bottom while the list still pads for rows
+ * below them, or start a gap below the viewport top while it pads for rows
+ * above. Without padding the space is the footer or header, or the chat is
+ * shorter than the viewport.
+ */
+export function virtualListGap(coverage: VirtualListCoverage): 'above' | 'below' | null {
+  if (!coverage.rows.length) return null
+  const top = Math.min(...coverage.rows.map(row => row.top))
+  const bottom = Math.max(...coverage.rows.map(row => row.bottom))
+  if (coverage.paddingBottom > 0 && coverage.clientHeight - bottom >= VIRTUAL_LIST_GAP_PX) return 'below'
+  if (coverage.paddingTop > 0 && top >= VIRTUAL_LIST_GAP_PX) return 'above'
+  return null
+}

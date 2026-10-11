@@ -4,7 +4,8 @@ import {
   initialTimelineLocation,
   isLatestTimelineLocation,
   remountTimelineLocation,
-  shiftedTimelineFirstItemIndex
+  shiftedTimelineFirstItemIndex,
+  virtualListGap
 } from './timeline-position'
 
 const NOW = 1_000_000_000_000
@@ -77,5 +78,36 @@ describe('bounded timeline first-item index', () => {
 
   it('does not infer an offset when replacement rows have no proven overlap', () => {
     expect(shiftedTimelineFirstItemIndex(1_000_000, ['old-a', 'old-b'], ['new-a', 'new-b'])).toBe(1_000_000)
+  })
+})
+
+describe('virtual list viewport gap', () => {
+  // The field case: a closed activity row ends 300px down a 1160px viewport,
+  // nothing is mounted below it, and the list still pads for the rows appended
+  // after it.
+  it('reports rows that end above the viewport bottom while rows below stay unmounted', () => {
+    expect(virtualListGap({ paddingTop: 4500, paddingBottom: 920, clientHeight: 1160, rows: [{ top: -600, bottom: 300 }] })).toBe('below')
+  })
+  it('reports rows that start below the viewport top while rows above stay unmounted', () => {
+    expect(virtualListGap({ paddingTop: 7000, paddingBottom: 5600, clientHeight: 1000, rows: [{ top: 5459, bottom: 5600 }] })).toBe('above')
+  })
+  it('accepts rows that cover the viewport', () => {
+    expect(virtualListGap({ paddingTop: 4500, paddingBottom: 920, clientHeight: 1160, rows: [{ top: -600, bottom: 300 }, { top: 300, bottom: 415 }, { top: 415, bottom: 1200 }] })).toBeNull()
+  })
+  it('accepts the footer below the last mounted row at the real end', () => {
+    expect(virtualListGap({ paddingTop: 5600, paddingBottom: 0, clientHeight: 1160, rows: [{ top: -200, bottom: 1000 }] })).toBeNull()
+  })
+  it('accepts a chat shorter than the viewport', () => {
+    expect(virtualListGap({ paddingTop: 0, paddingBottom: 0, clientHeight: 1160, rows: [{ top: 49, bottom: 420 }] })).toBeNull()
+  })
+  it('accepts the history header above the first row', () => {
+    expect(virtualListGap({ paddingTop: 0, paddingBottom: 6000, clientHeight: 1160, rows: [{ top: 120, bottom: 1300 }] })).toBeNull()
+  })
+  it('ignores a sub-threshold trail while rows are still mounting', () => {
+    expect(virtualListGap({ paddingTop: 4500, paddingBottom: 920, clientHeight: 1160, rows: [{ top: -600, bottom: 1140 }] })).toBeNull()
+    expect(virtualListGap({ paddingTop: 4500, paddingBottom: 920, clientHeight: 1160, rows: [{ top: 20, bottom: 1300 }] })).toBeNull()
+  })
+  it('ignores an empty list', () => {
+    expect(virtualListGap({ paddingTop: 0, paddingBottom: 0, clientHeight: 1160, rows: [] })).toBeNull()
   })
 })
