@@ -24,7 +24,7 @@ const mocks = {
   '../store/useAppStore': `import { useSyncExternalStore } from 'react'; const fixture = globalThis.__crossChatCardFixture; export const client = fixture.client; export const useAppStore = selector => useSyncExternalStore(fixture.subscribe, () => selector(fixture.state)); useAppStore.getState = () => fixture.state;`,
   '../lib/chat-references': `export const exactQueuedDeliverySkipAvailable = health => health.skipAvailable;`,
   '../lib/format': `export const formatDateTime = value => value; export const messageText = event => event.message || '';`,
-  '../lib/timeline-inline-references': `export const timelineChatReferenceIsRemote = reference => reference.target_kind === 'secure_peer'; export const timelineChatReferenceKey = reference => reference.session_id;`,
+  '../lib/timeline-inline-references': `export const timelineChatReferenceIsRemote = reference => reference.target_kind === 'secure_peer'; export const timelineChatReferenceKey = reference => reference.session_id; export const liveChatReferenceTitle = reference => reference.display_title_snapshot;`,
   './AppText': `export const Text = 'Text';`,
   './MarkdownContent': `import { createElement } from 'react'; export const MarkdownContent = ({ value, ...props }) => createElement('MarkdownContent', props, value);`,
 }
