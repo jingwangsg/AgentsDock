@@ -1,5 +1,24 @@
 # Public development log
 
+## 2026-10-11 — Desktop package 122 and Android build 66 (local package and APK)
+
+- Package the entries recorded since package 121 and Android build 65: `ssh
+  <name>` aliases for hub remotes and the eye toggle that hides a remote
+  from the server lists; `Create new agent` on Android with a choice of
+  agent; every displayed chat title following the chat's current name;
+  agents naming chats with `chats title`. The server parts of those entries
+  (hub-written aliases, the hidden flag, standing delegation, chat titling)
+  need a restarted hub; the pkg bundles no server code.
+- The pkg is unsigned like every local package, built with the fuses
+  re-signing flag and reports CFBundleVersion 122; the APK is signed with the
+  project debug keystore (SHA-256 fac61745…) and reports versionCode 66.
+  Checks run before packaging: both type checks; the desktop unit suite
+  (five test files whose fixtures predated today's merges were corrected
+  first; the remaining failures are the known stale scheduled-job card
+  tests and the two sqlite bundling failures); the Android contract suite
+  and the touched Android source tests; the version pins. Not exercised:
+  installing on a phone or Mac. Availability: local package and APK.
+
 ## 2026-10-11 — Every displayed chat title follows the chat's current name (server + desktop + Android source)
 
 - A chat's name appeared in many places that kept the title recorded when the
