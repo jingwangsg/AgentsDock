@@ -93620,13 +93620,19 @@ def completed_fork_events(
         if active_run_id and str(event.get("run_id") or "") == active_run_id:
             break
         prefix.append(event)
-        if is_completed_fork_terminal(event):
+        # copy_fork_history drops these turns from the new chat, so one cannot
+        # end its prefix.
+        if is_completed_fork_terminal(event) and event.get("purpose") not in FORK_INTERNAL_PURPOSES:
             completed_length = len(prefix)
     return prefix[:completed_length]
 
 
 def is_completed_fork_terminal(event: dict[str, Any]) -> bool:
-    """A ``turn_finished`` row that ends a resumable, fully completed turn."""
+    """A ``turn_finished`` row that ends a resumable, fully completed turn.
+
+    Mailbox wake, cross-chat delivery and handoff digest turns count: they ran
+    in the chat's own provider session, and a rewind keeps them in the timeline.
+    """
     return bool(
         event.get("type") == "turn_finished"
         and (event.get("exit_code") == 0 or event.get("imported") is True)
@@ -93636,7 +93642,6 @@ def is_completed_fork_terminal(event: dict[str, Any]) -> bool:
         # particular, metadata-only repair batches carry no native turn
         # identity and must not replace an already resumable boundary.
         and not (event.get("imported") is True and event.get("metadata_only") is True)
-        and event.get("purpose") not in FORK_INTERNAL_PURPOSES
         # A standalone run (a scheduled job on its own provider thread) never touched the
         # chat's thread or session, so it cannot be the point to fork or resume at.
         and event.get("provider_context_mode") != "standalone"
