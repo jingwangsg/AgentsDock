@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Session } from '../types'
-import { orderedSessionSections, rememberedFolderOrder, resolveSidebarDrop, sidebarVisibleSessions, type SidebarDropRow } from './session-order'
+import { orderedSessionSections, rankMentionRows, rememberedFolderOrder, resolveSidebarDrop, sidebarVisibleSessions, type SidebarDropRow } from './session-order'
 
 function session(id: string, folder = 'General'): Session {
   return { id, title: id, folder, backend: 'codex' } as Session
@@ -122,4 +122,27 @@ test('a standalone job run chat is listed only while it is open or once archived
   const finished = { ...session('run-done', 'Research'), archived: true, scheduled_job_run: { job_id: 'job-1', session_id: 'parent' } } as Session
   assert.deepEqual(sidebarVisibleSessions([parent, running, finished], null).map(value => value.id), ['parent', 'run-done'])
   assert.deepEqual(sidebarVisibleSessions([parent, running, finished], 'run-live').map(value => value.id), ['parent', 'run-live', 'run-done'])
+})
+
+test('@ picker rows rank a title match first, then every term matching a field in order, then other matches', () => {
+  const rows = [
+    { id: 'chat-1a', title: 'Launch agent team 负载均衡检查', folder: 'General', server: 'osmo_dev_l40' },
+    { id: 'chat-2b', title: 'OSMO 定制功能与负载均衡', folder: 'AgentsDock', server: '' },
+    { id: 'chat-3c', title: 'Launch check', folder: 'General', server: '' },
+    { id: 'chat-4d', title: 'Slack 搜索 OSMO GitLab', folder: 'General', server: '' },
+    { id: 'chat-5e7f', title: 'Launch nightly check', folder: 'General', server: '' },
+  ]
+  const rank = (query: string) => rankMentionRows(rows, query, row => [row.title, row.folder, row.server], row => row.id.includes(query))
+    .map(row => row.title)
+  // Title matches lead: exact, then prefix, then substring; ties keep the given order.
+  assert.deepEqual(rank('launch check'), ['Launch check', 'Launch nightly check'])
+  assert.deepEqual(rank('launch'), ['Launch agent team 负载均衡检查', 'Launch check', 'Launch nightly check'])
+  assert.deepEqual(rank('osmo'), ['OSMO 定制功能与负载均衡', 'Slack 搜索 OSMO GitLab', 'Launch agent team 负载均衡检查'])
+  // Each term matches on its own, in any field and with gaps.
+  assert.deepEqual(rank('launch 负载'), ['Launch agent team 负载均衡检查'])
+  assert.deepEqual(rank('l40 负载检查'), ['Launch agent team 负载均衡检查'])
+  // A chat id is found by otherMatch only.
+  assert.deepEqual(rank('5e7f'), ['Launch nightly check'])
+  assert.deepEqual(rank('zzz'), [])
+  assert.deepEqual(rank(''), rows.map(row => row.title))
 })

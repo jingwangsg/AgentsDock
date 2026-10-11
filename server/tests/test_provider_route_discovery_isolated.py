@@ -21,7 +21,7 @@ class HTTPException(Exception):
 class ProviderRouteDiscoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         names = {"list_provider_cross_chat_routes", "provider_cross_chat_route_projection",
-                 "sanitized_provider_route_label"}
+                 "sanitized_provider_route_label", "cross_server_routes_for", "cross_server_route_projection"}
         nodes = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
         tree = ast.parse((Path(__file__).resolve().parents[1] / "agent_server.py").read_text())
         for node in tree.body:
@@ -49,7 +49,7 @@ class ProviderRouteDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             "provider_route_capability_source": AsyncMock(return_value="source"),
             "session_lifecycle_lock": self.lifecycle, "authorize_provider_action": self.authorize,
             "live_provider_cross_chat_route": self.live,
-            "STORE": SimpleNamespace(sessions=sessions), "DEFAULT_BACKEND": "codex",
+            "STORE": SimpleNamespace(sessions=sessions), "DEFAULT_BACKEND": "codex", "CROSS_SERVER_ROUTES": {},
             "VALID_BACKENDS": {"codex", "claude"}, "cross_chat_target_backend_supported": lambda _: True,
             "provider_cross_chat_route_availability": lambda *_: (True, None),
         }

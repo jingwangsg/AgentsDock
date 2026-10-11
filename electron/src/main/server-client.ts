@@ -33,6 +33,8 @@ import type {
   ChatReference,
   TeamReference,
   ChatSearchSnapshot,
+  CrossServerChatsSnapshot,
+  CrossServerPairInput,
   CreateAgentCrossChatRouteInput,
   CrossChatExchange,
   CrossChatHandoff,
@@ -1514,6 +1516,14 @@ export class AgentServerClient {
       exclude_session_id: excludeSessionId
     })
     return this.get(`/api/chats/search?${params}`)
+  }
+
+  crossServerChats(): Promise<CrossServerChatsSnapshot> {
+    return this.get('/api/cross-server/chats')
+  }
+
+  async createCrossServerPair(input: CrossServerPairInput): Promise<void> {
+    await this.post('/api/cross-server/pairs', input)
   }
 
   async createAgentHandoffRoute(

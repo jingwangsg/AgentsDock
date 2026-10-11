@@ -169,7 +169,7 @@ export function localChatReferenceContractSupported(
   health: Health | null | undefined,
   reference: Pick<ChatReference, 'action' | 'grant_intent' | 'target_kind'>,
 ): boolean {
-  return reference.target_kind !== 'secure_peer'
+  return reference.target_kind === undefined
     && routeHintMentionsAvailable(health)
     && supportedCrossChatActions(health).includes(reference.action)
     && (reference.action === 'route' ? reference.grant_intent === true : reference.grant_intent !== true)
@@ -279,6 +279,21 @@ export function insertChatReference(
     },
     caret: trigger.start + inserted.length,
   }
+}
+
+/** A chat on another server under the same hub; the label carries its server tag, hub chats have none. */
+export function insertCrossServerChatReference(
+  text: string,
+  trigger: ChatMentionTrigger,
+  chat: Pick<Session, 'id' | 'title'>,
+  server: { server_identity: string; name: string },
+): InsertChatReferenceResult {
+  const title = chat.title.trim() || chat.id
+  const inserted = insertChatReference(text, trigger, { id: chat.id, title: server.name ? `${title} · ${server.name}` : title }, 'route')
+  // The hub pairs the chats when the message is sent; it is never a route grant on this server.
+  const reference: ChatReference = { ...inserted.reference, target_kind: 'cross_server', target_server_identity: server.server_identity }
+  delete reference.grant_intent
+  return { ...inserted, reference }
 }
 
 /**
@@ -430,7 +445,10 @@ export function validChatReferences(
     if (reference.source_text_start < 0 || reference.source_text_end <= reference.source_text_start || reference.source_text_end > text.length) continue
     if (text.slice(reference.source_text_start, reference.source_text_end) !== `@${reference.display_title_snapshot}`) continue
     if (occupied.some(([start, end]) => reference.source_text_start < end && reference.source_text_end > start)) continue
-    const authorityKey = `${reference.session_id}\u0000${reference.action}`
+    if (reference.target_kind === 'cross_server' && !validCrossServerReferenceTarget(reference)) continue
+    const authorityKey = reference.target_kind === 'cross_server'
+      ? `cross_server\u0000${reference.target_server_identity}\u0000${reference.session_id}`
+      : `${reference.session_id}\u0000${reference.action}`
     if (authorizedActions.has(authorityKey)) continue
     accepted.push({ ...reference })
     occupied.push([reference.source_text_start, reference.source_text_end])
@@ -458,6 +476,17 @@ export function parseStoredChatReferences(
     return [item as unknown as ChatReference]
   })
   return validChatReferences(text, references, sourceSessionId)
+}
+
+function validCrossServerReferenceTarget(reference: ChatReference): boolean {
+  return reference.action === 'route'
+    && typeof reference.target_server_identity === 'string'
+    && reference.target_server_identity.length > 0
+    && reference.target_server_identity.length <= 240
+    && !/[\u0000-\u001f\u007f]/.test(reference.target_server_identity)
+    && reference.target_connection_id === undefined
+    && reference.target_route_id === undefined
+    && reference.target_route_revision === undefined
 }
 
 export function chatReferenceLabel(action: ChatReferenceAction): string {

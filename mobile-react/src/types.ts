@@ -659,12 +659,45 @@ export interface ChatReference {
   grant_intent?: true
   /** Optional durable action ceiling for a saved scheduled route hint. */
   route_action?: AgentCrossChatRouteAction
-  /** Absent for references to chats on the current AgentsServer. */
-  target_kind?: 'secure_peer'
+  /**
+   * Absent for references to chats on the current AgentsServer. `cross_server`
+   * names a chat on another server under the same hub: the composer pairs the
+   * chats through the hub before sending and never sends this reference.
+   */
+  target_kind?: 'secure_peer' | 'cross_server'
   target_server_identity?: string
   target_connection_id?: string
   target_route_id?: string
   target_route_revision?: string
+}
+
+/** One chat in a server's `/api/chats/search` list. */
+export interface ChatSearchTarget {
+  id: string
+  title: string
+  folder: string | null
+  backend: Backend
+  cross_chat_handoff_supported: boolean
+  updated_at?: string | null
+}
+
+/** One reachable server's chats, as the hub lists them for the @ picker. */
+export interface CrossServerChats {
+  server_identity: string
+  /** Registry name of a remote; '' for the hub, whose chats carry no server tag. */
+  name: string
+  chats: ChatSearchTarget[]
+}
+
+export interface CrossServerChatsSnapshot {
+  servers: CrossServerChats[]
+}
+
+export interface CrossServerPairInput {
+  source_server_identity: string
+  source_session_id: string
+  target_server_identity: string
+  target_session_id: string
 }
 
 /** Exact, user-selected Team Network recipient authority. Offsets are UTF-16. */
@@ -1544,6 +1577,8 @@ export interface HealthCapabilities {
   side_questions?: { available: boolean; version: number; backends: string[]; max_question_chars?: number; native_context?: boolean; sync?: boolean }
   background_activity_v1?: { available: boolean }
   browser_tunnel_hosts_v1?: { available: boolean }
+  /** Chats on this server can be paired with chats on other servers under its hub. */
+  cross_server_mail_v1?: { available: boolean }
   [key: string]: JsonValue | InteractiveProviderCapability | CursorBackendCapability | ScheduledJobsCapability | AgentEmergencyAlertsCapability | ProviderJobsAccessControlCapability | AgentTeamMailCapability | CrossChatHandoffsCapability | TeamHubV1Capability | ServerUpdatesCapability | WorkingDirectoryCompletionCapability | RemoteServersCapability | SessionRewindCapability | LocalProviderCommandsCapability | undefined
 }
 

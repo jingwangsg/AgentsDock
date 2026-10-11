@@ -1,4 +1,5 @@
 import type { Session } from '../types'
+import { fuzzyScore } from './fuzzy'
 
 export interface SessionSection {
   id: string
@@ -112,4 +113,38 @@ export function rememberedFolderOrder(folderOrder: string[], sessions: Pick<Sess
     if (folder && !known.has(folder)) { known.add(folder); next.push(folder) }
   }
   return next.length === folderOrder.length ? folderOrder : next
+}
+
+/**
+ * Ranks @ picker rows. A title match comes first: exact, then prefix, then
+ * substring. Then rows where every space-separated term matches the title or
+ * another field as characters in order (best `fuzzyScore` first, a title match
+ * counting double); then rows `otherMatch` accepts. Ties keep the given order.
+ */
+export function rankMentionRows<T>(
+  rows: readonly T[],
+  query: string,
+  fields: (row: T) => readonly [title: string, ...others: Array<string | null | undefined>],
+  otherMatch: (row: T) => boolean,
+): T[] {
+  const needle = query.trim().toLocaleLowerCase()
+  const terms = needle.split(/\s+/).filter(Boolean)
+  if (!terms.length) return [...rows]
+  const ranked: Array<{ row: T; index: number; tier: number; score: number }> = []
+  rows.forEach((row, index) => {
+    const [title, ...others] = fields(row)
+    const lowerTitle = title.toLocaleLowerCase()
+    const nameRank = lowerTitle === needle ? 0 : lowerTitle.startsWith(needle) ? 1 : lowerTitle.includes(needle) ? 2 : null
+    if (nameRank !== null) {
+      ranked.push({ row, index, tier: 0, score: -nameRank })
+      return
+    }
+    const termScores = terms.map(term => Math.max(
+      2 * (fuzzyScore(term, title)?.score ?? Number.NEGATIVE_INFINITY),
+      ...others.map(text => (text ? fuzzyScore(term, text)?.score : undefined) ?? Number.NEGATIVE_INFINITY),
+    ))
+    if (termScores.every(Number.isFinite)) ranked.push({ row, index, tier: 1, score: termScores.reduce((sum, score) => sum + score, 0) })
+    else if (otherMatch(row)) ranked.push({ row, index, tier: 2, score: 0 })
+  })
+  return ranked.sort((a, b) => a.tier - b.tier || b.score - a.score || a.index - b.index).map(entry => entry.row)
 }

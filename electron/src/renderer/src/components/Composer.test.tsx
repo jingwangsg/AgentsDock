@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import { setLocale } from '@shared/i18n'
 import type { TeamHubStatus, TeamHubTeamDetails, TeamHubWorkspace } from '@shared/team-hub'
-import type { AgentCrossChatRoute, AgentFile, ChatReference, ClaudeRuntimeSnapshot, CodexRuntimeSnapshot, CrossChatHandoffsCapability, Health, PublicServerProfile, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
+import type { AgentCrossChatRoute, AgentFile, ChatReference, ClaudeRuntimeSnapshot, CodexRuntimeSnapshot, CrossChatHandoffsCapability, CrossServerChatsSnapshot, Health, PublicServerProfile, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
 import { closeTopTransient, resetTransientCloseStackForTests } from '../lib/transient-close'
 import { loadTeamNetworkCore, loadTeamNetworkWorkspace, resetTeamNetworkSnapshotCacheForTests, seedTeamNetworkRoster } from '../lib/team-network-snapshot-cache'
 import { flushActiveWorkspace, useAppStore } from '../store/app-store'
@@ -5485,6 +5485,53 @@ describe('Composer', () => {
 
     expect(useAppStore.getState().chatReferencesBySession['chat-1']).toHaveLength(16)
     expect(useAppStore.getState().error).toMatch(/at most 16 chats/i)
+  })
+
+  it('keeps Enter on the highlighted chat when chats on other servers arrive', async () => {
+    let answer: (snapshot: CrossServerChatsSnapshot) => void = () => undefined
+    const chats = vi.fn(() => new Promise<CrossServerChatsSnapshot>(resolve => { answer = resolve }))
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        agentRoutes: { list: vi.fn().mockResolvedValue({ routes: [], max_routes: 16 }) },
+        crossServer: { chats, pair: vi.fn() }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      activeProfileId: 'profile-a', profileGeneration: 7, connected: true,
+      profiles: [{ id: 'profile-a', name: 'Hub', serverIdentity: 'server-a' } as PublicServerProfile],
+      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'codex' }, { id: 'chat-2', title: 'Launch local', backend: 'claude' }],
+      health: { ok: true, capabilities: {
+        cross_chat_handoffs_v1: durableComposerCapability(),
+        cross_server_mail_v1: { available: true, required: false, message: '', action: null }
+      } }
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+
+    const editor = screen.getByPlaceholderText('Message')
+    await user.type(editor, '@launch')
+    const picker = await screen.findByRole('listbox', { name: 'Chats' })
+    expect(within(picker).getByRole('option', { name: /Launch local/ })).toHaveAttribute('aria-selected', 'true')
+    expect(chats).toHaveBeenCalledTimes(1)
+
+    // The remote chat's exact title ranks above the local prefix match.
+    await act(async () => answer({ servers: [
+      { server_identity: 'server-a', name: '', chats: [] },
+      { server_identity: 'server-l40', name: 'osmo_dev_l40', chats: [
+        { id: 'sess_remote', title: 'Launch', folder: 'General', backend: 'claude', cross_chat_handoff_supported: true }
+      ] }
+    ] }))
+    const options = within(picker).getAllByRole('option')
+    expect(options[0]).toHaveTextContent(/^Launch.*osmo_dev_l40/)
+    expect(within(picker).getByRole('option', { name: /Launch local/ })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(useAppStore.getState().chatReferencesBySession['chat-1']).toEqual([
+      expect.objectContaining({ session_id: 'chat-2', display_title_snapshot: 'Launch local' })
+    ])
+    expect(chats).toHaveBeenCalledTimes(1)
   })
 
   it('keeps granted chats usable while disabling new targets at route capacity', async () => {

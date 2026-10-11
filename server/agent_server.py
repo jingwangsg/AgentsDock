@@ -71,7 +71,7 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Reques
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from markdown_it import MarkdownIt
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from starlette.routing import Match
 from starlette.datastructures import Headers
 import uvicorn
@@ -79,6 +79,7 @@ from uvicorn.protocols.websockets.websockets_sansio_impl import WebSocketsSansIO
 import websockets
 import team_mail_grants
 import chat_mailbox
+import cross_server_mail
 import workspace_git
 import agentsdock_canvas
 import remote_servers
@@ -15098,6 +15099,7 @@ class CrossChatStore:
                     if column not in mailbox_columns:
                         connection.execute(f"ALTER TABLE cross_chat_envelopes ADD COLUMN {column} {definition}")
                 chat_mailbox.initialize(connection)
+                cross_server_mail.initialize(connection)
         await self._call(operation)
         self._initialized = True
 
@@ -15311,6 +15313,19 @@ class CrossChatStore:
             with self._transaction() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 return getattr(chat_mailbox, name)(connection, *args, **kwargs)
+        task = asyncio.create_task(self._call(operation))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await join_task_despite_caller_cancellation(task)
+            raise
+
+    async def cross_server_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        """One cross_server_mail transaction on the same ledger as the mailbox it feeds."""
+        def operation() -> Any:
+            with self._transaction() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                return getattr(cross_server_mail, name)(connection, *args, **kwargs)
         task = asyncio.create_task(self._call(operation))
         try:
             return await asyncio.shield(task)
@@ -20728,7 +20743,7 @@ async def issue_cross_chat_capability(
         effective_actions.discard("secure_peer_instruction")
         effective_actions.discard("secure_peer_request_reply")
         effective_actions.discard("secure_peer_response")
-    if not route_grants:
+    if not route_grants and not (async_route_v1 and cross_server_routes_for(source_session_id)):
         effective_actions.discard("agent_cross_chat_routes")
     if not team_mail_enabled:
         effective_actions.discard("team_mail")
@@ -20831,6 +20846,7 @@ async def issue_cross_chat_capability(
             # Server-bound provenance for any handoff prepared by this run.
             # Helpers never accept a caller-supplied replacement for it.
             "source_user_instruction": source_user_instruction,
+            "source_is_user_turn": source_is_user_turn is True and bool(AGENT_TOKEN),
             # Process-local only. Admission has validated these exact prompt
             # spans/targets; durable pair membership never creates this proof.
             "user_delegation_grants": {
@@ -21985,7 +22001,7 @@ def native_steer_provider_actions(
         # read-only Team Network ceiling across that rotation; internal
         # cross-chat and secure-peer deliveries remain denied by purpose.
         actions.add("team_read")
-    if route_snapshot:
+    if route_snapshot or cross_server_routes_for(source_session_id):
         actions.add("agent_cross_chat_routes")
     return actions, jobs_access
 
@@ -40223,12 +40239,8 @@ def async_route_conversation_fields(record: dict[str, Any]) -> dict[str, Any]:
         "message_id": str(record["id"]),
         "source_session_id": source_id,
         "target_session_id": target_id,
-        "source_title": sanitized_provider_route_label(
-            (STORE.sessions.get(source_id) or {}).get("title")
-        ),
-        "target_title": sanitized_provider_route_label(
-            (STORE.sessions.get(target_id) or {}).get("title")
-        ),
+        "source_title": sanitized_provider_route_label(mail_chat_title(source_id)),
+        "target_title": sanitized_provider_route_label(mail_chat_title(target_id)),
         **({
             "delivery_mode": "mailbox",
             "created_at": record.get("created_at"),
@@ -40279,14 +40291,8 @@ def cross_chat_lifecycle_fields(record: dict[str, Any], status: str, *, session_
         ),
         "source_session_id": source_session_id,
         "target_session_id": target_session_id,
-        "source_title": str(
-            (STORE.sessions.get(source_session_id) or {}).get("title")
-            or source_session_id
-        ),
-        "target_title": str(
-            (STORE.sessions.get(target_session_id) or {}).get("title")
-            or target_session_id
-        ),
+        "source_title": str(mail_chat_title(source_session_id) or source_session_id),
+        "target_title": str(mail_chat_title(target_session_id) or target_session_id),
         "queued_id": record.get("queued_id"),
         "queue_position": record.get("queue_position"),
         "target_run_id": record.get("target_run_id"),
@@ -57582,7 +57588,7 @@ async def claude_sdk_manager() -> ClaudeSDKSupervisorManager:
                 connect_timeout_seconds=CLAUDE_SDK_CONNECT_TIMEOUT_SECONDS,
                 control_timeout_seconds=CLAUDE_MCP_CONTROL_TIMEOUT_SECONDS,
                 usage_observer=observe_claude_provider_usage,
-                awaiting_observer=release_claude_run_for_queued_turn,
+                awaiting_observer=release_waiting_claude_run,
             )
             CLAUDE_SDK_MANAGER = manager
         return manager
@@ -57654,20 +57660,30 @@ async def steer_or_release_for_queued_turn(session_id: str, queued_id: str) -> N
                         "Claude follow-up steer failed session=%s queued_id=%s: %s",
                         session_id, queued_id, concise_error_message(exc),
                     )
-    await release_claude_run_for_queued_turn(session_id)
+    await release_waiting_claude_run(session_id)
 
 
-async def release_claude_run_for_queued_turn(session_id: str, run_id: str | None = None) -> bool:
-    """Let a queued message through a Claude run that only background tasks keep open.
+async def release_waiting_claude_run(session_id: str, run_id: str | None = None) -> bool:
+    """Let a queued message or unread peer mail through a Claude run that only background tasks keep open.
 
-    Called when a message is queued and when a run enters that state. The run
-    ends with the model's own Result, its agents and background shells stay
-    alive on the chat's SDK connection, and the queued message starts the next
-    run without an interrupt (which would kill them). Their completion then
-    wakes the model inside whichever run is open.
+    Called when a message is queued, when peer mail arrives, and when a run
+    enters that state. The run ends with the model's own Result, its agents and
+    background shells stay alive on the chat's SDK connection, and the queued
+    message or the idle mailbox wake starts the next run without an interrupt
+    (which would kill them). Their completion then wakes the model inside
+    whichever run is open.
     """
     manager = CLAUDE_SDK_MANAGER
-    if manager is None or not QUEUED_TURNS.get(session_id):
+    if manager is None:
+        return False
+    if not QUEUED_TURNS.get(session_id) and (
+        # Mail releases the run only when its wake can start right after (not
+        # after Stop, for a removed pair, or behind an update); otherwise the
+        # tasks' completions would arrive with no run open.
+        session_id not in CHAT_MAILBOX_PENDING or session_id in CHAT_MAILBOX_WAKE_BLOCKED
+        or managed_server_update_admission_blocker() is not None
+        or not await CROSS_CHAT.mailbox_call("wake_due", session_id, chat_mailbox_pairs(session_id))
+    ):
         return False
     async with ACTIVE_LOCK:
         active = ACTIVE.get(session_id) or {}
@@ -57688,7 +57704,7 @@ async def release_claude_run_for_queued_turn(session_id: str, run_id: str | None
         return False
     if released:
         logger.info(
-            "Claude run released to a queued message while background tasks keep running session=%s run=%s",
+            "Claude run released to a queued message or unread mail while background tasks keep running session=%s run=%s",
             session_id, active_run_id,
         )
     return released
@@ -76030,7 +76046,7 @@ async def _start_turn_locked(
                     "cross_chat_instruction",
                     "cross_chat_request_reply",
                 })
-            if provider_authority_route_snapshot:
+            if provider_authority_route_snapshot or cross_server_routes_for(session_id):
                 provider_actions.add("agent_cross_chat_routes")
             for snapshot in secure_route_snapshots:
                 provider_actions.add(
@@ -80620,6 +80636,7 @@ async def lifespan(app: FastAPI):
         )
     await asyncio.to_thread(scrub_tmux_global_secret_environment)
     await CROSS_CHAT.initialize()
+    await load_cross_server_routes()
     # Before any provider/queue admission can race startup recovery.
     await CROSS_CHAT.mailbox_call("recover_wakes")
     await reconcile_pending_cross_chat_reciprocal_effects()
@@ -80823,10 +80840,12 @@ async def lifespan(app: FastAPI):
         removed_authority_files,
     )
     await REMOTE_SERVERS.start()
+    CROSS_SERVER_RELAY.start()
     try:
         yield
     finally:
         SERVER_SHUTTING_DOWN = True
+        await CROSS_SERVER_RELAY.stop()
         await bounded_shutdown_phase("terminal-shells", kill_terminal_shells())
         await bounded_shutdown_phase("remote-servers", REMOTE_SERVERS.stop())
         await bounded_shutdown_phase("side-questions", asyncio.gather(
@@ -84550,6 +84569,7 @@ async def health() -> dict[str, Any]:
                 **remote_servers.capability(REMOTE_SERVERS),
                 "available": bool(AGENT_TOKEN),
             },
+            cross_server_mail.CAPABILITY: {"available": bool(AGENT_TOKEN)},
             "workspace_files": {
                 "available": WORKSPACE_SECURE_OPEN_AVAILABLE,
                 "required": False,
@@ -95059,7 +95079,8 @@ async def admit_turn(session_id: str, req: TurnRequest) -> dict[str, Any]:
 @app.get("/api/chats/search")
 async def search_chats(
     q: str = Query(default="", max_length=240),
-    limit: int = Query(default=20, ge=1, le=100),
+    # The hub lists each remote's chats in one request for the @ picker.
+    limit: int = Query(default=20, ge=1, le=cross_server_mail.SEARCH_LIMIT),
     exclude_session_id: str | None = Query(default=None, max_length=128),
 ) -> dict[str, Any]:
     query = " ".join(str(q or "").strip().casefold().split())
@@ -95541,9 +95562,17 @@ CHAT_MAILBOX_WAKE_PROMPT = (
 
 
 def schedule_chat_mailbox_wake(session_id: str) -> None:
-    """Notify idle admission once; busy completion already checks its mailbox."""
-    if (SERVER_SHUTTING_DOWN or session_id in BUSY_SESSIONS
-            or session_id in ACTIVE or session_id in CURRENT_TURNS):
+    """Notify idle admission once; a busy chat's completion checks its mailbox.
+
+    A Claude run held open only by background tasks has no tool call to carry
+    the mail hint and may wait minutes for them; it is released so that its
+    completion starts the wake (2026-10-11: a reply waited 6 minutes).
+    """
+    if SERVER_SHUTTING_DOWN:
+        return
+    if session_id in BUSY_SESSIONS or session_id in ACTIVE or session_id in CURRENT_TURNS:
+        if (ACTIVE.get(session_id) or {}).get("transport") == CLAUDE_TRANSPORT_AGENT_SDK:
+            asyncio.create_task(release_waiting_claude_run(session_id))
         return
     owner = QUEUE_START_TASKS.get(session_id)
     if owner is not None and not owner.done():
@@ -95571,12 +95600,7 @@ async def maybe_start_chat_mailbox_locked(session_id: str) -> bool:
             or managed_server_update_admission_blocker() is not None):
         return False
     async with STORE._lock:
-        routes = [live for route in provider_cross_chat_routes(session)
-                  if (live := live_provider_chat_mailbox_route(session_id, route)) is not None
-                  and live.get("pair_id")]
-        claim = await CROSS_CHAT.mailbox_call(
-            "claim_wake", session_id, {str(route["pair_id"]) for route in routes}, now=now_iso(),
-        )
+        claim = await CROSS_CHAT.mailbox_call("claim_wake", session_id, chat_mailbox_pairs(session_id), now=now_iso())
     if claim is None:
         return False
     try:
@@ -95610,10 +95634,12 @@ def chat_mailbox_pairs(session_id: str, capability: dict[str, Any] | None = None
         list((capability.get("provider_route_grants") or {}).values())
         if capability is not None else provider_cross_chat_routes(STORE.sessions.get(session_id))
     )
+    # Chats on other servers can be answered only by an async_route_v1 run.
+    cross_server = capability is None or capability.get("async_route_v1") is True
     return {
         str(live["pair_id"]) for route in candidates
         if (live := live_provider_chat_mailbox_route(session_id, route)) is not None and live.get("pair_id")
-    }
+    } | {route["pair_id"] for route in cross_server_routes_for(session_id) if cross_server}
 
 
 def public_chat_mailbox_message(
@@ -95626,7 +95652,7 @@ def public_chat_mailbox_message(
         "conversation_id": str(row.get("conversation_id") or row.get("authorization_pair_id") or ""),
         "conversation_mode": "async_route_v1", "delivery_mode": "mailbox",
         "source_session_id": source_id,
-        "source_title": sanitized_provider_route_label((STORE.sessions.get(source_id) or {}).get("title")),
+        "source_title": sanitized_provider_route_label(mail_chat_title(source_id)),
         "target_session_id": str(row.get("target_session_id") or ""),
         "state": str(row.get("inbox_state") or ("read" if row.get("read_at") else "unread")),
         "created_at": row.get("created_at"),
@@ -95689,6 +95715,19 @@ async def publish_chat_mailbox_read(row: dict[str, Any]) -> None:
         if owner in STORE.sessions and owner not in DELETING_SESSIONS:
             await append_cross_chat_event_once(owner, record, "chat_conversation_message_read", "read",
                                                "The receiving agent read this message.")
+    route = cross_server_peer_route(str(record["target_session_id"]), str(record["source_session_id"]))
+    if route is not None:
+        # The sender is on another server: the hub carries the receipt back.
+        # A lost receipt only leaves the sender's card unread; never fail the read.
+        with suppress(Exception):
+            await CROSS_CHAT.cross_server_call("enqueue", {
+            "id": "read_" + str(record["id"]).removeprefix("handoff_"), "message_id": str(record["id"]),
+            "kind": "read", "pair_id": route["pair_id"], "route_id": route["route_id"],
+            "source_session_id": route["session_id"], "source_title": "", "source_run_id": "receipt",
+            "idempotency_key": str(record["id"]), "target_server_identity": route["peer_server_identity"],
+            "target_session_id": route["peer_session_id"], "body": "", "reply_to_message_id": None,
+        })
+        CROSS_SERVER_OUTBOX_CHANGED.set()
     await CROSS_CHAT.mailbox_call("mark_read_event_published", str(record["id"]))
 
 
@@ -95797,7 +95836,7 @@ async def get_chat_mailbox(session_id: str, cursor: str = "", limit: int = 25) -
         "next_cursor": str(page["next_after_seq"]) if page.get("has_more") else None,
         "has_more": bool(page.get("has_more")),
         "senders": [{**row, "source_title": sanitized_provider_route_label(
-            (STORE.sessions.get(str(row["source_session_id"])) or {}).get("title"))} for row in senders["senders"]],
+            mail_chat_title(str(row["source_session_id"])))} for row in senders["senders"]],
     }
 
 
@@ -95815,7 +95854,7 @@ async def get_provider_chat_mailbox(request: Request) -> dict[str, Any]:
     return {**page, "next_cursor": page.get("next_after_sender"), "delivery_mode": "mailbox", "automatic_execution": True,
             "wake_policy": "idle_only",
             "senders": [{**row, "source_title": sanitized_provider_route_label(
-                (STORE.sessions.get(str(row["source_session_id"])) or {}).get("title"))} for row in page["senders"]]}
+                mail_chat_title(str(row["source_session_id"])))} for row in page["senders"]]}
 
 
 @app.post("/api/agent/cross-chat/inbox/read")
@@ -95841,6 +95880,8 @@ async def read_provider_chat_mailbox(req: ChatMailboxReadRequest, request: Reque
             for route in (capability.get("provider_route_grants") or {}).values()
             if (live := live_provider_cross_chat_route(session_id, route)) is not None
             and live.get("target_session_id") == req.source_session_id and live.get("pair_id")]
+        if (route := cross_server_peer_route(session_id, req.source_session_id)) is not None:
+            reply_routes.append(cross_server_route_projection(route))
     return {**page, "messages": [public_chat_mailbox_message(row, include_source_instruction=True)
                                for row in page["messages"]],
             "reply_routes": reply_routes, "automatic_reply": False}
@@ -95912,6 +95953,10 @@ async def list_provider_cross_chat_routes(request: Request) -> dict[str, Any]:
             if capability.get("async_route_v1") is True and live.get("pair_id"):
                 projection["mode"] = "async_route_v1"
             routes.append(projection)
+        if capability.get("async_route_v1") is True and (route_id or next_cursor is None):
+            # Chats on other servers follow the local routes, on the last page.
+            routes.extend(cross_server_route_projection(route) for route in cross_server_routes_for(source_session_id)
+                          if not route_id or route["route_id"] == route_id)
     return {
         "routes": routes,
         "next_cursor": next_cursor,
@@ -97228,6 +97273,8 @@ async def submit_provider_route_handoff(
             detail="agent handoff message exceeds the configured size limit",
         )
     source_session_id = await provider_route_capability_source(request)
+    if route_id in CROSS_SERVER_ROUTES:
+        return await send_cross_server_mail(request, source_session_id, route_id, body, req)
 
     async def accept_and_finish() -> dict[str, Any]:
         # Acceptance is serialized with source route CRUD and turn admission,
@@ -100888,6 +100935,491 @@ remote_servers.register_remote_server_routes(
     app, manager=REMOTE_SERVERS, authorize_admin=require_native_admin_control, websocket_authorized=websocket_authorized,
     # Update & redeploy all: the hub's own running chats (as /api/health lists them), CLI updates and restart.
     hub_running_chat_count=lambda: len(BUSY_SESSIONS), hub_update_cli=update_hub_cli, hub_restart=restart_hub_process,
+)
+
+
+# -- Cross-server chat mail (cross_server_mail.py) ---------------------------------
+# This server's halves of hub-created pairs, keyed by route id. Loaded at
+# startup and changed only by install/uninstall below; the provider route list,
+# mailbox scopes and chat labels read it synchronously.
+CROSS_SERVER_ROUTES: dict[str, dict[str, Any]] = {}
+CROSS_SERVER_OUTBOX_CHANGED = asyncio.Event()
+CROSS_SERVER_PAIR_LOCK = asyncio.Lock()
+
+
+def cross_server_routes_for(session_id: str) -> list[dict[str, Any]]:
+    return [route for route in CROSS_SERVER_ROUTES.values() if route["session_id"] == session_id]
+
+
+def cross_server_peer_route(session_id: str, peer: str) -> dict[str, Any] | None:
+    """The route linking a local chat with the foreign chat whose mailbox id is `peer`."""
+    return next((route for route in cross_server_routes_for(session_id) if cross_server_mail.peer_key(route) == peer), None)
+
+
+def mail_chat_title(session_id: str) -> str | None:
+    """A local chat's title, or the label of a paired chat on another server."""
+    if session_id in STORE.sessions:
+        return STORE.sessions[session_id].get("title")
+    route = next((route for route in CROSS_SERVER_ROUTES.values() if cross_server_mail.peer_key(route) == session_id), None)
+    return cross_server_mail.peer_label(route) if route is not None else None
+
+
+def cross_server_route_projection(route: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "route_id": route["route_id"], "alias": route["alias"],
+        "title": sanitized_provider_route_label(route["peer_title"]),
+        "server": route["peer_server_name"] or "hub",
+        "backend": "unknown", "allowed_actions": ["instruction"], "available": True, "reason": None,
+        "mode": "async_route_v1",
+    }
+
+
+def cross_server_message_record(item: dict[str, Any]) -> dict[str, Any]:
+    """A message this server sent to another server, in the shape the timeline's mail cards read."""
+    return {
+        "id": item["message_id"], "kind": "instruction", "action": "instruction",
+        "source_session_id": item["source_session_id"], "source_run_id": item["source_run_id"],
+        "target_session_id": cross_server_mail.sender_key(item["target_server_identity"], item["target_session_id"]),
+        "body": item["body"], "authorization_kind": "configured_route",
+        "authorization_route_id": item["route_id"], "authorization_pair_id": item["pair_id"],
+        "delivery_mode": "mailbox", "status": "stored", "created_at": item["created_at"],
+        "read_at": item.get("read_at"), "reply_to_message_id": item.get("reply_to_message_id"),
+        "inbox_state": "read" if item.get("read_at") else "unread",
+    }
+
+
+async def load_cross_server_routes() -> None:
+    CROSS_SERVER_ROUTES.clear()
+    CROSS_SERVER_ROUTES.update({route["route_id"]: route for route in await CROSS_CHAT.cross_server_call("routes")})
+
+
+async def send_cross_server_mail(request: Request, source_session_id: str, route_id: str, body: str,
+                                 req: AgentRouteHandoffRequest) -> dict[str, Any]:
+    """Queue a message for a paired chat on another server; the hub delivers it."""
+    async with session_lifecycle_lock(source_session_id):
+        capability = await authorize_provider_action(
+            request, action="agent_cross_chat_routes", session_id=source_session_id,
+        )
+        route = CROSS_SERVER_ROUTES.get(route_id)
+        if route is None or route["session_id"] != source_session_id:
+            raise HTTPException(status_code=404, detail="agent handoff route was not found")
+        if capability.get("async_route_v1") is not True or req.mode != "async_route_v1":
+            raise HTTPException(status_code=409, detail="a chat on another server accepts only async_route_v1 mail")
+        source_run_id = str(capability.get("source_run_id") or "")
+        if not provider_capability_is_attached_to_live_run(
+            source_session_id, source_run_id, str(capability.get("native_transition_nonce") or ""),
+            allow_native_transition=False,
+        ):
+            raise HTTPException(status_code=403, detail="provider capability is no longer attached to a live turn")
+        if req.reply_to_message_id is not None:
+            prior = await CROSS_CHAT.get(req.reply_to_message_id)
+            if (prior is None or prior.get("target_session_id") != source_session_id
+                    or prior.get("authorization_pair_id") != route["pair_id"]
+                    or prior.get("source_session_id") != cross_server_mail.peer_key(route)):
+                raise HTTPException(status_code=409, detail="Reply must reference an available exact peer message")
+        instruction = str(capability.get("source_user_instruction") or "")
+        # The longest chip that matches wins: "@Launch check" names that chat, not "Launch".
+        delegated = (capability.get("source_is_user_turn") is True and cross_server_mail.names_peer(instruction, route)
+                     and not any(other is not route and cross_server_mail.names_peer(instruction, other)
+                                 and cross_server_mail.peer_label(other).startswith(cross_server_mail.peer_label(route))
+                                 for other in cross_server_routes_for(source_session_id)))
+        if delegated:
+            instruction = validated_cross_chat_source_user_instruction(instruction)
+        message_id = "handoff_" + hashlib.sha256(
+            f"cross_server\0{source_run_id}\0{req.idempotency_key}".encode("utf-8")
+        ).hexdigest()[:32]
+        try:
+            item, created = await CROSS_CHAT.cross_server_call("enqueue", {
+                "id": message_id, "message_id": message_id, "kind": "mail",
+                "pair_id": route["pair_id"], "route_id": route_id, "source_session_id": source_session_id,
+                # Display metadata; the same title search_chats lists, which the peer's chip shows.
+                "source_title": str((STORE.sessions.get(source_session_id) or {}).get("title") or "Untitled"),
+                "source_run_id": source_run_id, "idempotency_key": req.idempotency_key,
+                "target_server_identity": route["peer_server_identity"], "target_session_id": route["peer_session_id"],
+                "body": body, "reply_to_message_id": req.reply_to_message_id,
+                "source_user_instruction": instruction if delegated else "",
+                "source_user_delegation_action": "route" if delegated else "",
+            })
+        except cross_server_mail.Refused as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if created:
+        CROSS_SERVER_OUTBOX_CHANGED.set()
+    # Idempotent: a retry repairs a card lost to a crash after the enqueue.
+    await append_cross_chat_event_once(
+        source_session_id, cross_server_message_record(item), "chat_conversation_message_registered",
+        "stored", "Agent mail queued for a chat on another server.", run_id=source_run_id,
+    )
+    return {
+        "ok": True, "route_id": route_id, "action": "instruction", "accepted": True, "mode": "async_route_v1",
+        "delivery_mode": "mailbox", "message_id": item["message_id"], "duplicate": not created,
+        "state": "unread", "execution_started": False,
+    }
+
+
+async def cross_server_outbox_items(wait: float, *, paired_here: bool = False) -> list[dict[str, Any]]:
+    """Due outbox items; with none due, wait up to `wait` seconds for one (the hub's long poll)."""
+    deadline = time.monotonic() + max(0.0, min(wait, 55.0))
+    while True:
+        CROSS_SERVER_OUTBOX_CHANGED.clear()
+        items = await CROSS_CHAT.cross_server_call("due_outbox", cross_server_mail.now_iso(), paired_here=paired_here)
+        remaining = deadline - time.monotonic()
+        if items or remaining <= 0:
+            return items
+        due = await CROSS_CHAT.cross_server_call("next_due_at", paired_here=paired_here)
+        if due:
+            until_due = (datetime.fromisoformat(due.replace("Z", "+00:00")) - datetime.now(timezone.utc)).total_seconds()
+            remaining = min(remaining, max(0.5, until_due))
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(CROSS_SERVER_OUTBOX_CHANGED.wait(), remaining)
+
+
+async def record_cross_server_result(item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None:
+    row = await CROSS_CHAT.cross_server_call("record_result", item_id, state, error=error, retry_after=retry_after)
+    if row is not None and row["state"] == "failed" and row["kind"] == "mail":
+        await notify_cross_server_mail_failed(row)
+
+
+async def notify_cross_server_mail_failed(row: dict[str, Any]) -> None:
+    if row["source_session_id"] in STORE.sessions:
+        await append_cross_chat_event_once(
+            row["source_session_id"], {**cross_server_message_record(row), "status": "failed"},
+            "chat_conversation_message_failed", "failed",
+            f"Agent mail was not delivered: {row.get('error') or 'unknown error'}",
+        )
+
+
+async def deliver_cross_server_mail(item: dict[str, Any], source_identity: str, source_name: str) -> None:
+    """Store mail from a paired chat on another server as an ordinary mailbox message."""
+    target_session_id = str(item.get("target_session_id") or "")
+    peer = cross_server_mail.sender_key(source_identity, str(item.get("source_session_id") or ""))
+    route = cross_server_peer_route(target_session_id, peer)
+    session = STORE.sessions.get(target_session_id)
+    message_id = str(item.get("message_id") or "")
+    body = str(item.get("body") or "").strip()
+    if (route is None or route["pair_id"] != item.get("pair_id") or not session or session.get("archived")
+            or target_session_id in DELETING_SESSIONS):
+        raise cross_server_mail.Refused("The receiving chat is not paired with the sender or no longer exists.")
+    if (not cross_server_mail.MESSAGE_ID_RE.fullmatch(message_id) or not body
+            or provider_cross_chat_route_body_exceeds_limit(body)):
+        raise cross_server_mail.Refused("The message is empty, too large or has an invalid id.")
+    title = str(item.get("source_title") or route["peer_title"])
+    if (title, source_name) != (route["peer_title"], route["peer_server_name"]):
+        await CROSS_CHAT.cross_server_call("rename_peer", route["route_id"], title, source_name)
+        route.update(peer_title=title, peer_server_name=source_name)
+    try:
+        record, created = await CROSS_CHAT.create_instruction(
+            envelope_id=message_id, source_session_id=peer, source_run_id=str(item.get("source_run_id") or ""),
+            target_session_id=target_session_id, body=body, idempotency_key=str(item.get("idempotency_key") or ""),
+            authorization_kind="configured_route", authorization_route_id=route["route_id"],
+            authorization_pair_id=route["pair_id"], initial_status="stored",
+            reply_to_message_id=item.get("reply_to_message_id") or None,
+            # The sender's server attests its user's turn, as for a local pair.
+            source_user_instruction=str(item.get("source_user_instruction") or ""),
+            source_user_delegation_action=str(item.get("source_user_delegation_action") or ""),
+        )
+    except (ValueError, HTTPException, sqlite3.Error) as exc:
+        raise cross_server_mail.Refused(str(getattr(exc, "detail", exc))) from exc
+    if created:
+        prime_cross_chat_event_cache(record)
+    if await publish_chat_mailbox_message(record) == "unread":
+        schedule_chat_mailbox_wake(target_session_id)
+
+
+async def accept_cross_server_receipt(message_id: str, read_at: str) -> None:
+    row = await CROSS_CHAT.cross_server_call("mark_read", message_id, read_at)
+    if row is not None and row["source_session_id"] in STORE.sessions:
+        await append_cross_chat_event_once(
+            row["source_session_id"], cross_server_message_record(row), "chat_conversation_message_read",
+            "read", "The receiving agent read this message.",
+        )
+
+
+def describe_cross_server_session(session_id: str) -> dict[str, Any]:
+    session = STORE.sessions.get(session_id)
+    if not session or session.get("archived") or session_id in DELETING_SESSIONS:
+        raise cross_server_mail.Refused("chat was not found")
+    backend = str(session.get("backend") or DEFAULT_BACKEND)
+    if not cross_chat_target_backend_supported(backend):
+        raise cross_server_mail.Refused("This chat's provider cannot exchange agent mail.")
+    # The title search_chats lists: a sender matches it against its user's chip text.
+    return {"id": session_id, "title": str(session.get("title") or "Untitled"), "backend": backend}
+
+
+async def install_cross_server_route(route: dict[str, Any]) -> None:
+    describe_cross_server_session(str(route.get("session_id") or ""))
+    row = await CROSS_CHAT.cross_server_call("install_route", {
+        key: str(route.get(key) or "") for key in (
+            "route_id", "pair_id", "session_id", "peer_server_identity", "peer_server_name",
+            "peer_session_id", "peer_title")
+    })
+    CROSS_SERVER_ROUTES[row["route_id"]] = row
+
+
+async def uninstall_cross_server_pair(pair_id: str) -> None:
+    removed, failed = await CROSS_CHAT.cross_server_call("delete_pair_routes", pair_id)
+    for route in removed:
+        CROSS_SERVER_ROUTES.pop(route["route_id"], None)
+        if route["session_id"] in STORE.sessions:
+            await refresh_chat_mailbox_pending(route["session_id"])
+    for row in failed:
+        await notify_cross_server_mail_failed(row)
+
+
+class LocalCrossServerEnd(cross_server_mail.End):
+    """This server, as the hub's relay sees it: the same operations as the admin endpoints, in process."""
+
+    name = ""
+
+    @property
+    def identity(self) -> str:
+        return server_identity()
+
+    async def outbox(self, wait: float) -> list[dict]:
+        return await cross_server_outbox_items(wait, paired_here=True)
+
+    async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None:
+        await record_cross_server_result(item_id, state, error, retry_after)
+
+    async def deliver(self, item: dict, source_identity: str, source_name: str) -> None:
+        # The same bounds a remote's delivery gets at the inbox endpoint.
+        try:
+            checked = CrossServerDelivery.model_validate(
+                {**item, "source_server_identity": source_identity, "source_server_name": source_name})
+        except ValidationError as exc:
+            raise cross_server_mail.Refused("The message is malformed.") from exc
+        await deliver_cross_server_mail(checked.model_dump(), source_identity, source_name)
+
+    async def receipt(self, item: dict) -> None:
+        await accept_cross_server_receipt(item["message_id"], item["created_at"])
+
+    async def describe(self, session_id: str) -> dict:
+        return describe_cross_server_session(session_id)
+
+    async def install(self, route: dict) -> None:
+        await install_cross_server_route(route)
+
+    async def uninstall(self, pair_id: str) -> None:
+        await uninstall_cross_server_pair(pair_id)
+
+    async def chats(self) -> list[dict]:
+        return (await search_chats(q="", limit=cross_server_mail.SEARCH_LIMIT, exclude_session_id=None))["chats"]
+
+
+LOCAL_CROSS_SERVER_END = LocalCrossServerEnd()
+
+
+def refused_as_http(exc: cross_server_mail.Refused) -> HTTPException:
+    return HTTPException(status_code=409, detail=str(exc))
+
+
+class CrossServerResult(BaseModel):
+    state: Literal["pending", "delivered", "failed"]
+    error: str = Field(default="", max_length=600)
+    retry_after: float = Field(default=0.0, ge=0, le=3600)
+
+
+class CrossServerDelivery(BaseModel):
+    message_id: str = Field(max_length=64)
+    pair_id: str = Field(max_length=64)
+    source_server_identity: str = Field(min_length=1, max_length=96)
+    source_server_name: str = Field(default="", max_length=120)
+    source_session_id: str = Field(min_length=1, max_length=128)
+    source_title: str = Field(default="", max_length=640)
+    source_run_id: str = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+    target_session_id: str = Field(min_length=1, max_length=128)
+    body: str = Field(min_length=1, max_length=PROVIDER_CROSS_CHAT_ROUTE_BODY_MAX_CHARS)
+    reply_to_message_id: str | None = Field(default=None, max_length=64)
+    source_user_instruction: str = Field(default="", max_length=CROSS_CHAT_SOURCE_USER_INSTRUCTION_MAX_CHARS)
+    source_user_delegation_action: Literal["", "route"] = ""
+
+
+class CrossServerReceipt(BaseModel):
+    message_id: str = Field(max_length=64)
+    read_at: str = Field(max_length=64)
+
+
+class CrossServerRoute(BaseModel):
+    route_id: str = Field(max_length=64)
+    pair_id: str = Field(max_length=64)
+    session_id: str = Field(min_length=1, max_length=128)
+    peer_server_identity: str = Field(min_length=1, max_length=96)
+    peer_server_name: str = Field(default="", max_length=120)
+    peer_session_id: str = Field(min_length=1, max_length=128)
+    peer_title: str = Field(default="", max_length=640)
+
+
+class CrossServerPairRequest(BaseModel):
+    source_server_identity: str = Field(min_length=1, max_length=96)
+    source_session_id: str = Field(min_length=1, max_length=128)
+    target_server_identity: str = Field(min_length=1, max_length=96)
+    target_session_id: str = Field(min_length=1, max_length=128)
+
+
+# Server-to-server: only the hub that registered this server holds its token.
+@app.get("/api/admin/cross-server/outbox")
+async def get_cross_server_outbox(request: Request, wait: float = Query(default=0.0, ge=0, le=55)) -> dict[str, Any]:
+    require_native_admin_control(request)
+    return {"items": await cross_server_outbox_items(wait)}
+
+
+@app.post("/api/admin/cross-server/outbox/{item_id}/result")
+async def post_cross_server_result(item_id: str, req: CrossServerResult, request: Request) -> dict[str, Any]:
+    require_native_admin_control(request)
+    try:
+        await record_cross_server_result(item_id, req.state, req.error, req.retry_after)
+    except cross_server_mail.Refused as exc:
+        raise refused_as_http(exc) from exc
+    return {"ok": True}
+
+
+@app.post("/api/admin/cross-server/inbox")
+async def post_cross_server_inbox(req: CrossServerDelivery, request: Request) -> dict[str, Any]:
+    require_native_admin_control(request)
+    try:
+        await deliver_cross_server_mail(req.model_dump(), req.source_server_identity, req.source_server_name)
+    except cross_server_mail.Refused as exc:
+        raise refused_as_http(exc) from exc
+    return {"ok": True}
+
+
+@app.post("/api/admin/cross-server/receipts")
+async def post_cross_server_receipt(req: CrossServerReceipt, request: Request) -> dict[str, Any]:
+    require_native_admin_control(request)
+    try:
+        await accept_cross_server_receipt(req.message_id, req.read_at)
+    except cross_server_mail.Refused as exc:
+        raise refused_as_http(exc) from exc
+    return {"ok": True}
+
+
+@app.get("/api/admin/cross-server/sessions/{session_id}")
+async def get_cross_server_session(session_id: str, request: Request) -> dict[str, Any]:
+    require_native_admin_control(request)
+    try:
+        return describe_cross_server_session(session_id)
+    except cross_server_mail.Refused as exc:
+        raise refused_as_http(exc) from exc
+
+
+@app.post("/api/admin/cross-server/routes")
+async def post_cross_server_route(req: CrossServerRoute, request: Request) -> dict[str, Any]:
+    require_native_admin_control(request)
+    try:
+        await install_cross_server_route(req.model_dump())
+    except cross_server_mail.Refused as exc:
+        raise refused_as_http(exc) from exc
+    return {"ok": True}
+
+
+@app.delete("/api/admin/cross-server/pairs/{pair_id}")
+async def delete_cross_server_routes(pair_id: str, request: Request) -> dict[str, Any]:
+    require_native_admin_control(request)
+    await uninstall_cross_server_pair(pair_id)
+    return {"ok": True}
+
+
+# Client-facing, on the hub.
+@app.get("/api/cross-server/chats")
+async def list_cross_server_chats() -> dict[str, Any]:
+    """Chats on the hub and on every reachable remote that supports cross-server mail."""
+    ends = list(CROSS_SERVER_RELAY.ends().values())
+    results = await asyncio.gather(*(end.chats() for end in ends), return_exceptions=True)
+    return {"servers": [
+        {"server_identity": end.identity, "name": end.name, "chats": chats}
+        # An unreachable server is left out: only live servers' chats can be picked.
+        for end, chats in zip(ends, results) if not isinstance(chats, BaseException)
+    ]}
+
+
+@app.post("/api/cross-server/pairs")
+async def create_cross_server_pair(req: CrossServerPairRequest) -> dict[str, Any]:
+    """Pair a chat with a chat on another server; the user picked it in the composer."""
+    one = (req.source_server_identity, req.source_session_id)
+    other = (req.target_server_identity, req.target_session_id)
+    if one[0] == other[0]:
+        raise HTTPException(status_code=400, detail="chats on the same server use @Chat routes")
+    async with CROSS_SERVER_PAIR_LOCK:
+        existing = await CROSS_CHAT.cross_server_call("find_pair", one, other)
+        ends = CROSS_SERVER_RELAY.ends()
+        source_end, target_end = ends.get(one[0]), ends.get(other[0])
+        try:
+            if source_end is None or target_end is None:
+                raise HTTPException(status_code=409, detail="that server is unreachable or does not support cross-server mail")
+            source_chat, target_chat = await asyncio.gather(source_end.describe(one[1]), target_end.describe(other[1]))
+        except Exception as exc:
+            if existing is not None:
+                return {"pair": existing, "created": False}
+            if isinstance(exc, HTTPException):
+                raise
+            if isinstance(exc, cross_server_mail.Refused):
+                raise refused_as_http(exc) from exc
+            raise HTTPException(status_code=502, detail=f"could not reach the other server: {concise_error_message(exc)}") from exc
+        pair = existing or {
+            "pair_id": cross_server_mail.new_id("pair"),
+            "a_server_identity": one[0], "a_session_id": one[1], "a_route_id": cross_server_mail.new_id("route"),
+            "b_server_identity": other[0], "b_session_id": other[1], "b_route_id": cross_server_mail.new_id("route"),
+        }
+        halves = {(pair["a_server_identity"], pair["a_session_id"]): pair["a_route_id"],
+                  (pair["b_server_identity"], pair["b_session_id"]): pair["b_route_id"]}
+        if existing is None:
+            await CROSS_CHAT.cross_server_call("put_pair", pair)
+        try:
+            # The receiving half first: the sender's agent sees the route only once both exist.
+            # Installing an existing pair again refreshes each side's label of the other,
+            # which the sender's `@title` must match for the user's turn to delegate.
+            await target_end.install({
+                "route_id": halves[other], "pair_id": pair["pair_id"], "session_id": other[1],
+                "peer_server_identity": one[0], "peer_server_name": source_end.name,
+                "peer_session_id": one[1], "peer_title": source_chat["title"],
+            })
+            await source_end.install({
+                "route_id": halves[one], "pair_id": pair["pair_id"], "session_id": one[1],
+                "peer_server_identity": other[0], "peer_server_name": target_end.name,
+                "peer_session_id": other[1], "peer_title": target_chat["title"],
+            })
+        except Exception as exc:
+            if existing is not None:
+                return {"pair": existing, "created": False}
+            await CROSS_CHAT.cross_server_call("delete_pair", pair["pair_id"])
+            for end in (target_end, source_end):
+                with suppress(Exception):
+                    await end.uninstall(pair["pair_id"])
+            if isinstance(exc, cross_server_mail.Refused):
+                raise refused_as_http(exc) from exc
+            raise HTTPException(status_code=502, detail=f"could not pair the chats: {concise_error_message(exc)}") from exc
+    return {"pair": pair, "created": existing is None}
+
+
+@app.get("/api/cross-server/pairs")
+async def list_cross_server_pairs(server_identity: str = Query(max_length=96),
+                                  session_id: str = Query(max_length=128)) -> dict[str, Any]:
+    return {"pairs": await CROSS_CHAT.cross_server_call("pairs_for", server_identity, session_id)}
+
+
+@app.delete("/api/cross-server/pairs/{pair_id}")
+async def delete_cross_server_pair(pair_id: str) -> dict[str, Any]:
+    """Remove a pair; the hub stops relaying at once, each server drops its half when reachable."""
+    async with CROSS_SERVER_PAIR_LOCK:
+        pair = await CROSS_CHAT.cross_server_call("delete_pair", pair_id)
+        if pair is None:
+            raise HTTPException(status_code=404, detail="chat pair was not found")
+        ends = CROSS_SERVER_RELAY.ends()
+        unreachable = []
+        for identity in (pair["a_server_identity"], pair["b_server_identity"]):
+            end = ends.get(identity)
+            try:
+                if end is None:
+                    raise ConnectionError("unreachable")
+                await end.uninstall(pair_id)
+            except Exception:
+                unreachable.append(identity)
+    return {"ok": True, "pair_id": pair_id, "unreachable_server_identities": unreachable}
+
+
+CROSS_SERVER_RELAY = cross_server_mail.Relay(
+    local=LOCAL_CROSS_SERVER_END, remotes=REMOTE_SERVERS,
+    ledger=CROSS_CHAT.cross_server_call,
 )
 
 

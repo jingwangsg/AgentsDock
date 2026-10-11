@@ -365,7 +365,8 @@ Release gates cover:
 
 - event-driven watches and source resumption based on watched conditions
 - explicit artifact grants and copies
-- cross-server/profile federation
+- cross-server/profile federation beyond one hub's remotes (mail between a
+  hub and its remotes: [CROSS_SERVER_MAIL.md](CROSS_SERVER_MAIL.md))
 - group or third-party exchange expansion
 - automatic target interruption
 - transcript visibility without an explicit digest

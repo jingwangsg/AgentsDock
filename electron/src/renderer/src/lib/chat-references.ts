@@ -266,6 +266,18 @@ export function insertChatReference(
   }
 }
 
+/** A chat on another server under the same hub; the label carries its server tag, hub chats have none. */
+export function insertCrossServerChatReference(
+  text: string,
+  trigger: ChatMentionTrigger,
+  chat: Pick<Session, 'id' | 'title'>,
+  server: { server_identity: string; name: string }
+): InsertChatReferenceResult {
+  const title = chat.title.trim() || chat.id
+  const inserted = insertChatReference(text, trigger, { id: chat.id, title: server.name ? `${title} · ${server.name}` : title })
+  return { ...inserted, reference: { ...inserted.reference, target_kind: 'cross_server', target_server_identity: server.server_identity } }
+}
+
 export function insertSecurePeerChatReference(
   text: string,
   trigger: ChatMentionTrigger,
@@ -338,8 +350,9 @@ export function validChatReferences(
     if (!chatReferenceTokenMatches(text, reference)) continue
     if (occupied.some(([start, end]) => reference.source_text_start < end && reference.source_text_end > start)) continue
     if (reference.target_kind === 'secure_peer' && !validSecurePeerReferenceTarget(reference)) continue
-    if (reference.target_kind !== undefined && reference.target_kind !== 'secure_peer') continue
-    if (reference.target_kind !== 'secure_peer' && (
+    if (reference.target_kind === 'cross_server' && !validCrossServerReferenceTarget(reference)) continue
+    if (reference.target_kind !== undefined && reference.target_kind !== 'secure_peer' && reference.target_kind !== 'cross_server') continue
+    if (reference.target_kind === undefined && (
       reference.target_server_identity !== undefined
       || reference.target_connection_id !== undefined
       || reference.target_route_id !== undefined
@@ -347,9 +360,11 @@ export function validChatReferences(
     )) continue
     const authorityKey = reference.target_kind === 'secure_peer'
       ? `secure_peer\u0000${reference.target_server_identity}\u0000${reference.target_connection_id}\u0000${reference.target_route_id}\u0000${reference.action}`
-      : `${reference.session_id}\u0000${reference.action}`
+      : reference.target_kind === 'cross_server'
+        ? `cross_server\u0000${reference.target_server_identity}\u0000${reference.session_id}`
+        : `${reference.session_id}\u0000${reference.action}`
     if (authorizedActions.has(authorityKey)) continue
-    const canonicalGrantMarker = reference.target_kind !== 'secure_peer'
+    const canonicalGrantMarker = reference.target_kind === undefined
       && reference.action === 'route'
       && reference.grant_intent === true
       && text.slice(reference.source_text_start, reference.source_text_end) === chatReferenceText(reference)
@@ -378,7 +393,7 @@ export function canonicalizeLocalRouteHints(
   for (const reference of valid) {
     output += text.slice(cursor, reference.source_text_start)
     const start = output.length
-    const normalize = reference.target_kind !== 'secure_peer'
+    const normalize = reference.target_kind === undefined
       && (reference.action === 'direct_message' || reference.action === 'route')
     const marker = normalize
       ? `@${reference.display_title_snapshot}`
@@ -409,6 +424,9 @@ function canonicalChatReference(reference: ChatReference, preserveGrantIntent = 
       ? { route_action: reference.route_action }
       : {})
   }
+  if (reference.target_kind === 'cross_server') {
+    return { ...common, target_kind: 'cross_server', target_server_identity: reference.target_server_identity }
+  }
   return reference.target_kind === 'secure_peer' ? {
     ...common,
     target_kind: 'secure_peer',
@@ -433,7 +451,8 @@ export function parseStoredChatReferences(value: unknown, text: string, sourceSe
     ) return []
     const reference = item as unknown as ChatReference
     if (reference.target_kind === 'secure_peer' && !validSecurePeerReferenceTarget(reference)) return []
-    if (reference.target_kind !== undefined && reference.target_kind !== 'secure_peer') return []
+    if (reference.target_kind === 'cross_server' && !validCrossServerReferenceTarget(reference)) return []
+    if (reference.target_kind !== undefined && reference.target_kind !== 'secure_peer' && reference.target_kind !== 'cross_server') return []
     return [reference]
   })
   return validChatReferences(text, references, sourceSessionId)
@@ -460,6 +479,17 @@ function validSecurePeerReferenceTarget(reference: ChatReference): boolean {
     && typeof reference.target_route_revision === 'string'
     && /^rev_[0-9a-f]{32}$/.test(reference.target_route_revision)
     && (reference.action === 'instruction' || reference.action === 'request_reply')
+}
+
+function validCrossServerReferenceTarget(reference: ChatReference): boolean {
+  return reference.action === 'route'
+    && typeof reference.target_server_identity === 'string'
+    && reference.target_server_identity.length > 0
+    && reference.target_server_identity.length <= 240
+    && !/[\u0000-\u001f\u007f]/.test(reference.target_server_identity)
+    && reference.target_connection_id === undefined
+    && reference.target_route_id === undefined
+    && reference.target_route_revision === undefined
 }
 
 function secureRouteConnectionId(route: SecurePeerRemoteRoute): string {

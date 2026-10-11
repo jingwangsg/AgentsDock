@@ -45,6 +45,8 @@ import type {
   ChatInboxDeleteReceipt,
   TeamReference,
   ChatSearchSnapshot,
+  CrossServerChatsSnapshot,
+  CrossServerPairInput,
   CreateAgentCrossChatRouteInput,
   CrossChatExchange,
   CrossChatHandoff,
@@ -550,6 +552,11 @@ export interface AgentsDockAPI {
     create(scope: WorkspaceProfileScope, sessionId: string, input: CreateAgentCrossChatRouteInput): Promise<AgentCrossChatRoute>
     update(scope: WorkspaceProfileScope, sessionId: string, routeId: string, input: UpdateAgentCrossChatRouteInput): Promise<AgentCrossChatRouteUpdateResult>
     remove(scope: WorkspaceProfileScope, sessionId: string, routeId: string, expectedRevision: string): Promise<DeleteAgentCrossChatRouteResult>
+  }
+  crossServer: {
+    /** Chats on every live server under the active server's hub; the hub relays mail between them. */
+    chats(scope: WorkspaceProfileScope): Promise<CrossServerChatsSnapshot>
+    pair(scope: WorkspaceProfileScope, input: CrossServerPairInput): Promise<void>
   }
   agentTeamMailRoutes: {
     list(scope: WorkspaceProfileScope, sessionId: string): Promise<AgentTeamMailRoutesSnapshot>

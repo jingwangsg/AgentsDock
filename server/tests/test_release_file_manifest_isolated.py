@@ -24,6 +24,7 @@ NEW_MODULES = {
     "title_generation.py",
     "server_instances.py",
     "chat_mailbox.py",
+    "cross_server_mail.py",
     "claude_background_reconciliation.py",
     "claude_model_catalog.py", "codex_model_catalog.py",
     "agentsdock_canvas.py", "remote_servers.py",

@@ -729,8 +729,12 @@ export interface ChatReference {
   grant_intent?: true
   /** Optional durable action ceiling for a saved scheduled route hint. */
   route_action?: AgentCrossChatRouteAction
-  /** Absent for existing same-server chat references. */
-  target_kind?: 'secure_peer'
+  /**
+   * Absent for existing same-server chat references. `cross_server` names a chat
+   * on another server under the same hub: the composer pairs the chats through
+   * the hub before sending and never sends this reference to the server.
+   */
+  target_kind?: 'secure_peer' | 'cross_server'
   target_server_identity?: string
   target_connection_id?: string
   target_route_id?: string
@@ -855,6 +859,25 @@ export interface ChatSearchSnapshot {
   limit: number
   truncated: boolean
   server_identity: string
+}
+
+/** One reachable server's chats, as the hub lists them for the @ picker. */
+export interface CrossServerChats {
+  server_identity: string
+  /** Registry name of a remote; '' for the hub, whose chats carry no server tag. */
+  name: string
+  chats: ChatSearchTarget[]
+}
+
+export interface CrossServerChatsSnapshot {
+  servers: CrossServerChats[]
+}
+
+export interface CrossServerPairInput {
+  source_server_identity: string
+  source_session_id: string
+  target_server_identity: string
+  target_session_id: string
 }
 
 export type ChatInboxState = 'unread' | 'read' | 'cancelled' | 'deleted'
@@ -1903,6 +1926,7 @@ export interface HealthCapabilities {
   websocket_auth_v1?: ServerCapability
   session_summary_events_v1?: ServerCapability
   remote_servers_v1?: RemoteServersCapability
+  cross_server_mail_v1?: ServerCapability
   [key: string]: SideQuestionsCapability | ServerCapability | ServerRestartCapability | TeamHubV1Capability | TeamHubHostControlCapability | LocalSessionImportCapability | SessionForkCompletedPrefixCapability | SessionRewindCapability | AgentEmergencyAlertsCapability | TeamMailHintsCapability | TeamActivityHintsCapability | AgentTeamMailCapability | AgentTeamMessagesCapability | TeamBulletinAliasCapability | TeamAllServersAliasCapability | PinnedItemsCapability | RemoteServersCapability | JsonValue | undefined
 }
 

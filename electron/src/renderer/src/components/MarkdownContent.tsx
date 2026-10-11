@@ -245,7 +245,8 @@ export const MarkdownContent = memo(function MarkdownContent({
         if (insideMarkdownLink) {
           return <span className={className} title={title}>{children}</span>
         }
-        if (remote || !onChatReferenceClick) {
+        // Only a chat on this server can be opened from its chip.
+        if (marker.reference.target_kind !== undefined || !onChatReferenceClick) {
           return <span className={className} title={title} aria-label={title}>{children}</span>
         }
         const activate = (event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>) => {

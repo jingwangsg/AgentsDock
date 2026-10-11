@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import agentsdock_chats as cli
 import chat_mailbox
+import cross_server_mail
 
 
 TREE = ast.parse((Path(__file__).resolve().parents[1] / "agent_server.py").read_text())
@@ -29,7 +30,7 @@ FUNCTIONS = {
     "append_cross_chat_lifecycle", "finish_cross_chat_delivery", "cross_chat_delivery_state",
     "issued_provider_capability_snapshot", "provider_authority_runtime_env",
     "resolve_provider_tool_arguments", "provider_tool_argument_value",
-    "validated_cross_chat_source_user_instruction",
+    "validated_cross_chat_source_user_instruction", "mail_chat_title",
 }
 ROUTE = "route_" + "a" * 32
 PAIR = "pair_" + "b" * 32
@@ -51,7 +52,7 @@ def server_namespace():
             nodes.append(copied)
     namespace = {
         "asyncio": asyncio, "hashlib": hashlib, "suppress": suppress,
-        "HTTPException": HTTPException,
+        "HTTPException": HTTPException, "cross_server_mail": cross_server_mail, "CROSS_SERVER_ROUTES": {},
         "PROVIDER_CROSS_CHAT_ROUTE_ID_RE": re.compile(r"route_[0-9a-f]{32}"),
         "PROVIDER_CROSS_CHAT_ROUTE_PAIR_ID_RE": re.compile(r"pair_[0-9a-f]{32}"),
         "STORE": SimpleNamespace(sessions={"a": {"title": "Alice"}, "b": {"title": "Bob"}}),

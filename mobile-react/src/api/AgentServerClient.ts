@@ -27,6 +27,8 @@ import type {
   ClaudeMcpSnapshot,
   ClaudeRuntimeSnapshot,
   ChatReference,
+  CrossServerChatsSnapshot,
+  CrossServerPairInput,
   CanvasCommentAnchor,
   CanvasCommentInput,
   CanvasCommentThread,
@@ -91,6 +93,7 @@ import type {
 } from '../types'
 import { base64 } from '../lib/base64'
 import { normalizeServerURL } from '../lib/format'
+import { hubProxyBaseURL } from '../lib/server-profiles'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../lib/provider-usage'
 import { parseSyncedSideChat, type SyncedSideChat } from '../lib/side-chat'
 import type { BackgroundActivityItem } from '../lib/background-activity'
@@ -965,6 +968,13 @@ export class AgentServerClient {
       `/api/cross-chat/handoffs/${encodeURIComponent(envelopeId)}`,
     )).handoff
   }
+  /** Chats on every live server under this server's hub; the hub relays mail between them. */
+  crossServerChats(): Promise<CrossServerChatsSnapshot> {
+    return this.request('/api/cross-server/chats', {}, 30_000, false, 'standard', 'hub')
+  }
+  async createCrossServerPair(input: CrossServerPairInput): Promise<void> {
+    await this.request('/api/cross-server/pairs', { method: 'POST', body: JSON.stringify(input) }, 30_000, false, 'standard', 'hub')
+  }
   agentHandoffRoutes(sessionId: string): Promise<AgentCrossChatRoutesSnapshot> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/agent-handoff-routes`)
   }
@@ -1429,15 +1439,21 @@ export class AgentServerClient {
     timeoutMs = 30_000,
     allowUnvalidated = false,
     authentication: 'standard' | 'team-network' | 'native-control' = 'standard',
+    address: 'server' | 'hub' = 'server',
   ): Promise<T> {
     const scope = this.captureScope(allowUnvalidated)
+    // A hub-proxied profile (`{hub}/api/remote/{id}`) carries the hub's own token,
+    // so it reaches the hub directly; any other server is its own hub.
+    const baseURL = address === 'hub'
+      ? hubProxyBaseURL(scope.configuration.baseURL) ?? scope.configuration.baseURL
+      : scope.configuration.baseURL
     const headers = new Headers(init.headers)
     const credentials = authentication !== 'standard'
       ? teamNetworkAuthHeaders(scope.configuration.token)
       : authHeaders(scope.configuration.token)
     for (const [key, value] of Object.entries(credentials)) headers.set(key, value)
     if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
-    const response = await this.fetchWithTimeout(buildURL(scope.configuration.baseURL, path), { ...init, headers }, timeoutMs, scope.signal)
+    const response = await this.fetchWithTimeout(buildURL(baseURL, path), { ...init, headers }, timeoutMs, scope.signal)
     if (!response.ok) {
       const error = await this.serverError(response)
       this.assertScopeActive(scope)

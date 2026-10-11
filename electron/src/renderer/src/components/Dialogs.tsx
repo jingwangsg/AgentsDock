@@ -3789,7 +3789,7 @@ function sameServerScheduledChatReferences(
   sourceSessionId: string
 ): ChatReference[] {
   return validChatReferences(text, references, sourceSessionId)
-    .filter(reference => reference.target_kind !== 'secure_peer')
+    .filter(reference => reference.target_kind === undefined)
     // A scheduled job owns an independent exact route grant. Never carry the
     // ordinary composer's durable source-chat grant intent into job storage.
     .map(reference => {
@@ -3864,7 +3864,7 @@ function JobPromptEditor({
   const [teamMention, setTeamMention] = useState<TeamMentionTrigger | null>(null)
   const [teamMentionCandidates, setTeamMentionCandidates] = useState<TeamMentionCandidate[]>([])
   const [teamMentionIndex, setTeamMentionIndex] = useState(0)
-  const selectedSameServerCount = chatReferences.filter(reference => reference.target_kind !== 'secure_peer').length
+  const selectedSameServerCount = chatReferences.filter(reference => reference.target_kind === undefined).length
   const maximumChatsSelected = selectedSameServerCount >= MAX_SCHEDULED_CHAT_REFERENCES
   const supportedBackends = supportedCrossChatTargetBackends(health)
   const routeHintsSupported = chatSupported && scheduledJobChatReferenceActionAvailable(health, 'route')
@@ -4387,7 +4387,7 @@ export function JobDialog() {
     }
     const leadingWhitespace = prompt.length - prompt.trimStart().length
     const cleanPrompt = prompt.trim()
-    const sameServerChatReferences = chatReferences.filter(reference => reference.target_kind !== 'secure_peer')
+    const sameServerChatReferences = chatReferences.filter(reference => reference.target_kind === undefined)
     if (selectedBackend === 'opencode' && sameServerChatReferences.length) {
       currentState.setError(t('opencode.crossChatUnavailable'))
       setSaving(false)

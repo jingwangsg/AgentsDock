@@ -2992,6 +2992,46 @@ describe('workspace Git scope fencing', () => {
   })
 })
 
+describe('cross-server chat mail', () => {
+  function crossServerService(serverUrl: string) {
+    const activeClient = { crossServerChats: vi.fn().mockResolvedValue({ servers: [] }), createCrossServerPair: vi.fn().mockResolvedValue(undefined), dispose: vi.fn() }
+    const hubClient = { crossServerChats: vi.fn().mockResolvedValue({ servers: [] }), createCrossServerPair: vi.fn().mockResolvedValue(undefined), dispose: vi.fn() }
+    const scope = { profileId: 'remote-profile', generation: 2, namespace: 'profile:remote-profile', client: activeClient, serverUrl }
+    const clientFactory = vi.fn(() => hubClient)
+    const service = Object.create(AppService.prototype) as AppService
+    Object.assign(service, {
+      scope,
+      clientFactory,
+      settings: { accessTokenForConnectionAsync: vi.fn(async (id: string) => `token-of-${id}`) },
+      requireWorkspaceScope: vi.fn(() => scope),
+      ensureValidatedScope: vi.fn().mockResolvedValue(undefined),
+      assertCurrentScope: vi.fn()
+    })
+    return { service, activeClient, hubClient, clientFactory }
+  }
+  const expected = { profileId: 'remote-profile', profileGeneration: 2, serverIdentity: 'server-r' }
+  const pair = { source_server_identity: 'server-r', source_session_id: 'a', target_server_identity: 'server-h', target_session_id: 'b' }
+
+  it('asks the hub behind a hub-remote profile, with that profile\'s token', async () => {
+    const f = crossServerService('http://100.81.112.90:7850/api/remote/b59f34ff9b92')
+    await f.service.crossServerChats(expected)
+    await f.service.createCrossServerPair(expected, pair)
+    expect(f.clientFactory).toHaveBeenCalledWith('http://100.81.112.90:7850', 'token-of-remote-profile')
+    expect(f.hubClient.crossServerChats).toHaveBeenCalledOnce()
+    expect(f.hubClient.createCrossServerPair).toHaveBeenCalledWith(pair)
+    expect(f.hubClient.dispose).toHaveBeenCalledTimes(2)
+    expect(f.activeClient.crossServerChats).not.toHaveBeenCalled()
+  })
+
+  it('asks the active server itself when it is not behind a hub', async () => {
+    const f = crossServerService('http://100.81.112.90:7850')
+    await f.service.crossServerChats(expected)
+    expect(f.clientFactory).not.toHaveBeenCalled()
+    expect(f.activeClient.crossServerChats).toHaveBeenCalledOnce()
+    expect(f.activeClient.dispose).not.toHaveBeenCalled()
+  })
+})
+
 describe('persistent agent handoff route scope fencing', () => {
   it('validates the active profile around every route admin operation', async () => {
     const route = { route_id: 'route-1', alias: 'mobile' }

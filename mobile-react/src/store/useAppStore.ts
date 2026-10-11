@@ -2578,7 +2578,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const rawReferences = consumeComposer
       ? options?.chatReferences ?? get().chatReferencesBySession[sessionId] ?? []
       : []
-    const requestedReferences = rawReferences.map(reference => ({
+    // The composer paired cross-server chips through the hub before this call; the
+    // server rejects their kind, so the turn carries their chip text only. They stay
+    // in rawReferences, which must equal the composer's to consume or restore it.
+    const requestedReferences = rawReferences.filter(reference => reference.target_kind !== 'cross_server').map(reference => ({
       ...reference,
       source_text_start: reference.source_text_start - leadingWhitespace,
       source_text_end: reference.source_text_end - leadingWhitespace,

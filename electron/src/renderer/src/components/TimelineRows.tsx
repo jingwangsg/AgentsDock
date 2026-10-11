@@ -148,7 +148,7 @@ function inlineTimelineChatReferences(event: Event): ChatReference[] {
 }
 
 function selectTimelineChatReference(reference: ChatReference): void {
-  if (reference.target_kind === 'secure_peer') return
+  if (reference.target_kind !== undefined) return
   runTimelineAction(useAppStore.getState().selectSession(reference.session_id))
 }
 

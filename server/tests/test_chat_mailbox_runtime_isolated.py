@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import agentsdock_chats
 import chat_mailbox
+import cross_server_mail
 
 
 TREE = ast.parse((Path(__file__).resolve().parents[1] / "agent_server.py").read_text())
@@ -38,6 +39,7 @@ FUNCTIONS = {
     "maybe_start_chat_mailbox_locked", "_start_next_queued_turn_locked", "stop_turn_endpoint",
     "schedule_chat_mailbox_wake",
     "provider_cross_chat_source_instruction", "validated_cross_chat_source_user_instruction",
+    "mail_chat_title", "cross_server_routes_for", "cross_server_peer_route", "cross_server_route_projection",
 }
 METHODS = {"__init__", "_locked_call", "_call", "_connect", "_transaction", "initialize", "_row",
            "create_instruction", "get", "update", "mailbox_call", "mailbox_envelopes"}
@@ -137,14 +139,15 @@ def isolated_source():
     nodes.append(ast.ClassDef(name="Ledger", bases=[], keywords=[], decorator_list=[], body=selected))
     namespace = dict(asyncio=asyncio, contextmanager=contextmanager, suppress=suppress,
                      hashlib=hashlib, hmac=hmac, sqlite3=sqlite3, threading=threading, time=time,
-                     chat_mailbox=chat_mailbox, HTTPException=HTTPException,
+                     chat_mailbox=chat_mailbox, cross_server_mail=cross_server_mail, HTTPException=HTTPException,
+                     CROSS_SERVER_ROUTES={}, CROSS_SERVER_OUTBOX_CHANGED=asyncio.Event(),
                      now_iso=lambda: NOW, logger=logging.getLogger("isolated-mailbox"),
                      PROVIDER_CROSS_CHAT_LEGACY_RATE_RETENTION_SECONDS=86400,
                      PROVIDER_CROSS_CHAT_ROUTE_ID_RE=re.compile(r"route_[0-9a-f]{32}"),
                      PROVIDER_CROSS_CHAT_ROUTE_PAIR_ID_RE=re.compile(r"pair_[0-9a-f]{32}"),
                      CROSS_CHAT_SOURCE_USER_INSTRUCTION_MAX_CHARS=100000,
                      sanitized_provider_route_label=lambda value: str(value or "Untitled chat"),
-                     CODEX_TRANSPORT_APP_SERVER="app-server")
+                     CODEX_TRANSPORT_APP_SERVER="app-server", CLAUDE_TRANSPORT_AGENT_SDK="agent-sdk")
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
                  "<isolated-mailbox-runtime>", "exec"), namespace)
     return namespace

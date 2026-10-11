@@ -213,6 +213,26 @@ try {
     assert.equal(useAppStore.getState().agentRoutesBySession.source.routes[0].route_id, route.route_id)
   })
 
+  await test('cross-server chips stay out of the turn request; the draft is consumed, or restored with them on failure', async () => {
+    const local = { session_id: 'target', display_title_snapshot: 'Target', source_text_start: 0, source_text_end: 7, action: 'route' as const, grant_intent: true as const }
+    const remote = { session_id: 'remote-chat', display_title_snapshot: 'Launch · l40', source_text_start: 8, source_text_end: 21, action: 'route' as const, target_kind: 'cross_server' as const, target_server_identity: 'srv-l40' }
+    const text = '@Target @Launch · l40 hello'
+    reset()
+    let sentReferences: unknown
+    client.sendTurn = async (...args: Parameters<typeof client.sendTurn>) => { sends += 1; sentReferences = args[6]; return { session } }
+    useAppStore.setState({ drafts: { source: text }, chatReferencesBySession: { source: [local, remote] } })
+    assert.equal(await send(), true)
+    assert.deepEqual(sentReferences, [local])
+    assert.equal(useAppStore.getState().drafts.source, '')
+    assert.deepEqual(useAppStore.getState().chatReferencesBySession.source, [])
+    reset()
+    client.sendTurn = async () => { throw new ServerError(500, 'Unavailable') }
+    useAppStore.setState({ drafts: { source: text }, chatReferencesBySession: { source: [local, remote] } })
+    assert.equal(await send(), false)
+    assert.equal(useAppStore.getState().drafts.source, text)
+    assert.deepEqual(useAppStore.getState().chatReferencesBySession.source, [local, remote])
+  })
+
   await test('API route reads and revision deletes encode opaque identifiers; async skip sends its envelope', async () => {
     const requests: Array<{ url: string; method: string; body: unknown }> = []
     globalThis.fetch = async (input, init) => { requests.push({ url: String(input), method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : null }); return new Response(JSON.stringify({ ok: true, routes: [], max_routes: 16, deleted: true, route_id: 'r /?' }), { status: 200 }) }

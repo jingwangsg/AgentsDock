@@ -102,7 +102,7 @@ class ClaudeFollowUpSteerTests(unittest.IsolatedAsyncioTestCase):
         release = AsyncMock(return_value=False)
         earlier, later = dict(queued_item("claude"), queued_id="q0"), queued_item("claude")
         with patch.object(agent_server, "_run_queued_turn_now_and_release", join), \
-             patch.object(agent_server, "release_claude_run_for_queued_turn", release), \
+             patch.object(agent_server, "release_waiting_claude_run", release), \
              patch.dict(agent_server.ACTIVE, {"chat": self._active(agent_server.CLAUDE_TRANSPORT_AGENT_SDK)}), \
              patch.dict(agent_server.QUEUED_TURNS, {"chat": deque([earlier, later])}):
             # The later message keeps its place behind one that could not join: it is released for, not steered.
@@ -113,7 +113,7 @@ class ClaudeFollowUpSteerTests(unittest.IsolatedAsyncioTestCase):
             await agent_server.steer_or_release_for_queued_turn("chat", "q0")
             join.assert_awaited_once_with("chat", "q0", deliver_now=False, steer_only=True)
         with patch.object(agent_server, "_run_queued_turn_now_and_release", join), \
-             patch.object(agent_server, "release_claude_run_for_queued_turn", release), \
+             patch.object(agent_server, "release_waiting_claude_run", release), \
              patch.dict(agent_server.ACTIVE, {"chat": self._active(agent_server.CODEX_TRANSPORT_APP_SERVER)}), \
              patch.dict(agent_server.QUEUED_TURNS, {"chat": deque([earlier])}):
             await agent_server.steer_or_release_for_queued_turn("chat", "q0")
