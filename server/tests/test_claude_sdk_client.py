@@ -502,6 +502,10 @@ async def materialize_query(
     return prompt_text, str(frame.get("uuid") or ""), envelope
 
 
+# What CLI 2.1.296 sends for a turn it interrupted.
+ABORTED_RESULT = {"type": "result", "subtype": "error_during_execution", "is_error": True, "result": ""}
+
+
 def replay_ack(correlation_id: str) -> dict[str, Any]:
     return {
         "type": "user",
@@ -2494,6 +2498,82 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit({"type": "result", "is_error": False, "terminal_reason": "aborted_tools", "result": ""})
         self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["terminal_reason"], "aborted_tools")
         self.assertTrue(client.disconnected)
+
+    async def start_with_queued_follow_up(self, chat_id: str) -> tuple[Any, Any, str]:
+        """A run writing its answer, with a follow-up the CLI has not taken yet."""
+        handle = await self.manager.start_run(chat_id, "Write the essay", run_id=f"run-{chat_id}", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "assistant", "text": "Rivers have…"})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        client.auto_ack = False
+        self.assertTrue(await self.manager.steer(chat_id, run_id=f"run-{chat_id}", prompt="Reply with BANANA", deliver_now=False))
+        return handle, client, client.query_envelopes[-1][0]["uuid"]
+
+    async def test_stop_keeps_the_run_for_a_queued_follow_up_claude_answers_next(self) -> None:
+        # Native Esc (CLI 2.1.296): the interrupted answer's aborted Result, then
+        # the queued message's replay and answer. On 2026-10-11 that answer ran
+        # with no run to own it and only reached the timeline as a late import.
+        handle, client, follow_up_id = await self.start_with_queued_follow_up("chat-stop-follow")
+        self.assertTrue(handle.interrupt_would_keep_follow_up)
+        self.assertTrue(await handle.interrupt(keep_follow_up=True))
+        await client.emit(ABORTED_RESULT)
+        await asyncio.sleep(0.05)
+        self.assertFalse(handle.done)
+        self.assertFalse(client.disconnected)
+        await client.emit(replay_ack(follow_up_id))
+        await client.emit({"type": "assistant", "text": "BANANA"})
+        self.assertEqual((await asyncio.wait_for(handle.__anext__(), 5))["text"], "BANANA")
+        await client.emit({"type": "result", "is_error": False, "result": "BANANA"})
+        self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "BANANA")
+
+    async def test_a_second_stop_ends_the_follow_up_answer(self) -> None:
+        handle, client, follow_up_id = await self.start_with_queued_follow_up("chat-stop-twice")
+        self.assertTrue(await handle.interrupt(keep_follow_up=True))
+        await client.emit(ABORTED_RESULT)
+        await client.emit(replay_ack(follow_up_id))
+        await client.emit({"type": "assistant", "text": "BAN"})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        # Nothing is queued any more: like a second Esc, this Stop ends the answer.
+        self.assertFalse(handle.interrupt_would_keep_follow_up)
+        self.assertFalse(await handle.interrupt(keep_follow_up=True))
+        await client.emit(ABORTED_RESULT)
+        self.assertTrue((await asyncio.wait_for(handle.wait_result(), 5))["is_error"])
+
+    async def test_a_second_stop_before_claude_takes_the_follow_up_ends_the_run(self) -> None:
+        handle, client, _ = await self.start_with_queued_follow_up("chat-stop-early")
+        self.assertTrue(await handle.interrupt(keep_follow_up=True))
+        await client.emit(ABORTED_RESULT)
+        await asyncio.sleep(0.05)
+        self.assertFalse(handle.interrupt_would_keep_follow_up)
+        self.assertTrue(await handle.interrupt())
+        self.assertTrue((await asyncio.wait_for(handle.wait_result(), 5))["is_error"])
+
+    async def test_a_follow_up_taken_before_the_interrupt_landed_ends_with_it(self) -> None:
+        # The CLI replayed the follow-up first: it joined the answer the interrupt ends.
+        handle, client, follow_up_id = await self.start_with_queued_follow_up("chat-stop-race")
+        self.assertTrue(await handle.interrupt(keep_follow_up=True))
+        await client.emit(replay_ack(follow_up_id))
+        await client.emit(ABORTED_RESULT)
+        self.assertTrue((await asyncio.wait_for(handle.wait_result(), 5))["is_error"])
+
+    async def test_an_error_during_the_follow_up_answer_is_not_held_for_a_new_follow_up(self) -> None:
+        handle, client, follow_up_id = await self.start_with_queued_follow_up("chat-stop-error")
+        self.assertTrue(await handle.interrupt(keep_follow_up=True))
+        await client.emit(ABORTED_RESULT)
+        await client.emit(replay_ack(follow_up_id))
+        self.assertTrue(await self.manager.steer("chat-stop-error", run_id="run-chat-stop-error", prompt="And this", deliver_now=False))
+        await client.emit({"type": "result", "is_error": True, "result": "API Error"})
+        self.assertEqual((await asyncio.wait_for(handle.wait_result(), 1))["result"], "API Error")
+
+    async def test_a_kept_follow_up_the_cli_never_answers_ends_the_run_after_the_grace(self) -> None:
+        handle, client, _ = await self.start_with_queued_follow_up("chat-stop-lost")
+        with patch.object(claude_sdk_client, "CLAUDE_SDK_STEER_REPLAY_GRACE_SECONDS", 0.3):
+            self.assertTrue(await handle.interrupt(keep_follow_up=True))
+            await client.emit(ABORTED_RESULT)
+            await asyncio.sleep(0.05)
+            self.assertFalse(handle.done)
+            result = await asyncio.wait_for(handle.wait_result(), 5)
+        self.assertEqual(result["subtype"], "error_during_execution")
 
     async def test_queued_message_releases_a_run_that_only_background_tasks_keep_open(self) -> None:
         awaited: list[tuple[str, str]] = []

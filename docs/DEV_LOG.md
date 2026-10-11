@@ -1,5 +1,41 @@
 # Public development log
 
+## 2026-10-11 — Stop keeps the answer to a queued Claude message; a history import no longer dates an active chat back (server source)
+
+- A message sent while Claude writes its answer waits in Claude's queue. Stop
+  interrupted that answer, and Claude then answered the queued message at
+  once, as its own Esc does (CLI 2.1.296: the aborted result, then the message
+  about 2 s later). AgentsDock had already ended the run, so the answer and its
+  tool calls ran unseen: the chat looked idle, and the answer's text reached
+  the timeline only when a later history catch-up imported it at the bottom,
+  under its old time. When such a message is queued, Stop now ends only the
+  answer in progress: the run stays open, Claude's answer streams into it, and
+  Stop replies `stopped: false` with a notice, so clients keep showing the
+  chat as working. Stop again, once Claude is answering or before it starts,
+  ends the run. If Claude does not take the message within 30 s, the run ends.
+  Other interrupts (timeouts, deletion, Force Send) are unchanged.
+- A provider-history import appends messages with their original timestamps,
+  and those set the chat's recency fields: a chat whose last turn ended at
+  03:51 was listed at 03:22. In a chat with activity of its own, an import no
+  longer moves `updated_at`, `latest_event_at` or `latest_agent_event_at`
+  back; a newer message continued in Claude's own CLI still moves them
+  forward, and a new chat's first import is still dated by its history.
+- Verified with SDK client tests (the run stays open through the aborted
+  result; Stop again before or during the answer ends it; a message taken
+  before the interrupt landed ends with it; the 30 s bound), Stop tests through
+  the explicit Stop entry (no fence, revocation or eviction; a message already
+  taken falls back to an ordinary Stop) and import recency tests; with the real
+  Claude CLI (Haiku) on an isolated server (the reply arrives in the same run,
+  which finishes normally; a second Stop during the reply's 60 s Bash ends the
+  run with no process left; the chat keeps its latest time; a first import is
+  dated by its history; in an SDK probe, a second interrupt 0.5 s after the
+  first ends the reply before it starts); and in the desktop app built from
+  source on that server (notice shown, chat stays "Running", reply rendered).
+  Not exercised: Android, which shows the notice in its error banner. Known
+  issue, not introduced by this change: when Stop ends a turn that had already
+  taken a queued message, the next history catch-up imports that message again
+  as a user bubble.
+
 ## 2026-10-11 — Side chat keeps its history across server switches; older history pages are kept in memory (desktop source)
 
 - On a hub-proxied remote behind a slow, flapping link the side chat looked

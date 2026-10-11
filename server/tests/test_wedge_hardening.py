@@ -242,6 +242,7 @@ class ExplicitStopDeadlineTests(unittest.IsolatedAsyncioTestCase):
             session_id,
             *,
             schedule_queue=True,
+            keep_follow_up=False,
             _admission_ready=None,
         ):
             self.assertFalse(schedule_queue)
@@ -320,6 +321,7 @@ class ExplicitStopDeadlineTests(unittest.IsolatedAsyncioTestCase):
             session_id,
             *,
             schedule_queue=True,
+            keep_follow_up=False,
             _admission_ready=None,
         ):
             self.assertFalse(schedule_queue)

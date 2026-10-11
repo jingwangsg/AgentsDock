@@ -56,9 +56,28 @@ class FakeClaudeRun:
     async def wait_result(self) -> object:
         return {"type": "result", "result": "done", "session_id": "provider"}
 
-    async def interrupt(self) -> bool:
+    async def interrupt(self, *, keep_follow_up: bool = False) -> bool:
         self.interrupt_calls += 1
         return True
+
+
+class FollowUpClaudeRun(FakeClaudeRun):
+    """A run writing its answer with a follow-up queued behind it.
+
+    ``kept``: a Stop interrupt leaves the run open for the follow-up; False
+    means Claude took the follow-up just before the interrupt landed.
+    """
+
+    def __init__(self, *, kept: bool) -> None:
+        super().__init__()
+        self.kept = kept
+        self.interrupt_would_keep_follow_up = True
+        self.interrupt_modes: list[bool] = []
+
+    async def interrupt(self, *, keep_follow_up: bool = False) -> bool:
+        self.interrupt_modes.append(keep_follow_up)
+        await super().interrupt()
+        return self.kept if keep_follow_up else True
 
 
 class NoisyClaudeRun(FakeClaudeRun):
@@ -3308,6 +3327,73 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.evict_calls, [("chat-claude", True)])
         self.assertEqual(handle.interrupt_calls, 1)
         self.assertTrue(runner.cancelled() or runner.done())
+
+    async def explicit_stop_with_queued_follow_up(self, handle: FollowUpClaudeRun, *, stop_requested: bool = False) -> tuple[dict[str, Any], FakeClaudeManager, AsyncMock, AsyncMock, asyncio.Task[None]]:
+        manager = FakeClaudeManager(handle)
+        manager.active_run_id = "run-claude"
+        runner = asyncio.create_task(wait_forever())
+        self.addCleanup(runner.cancel)
+        agent_server.CLAUDE_SDK_MANAGER = manager
+        agent_server.ACTIVE = {
+            "chat-claude": {
+                "proc": None,
+                "run_id": "run-claude",
+                "backend": agent_server.BACKEND_CLAUDE,
+                "transport": agent_server.CLAUDE_TRANSPORT_AGENT_SDK,
+                "claude_sdk_run": handle,
+                "claude_sdk_owner_token": manager.owner_token,
+                "claude_permissions_open": True,
+                "provider_turn_ready": True,
+                "stop_requested": stop_requested,
+            }
+        }
+        agent_server.SESSION_TURN_TASKS = {"chat-claude": {runner}}
+        cancel_interactions = AsyncMock()
+        revoke = AsyncMock()
+        with patch.object(agent_server, "STOP_CONFIRM_TIMEOUT_SECONDS", 0.01), \
+                patch.object(agent_server, "SCHEDULED_JOB_STOP_HOLDS", set()), \
+                patch.object(agent_server, "schedule_next_queued_turn", Mock()), \
+                patch.object(agent_server, "cancel_codex_interactions", AsyncMock()), \
+                patch.object(agent_server, "cancel_claude_interactions", cancel_interactions), \
+                patch.object(agent_server, "append_event", AsyncMock(return_value={})), \
+                patch.object(agent_server, "revoke_cross_chat_capability", revoke):
+            result = await agent_server.run_explicit_stop_operation("chat-claude", asyncio.Event())
+        return result, manager, cancel_interactions, revoke, runner
+
+    async def test_stop_with_a_queued_follow_up_leaves_the_run_answering_it(self) -> None:
+        handle = FollowUpClaudeRun(kept=True)
+        result, manager, cancel_interactions, revoke, runner = await self.explicit_stop_with_queued_follow_up(handle)
+
+        # stopped=False keeps clients showing the run as working.
+        self.assertFalse(result["stopped"])
+        self.assertIn("replying to the message you sent", result["message"])
+        self.assertEqual(handle.interrupt_modes, [True])
+        cancel_interactions.assert_awaited_once_with("chat-claude", resolution="turn_stopped")
+        self.assertEqual(manager.evict_calls, [])
+        revoke.assert_not_awaited()
+        active = agent_server.ACTIVE["chat-claude"]
+        self.assertFalse(active["stop_requested"])
+        self.assertTrue(active["claude_permissions_open"])
+        self.assertFalse(active["native_interrupt_sent"])
+        self.assertNotIn("run-claude", agent_server.STOPPED_RUNS)
+        self.assertFalse(runner.done())
+
+    async def test_stop_whose_follow_up_was_taken_first_finishes_as_an_ordinary_stop(self) -> None:
+        handle = FollowUpClaudeRun(kept=False)
+        result, manager, _, revoke, runner = await self.explicit_stop_with_queued_follow_up(handle)
+
+        self.assertTrue(result["stopped"])
+        self.assertEqual(handle.interrupt_modes, [True, False])
+        self.assertEqual(manager.evict_calls, [("chat-claude", True)])
+        revoke.assert_awaited_once_with("run-claude")
+        self.assertTrue(runner.cancelled() or runner.done())
+
+    async def test_stop_of_a_run_already_stopping_does_not_keep_its_follow_up(self) -> None:
+        handle = FollowUpClaudeRun(kept=True)
+        result, _, _, _, _ = await self.explicit_stop_with_queued_follow_up(handle, stop_requested=True)
+
+        self.assertTrue(result["stopped"])
+        self.assertNotIn(True, handle.interrupt_modes)
 
     async def test_idle_stop_retires_only_chat_with_background_subagents(self) -> None:
         manager = FakeClaudeManager()

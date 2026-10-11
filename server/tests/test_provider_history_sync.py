@@ -2427,5 +2427,72 @@ class ScheduleProviderHistorySyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("chat-open", agent_server.HISTORY_SYNC_SCHEDULED)
 
 
+class ImportedHistoryRecencyTests(unittest.IsolatedAsyncioTestCase):
+    """2026-10-11: a history catch-up of a 03:22 reply, appended after a turn
+    that ended at 03:51, made the chat list show 03:22."""
+
+    LIVE_AT = "2026-10-10T19:51:01Z"
+    REPLY_AT = "2026-10-10T19:22:41.214Z"
+
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        for item in (
+            patch.object(agent_server, "EVENT_SEQ_CACHE", {}),
+            patch.object(agent_server, "EVENT_SEQ_LOCK", asyncio.Lock()),
+            patch.object(agent_server, "EVENT_SEQ_REPAIR_LOCKS", {}),
+            patch.object(agent_server, "EVENT_DELIVERY_LOCKS", {}),
+            patch.object(agent_server, "ensure_dirs", return_value=None),
+            patch.object(agent_server, "events_path", side_effect=lambda session_id: root / f"{session_id}.jsonl"),
+            patch.object(agent_server, "prepare_claude_history_metadata_repair", return_value=None),
+            patch.object(agent_server, "broadcast_session_summary", new=AsyncMock()),
+            patch.object(agent_server.HUB, "broadcast", new=AsyncMock()),
+            patch.object(agent_server.STORE, "save", new=AsyncMock()),
+            patch.dict(agent_server.STORE.sessions, {}, clear=True),
+        ):
+            item.start()
+            self.addCleanup(item.stop)
+
+    async def import_reply(self, session: dict, *, reply_at: str = REPLY_AT) -> dict:
+        agent_server.STORE.sessions["chat-recency"] = {"id": "chat-recency", **session}
+        common = {"run_id": "import_recency", "backend": agent_server.BACKEND_CLAUDE}
+        # The chat's first sync: commit_history_sync always attaches a checkpoint.
+        checkpoint = {"version": 1, "previous_present": False}
+        await agent_server.append_durable_event_batch("chat-recency", [
+            ("history_imported", {**common, "message": "Imported 1 rough messages from claude history.",
+                                  "_history_sync_checkpoint": checkpoint}),
+            ("assistant_text", {**common, "text": "Understood.", "imported": True, "ts": reply_at}),
+            ("turn_finished", {**common, "imported": True, "result_text": "", "ts": reply_at}),
+        ])
+        return agent_server.STORE.sessions["chat-recency"]
+
+    def active_chat(self) -> dict:
+        return {"updated_at": self.LIVE_AT, "latest_event_at": self.LIVE_AT,
+                "latest_agent_event_at": self.LIVE_AT, "latest_event_type": "turn_finished"}
+
+    async def test_catch_up_import_does_not_move_the_chat_back_in_time(self) -> None:
+        sess = await self.import_reply(self.active_chat())
+        for field in ("updated_at", "latest_event_at", "latest_agent_event_at"):
+            with self.subTest(field=field):
+                self.assertEqual(sess[field], self.LIVE_AT)
+
+    async def test_catch_up_import_of_a_newer_reply_dates_the_chat_by_that_reply(self) -> None:
+        # Continued in Claude's own CLI after the last AgentsDock turn.
+        newer = "2026-10-10T20:05:00Z"
+        sess = await self.import_reply(self.active_chat(), reply_at=newer)
+        for field in ("updated_at", "latest_event_at", "latest_agent_event_at"):
+            with self.subTest(field=field):
+                self.assertEqual(sess[field], newer)
+
+    async def test_first_import_into_a_new_chat_is_dated_by_its_history(self) -> None:
+        created = "2026-10-10T21:01:40Z"
+        sess = await self.import_reply({"created_at": created, "updated_at": created,
+                                        "latest_event_at": created, "latest_event_type": "session_created"})
+        for field in ("updated_at", "latest_event_at", "latest_agent_event_at"):
+            with self.subTest(field=field):
+                self.assertEqual(sess[field], self.REPLY_AT)
+
+
 if __name__ == "__main__":
     unittest.main()

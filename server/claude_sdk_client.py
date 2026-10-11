@@ -234,7 +234,7 @@ ClientFactory = Callable[
     ClaudeSDKClientProtocol | Awaitable[ClaudeSDKClientProtocol],
 ]
 ResultPredicate = Callable[[Any], bool]
-InterruptCallback = Callable[[str], Awaitable[bool]]
+InterruptCallback = Callable[[str, bool], Awaitable[bool]]
 SupervisorReadyCallback = Callable[[str], Awaitable[None]]
 
 
@@ -1196,6 +1196,10 @@ class ClaudeSDKRunHandle:
         # arrives before it ended the turn without the message, so the run
         # stays open for the CLI's answer.
         self._unconfirmed_steer_ids: set[str] = set()
+        # A Stop interrupted the answer with such a follow-up queued behind
+        # it: Claude answers the follow-up next, as native Esc does. Cleared
+        # when the CLI takes the follow-up.
+        self._follow_up_kept = False
         # A steer query joins the start query's CLI session.
         self._query_session_id: str | None = None
         # Top-level tool calls the model is blocked on: tool_use seen, no
@@ -1218,6 +1222,13 @@ class ClaudeSDKRunHandle:
         it as a steer instead of holding it in the queue until the tasks end.
         """
         return self._awaiting_background_tasks and not self.done
+
+    @property
+    def interrupt_would_keep_follow_up(self) -> bool:
+        """Claude is still writing its answer and a follow-up waits behind it:
+        interrupt(keep_follow_up=True) would end only that answer."""
+        return (bool(self._unconfirmed_steer_ids) and self._result_after_steer is None
+                and not self._follow_up_kept and not self.done)
 
     @property
     def background_task_receipts(self) -> tuple[MappingProxyType, ...]:
@@ -1340,11 +1351,16 @@ class ClaudeSDKRunHandle:
         self._check_loop()
         await self._acknowledged_event.wait()
 
-    async def interrupt(self) -> bool:
-        """Interrupt only this accepted run, returning false once it is no longer active."""
+    async def interrupt(self, *, keep_follow_up: bool = False) -> bool:
+        """Interrupt only this accepted run, returning false once it is no longer active.
+
+        With ``keep_follow_up`` (Stop) the result instead says whether the run
+        stays open for the queued follow-up Claude answers next; see
+        ``interrupt_would_keep_follow_up``.
+        """
 
         self._check_loop()
-        return await self._interrupt_callback(self.run_id)
+        return await self._interrupt_callback(self.run_id, keep_follow_up)
 
     def __aiter__(self) -> ClaudeSDKRunHandle:
         return self
@@ -1463,6 +1479,7 @@ class _ReleaseAwaiting:
 class _Interrupt:
     run_id: str | None
     response: asyncio.Future[bool]
+    keep_follow_up: bool = False
 
 
 @dataclass
@@ -1763,13 +1780,13 @@ class ClaudeSDKSupervisor:
         )
         return await asyncio.shield(response)
 
-    async def interrupt(self, *, run_id: str | None = None) -> bool:
+    async def interrupt(self, *, run_id: str | None = None, keep_follow_up: bool = False) -> bool:
         """Ask the SDK to interrupt this chat's active response."""
 
         loop = self._ensure_actor()
         response: asyncio.Future[bool] = loop.create_future()
         assert self._commands is not None
-        await self._commands.put(_Interrupt(run_id=run_id, response=response))
+        await self._commands.put(_Interrupt(run_id=run_id, response=response, keep_follow_up=keep_follow_up))
         return await asyncio.shield(response)
 
     async def steer(self, *, run_id: str, prompt: str, deliver_now: bool = True) -> bool:
@@ -2381,8 +2398,8 @@ class ClaudeSDKSupervisor:
                 ))
             return
         assert self._loop is not None
-        async def interrupt_this_run(run_id: str) -> bool:
-            return await self.interrupt(run_id=run_id)
+        async def interrupt_this_run(run_id: str, keep_follow_up: bool) -> bool:
+            return await self.interrupt(run_id=run_id, keep_follow_up=keep_follow_up)
 
         correlation_id = str(uuid.uuid4())
         handle = ClaudeSDKRunHandle(
@@ -2676,6 +2693,11 @@ class ClaudeSDKSupervisor:
             return
         active._background_reconciliation_aborted = True
         active._interrupt_requested = True
+        # Native Esc ends the answer in progress, then Claude answers the
+        # queued message (CLI 2.1.296: the aborted Result, then its replay
+        # ~2 s later). Stop keeps the run for that answer; other interrupts
+        # (timeouts, deletion, Force Send) still end it.
+        active._follow_up_kept = command.keep_follow_up and active.interrupt_would_keep_follow_up
         try:
             await client.interrupt()
         except Exception as exc:
@@ -2693,6 +2715,10 @@ class ClaudeSDKSupervisor:
             )
             self._fail_active(error)
             await self._disconnect_current_client()
+        elif active._follow_up_kept:
+            # Keep the steer id: its replay starts Claude's answer in this
+            # run; without it, the steer-replay grace ends the run.
+            pass
         elif active._result_after_steer is not None:
             # The model's turn had ended; only an injected follow-up the CLI
             # never took held the run, and the interrupt discards it.
@@ -2705,7 +2731,7 @@ class ClaudeSDKSupervisor:
             active._unconfirmed_steer_ids.clear()
         self._last_used_at = time.monotonic()
         if not command.response.done():
-            command.response.set_result(True)
+            command.response.set_result(active._follow_up_kept if command.keep_follow_up else True)
 
     async def _handle_get_context_usage(
         self,
@@ -3229,6 +3255,12 @@ class ClaudeSDKSupervisor:
                 # the frame is not a user bubble, and the CLI's next Result,
                 # not the one it sent before taking the follow-up, ends the run.
                 active._unconfirmed_steer_ids.discard(steer_id)
+                if active._follow_up_kept and active._result_after_steer is not None:
+                    # The interrupted answer already ended, so a Result during
+                    # this answer is not that interrupt's. Replayed before it,
+                    # the follow-up joined the answer the interrupt ends.
+                    active._interrupt_requested = False
+                active._follow_up_kept = False
                 active._result_after_steer = None
                 return
 
@@ -3255,7 +3287,7 @@ class ClaudeSDKSupervisor:
                 and not active._interrupt_requested
                 and not _message_field(command.message, "is_error", False)
             )
-            if active._unconfirmed_steer_ids and (not forced_run_end or cli_own_abort):
+            if active._unconfirmed_steer_ids and (not forced_run_end or cli_own_abort or active._follow_up_kept):
                 # This Result ended the turn before the CLI took an injected
                 # follow-up; the CLI replays and answers it next, in this run.
                 # Ending the run here would disconnect the client and kill the
