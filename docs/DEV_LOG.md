@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-11 — Editing a message keeps the chat mail read before it (server source)
+
+- A chat read a peer's mail in a mailbox wake turn. The user then sent a
+  message, stopped it before Claude received it, and edited it. After the
+  edit the agent answered that its inbox was empty: the mail was no longer
+  in its conversation, and `chats inbox` lists only unread mail.
+- Editing a message forks the provider conversation. For Claude the fork
+  point is the transcript row before the edited message; a message that
+  never reached Claude has no row, so the fork point falls back to the last
+  completed turn. For Codex the fork point is always the last completed
+  turn. That lookup skipped mailbox wake, cross-chat delivery and handoff
+  digest turns, although they run in the chat's own provider session and
+  the timeline keeps them, so the fork ended before such a turn whenever it
+  was the last completed one before the edited message.
+- An edit now counts those turns as completed turns, for Claude and Codex.
+  Forking a running chat into a new chat still ends at the last ordinary
+  turn, because the new chat does not copy those turns.
+- Checks: two new edit tests (Claude and Codex) fail before the change; the
+  edit, fork and related server test modules pass (342 tests). Replaying the
+  incident's events and Claude transcript, main forks before the wake turn
+  and the change forks at its reply. Real CLIs on isolated servers, main
+  against the change, a peer mailing a code word: Claude over the HTTP API
+  (Stop before the prompt reached Claude, then edit) and Codex over the HTTP
+  API (edit the question asked after the wake turn); main answered that the
+  inbox was empty (Claude) or "Unavailable" when asked for the code word
+  (Codex), the change answered with the code word.
+  The desktop app against both servers (send, Stop before Claude received
+  the prompt, edit twice): main answered that the inbox was empty both
+  times, the change answered with the code word both times; the mailbox
+  kept one read message and no second wake turn ran. Not exercised:
+  Android, and handoff digest or cross-chat delivery turns with a real CLI.
+  Availability: server source; a remote takes it after a redeploy.
+
 ## 2026-10-11 — Desktop package 119 and Android build 64 (local package and APK)
 
 - Package the entries recorded since package 118 and Android build 63: the

@@ -344,6 +344,45 @@ class SessionRewindTests(RewindFixture):
         self.assertEqual(result["provider_rewind"], "claude_fork")
         self.assertEqual(sess["fork_resume_session_at"], "second-uuid")
 
+    def events_with_mailbox_wake_before_the_edit(self, provider: dict) -> list[dict]:
+        # A mailbox wake turn read peer mail in the chat's own provider session between the second
+        # turn and the edited one. Mail it marked read is never listed again, so a rewind that keeps
+        # the turn in the timeline must keep it in the provider history too.
+        wake = {"purpose": "chat_mailbox_wake", "provider_context_mode": "chat"}
+        base = self.events()
+        return [
+            *base[:7],
+            {"seq": 8, "id": "e8", "type": "turn_started", "run_id": "wake", "ts": "2026-09-08T10:03:30Z", "prompt": "", **wake},
+            {"seq": 9, "id": "e9", "type": "turn_finished", "run_id": "wake", "ts": "2026-09-08T10:03:40Z", "exit_code": 0,
+             "result_text": "Mail answer", **wake, **provider},
+            *[{**event, "seq": event["seq"] + 2, "id": f"e{event['seq'] + 2}"} for event in base[7:10]],
+        ]
+
+    async def test_a_mailbox_wake_turn_before_the_edit_is_the_claude_cutoff(self) -> None:
+        events = self.events_with_mailbox_wake_before_the_edit({"provider_session_id": "claude-parent"})
+        sess = self.chat(latest_event_seq=12, latest_agent_event_seq=12, last_read_agent_event_seq=12)
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        wake_reply = {"type": "assistant", "uuid": "wake-uuid", "timestamp": "2026-09-08T10:03:38Z",
+                      "message": {"content": [{"type": "text", "text": "Mail answer"}]}}
+        # The transcript has no row for the edited message, so the cutoff falls back to the last
+        # completed reply.
+        with self.claude_transcript(wake_reply):
+            result = await server.rewind_session("chat", rewind_request(expected_latest_seq=12))
+        self.assertEqual(result["provider_rewind"], "claude_fork")
+        self.assertEqual(sess["fork_resume_session_at"], "wake-uuid")
+
+    async def test_a_mailbox_wake_turn_before_the_edit_is_the_codex_cutoff(self) -> None:
+        sess = self.write_events(self.events_with_mailbox_wake_before_the_edit(
+            {"provider_thread_id": "thread-1", "provider_turn_id": "wake-turn"}))
+        sess.update(latest_event_seq=12, latest_agent_event_seq=12, last_read_agent_event_seq=12)
+        server.CODEX_THREAD_SESSION_INDEX["thread-1"] = "chat"
+        with patch.object(server, "fork_codex_thread", AsyncMock(return_value="forked-thread")) as fork, patch.object(
+            server, "bind_forked_codex_thread", AsyncMock(side_effect=self.persisting_bind),
+        ):
+            result = await server.rewind_session("chat", rewind_request(expected_latest_seq=12))
+        fork.assert_awaited_once_with("thread-1", sess, last_turn_id="wake-turn")
+        self.assertEqual(result["provider_rewind"], "codex_fork")
+
     async def test_codex_rewind_to_first_turn_resets_provider_thread(self) -> None:
         sess = self.chat(backend="codex", codex_instruction_hash="policy-hash", codex_instruction_version=3)
         server.CODEX_THREAD_SESSION_INDEX["thread-1"] = "chat"
