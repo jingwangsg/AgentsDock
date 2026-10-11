@@ -1,5 +1,27 @@
 # Public development log
 
+## 2026-10-11 — Desktop package 119 and Android build 64 (local package and APK)
+
+- Package the entries recorded since package 118 and Android build 63: the
+  side chat keeps its history across server switches and older history
+  pages stay in memory; Android edits a hub remote as the desktop does;
+  browser tabs load large pages through port tunnels in full; chat mail
+  reaches chats on the hub's other servers with the fuzzy `@` picker. The
+  server entries of the same period (browser-tab tunnels on their own hub
+  connection, Import Chat on an unowned home, Stop keeping the answer to a
+  queued message, the hub relaying cross-server mail) need a deployed
+  server; the pkg bundles no server code.
+- The pkg is unsigned like every local package, built with the fuses
+  re-signing flag and reports CFBundleVersion 119; the APK is signed with the
+  project debug keystore (SHA-256 fac61745…) and reports versionCode 64.
+  Checks run before packaging: both type checks; the full server suite in
+  eight shards, where one installer timing test failed under load and passed
+  alone; the desktop unit suite, whose two scheduled-job card tests fail
+  since the running-run-as-turn change and are corrected on a separate
+  branch; the Android contract tests, the touched Android source tests and
+  the version pins. Not exercised: installing on a phone or Mac.
+  Availability: local package and APK.
+
 ## 2026-10-11 — Browser tabs load large pages through port tunnels in full (server and desktop source)
 
 - A dashboard in a browser tab on a hub-proxied remote showed "Could not
