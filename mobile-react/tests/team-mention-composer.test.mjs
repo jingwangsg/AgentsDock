@@ -29,7 +29,7 @@ const mocks = {
   'expo-document-picker': `export async function getDocumentAsync(){return {canceled:true}}`,
   'expo-image-picker': `export async function launchImageLibraryAsync(){return {canceled:true}}`,
   '@expo/ui/community/menu': `export const MenuView='MenuView';`,
-  'lucide-react-native': `export const AlertCircle='AlertCircle', ArrowDown='ArrowDown', ArrowUp='ArrowUp', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', CornerDownRight='CornerDownRight', File='File', Mail='Mail', MessageCircleMore='MessageCircleMore', MessageSquareShare='MessageSquareShare', Paperclip='Paperclip', Pencil='Pencil', Search='Search', Send='Send', Square='Square', Trash2='Trash2', X='X', Server='Server', RefreshCw='RefreshCw';`,
+  'lucide-react-native': `export const AlertCircle='AlertCircle', ArrowDown='ArrowDown', ArrowUp='ArrowUp', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', CornerDownRight='CornerDownRight', File='File', Mail='Mail', MessageCircleMore='MessageCircleMore', MessageSquarePlus='MessageSquarePlus', MessageSquareShare='MessageSquareShare', Paperclip='Paperclip', Pencil='Pencil', Search='Search', Send='Send', Square='Square', Trash2='Trash2', X='X', Server='Server', RefreshCw='RefreshCw';`,
   '../store/useAppStore': `export const useAppStore=globalThis.__teamComposerFixture.store; export const client=globalThis.__teamComposerFixture.client; export const capturedConnectionIsCurrent=(connection, profileId, generation)=>{ const state=useAppStore.getState(); return client===connection && connection.isValidated && state.activeProfileId===profileId && state.profileGeneration===generation && state.connected && !state.connecting && !state.switchingProfileId };`,
   '../lib/analytics': `export function trackEvent(){}`,
   '../lib/app-keyboard': `export async function dismissAppKeyboard(){}`,
@@ -76,6 +76,9 @@ function reset(patch = {}) {
     activeProfileId:'profile',profileGeneration:1,selectedSessionId:'chat',connected:true,connecting:false,switchingProfileId:null,workspaceAdopting:false,
     health:health(),sessions:[{id:'chat',title:'Mobile',backend:'codex'}],snapshots:{},runtime:null,profiles:[],
     drafts:{chat:''},editingTurn:{},uploads:{},uploadPending:{},uploadFailed:{},queuedRunStatus:{},chatReferencesBySession:{},teamReferencesBySession:{},
+    // The picker calls rememberRemoteChatTitles on the hub chat list before showing it; without
+    // the method the request rejects silently and no remote row appears.
+    rememberRemoteChatTitles(){},
     activeSessionIds:new Set(),sendingSessionIds:new Set(),stoppingSessionIds:new Set(),turnAdmissionTokens:{},
     agentRoutesBySession:{},agentRouteErrorsBySession:{},agentRouteLoadingSessionIds:new Set(),revokingAgentRouteIds:new Set(),skippingQueuedDeliveryIds:new Set(),pendingQueuedRunIds:new Set(),
     refreshAgentRoutes:async(...args)=>{fixture.routeReads.push(args);return store.getState().agentRoutesBySession[args[0]]??null},
@@ -549,7 +552,7 @@ test('a chat on another server becomes a tagged chip that is paired through the 
     assert.match(texts(renderer),/Pairs when sent/)
     const pairing=deferred();fixture.client.createCrossServerPair=input=>{fixture.pairs.push(input);return pairing.promise}
     await click(renderer,'chat-send')
-    assert.deepEqual(fixture.pairs,[{source_server_identity:'local-server',source_session_id:'chat',target_server_identity:'l40-server',target_session_id:'l40-chat'}])
+    assert.deepEqual(fixture.pairs,[{source_server_identity:'local-server',source_session_id:'chat',target_server_identity:'l40-server',target_session_id:'l40-chat',target_label:'Launch agent team 负载均衡检查'}])
     assert.equal(fixture.sends.length,0,'The turn waits until the hub has paired the chats')
     await act(async()=>pairing.resolve())
     assert.equal(fixture.sends.length,1)
@@ -586,7 +589,7 @@ for(const [scheme,background,border] of [['dark',dark.surface,dark.blue],['light
   resetRoutes({health:queueHealth(),snapshots:{chat:{queuedTurns:[asyncTurn()]}}});fixture.scheme=scheme
   const {renderer}=await renderQueue()
   try{
-    assert.match(texts(renderer),/Mac agent/)
+    assert.match(texts(renderer),/Chat target/,'The queued sender shows its current title, not the saved Mac agent')
     assert.match(texts(renderer),/Please review the patch/)
     assert.doesNotMatch(texts(renderer),/starts automatically|Run now/)
     const row=byID(renderer,'queued-row-incoming')[0]

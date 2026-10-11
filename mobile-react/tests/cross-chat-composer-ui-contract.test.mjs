@@ -47,7 +47,7 @@ test('selected chats are removable grant references; modern local actions stay o
   assert.match(composer, /insertChatReference\(currentDraft, currentTrigger, target, action\)/)
   assert.match(composer, /reconcileChatReferences\(currentDraft, inserted\.text, currentReferences\)/)
   assert.match(composer, /testID="composer-chat-references"/)
-  assert.match(composer, /Remove reference to \$\{reference\.display_title_snapshot\}/)
+  assert.match(composer, /Remove reference to \$\{title\}/)  // the chip shows the chat's current title
   assert.match(composer, /if \(action === 'request_reply'\) return 'Ask & return reply'/)
   assert.match(composer, /if \(action === 'final_result'\) return 'Send my final result'/)
   assert.match(composer, /return 'Send only'/)

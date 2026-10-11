@@ -55,12 +55,13 @@ describe('async agent message cards', () => {
     useAppStore.setState({ sessions: [
       { id: 'sender', title: 'Renamed agent', backend: 'codex' },
       { id: 'recipient', title: 'Desktop agent', backend: 'codex' },
-      { id: 'same-title-different-chat', title: 'Research agent', backend: 'codex' }
+      { id: 'same-title-different-chat', title: 'Renamed agent', backend: 'codex' }
     ] })
     const view = render(messageRow(event()))
     fireEvent.click(screen.getByText('Review the keyboard behavior.'))
     expect(selectSession).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Research agent' }))
+    // The heading is the sender's current title; the click resolves by id, never by that title, which another chat also carries.
+    fireEvent.click(screen.getByRole('button', { name: 'Renamed agent' }))
     expect(selectSession).toHaveBeenCalledExactlyOnceWith('sender')
     view.rerender(messageRow(event({ session_id: 'sender', type: 'chat_conversation_message_registered' })))
     fireEvent.click(screen.getByRole('button', { name: 'To Desktop agent' }))
@@ -73,7 +74,8 @@ describe('async agent message cards', () => {
     const selectSession = vi.fn().mockResolvedValue(undefined)
     useAppStore.setState({ selectSession })
     render(messageRow(event()))
-    useAppStore.setState({ sessions: [{ id: 'wrong-id', title: 'Research agent', backend: 'codex' }] })
+    // The heading follows the store, so this store change must flush before the query.
+    act(() => useAppStore.setState({ sessions: [{ id: 'wrong-id', title: 'Research agent', backend: 'codex' }] }))
     fireEvent.click(screen.getByRole('button', { name: 'Research agent' }))
     expect(selectSession).not.toHaveBeenCalled()
     expect(useAppStore.getState().error).toBe('That chat is no longer available.')
@@ -84,12 +86,12 @@ describe('async agent message cards', () => {
     expect(useAppStore.getState().error).toBeNull()
   })
 
-  it('shows received text on the right with the saved sender and outgoing text on the left', () => {
+  it("shows received text on the right under the sender's current title and outgoing text on the left", () => {
     const incoming = render(messageRow(event()))
     expect(incoming.container.querySelector('article')).toHaveClass('cross-chat-message', 'incoming')
-    expect(screen.getByText('Research agent')).toBeVisible()
+    expect(screen.getByText('Renamed agent')).toBeVisible()
     expect(screen.getByText('Review the keyboard behavior.')).toBeVisible()
-    expect(screen.queryByText('Renamed agent')).not.toBeInTheDocument()
+    expect(screen.queryByText('Research agent')).not.toBeInTheDocument()
     incoming.unmount()
     const outgoing = render(messageRow(event({ session_id: 'sender', type: 'chat_conversation_message_registered' })))
     expect(outgoing.container.querySelector('article')).toHaveClass('cross-chat-message', 'outgoing')
@@ -118,14 +120,14 @@ describe('async agent message cards', () => {
       handoff_preview: 'Recipient edited body.', handoff_body_chars: 22, handoff_body_truncated: false })
     const saved = structuredClone([original, edited])
     const view = render(messageRow(edited, [original]))
-    expect(screen.getByText('Research agent')).toBeVisible()
+    expect(screen.getByText('Renamed agent')).toBeVisible()
     expect(screen.getByText('Edited by you')).toBeVisible()
     expect(screen.getByText('Recipient edited body.')).toBeVisible()
     expect(screen.queryByText('Sender original body.')).not.toBeInTheDocument()
     expect(view.container.querySelector('.message-row.user')).toBeNull()
     act(() => setLocale('zh-CN'))
     expect(screen.getByText('由你编辑')).toBeVisible()
-    expect(screen.getByText('Research agent')).toBeVisible()
+    expect(screen.getByText('Renamed agent')).toBeVisible()
     act(() => setLocale('en'))
     view.rerender(messageRow(event({ session_id: 'sender', type: 'chat_conversation_message_registered',
       handoff_preview: 'Sender original body.' })))
