@@ -1,5 +1,43 @@
 # Public development log
 
+## 2026-10-11 — Editing a queued message keeps the chat's `@Chat` pairs (server source)
+
+- A follow-up sent while a turn with an `@Chat` chip is running stays queued
+  (it cannot join that turn). When its text was edited before it ran, or
+  Force Send ran it after an edit, the turn started with no chat routes:
+  every `chats` helper call in it, `chats list` included, failed with 403
+  "provider action was not authorized", although the chat held live `@Chat`
+  pairs and the same follow-up without the edit would have received them all.
+- Cause: a queued-message edit rebuilds the message's route snapshot and kept
+  an issued route only when the edited text still carried that target's `@`
+  chip. That rule predates permanent pairs; since pairs exist, admission has
+  given every ordinary turn the chat's live pairs without a chip, and the edit
+  path had not followed. An edit without chips therefore removed the pairs,
+  and the started turn was issued no chat-route action.
+- The edit now keeps the same set an ordinary turn keeps: the message's live
+  pairs plus the edited text's exact `@` hints, each re-checked against the
+  chat's current grants, so a revoked pair still does not return and no edit
+  creates a grant. Scheduled jobs are unchanged (they never inherit
+  source-chat grants), and a message sent from a turn whose text has no chip
+  for the target still carries no user delegation.
+- Verification. Unit: a chip-less edit of a queued message keeps the pair, a
+  capability issued from that snapshot lists it through `chats list`, the
+  scheduled-job projection stays empty, and a pair removed before a second
+  edit is dropped; the test fails on the previous code. Real server: two
+  isolated servers on this Mac, one from this branch and one from the
+  unchanged main, each driven through the HTTP API with a real Claude chat:
+  an `@Peer` turn (pair created), a second `@Peer` turn kept busy by a
+  sleeping Bash command, a chip-less follow-up (queued), an edit of its text,
+  then Force Send (the run-now endpoint). On main the started turn's own
+  `chats list` returned 403
+  "provider action was not authorized"; on this branch it returned the Peer
+  route, and the stored queue-edit and turn-start events carried the pair.
+  Not exercised: the desktop composer's edit and Force Send controls (the
+  server endpoints they call were driven directly), Codex chats, and a helper
+  call from outside the provider process.
+- Availability: server source; takes effect when the hub restarts, and on a
+  remote after a redeploy. Installing the desktop app alone does not update a
+  running server.
 ## 2026-10-11 — Open in Zed reaches every remote through the app's port tunnel (desktop + server source)
 
 - Open in Zed failed on an `osmo@<workflow>` remote with "An osmo@ workflow is

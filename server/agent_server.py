@@ -23465,27 +23465,19 @@ async def update_queued_turn(session_id: str, queued_id: str, req: UpdateQueuedT
                                 )
                             selected_routes.append(dict(current_route))
 
-                        # Editing a queued message never mints a grant. Keep
-                        # only still-current durable routes from its admission
-                        # ceiling, then permit newly referenced targets only
-                        # when their durable source grant already exists.
+                        # Editing a queued message never mints a grant. Filter
+                        # the issued ceiling with the same rule admission uses:
+                        # the chat's permanent pairs sit in it without any chip,
+                        # so a hint-only filter dropped them and an edited
+                        # follow-up started with no chat routes (2026-10-11).
+                        # Newly hinted targets, checked above, join only
+                        # because their source grant already exists.
                         edited_route_snapshot: list[dict[str, Any]] = []
                         seen_route_ids: set[str] = set()
-                        hinted_target_ids = set(
-                            local_route_hint_target_ids(new_references)
-                        )
-                        for issued_route in original.get(
-                            "provider_cross_chat_route_snapshot", []
+                        for issued_route in provider_cross_chat_route_snapshot_for_hints(
+                            original.get("provider_cross_chat_route_snapshot", []),
+                            new_references,
                         ):
-                            if issued_route.get("route_kind") in {
-                                PROVIDER_CROSS_CHAT_ROUTE_KIND_AMBIENT,
-                                PROVIDER_CROSS_CHAT_ROUTE_KIND_REFERENCE,
-                            }:
-                                continue
-                            if str(
-                                issued_route.get("target_session_id") or ""
-                            ) not in hinted_target_ids:
-                                continue
                             live_route = live_provider_cross_chat_route(
                                 session_id,
                                 issued_route,
