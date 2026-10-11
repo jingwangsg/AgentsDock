@@ -1,5 +1,34 @@
 # Public development log
 
+## 2026-10-11 — "Update Claude Code" / "Update Codex" install a missing CLI (server source)
+
+- On a server without the Codex CLI, Settings → server row → "Update Codex"
+  ended with "The codex CLI is not installed on this server." The same held
+  for Claude Code and for the CLI step of "Update & redeploy all".
+- When the CLI is missing, the server now runs the product's official
+  installer instead: `curl -fsSL https://claude.ai/install.sh | bash` for
+  Claude Code and `curl -fsSL https://chatgpt.com/codex/install.sh |
+  CODEX_NON_INTERACTIVE=1 sh` for Codex. Both put the CLI in `~/.local/bin`,
+  which is on the PATH the server's chats use, and the CLI's own `update`
+  maintains that install afterwards. The install runs under the same lock,
+  10-minute limit and process-group stop as an update. A failed download, a
+  failed installer, or a CLI that the chats still cannot find afterwards is
+  reported as an error with the installer's last lines; a server without
+  `curl` or `bash` answers which of them is missing. The row shows the
+  installer's own result line, and the update-all job log reports
+  "installed Codex <version>".
+- Verification. Test surface: an isolated server from the branch on this Mac
+  with an empty home directory, called through the update endpoint and
+  through the desktop app's Settings → server row menu. The real installers
+  ran: Codex installed in 6 s, Claude Code in 15 s; the Runtimes panel moved
+  from "Not installed" to "Sign-in required" with the installed version; a
+  second click ran each CLI's own `update`. Update-all on that isolated hub
+  logged "installed Codex". Unit tests cover the installer commands through
+  a fake `curl`, a failed download, an install the chats cannot find, the
+  missing-tool answer and the update lock. Not exercised: a Linux remote
+  server, because the deployed servers run the previous release; the change
+  takes effect on a server after it is redeployed with this version.
+
 ## 2026-10-11 — Remote servers on SkyPilot AWS clusters: `aws@<cluster>` (server source)
 
 - Adding a remote server as `oci@<cluster>` for a SkyPilot cluster on AWS

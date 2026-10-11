@@ -105,7 +105,8 @@ def fake_upstream(identity: str = "fake-remote") -> FastAPI:
         # The real route takes the remote's own token in this header and nothing else.
         if dict(token_headers(request)).get("x-agentsdock-token") != REMOTE_TOKEN:
             raise HTTPException(status_code=401, detail="unauthorized")
-        return {"output": "", "diagnostic": {"available": True, "version": f"{backend}-2.0"}}
+        # This remote had no codex CLI, so its update installed it.
+        return {"output": "", "diagnostic": {"available": True, "version": f"{backend}-2.0"}, "action": "install" if backend == "codex" else "update"}
 
     @app.api_route("/echo/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def echo(request: Request, rest: str) -> dict:
@@ -219,7 +220,7 @@ def hub_hooks(**overrides):
     """The hub-side callables Update & redeploy all needs; tests inspect the mocks."""
     return SimpleNamespace(**{
         "hub_running_chat_count": lambda: 0,
-        "hub_update_cli": mock.AsyncMock(side_effect=lambda backend: f"{backend}-hub-9.9"),
+        "hub_update_cli": mock.AsyncMock(side_effect=lambda backend: (f"{backend}-hub-9.9", False)),
         "hub_restart": mock.AsyncMock(return_value=None),
         **overrides,
     })
@@ -1184,7 +1185,7 @@ time.sleep(30)
     def test_update_all_redeploys_each_remote_updates_every_cli_and_restarts_the_hub_last(self) -> None:
         order: list[tuple[str, ...]] = []
         hooks = hub_hooks(hub_running_chat_count=lambda: 2)
-        hooks.hub_update_cli.side_effect = lambda backend: order.append(("hub-cli", backend)) or f"{backend}-hub-9.9"
+        hooks.hub_update_cli.side_effect = lambda backend: order.append(("hub-cli", backend)) or (f"{backend}-hub-9.9", False)
         released = asyncio.Event()
 
         async def restart() -> None:
@@ -1247,6 +1248,7 @@ time.sleep(30)
             ]
             messages = [entry["message"] for entry in view["log"]]
             assert f"{remote.name}: Uploading the server…" in messages and f"{remote.name}: Claude Code claude-2.0" in messages
+            assert f"{remote.name}: installed Codex codex-2.0" in messages
             assert "attached: attached from another hub, not redeployed." in messages and "hub: Codex codex-hub-9.9" in messages
             assert messages[-1] == "Restarting the hub…" and view["phase"] == "restart" and view["done"] and view["restarting"]
             # A remote's failures are reported; the hub still restarts.
