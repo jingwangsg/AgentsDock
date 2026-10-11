@@ -1342,6 +1342,81 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             [],
         )
 
+    async def test_queue_edit_without_chip_keeps_permanent_pairs(self) -> None:
+        # A queued follow-up edited without an @ chip keeps the pairs in its
+        # admission ceiling like any ordinary turn. Before 2026-10-11 the edit
+        # dropped them and the started turn's `chats list` answered 403.
+        pair_id = "pair_" + "a" * 32
+        forward = {
+            **self.route("a", actions=["instruction", "request_reply"]),
+            "pair_id": pair_id,
+            "paired_route_id": "route_" + "b" * 32,
+        }
+        # live_provider_cross_chat_route requires the pair's reverse member.
+        reverse = {
+            **self.route("b", alias="source", target="source"),
+            "pair_id": pair_id,
+            "paired_route_id": forward["route_id"],
+        }
+        agent_server.STORE.sessions["source"]["provider_cross_chat_routes"] = [forward]
+        agent_server.STORE.sessions["target"]["provider_cross_chat_routes"] = [reverse]
+        agent_server.QUEUED_TURNS = {"source": deque([{
+            "queued_id": "queued_edit_pair",
+            "prompt": "plain",
+            "file_ids": [],
+            "chat_references": [],
+            "cross_chat_obligation_ids": [],
+            "cross_chat_exchange_ids": [],
+            "client_capabilities": [
+                agent_server.AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY
+            ],
+            "provider_cross_chat_route_snapshot": [forward],
+        }])}
+
+        async def edit(prompt: str) -> list[dict]:
+            with (
+                self.native_transports(),
+                patch.object(
+                    agent_server,
+                    "managed_server_update_blocker",
+                    return_value=None,
+                ),
+                patch.object(
+                    agent_server,
+                    "append_durable_event",
+                    AsyncMock(return_value={"type": "turn_queue_updated"}),
+                ),
+            ):
+                edited = await agent_server.update_queued_turn(
+                    "source",
+                    "queued_edit_pair",
+                    agent_server.UpdateQueuedTurnRequest(prompt=prompt),
+                )
+            return edited["item"]["provider_cross_chat_route_snapshot"]
+
+        edited_snapshot = await edit("plain, edited")
+        self.assertEqual(edited_snapshot, [forward])
+        with self.native_transports():
+            authority_snapshot = (
+                agent_server.provider_cross_chat_route_snapshot_for_authority(
+                    edited_snapshot,
+                    [],
+                    source_session_id="source",
+                )
+            )
+        self.assertEqual(authority_snapshot, [forward])
+        _token, request = await self.issue("run_edit_pair", authority_snapshot)
+        with self.native_transports():
+            listing = await agent_server.list_provider_cross_chat_routes(request)
+        self.assertEqual(
+            [row["route_id"] for row in listing["routes"]],
+            [forward["route_id"]],
+        )
+
+        # A pair revoked before a later edit does not come back.
+        agent_server.STORE.sessions["target"]["provider_cross_chat_routes"] = []
+        self.assertEqual(await edit("plain, edited again"), [])
+
     async def test_durable_route_list_freezes_ceiling_and_live_state_only_narrows(
         self,
     ) -> None:
