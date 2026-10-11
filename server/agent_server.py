@@ -5703,7 +5703,7 @@ ARTIFACT_PUBLICATION_LOCK_STRIPES = tuple(asyncio.Lock() for _ in range(64))
 TIMELINE_PIN_LOCK_STRIPES = tuple(asyncio.Lock() for _ in range(64))
 TIMELINE_INDEX_CACHE_MAX = int(agentsdock_setting("TIMELINE_INDEX_CACHE_MAX", "24"))
 TIMELINE_INDEX_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
-TIMELINE_INDEX_PROJECTION_VERSION = 8
+TIMELINE_INDEX_PROJECTION_VERSION = 9
 # Retained as a compatibility/testing surface; synchronization uses the fixed
 # stripe pool below so deleted-session churn cannot leak one lock per chat.
 TIMELINE_INDEX_LOCKS: dict[str, threading.Lock] = {}
@@ -33562,6 +33562,10 @@ def update_async_cross_chat_timeline_record(
         record["title"] = compact_timeline_index_text(
             f"Message from {counterpart}" if incoming else f"Sent to {counterpart}", 72,
         )
+        # `title` freezes the counterpart's name as of this event; the landmark also carries the
+        # counterpart's session id and the direction so a client can retitle it with the chat's current name.
+        record["_async_message_counterpart_session_id"] = str(event.get("source_session_id" if incoming else "target_session_id") or "")
+        record["_async_message_direction"] = "incoming" if incoming else "outgoing"
         preview = event.get("handoff_preview")
         if isinstance(preview, str):
             record["preview"] = compact_timeline_index_text(preview)
@@ -35586,6 +35590,9 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
             landmark["job_timeline_group_id"] = str(
                 stored.get("job_timeline_group_id") or stored.get("key") or ""
             )
+        if async_message:
+            landmark["counterpart_session_id"] = str(stored.get("_async_message_counterpart_session_id") or "")
+            landmark["direction"] = str(stored.get("_async_message_direction") or "outgoing")
         return landmark
 
     if not can_append or not landmarks_by_key:

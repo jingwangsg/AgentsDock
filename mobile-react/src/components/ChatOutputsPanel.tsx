@@ -7,6 +7,7 @@ import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
 import { FileDiff, FileText, Frame, GitBranch, Globe, Image, MessageSquare, Paperclip, Plug, Search, Sparkles, type LucideIcon } from 'lucide-react-native'
 import { collectChatOutputs, type ChatOutputsSummary } from '../lib/chat-outputs'
+import { liveChatTitle } from '../lib/live-chat-title'
 import { artifactTransferRequest } from '../lib/file-transfer'
 import { mobileFileViewerKind } from '../lib/file-viewer'
 import { agentFileAbsolutePath } from '../lib/format'
@@ -38,6 +39,10 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
   const transfer = useFileTransfer(`${activeProfileId ?? 'none'}:${profileGeneration}:${sessionId}`)
   const [summary, setSummary] = useState<ChatOutputsSummary | null>(null)
   const [allSources, setAllSources] = useState(false)
+  // Indexed like `sources` (`visibleSources` is a prefix of it). One joined string: the selector returns a stable primitive, so only a title change re-renders.
+  const chatTitles = useAppStore(state => (summary?.sources ?? [])
+    .map(item => item.kind === 'chat_reference' ? liveChatTitle(state, item.sessionId, item.label) : '')
+    .join('\u0000')).split('\u0000')
   const [canvases, setCanvases] = useState<CanvasSummary[]>([])
   const firstLoad = useRef(true)
   const pendingAction = useRef<(() => void) | null>(null)
@@ -145,7 +150,7 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
         <Row icon={GitBranch} label="Workspace changes" secondary="Git status and diffs of the working directory" onPress={() => closeThen(onChanges)} />
         <Text style={[styles.section, styles.sectionGap, { color: colors.muted }]}>Sources</Text>
         {summary && sources.length === 0 ? <Text style={[styles.empty, { color: colors.muted }]}>No sources yet</Text> : null}
-        {visibleSources.map(item => {
+        {visibleSources.map((item, index) => {
           switch (item.kind) {
             case 'mcp':
               return <Row key={`mcp:${item.label}`} icon={Plug} label={item.label} secondary={plural(item.count, 'use', 'uses')} onPress={() => jumpTo(item.eventId)} />
@@ -156,7 +161,7 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
             case 'skill':
               return <Row key={`skill:${item.label}`} icon={Sparkles} label={item.label} secondary="Skill" onPress={() => jumpTo(item.eventId)} />
             case 'chat_reference':
-              return <Row key={`chat:${item.eventId}:${item.label}`} icon={MessageSquare} label={item.label} secondary="Referenced chat" onPress={() => jumpTo(item.eventId)} />
+              return <Row key={`chat:${item.eventId}:${item.label}`} icon={MessageSquare} label={chatTitles[index] || item.label} secondary="Referenced chat" onPress={() => jumpTo(item.eventId)} />
             case 'attached_file':
               return <Row key={`file:${item.eventId}:${item.label}`} icon={Paperclip} label={item.label} secondary="Attached to this chat" onPress={() => jumpTo(item.eventId)} />
           }

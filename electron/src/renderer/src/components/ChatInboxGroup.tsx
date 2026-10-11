@@ -8,6 +8,7 @@ import type { ChatInboxMessage, CrossChatHandoff, WorkspaceProfileScope } from '
 import type { SystemItem } from '../lib/timeline'
 import { useLocale } from '../lib/i18n'
 import { formatTime } from '../lib/format'
+import { liveChatTitle } from '../lib/live-chat-title'
 import { useAppStore } from '../store/app-store'
 import { MarkdownContent } from './MarkdownContent'
 import { CrossChatPeerLink } from './CrossChatPeerLink'
@@ -59,7 +60,7 @@ export function ChatInboxGroup({ item, sessionId, profileScope }: {
   const unread = visible.filter(child => stateFor(child) === 'unread').length
   const countLabel = unread ? t('timeline.inbox.unreadCount', { count: unread })
     : t(visible.length === 1 ? 'timeline.inbox.oneMessage' : 'timeline.inbox.messageCount', { count: visible.length })
-  const sender = item.event.source_title || t('timeline.ui.unknownAgent')
+  const sender = useAppStore(state => liveChatTitle(state, item.event.source_session_id, item.event.source_title)) || t('timeline.ui.unknownAgent')
   const load = async () => {
     if (!available || !profileScope || loading || !scopeCurrent()) return
     const request = generation.current

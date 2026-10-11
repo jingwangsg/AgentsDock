@@ -77,6 +77,8 @@ import {
   type ChatMentionTrigger,
   type InsertChatReferenceResult,
 } from '../lib/chat-references'
+import { liveChatTitle } from '../lib/live-chat-title'
+import { liveChatReferenceTitle } from '../lib/timeline-inline-references'
 import { rankMentionRows } from '../lib/session-order'
 import {
   COMPOSER_CARD_MAX_HEIGHT,
@@ -687,16 +689,18 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   }, [activeProfileId, profileGeneration, sessionId, finishTargetPickerDismissal, setSessionDraft, storeReferences, storeTeamReferences])
 
   const changeReferenceAction = useCallback((reference: ChatReference) => {
+    const title = liveChatReferenceTitle(reference, useAppStore.getState(), sessionId)
     showReferenceActionPicker({
       width,
       reference,
+      title,
       actions: availableChatReferenceActions(supportedChatActions, requestReplySupportedForSource),
       onSelect: action => {
         const currentReferences = referencesRef.current
         const selected = currentReferences.find(candidate => sameChatReference(candidate, reference))
         if (!selected) return
         if (currentReferences.some(candidate => !sameChatReference(candidate, selected) && candidate.session_id === selected.session_id && candidate.action === action)) {
-          Alert.alert('Already selected', `${chatReferenceLabel(action)} is already selected for ${reference.display_title_snapshot}.`)
+          Alert.alert('Already selected', `${chatReferenceLabel(action)} is already selected for ${title}.`)
           return
         }
         storeReferences(currentReferences.map(candidate => sameChatReference(candidate, selected) ? chatReferenceWithAction(candidate, action) : candidate))
@@ -1267,6 +1271,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
           onSelect={chooseCommand}
         /> : null}
         {references.length ? <ChatReferenceShelf
+          sessionId={sessionId}
           references={references}
           referenceSupported={referenceSupported}
           onChangeAction={changeReferenceAction}
@@ -1452,7 +1457,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   )
 }
 
-function ChatReferenceShelf({ references, referenceSupported, onChangeAction, onRemove, warning, testID }: {
+function ChatReferenceShelf({ sessionId, references, referenceSupported, onChangeAction, onRemove, warning, testID }: {
+  sessionId: string
   references: readonly ChatReference[]
   referenceSupported: (reference: ChatReference) => boolean
   onChangeAction: (reference: ChatReference) => void
@@ -1461,6 +1467,8 @@ function ChatReferenceShelf({ references, referenceSupported, onChangeAction, on
   testID: string
 }) {
   const colors = usePalette()
+  // One joined string: the selector returns a stable primitive, so only a title change re-renders.
+  const titles = useAppStore(state => references.map(reference => liveChatReferenceTitle(reference, state, sessionId)).join('\u0000')).split('\u0000')
   return <View testID={testID} accessibilityLabel="Cross-chat actions" style={styles.referenceShelfWrap}>
     <ScrollView
       horizontal
@@ -1469,7 +1477,8 @@ function ChatReferenceShelf({ references, referenceSupported, onChangeAction, on
       showsHorizontalScrollIndicator={false}
       keyboardShouldPersistTaps="always"
     >
-      {references.map(reference => {
+      {references.map((reference, index) => {
+        const title = titles[index] || reference.display_title_snapshot
         const supported = referenceSupported(reference)
         // A chat on another server is paired, not granted an action, and a new agent's chip
         // is a placeholder the composer resolves on send: neither has an action to change.
@@ -1481,16 +1490,16 @@ function ChatReferenceShelf({ references, referenceSupported, onChangeAction, on
           <MessageSquareShare size={14} color={supported ? colors.blue : colors.red} />
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={fixedLabel ? `${reference.target_kind === 'cross_server' ? 'Chat on another server: ' : ''}${reference.display_title_snapshot}. ${fixedLabel}` : `Cross-chat action for ${reference.display_title_snapshot}: ${chatReferenceLabel(reference.action)}. Change action`}
+            accessibilityLabel={fixedLabel ? `${reference.target_kind === 'cross_server' ? 'Chat on another server: ' : ''}${title}. ${fixedLabel}` : `Cross-chat action for ${title}: ${chatReferenceLabel(reference.action)}. Change action`}
             disabled={Boolean(fixedLabel)}
             onPress={() => onChangeAction(reference)}
             style={styles.referenceAction}
           >
-            <Text style={[styles.referenceTitle, { color: colors.text }]} numberOfLines={1}>@{reference.display_title_snapshot}</Text>
+            <Text style={[styles.referenceTitle, { color: colors.text }]} numberOfLines={1}>@{title}</Text>
             <Text style={[styles.referenceLabel, { color: supported ? colors.blue : colors.red }]} numberOfLines={1}>· {fixedLabel ?? chatReferenceLabel(reference.action)}</Text>
             {fixedLabel ? null : <ChevronDown size={13} color={supported ? colors.blue : colors.red} />}
           </Pressable>
-          {onRemove ? <IconButton icon={X} size={13} touchSize={44} onPress={() => onRemove(reference)} label={`Remove reference to ${reference.display_title_snapshot}`} /> : null}
+          {onRemove ? <IconButton icon={X} size={13} touchSize={44} onPress={() => onRemove(reference)} label={`Remove reference to ${title}`} /> : null}
         </View>
       })}
     </ScrollView>
@@ -1555,7 +1564,11 @@ export function ChatTargetPicker({ visible, width, query, sourceSessionId, suppo
     if (!visible || !connected || !client.isValidated || !crossServerMailAvailable) return
     let current = true
     client.crossServerChats()
-      .then(snapshot => { if (current && remoteComposerScopeIsCurrent(profileId, generation, sourceSessionId)) setCrossServerSnapshot({ key: crossServerKey, servers: snapshot.servers, createChats: snapshot.create_chats === true }) })
+      .then(snapshot => {
+        // Outside the picker guard: these titles name chats everywhere, not just here.
+        useAppStore.getState().rememberRemoteChatTitles(snapshot.servers)
+        if (current && remoteComposerScopeIsCurrent(profileId, generation, sourceSessionId)) setCrossServerSnapshot({ key: crossServerKey, servers: snapshot.servers, createChats: snapshot.create_chats === true })
+      })
       .catch(() => undefined)
     return () => { current = false }
   }, [visible, sourceSessionId, profileId, generation, connected, validationRevision, crossServerKey, crossServerMailAvailable])
@@ -1738,9 +1751,11 @@ function sameChatReference(left: ChatReference, right: ChatReference): boolean {
     && left.source_text_end === right.source_text_end
 }
 
-function showReferenceActionPicker({ width, reference, actions, onSelect }: {
+function showReferenceActionPicker({ width, reference, title, actions, onSelect }: {
   width: number
   reference: ChatReference
+  /** The chip's current title, as the shelf shows it. */
+  title: string
   actions: readonly ChatReferenceAction[]
   onSelect: (action: ChatReferenceAction) => void
 }) {
@@ -1753,7 +1768,7 @@ function showReferenceActionPicker({ width, reference, actions, onSelect }: {
   if (Platform.OS === 'ios' && width < 720) {
     const options = [...labels, 'Cancel']
     ActionSheetIOS.showActionSheetWithOptions({
-      title: `@${reference.display_title_snapshot} · ${chatReferenceLabel(reference.action)}`,
+      title: `@${title} · ${chatReferenceLabel(reference.action)}`,
       options,
       cancelButtonIndex: options.length - 1,
     }, index => {
@@ -1762,7 +1777,7 @@ function showReferenceActionPicker({ width, reference, actions, onSelect }: {
     })
     return
   }
-  Alert.alert(`@${reference.display_title_snapshot}`, 'Choose how this chat should receive the message.', [
+  Alert.alert(`@${title}`, 'Choose how this chat should receive the message.', [
     ...ordered.map(action => ({ text: chatReferenceActionMenuLabel(action), onPress: () => onSelect(action) })),
     { text: 'Cancel', style: 'cancel' as const },
   ])
@@ -1923,7 +1938,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
   const runNow = useAppStore(state => state.runQueuedNow)
   const skipDelivery = useAppStore(state => state.skipQueuedDelivery)
   const skippingDeliveryIds = useAppStore(state => state.skippingQueuedDeliveryIds ?? EMPTY_ROUTE_IDS)
-  const sourceTitles = useAppStore(useShallow(state => Object.fromEntries(turns.filter(isAsyncQueuedChatMessage).map(turn => [turn.source_session_id ?? '', state.sessions.find(session => session.id === turn.source_session_id)?.title ?? 'Unknown agent']))))
+  const senderTitles = useAppStore(useShallow(state => Object.fromEntries(turns.filter(isAsyncQueuedChatMessage).map(turn => [turn.queued_id, liveChatTitle(state, turn.source_session_id, turn.source_title)]))))
   const clearRunStatus = useAppStore(state => state.clearQueuedRunStatus)
   const [editing, setEditing] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
@@ -2031,16 +2046,18 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
       Alert.alert('Finish the current edit', 'Save or cancel the queued message you are editing first.')
       return
     }
+    const title = liveChatReferenceTitle(reference, useAppStore.getState(), sessionId)
     showReferenceActionPicker({
       width,
       reference,
+      title,
       actions: availableChatReferenceActions(supportedChatActions, requestReplySupportedForSource),
       onSelect: action => {
         const availableReferences = editing === turn.queued_id ? editReferencesRef.current : currentReferences
         const selected = availableReferences.find(candidate => sameChatReference(candidate, reference))
         if (!selected) return
         if (availableReferences.some(candidate => !sameChatReference(candidate, selected) && candidate.session_id === selected.session_id && candidate.action === action)) {
-          Alert.alert('Already selected', `${chatReferenceLabel(action)} is already selected for ${reference.display_title_snapshot}.`)
+          Alert.alert('Already selected', `${chatReferenceLabel(action)} is already selected for ${title}.`)
           return
         }
         const next = availableReferences.map(candidate => sameChatReference(candidate, selected) ? chatReferenceWithAction(candidate, action) : candidate)
@@ -2082,7 +2099,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
         const busy = busyTurn === turn.queued_id || pendingQueuedRunIds.has(turn.queued_id) || skippingDeliveryIds.has(`${sessionId}:${turn.queued_id}`)
         const crossChatDelivery = isCrossChatDeliveryQueuedTurn(turn)
         const agentMessage = isAsyncQueuedChatMessage(turn)
-        const sender = turn.source_title?.trim() || sourceTitles[turn.source_session_id ?? ''] || 'Unknown agent'
+        const sender = senderTitles[turn.queued_id] || 'Unknown agent'
         const canSkip = Boolean(queuedDeliverySkipIdentity(turn, health))
         const blockedByEarlierDelivery = queuedTurnHasEarlierDeliveryBarrier(allTurns, turn.queued_id)
         const pausedLabel = turn.paused !== true
@@ -2118,6 +2135,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
             style={[styles.queueInput, { color: colors.text }]}
           /> : <Pressable accessibilityRole={crossChatDelivery ? undefined : 'button'} accessibilityLabel={agentMessage ? `${sender}: ${turnText}` : crossChatDelivery ? 'Incoming cross-chat delivery' : 'Edit queued message'} accessibilityState={{ disabled: crossChatDelivery || networkDisabled || queueBusy }} disabled={crossChatDelivery || networkDisabled || queueBusy} style={styles.queuePrompt} onPress={() => { if (remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) beginEdit(turn) }}>{agentMessage ? <Text style={{ color: colors.muted, fontSize: 11, fontWeight: '700' }}>{sender}</Text> : null}<Text style={[styles.queueText, { color: colors.text }]} numberOfLines={3}>{turnText}</Text>{turn.file_ids.length ? <View style={styles.queueAttachments}>{turn.file_ids.map(fileId => <QueuedAttachment key={fileId} sessionId={sessionId} fileId={fileId} onPreview={onPreview} />)}</View> : null}{crossChatDelivery && !agentMessage ? <Text style={{ color: colors.muted, fontSize: 10 }}>Cross-chat delivery · starts automatically</Text> : !agentMessage && pausedLabel ? <Text style={{ color: colors.orange, fontSize: 10 }}>{pausedLabel}</Text> : null}</Pressable>}
           {!crossChatDelivery && rowReferences.length ? <ChatReferenceShelf
+            sessionId={sessionId}
             references={rowReferences}
             referenceSupported={referenceSupported}
             onChangeAction={reference => chooseQueuedAction(turn, reference, rowReferences)}

@@ -123,8 +123,8 @@ for (const theme of ['dark', 'light']) for (const width of [320, 834]) test(`${t
   reset(); fixture.theme = theme
   const renderer = await render(event(), width)
   try {
-    assert.match(visible(renderer), /Research agent/)
-    assert.doesNotMatch(visible(renderer), /Renamed agent|Agent conversation|Reply expected|End conversation|Source request|Provider authority/)
+    assert.match(visible(renderer), /Renamed agent/)
+    assert.doesNotMatch(visible(renderer), /Research agent|Agent conversation|Reply expected|End conversation|Source request|Provider authority/)
     assert.equal(renderer.root.findAllByType('Pressable').length, 0, 'A complete short message has no exchange or routing actions')
     const surface = flatten(byID(renderer, 'cross-chat-async-message-message-a-surface')[0].props.style)
     assert.equal(surface.alignSelf, 'flex-end')
@@ -139,7 +139,7 @@ for (const theme of ['dark', 'light']) for (const width of [320, 834]) test(`${t
     await act(async () => renderer.root.findAll(node => node.type === 'SelectableText' && node.props.onPress)[0].props.onPress())
     assert.deepEqual(fixture.links, ['https://example.com/review'])
     await act(async () => renderer.update(React.createElement(TimelineRowView, props(row(event({ session_id: 'sender', type: 'chat_conversation_message_registered' })), width))))
-    assert.match(visible(renderer), /Sent to Mobile agent/)
+    assert.match(visible(renderer), /Sent to Renamed mobile/)
     assert.equal(flatten(byID(renderer, 'cross-chat-async-message-message-a-surface')[0].props.style).alignSelf, 'flex-start')
     assert.deepEqual(calls, [])
   } finally { await act(async () => renderer.unmount()) }
@@ -304,6 +304,8 @@ test('recycled message identity clears expanded content and pending responses ca
 
 test('message body and sender labels cannot create chat routes or reply controls', async () => {
   reset()
+  // The sender's current title is the @-prefixed one too, so the label under test is what the card now shows.
+  fixture.state.sessions = [{ id: 'sender', title: '@Different chat' }, { id: 'recipient', title: 'Renamed mobile' }]
   const marker = '@Research agent'
   const renderer = await render(event({
     source_title: '@Different chat', handoff_preview: `Ask ${marker} to review this.`,

@@ -3,7 +3,8 @@ import { useLocale } from '../lib/i18n'
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, WheelEvent } from 'react'
 import { formatTime } from '../lib/format'
-import { visibleLoadedPositions, type LoadedTimelinePosition, type TimelineNavigatorLandmark } from '../lib/timeline-minimap'
+import { liveLandmarkTitle, visibleLoadedPositions, type LoadedTimelinePosition, type TimelineNavigatorLandmark } from '../lib/timeline-minimap'
+import { useAppStore } from '../store/app-store'
 
 export interface TimelineMinimapHandle {
   setVisibleRange(startIndex: number, endIndex: number, atBottom?: boolean): void
@@ -193,6 +194,7 @@ export const TimelineMinimap = memo(forwardRef<TimelineMinimapHandle, TimelineMi
   }
 
   const hoveredLandmark = hovered ? landmarks.find(landmark => landmark.key === hovered.landmark.key) ?? hovered.landmark : null
+  const hoveredTitle = useAppStore(state => hoveredLandmark ? liveLandmarkTitle(hoveredLandmark, state) : '')
   return <div
     ref={rootRef}
     className="timeline-minimap"
@@ -230,7 +232,7 @@ export const TimelineMinimap = memo(forwardRef<TimelineMinimapHandle, TimelineMi
     <canvas ref={backgroundCanvasRef} aria-hidden="true" />
     <canvas ref={overlayCanvasRef} className="timeline-minimap-overlay" aria-hidden="true" />
     {hovered && hoveredLandmark && <div className={`timeline-minimap-popover ${hoveredLandmark.kind}`} style={{ top: hovered.top }}>
-      <header><strong>{hoveredLandmark.title}</strong>{hoveredLandmark.timestamp && <time>{formatTime(hoveredLandmark.timestamp)}</time>}</header>
+      <header><strong>{hoveredTitle}</strong>{hoveredLandmark.timestamp && <time>{formatTime(hoveredLandmark.timestamp)}</time>}</header>
       <p>{hoveredLandmark.preview}</p>
       {hoveredLandmark.meta && <footer>{hoveredLandmark.meta}</footer>}
     </div>}

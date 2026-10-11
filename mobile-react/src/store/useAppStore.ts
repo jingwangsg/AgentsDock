@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { rememberedFolderOrder } from '../lib/session-order'
 import { sessionNeedsProviderInteraction } from '../lib/claude-controls'
 import { newIdempotencyKey } from '../lib/team-network'
+import { remoteChatTitlesFrom } from '../lib/live-chat-title'
 import { AppState as NativeAppState, Linking } from 'react-native'
 import * as Notifications from 'expo-notifications'
 import type {
@@ -11,6 +12,7 @@ import type {
   Backend,
   ChatDefaults,
   ChatReference,
+  CrossServerChats,
   TeamReference,
   CreateJobInput,
   CreateSessionInput,
@@ -506,6 +508,8 @@ interface AppState {
   health: Health | null
   runtime: RuntimeCatalog | null
   sessions: Session[]
+  /** See LiveChatTitleSource; filled by rememberRemoteChatTitles from the hub's chat list. */
+  remoteChatTitles: Record<string, string>
   selectedSessionId: string | null
   /** The chat whose timeline is visible right now (AppShell keeps it current); null on the chat list. */
   onScreenSessionId: string | null
@@ -602,6 +606,7 @@ interface AppState {
   cancelPendingServerUpdate(expectedGeneration?: number): Promise<boolean>
   refreshRuntime(): Promise<void>
   refreshSessions(expectedGeneration?: number): Promise<void>
+  rememberRemoteChatTitles(servers: readonly CrossServerChats[]): void
   refreshSurfaces(expectedGeneration?: number): Promise<void>
   createSurface(kind: SurfaceKind, folder: string, expectedGeneration?: number, url?: string | null): Promise<boolean>
   /** A web link from a chat opens in the app's browser tab: the tab already showing it, else a new one in the chat's folder. */
@@ -711,6 +716,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   health: null,
   runtime: null,
   sessions: [],
+  remoteChatTitles: {},
   selectedSessionId: null,
   surfaces: [],
   surfacesRevision: null,
@@ -1410,6 +1416,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  rememberRemoteChatTitles(servers) {
+    set(state => ({ remoteChatTitles: { ...state.remoteChatTitles, ...remoteChatTitlesFrom(servers) } }))
+  },
   async refreshSessions(expectedGeneration) {
     if (NativeAppState.currentState !== 'active' || !get().connected) return
     const scope = captureConnection()

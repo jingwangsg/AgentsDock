@@ -19,6 +19,7 @@ import { useReasoningDisplay } from '../lib/reasoning-display'
 import { formatDuration, formatTime, titleCase } from '../lib/format'
 import { requirePinnedItemsScope } from '../lib/pinned-items'
 import { exactQueuedDeliverySkipAvailable, liveChatReferenceTitle } from '../lib/chat-references'
+import { liveChatTitle } from '../lib/live-chat-title'
 import { isSubagentActive, subagentDisplayName, subagentLogText, subagentStatusLabel, subagentsForRun, type SubagentActivity, type SubagentStatus } from '../lib/subagents'
 import { useAppStore } from '../store/app-store'
 import { MarkdownContent } from './MarkdownContent'
@@ -65,7 +66,7 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
     : []
   // One joined string: the selector returns a stable primitive, so only a title change re-renders.
   const chatReferenceTitles = useAppStore(state => chatReferences
-    .map(reference => liveChatReferenceTitle(reference, state.sessions, sessionId))
+    .map(reference => liveChatReferenceTitle(reference, state, sessionId))
     .join('\u0000')).split('\u0000')
   const primary = events[0] ?? event
   const collaborator = role === 'user' && isSharedChatCollaborator(primary)
@@ -1516,9 +1517,7 @@ function CrossChatMessageView({ item, sessionId, profileScope }: { item: SystemI
     && event.message_revision === messageRevision) : events
   const counterpartId = incoming ? sourceId : targetId
   const savedTitle = latestExchangeString(events, event => incoming ? event.source_title : event.target_title)
-  const currentTitle = !savedTitle && counterpartId
-    ? useAppStore.getState().sessions.find(session => session.id === counterpartId)?.title : undefined
-  const counterpartTitle = savedTitle || currentTitle || t('timeline.ui.unknownAgent')
+  const counterpartTitle = useAppStore(state => liveChatTitle(state, counterpartId, savedTitle)) || t('timeline.ui.unknownAgent')
   const [loadedBody, setLoadedBody] = useState<{ revisionKey: string; text: string } | null>(null)
   const body = loadedBody?.revisionKey === bodyRevisionKey ? loadedBody.text : null
   const [expanded, setExpanded] = useState(false)
@@ -1700,8 +1699,9 @@ function CrossChatExchangeView({ item, sessionId, profileScope }: { item: System
     || firstLeg?.sourceTitle
   const responderTitleSnapshot = latestExchangeString(lifecycleEvents, candidate => candidate.responder_title)
     || firstLeg?.targetTitle
+  const remoteChatTitles = useAppStore(state => state.remoteChatTitles)
   const participantTitle = (id: string, fallback = '') => (
-    sessions.find(session => session.id === id)?.title
+    liveChatTitle({ sessions, remoteChatTitles }, id)
     || (id === requesterId ? requesterTitleSnapshot : '')
     || (id === responderId ? responderTitleSnapshot : '')
     || fallback
@@ -1975,9 +1975,7 @@ function CrossChatView({ item, sessionId, profileScope }: { item: SystemItem; se
   const sourceId = event.source_session_id?.trim() || ''
   const targetId = event.target_session_id?.trim() || ''
   const counterpartId = sourceId === sessionId ? targetId : sourceId || targetId
-  const knownTitle = useAppStore(state => state.sessions.find(session => session.id === counterpartId)?.title)
-  const counterpartTitle = knownTitle
-    || (sourceId === sessionId ? event.target_title : event.source_title)
+  const counterpartTitle = useAppStore(state => liveChatTitle(state, counterpartId, sourceId === sessionId ? event.target_title : event.source_title))
     || t('timeline.ui.anotherChat')
   const workspaceRevision = useAppStore(state => {
     const profile = state.profiles.find(candidate => candidate.id === state.activeProfileId)

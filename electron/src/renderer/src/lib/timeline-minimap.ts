@@ -3,6 +3,7 @@ import type { RenderTimelineItem } from './timeline'
 import { isHandoffDigestEvent, isTimelineError, jobDisplaySelection, messageItemText, messageText } from './timeline'
 import { getLocale, t, type Locale } from '@shared/i18n'
 import { timelineCount, timelineEventLabel } from './timeline-labels'
+import { liveChatTitle, type LiveChatTitleSource } from './live-chat-title'
 
 export interface TimelineLandmark extends TimelineIndexLandmark {
   index: number
@@ -167,6 +168,19 @@ export function retainTimelineLandmarkSpine(
   })
 }
 
+function crossChatLandmarkTitle(direction: 'incoming' | 'outgoing', counterpartTitle: string | null | undefined): string {
+  return direction === 'incoming'
+    ? t('timeline.exchange.importedMessageFrom', { sender: counterpartTitle || t('timeline.ui.unknownAgent') })
+    : t('timeline.handoff.sent', { title: counterpartTitle || t('timeline.ui.unknownAgent') })
+}
+
+/** A message landmark named after the other chat's current title; every other landmark keeps the title it was built with. */
+export function liveLandmarkTitle(landmark: TimelineIndexLandmark, source: LiveChatTitleSource): string {
+  if (!landmark.direction) return landmark.title
+  const current = liveChatTitle(source, landmark.counterpart_session_id)
+  return current ? crossChatLandmarkTitle(landmark.direction, current) : landmark.title
+}
+
 export function compactPreview(value: string, limit = 240): string {
   const compact = value.replace(/\s+/g, ' ').trim()
   if (!compact) return t('timeline.minimap.noPreview')
@@ -241,11 +255,12 @@ function standaloneLandmark(item: RenderTimelineItem, index: number): TimelineLa
     if (item.crossChatMessage) {
       const incoming = item.event.target_session_id === item.event.session_id
         && item.event.source_session_id !== item.event.session_id
-      const title = incoming
-        ? t('timeline.exchange.importedMessageFrom', { sender: item.event.source_title || t('timeline.ui.unknownAgent') })
-        : t('timeline.handoff.sent', { title: item.event.target_title || t('timeline.ui.unknownAgent') })
+      const direction = incoming ? 'incoming' : 'outgoing'
       return {
-        index, endIndex: index, key: item.key, kind: 'system', title,
+        index, endIndex: index, key: item.key, kind: 'system',
+        title: crossChatLandmarkTitle(direction, incoming ? item.event.source_title : item.event.target_title),
+        counterpart_session_id: incoming ? item.event.source_session_id : item.event.target_session_id,
+        direction,
         preview: compactPreview(item.event.handoff_preview || ''), meta: '',
         start_seq: item.seq, end_seq: item.seq, timestamp: item.anchorTs || item.event.ts
       }
