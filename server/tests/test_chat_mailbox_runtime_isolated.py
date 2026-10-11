@@ -45,7 +45,8 @@ METHODS = {"__init__", "_locked_call", "_call", "_connect", "_transaction", "ini
            "create_instruction", "get", "update", "mailbox_call", "mailbox_envelopes"}
 
 
-def actual_delegation_grants(references, *, user_turn=True, authenticated=True):
+def actual_delegation_grants(references, *, user_turn=True, authenticated=True, route_grants=None,
+                             instruction="Ask @Recipient to research the bug."):
     issuance = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef)
                     and node.name == "issue_cross_chat_capability")
     record = next(node.value for node in ast.walk(issuance) if isinstance(node, ast.Assign)
@@ -54,11 +55,12 @@ def actual_delegation_grants(references, *, user_turn=True, authenticated=True):
     expression = next(value for key, value in zip(record.keys, record.values)
                       if isinstance(key, ast.Constant) and key.value == "user_delegation_grants")
     return eval(compile(ast.Expression(expression), "<actual-delegation-issuance>", "eval"),
-                {"references": references, "source_is_user_turn": user_turn, "AGENT_TOKEN": authenticated})
+                {"references": references, "source_is_user_turn": user_turn, "AGENT_TOKEN": authenticated,
+                 "route_grants": dict(route_grants or {}), "source_user_instruction": instruction})
 
 
 class DelegationAdmissionTests(unittest.TestCase):
-    def test_only_current_explicit_user_references_get_attestation(self):
+    def test_user_turn_references_and_pairs_get_attestation(self):
         def reference(target, action="route", intent=True, kind=None):
             return SimpleNamespace(session_id=target, action=action, grant_intent=intent, target_kind=kind)
         references = [reference("recipient"), reference("direct", "instruction"),
@@ -68,7 +70,14 @@ class DelegationAdmissionTests(unittest.TestCase):
                          {("recipient", "route"), ("direct", "instruction"), ("question", "request_reply")})
         self.assertEqual(actual_delegation_grants(references, user_turn=False), set())
         self.assertEqual(actual_delegation_grants(references, authenticated=False), set())
-        self.assertEqual(actual_delegation_grants([]), set())  # Existing routes alone are insufficient.
+        # A pair the user made earlier delegates in a chip-less turn; a plain route does not.
+        routes = {"route_a": {"target_session_id": "paired", "pair_id": "pair_a"},
+                  "route_b": {"target_session_id": "plain"}}
+        self.assertEqual(actual_delegation_grants([], route_grants=routes), {("paired", "route")})
+        self.assertEqual(actual_delegation_grants([], user_turn=False, route_grants=routes), set())
+        self.assertEqual(actual_delegation_grants([], authenticated=False, route_grants=routes), set())
+        self.assertEqual(actual_delegation_grants([], route_grants=routes, instruction="  "), set())
+        self.assertEqual(actual_delegation_grants([]), set())  # No reference and no pair: nothing is delegated.
 
     def test_internal_and_standalone_turns_cannot_mint_user_origin(self):
         start = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "_start_turn_locked")
@@ -79,8 +88,12 @@ class DelegationAdmissionTests(unittest.TestCase):
         for purpose in (None, "scheduled_job", "cross_chat_handoff_delivery", "secure_peer_handoff_delivery", "chat_mailbox_wake"):
             for mode in ("chat", "standalone"):
                 with self.subTest(purpose=purpose, mode=mode):
-                    self.assertEqual(eval(code, {"req": SimpleNamespace(purpose=purpose), "provider_context_mode": mode}),
+                    self.assertEqual(eval(code, {"req": SimpleNamespace(purpose=purpose, shared_chat_id=None),
+                                                 "provider_context_mode": mode}),
                                      purpose is None and mode == "chat")
+        # A guest's turn on a shared chat is not the owner's instruction.
+        self.assertFalse(eval(code, {"req": SimpleNamespace(purpose=None, shared_chat_id="interactive_" + "a" * 32),
+                                     "provider_context_mode": "chat"}))
         issue = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef)
                      and node.name == "issue_cross_chat_capability")
         default = dict(zip((arg.arg for arg in issue.args.kwonlyargs), issue.args.kw_defaults))["source_is_user_turn"]
