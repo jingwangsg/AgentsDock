@@ -67,7 +67,7 @@ export function shiftedTimelineFirstItemIndex(
 }
 
 export interface VirtualListCoverage {
-  /** Space the virtual list reserves for rows it has not mounted above and below the rendered ones. */
+  /** paddingTop / paddingBottom: space the list reserves for rows not mounted above / below the rendered ones. */
   paddingTop: number
   paddingBottom: number
   clientHeight: number
@@ -75,10 +75,11 @@ export interface VirtualListCoverage {
   rows: ReadonlyArray<{ top: number; bottom: number }>
 }
 
-// Virtuoso refills an exposed region within a frame; a gap this large that
-// survives a re-check means the list stopped tracking the viewport. The
-// footer at the real end of the list is well under this.
-export const VIRTUAL_LIST_GAP_PX = 64
+// Mid-scroll the mounted rows can trail the viewport edge by a few pixels for
+// a frame; a gap this large that survives a re-check means the list stopped
+// tracking the viewport. (Header, footer and short chats are excluded by the
+// padding checks below, not by this.)
+const VIRTUAL_LIST_GAP_PX = 64
 
 /**
  * Report reserved-but-unmounted space showing in the viewport: the rendered

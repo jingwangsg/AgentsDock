@@ -49,8 +49,12 @@ const OPEN_SETTLE_QUIET_MS = 600
 // bottom after this long regardless so a scrollbar drag is not fought.
 const OPEN_SETTLE_MAX_MS = 4000
 // A gap must survive this long before the list is remounted; Virtuoso's own
-// refill after a scroll or a row resize lands within a frame.
+// refill after a scroll or a row resize lands within a frame. Also the quiet
+// time after a scroll before the first check: anything sooner would only be
+// re-checked.
 const VIRTUAL_LIST_GAP_RECHECK_MS = 300
+// Loop protection: a gap that a remount does not close would otherwise remount
+// (and reparse every Markdown row) on every re-check.
 const VIRTUAL_LIST_RECOVERY_LIMIT = 3
 
 interface HistoricalWindow {
@@ -190,7 +194,7 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
   const virtualListScrollTimer = useRef<number | null>(null)
   const [atBottom, setAtBottom] = useState(initialViewState?.atBottom ?? true)
   // Each recovery remounts Virtuoso at the current anchor; see captureVisiblePosition.
-  const [virtualListRecovery, setVirtualListRecovery] = useState(0)
+  const [virtualListRemounts, setVirtualListRemounts] = useState(0)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [newBelow, setNewBelow] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -256,9 +260,12 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
     const range = visibleRangeRef.current
     if (range) minimap.setVisibleRange(range.startIndex, range.endIndex)
   }, [])
-  // Virtuoso's own scroll callbacks stop once it loses track of the viewport,
-  // so the gap check in captureVisiblePosition listens to the scroller itself.
-  const checkAfterScroll = useCallback(() => {
+  // If Virtuoso has stopped tracking the viewport, its isScrolling/rangeChanged
+  // callbacks (the path to scheduleViewSave) may not fire either, so the gap
+  // check in captureVisiblePosition also follows the scroller's native scroll
+  // events. One extra walk of the mounted rows per scroll stop is the cost of
+  // finding a gap Virtuoso never reports.
+  const scheduleGapCheckAfterScroll = useCallback(() => {
     if (virtualListScrollTimer.current != null) window.clearTimeout(virtualListScrollTimer.current)
     virtualListScrollTimer.current = window.setTimeout(() => {
       virtualListScrollTimer.current = null
@@ -271,10 +278,10 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
     workspaceResizeObserver.current?.disconnect()
     workspaceResizeObserver.current = null
     if (workspaceResizeObserverFrame.current != null) window.cancelAnimationFrame(workspaceResizeObserverFrame.current)
-    scroller.current?.removeEventListener('scroll', checkAfterScroll)
+    scroller.current?.removeEventListener('scroll', scheduleGapCheckAfterScroll)
     scroller.current = next
     if (next) {
-      next.addEventListener('scroll', checkAfterScroll, { passive: true })
+      next.addEventListener('scroll', scheduleGapCheckAfterScroll, { passive: true })
       syncMinimapToVisibleRange()
       const observer = new ResizeObserver(() => {
         if (!workspaceLayoutAnchor.current) return
@@ -290,7 +297,7 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
         if (content instanceof HTMLElement) observer.observe(content)
       })
     }
-  }, [checkAfterScroll, syncMinimapToVisibleRange])
+  }, [scheduleGapCheckAfterScroll, syncMinimapToVisibleRange])
 
   useEffect(() => () => {
     historySeekLease.current += 1
@@ -310,9 +317,12 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
   // servers can issue those corrections repeatedly while reconciling a live
   // timeline, which made scrolling and unrelated composer input hitch.
   const projectionSourceKey = historicalWindow ? `history:${historicalWindow.anchorSeq}` : `live:${snapshot.generation ?? 0}`
-  const listSourceKey = `${historicalWindow
+  const listBaseKey = historicalWindow
     ? `history:${historicalWindow.anchorSeq}`
-    : `live:${snapshot.timelineListGeneration ?? 0}`}${virtualListRecovery ? `:recovery:${virtualListRecovery}` : ''}`
+    : `live:${snapshot.timelineListGeneration ?? 0}`
+  // A gap recovery (captureVisiblePosition) is the exception: that list has
+  // already stopped rendering, and the remount keeps the reader's position.
+  const listSourceKey = virtualListRemounts ? `${listBaseKey}:recovery:${virtualListRemounts}` : listBaseKey
   const sourceEvents = historicalWindow?.page.events ?? snapshot.events
   const presentedActiveRunId = useMemo(
     () => activeCodexRunId ?? timelineActiveRunId(sourceEvents),
@@ -429,11 +439,16 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
       ? { index: historicalAnchorIndex, align: 'start', offset: -(historicalWindow.restoredView.topOffset ?? 0) }
       : { index: historicalAnchorIndex, align: 'center' }
     : undefined
-  const sourceLocationRef = useRef<{ sourceKey: string; location: TimelineInitialLocation }>({
+  const sourceLocationRef = useRef<{ sourceKey: string; baseKey: string; location: TimelineInitialLocation; recovering: boolean }>({
     sourceKey: listSourceKey,
-    location: initialLocation
+    baseKey: listBaseKey,
+    location: initialLocation,
+    recovering: false
   })
   if (sourceLocationRef.current.sourceKey !== listSourceKey) {
+    // Same source, new recovery suffix: the history seek anchor and the
+    // latest landing do not apply; the reader stays where the gap was found.
+    const recovering = sourceLocationRef.current.baseKey === listBaseKey
     const returningFromHistory = sourceLocationRef.current.sourceKey.startsWith('history:')
       && listSourceKey.startsWith('live:')
     const location = remountTimelineLocation(
@@ -443,9 +458,9 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
         topOffset: topOffsetRef.current
       },
       items.map(item => item.key),
-      historicalLocation ?? (returningFromHistory ? { index: 'LAST', align: 'end' } : undefined)
+      recovering ? undefined : historicalLocation ?? (returningFromHistory ? { index: 'LAST', align: 'end' } : undefined)
     )
-    sourceLocationRef.current = { sourceKey: listSourceKey, location }
+    sourceLocationRef.current = { sourceKey: listSourceKey, baseKey: listBaseKey, location, recovering }
     if (!historicalWindow && isLatestTimelineLocation(location)) {
       // A replacement that drops the old anchor is a new latest landing. Give
       // its rows the same bounded settle treatment as the original chat open.
@@ -454,7 +469,9 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
       openSettleLease.current = historySeekLease.current
     }
   }
-  const activeInitialLocation = historicalLocation ?? sourceLocationRef.current.location
+  const activeInitialLocation = sourceLocationRef.current.recovering
+    ? sourceLocationRef.current.location
+    : historicalLocation ?? sourceLocationRef.current.location
 
   const cancelSavedViewRestore = useCallback(() => {
     if (!restoringSavedViewRef.current) return
@@ -535,11 +552,16 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
     if (!node) return
     const viewport = node.getBoundingClientRect()
     const rows = Array.from(node.querySelectorAll<HTMLElement>('[data-index]'))
-    // Seen in the field: the rendered rows stop at a collapsed activity row
-    // while the rows appended after it are never mounted, so the reader
-    // scrolls into empty space and the jump-to-latest arrow stays up. Virtuoso
-    // does not recover on its own; a remount at the current anchor re-measures
-    // every row. The initial-position pass keeps the list hidden and is skipped.
+    // Seen in the field: the rendered rows stop at a closed activity row while
+    // the rows appended after it are never mounted, so the reader scrolls into
+    // empty space and the jump-to-latest arrow stays up. Virtuoso does not
+    // recover on its own; a remount at the current anchor re-measures every
+    // row. This rides on captureVisiblePosition because it is the one place
+    // that already walks the mounted rows after every item change, scroll stop
+    // and layout pass. The initial-position pass keeps the list hidden and is
+    // skipped.
+    // Virtuoso's own item-list element; its padding is the space reserved for
+    // rows it has not mounted.
     const list = node.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
     const listStyle = list ? window.getComputedStyle(list) : null
     const gap = !list || !listStyle || listStyle.visibility === 'hidden'
@@ -562,7 +584,9 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
         virtualListGapTimer.current = null
         captureVisiblePositionRef.current()
       }, VIRTUAL_LIST_GAP_RECHECK_MS)
-    } else if (performance.now() - virtualListGapSince.current >= VIRTUAL_LIST_GAP_RECHECK_MS && virtualListRecovery < VIRTUAL_LIST_RECOVERY_LIMIT) {
+    } else if (virtualListRemounts >= VIRTUAL_LIST_RECOVERY_LIMIT) {
+      // Past the limit the gap is left; the log already carries its samples.
+    } else if (performance.now() - virtualListGapSince.current >= VIRTUAL_LIST_GAP_RECHECK_MS) {
       virtualListGapSince.current = null
       void window.agentsDock.native.log('timeline', 'virtual list left the viewport uncovered; remounting', {
         sessionId,
@@ -572,14 +596,21 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
         clientHeight: node.clientHeight,
         paddingTop: listStyle?.paddingTop,
         paddingBottom: listStyle?.paddingBottom,
-        rows: rows.slice(-6).map(candidate => ({
+        rows: (gap === 'above' ? rows.slice(0, 6) : rows.slice(-6)).map(candidate => ({
           index: Number(candidate.dataset.index),
           knownSize: Number(candidate.dataset.knownSize),
           height: Math.round(candidate.offsetHeight),
           key: candidate.querySelector<HTMLElement>('[data-timeline-key]')?.dataset.timelineKey ?? null
         }))
       })
-      setVirtualListRecovery(virtualListRecovery + 1)
+      setVirtualListRemounts(virtualListRemounts + 1)
+    } else if (virtualListGapTimer.current == null) {
+      // The clock can read a fraction short of the hold on the timer's own
+      // callback; keep a re-check pending rather than wait for the next scroll.
+      virtualListGapTimer.current = window.setTimeout(() => {
+        virtualListGapTimer.current = null
+        captureVisiblePositionRef.current()
+      }, Math.max(1, VIRTUAL_LIST_GAP_RECHECK_MS - (performance.now() - virtualListGapSince.current)))
     }
     const row = rows.find(candidate => candidate.getBoundingClientRect().bottom > viewport.top + 1)
     if (!row) return
@@ -593,7 +624,7 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
     const distanceFromBottom = Math.max(0, node.scrollHeight - node.scrollTop - node.clientHeight)
     distanceFromBottomRef.current = distanceFromBottom
     atBottomRef.current = distanceFromBottom <= 80
-  }, [items, sessionId, virtualListRecovery])
+  }, [items, sessionId, virtualListRemounts])
   captureVisiblePositionRef.current = captureVisiblePosition
 
   const restoreWorkspaceLayoutAnchor = useCallback(() => {
@@ -1194,7 +1225,9 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
             // input. Let its quiet-period capture do the DOM measurement once;
             // doing it synchronously here forces layout for every rich mounted
             // row on the scroll-stop frame, then repeats the same work 500 ms
-            // later in scheduleViewSave.
+            // later in scheduleViewSave. (scheduleGapCheckAfterScroll walks the
+            // rows once more 300 ms after the last native scroll event; that
+            // one must not depend on this callback firing.)
             scheduleViewSave()
           }
         }}

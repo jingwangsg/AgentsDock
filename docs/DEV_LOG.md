@@ -9,8 +9,8 @@
   commentary paragraphs ending a third of the way down the viewport and
   nothing drawn below; the rows appended after it (the message, the next
   segments) were never mounted, and the scroller still held their estimated
-  height, so the arrow had something to point at. A saved reading position
-  from an earlier chat recorded the mirror image: the first rendered row
+  height, so the jump-to-latest arrow stayed up. A saved reading position
+  from an earlier chat recorded the opposite case: the first rendered row
   started several thousand pixels below the viewport top. In both states the
   virtual list (react-virtuoso) had stopped tracking the viewport and did not
   recover on its own. Replaying the chat's full event stream into the real
