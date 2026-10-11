@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import json
 import sqlite3
@@ -21,17 +22,21 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_issued_delegation_is_target_scoped_private_and_user_origin_only(self) -> None:
         prompt = "Ask @Target to research the issue. Do not modify or deploy anything."
         reference = self.grant_reference(start=4)
-        for number, (user_turn, references, expected) in enumerate((
-            (True, [reference], {("target", "route")}),
-            (False, [reference], set()),
-            (True, [], set()),
+        # A pair, made by the user's own earlier @, delegates on every later user turn; a plain route does not.
+        pair = {**self.route("2"), "pair_id": "pair_" + "2" * 32, "paired_route_id": "route_" + "3" * 32}
+        for number, (user_turn, references, routes, expected) in enumerate((
+            (True, [reference], [self.route("1")], {("target", "route")}),
+            (False, [reference], [self.route("1")], set()),
+            (True, [], [self.route("1")], set()),
+            (True, [], [pair], {("target", "route")}),
+            (False, [], [pair], set()),
         )):
-            with self.subTest(user_turn=user_turn, has_reference=bool(references)):
+            with self.subTest(user_turn=user_turn, has_reference=bool(references), paired=routes == [pair]):
                 run_id = f"run_delegation_{number}"
                 authority = await agent_server.issue_cross_chat_capability(
                     "source", run_id, references, source_user_instruction=prompt,
                     source_is_user_turn=user_turn, actions={"agent_cross_chat_routes"},
-                    provider_route_snapshot=[self.route("1")], async_route_v1=True,
+                    provider_route_snapshot=routes, async_route_v1=True,
                 )
                 self.assertIsNotNone(authority)
                 serialized = authority.read_text()
@@ -41,6 +46,20 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(record["source_user_instruction"], prompt)
                 self.assertNotIn(prompt, serialized)
                 self.assertNotIn("user_delegation_grants", serialized)
+
+    def test_mail_to_a_paired_chat_on_another_server_delegates_on_the_users_own_turn_only(self) -> None:
+        # send_cross_server_mail needs a live run, the lifecycle lock and the ledger; the rule is
+        # evaluated with only `capability` in scope, so it can depend on nothing else.
+        tree = ast.parse(Path(agent_server.__file__).read_text(encoding="utf-8"))
+        send = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
+                    and node.name == "send_cross_server_mail")
+        assignment = next(node for node in ast.walk(send) if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == "delegated" for target in node.targets))
+        rule = compile(ast.Expression(assignment.value), "<delegated>", "eval")
+        self.assertTrue(eval(rule, {"capability": {"source_is_user_turn": True}, "instruction": "Reply pong."}))
+        self.assertFalse(eval(rule, {"capability": {"source_is_user_turn": True}, "instruction": " "}))
+        self.assertFalse(eval(rule, {"capability": {"source_is_user_turn": False}, "instruction": "Reply pong."}))
+        self.assertFalse(eval(rule, {"capability": {}, "instruction": "Reply pong."}))
 
     def test_route_request_cannot_supply_delegation_provenance(self) -> None:
         request = agent_server.AgentRouteHandoffRequest.model_validate({

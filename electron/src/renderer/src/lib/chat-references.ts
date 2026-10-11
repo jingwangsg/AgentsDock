@@ -284,8 +284,7 @@ export function insertCrossServerChatReference(
 /**
  * The chat does not exist yet: the composer creates it on send and points this
  * reference at it. A chat on another server is tagged like any remote chip; the
- * created chat is then named "New agent" too, because the hub attaches the user's
- * instruction to its mail only when the chip text names the paired chat's title.
+ * created chat is then named "New agent" too.
  */
 export function insertNewAgentChatReference(
   text: string,

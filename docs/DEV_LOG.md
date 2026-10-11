@@ -1,5 +1,31 @@
 # Public development log
 
+## 2026-10-11 — A chat paired by the user's `@` stays delegated in later turns (server source)
+
+- An agent could message a chat the user had `@`-mentioned earlier, but the
+  message carried the user's instruction (`user_delegation`) only when the
+  current turn named that chat again. The receiving agent treats mail without
+  it as peer content, so a task handed on in a later turn was declined until
+  the user repeated the `@`. A pair exists only because the user picked one
+  of its two chats in the composer, so it now delegates on every later user
+  turn, from either side: each message the agent sends to the paired chat, on
+  one server or across servers, attaches the user's instruction from that
+  turn, and the receiving agent judges its scope. A turn without text, a
+  guest's turn on a shared chat, a steer, a scheduled job or a mailbox-wake
+  run still delegates nothing; a Canvas comment delegates the comment the
+  user typed, not the prompt built around it. The receiving-side rule is
+  unchanged. The
+  cross-server chip-text match is removed; the pair itself shows the user
+  chose the chat.
+- Verification. Unit: a pair delegates in a chip-less user turn, a plain route
+  does not, a non-user turn does not, and the cross-server rule. Real server:
+  an isolated server with two Claude chats; the first turn's `@Beta` handoff
+  and the second, chip-less turn's message both stored the user's instruction
+  with action `route`, and Beta's reply from its mailbox wake stored none. Not
+  exercised: mail between two servers, the desktop and Android apps, deployed
+  servers. Availability: server source; a deployed hub applies it after a
+  restart.
+
 ## 2026-10-11 — Desktop package 121 and Android build 65 (local package and APK)
 
 - Package the entry recorded since package 120 and Android build 64: a
