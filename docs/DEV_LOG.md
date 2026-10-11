@@ -33,6 +33,24 @@
   deployed servers, and Codex-backed chats.
   Availability: desktop and Android source.
 
+## 2026-10-11 — Desktop package 120 (local package)
+
+- Package the desktop entries recorded since package 119: Open in Zed
+  through the app's port tunnel, `Create new agent` in the `@` picker, and
+  the `aws@<cluster>` host hint. Android has no change since build 64, so no
+  APK is built. The server parts of those entries (the ssh-port tunnel
+  exception, the hub's new-chat endpoint, the queued-edit pairing fix, CLI
+  installs) need a restarted hub and redeployed remotes; the pkg bundles no
+  server code.
+- The pkg is unsigned like every local package, built with the fuses
+  re-signing flag and reports CFBundleVersion 120. Checks run before
+  packaging: the desktop type check and unit suite on the merged tree (two
+  new Chinese strings used a term the terminology test forbids and were
+  corrected first; the remaining failures are the known stale scheduled-job
+  card tests, the two sqlite bundling failures and editor timeouts under
+  load), plus the server and desktop tests of the merged tasks. Not
+  exercised: installing on a Mac. Availability: local package.
+
 ## 2026-10-11 — Composer: `Create new agent` in the `@` picker hands a task to a new chat (desktop + server source)
 
 - Handing a task to a new agent took several steps: create a chat, name it,
