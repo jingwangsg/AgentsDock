@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ensureSshConfigInclude, removeSshHost, resolvedSshOptions, sshDestination, sshHostFileContent, writeSshHost } from './ssh-hosts'
+import { ensureSshConfigInclude, removeSshHost, resolvedSshOptions, sshDestination, sshHostFileContent, tunnelSshHostFileContent, writeSshHost, writeTunnelSshHost } from './ssh-hosts'
 
 const RESOLVED = [
   'user root', 'hostname 10.244.141.135', 'port 22', 'addressfamily any', 'controlmaster auto',
@@ -23,6 +23,7 @@ const paths = () => {
 describe('sshDestination', () => {
   it('strips the hub notation for a Sky cluster and refuses an osmo workflow or an option', () => {
     expect(sshDestination('oci@jing-debug-a236')).toBe('jing-debug-a236')
+    expect(sshDestination('aws@jing-aws-8')).toBe('jing-aws-8')
     expect(sshDestination(' nv_gb300 ')).toBe('nv_gb300')
     expect(sshDestination('root@10.0.0.5:2222')).toBe('root@10.0.0.5:2222')
     expect(() => sshDestination('osmo@wf-1')).toThrow('osmo')
@@ -72,6 +73,41 @@ describe('sshHostFileContent', () => {
   it('refuses an alias that is not a plain host name', () => {
     expect(() => sshHostFileContent('my server', 'host', new Map())).toThrow('alias')
     expect(() => sshHostFileContent('-x', 'host', new Map())).toThrow('alias')
+  })
+})
+
+describe('tunnelSshHostFileContent', () => {
+  it('points the alias at the tunnel\'s loopback port, keeping only who logs in and with which key, and checks no host key', async () => {
+    const content = tunnelSshHostFileContent('oci_dev', 'oci@jing-debug-a236', 50022, await resolvedSshOptions('jing-debug-a236', async () => RESOLVED))
+    expect(content.split('\n')).toEqual([
+      '# Added by AgentsDock for the server "oci_dev" (SSH host oci@jing-debug-a236). Reaches its sshd through AgentsDock\'s port tunnel, which exists only while AgentsDock runs. Rewritten when that server is opened in Zed; turning off Forward SSH removes it.',
+      'Host oci_dev',
+      '  HostName 127.0.0.1',
+      '  Port 50022',
+      '  User root',
+      '  IdentityFile ~/.sky/generated/ssh-keys/jing-debug-a236.key',
+      '  IdentityFile ~/.ssh/id_ed25519',
+      '  IdentitiesOnly yes',
+      '  StrictHostKeyChecking no',
+      '  UserKnownHostsFile /dev/null',
+      ''
+    ])
+  })
+
+  it('writes an osmo@ workflow as root with the default keys without resolving an ssh entry', async () => {
+    const p = paths()
+    const run = vi.fn(async () => RESOLVED)
+    const file = await writeTunnelSshHost('osmo_dev', 'osmo@wf-1', 50023, p, run)
+    expect(run).not.toHaveBeenCalled()
+    expect(readFileSync(file, 'utf8')).toContain('Host osmo_dev\n  HostName 127.0.0.1\n  Port 50023\n  User root\n  StrictHostKeyChecking no\n')
+    expect(readFileSync(file, 'utf8')).not.toContain('IdentityFile')
+  })
+
+  it('keeps the host\'s own entry when its sshd is not on port 22, which the tunnel cannot reach', async () => {
+    const file = await writeTunnelSshHost('nv_box', 'nv_box', 50024, paths(), async () => RESOLVED.replace('port 22', 'port 2222'))
+    const content = readFileSync(file, 'utf8')
+    expect(content).toContain('  HostName 10.244.141.135\n  User root\n  Port 2222\n')
+    expect(content).not.toContain('HostName 127.0.0.1')
   })
 })
 

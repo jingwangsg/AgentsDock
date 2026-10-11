@@ -77,7 +77,7 @@ describe('ChatHeader', () => {
     const button = screen.getByRole('button', { name: 'Open in Zed' })
     expect(button).toHaveAttribute('title', 'Open /mnt/oci-lustre/jingwang/PROJECTS/N2 on oci_dev in Zed')
     await userEvent.setup().click(button)
-    expect(openInZed).toHaveBeenCalledWith({ path: '/mnt/oci-lustre/jingwang/PROJECTS/N2', sshHost: 'oci@jing-debug-a236', hostAlias: 'oci_dev' })
+    expect(openInZed).toHaveBeenCalledWith({ path: '/mnt/oci-lustre/jingwang/PROJECTS/N2', sshHost: 'oci@jing-debug-a236', hostAlias: 'oci_dev', sessionId: 'chat', profileId: 'oci', profileGeneration: 0 })
 
     useAppStore.setState({ selectedSessionId: 'bare' })
     view.rerender(<ChatHeader />)

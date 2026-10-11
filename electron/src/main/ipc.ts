@@ -6,7 +6,6 @@ import { ServerSetupManager } from './server-setup'
 import { localHubPairingUrl } from './local-hub'
 import { InferenceProxyManager } from './inference-proxy'
 import { acknowledgeWindowCloseFlush, closeWindowAfterRendererFlush } from './window-close'
-import { openInZed } from './open-in-zed'
 import type { LazyTeamHubService } from './team-hub-lazy-service'
 import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, parseBulkImportSessionItems } from '../shared/local-session-import'
 import type { LanguageSettings } from './language'
@@ -524,7 +523,7 @@ export function registerIpc(
     await shell.openExternal(parsed.toString())
   })
   handle('native:show-item', path => shell.showItemInFolder(path))
-  handle('native:open-in-zed', input => openInZed(input))
+  handle('native:open-in-zed', input => service.openInZed(input))
   handle('native:set-badge', count => service.setBadge(count))
   handle('native:notify', payload => service.notify(payload))
   handle('native:log', (scope, message, data) => appLog(`renderer:${scope}`, message, data))
