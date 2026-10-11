@@ -47,6 +47,7 @@ import type {
   TeamReference,
   ChatSearchSnapshot,
   CrossServerChatsSnapshot,
+  CrossServerChatInput,
   CrossServerPairInput,
   CreateAgentCrossChatRouteInput,
   CrossChatExchange,
@@ -558,6 +559,8 @@ export interface AgentsDockAPI {
     /** Chats on every live server under the active server's hub; the hub relays mail between them. */
     chats(scope: WorkspaceProfileScope): Promise<CrossServerChatsSnapshot>
     pair(scope: WorkspaceProfileScope, input: CrossServerPairInput): Promise<void>
+    /** The hub creates the chat on the named server; the composer then pairs it like a picked chat. */
+    createChat(scope: WorkspaceProfileScope, input: CrossServerChatInput): Promise<Session>
   }
   agentTeamMailRoutes: {
     list(scope: WorkspaceProfileScope, sessionId: string): Promise<AgentTeamMailRoutesSnapshot>

@@ -392,6 +392,7 @@ export function registerIpc(
   handle('agent-routes:search', (scope, query, excludeSessionId, limit) => service.searchAgentHandoffTargets(scope, query, excludeSessionId, limit))
   handle('cross-server:chats', scope => service.crossServerChats(scope))
   handle('cross-server:pair', (scope, input) => service.createCrossServerPair(scope, input))
+  handle('cross-server:create-chat', (scope, input) => service.createCrossServerChat(scope, input))
   handle('agent-routes:create', (scope, sessionId, input) => service.createAgentHandoffRoute(scope, sessionId, input))
   handle('agent-routes:update', (scope, sessionId, routeId, input) => service.updateAgentHandoffRoute(scope, sessionId, routeId, input))
   handle('agent-routes:remove', (scope, sessionId, routeId, expectedRevision) => service.deleteAgentHandoffRoute(scope, sessionId, routeId, expectedRevision))

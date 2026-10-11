@@ -339,7 +339,8 @@ const api: AgentsDockAPI = {
   },
   crossServer: {
     chats: scope => ipcRenderer.invoke('cross-server:chats', scope),
-    pair: (scope, input) => ipcRenderer.invoke('cross-server:pair', scope, input)
+    pair: (scope, input) => ipcRenderer.invoke('cross-server:pair', scope, input),
+    createChat: (scope, input) => ipcRenderer.invoke('cross-server:create-chat', scope, input)
   },
   agentTeamMailRoutes: {
     list: (scope, sessionId) => ipcRenderer.invoke('agent-team-mail-routes:list', scope, sessionId),

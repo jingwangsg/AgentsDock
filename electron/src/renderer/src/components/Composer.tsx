@@ -10,7 +10,7 @@ import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSe
 import { AlertTriangle, ArchiveRestore, ArrowDown, ArrowUp, CalendarClock, CheckCircle2, ChevronDown, Columns2, CornerDownRight, File, FolderOpen, Gauge, GitFork, Goal, GripVertical, Import, Info, ListOrdered, LoaderCircle, Mail, MessageSquarePlus, MessageSquareShare, MoreHorizontal, Network, Paperclip, Pencil, Plus, RadioTower, RotateCw, Send, Settings, Sparkles, Square, Trash2, X } from 'lucide-react'
 import { effectiveFileContentType } from '@shared/file-content-type'
 import { localSessionImportSupported } from '@shared/local-session-import'
-import type { AgentCrossChatRoute, AgentTeamMailRoute, AgentTeamMailRoutesSnapshot, AgentFile, ChatReference, ChatReferenceAction, ChatSearchTarget, CrossServerChats, Event as AgentEvent, Health, NativeFileRef, ProviderCommand, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
+import type { AgentCrossChatRoute, AgentTeamMailRoute, AgentTeamMailRoutesSnapshot, AgentFile, ChatReference, ChatReferenceAction, ChatSearchTarget, CrossServerChats, Event as AgentEvent, Health, NativeFileRef, NewAgentSettings, ProviderCommand, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
 import { teamAllServersAliasAvailable, teamBulletinAliasAvailable, type TeamNetworkServer } from '@shared/team-network'
 import { chatBackendChoice, chatBackendSelection, codexCustomProviderAvailable, cursorBackendAvailable, cursorBackendUnavailableReason, runtimeCatalogOptions, runtimeDiagnosticFor, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, selectableChatBackendChoices } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
@@ -19,7 +19,7 @@ import { CodexModelDiscovery } from './CodexModelDiscovery'
 import { cancelComposerEditorLayout, composerTextCanUseMirror, observeComposerEditorWidth, scheduleComposerEditorLayout, syncComposerEditorMirror } from '../lib/composer-editor-layout'
 import { nativeFileRefsFromFiles } from '../lib/native-files'
 import { profileSessionKey } from '../lib/profile-scope'
-import { orderedActiveSessions, rankMentionRows, rankSessionsForSearch, sessionMatchesQuery } from '../lib/sessions'
+import { orderedActiveSessions, rankMentionRows, rankSessionsForSearch, sessionMatchesQuery, sidebarFolders } from '../lib/sessions'
 import {
   assertTeamNetworkExpectedIdentity,
   loadTeamNetworkServers as loadCachedTeamNetworkServers,
@@ -51,7 +51,10 @@ import {
   exactQueuedPeerDeliverySkipAvailable,
   insertChatReference,
   insertCrossServerChatReference,
+  insertNewAgentChatReference,
   MAX_CHAT_REFERENCES,
+  NEW_AGENT_DISPLAY_TITLE,
+  NEW_AGENT_REFERENCE_ID,
   parseStoredChatReferences,
   reconcileChatReferences,
   routeHintMentionsAvailable,
@@ -120,6 +123,7 @@ import { MediaPreviewDialog } from './MediaGrid'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { WorkingDirectoryInput } from './WorkingDirectoryInput'
 import { WorkingDirectoryPopover } from './WorkingDirectoryPopover'
+import { DialogShell } from './DialogShell'
 
 const EMPTY_UPLOADS: AgentFile[] = []
 const EMPTY_UPLOAD_PATHS: NativeFileRef[] = []
@@ -241,13 +245,17 @@ function commitComposerSnapshot(
   })
 }
 
-/** `tag` names the current server when it is not the hub; remote candidates live on other servers under the hub. */
+/**
+ * `tag` names the current server when it is not the hub; remote candidates live on other
+ * servers under the hub; `new_agent` is the fixed "Create new agent" entry.
+ */
 type ChatMentionCandidate =
   | { kind: 'local'; id: string; session: Session; tag: string }
   | { kind: 'remote'; id: string; server: CrossServerChats; chat: ChatSearchTarget }
+  | { kind: 'new_agent'; id: typeof NEW_AGENT_REFERENCE_ID }
 
 /** The hub's chat list for the @ picker, seen from the active server; null when it cannot pair across servers. */
-type CrossServerMention = { localTag: string; servers: CrossServerChats[] }
+type CrossServerMention = { localTag: string; servers: CrossServerChats[]; createChats: boolean }
 
 const remoteAgentRouteUnavailable = () => t('teamNetwork.mention.remoteRouteUnavailable')
 
@@ -600,7 +608,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const [mention, setMention] = useState<ChatMentionTrigger | null>(null)
   const [mentionIndex, setMentionIndex] = useState(0)
   const [mentionCandidates, setMentionCandidates] = useState<ChatMentionCandidate[]>([])
-  const [crossServerSnapshot, setCrossServerSnapshot] = useState<{ key: string; servers: CrossServerChats[] } | null>(null)
+  const [crossServerSnapshot, setCrossServerSnapshot] = useState<{ key: string; servers: CrossServerChats[]; createChats: boolean } | null>(null)
   const [teamMention, setTeamMention] = useState<TeamMentionTrigger | null>(null)
   const [teamMentionIndex, setTeamMentionIndex] = useState(0)
   const [teamMentionCandidates, setTeamMentionCandidates] = useState<TeamMentionCandidate[]>([])
@@ -617,6 +625,8 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const [mcpDialogOpen, setMcpDialogOpen] = useState(false)
   const [claudeGoalOpen, setClaudeGoalOpen] = useState(false)
   const [workingDirectoryOpen, setWorkingDirectoryOpen] = useState(false)
+  // The @ span "Create new agent" was picked from; the new-agent dialog's confirm inserts the chip there.
+  const [newAgentTrigger, setNewAgentTrigger] = useState<ChatMentionTrigger | null>(null)
   useEffect(() => {
     providerCommandRequestRef.current += 1
     providerCommandBindingRef.current = null
@@ -725,8 +735,11 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     && supportedChatActions.includes('route')
     && supportedTargetBackends.length > 0
   const crossServerAvailable = crossChatSupported && health?.capabilities?.cross_server_mail_v1?.available === true
+  // The new chat inherits this chat's backend, so that backend must be a handoff target.
+  const newAgentSupported = crossChatSupported && Boolean(session && supportedTargetBackends.includes(session.backend))
   const crossServerKey = `${activeProfileId}:${profileGeneration}:${serverIdentity ?? ''}`
-  const mentionOpen = mention !== null
+  // The new-agent dialog lists the other servers too, so the request outlives the picker.
+  const mentionOpen = mention !== null || newAgentTrigger !== null
   // One hub request each time the @ picker opens, never per keystroke. Until it
   // answers (or when a server is unreachable) the picker lists this server's chats.
   useEffect(() => {
@@ -735,7 +748,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     if (!scope) return
     let current = true
     window.agentsDock.crossServer.chats(scope)
-      .then(snapshot => { if (current) setCrossServerSnapshot({ key: crossServerKey, servers: snapshot.servers }) })
+      .then(snapshot => { if (current) setCrossServerSnapshot({ key: crossServerKey, servers: snapshot.servers, createChats: snapshot.create_chats === true }) })
       .catch(() => undefined)
     return () => { current = false }
   }, [crossServerAvailable, crossServerKey, mentionOpen])
@@ -744,7 +757,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     const local = crossServerSnapshot.servers.find(server => server.server_identity === serverIdentity)
     // The hub lists only servers that can pair; without this one, nothing here can.
     if (!local) return null
-    return { localTag: local.name, servers: crossServerSnapshot.servers.filter(server => server !== local) }
+    return { localTag: local.name, servers: crossServerSnapshot.servers.filter(server => server !== local), createChats: crossServerSnapshot.createChats }
   }, [crossServerAvailable, crossServerKey, crossServerSnapshot, serverIdentity])
   const grantedTargetIds = useMemo(
     () => new Set(grantedRoutes.map(route => route.target_session_id)),
@@ -773,6 +786,8 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     if (reference.target_kind === 'secure_peer') return false
     // Its chat lives on another server: the hub checks it when pairing at send.
     if (reference.target_kind === 'cross_server') return crossServerAvailable && currentRouteHintReference(draft, reference)
+    // Its chat is created at send; until then only this chat's backend can rule it out.
+    if (reference.target_kind === 'new_agent') return newAgentSupported && currentRouteHintReference(draft, reference)
     const target = useAppStore.getState().sessions.find(candidate => candidate.id === reference.session_id)
     return Boolean(
       crossChatSupported
@@ -783,7 +798,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     )
   // The primitive revision subscribes only to referenced targets without
   // rerendering the composer for unrelated activity across hundreds of chats.
-  }, [crossChatSupported, crossServerAvailable, draft, referenceTargetsRevision, supportedTargetBackends])
+  }, [crossChatSupported, crossServerAvailable, draft, newAgentSupported, referenceTargetsRevision, supportedTargetBackends])
   const chatReferencesSupported = references.length === 0 || references.every(referenceSupported)
   const hasRemoteAgentReference = references.some(reference => reference.target_kind === 'secure_peer')
   const unsupportedAllServersReference = !teamAllServersSupported && hasAllServersReference(teamReferences)
@@ -1284,7 +1299,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       consumeComposer && routeHintsSupported
     )
     const outgoing = canonicalOutgoing.text
-    const outgoingReferences = canonicalOutgoing.chatReferences
+    let outgoingReferences = canonicalOutgoing.chatReferences
     const outgoingTeamReferences = canonicalOutgoing.teamReferences
     if (consumeComposer && uploadPaths.length > 0) return
     if (!outgoing.trim() && (!consumeComposer || uploads.length === 0)) return
@@ -1435,6 +1450,56 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         return
       }
       if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) return
+      const newAgentReference = outgoingReferences.find(reference => reference.target_kind === 'new_agent')
+      if (newAgentReference?.new_agent) {
+        // The chat exists before the turn starts, so its route is granted (or, on another
+        // server, paired below under the chip's label) like any @Chat's. The staged submission
+        // is renamed to the created chat at once: a failed or abandoned send restores that
+        // chip, so a retry pairs or grants again instead of creating a second chat.
+        const settings = newAgentReference.new_agent
+        const otherServer = settings.server_identity !== null && settings.server_identity !== serverIdentity
+        // The task's first words name the chat: the text without its chips, at the width of
+        // the server's own first-line titles; a title may not begin with @.
+        const withoutChips = [...outgoingReferences].sort((a, b) => b.source_text_start - a.source_text_start)
+          .reduce((text, reference) => `${text.slice(0, reference.source_text_start)}${text.slice(reference.source_text_end)}`, outgoing)
+        const title = [...withoutChips.trim().split('\n', 1)[0].trim()].slice(0, 72).join('').replace(/^@+\s*/u, '') || NEW_AGENT_DISPLAY_TITLE
+        const chat = { title, folder: settings.folder, backend: session.backend, model: settings.model, effort: settings.effort }
+        let created: Session
+        try {
+          if (otherServer) {
+            const scope = captureWorkspaceScope(useAppStore.getState())
+            if (!scope) throw new Error(t('ui.composer.crossServer.unavailable'))
+            // '' lets the other server choose its default directory.
+            created = await window.agentsDock.crossServer.createChat(scope, { ...chat, server_identity: settings.server_identity!, cwd: '' })
+          } else {
+            created = await window.agentsDock.sessions.create({
+              ...chat,
+              cwd: session.cwd?.trim() || '',
+              ...(session.codex_provider === 'custom' ? { codex_provider: 'custom' as const } : {}),
+              system_prompt: null
+            })
+            // load-bearing: the store refuses a same-server reference whose chat is not yet in its session list.
+            await useAppStore.getState().refreshSessions()
+          }
+          trackEvent('chat_created')
+        } catch (error) {
+          if (composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) reportActionError(error)
+          return
+        }
+        const createdReference = {
+          session_id: created.id,
+          display_title_snapshot: newAgentReference.display_title_snapshot,
+          source_text_start: newAgentReference.source_text_start,
+          source_text_end: newAgentReference.source_text_end,
+          action: 'route' as const
+        }
+        const replacement = otherServer
+          ? { ...createdReference, target_kind: 'cross_server' as const, target_server_identity: settings.server_identity! }
+          : { ...createdReference, grant_intent: true as const }
+        outgoingReferences = outgoingReferences.map(reference => reference === newAgentReference ? replacement : reference)
+        useAppStore.getState().replacePendingTurnSubmissionChatReferences(session.id, admissionToken, outgoingReferences)
+        if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) return
+      }
       const crossServerReferences = outgoingReferences.filter(reference => reference.target_kind === 'cross_server')
       if (crossServerReferences.length) {
         // The hub pairs the chats first, so this turn's agent already sees the route.
@@ -1442,11 +1507,20 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         try {
           if (!scope || !serverIdentity) throw new Error(t('ui.composer.crossServer.unavailable'))
           for (const reference of crossServerReferences) {
+            // The pair's label on this side is the chip's title part: the user's instruction is
+            // delegated only when the chip text names that label, and a new agent's chip says
+            // "New agent" whatever its chat is named.
+            const server = crossServerMention?.servers.find(candidate => candidate.server_identity === reference.target_server_identity)
+            const tag = server?.name ? ` · ${server.name}` : ''
+            const label = server && reference.display_title_snapshot.endsWith(tag)
+              ? reference.display_title_snapshot.slice(0, reference.display_title_snapshot.length - tag.length)
+              : null
             await window.agentsDock.crossServer.pair(scope, {
               source_server_identity: serverIdentity,
               source_session_id: session.id,
               target_server_identity: reference.target_server_identity!,
-              target_session_id: reference.session_id
+              target_session_id: reference.session_id,
+              ...(label ? { target_label: label } : {})
             })
           }
         } catch (error) {
@@ -1660,7 +1734,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     setTeamMentionCandidates([])
     setTeamMentionIndex(0)
     setMention(nextMention)
-    setMentionCandidates(nextMention && selectedId ? currentMentionCandidates(nextMention, selectedId, supportedTargetBackends, crossChatSupported, crossServerMention) : [])
+    setMentionCandidates(nextMention && selectedId ? currentMentionCandidates(nextMention, selectedId, supportedTargetBackends, crossChatSupported, crossServerMention, newAgentSupported) : [])
     setMentionIndex(0)
   }
   const focusCommandSession = () => {
@@ -1762,6 +1836,22 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     const action: ChatReferenceAction = 'route'
     if (!action || !supportedChatActions.includes(action)) {
       useAppStore.getState().setError('Update AgentsServer to use inline @Chat route hints.')
+      setMention(null)
+      setMentionCandidates([])
+      return
+    }
+    if (target.kind === 'new_agent') {
+      if (referencesRef.current.some(reference => reference.target_kind === 'new_agent')) {
+        useAppStore.getState().setError(t('ui.composer.newAgent.alreadySelected'))
+      } else if (referencesRef.current.length >= MAX_CHAT_REFERENCES) {
+        useAppStore.getState().setError(`A message can reference at most ${MAX_CHAT_REFERENCES} chats. Remove a chat reference before adding another.`)
+      } else if (remainingNewRouteCapacity !== null && remainingNewRouteCapacity < 1) {
+        const maximum = agentRouteSnapshot?.max_routes ?? grantedRoutes.length
+        useAppStore.getState().setError(`This chat has reached its route access limit (${maximum} ${maximum === 1 ? 'route' : 'routes'} maximum). Revoke a granted route before adding another chat.`)
+      } else {
+        // The new-agent dialog completes the insertion into this @ span.
+        setNewAgentTrigger(mention)
+      }
       setMention(null)
       setMentionCandidates([])
       return
@@ -2035,7 +2125,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
             setTeamMentionCandidates([])
             setTeamMentionIndex(0)
             setMention(nextMention)
-            setMentionCandidates(nextMention && selectedId ? currentMentionCandidates(nextMention, selectedId, supportedTargetBackends, crossChatSupported, crossServerMention) : [])
+            setMentionCandidates(nextMention && selectedId ? currentMentionCandidates(nextMention, selectedId, supportedTargetBackends, crossChatSupported, crossServerMention, newAgentSupported) : [])
             setMentionIndex(0)
           }}
           onBlur={() => {
@@ -2210,6 +2300,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         selectedIndex={mentionIndex}
         supported={crossChatSupported}
         localSupported={crossChatSupported}
+        newAgentSupported={newAgentSupported}
         supportedTargetBackends={supportedTargetBackends}
         requestReplySupportedForSource={requestReplySupportedForSource}
         maximumReferencesSelected={references.length >= MAX_CHAT_REFERENCES}
@@ -2287,6 +2378,17 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         session={session}
         onOpenChange={setWorkingDirectoryOpen}
       />}
+      <NewAgentDialog
+        trigger={newAgentTrigger}
+        session={session}
+        servers={crossServerMention?.createChats ? crossServerMention.servers : []}
+        localServerName={crossServerMention?.localTag ?? ''}
+        onOpenChange={open => { if (!open) setNewAgentTrigger(null) }}
+        onConfirm={(trigger, settings, serverName) => {
+          setNewAgentTrigger(null)
+          applyInsertedChatReference(insertNewAgentChatReference(draftRef.current, trigger, settings, serverName))
+        }}
+      />
       <ClaudeMcpDialog
         open={mcpDialogOpen}
         session={session}
@@ -2429,9 +2531,12 @@ function currentMentionCandidates(
   selectedId: string,
   supportedTargetBackends: readonly Session['backend'][],
   localRouteHintsSupported: boolean,
-  crossServer: CrossServerMention | null
+  crossServer: CrossServerMention | null,
+  newAgentSupported: boolean
 ): ChatMentionCandidate[] {
   const state = useAppStore.getState()
+  // Listed first: rankMentionRows keeps array order for an empty query and ranks it by its label otherwise.
+  const newAgent: ChatMentionCandidate[] = newAgentSupported ? [{ kind: 'new_agent', id: NEW_AGENT_REFERENCE_ID }] : []
   const local: ChatMentionCandidate[] = localRouteHintsSupported ? orderedActiveSessions(state.sessions, state.folderOrder)
     .filter(candidate => (
       candidate.id !== selectedId
@@ -2444,15 +2549,19 @@ function currentMentionCandidates(
     .map(chat => ({ kind: 'remote' as const, id: `remote-${server.server_identity}-${chat.id}`, server, chat })))
   const idQuery = mention.query.trim().toLocaleLowerCase()
   return rankMentionRows(
-    [...local, ...remote],
+    [...newAgent, ...local, ...remote],
     mention.query,
-    candidate => candidate.kind === 'local'
-      ? [candidate.session.title, candidate.session.folder, candidate.tag]
-      : [candidate.chat.title, candidate.chat.folder, candidate.server.name],
+    candidate => candidate.kind === 'new_agent'
+      ? [t('ui.composer.newAgent.option')]
+      : candidate.kind === 'local'
+        ? [candidate.session.title, candidate.session.folder, candidate.tag]
+        : [candidate.chat.title, candidate.chat.folder, candidate.server.name],
     // What the sidebar search also covers (backend, model, folder path, ids); a pasted remote chat id.
-    candidate => candidate.kind === 'local'
-      ? sessionMatchesQuery(candidate.session, mention.query)
-      : candidate.chat.id.toLocaleLowerCase().includes(idQuery)
+    candidate => candidate.kind === 'new_agent'
+      ? false
+      : candidate.kind === 'local'
+        ? sessionMatchesQuery(candidate.session, mention.query)
+        : candidate.chat.id.toLocaleLowerCase().includes(idQuery)
   )
 }
 
@@ -3009,6 +3118,78 @@ function composerCommandIcon(command: ComposerCommand) {
   }
 }
 
+/** Where and with which runtime "Create new agent" makes its chat on send; the current chat's values are the defaults. */
+function NewAgentDialog({
+  trigger,
+  session,
+  servers,
+  localServerName,
+  onOpenChange,
+  onConfirm
+}: {
+  trigger: ChatMentionTrigger | null
+  session: Session
+  /** Other servers under the hub that can host the chat; empty when the hub cannot pair across servers. */
+  servers: readonly CrossServerChats[]
+  localServerName: string
+  onOpenChange: (open: boolean) => void
+  onConfirm: (trigger: ChatMentionTrigger, settings: NewAgentSettings, serverName: string) => void
+}) {
+  useLocale()
+  const catalog = useAppStore(state => state.runtimeCatalog)
+  const folderListId = `new-agent-folders-${useId().replace(/:/g, '')}`
+  const open = trigger !== null
+  const [model, setModel] = useState('')
+  const [effort, setEffort] = useState('')
+  const [serverIdentity, setServerIdentity] = useState<string | null>(null)
+  const [folder, setFolder] = useState('')
+  useEffect(() => {
+    if (!open) return
+    setModel(session.model ?? '')
+    setEffort(session.effort ?? '')
+    setServerIdentity(null)
+    setFolder(session.folder?.trim() || 'General')
+  }, [open, session.effort, session.folder, session.id, session.model])
+  // Read once per opening: the always-mounted composer must not rerender on every chat update.
+  const folders = useMemo(() => {
+    if (!open) return []
+    if (serverIdentity === null) {
+      const state = useAppStore.getState()
+      return sidebarFolders(state.sessions, state.folderOrder)
+    }
+    const chats = servers.find(server => server.server_identity === serverIdentity)?.chats ?? []
+    return [...new Set(chats.map(chat => chat.folder?.trim() || 'General'))].sort()
+  }, [open, serverIdentity, servers])
+  const models = runtimeCatalogOptions(catalog, session.backend, 'models', model || null, session.codex_provider, session.codex_provider_catalog)
+  const efforts = runtimeEffortOptions(catalog, session.backend, model || null, effort || null, session.codex_provider, session.codex_provider_catalog)
+  const hasReasoning = session.backend !== 'cursor' && session.backend !== 'opencode' && efforts.some(option => Boolean(option.value))
+  const selectModel = (value: string) => {
+    setModel(value)
+    setEffort(runtimeEffortAfterModelChange(catalog, session.backend, value || null, effort || null, session.codex_provider, session.codex_provider_catalog) || '')
+  }
+  const serverName = servers.find(server => server.server_identity === serverIdentity)?.name ?? ''
+  return <DialogShell
+    open={open}
+    onOpenChange={onOpenChange}
+    title={t('ui.composer.newAgent.dialogTitle')}
+    description={t('ui.composer.newAgent.dialogDescription', { backend: backendLabel(session.backend, session.codex_provider) })}
+  >
+    <form className="dialog-form two-column-form" onSubmit={event => {
+      event.preventDefault()
+      if (trigger) onConfirm(trigger, { model: model || null, effort: effort || null, server_identity: serverIdentity, folder: folder.trim() || 'General' }, serverName)
+    }}>
+      {servers.length > 0 && <label><span>{t('ui.composer.newAgent.server')}</span><select value={serverIdentity ?? ''} onChange={event => setServerIdentity(event.target.value || null)}>
+        <option value="">{localServerName ? `${t('ui.composer.newAgent.thisServer')} · ${localServerName}` : t('ui.composer.newAgent.thisServer')}</option>
+        {servers.map(server => <option value={server.server_identity} key={server.server_identity}>{server.name || t('ui.composer.newAgent.hub')}</option>)}
+      </select></label>}
+      <label className={servers.length > 0 ? undefined : 'span-two'}><span>{t('ui.composer.newAgent.folder')}</span><input value={folder} onChange={event => setFolder(event.target.value)} list={folderListId} /><datalist id={folderListId}>{folders.map(item => <option key={item}>{item}</option>)}</datalist></label>
+      <label className={hasReasoning ? undefined : 'span-two'}><span>{t('ui.composer.newAgent.model')}</span><select value={model} onChange={event => selectModel(event.target.value)}>{models.map(option => <option value={option.value} key={option.value || 'default'} disabled={option.locked}>{option.label}</option>)}</select></label>
+      {hasReasoning && <label><span>{t('ui.composer.newAgent.reasoning')}</span><select value={effort} onChange={event => setEffort(event.target.value)}>{efforts.map(option => <option value={option.value} key={option.value || 'default'}>{option.label}</option>)}</select></label>}
+      <footer className="span-two"><button type="button" className="quiet-button" onClick={() => onOpenChange(false)}>{t('ui.composer.newAgent.cancel')}</button><button className="primary-button">{t('ui.composer.newAgent.confirm')}</button></footer>
+    </form>
+  </DialogShell>
+}
+
 function WorkingDirectoryCommandDialog({
   open,
   session,
@@ -3090,6 +3271,7 @@ function ChatMentionPalette({
   selectedIndex,
   supported,
   localSupported,
+  newAgentSupported,
   supportedTargetBackends,
   requestReplySupportedForSource,
   maximumReferencesSelected,
@@ -3111,6 +3293,7 @@ function ChatMentionPalette({
   selectedIndex: number
   supported: boolean
   localSupported: boolean
+  newAgentSupported: boolean
   supportedTargetBackends: readonly Session['backend'][]
   requestReplySupportedForSource: boolean
   maximumReferencesSelected: boolean
@@ -3139,8 +3322,8 @@ function ChatMentionPalette({
     // shared selector then applies identical ranking for keyboard and click.
     void sessions
     void folderOrder
-    return currentMentionCandidates(mention, selectedId, supportedTargetBackends, localSupported, crossServer)
-  }, [crossServer, folderOrder, localSupported, mention, selectedId, sessions, supportedTargetBackends])
+    return currentMentionCandidates(mention, selectedId, supportedTargetBackends, localSupported, crossServer, newAgentSupported)
+  }, [crossServer, folderOrder, localSupported, mention, newAgentSupported, selectedId, sessions, supportedTargetBackends])
   const grantByTarget = useMemo(
     () => new Map(grantedRoutes.map(route => [route.target_session_id, route])),
     [grantedRoutes]
@@ -3176,6 +3359,31 @@ function ChatMentionPalette({
       ? <div className="chat-mention-empty"><AlertTriangle size={14} /><span><strong>{t("ui.Composer.ChatMentionPalette.server_update_required_4a5a2af")}</strong><small>{t("ui.Composer.ChatMentionPalette.cross_chat_handoffs_are_unavailable_on_thi_85df9b0")}</small></span></div>
       : <>
         {candidates.map((candidate, index) => {
+          if (candidate.kind === 'new_agent') {
+            // A new chat needs a new route like an unpaired local chat does.
+            const routeCapacityReached = !pendingGrantTargetIds.has(NEW_AGENT_REFERENCE_ID)
+              && remainingNewRouteCapacity !== null
+              && remainingNewRouteCapacity < 1
+            return <div className="chat-mention-option-row" key={candidate.id}>
+              <button
+                ref={node => { optionRefs.current[index] = node }}
+                id={`${id}-${candidate.id}`}
+                type="button"
+                role="option"
+                aria-selected={index === selectedIndex}
+                disabled={maximumReferencesSelected || routeCapacityReached}
+                title={maximumReferencesSelected
+                  ? t("ui.Composer.a_message_can_reference_at_most_chats_d18596a", { "maximum": String(MAX_CHAT_REFERENCES) })
+                  : routeCapacityReached
+                    ? t("ui.Composer.revoke_a_granted_route_before_adding_anoth_063538c")
+                    : undefined}
+                className={`chat-mention-option${index === selectedIndex ? ' selected' : ''}`}
+                onMouseDown={event => event.preventDefault()}
+                onClick={() => onSelect(candidate)}
+              ><MessageSquarePlus size={15} /><span><strong>{t('ui.composer.newAgent.option')}</strong><small>{t('ui.composer.newAgent.optionHint')}</small></span>
+              </button>
+            </div>
+          }
           if (candidate.kind === 'remote') {
             return <div className="chat-mention-option-row" key={candidate.id}>
               <button

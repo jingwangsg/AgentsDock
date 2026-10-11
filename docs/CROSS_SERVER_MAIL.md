@@ -66,7 +66,8 @@ Client-facing, on the hub:
 
 ```text
 GET    /api/cross-server/chats                    live servers and their chats
-POST   /api/cross-server/pairs                    pair two chats (idempotent)
+POST   /api/cross-server/chats                    create a chat on one of them (the composer's "Create new agent")
+POST   /api/cross-server/pairs                    pair two chats (idempotent); `target_label` is the chip's title part
 GET    /api/cross-server/pairs?server_identity=&session_id=
 DELETE /api/cross-server/pairs/{pair_id}
 ```

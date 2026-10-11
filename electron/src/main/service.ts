@@ -45,6 +45,7 @@ import type {
   TeamReference,
   ChatSearchSnapshot,
   CrossServerChatsSnapshot,
+  CrossServerChatInput,
   CrossServerPairInput,
   CreateAgentCrossChatRouteInput,
   CrossChatExchange,
@@ -4399,6 +4400,10 @@ export class AppService {
 
   createCrossServerPair(expected: WorkspaceProfileScope, input: CrossServerPairInput): Promise<void> {
     return this.withCrossServerClient(expected, client => client.createCrossServerPair(input))
+  }
+
+  createCrossServerChat(expected: WorkspaceProfileScope, input: CrossServerChatInput): Promise<Session> {
+    return this.withCrossServerClient(expected, client => client.createCrossServerChat(input))
   }
 
   async createAgentHandoffRoute(

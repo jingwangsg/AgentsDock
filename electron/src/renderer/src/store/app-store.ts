@@ -262,6 +262,7 @@ interface AppState {
   endTurnAdmission(sessionId: string, token: string): void
   stagePendingTurnSubmission(sessionId: string, token: string, input: PendingTurnSubmissionInput): boolean
   rollbackPendingTurnSubmission(sessionId: string, token: string): void
+  replacePendingTurnSubmissionChatReferences(sessionId: string, token: string, chatReferences: ChatReference[]): void
   sendPrompt(promptOverride?: string, steer?: boolean, options?: SendPromptOptions): Promise<boolean>
   sendPromptForSession(sessionId: string, promptOverride?: string, steer?: boolean, options?: SendPromptOptions): Promise<boolean>
   stopTurn(): Promise<void>
@@ -1704,6 +1705,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   rollbackPendingTurnSubmission(sessionId, token) {
     set(state => rollbackPendingTurnSubmissionState(state, sessionId, token))
+  },
+
+  /** The send and a failed send's restore both read the staged references, so a chat created during preflight is named there. */
+  replacePendingTurnSubmissionChatReferences(sessionId, token, chatReferences) {
+    set(state => {
+      const pending = state.pendingTurnSubmissions[sessionId]
+      if (!pending || pending.token !== token) return state
+      return { pendingTurnSubmissions: { ...state.pendingTurnSubmissions, [sessionId]: { ...pending, chatReferences: chatReferences.map(reference => ({ ...reference })) } } }
+    })
   },
 
   async sendPrompt(promptOverride, steer = false, options) {

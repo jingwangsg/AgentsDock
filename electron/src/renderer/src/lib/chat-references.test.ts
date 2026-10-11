@@ -12,8 +12,10 @@ import {
   defaultCrossChatAction,
   insertChatReference,
   insertCrossServerChatReference,
+  insertNewAgentChatReference,
   insertSecurePeerChatReference,
   MAX_CHAT_REFERENCES,
+  NEW_AGENT_REFERENCE_ID,
   parseStoredChatReferences,
   reconcileChatReferences,
   routeHintMentionsAvailable,
@@ -553,5 +555,41 @@ describe('chat references', () => {
     expect(validChatReferences(text, [base], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...base, target_server_identity: 'srv-l40', target_route_id: 'route_x' }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...base, target_server_identity: 'srv-l40', action: 'instruction' as const }], 'source-chat')).toEqual([])
+  })
+
+  it('keeps the "Create new agent" placeholder as one route hint until the composer creates the chat', () => {
+    const settings = { model: 'gpt-5-codex', effort: 'high', server_identity: null, folder: 'Research' }
+    const inserted = insertNewAgentChatReference('ask @cre', chatMentionTrigger('ask @cre', 8)!, settings)
+    expect(inserted.text).toBe('ask @New agent ')
+    expect(inserted.reference).toEqual({
+      session_id: NEW_AGENT_REFERENCE_ID, display_title_snapshot: 'New agent', source_text_start: 4, source_text_end: 14,
+      action: 'route', grant_intent: true, target_kind: 'new_agent', new_agent: settings
+    })
+    expect(validChatReferences(inserted.text, [inserted.reference], 'source-chat')).toEqual([inserted.reference])
+    expect(parseStoredChatReferences([inserted.reference], inserted.text, 'source-chat')).toEqual([inserted.reference])
+    expect(canonicalizeLocalRouteHints(inserted.text, [inserted.reference], 'source-chat').references).toEqual([inserted.reference])
+    // One new agent per message: a second marker is dropped.
+    const twice = `${inserted.text}@New agent`
+    const second = { ...inserted.reference, source_text_start: inserted.text.length, source_text_end: twice.length }
+    expect(validChatReferences(twice, [inserted.reference, second], 'source-chat')).toEqual([inserted.reference])
+    // On another server the chip carries the server tag like any remote chat; the hub has none.
+    const remote = insertNewAgentChatReference('@', chatMentionTrigger('@', 1)!, { ...settings, server_identity: 'srv-l40' }, 'osmo_dev_l40')
+    expect(remote.text).toBe('@New agent · osmo_dev_l40 ')
+    expect(remote.reference.new_agent).toEqual({ ...settings, server_identity: 'srv-l40' })
+    expect(insertNewAgentChatReference('@', chatMentionTrigger('@', 1)!, { ...settings, server_identity: 'srv-hub' }, '').text).toBe('@New agent ')
+  })
+
+  it('rejects a new-agent marker without grant intent, settings or the placeholder id', () => {
+    const text = '@New agent'
+    const marker = {
+      session_id: NEW_AGENT_REFERENCE_ID, display_title_snapshot: 'New agent', source_text_start: 0, source_text_end: text.length,
+      action: 'route' as const, grant_intent: true as const, target_kind: 'new_agent' as const,
+      new_agent: { model: null, effort: null, server_identity: null, folder: 'General' }
+    }
+    expect(validChatReferences(text, [marker], 'source-chat')).toEqual([marker])
+    expect(validChatReferences(text, [{ ...marker, grant_intent: undefined }], 'source-chat')).toEqual([])
+    expect(validChatReferences(text, [{ ...marker, new_agent: undefined }], 'source-chat')).toEqual([])
+    expect(validChatReferences(text, [{ ...marker, session_id: 'sess_real' }], 'source-chat')).toEqual([])
+    expect(validChatReferences(text, [{ ...marker, target_server_identity: 'srv-l40' }], 'source-chat')).toEqual([])
   })
 })
