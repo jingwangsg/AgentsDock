@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { SSH_HOST_ALIAS_PATTERN } from '../shared/ssh-host-alias'
-import { sshDestination, writeSshHost } from './ssh-hosts'
+import { sshDestination, writeSshHost, writeTunnelSshHost } from './ssh-hosts'
 
 export interface OpenInZedInput {
   /** Absolute path on the server that owns the chat. */
@@ -38,13 +38,19 @@ export function findZedCli(candidates: readonly string[] = ZED_CLI_CANDIDATES): 
   return candidates.find(candidate => existsSync(candidate)) ?? null
 }
 
-export async function openInZed(input: OpenInZedInput): Promise<void> {
+/**
+ * Launches Zed on the path. `tunnelPort` is the local port of AgentsDock's tunnel to the remote's
+ * sshd; without it (a server from before that tunnel) the alias copies the host's own ssh entry.
+ */
+export async function openInZed(input: OpenInZedInput, tunnelPort?: number): Promise<void> {
   const target = zedTarget(input)
   const cli = findZedCli()
   if (!cli) throw new Error('Zed CLI not found. Install Zed and run "Install CLI" from its Zed menu.')
-  // The alias file carries the host's resolved address and keys; a Sky cluster's change between
-  // opens must not strand Zed, so the file is rewritten right before Zed connects.
-  if (input.hostAlias?.trim() && input.sshHost?.trim()) await writeSshHost(input.hostAlias.trim(), input.sshHost.trim())
+  const alias = input.hostAlias?.trim()
+  const sshHost = input.sshHost?.trim()
+  // The alias file carries how this Mac reaches the host now (the tunnel's port, or a Sky cluster's
+  // resolved address and keys); a change between opens must not strand Zed, so it is rewritten right before Zed connects.
+  if (alias && sshHost) await (tunnelPort === undefined ? writeSshHost(alias, sshHost) : writeTunnelSshHost(alias, sshHost, tunnelPort))
   await new Promise<void>((resolve, reject) => {
     execFile(cli, [target], { timeout: 15_000 }, error => (error ? reject(error) : resolve()))
   })

@@ -1,5 +1,50 @@
 # Public development log
 
+## 2026-10-11 — Open in Zed reaches every remote through the app's port tunnel (desktop + server source)
+
+- Open in Zed failed on an `osmo@<workflow>` remote with "An osmo@ workflow is
+  reached through `osmo workflow exec`; it has no plain SSH host": the alias
+  AgentsDock wrote for a remote copied the host's own ssh entry (`ssh -G`), and
+  an OSMO workflow has none. The same copy made Zed depend on the Sky CA
+  environment for Kubernetes clusters and did not strip `aws@`.
+- One route now serves every remote kind. Open in Zed asks the chat's server
+  for a port tunnel to its own sshd (port 22, through the hub proxy for a hub
+  remote), writes the alias as `HostName 127.0.0.1`, `Port <local port>` with
+  no host-key check (every server presents its own key on that one port), and
+  launches `zed ssh://<alias>/<path>` as before. Who logs in and with which
+  key still comes from the host's own ssh entry (`ssh -G`, with `oci@` and
+  `aws@` stripped to Sky's alias); an `osmo@` workflow logs in as root with the
+  default keys, as the hub does. The tunnel is kept apart from the chats'
+  tunnels: it survives a profile switch and the chat's archive (the server
+  refuses new connections for an archived chat, after which the next Open in
+  Zed opens a fresh tunnel), is reused by every chat opened on that server,
+  and closes with the app. While it is open, `ssh <alias>` from a terminal
+  goes through it too; a profile change still rewrites the alias from the
+  host's own entry.
+- Server: a chat's tunnel may name port 22, the one port below the 1024
+  floor, and `/api/health` advertises it as `port_forwarding_v1.ssh_port`. A
+  desktop talking to a server without it keeps the previous alias route for
+  Sky clusters and plain hosts and names the needed server update for an
+  `osmo@` workflow. The server part reaches a remote only when that server is
+  redeployed.
+- Verification. Test surface: an isolated desktop build and two isolated
+  servers on this Mac (one from the branch, one from the previous source),
+  driven through the real chat header button. Against the branch server, the
+  alias carried the tunnel's loopback port and `User root` for an `osmo@`
+  host, the server accepted the chat's tunnel to port 22, Zed launched and
+  began ssh authentication, and `ssh <alias>` reached the Mac's own sshd
+  banner through the tunnel; the login itself was refused by this Mac's sshd
+  policy. A second click reused the tunnel; the listener survived a profile
+  switch and served a new connection; archiving the chat made the server
+  refuse the next connection and the desktop drop the listener; unarchiving
+  and clicking again opened a new tunnel; quitting the app closed it. A plain
+  host yielded the `ssh -G` user and key options. Against the previous server,
+  an `osmo@` host showed the update message. Unit tests cover the port floor
+  on the server, the manager and the client, the alias block, and the service
+  route choice. Not exercised: a real OSMO pod or Sky cluster through the
+  tunnel (the deployed remotes were not redeployed), and the previous alias
+  route for a non-`osmo@` host on an old server beyond its unit test.
+
 ## 2026-10-11 — Remote servers on SkyPilot AWS clusters: `aws@<cluster>` (server source)
 
 - Adding a remote server as `oci@<cluster>` for a SkyPilot cluster on AWS

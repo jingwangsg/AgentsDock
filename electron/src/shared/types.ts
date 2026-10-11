@@ -1476,6 +1476,8 @@ export interface PortForwardingCapability extends ServerCapability {
   transport?: string
   destination_host?: string
   minimum_port?: number
+  /** The server lets a chat forward this port (22) below minimum_port; absent on servers whose Open in Zed route is the host's own ssh entry. */
+  ssh_port?: number
   maximum_port?: number
   max_active_connections?: number
   max_active_connections_per_session?: number

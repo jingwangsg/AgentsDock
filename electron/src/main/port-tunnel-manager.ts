@@ -7,6 +7,8 @@ export const PORT_TUNNEL_MAX_LISTENERS_GLOBAL = 64
 export const PORT_TUNNEL_MAX_LISTENERS_PER_SESSION = 16
 export const PORT_TUNNEL_MAX_BRIDGES_GLOBAL = 64
 export const PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL = 16
+/** sshd's port: the one port below the 1024 floor a chat may forward, so Open in Zed reaches a remote's shell through the tunnel. */
+export const PORT_TUNNEL_SSH_PORT = 22
 
 const MAX_PENDING_BYTES = 4 * 1024 * 1024
 // The WebSocket cannot pause the remote, so bytes a slow local reader has not taken stay in the
@@ -69,7 +71,7 @@ export class PortTunnelManager {
     maxBridgesPerSession = PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL
   ): Promise<ForwardedPort> {
     requireSessionId(sessionId)
-    requireTCPPort(remotePort, 'Remote', this.minimumRemotePort)
+    requireRemotePort(remotePort, this.minimumRemotePort)
     if (preferredLocalPort !== undefined) requireTCPPort(preferredLocalPort, 'Local')
     if (typeof createRemoteSocket !== 'function') throw new Error('A remote port tunnel transport is required.')
     const boundedSessionBridgeLimit = boundedBridgeLimit(maxBridgesPerSession)
@@ -130,7 +132,7 @@ export class PortTunnelManager {
 
   async stop(sessionId: string, remotePort: number): Promise<void> {
     requireSessionId(sessionId)
-    requireTCPPort(remotePort, 'Remote', this.minimumRemotePort)
+    requireRemotePort(remotePort, this.minimumRemotePort)
     const tunnel = this.tunnels.get(tunnelKey(sessionId, remotePort))
     if (!tunnel) return
     this.tunnels.delete(tunnel.key)
@@ -149,7 +151,7 @@ export class PortTunnelManager {
     createRemoteSocket: () => WebSocket
   ): boolean {
     requireSessionId(sessionId)
-    requireTCPPort(remotePort, 'Remote', this.minimumRemotePort)
+    requireRemotePort(remotePort, this.minimumRemotePort)
     const tunnel = this.tunnels.get(tunnelKey(sessionId, remotePort))
     if (!tunnel || tunnel.createRemoteSocket !== createRemoteSocket) return false
     this.tunnels.delete(tunnel.key)
@@ -160,7 +162,7 @@ export class PortTunnelManager {
 
   url(sessionId: string, remotePort: number): string {
     requireSessionId(sessionId)
-    requireTCPPort(remotePort, 'Remote', this.minimumRemotePort)
+    requireRemotePort(remotePort, this.minimumRemotePort)
     const tunnel = this.tunnels.get(tunnelKey(sessionId, remotePort))
     if (!tunnel || tunnel.closed || tunnel.localPort < 1) {
       throw new Error(`Remote port ${remotePort} is not forwarded for this chat.`)
@@ -515,6 +517,10 @@ function requireSessionId(value: string): void {
   if (typeof value !== 'string' || value.length < 1 || value.length > 2_048 || /[\u0000-\u001f\u007f]/.test(value)) {
     throw new Error('Invalid chat for port forwarding.')
   }
+}
+
+function requireRemotePort(value: number, minimum: number): void {
+  if (value !== PORT_TUNNEL_SSH_PORT) requireTCPPort(value, 'Remote', minimum)
 }
 
 function requireTCPPort(value: number, label: string, minimum = 1_024): void {

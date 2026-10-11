@@ -1304,6 +1304,9 @@ PORT_TUNNEL_WEBSOCKET_PROTOCOL = "agentsdock-port-tunnel-v1"
 PORT_TUNNEL_TOKEN_PROTOCOL_PREFIX = "agentsdock-token."
 PORT_TUNNEL_LOOPBACK_HOST = "127.0.0.1"
 PORT_TUNNEL_MIN_PORT = 1024
+# sshd's port: the one port below the floor a chat may forward, so the desktop's
+# Open in Zed reaches a remote's shell through the tunnel instead of its own ssh route.
+PORT_TUNNEL_SSH_PORT = 22
 PORT_TUNNEL_MAX_PORT = 65535
 PORT_TUNNEL_MAX_ACTIVE_GLOBAL = max(
     1,
@@ -6660,7 +6663,7 @@ def canonical_port_tunnel_port(value: Any, minimum_port: int = PORT_TUNNEL_MIN_P
     if not re.fullmatch(r"[0-9]{1,5}", raw):
         raise ValueError("port must be an explicit decimal TCP port")
     port = int(raw)
-    if port < minimum_port or port > PORT_TUNNEL_MAX_PORT:
+    if (port < minimum_port and port != PORT_TUNNEL_SSH_PORT) or port > PORT_TUNNEL_MAX_PORT:
         raise ValueError(
             f"port must be between {minimum_port} and "
             f"{PORT_TUNNEL_MAX_PORT}"
@@ -84483,6 +84486,8 @@ async def health() -> dict[str, Any]:
                 "transport": "binary_websocket",
                 "destination_host": PORT_TUNNEL_LOOPBACK_HOST,
                 "minimum_port": PORT_TUNNEL_MIN_PORT,
+                # Advertised so a desktop on an older server keeps its own ssh route to the host.
+                "ssh_port": PORT_TUNNEL_SSH_PORT,
                 "maximum_port": PORT_TUNNEL_MAX_PORT,
                 "max_active_connections": PORT_TUNNEL_MAX_ACTIVE_GLOBAL,
                 "max_active_connections_per_session": (

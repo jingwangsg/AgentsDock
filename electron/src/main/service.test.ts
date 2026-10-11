@@ -90,9 +90,12 @@ vi.mock('electron', () => ({
 
 // A test must never kickstart this machine's real local server.
 vi.mock('./local-hub', async importOriginal => ({ ...await importOriginal<typeof import('./local-hub')>(), startLocalServerAgent: vi.fn() }))
+// Nor launch this machine's Zed.
+vi.mock('./open-in-zed', () => ({ openInZed: vi.fn(async () => undefined) }))
 
 import { LocalCache, TIMELINE_PAGING_SCHEMA_VERSION } from './persistence'
 import { startLocalServerAgent } from './local-hub'
+import { openInZed as launchZed } from './open-in-zed'
 import {
   ServerError,
   TeamHubBootstrapTransportError,
@@ -10641,7 +10644,7 @@ describe('service stop and restart', () => {
 })
 
 describe('rapid profile resource teardown', () => {
-  const portForwardingHealth = (serverIdentity = 'server-a', perSessionLimit = 16): Health => ({
+  const portForwardingHealth = (serverIdentity = 'server-a', perSessionLimit = 16, sshPort?: number): Health => ({
     ok: true,
     server_identity: serverIdentity,
     capabilities: {
@@ -10651,7 +10654,8 @@ describe('rapid profile resource teardown', () => {
         required: false,
         message: 'Port forwarding is available.',
         action: null,
-        max_active_connections_per_session: perSessionLimit
+        max_active_connections_per_session: perSessionLimit,
+        ...(sshPort === undefined ? {} : { ssh_port: sshPort })
       }
     }
   })
@@ -10725,6 +10729,57 @@ describe('rapid profile resource teardown', () => {
     expect(start).toHaveBeenCalledWith(
       'chat-a', 7007, undefined, expect.any(Function), 7
     )
+  })
+
+  it('opens a remote chat in Zed through a tunnel of its own to the server\'s ssh port, keyed by server', async () => {
+    const remoteSocket = {} as WebSocket
+    const a = fakeClient({
+      health: async () => portForwardingHealth('server-a', 16, 22),
+      sessions: async () => [{ id: 'chat-a', title: 'Chat', backend: 'codex', archived: false }]
+    })
+    const tunnelClient = fakeClient({ portTunnelSocket: () => remoteSocket })
+    const start = vi.fn(async (sessionId: string, remotePort: number, _preferredLocalPort: number | undefined, createRemoteSocket: () => WebSocket) => {
+      expect(createRemoteSocket()).toBe(remoteSocket)
+      return { sessionId, remotePort, localPort: 50022, localUrl: 'http://127.0.0.1:50022', state: 'open' as const, error: null }
+    })
+    const chatTunnels = { list: vi.fn(() => []), start: vi.fn(), disposeAll: vi.fn(), disposeSession: vi.fn() } as unknown as PortTunnelManager
+    const { service } = createProfileService({ 'http://a.test:7850': [a, tunnelClient] }, undefined, chatTunnels)
+    ;(service as unknown as { zedTunnels: PortTunnelManager }).zedTunnels = { start } as unknown as PortTunnelManager
+    const initial = await service.bootstrap()
+    await service.refreshServer('a', initial.profileGeneration)
+    const request = { path: '/root/proj', sshHost: 'osmo@wf-1', hostAlias: 'osmo_dev', sessionId: 'chat-a', profileId: 'a', profileGeneration: initial.profileGeneration }
+
+    await service.openInZed(request)
+
+    expect(start).toHaveBeenCalledWith('a', 22, undefined, expect.any(Function))
+    expect(tunnelClient.portTunnelSocket).toHaveBeenCalledWith('chat-a', 22)
+    expect(a.portTunnelSocket).not.toHaveBeenCalled()
+    expect(launchZed).toHaveBeenCalledWith(request, 50022)
+    expect(chatTunnels.start).not.toHaveBeenCalled()
+    await expect(service.openInZed({ ...request, sessionId: 'missing-chat' })).rejects.toThrow('no longer available for port forwarding')
+  })
+
+  it('keeps the host\'s own ssh entry for Zed on a server without the ssh port, and names the server an osmo@ workflow needs', async () => {
+    const a = fakeClient({
+      health: async () => portForwardingHealth(),
+      sessions: async () => [{ id: 'chat-a', title: 'Chat', backend: 'codex', archived: false }]
+    })
+    const start = vi.fn()
+    const { service } = createProfileService({ 'http://a.test:7850': [a] })
+    ;(service as unknown as { zedTunnels: PortTunnelManager }).zedTunnels = { start } as unknown as PortTunnelManager
+    const initial = await service.bootstrap()
+    await service.refreshServer('a', initial.profileGeneration)
+    const request = { path: '/mnt/lustre/proj', sshHost: 'oci@jing-debug-a236', hostAlias: 'oci_dev', sessionId: 'chat-a', profileId: 'a', profileGeneration: initial.profileGeneration }
+
+    await service.openInZed(request)
+    expect(launchZed).toHaveBeenCalledWith(request)
+    await expect(service.openInZed({ ...request, sshHost: 'osmo@wf-1', hostAlias: 'osmo_dev' })).rejects.toThrow('newer AgentsServer')
+    expect(start).not.toHaveBeenCalled()
+
+    // A chat on this Mac never touches the server, so a stale profile generation does not matter.
+    const local = { ...request, sshHost: null, hostAlias: null, profileGeneration: initial.profileGeneration + 5 }
+    await service.openInZed(local)
+    expect(launchZed).toHaveBeenCalledWith(local)
   })
 
   it('rejects missing, archived, and stale chats before creating a forwarded listener', async () => {
