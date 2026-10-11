@@ -1,5 +1,19 @@
 # Public development log
 
+## 2026-10-12 — Desktop package 123 and Android build 67 (local package and APK)
+
+- Package the entry recorded since package 122: the chat timeline recovers
+  when its virtual list leaves the viewport empty (desktop). Android has no
+  change since build 66; both numbers move so the pair stays matched.
+- The pkg is unsigned like every local package, built with the fuses
+  re-signing flag and reports CFBundleVersion 123; the APK is signed with the
+  project debug keystore (SHA-256 fac61745…) and reports versionCode 67.
+  Checks run before packaging: both type checks; the desktop unit suite
+  (remaining failures are the known stale scheduled-job card tests and the
+  two sqlite bundling failures); the Android contract suite and the version
+  pins. Not exercised: installing on a phone or Mac. Availability: local
+  package and APK.
+
 ## 2026-10-12 — The chat timeline recovers when its virtual list leaves the viewport empty (desktop)
 
 - Reported on a long Codex chat: scrolling to the end landed in a large empty
