@@ -6,7 +6,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, MessageSquareShare } from 'lu
 import type { AgentServerClient } from '../api/AgentServerClient'
 import { exactQueuedDeliverySkipAvailable } from '../lib/chat-references'
 import { formatDateTime, messageText } from '../lib/format'
-import { timelineChatReferenceIsRemote, timelineChatReferenceKey } from '../lib/timeline-inline-references'
+import { liveChatReferenceTitle, timelineChatReferenceIsRemote, timelineChatReferenceKey } from '../lib/timeline-inline-references'
 import type {
   ChatReference,
   CrossChatExchange,
@@ -153,19 +153,23 @@ export function ChatReferenceChips({
   const identity = unique.map(reference => (
     `${timelineChatReferenceKey(reference)}:${readOnlyReferenceKeys.has(timelineChatReferenceKey(reference))}`
   )).join('|')
+  // One joined string: the selector returns a stable primitive, so only a title change re-renders.
+  const titles = useAppStore(state => unique
+    .map(reference => liveChatReferenceTitle(reference, state.sessions, sessionId))
+    .join('\u0000')).split('\u0000')
   const [openError, setOpenError] = useRecyclingState<string | null>(null, [profileGeneration, sessionId, identity])
   if (!unique.length) return null
   return <View accessibilityLabel="Referenced chats" style={styles.referenceList}>
-    {unique.map(reference => {
+    {unique.map((reference, index) => {
       const key = timelineChatReferenceKey(reference)
       const remote = timelineChatReferenceIsRemote(reference)
       const readOnly = remote || readOnlyReferenceKeys.has(key)
-      const label = `${timelineReferenceLabel(reference)}${remote ? ' · secure paired server' : ''}`
+      const label = `${timelineReferencePrefix(reference)}${titles[index]}${remote ? ' · secure paired server' : ''}`
       const content = <>
         <MessageSquareShare size={13} color={readOnly ? colors.muted : colors.blue} />
         <Text style={[styles.referenceText, { color: readOnly ? colors.muted : colors.blue }]} numberOfLines={2}>
           {timelineReferencePrefix(reference)}
-          <Text style={styles.referenceStrong}>{reference.display_title_snapshot}</Text>
+          <Text style={styles.referenceStrong}>{titles[index]}</Text>
           {remote ? ' · secure paired server' : ''}
         </Text>
       </>
@@ -199,10 +203,6 @@ function timelineReferencePrefix(reference: ChatReference): string {
   if (reference.action === 'request_reply') return 'Reply expected from '
   if (reference.action === 'final_result') return 'Final result to '
   return 'Agent may send to '
-}
-
-function timelineReferenceLabel(reference: ChatReference): string {
-  return `${timelineReferencePrefix(reference)}${reference.display_title_snapshot}`
 }
 
 interface CrossChatCardProps { event: Event; events?: Event[]; rowKey: string; sessionId: string; fontScale?: number }

@@ -1462,7 +1462,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         // the server's own first-line titles; a title may not begin with @.
         const withoutChips = [...outgoingReferences].sort((a, b) => b.source_text_start - a.source_text_start)
           .reduce((text, reference) => `${text.slice(0, reference.source_text_start)}${text.slice(reference.source_text_end)}`, outgoing)
-        const title = [...withoutChips.trim().split('\n', 1)[0].trim()].slice(0, 72).join('').replace(/^@+\s*/u, '') || NEW_AGENT_DISPLAY_TITLE
+        const title = [...withoutChips.trim().split('\n', 1)[0].trim()].slice(0, 72).join('').replace(/^@+\s*/u, '').trim() || NEW_AGENT_DISPLAY_TITLE
         const chat = { title, folder: settings.folder, backend: session.backend, model: settings.model, effort: settings.effort }
         let created: Session
         try {

@@ -1,4 +1,4 @@
-import type { ChatReference, ChatReferenceAction, Event } from '../types'
+import type { ChatReference, ChatReferenceAction, Event, Session } from '../types'
 import { MAX_CHAT_REFERENCES } from './chat-references'
 import { messageText } from './format'
 
@@ -56,6 +56,25 @@ export function timelineChatReferenceIsRemote(reference: ChatReference): boolean
 /** Only same-server route history can navigate inside the current workspace. */
 export function inlineRouteReferenceIsInteractive(reference: ChatReference): boolean {
   return reference.action === 'route' && !timelineChatReferenceIsRemote(reference)
+}
+
+/**
+ * The name a sent reference shows: the chat's current title while this server lists both
+ * chats, else the title it had when sent. The record names its chat by id; the snapshot is
+ * only the name at send time, `New agent` for a chat created on send.
+ */
+export function liveChatReferenceTitle(
+  reference: ChatReference,
+  sessions: readonly Pick<Session, 'id' | 'title'>[],
+  sourceSessionId?: string,
+): string {
+  if (timelineChatReferenceIsRemote(reference) || !sourceSessionId || !sessions.some(session => session.id === sourceSessionId)) {
+    return reference.display_title_snapshot
+  }
+  const title = sessions.find(session => session.id === reference.session_id)?.title.trim()
+  // The same rules a snapshot passed: no leading @ (it would read as a Team Network
+  // mention) and no control characters (the title selectors join on NUL).
+  return title && !title.startsWith('@') && cleanText(title) ? title : reference.display_title_snapshot
 }
 
 /**

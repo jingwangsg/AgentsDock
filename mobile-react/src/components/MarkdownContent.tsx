@@ -17,6 +17,7 @@ import {
   restoreInlineRouteMarkerText,
   splitInlineRouteMarkerText,
   timelineChatReferenceIsRemote,
+  liveChatReferenceTitle,
 } from '../lib/timeline-inline-references'
 import { openCanvasLink } from '../lib/canvas-links'
 import { codexFollowupPrompt, rewriteCodexDirectives } from '../lib/codex-directives'
@@ -76,6 +77,12 @@ export function MarkdownContent({
     () => prepareInlineRouteMarkdown(value, inlineChatReferences, sourceSessionId),
     [inlineChatReferences, sourceSessionId, value],
   )
+  // Chips name their chat by its current title; the markers keep the sent text for positions.
+  // One joined string: the selector returns a stable primitive, so only a title change re-renders.
+  const liveTitles = useAppStore(state => prepared.markers
+    .map(marker => liveChatReferenceTitle(marker.reference, state.sessions, sourceSessionId))
+    .join('\u0000'))
+  const titles = useMemo(() => liveTitles.split('\u0000'), [liveTitles])
   const defaultMathFontSize = scaleChatFont(compact ? 12 : 15.5, fontScale)
   // After route preparation, whose markers are matched against the original text.
   const markdownText = useMemo(() => rewriteCodexDirectives(prepared.text), [prepared.text])
@@ -183,19 +190,21 @@ export function MarkdownContent({
         const interactive = !insideLink
           && Boolean(onChatReferencePress)
           && inlineRouteReferenceIsInteractive(segment.reference)
+        const chatTitle = titles[prepared.markers.findIndex(marker => marker.reference === segment.reference)] || segment.reference.display_title_snapshot
+        const label = `${segment.text.startsWith('@@') ? '@@' : '@'}${chatTitle}`
         return <SelectableText
           key={`${node.key}:route:${segment.reference.session_id}:${index}`}
           accessibilityRole={interactive ? 'link' : undefined}
           accessibilityLabel={insideLink
             ? undefined
             : remote
-              ? `${segment.text}, secure route on paired server`
+              ? `${label}, secure route on paired server`
               : interactive
-                ? `Open ${segment.reference.display_title_snapshot}`
-                : `${segment.text}, route unavailable`}
+                ? `Open ${chatTitle}`
+                : `${label}, route unavailable`}
           onPress={interactive ? () => onChatReferencePress?.(segment.reference!) : undefined}
           style={!insideLink ? [inlineReferenceStyles.marker, { color: remote ? colors.muted : colors.blue, backgroundColor: `${remote ? colors.muted : colors.blue}1A` }] : undefined}
-        >{segment.text}</SelectableText>
+        >{label}</SelectableText>
       })}</SelectableText>
     },
     hardbreak: (node, _children, _parents, styles) => (
@@ -307,7 +316,7 @@ export function MarkdownContent({
         block
       />
     ),
-  }), [colors.blue, colors.muted, colorScheme, textColor, defaultMathFontSize, expandableTables, onChatReferencePress, openLink, prepared.markers, tableColumnWidths])
+  }), [colors.blue, colors.muted, colorScheme, textColor, defaultMathFontSize, expandableTables, onChatReferencePress, openLink, prepared.markers, tableColumnWidths, titles])
 
   return (
     <>
