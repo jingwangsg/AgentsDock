@@ -5,7 +5,7 @@ each one, deploys or updates the server source on demand, and reverse-proxies
 ``/api/remote/{id}/...`` (HTTP and WebSocket) to the tunnel so clients only ever
 hold the hub's URL and token; phones, which have neither ssh nor the server
 source, get the same capability. Hosts are ssh destinations or the cluster
-notations ``oci@<sky-cluster>`` and ``osmo@<workflow>`` (see ``ssh_route``).
+notations ``oci@<sky-cluster>``, ``aws@<sky-cluster>`` and ``osmo@<workflow>`` (see ``ssh_route``).
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ TOKEN_SUBPROTOCOL_PREFIX = "agentsdock-token."
 PROXY_PREFIX = "/api/remote"
 ADMIN_PATH = "/api/admin/remote-servers"
 
-# Same syntax as electron/src/main/settings.ts. Only the hub resolves oci@/osmo@ (ssh_route);
+# Same syntax as electron/src/main/settings.ts. Only the hub resolves oci@/aws@/osmo@ (ssh_route);
 # elsewhere ssh_host is a literal ssh destination.
 SSH_HOST_RE = re.compile(r"^[A-Za-z0-9_.@%+:\[\]-]+$")
 REMOTE_DIR_RE = re.compile(r"^[A-Za-z0-9_.~/-]+$")
@@ -85,6 +85,16 @@ UPLOAD_RETRY_DELAY = 5.0
 
 DEFAULT_INSTALL_DIR = "~/.agentsdock-server"
 SKY_CA_BUNDLE = Path.home() / ".sky" / "certs" / "requests-ca-bundle.pem"
+# An aws@ cluster's ssh entry opens an AWS SSM session, which needs AWS credentials: a temporary
+# STS session that the cluster itself mints (see aws_session_file); one credentials file per cluster.
+AWS_SESSION_DIR = Path.home() / ".aws"
+AWS_SESSION_SECONDS = 3600
+# An STS session is replaced this long before it ends: a deploy resolves its route once and
+# opens its later ssh connections with that route's credentials.
+AWS_SESSION_MARGIN = 1800
+# A failed relay is repeated only after this long: tunnels retry a failed connection every
+# few seconds, and a relay that keeps failing must not flood the cluster's job queue.
+AWS_RELAY_INTERVAL = 120.0
 # A cluster container's own ~ does not outlive it. When the hub's environment names
 # the persistent cluster home that holds the Claude and Codex logins, a default
 # install goes there, one per cluster or workflow (see default_install_dir); mount points are
@@ -388,8 +398,8 @@ def tunnel_args(
     return [*args, validate_ssh_host(ssh_host)]
 
 
-async def isolated_proxy_args(ssh_host: str) -> list[str]:
-    # Sky-generated aliases have an inner ssh hop; the outer -o options do not isolate it.
+async def resolved_proxy_command(ssh_host: str) -> str:
+    """The ProxyCommand ssh resolves for the host; empty when it has none."""
     config = await asyncio.create_subprocess_exec(
         ssh_binary(), "-G", ssh_host, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -402,11 +412,19 @@ async def isolated_proxy_args(ssh_host: str) -> list[str]:
         raise
     if config.returncode:
         raise OSError(f"ssh -G failed for {ssh_host}")
-    prefix = "proxycommand ssh "
+    prefix = "proxycommand "
     for line in output.decode("utf-8", "replace").splitlines():
         if line.startswith(prefix):
-            return ["-o", "ProxyCommand=ssh -S none -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=30 " + line[len(prefix):]]
-    return []
+            return line[len(prefix):]
+    return ""
+
+
+async def isolated_proxy_args(ssh_host: str) -> list[str]:
+    # Sky-generated aliases have an inner ssh hop; the outer -o options do not isolate it.
+    command = await resolved_proxy_command(ssh_host)
+    if not command.startswith("ssh "):
+        return []
+    return ["-o", "ProxyCommand=ssh -S none -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=30 " + command.removeprefix("ssh ")]
 
 
 @dataclass
@@ -418,10 +436,13 @@ class SSHRoute:
     env: dict[str, str]
 
 
+def cli_search_path() -> str:
+    # launchd starts the hub with a minimal PATH; the osmo, sky and aws CLIs install into one of these.
+    return os.pathsep.join([os.environ.get("PATH", ""), "/usr/local/bin", "/opt/homebrew/bin", str(Path.home() / ".local" / "bin")])
+
+
 def cluster_cli(name: str) -> str | None:
-    # launchd starts the hub with a minimal PATH; the osmo and sky CLIs install into one of these.
-    search = os.pathsep.join([os.environ.get("PATH", ""), "/usr/local/bin", "/opt/homebrew/bin", str(Path.home() / ".local" / "bin")])
-    return shutil.which(name, path=search)
+    return shutil.which(name, path=cli_search_path())
 
 
 async def write_sky_ssh_entry(cluster: str, env: dict[str, str]) -> None:
@@ -483,11 +504,123 @@ async def osmo_lead_task(workflow: str) -> tuple[str, str]:
     return osmo, lead
 
 
+async def cli_output(argv: list[str], env: dict[str, str], timeout: float, stdin: bytes | None = None) -> str:
+    """stdout of a CLI run; a failure or timeout raises OSError, which Tunnel._supervise retries."""
+
+    proc = await asyncio.create_subprocess_exec(
+        *argv, env=env, stdin=asyncio.subprocess.DEVNULL if stdin is None else asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    name = f"{Path(argv[0]).name} {argv[1]}"
+    try:
+        output, error = await asyncio.wait_for(proc.communicate(stdin), timeout)
+    except asyncio.TimeoutError:
+        raise OSError(f"{name} timed out.") from None
+    finally:
+        if proc.returncode is None:  # timed out, or the tunnel or deploy was cancelled
+            proc.kill()
+            await proc.wait()
+    if proc.returncode:
+        raise OSError(last_line(error.decode("utf-8", "replace")) or last_line(output.decode("utf-8", "replace"))
+                      or f"{name} exited {proc.returncode}.")
+    return output.decode("utf-8", "replace")
+
+
+# Runs on an aws@ cluster under `sky exec`. The cluster's own AWS keys mint the STS session. Sky
+# keeps job logs, so the job prints the session only encrypted, with a key made for this run that
+# reaches the job as a Sky secret. python3 on a base image may lack boto3.
+AWS_RELAY_SCRIPT = f"""\
+set -euo pipefail
+python3 -c 'import boto3' 2>/dev/null || python3 -m pip install --quiet --user boto3
+session=$(python3 -c '
+import json, boto3
+credentials = boto3.client("sts").get_session_token(DurationSeconds={AWS_SESSION_SECONDS})["Credentials"]
+print(json.dumps({{key: credentials[key] for key in ("AccessKeyId", "SecretAccessKey", "SessionToken")}}))
+' | openssl enc -aes-256-cbc -pbkdf2 -a -A -pass env:AGENTSDOCK_RELAY_KEY)
+echo "AGENTSDOCK_AWS_SESSION=$session"
+"""
+# Per cluster, the running or last relay and when it started. The tunnels of one server
+# reconnect together; they wait on one relay.
+AWS_RELAYS: dict[str, tuple[asyncio.Task[None], float]] = {}
+
+
+async def relay_aws_session(cluster: str, path: Path, env: dict[str, str]) -> None:
+    """Have the cluster mint an STS session and save it to ``path`` as profile ``agentsdock``.
+
+    The hub's machine usually holds no AWS keys; the cluster does, since Sky set it up with them.
+    """
+
+    sky = cluster_cli("sky")
+    if sky is None:
+        raise OSError("The sky CLI is not installed on this server.")
+    # `sky exec` refuses a cluster outside the active workspace.
+    listing = await cli_output([sky, "status", "-u", "-o", "json", "--", cluster], env, timeout=90)
+    # Sky logs warnings to stdout too; the JSON starts at the line that opens the list.
+    start = re.search(r"^\[", listing, re.MULTILINE)
+    try:
+        records = json.JSONDecoder().raw_decode(listing, start.start())[0] if start else []
+        workspace = next((record["workspace"] for record in records if record["name"] == cluster), None)
+    except (ValueError, LookupError, TypeError):
+        raise OSError(f"`sky status -u` returned an unexpected result for {cluster}.") from None
+    if workspace is None:
+        raise OSError(f"`sky status -u` does not list {cluster}.")
+
+    # --secret takes the key from this environment, so it is in neither argv nor the job log.
+    relay_env = {**env, "AGENTSDOCK_RELAY_KEY": secrets.token_urlsafe(32)}
+    # Measured on 2026-10-11: status and exec took 31 s together and the job itself ran 3 s;
+    # the timeout leaves room for a busy job queue on the cluster.
+    output = await cli_output(
+        [sky, "exec", "--config", f"active_workspace={workspace}", "--name", "agentsdock-aws-session",
+         "--secret", "AGENTSDOCK_RELAY_KEY", "--", cluster, AWS_RELAY_SCRIPT],
+        relay_env, timeout=300,
+    )
+    sealed = re.search(r"AGENTSDOCK_AWS_SESSION=([A-Za-z0-9+/=]+)", output)
+    if sealed is None:
+        raise OSError(f"The AWS session relay on {cluster} printed no session.")
+    opened = await cli_output(
+        ["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-a", "-A", "-pass", "env:AGENTSDOCK_RELAY_KEY"],
+        relay_env, timeout=30, stdin=sealed.group(1).encode() + b"\n",
+    )
+    try:
+        session = json.loads(opened)
+        content = (f"[agentsdock]\naws_access_key_id={session['AccessKeyId']}\n"
+                   f"aws_secret_access_key={session['SecretAccessKey']}\naws_session_token={session['SessionToken']}\n")
+    except (ValueError, LookupError, TypeError):
+        raise OSError(f"The AWS session relay on {cluster} returned an unexpected result.") from None
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Replaced whole: the ssh connections of the other tunnels may read the file meanwhile.
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    tmp.touch(mode=0o600)
+    tmp.write_text(content, "utf-8")
+    os.replace(tmp, path)
+
+
+async def aws_session_file(cluster: str, env: dict[str, str]) -> Path:
+    """The credentials file for the cluster's SSM ProxyCommand, relayed again when its STS session nears its end."""
+
+    path = AWS_SESSION_DIR / f"agentsdock-{cluster}.credentials"
+    with suppress(FileNotFoundError):
+        if time.time() - path.stat().st_mtime < AWS_SESSION_SECONDS - AWS_SESSION_MARGIN:
+            return path
+    relay, started = AWS_RELAYS.get(cluster, (None, 0.0))
+    if relay is None or relay.done():
+        # A relay that failed within the interval is not repeated; awaiting it raises its error again.
+        failed = relay is not None and not relay.cancelled() and relay.exception() is not None
+        if not failed or time.monotonic() - started >= AWS_RELAY_INTERVAL:
+            relay = asyncio.create_task(relay_aws_session(cluster, path, env))
+            AWS_RELAYS[cluster] = (relay, time.monotonic())
+    # A cancelled waiter (a stopped tunnel or deploy) leaves a running relay to the others.
+    await asyncio.shield(relay)
+    return path
+
+
 async def ssh_route(ssh_host: str) -> SSHRoute:
     """Resolve the cluster notations; any other host is a plain ssh destination.
 
     ``oci@<cluster>``: a Sky-generated alias. Its inner hop needs isolation, and Sky's
     websocket proxy needs Sky's CA bundle, which a launchd-started hub does not inherit.
+    ``aws@<cluster>``: a Sky-generated alias whose ProxyCommand opens an AWS SSM session
+    with the credentials of an STS session the cluster mints (see aws_session_file).
     ``osmo@<workflow>``: sshd in the workflow's lead task, reached as root with
     ``osmo workflow exec --raw`` as the ProxyCommand.
     """
@@ -505,8 +638,25 @@ async def ssh_route(ssh_host: str) -> SSHRoute:
             await write_sky_ssh_entry(cluster, env)
             options = await isolated_proxy_args(cluster)
         if not options:
+            if (await resolved_proxy_command(cluster)).startswith("aws ssm "):
+                raise OSError(f"{cluster} is an AWS cluster; use aws@{cluster}.")
             raise OSError(f"Sky has no ssh entry for {cluster}; check that `sky status -u` lists it as UP.")
         return SSHRoute([*slow_proxy, *options], cluster, env)
+    if ssh_host.startswith("aws@"):
+        cluster = ssh_host.removeprefix("aws@")
+        # For the sky CLI; the aws CLI then trusts this bundle alone, and it holds the public roots too.
+        if SKY_CA_BUNDLE.exists():
+            env["SSL_CERT_FILE"] = env["REQUESTS_CA_BUNDLE"] = str(SKY_CA_BUNDLE)
+        command = await resolved_proxy_command(cluster)
+        if not command.startswith("aws ssm "):
+            await write_sky_ssh_entry(cluster, env)
+            command = await resolved_proxy_command(cluster)
+        if not command.startswith("aws ssm "):
+            raise OSError(f"Sky has no AWS ssh entry for {cluster}; check that `sky status -u` lists it as UP.")
+        credentials = await aws_session_file(cluster, env)
+        # The ProxyCommand runs the aws CLI, which runs session-manager-plugin; both install into this PATH.
+        env.update(AWS_SHARED_CREDENTIALS_FILE=str(credentials), AWS_PROFILE="agentsdock", PATH=cli_search_path())
+        return SSHRoute(slow_proxy, cluster, env)
     if ssh_host.startswith("osmo@"):
         workflow = ssh_host.removeprefix("osmo@")
         osmo, task = await osmo_lead_task(workflow)
@@ -1476,8 +1626,8 @@ class RemoteServerManager:
                 if install_dir == DEFAULT_INSTALL_DIR:
                     install_dir = default_install_dir(ssh_host)
 
-            if request is not None and request.password and ssh_host.startswith(("oci@", "osmo@")):
-                raise RuntimeError("oci@ and osmo@ targets are reached through the cluster CLI; leave the password empty.")
+            if request is not None and request.password and ssh_host.startswith(("oci@", "aws@", "osmo@")):
+                raise RuntimeError("oci@, aws@ and osmo@ targets are reached through the cluster CLI; leave the password empty.")
             job.progress("connect", f"Probing {ssh_host}…")
             route = await ssh_route(ssh_host)
             if request is not None and request.password:
