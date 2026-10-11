@@ -101,10 +101,11 @@ class AgentTerminalContextTests(unittest.TestCase):
         )
         # A budget for the static guidance. The interpreter and Canvas checker
         # paths in it vary with the checkout, so they do not count. 12_500 since
-        # the Canvas report guidance (d48af178, about 1 KB) passed 12_000.
+        # the Canvas report guidance (d48af178, about 1 KB) passed 12_000; 13_000
+        # since the `chats title` guidance (2026-10-11) came within 10 of 12_500.
         static = first_prompt.replace(sys.executable, "python").replace(
             str(Path(agentsdock_canvas.__file__).resolve()), "agentsdock_canvas.py")
-        self.assertLess(len(static), 12_500)
+        self.assertLess(len(static), 13_000)
 
     def test_claude_transcript_suppression_flag_only_affects_fresh_command(self) -> None:
         standalone = agent_server.build_claude_cmd(
