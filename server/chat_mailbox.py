@@ -155,6 +155,14 @@ def store_message(connection: sqlite3.Connection, message_id: str, *, now: str,
         prior = connection.execute("SELECT * FROM cross_chat_envelopes WHERE id=?", (parent,)).fetchone()
         prior_mail = connection.execute("SELECT excluded_at FROM chat_mailbox_messages WHERE message_id=?",
                                          (parent,)).fetchone()
+        if prior is None:
+            # A reply to mail this server sent to a chat on another server
+            # (cross_server_mail): the original lives only in the outbox here.
+            # load-bearing: the target id is cross_server_mail.sender_key().
+            prior = connection.execute("""SELECT id, source_session_id,
+                target_server_identity || '/' || target_session_id AS target_session_id,
+                pair_id AS authorization_pair_id, state AS status
+                FROM cross_server_outbox WHERE id=? AND kind='mail'""", (parent,)).fetchone()
         if (prior is None or prior["source_session_id"] != record["target_session_id"]
                 or prior["target_session_id"] != record["source_session_id"]
                 or prior["authorization_pair_id"] != record["authorization_pair_id"]
@@ -374,6 +382,24 @@ def mark_read_event_published(connection: sqlite3.Connection, message_id: str) -
         (_identifier(message_id),)).rowcount == 1
 
 
+def _unread_since_wake(connection: sqlite3.Connection, target_session_id: str,
+                       allowed_pair_ids: Iterable[str]) -> tuple[sqlite3.Row | None, int]:
+    """The wake row and the newest unread message above its last attempt or Stop (0: none)."""
+    clause, args = _scope(target_session_id, None, allowed_pair_ids)
+    prior = connection.execute("SELECT * FROM chat_mailbox_wakes WHERE target_session_id=?",
+                               (target_session_id,)).fetchone()
+    cutoff = max(prior["last_attempt_seq"], prior["suppressed_seq"]) if prior else 0
+    through_seq = connection.execute(f"""SELECT COALESCE(MAX(m.mailbox_seq),0) FROM {_JOIN}
+        WHERE {clause} AND m.read_at IS NULL AND m.mailbox_seq>?""", (*args, cutoff)).fetchone()[0]
+    return prior, through_seq
+
+
+def wake_due(connection: sqlite3.Connection, target_session_id: str, allowed_pair_ids: Iterable[str]) -> bool:
+    """Whether claim_wake would reserve a wake now; reads only."""
+    prior, through_seq = _unread_since_wake(connection, target_session_id, allowed_pair_ids)
+    return bool(through_seq) and not (prior is not None and prior["state"] == "reserved")
+
+
 def claim_wake(connection: sqlite3.Connection, target_session_id: str,
                allowed_pair_ids: Iterable[str], *, now: str) -> dict | None:
     """Reserve one authorized unread cutoff; the caller must separately prove idle.
@@ -382,15 +408,8 @@ def claim_wake(connection: sqlite3.Connection, target_session_id: str,
     an admitted attempt only when the runtime has again proved the chat idle.
     """
     _transaction(connection)
-    clause, args = _scope(target_session_id, None, allowed_pair_ids)
-    prior = connection.execute("SELECT * FROM chat_mailbox_wakes WHERE target_session_id=?",
-                               (target_session_id,)).fetchone()
-    if prior is not None and prior["state"] == "reserved":
-        return None
-    cutoff = max(prior["last_attempt_seq"], prior["suppressed_seq"]) if prior else 0
-    through_seq = connection.execute(f"""SELECT COALESCE(MAX(m.mailbox_seq),0) FROM {_JOIN}
-        WHERE {clause} AND m.read_at IS NULL AND m.mailbox_seq>?""", (*args, cutoff)).fetchone()[0]
-    if not through_seq:
+    prior, through_seq = _unread_since_wake(connection, target_session_id, allowed_pair_ids)
+    if (prior is not None and prior["state"] == "reserved") or not through_seq:
         return None
     claim_id = "mailwake_" + uuid.uuid4().hex
     connection.execute("""INSERT INTO chat_mailbox_wakes

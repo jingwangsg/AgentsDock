@@ -1836,6 +1836,31 @@ describe('send rollback', () => {
     }
   })
 
+  it('keeps a chip for a chat on another server out of the turn but in the pending submission', async () => {
+    const send = vi.fn(async () => ({ session: sessionFor('chat-a'), queued: false }))
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { turns: { send } } as unknown as AgentsDockAPI })
+    const remote: ChatReference = {
+      session_id: 'sess_remote', display_title_snapshot: 'Launch check · osmo_dev_l40', source_text_start: 0,
+      source_text_end: 28, action: 'route', target_kind: 'cross_server', target_server_identity: 'srv-l40'
+    }
+    useAppStore.setState({
+      activeProfileId: 'local', profileGeneration: 1, switchingProfileId: null,
+      selectedSessionId: 'chat-a', chatPanes: { primary: 'chat-a', secondary: null },
+      sessions: [sessionFor('chat-a')],
+      health: { ok: true, capabilities: { cross_chat_handoffs_v1: { available: true, required: false, message: '', action: null, version: 1 } } },
+      snapshots: { 'chat-a': snapshot('chat-a', [eventFor('chat-a', 1)]) },
+      drafts: { 'chat-a': '@Launch check · osmo_dev_l40 ping' }, uploadsBySession: {}, uploadPathsBySession: {},
+      chatReferencesBySession: { 'chat-a': [remote] }, teamReferencesBySession: {},
+      activeSessionIds: new Set(), turnAdmissionTokens: {}, pendingTurnSubmissions: {}, error: null
+    })
+
+    const request = useAppStore.getState().sendPrompt()
+    expect(useAppStore.getState().pendingTurnSubmissions['chat-a']?.chatReferences).toEqual([remote])
+    await expect(request).resolves.toBe(true)
+    expect(useAppStore.getState().error).toBeNull()
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ prompt: '@Launch check · osmo_dev_l40 ping', chatReferences: [] }))
+  })
+
   it('removes the matching pending submission in the authoritative response commit', async () => {
     const pendingSend = deferred<{ session: Session; queued: boolean; event: Event }>()
     const send = vi.fn(() => pendingSend.promise)

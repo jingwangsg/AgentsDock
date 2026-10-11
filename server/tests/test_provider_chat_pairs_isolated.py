@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 import uuid
 import unicodedata
 import team_mail_grants
+import cross_server_mail
 
 
 TREE = ast.parse((Path(__file__).resolve().parents[1] / "agent_server.py").read_text())
@@ -45,7 +46,7 @@ FUNCTIONS = {
     "sanitized_provider_route_label", "enqueue_turn",
     "provider_cross_chat_reciprocal_admission_fields",
     "join_task_despite_caller_cancellation",
-    "stage_provider_team_mail_grants", "settle_provider_team_mail_grants",
+    "stage_provider_team_mail_grants", "settle_provider_team_mail_grants", "mail_chat_title",
 }
 CONSTANTS = {
     "CROSS_CHAT_HANDOFF_BODY_MAX_CHARS",
@@ -103,7 +104,7 @@ class ChatPairTests(unittest.IsolatedAsyncioTestCase):
         self.events = {}
         self.retired = AsyncMock()
         self.namespace = {
-            "team_mail_grants": team_mail_grants,
+            "team_mail_grants": team_mail_grants, "cross_server_mail": cross_server_mail, "CROSS_SERVER_ROUTES": {},
             "asyncio": asyncio, "datetime": datetime, "re": re, "uuid": uuid,
             "unicodedata": unicodedata, "deque": deque, "suppress": suppress,
             "HTTPException": HTTPException, "STORE": self.store,

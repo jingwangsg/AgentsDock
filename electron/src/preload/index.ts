@@ -337,6 +337,10 @@ const api: AgentsDockAPI = {
     update: (scope, sessionId, routeId, input) => ipcRenderer.invoke('agent-routes:update', scope, sessionId, routeId, input),
     remove: (scope, sessionId, routeId, expectedRevision) => ipcRenderer.invoke('agent-routes:remove', scope, sessionId, routeId, expectedRevision)
   },
+  crossServer: {
+    chats: scope => ipcRenderer.invoke('cross-server:chats', scope),
+    pair: (scope, input) => ipcRenderer.invoke('cross-server:pair', scope, input)
+  },
   agentTeamMailRoutes: {
     list: (scope, sessionId) => ipcRenderer.invoke('agent-team-mail-routes:list', scope, sessionId),
     remove: (scope, sessionId, routeId, expectedRevision) => ipcRenderer.invoke('agent-team-mail-routes:remove', scope, sessionId, routeId, expectedRevision)

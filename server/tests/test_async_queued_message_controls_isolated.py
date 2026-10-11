@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock
 
 import chat_mailbox
+import cross_server_mail
 
 from tests.test_async_route_transport_isolated import HTTPException, envelope, PAIR
 
@@ -32,7 +33,7 @@ NAMES = {
     "prepare_steered_turn", "cross_chat_delivery_prompt", "cross_chat_delivery_header",
     "cross_chat_delivery_origin", "cross_chat_provider_prompt_kind", "cross_chat_relay_content_prompt",
     "_run_queued_turn_now_once", "queue_insert_index", "queued_turn_run_metadata",
-    "join_task_despite_caller_cancellation",
+    "join_task_despite_caller_cancellation", "mail_chat_title",
 }
 
 
@@ -46,7 +47,7 @@ def namespace():
     ns = {
         "asyncio": asyncio, "deque": deque, "contextmanager": contextmanager, "suppress": suppress,
         "hashlib": hashlib, "sqlite3": sqlite3, "threading": threading, "time": time,
-        "chat_mailbox": chat_mailbox,
+        "chat_mailbox": chat_mailbox, "cross_server_mail": cross_server_mail, "CROSS_SERVER_ROUTES": {},
         "HTTPException": HTTPException, "now_iso": lambda: "2026-09-10T20:00:00Z",
         "PROVIDER_CROSS_CHAT_LEGACY_RATE_RETENTION_SECONDS": 3600,
         "PROVIDER_CROSS_CHAT_ROUTE_PAIR_ID_RE": re.compile(r"pair_[0-9a-f]{32}"),

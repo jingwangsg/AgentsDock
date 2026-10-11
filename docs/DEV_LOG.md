@@ -1,5 +1,32 @@
 # Public development log
 
+## 2026-10-11 — Chat mail reaches chats on the hub's other servers; fuzzy @ picker; mail no longer waits behind a background task (desktop, Android and server source)
+
+- The `@` picker lists chats on every live server under the active server's
+  hub, each tagged with its server name (hub chats carry no tag), and matches
+  fuzzily: every term must match the title, folder or server name, as a
+  substring or as characters in order, so `launch 负载` finds "Launch agent
+  team 负载均衡检查". Title matches still rank first and everything the
+  sidebar search covers still matches. Picking a chat on another server pairs
+  the two chats through the hub when the message is sent; they then exchange
+  mail with the existing `chats` helper, and the user's own turn naming the
+  chat delegates as a local `@Chat` does. The hub alone creates pairs and
+  relays mail, and only between the exact chats it paired. Design:
+  `docs/CROSS_SERVER_MAIL.md`.
+- Mail that arrived while a Claude run only waited for its background tasks
+  was read when those tasks ended (a reply waited 6 minutes behind a `git
+  clone`). Such a run now ends with the model's answer, its tasks keep
+  running, and the mailbox wake starts at once. Same-server A/B on one Mac,
+  Sonnet 5, a 150 s background shell: reply stored → read 144.0 s on main,
+  6.0 s on this change.
+- Verified on two isolated servers (a hub and a remote registered with it)
+  with real Claude runs: hub → remote and remote → hub mail, wake, read
+  receipts, `--reply-to` and the user's delegation; and in the built desktop
+  app through a hub-proxied remote profile: the tagged list, the fuzzy query,
+  keyboard selection, pairing on send and the mail cards. The hub reached the
+  remote over a local port instead of an SSH tunnel. Not exercised: the
+  Android app on a device or emulator, and deployed remotes.
+
 ## 2026-10-11 — Side chat keeps its history across server switches; older history pages are kept in memory (desktop source)
 
 - On a hub-proxied remote behind a slow, flapping link the side chat looked

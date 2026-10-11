@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Session } from '@shared/types'
-import { digestTargetSections, isUntouchedNewChat, rankSessionsForSearch, sessionNameMatchRank } from './sessions'
+import { digestTargetSections, isUntouchedNewChat, rankMentionRows, rankSessionsForSearch, sessionNameMatchRank } from './sessions'
 
 const session = (id: string, title: string, patch: Partial<Session> = {}): Session => ({
   id,
@@ -72,6 +72,35 @@ describe('chat search ranking', () => {
     ]
     expect(rankSessionsForSearch(sessions, 'renderer', new Set(['archived-content', 'active-content'])).map(item => item.id))
       .toEqual(['archived-title', 'active-content'])
+  })
+})
+
+describe('@ picker ranking', () => {
+  const rows = [
+    { title: 'Launch agent team 负载均衡检查', folder: 'General', server: 'osmo_dev_l40', model: 'opus' },
+    { title: 'OSMO 定制功能与负载均衡', folder: 'AgentsDock', server: '', model: 'fable' },
+    { title: 'Launch check', folder: 'General', server: '', model: 'sonnet' },
+    { title: 'Slack 搜索 OSMO GitLab', folder: 'General', server: '', model: 'gpt' },
+    { title: 'Launch nightly check', folder: 'General', server: '', model: 'haiku' }
+  ]
+  const rank = (query: string) => rankMentionRows(rows, query, row => [row.title, row.folder, row.server], row => row.model.includes(query))
+    .map(row => row.title)
+
+  it('ranks a title match as the sidebar search does, before fuzzy matches', () => {
+    expect(rank('launch check')).toEqual(['Launch check', 'Launch nightly check'])
+    expect(rank('osmo')[0]).toBe('OSMO 定制功能与负载均衡')
+  })
+
+  it('matches every term on its own, in any field and with gaps', () => {
+    expect(rank('launch 负载')).toEqual(['Launch agent team 负载均衡检查'])
+    expect(rank('l40 负载检查')).toEqual(['Launch agent team 负载均衡检查'])
+  })
+
+  it('puts a title match above a server-tag match and keeps other fields last', () => {
+    expect(rank('osmo')).toEqual(['OSMO 定制功能与负载均衡', 'Slack 搜索 OSMO GitLab', 'Launch agent team 负载均衡检查'])
+    expect(rank('fable')).toEqual(['OSMO 定制功能与负载均衡'])
+    expect(rank('zzz')).toEqual([])
+    expect(rank('')).toEqual(rows.map(row => row.title))
   })
 })
 

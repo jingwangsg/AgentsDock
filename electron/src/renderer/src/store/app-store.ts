@@ -1805,6 +1805,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const actions = supportedCrossChatActions(state.health)
       const targetBackends = supportedCrossChatTargetBackends(state.health)
       const unsupported = chatReferences.some(reference => {
+        // The composer paired it through the hub; its chat is on another server.
+        if (reference.target_kind === 'cross_server') return false
         if (reference.target_kind === 'secure_peer') {
           return reference.action === 'final_result'
             || !actions.includes(reference.action)
@@ -1891,7 +1893,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         model: session?.model,
         effort: session?.effort,
         clientCapabilities: interactiveClientCapabilities(session, get().health, Boolean(options?.skillSelection)),
-        chatReferences,
+        // The server never receives a chip for a chat on another server (the hub paired
+        // them); the pending submission keeps it so a failed send restores the chip.
+        chatReferences: chatReferences.filter(reference => reference.target_kind !== 'cross_server'),
         teamReferences,
         ...(options?.skillSelection ? { skillSelection: options.skillSelection } : {})
       }).catch(error => {

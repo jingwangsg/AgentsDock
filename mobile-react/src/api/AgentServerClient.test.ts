@@ -1596,4 +1596,32 @@ try {
   globalThis.WebSocket = originalWebSocket
 }
 
+// Cross-server mail lives on the hub: a hub-proxied profile calls the hub with
+// its own (hub) token; a directly addressed server is its own hub.
+{
+  const fetchBeforeCrossServer = globalThis.fetch
+  const crossServerRequests: Array<{ url: string; token: string | null; method: string; body: string | null }> = []
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    crossServerRequests.push({ url: String(input), token: new Headers(init?.headers).get('X-ZenithDock-Token'), method: init?.method ?? 'GET', body: typeof init?.body === 'string' ? init.body : null })
+    return Promise.resolve(new Response(JSON.stringify({ servers: [], pair: {}, created: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  }) as typeof fetch
+  try {
+    const remote = new AgentServerClient('http://hub.example:7850/api/remote/abc123', 'hub-token')
+    await remote.crossServerChats()
+    const pair = { source_server_identity: 'srv-remote', source_session_id: 'source', target_server_identity: 'srv-hub', target_session_id: 'target' }
+    await remote.createCrossServerPair(pair)
+    const direct = new AgentServerClient('https://direct.example', 'direct-token')
+    await direct.crossServerChats()
+    assert(JSON.stringify(crossServerRequests) === JSON.stringify([
+      { url: 'http://hub.example:7850/api/cross-server/chats', token: 'hub-token', method: 'GET', body: null },
+      { url: 'http://hub.example:7850/api/cross-server/pairs', token: 'hub-token', method: 'POST', body: JSON.stringify(pair) },
+      { url: 'https://direct.example/api/cross-server/chats', token: 'direct-token', method: 'GET', body: null },
+    ]), `Cross-server calls must address the hub, got ${JSON.stringify(crossServerRequests)}`)
+    remote.dispose()
+    direct.dispose()
+  } finally {
+    globalThis.fetch = fetchBeforeCrossServer
+  }
+}
+
 console.log('agent server client scope regressions passed')

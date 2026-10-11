@@ -450,6 +450,130 @@ test('composer disables Send while granted access is being revoked',async()=>{
   }finally{await act(async()=>renderer.unmount())}
 })
 
+// The hub lists every live server's chats; the active server ('local-server') is one of them.
+const remoteChat=(id,title,extra={})=>({id,title,folder:'Work',backend:'codex',cross_chat_handoff_supported:true,updated_at:'2026-10-01T00:00:00Z',...extra})
+function crossServerHealth(){const value=withLocalChats();value.capabilities.cross_server_mail_v1={available:true};return value}
+function resetCrossServer({localHub=false,patch={}}={}){
+  resetRoutes({health:crossServerHealth(),...patch})
+  fixture.crossServerReads=0;fixture.pairs=[]
+  fixture.crossServer={servers:[
+    {server_identity:'local-server',name:localHub?'':'mac_mini',chats:[remoteChat('target','Chat target')]},
+    {server_identity:'hub-server',name:'',chats:[remoteChat('hub-chat','Hub planning',{backend:'claude'}),remoteChat('hub-old','Hub legacy',{cross_chat_handoff_supported:false})]},
+    {server_identity:'l40-server',name:'osmo_dev_l40',chats:[remoteChat('l40-chat','Launch agent team 负载均衡检查')]},
+  ]}
+  fixture.client.crossServerChats=async()=>{fixture.crossServerReads++;return fixture.crossServer}
+  fixture.client.createCrossServerPair=async input=>{fixture.pairs.push(input)}
+}
+const rowIDs=renderer=>renderer.root.findAll(node=>typeof node.type==='string'&&/^chat-target-(?!server-|search$|list$|picker-close$|team-network$|reference-limit$)/.test(node.props.testID??'')).map(node=>node.props.testID)
+const tagOf=(renderer,id)=>byID(renderer,`chat-target-server-${id}`).map(node=>node.children.join(''))
+
+test('chat picker lists other servers under the hub with server tags, hub chats untagged, from one request per open',async()=>{
+  resetCrossServer()
+  const {renderer,props}=await renderChatPicker()
+  try{
+    assert.equal(fixture.crossServerReads,1)
+    assert.deepEqual(new Set(rowIDs(renderer)),new Set(['chat-target-target','chat-target-new','chat-target-remote:hub-server:hub-chat','chat-target-remote:l40-server:l40-chat']),'A chat without cross-chat support is not listed; this server comes from its own session list')
+    assert.deepEqual(tagOf(renderer,'remote:l40-server:l40-chat'),['osmo_dev_l40'])
+    assert.deepEqual(tagOf(renderer,'remote:hub-server:hub-chat'),[],'Hub chats carry no server tag')
+    assert.deepEqual(tagOf(renderer,'target'),['mac_mini'],'This server is not the hub, so its own chats are tagged')
+    assert.match(texts(renderer),/Pairs with this chat when sent/)
+    for(const query of ['launch 负载','lnch','l40']){
+      await act(async()=>renderer.update(React.createElement(ChatTargetPicker,{...props,query})))
+      assert.deepEqual(rowIDs(renderer),['chat-target-remote:l40-server:l40-chat'],`Fuzzy query ${query}`)
+    }
+    await act(async()=>renderer.update(React.createElement(ChatTargetPicker,{...props,query:'mac_mini'})))
+    assert.deepEqual(new Set(rowIDs(renderer)),new Set(['chat-target-target','chat-target-new']),'This server\'s tag matches its own chats')
+    // A pasted chat id finds its chat by substring only.
+    await act(async()=>renderer.update(React.createElement(ChatTargetPicker,{...props,query:'hub-chat'})))
+    assert.deepEqual(rowIDs(renderer),['chat-target-remote:hub-server:hub-chat'])
+    assert.equal(fixture.crossServerReads,1,'Typing never refetches')
+    let chosen=null
+    await act(async()=>renderer.update(React.createElement(ChatTargetPicker,{...props,query:'',onSelectCrossServer(server,chat){chosen=[server.server_identity,chat.id];return true}})))
+    await click(renderer,'chat-target-remote:l40-server:l40-chat')
+    assert.deepEqual(chosen,['l40-server','l40-chat'])
+    const reread=deferred();fixture.client.crossServerChats=()=>{fixture.crossServerReads++;return reread.promise}
+    await act(async()=>renderer.update(React.createElement(ChatTargetPicker,{...props,visible:false})))
+    await act(async()=>renderer.update(React.createElement(ChatTargetPicker,props)))
+    assert.equal(fixture.crossServerReads,2,'Each open reads the hub once')
+    assert.equal(rowIDs(renderer).length,4,'The list from the last open shows while the hub answers again')
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('chat picker shows only this server while the hub list loads, fails, or lacks this server; stale lists are dropped',async()=>{
+  resetCrossServer({localHub:true})
+  const pending=deferred();fixture.client.crossServerChats=()=>pending.promise
+  const {renderer}=await renderChatPicker()
+  try{
+    assert.deepEqual(new Set(rowIDs(renderer)),new Set(['chat-target-target','chat-target-new']))
+    await act(async()=>pending.resolve(fixture.crossServer))
+    assert.equal(rowIDs(renderer).length,4)
+    assert.deepEqual(tagOf(renderer,'target'),[],'The hub\'s own chats carry no tag')
+  }finally{await act(async()=>renderer.unmount())}
+  for(const answer of [()=>Promise.reject(new Error('hub offline')),async()=>({servers:fixture.crossServer.servers.slice(1)})]){
+    resetCrossServer();fixture.client.crossServerChats=answer
+    const {renderer}=await renderChatPicker()
+    try{assert.deepEqual(new Set(rowIDs(renderer)),new Set(['chat-target-target','chat-target-new']))}
+    finally{await act(async()=>renderer.unmount())}
+  }
+  resetCrossServer()
+  const reads=[];fixture.client.crossServerChats=()=>{const read=deferred();reads.push(read);return read.promise}
+  const second=await renderChatPicker()
+  const remoteRows=()=>rowIDs(second.renderer).filter(id=>id.startsWith('chat-target-remote:')).length
+  try{
+    await act(async()=>store.setState({profileGeneration:2}))
+    assert.equal(reads.length,2,'A profile generation change rereads the hub')
+    await act(async()=>reads[0].resolve(fixture.crossServer))
+    assert.equal(remoteRows(),0,'A response for the previous profile generation must not populate the picker')
+    await act(async()=>reads[1].resolve(fixture.crossServer))
+    assert.equal(remoteRows(),2)
+    await act(async()=>store.setState({profileGeneration:3}))
+    assert.equal(remoteRows(),0,'The list kept from the previous profile generation is not shown')
+  }finally{await act(async()=>second.renderer.unmount())}
+  resetCrossServer({patch:{health:withLocalChats()}})
+  const unsupported=await renderChatPicker()
+  try{assert.equal(fixture.crossServerReads,0,'Without the capability the hub is never asked')}
+  finally{await act(async()=>unsupported.renderer.unmount())}
+})
+
+test('a chat on another server becomes a tagged chip that is paired through the hub before the turn is sent',async()=>{
+  resetCrossServer()
+  const renderer=await render()
+  try{
+    await type(renderer,'Ask @')
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,280)))
+    await click(renderer,'chat-target-remote:l40-server:l40-chat')
+    const draft='Ask @Launch agent team 负载均衡检查 · osmo_dev_l40 '
+    assert.equal(store.getState().drafts.chat,draft)
+    const reference={session_id:'l40-chat',display_title_snapshot:'Launch agent team 负载均衡检查 · osmo_dev_l40',source_text_start:4,source_text_end:draft.length-1,action:'route',target_kind:'cross_server',target_server_identity:'l40-server'}
+    assert.deepEqual(store.getState().chatReferencesBySession.chat,[reference])
+    assert.match(texts(renderer),/Pairs when sent/)
+    const pairing=deferred();fixture.client.createCrossServerPair=input=>{fixture.pairs.push(input);return pairing.promise}
+    await click(renderer,'chat-send')
+    assert.deepEqual(fixture.pairs,[{source_server_identity:'local-server',source_session_id:'chat',target_server_identity:'l40-server',target_session_id:'l40-chat'}])
+    assert.equal(fixture.sends.length,0,'The turn waits until the hub has paired the chats')
+    await act(async()=>pairing.resolve())
+    assert.equal(fixture.sends.length,1)
+    assert.deepEqual(fixture.sends[0][3].chatReferences,[reference],'The chip still reaches the store, which needs it to consume or restore the draft')
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('a failed pairing shows its error and keeps the draft unsent',async()=>{
+  resetCrossServer()
+  const draft='@Hub planning hi'
+  const reference={session_id:'hub-chat',display_title_snapshot:'Hub planning',source_text_start:0,source_text_end:13,action:'route',target_kind:'cross_server',target_server_identity:'hub-server'}
+  store.setState({drafts:{chat:draft},chatReferencesBySession:{chat:[reference]}})
+  fixture.client.createCrossServerPair=async()=>{throw new Error('that server is unreachable or does not support cross-server mail')}
+  const renderer=await render()
+  try{
+    await click(renderer,'chat-send')
+    assert.equal(fixture.sends.length,0)
+    assert.deepEqual(fixture.alerts.map(alert=>alert.slice(0,2)),[['Could not pair chats','that server is unreachable or does not support cross-server mail']])
+    assert.equal(store.getState().drafts.chat,draft)
+    assert.deepEqual(store.getState().chatReferencesBySession.chat,[reference])
+    assert.equal(byID(renderer,'chat-send')[0].props.disabled,false,'Send is available again for a retry')
+  }finally{await act(async()=>renderer.unmount())}
+})
+
 function asyncTurn(){return {queued_id:'incoming',session_id:'chat',purpose:'cross_chat_handoff_delivery',conversation_mode:'async_route_v1',source_session_id:'target',source_title:'Mac agent',target_session_id:'chat',cross_chat_envelope_id:'envelope',prompt:'Please review the patch.',display_prompt:'Please review the patch.',file_ids:[],position:0}}
 function queueHealth(){const value=withLocalChats();value.capabilities.cross_chat_handoffs_v1.version=9;value.capabilities.cross_chat_handoffs_v1.features.exact_queued_delivery_skip=true;return value}
 async function renderQueue(overrides={}){

@@ -62,6 +62,7 @@ import {
   chatReferenceLabel,
   chatReferenceWithAction,
   insertChatReference,
+  insertCrossServerChatReference,
   localChatReferenceContractSupported,
   MAX_CHAT_REFERENCES,
   parseStoredChatReferences,
@@ -71,7 +72,9 @@ import {
   supportedCrossChatTargetBackends,
   validChatReferences,
   type ChatMentionTrigger,
+  type InsertChatReferenceResult,
 } from '../lib/chat-references'
+import { rankMentionRows } from '../lib/session-order'
 import {
   COMPOSER_CARD_MAX_HEIGHT,
   COMPOSER_COMPACT_BACKEND_SLOT_WIDTH,
@@ -92,7 +95,7 @@ import {
 import { cursorBackendUnavailableReason, isBackendLocked, runtimeCatalogHasSelectableModels, runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, selectableChatBackends } from '../lib/runtime-catalog'
 import { runtimeChipLabel } from '../lib/runtime-chip'
 import { usePalette } from '../theme'
-import type { AgentCrossChatRoute, AgentFile, Backend, ChatReference, ChatReferenceAction, FailedUpload, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, Session, TeamReference, UploadRef } from '../types'
+import type { AgentCrossChatRoute, AgentFile, Backend, ChatReference, ChatReferenceAction, ChatSearchTarget, CrossServerChats, FailedUpload, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, Session, TeamReference, UploadRef } from '../types'
 import { appendWelcomeExchange, isWelcomeSession } from '../lib/welcome-session'
 import { Text, TextInput } from './AppText'
 import { BackendMark } from './BackendMark'
@@ -117,6 +120,13 @@ const EMPTY_QUEUE: QueuedTurn[] = []
 const EMPTY_CHAT_REFERENCES: ChatReference[] = []
 const EMPTY_TEAM_REFERENCES: TeamReference[] = []
 const EMPTY_SESSIONS: Session[] = []
+/** An @ picker row: a chat on this server, or one on another server under the same hub. `tag` names this server when it is not the hub. */
+type ChatTargetCandidate =
+  | { kind: 'local'; id: string; session: Session; tag: string }
+  | { kind: 'remote'; id: string; server: CrossServerChats; chat: ChatSearchTarget }
+/** The hub's chat list seen from the active server: this server's tag and the other servers. */
+type CrossServerTargets = { localTag: string; servers: CrossServerChats[] }
+const EMPTY_CANDIDATES: ChatTargetCandidate[] = []
 const EMPTY_ROUTES: AgentCrossChatRoute[] = []
 const EMPTY_ROUTE_IDS: ReadonlySet<string> = new Set()
 const ATTACHMENT_PICKER_SEND_GUARD_MS = 600
@@ -234,7 +244,10 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const crossChatSupported = routeHintsSupported
     && supportedChatActions.includes('route')
     && supportedTargetBackends.length > 0
+  const crossServerAvailable = crossChatSupported && health?.capabilities?.cross_server_mail_v1?.available === true
   const referenceSupported = useCallback((reference: ChatReference): boolean => {
+    // Paired through the hub at send time; its target lives on another server.
+    if (reference.target_kind === 'cross_server') return crossServerAvailable
     const target = useAppStore.getState().sessions.find(candidate => candidate.id === reference.session_id)
     return Boolean(
       crossChatSupported
@@ -244,7 +257,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       && !target.archived
       && supportedTargetBackends.includes(target.backend)
     )
-  }, [crossChatSupported, health, requestReplySupportedForSource, supportedTargetBackends])
+  }, [crossChatSupported, crossServerAvailable, health, requestReplySupportedForSource, supportedTargetBackends])
   const referencesSupported = references.length === 0 || references.every(referenceSupported)
   const teamMentionsSupported = teamMessagesAvailable(health)
   const teamReferencesSupported = teamReferences.every(reference => teamReferenceContractSupported(health, reference))
@@ -518,6 +531,28 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     setPickerTrigger(nextTrigger)
   }, [crossChatSupported])
 
+  // Replaces the picker's trigger text with the chip of the chosen chat.
+  const applyChatReference = useCallback((inserted: InsertChatReferenceResult): boolean => {
+    const currentDraft = draftRef.current
+    const currentReferences = referencesRef.current
+    const shifted = reconcileChatReferences(currentDraft, inserted.text, currentReferences)
+    const nextReferences = [...shifted, inserted.reference]
+      .sort((left, right) => left.source_text_start - right.source_text_start)
+    pendingCaretRef.current = inserted.caret
+    selectionRef.current = { start: inserted.caret, end: inserted.caret }
+    draftRef.current = inserted.text
+    restoreInputAfterPickerRef.current = true
+    pickerTriggerRef.current = null
+    setSessionDraft(sessionId, inserted.text, profileGeneration)
+    storeReferences(nextReferences)
+    storeTeamReferences(reconcileTeamReferences(currentDraft, inserted.text, teamReferencesRef.current))
+    setPickerTrigger(null)
+    setPickerQuery('')
+    requestAnimationFrame(dismissAppKeyboard)
+    if (Platform.OS !== 'ios') requestAnimationFrame(finishTargetPickerDismissal)
+    return true
+  }, [finishTargetPickerDismissal, profileGeneration, sessionId, setSessionDraft, storeReferences, storeTeamReferences])
+
   const chooseTarget = useCallback((target: Session): boolean => {
     const currentTrigger = pickerTriggerRef.current
     if (!currentTrigger || currentTrigger.kind === '@@' || !crossChatSupported || !remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return false
@@ -544,24 +579,33 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       return false
     }
     const currentDraft = draftRef.current
-    const inserted = insertChatReference(currentDraft, currentTrigger, target, action)
-    const shifted = reconcileChatReferences(currentDraft, inserted.text, currentReferences)
-    const nextReferences = [...shifted, inserted.reference]
-      .sort((left, right) => left.source_text_start - right.source_text_start)
-    pendingCaretRef.current = inserted.caret
-    selectionRef.current = { start: inserted.caret, end: inserted.caret }
-    draftRef.current = inserted.text
-    restoreInputAfterPickerRef.current = true
-    pickerTriggerRef.current = null
-    setSessionDraft(sessionId, inserted.text, profileGeneration)
-    storeReferences(nextReferences)
-    storeTeamReferences(reconcileTeamReferences(currentDraft, inserted.text, teamReferencesRef.current))
-    setPickerTrigger(null)
-    setPickerQuery('')
-    requestAnimationFrame(dismissAppKeyboard)
-    if (Platform.OS !== 'ios') requestAnimationFrame(finishTargetPickerDismissal)
-    return true
-  }, [activeProfileId, backend, crossChatSupported, finishTargetPickerDismissal, health, profileGeneration, sessionId, setSessionDraft, storeReferences, storeTeamReferences])
+    return applyChatReference(insertChatReference(currentDraft, currentTrigger, target, action))
+  }, [activeProfileId, applyChatReference, backend, crossChatSupported, health, profileGeneration, sessionId])
+
+  const chooseCrossServerTarget = useCallback((server: CrossServerChats, chat: ChatSearchTarget): boolean => {
+    const currentTrigger = pickerTriggerRef.current
+    if (!currentTrigger || currentTrigger.kind === '@@' || !crossServerAvailable || !remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return false
+    if (referencesRef.current.length >= MAX_CHAT_REFERENCES) {
+      Alert.alert('Chat reference limit reached', `A message can reference up to ${MAX_CHAT_REFERENCES} chats. Remove one before adding another.`)
+      return false
+    }
+    if (referencesRef.current.some(reference => (
+      reference.target_kind === 'cross_server'
+      && reference.session_id === chat.id
+      && reference.target_server_identity === server.server_identity
+    ))) {
+      Alert.alert('Already selected', `${chat.title || chat.id} is already selected.`)
+      return false
+    }
+    let inserted: InsertChatReferenceResult
+    try {
+      inserted = insertCrossServerChatReference(draftRef.current, currentTrigger, chat, server)
+    } catch (error) {
+      Alert.alert('Chat reference unavailable', errorText(error))
+      return false
+    }
+    return applyChatReference(inserted)
+  }, [activeProfileId, applyChatReference, crossServerAvailable, profileGeneration, sessionId])
 
   const chooseTeamTarget = useCallback((candidate: TeamMentionCandidate) => {
     const trigger = pickerTriggerRef.current
@@ -760,6 +804,27 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     const admittedDraft = consumeComposer ? currentDraft : undefined
     const admittedFiles = consumeComposer ? currentUploads : undefined
     try {
+      const crossServerReferences = outgoingReferences.filter(reference => reference.target_kind === 'cross_server')
+      if (crossServerReferences.length) {
+        // The hub pairs the chats first, so this turn's agent already sees the route.
+        // sendPrompt leaves these references out of the turn; the chip stays plain text.
+        try {
+          const sourceServerIdentity = useAppStore.getState().health?.server_identity
+          if (!sourceServerIdentity) throw new Error('This server cannot pair chats across servers right now.')
+          for (const reference of crossServerReferences) {
+            await client.createCrossServerPair({
+              source_server_identity: sourceServerIdentity,
+              source_session_id: sessionId,
+              target_server_identity: reference.target_server_identity!,
+              target_session_id: reference.session_id,
+            })
+          }
+        } catch (error) {
+          if (composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) Alert.alert('Could not pair chats', errorText(error))
+          return
+        }
+        if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+      }
       try {
         const request = sendPrompt(steer, profileGeneration, sessionId, {
           promptOverride,
@@ -1208,6 +1273,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         onQueryChange={query => { if (query.startsWith('@')) openTeamFromChatPicker(query.replace(/^@+/u, '')); else setPickerQuery(query) }}
         onTeamNetwork={() => openTeamFromChatPicker()}
         onSelect={chooseTarget}
+        onSelectCrossServer={chooseCrossServerTarget}
         onClose={closeTargetPicker}
         onDidDismiss={finishTargetPickerDismissal}
       />
@@ -1267,6 +1333,8 @@ function ChatReferenceShelf({ references, referenceSupported, onChangeAction, on
     >
       {references.map(reference => {
         const supported = referenceSupported(reference)
+        // A chat on another server is paired, not granted an action; there is nothing to change.
+        const crossServer = reference.target_kind === 'cross_server'
         return <View
           key={`${reference.session_id}:${reference.source_text_start}:${reference.source_text_end}`}
           style={[styles.referenceChip, { backgroundColor: supported ? `${colors.blue}14` : `${colors.red}14`, borderColor: supported ? `${colors.blue}66` : colors.red }]}
@@ -1274,13 +1342,14 @@ function ChatReferenceShelf({ references, referenceSupported, onChangeAction, on
           <MessageSquareShare size={14} color={supported ? colors.blue : colors.red} />
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`Cross-chat action for ${reference.display_title_snapshot}: ${chatReferenceLabel(reference.action)}. Change action`}
+            accessibilityLabel={crossServer ? `Chat on another server: ${reference.display_title_snapshot}. Pairs when sent` : `Cross-chat action for ${reference.display_title_snapshot}: ${chatReferenceLabel(reference.action)}. Change action`}
+            disabled={crossServer}
             onPress={() => onChangeAction(reference)}
             style={styles.referenceAction}
           >
             <Text style={[styles.referenceTitle, { color: colors.text }]} numberOfLines={1}>@{reference.display_title_snapshot}</Text>
-            <Text style={[styles.referenceLabel, { color: supported ? colors.blue : colors.red }]} numberOfLines={1}>· {chatReferenceLabel(reference.action)}</Text>
-            <ChevronDown size={13} color={supported ? colors.blue : colors.red} />
+            <Text style={[styles.referenceLabel, { color: supported ? colors.blue : colors.red }]} numberOfLines={1}>· {crossServer ? 'Pairs when sent' : chatReferenceLabel(reference.action)}</Text>
+            {crossServer ? null : <ChevronDown size={13} color={supported ? colors.blue : colors.red} />}
           </Pressable>
           {onRemove ? <IconButton icon={X} size={13} touchSize={44} onPress={() => onRemove(reference)} label={`Remove reference to ${reference.display_title_snapshot}`} /> : null}
         </View>
@@ -1290,7 +1359,7 @@ function ChatReferenceShelf({ references, referenceSupported, onChangeAction, on
   </View>
 }
 
-export function ChatTargetPicker({ visible, width, query, sourceSessionId, supportedTargetBackends, references, requestReplySupported, referenceLimitReached, onQueryChange, onTeamNetwork, onSelect, onClose, onDidDismiss }: {
+export function ChatTargetPicker({ visible, width, query, sourceSessionId, supportedTargetBackends, references, requestReplySupported, referenceLimitReached, onQueryChange, onTeamNetwork, onSelect, onSelectCrossServer, onClose, onDidDismiss }: {
   visible: boolean
   width: number
   query: string
@@ -1302,6 +1371,7 @@ export function ChatTargetPicker({ visible, width, query, sourceSessionId, suppo
   onQueryChange: (query: string) => void
   onTeamNetwork: () => void
   onSelect: (target: Session) => boolean
+  onSelectCrossServer: (server: CrossServerChats, chat: ChatSearchTarget) => boolean
   onClose: () => void
   onDidDismiss: () => void
 }) {
@@ -1334,25 +1404,43 @@ export function ChatTargetPicker({ visible, width, query, sourceSessionId, suppo
     try { await useAppStore.getState().revokeAgentRoute(sourceSessionId, route.route_id, route.revision, generation) }
     finally { if (revokedInFlight.current.get(route.route_id) === token) revokedInFlight.current.delete(route.route_id) }
   }
-  const targets = useAppStore(useShallow(state => visible ? rankChatTargets(
-    state.sessions.filter(candidate => (
-      candidate.id !== sourceSessionId
-      && !candidate.archived
-      && supportedTargetBackends.includes(candidate.backend)
-    )),
-    query,
-  ) : EMPTY_SESSIONS))
+  const serverIdentity = useAppStore(state => state.health?.server_identity)
+  const crossServerMailAvailable = useAppStore(state => state.health?.capabilities?.cross_server_mail_v1?.available === true)
+  const crossServerKey = `${profileId}:${generation}:${serverIdentity ?? ''}`
+  const [crossServerSnapshot, setCrossServerSnapshot] = useState<{ key: string; servers: CrossServerChats[] } | null>(null)
+  useEffect(() => {
+    // One hub request each time the picker opens, never per keystroke. Until it
+    // answers, or when it fails, the picker shows the list from the last open.
+    if (!visible || !connected || !client.isValidated || !crossServerMailAvailable) return
+    let current = true
+    client.crossServerChats()
+      .then(snapshot => { if (current && remoteComposerScopeIsCurrent(profileId, generation, sourceSessionId)) setCrossServerSnapshot({ key: crossServerKey, servers: snapshot.servers }) })
+      .catch(() => undefined)
+    return () => { current = false }
+  }, [visible, sourceSessionId, profileId, generation, connected, validationRevision, crossServerKey, crossServerMailAvailable])
+  const crossServer = useMemo<CrossServerTargets | null>(() => {
+    if (!crossServerMailAvailable || crossServerSnapshot?.key !== crossServerKey) return null
+    const local = crossServerSnapshot.servers.find(server => server.server_identity === serverIdentity)
+    // The hub lists only servers that can pair; without this one, nothing here can.
+    return local ? { localTag: local.name, servers: crossServerSnapshot.servers.filter(server => server !== local) } : null
+  }, [crossServerKey, crossServerMailAvailable, crossServerSnapshot, serverIdentity])
+  const localTargets = useAppStore(useShallow(state => visible ? state.sessions.filter(candidate => (
+    candidate.id !== sourceSessionId
+    && !candidate.archived
+    && supportedTargetBackends.includes(candidate.backend)
+  )) : EMPTY_SESSIONS))
+  const targets = useMemo(() => visible ? chatTargetCandidates(localTargets, crossServer, query) : EMPTY_CANDIDATES, [crossServer, localTargets, query, visible])
   // Status changes that do not affect session metadata (notably queued-turn
   // bookkeeping) still refresh an open picker through one stable primitive.
-  useAppStore(state => visible ? targets.map(target => [
+  useAppStore(state => visible ? targets.flatMap(target => target.kind === 'local' ? [[
     target.id,
     state.activeSessionIds.has(target.id) ? 1 : 0,
     state.snapshots[target.id]?.queuedTurns.filter(isUserQueuedTurn).length ?? 0,
-  ].join(':')).join('|') : '')
+  ].join(':')] : []).join('|') : '')
   const activeSessionIds = useAppStore.getState().activeSessionIds
   const queuedCount = (targetId: string) => useAppStore.getState().snapshots[targetId]?.queuedTurns.filter(isUserQueuedTurn).length ?? 0
   const needle = query.trim().toLocaleLowerCase()
-  const detachedGrants = routes.filter(route => !targets.some(target => target.id === route.target_session_id)
+  const detachedGrants = routes.filter(route => !targets.some(target => target.kind === 'local' && target.id === route.target_session_id)
     && (!needle || [route.alias, route.target.title, route.target_session_id].some(value => value?.toLocaleLowerCase().includes(needle))))
   const routeRevokeButton = (route: AgentCrossChatRoute) => {
     const busy = revoking.has(`${sourceSessionId}:${route.route_id}`)
@@ -1413,7 +1501,31 @@ export function ChatTargetPicker({ visible, width, query, sourceSessionId, suppo
             {routeSnapshot && routeCapacityReached(routes, routeSnapshot.max_routes, references) ? <Text testID="chat-route-capacity" style={{ color: colors.orange, fontSize: 12 }}>Route access limit reached. Granted chats remain available; revoke one to grant another.</Text> : null}
             {routes.length ? <Text style={{ color: colors.muted, fontSize: 12 }}>Revoke removes this chat’s granted cross-chat access. Removing a draft reference does not revoke access.</Text> : null}
           </View>}
-          renderItem={({ item }) => {
+          renderItem={({ item: candidate }) => {
+            const select = (disabled: boolean, choose: () => boolean) => {
+              if (selected.current || disabled || !remoteComposerScopeIsCurrent(profileId, generation, sourceSessionId) || composerActionScopeKey(useAppStore.getState(), sourceSessionId) !== actionScopeKey) return
+              selected.current = choose()
+            }
+            const tag = candidate.kind === 'local' ? candidate.tag : candidate.server.name
+            const title = (text: string) => <View style={styles.targetTitleRow}><Text style={[styles.targetTitle, styles.targetTitleText, { color: colors.text }]} numberOfLines={1}>{text}</Text>{tag ? <Text testID={`chat-target-server-${candidate.id}`} style={[styles.targetServerTag, { color: colors.muted, borderColor: colors.border }]} numberOfLines={1}>{tag}</Text> : null}</View>
+            if (candidate.kind === 'remote') {
+              const { server, chat } = candidate
+              const disabled = referenceLimitReached || !connected || !client.isValidated
+              const meta = [chat.folder?.trim(), backendLabel(chat.backend), tablet ? chat.id.slice(0, 8) : null].filter(Boolean).join(' · ')
+              return <View style={[styles.routeRow, { backgroundColor: colors.surface, borderColor: colors.border }]}><Pressable
+                testID={`chat-target-${candidate.id}`}
+                accessibilityRole="button"
+                accessibilityLabel={`Reference ${chat.title || chat.id}${server.name ? ` on ${server.name}` : ''}. Pairs with this chat when sent`}
+                accessibilityState={{ disabled }}
+                disabled={disabled}
+                onPress={() => select(disabled, () => onSelectCrossServer(server, chat))}
+                style={({ pressed }) => [styles.targetRow, styles.routeTarget, tablet && styles.targetRowTablet, { backgroundColor: pressed ? colors.raised : colors.surface, opacity: disabled ? 0.45 : 1 }]}
+              >
+                <View style={[styles.targetBackend, { backgroundColor: colors.raised }]}><BackendMark backend={chat.backend} size={22} /></View>
+                <View style={styles.targetIdentity}>{title(chat.title || chat.id)}<Text style={[styles.targetMeta, { color: colors.muted }]}>Pairs with this chat when sent</Text><Text style={[styles.targetMeta, { color: colors.muted }]} numberOfLines={1}>{meta}</Text></View>
+              </Pressable></View>
+            }
+            const item = candidate.session
             const count = queuedCount(item.id)
             const status = chatTargetStatus(item, activeSessionIds.has(item.id), count)
             const meta = [item.folder?.trim(), backendLabel(item.backend), tablet ? item.id.slice(0, 8) : null].filter(Boolean).join(' · ')
@@ -1427,14 +1539,11 @@ export function ChatTargetPicker({ visible, width, query, sourceSessionId, suppo
               accessibilityHint={capacityReached ? 'Revoke an existing route to grant another chat.' : undefined}
               accessibilityState={{ disabled }}
               disabled={disabled}
-              onPress={() => {
-                if (selected.current || disabled || !remoteComposerScopeIsCurrent(profileId, generation, sourceSessionId) || composerActionScopeKey(useAppStore.getState(), sourceSessionId) !== actionScopeKey) return
-                selected.current = onSelect(item)
-              }}
+              onPress={() => select(disabled, () => onSelect(item))}
               style={({ pressed }) => [styles.targetRow, styles.routeTarget, tablet && styles.targetRowTablet, { backgroundColor: pressed ? colors.raised : colors.surface, opacity: disabled ? 0.45 : 1 }]}
             >
               <View style={[styles.targetBackend, { backgroundColor: colors.raised }]}><BackendMark backend={item.backend} size={22} /></View>
-              <View style={styles.targetIdentity}><Text style={[styles.targetTitle, { color: colors.text }]} numberOfLines={1}>{item.title || item.id}</Text><Text style={[styles.targetMeta, { color: colors.muted }]}>{grant ? `Granted · ${routeActionLabel(grant)}` : `Will grant when sent · ${requestReplySupported ? 'Send + Ask' : 'Send'}`}</Text><Text style={[styles.targetMeta, { color: colors.muted }]} numberOfLines={1}>{meta} · {status}</Text></View>
+              <View style={styles.targetIdentity}>{title(item.title || item.id)}<Text style={[styles.targetMeta, { color: colors.muted }]}>{grant ? `Granted · ${routeActionLabel(grant)}` : `Will grant when sent · ${requestReplySupported ? 'Send + Ask' : 'Send'}`}</Text><Text style={[styles.targetMeta, { color: colors.muted }]} numberOfLines={1}>{meta} · {status}</Text></View>
             </Pressable>{grant ? routeRevokeButton(grant) : null}</View>
           }}
         />
@@ -1508,31 +1617,32 @@ function chatReferenceActionMenuLabel(action: ChatReferenceAction): string {
   return 'Send only'
 }
 
-function rankChatTargets(targets: Session[], query: string): Session[] {
+/**
+ * The @ picker's rows ranked by `rankMentionRows` over title, folder and server tag.
+ * Ties keep this server's chats first, most recent activity first, then other
+ * servers' chats in the hub's order.
+ */
+function chatTargetCandidates(sessions: readonly Session[], crossServer: CrossServerTargets | null, query: string): ChatTargetCandidate[] {
+  const activity = (session: Session) => Date.parse(session.latest_event_at || session.updated_at || session.created_at || '') || 0
+  const local: ChatTargetCandidate[] = [...sessions]
+    .sort((left, right) => activity(right) - activity(left) || (left.title || left.id).localeCompare(right.title || right.id))
+    .map(session => ({ kind: 'local', id: session.id, session, tag: crossServer?.localTag ?? '' }))
+  const remote: ChatTargetCandidate[] = (crossServer?.servers ?? []).flatMap(server => server.chats
+    .filter(chat => chat.cross_chat_handoff_supported)
+    .map(chat => ({ kind: 'remote' as const, id: `remote:${server.server_identity}:${chat.id}`, server, chat })))
   const needle = query.trim().toLocaleLowerCase()
-  return [...targets].sort((left, right) => {
-    const leftRank = chatTargetSearchRank(left, needle)
-    const rightRank = chatTargetSearchRank(right, needle)
-    if (leftRank !== rightRank) return leftRank - rightRank
-    const leftActivity = Date.parse(left.latest_event_at || left.updated_at || left.created_at || '') || 0
-    const rightActivity = Date.parse(right.latest_event_at || right.updated_at || right.created_at || '') || 0
-    if (leftActivity !== rightActivity) return rightActivity - leftActivity
-    return (left.title || left.id).localeCompare(right.title || right.id)
-  }).filter(target => chatTargetSearchRank(target, needle) < 9)
-}
-
-function chatTargetSearchRank(target: Session, needle: string): number {
-  if (!needle) return 0
-  const title = (target.title || '').toLocaleLowerCase()
-  const folder = (target.folder || '').toLocaleLowerCase()
-  const backend = target.backend.toLocaleLowerCase()
-  const id = target.id.toLocaleLowerCase()
-  if (title === needle) return 0
-  if (title.startsWith(needle)) return 1
-  if (title.includes(needle)) return 2
-  if (folder.startsWith(needle)) return 3
-  if (folder.includes(needle) || backend.includes(needle) || id.includes(needle)) return 4
-  return 9
+  return rankMentionRows(
+    [...local, ...remote],
+    query,
+    candidate => candidate.kind === 'local'
+      ? [candidate.session.title, candidate.session.folder, candidate.tag]
+      : [candidate.chat.title, candidate.chat.folder, candidate.server.name],
+    // Every field the picker has always matched by substring, so a pasted chat id still finds its chat.
+    candidate => {
+      const { id, title, folder, backend } = candidate.kind === 'local' ? candidate.session : candidate.chat
+      return [title, folder, backend, id].some(value => value?.toLocaleLowerCase().includes(needle))
+    },
+  )
 }
 
 function chatTargetStatus(session: Session, active: boolean, queued: number): string {
@@ -1952,6 +2062,8 @@ const styles = StyleSheet.create({
   targetRow: { minHeight: 66, borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 9 }, targetRowTablet: { minHeight: 74, paddingHorizontal: 14 },
   targetBackend: { width: 40, height: 40, flexShrink: 0, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   targetIdentity: { minWidth: 0, flex: 1, gap: 3 }, targetTitle: { fontSize: 14, fontWeight: '700' }, targetMeta: { fontSize: 10.5 },
+  targetTitleRow: { minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 6 }, targetTitleText: { flexShrink: 1 },
+  targetServerTag: { flexShrink: 0, maxWidth: 140, paddingHorizontal: 6, paddingVertical: 1, borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, fontSize: 10.5, fontWeight: '600' },
   targetStatus: { minHeight: 25, maxWidth: 104, borderRadius: 7, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' }, targetStatusText: { fontSize: 10.5, fontWeight: '700' },
   targetEmpty: { flex: 1, minHeight: 200, alignItems: 'center', justifyContent: 'center', gap: 7, padding: 24 }, targetEmptyTitle: { fontSize: 17, fontWeight: '700' }, targetEmptyBody: { maxWidth: 300, fontSize: 12.5, lineHeight: 18, textAlign: 'center' },
   queue: { gap: 5 }, queueLabel: { fontSize: 10, fontWeight: '800', textAlign: 'right' },

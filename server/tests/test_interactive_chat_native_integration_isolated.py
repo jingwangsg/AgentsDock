@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import HTTPException
 from fastapi.responses import Response
+import cross_server_mail
 from interactive_chat_controls import ChatControlError, InteractiveChatControls
 from interactive_chat_native import shared_events, shared_native_value, shared_session
 from tests.test_interactive_chat_controls import native_models
@@ -28,7 +29,7 @@ def load_native_glue():
     names = {"interactive_chat_native_page", "interactive_chat_native_snapshot",
              "steer_interactive_chat_prompt", "run_interactive_chat_job", "control_interactive_chat",
              "get_cross_chat_handoff", "public_cross_chat_envelope", "is_async_route_message",
-             "async_route_conversation_fields", "async_message_target_fields"}
+             "async_route_conversation_fields", "async_message_target_fields", "mail_chat_title"}
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
     assert {node.name for node in nodes} == names
     for node in nodes:
@@ -38,7 +39,8 @@ def load_native_glue():
     namespace.update(native_models())
     namespace.update(asyncio=asyncio, time=time, json=json, hashlib=hashlib, Response=Response,
         scan_transcript=asyncio.to_thread, shared_events=shared_events, shared_native_value=shared_native_value, shared_session=shared_session,
-        ChatControlError=ChatControlError, InteractiveChatControls=InteractiveChatControls)
+        ChatControlError=ChatControlError, InteractiveChatControls=InteractiveChatControls,
+        cross_server_mail=cross_server_mail, CROSS_SERVER_ROUTES={})
     exec(compile(ast.fix_missing_locations(ast.Module(body=[*nodes, manual], type_ignores=[])), "<isolated-native-chat-adapters>", "exec"), namespace)
     return namespace
 

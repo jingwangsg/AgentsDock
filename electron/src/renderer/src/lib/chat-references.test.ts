@@ -11,6 +11,7 @@ import {
   currentRouteHintReference,
   defaultCrossChatAction,
   insertChatReference,
+  insertCrossServerChatReference,
   insertSecurePeerChatReference,
   MAX_CHAT_REFERENCES,
   parseStoredChatReferences,
@@ -525,5 +526,32 @@ describe('chat references', () => {
     }]
 
     expect(parseStoredChatReferences(persisted, text, 'source-chat')).toEqual(persisted)
+  })
+
+  it('keeps a chat on another server as a tagged chip that survives drafts and edits elsewhere', () => {
+    const trigger = chatMentionTrigger('ask @laun', 9)!
+    const inserted = insertCrossServerChatReference('ask @laun', trigger, { id: 'sess_remote', title: 'Launch check' }, { server_identity: 'srv-l40', name: 'osmo_dev_l40' })
+    expect(inserted.text).toBe('ask @Launch check · osmo_dev_l40 ')
+    expect(inserted.reference).toEqual({
+      session_id: 'sess_remote', display_title_snapshot: 'Launch check · osmo_dev_l40', source_text_start: 4,
+      source_text_end: 32, action: 'route', target_kind: 'cross_server', target_server_identity: 'srv-l40'
+    })
+    expect(validChatReferences(inserted.text, [inserted.reference], 'source-chat')).toEqual([inserted.reference])
+    expect(parseStoredChatReferences([inserted.reference], inserted.text, 'source-chat')).toEqual([inserted.reference])
+    expect(canonicalizeLocalRouteHints(inserted.text, [inserted.reference], 'source-chat').references).toEqual([inserted.reference])
+    // Typing after the chip does not reopen the picker on its own @.
+    expect(chatMentionTrigger(`${inserted.text}now`, inserted.text.length + 3, [inserted.reference])).toBeNull()
+
+    const hub = insertCrossServerChatReference('@', chatMentionTrigger('@', 1)!, { id: 'sess_hub', title: 'Hub chat' }, { server_identity: 'srv-hub', name: '' })
+    expect(hub.text).toBe('@Hub chat ')
+    expect(hub.reference.display_title_snapshot).toBe('Hub chat')
+  })
+
+  it('rejects a cross-server chip without its server or with secure-peer route fields', () => {
+    const text = '@Launch check · osmo_dev_l40'
+    const base = { session_id: 'sess_remote', display_title_snapshot: 'Launch check · osmo_dev_l40', source_text_start: 0, source_text_end: text.length, action: 'route' as const, target_kind: 'cross_server' as const }
+    expect(validChatReferences(text, [base], 'source-chat')).toEqual([])
+    expect(validChatReferences(text, [{ ...base, target_server_identity: 'srv-l40', target_route_id: 'route_x' }], 'source-chat')).toEqual([])
+    expect(validChatReferences(text, [{ ...base, target_server_identity: 'srv-l40', action: 'instruction' as const }], 'source-chat')).toEqual([])
   })
 })

@@ -11,6 +11,7 @@ import {
   defaultCrossChatAction,
   exactQueuedDeliverySkipAvailable,
   insertChatReference,
+  insertCrossServerChatReference,
   interactiveClientCapabilities,
   localChatReferenceContractSupported,
   parseStoredChatReferences,
@@ -247,5 +248,34 @@ assert.deepEqual(removeChatReferencesForSession({
 }, 'target'), {
   source: [{ ...emojiReference, session_id: 'keep', action: 'instruction' }],
 })
+
+// A chat on another server is a tagged chip that survives drafts and edits elsewhere.
+const crossServerTrigger = chatMentionTrigger('ask @laun', 9)!
+const crossServer = insertCrossServerChatReference('ask @laun', crossServerTrigger, { id: 'sess_remote', title: 'Launch check' }, { server_identity: 'srv-l40', name: 'osmo_dev_l40' })
+assert.equal(crossServer.text, 'ask @Launch check · osmo_dev_l40 ')
+assert.deepEqual(crossServer.reference, {
+  session_id: 'sess_remote', display_title_snapshot: 'Launch check · osmo_dev_l40', source_text_start: 4,
+  source_text_end: 32, action: 'route', target_kind: 'cross_server', target_server_identity: 'srv-l40',
+})
+assert.deepEqual(validChatReferences(crossServer.text, [crossServer.reference], 'source-chat'), [crossServer.reference])
+assert.deepEqual(parseStoredChatReferences([crossServer.reference], crossServer.text, 'source-chat'), [crossServer.reference])
+// Typing after the chip does not reopen the picker on its own @.
+assert.equal(chatMentionTrigger(`${crossServer.text}now`, crossServer.text.length + 3, [crossServer.reference]), null)
+// The same chat id on this server and on another one are two references.
+const localTwin = insertChatReference(crossServer.text, chatMentionTrigger(`${crossServer.text}@`, crossServer.text.length + 1)!, { id: 'sess_remote', title: 'Local twin' }, 'route')
+assert.equal(validChatReferences(localTwin.text, [crossServer.reference, localTwin.reference], 'source-chat').length, 2)
+const hubChat = insertCrossServerChatReference('@', chatMentionTrigger('@', 1)!, { id: 'sess_hub', title: 'Hub chat' }, { server_identity: 'srv-hub', name: '' })
+assert.equal(hubChat.text, '@Hub chat ')
+assert.equal(hubChat.reference.display_title_snapshot, 'Hub chat')
+
+// A cross-server chip without its server, with secure-peer route fields, or with another action is refused.
+const crossServerText = '@Launch check · osmo_dev_l40'
+const crossServerBase: ChatReference = { session_id: 'sess_remote', display_title_snapshot: 'Launch check · osmo_dev_l40', source_text_start: 0, source_text_end: crossServerText.length, action: 'route', target_kind: 'cross_server' }
+assert.deepEqual(validChatReferences(crossServerText, [crossServerBase], 'source-chat'), [])
+assert.deepEqual(validChatReferences(crossServerText, [{ ...crossServerBase, target_server_identity: 'srv-l40', target_route_id: 'route_x' }], 'source-chat'), [])
+assert.deepEqual(validChatReferences(crossServerText, [{ ...crossServerBase, target_server_identity: 'srv-l40', action: 'instruction' }], 'source-chat'), [])
+assert.deepEqual(parseStoredChatReferences([crossServerBase], crossServerText, 'source-chat'), [])
+// It is never a local route grant, even with grant intent on a full v7 server.
+assert.equal(localChatReferenceContractSupported(hardenedV7, { ...crossServer.reference, grant_intent: true }), false)
 
 console.log('cross-chat reference regressions passed')

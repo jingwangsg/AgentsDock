@@ -44,6 +44,8 @@ import type {
   ChatReference,
   TeamReference,
   ChatSearchSnapshot,
+  CrossServerChatsSnapshot,
+  CrossServerPairInput,
   CreateAgentCrossChatRouteInput,
   CrossChatExchange,
   CrossChatHandoff,
@@ -4360,6 +4362,33 @@ export class AppService {
     const snapshot = await scope.client.searchAgentHandoffTargets(query, excludeSessionId, limit)
     this.assertCurrentScope(scope)
     return snapshot
+  }
+
+  /**
+   * Calls the server that relays mail between the active server and its siblings: for a
+   * `<hub>/api/remote/<id>` profile the hub, with that profile's token (a hub remote's profile
+   * carries the hub token); else the active server, which is then its own hub.
+   */
+  private async withCrossServerClient<T>(expected: WorkspaceProfileScope, call: (client: AgentServerClient) => Promise<T>): Promise<T> {
+    const scope = this.requireWorkspaceScope(expected)
+    await this.ensureValidatedScope(scope)
+    const hubUrl = /^(.*)\/api\/remote\/[^/]+$/.exec(normalizeServerURL(scope.serverUrl))?.[1]
+    const client = hubUrl ? this.clientFactory(hubUrl, await this.settings.accessTokenForConnectionAsync(scope.profileId)) : scope.client
+    try {
+      const result = await call(client)
+      this.assertCurrentScope(scope)
+      return result
+    } finally {
+      if (client !== scope.client) client.dispose()
+    }
+  }
+
+  crossServerChats(expected: WorkspaceProfileScope): Promise<CrossServerChatsSnapshot> {
+    return this.withCrossServerClient(expected, client => client.crossServerChats())
+  }
+
+  createCrossServerPair(expected: WorkspaceProfileScope, input: CrossServerPairInput): Promise<void> {
+    return this.withCrossServerClient(expected, client => client.createCrossServerPair(input))
   }
 
   async createAgentHandoffRoute(

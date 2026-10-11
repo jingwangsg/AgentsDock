@@ -32,9 +32,9 @@ class ReleaseForQueuedTurnTests(unittest.IsolatedAsyncioTestCase):
             patch.object(agent_server, "QUEUED_TURNS", {SESSION: deque([{"queued_id": "q1", "prompt": "status?"}])}),
             patch.object(agent_server, "ACTIVE", {SESSION: self.active()}),
         ):
-            self.assertTrue(await agent_server.release_claude_run_for_queued_turn(SESSION))
+            self.assertTrue(await agent_server.release_waiting_claude_run(SESSION))
             # The supervisor's own notice names the run it is waiting in.
-            self.assertTrue(await agent_server.release_claude_run_for_queued_turn(SESSION, "run_parent"))
+            self.assertTrue(await agent_server.release_waiting_claude_run(SESSION, "run_parent"))
         manager.release_awaiting_run.assert_awaited_with(SESSION, run_id="run_parent")
         self.assertEqual(manager.release_awaiting_run.await_count, 2)
 
@@ -53,8 +53,53 @@ class ReleaseForQueuedTurnTests(unittest.IsolatedAsyncioTestCase):
                     patch.object(agent_server, "QUEUED_TURNS", queue),
                     patch.object(agent_server, "ACTIVE", {SESSION: active}),
                 ):
-                    self.assertFalse(await agent_server.release_claude_run_for_queued_turn(SESSION, "run_parent"))
+                    self.assertFalse(await agent_server.release_waiting_claude_run(SESSION, "run_parent"))
         manager.release_awaiting_run.assert_not_awaited()
+
+    async def test_unread_peer_mail_releases_the_run_only_when_its_wake_follows(self) -> None:
+        # 2026-10-11: a reply sat unread for 6 minutes while the model waited
+        # on a background clone; nothing else could reach the idle model. A run
+        # released with no wake to follow would lose its tasks' completions.
+        cases = {"wake due": (set(), True, True), "wake blocked": ({SESSION}, True, False),
+                 "no unread mail above the last wake or Stop": (set(), False, False)}
+        for name, (blocked, wake_due, expected) in cases.items():
+            with self.subTest(name):
+                manager = self.manager()
+                ledger = AsyncMock()
+                ledger.mailbox_call = AsyncMock(return_value=wake_due)
+                with (
+                    patch.object(agent_server, "CLAUDE_SDK_MANAGER", manager),
+                    patch.object(agent_server, "CROSS_CHAT", ledger),
+                    patch.object(agent_server, "chat_mailbox_pairs", lambda _session_id: {"pair_x"}),
+                    patch.object(agent_server, "QUEUED_TURNS", {}),
+                    patch.object(agent_server, "CHAT_MAILBOX_PENDING", {SESSION}),
+                    patch.object(agent_server, "CHAT_MAILBOX_WAKE_BLOCKED", blocked),
+                    patch.object(agent_server, "ACTIVE", {SESSION: self.active()}),
+                ):
+                    self.assertIs(await agent_server.release_waiting_claude_run(SESSION, "run_parent"), expected)
+                self.assertEqual(manager.release_awaiting_run.await_count, int(expected))
+
+    async def test_mail_for_a_busy_chat_asks_only_a_claude_sdk_run_to_release(self) -> None:
+        for transport, expected in ((agent_server.CLAUDE_TRANSPORT_AGENT_SDK, 1), ("app-server", 0)):
+            with self.subTest(transport=transport):
+                manager = self.manager()
+                ledger = AsyncMock()
+                ledger.mailbox_call = AsyncMock(return_value=True)
+                with (
+                    patch.object(agent_server, "CLAUDE_SDK_MANAGER", manager),
+                    patch.object(agent_server, "CROSS_CHAT", ledger),
+                    patch.object(agent_server, "chat_mailbox_pairs", lambda _session_id: {"pair_x"}),
+                    patch.object(agent_server, "QUEUED_TURNS", {}),
+                    patch.object(agent_server, "CHAT_MAILBOX_PENDING", {SESSION}),
+                    patch.object(agent_server, "CHAT_MAILBOX_WAKE_BLOCKED", set()),
+                    patch.object(agent_server, "ACTIVE", {SESSION: self.active(transport=transport)}),
+                    patch.object(agent_server, "schedule_next_queued_turn") as idle_wake,
+                ):
+                    agent_server.schedule_chat_mailbox_wake(SESSION)
+                    for _ in range(3):
+                        await asyncio.sleep(0)
+                idle_wake.assert_not_called()
+                self.assertEqual(manager.release_awaiting_run.await_count, expected)
 
     async def test_a_supervisor_failure_is_reported_not_raised(self) -> None:
         manager = self.manager()
@@ -64,7 +109,7 @@ class ReleaseForQueuedTurnTests(unittest.IsolatedAsyncioTestCase):
             patch.object(agent_server, "QUEUED_TURNS", {SESSION: deque([{"queued_id": "q1"}])}),
             patch.object(agent_server, "ACTIVE", {SESSION: self.active()}),
         ):
-            self.assertFalse(await agent_server.release_claude_run_for_queued_turn(SESSION))
+            self.assertFalse(await agent_server.release_waiting_claude_run(SESSION))
 
 
 class StopReleasesWaitingRunTests(unittest.IsolatedAsyncioTestCase):
