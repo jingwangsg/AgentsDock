@@ -125,7 +125,8 @@ export const MarkdownContent = memo(function MarkdownContent({
     const decoded = decodeLinkTarget(href)
     const reference = parseWorkspaceCodeReference(decoded)
     const clean = (reference?.path ?? decoded).replace(/^\.\//, '')
-    const file = files.find(candidate => (
+    // A path the agent republished has several copies in event order; a link names the newest.
+    const file = files.findLast(candidate => (
       candidate.path === clean
       || candidate.source_path === clean
       || candidate.filename === clean

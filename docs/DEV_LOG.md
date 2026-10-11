@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-11 — A turn's files show one entry per republished path, newest first (desktop + Android source)
+
+- An agent that publishes the same file again as it grows (a transcript it
+  keeps extending, a report it rewrites) filled the turn's "Files & media"
+  with one tile per publish: seven tiles with the same title, the oldest four
+  visible and the newest behind "Show 3 more". The agent-facing publish rule
+  already said "republish updates from the same path; the outputs list keeps
+  the newest per path", and the chat's Outputs panel did so; the turn's own
+  file row did not.
+- The timeline projection now keeps one entry per source path in a turn's
+  output files, the newest publish, and orders the row newest first so the
+  fresh copy is visible without "Show more". Files without a source path
+  never collapse, and the user's own uploads are untouched. The
+  collapse happens where the row is built, so the count, "Show more", preview
+  navigation, pins and "Find in chat" all see the collapsed list, and a link
+  in the answer that names the path opens the newest copy too (desktop). The
+  earlier copies stay reachable through the files API.
+- Order change (desktop): the row listed output files oldest first; it now
+  lists them newest first. Android's grid already sorted them newest first,
+  so nothing changes there. No server change.
+- Verification. Unit: desktop and Android timeline tests (repeated path kept
+  once as the newest with its count, pathless files and a same-path upload
+  untouched, newest-first order) and the locale catalog test. Real app: the
+  worktree's built desktop app
+  against an isolated server on this Mac, driven over the debugging protocol;
+  a real Claude turn published one file three times as it grew and a second
+  file once. The turn's row showed two entries with the latest publish first,
+  the republished file once at its final size, a count of 2 and no "Show
+  more", while the files endpoint kept all four records. Not exercised: the
+  Android app (source change and unit test only),
+  deployed servers, and Codex-backed chats.
+  Availability: desktop and Android source.
+
 ## 2026-10-11 — Composer: `Create new agent` in the `@` picker hands a task to a new chat (desktop + server source)
 
 - Handing a task to a new agent took several steps: create a chat, name it,
@@ -32,6 +65,8 @@
   by the provider's own title for that wake prompt (observed as "Unread peer
   mail inbox").
 - Android: the picker entry and dialog are not on the mobile app yet; follow-up.
+- Follow-up the same day: the dialog's Chinese labels for the effort choice
+  used a term the locale catalog forbids; they now read "Reasoning 强度".
 - Verification. Unit: desktop reference-helper and Composer tests for the
   picker entry, the dialog defaults, the created chat's request on the same
   server and through the hub, the sent references, and the entry withheld

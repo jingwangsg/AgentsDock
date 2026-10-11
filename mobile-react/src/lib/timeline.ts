@@ -798,7 +798,16 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
     if ('kind' in item) { rows.push(item); continue }
     const inputFileIds = new Set(item.user?.file_ids ?? [])
     const inputFiles = item.files.filter(file => inputFileIds.has(file.id))
-    const outputFiles = item.files.filter(file => !inputFileIds.has(file.id))
+    // The agent's publish rule promises "the outputs list keeps the newest per path"
+    // (server/agent_server.py, publish bullet); the turn's file row shows the same copy as
+    // the Outputs panel. item.files is in event order, so reversed is newest first, which
+    // keeps the current copy inside the first tiles shown before "Show more".
+    const seenPaths = new Set<string>()
+    const outputFiles = item.files.filter(file => !inputFileIds.has(file.id)).reverse().filter(file => {
+      if (!file.source_path || seenPaths.has(file.source_path)) return !file.source_path
+      seenPaths.add(file.source_path)
+      return true
+    })
     const mediaRow: MediaRow | null = outputFiles.length ? {
       kind: 'media',
       key: `${item.key}:media`,
