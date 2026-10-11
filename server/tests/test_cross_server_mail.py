@@ -127,23 +127,6 @@ class StorageTests(unittest.TestCase):
             chat_mailbox.store_message(self.db, reply, now=xs.now_iso(), in_reply_to_message_id=MESSAGE)
 
 
-class DelegationMatchTests(unittest.TestCase):
-    REMOTE = {"peer_title": "Launch check", "peer_server_name": "osmo_dev_l40"}
-    HUB = {"peer_title": "Launch", "peer_server_name": ""}
-
-    def test_the_whole_chip_names_its_peer(self) -> None:
-        self.assertTrue(xs.names_peer("@Launch check · osmo_dev_l40 reply PONG", self.REMOTE))
-        self.assertTrue(xs.names_peer("ask (@Launch check · osmo_dev_l40 ) now", self.REMOTE))
-        self.assertTrue(xs.names_peer("ping @Launch", self.HUB))
-
-    def test_a_prefix_of_another_chip_or_a_bare_title_does_not(self) -> None:
-        self.assertFalse(xs.names_peer("@Launch check · osmo_dev_l40x", self.REMOTE))
-        self.assertFalse(xs.names_peer("@Launch check", self.REMOTE))
-        self.assertFalse(xs.names_peer("@Launch check · osmo_dev_l40", {"peer_title": "Launch c", "peer_server_name": "osmo_dev_l40"}))
-        self.assertFalse(xs.names_peer("mail@Launch check · osmo_dev_l40", self.REMOTE))
-        self.assertFalse(xs.names_peer("@Untitled", {"peer_title": "  ", "peer_server_name": ""}))
-
-
 class FakeEnd(xs.End):
     def __init__(self, identity: str, name: str = "", *, refuse: str = "", down: bool = False) -> None:
         self.identity = identity

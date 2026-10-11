@@ -1507,8 +1507,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         try {
           if (!scope || !serverIdentity) throw new Error(t('ui.composer.crossServer.unavailable'))
           for (const reference of crossServerReferences) {
-            // The pair's label on this side is the chip's title part: the user's instruction is
-            // delegated only when the chip text names that label, and a new agent's chip says
+            // The pair's label on this side is the chip's title part; a new agent's chip says
             // "New agent" whatever its chat is named.
             const server = crossServerMention?.servers.find(candidate => candidate.server_identity === reference.target_server_identity)
             const tag = server?.name ? ` · ${server.name}` : ''
