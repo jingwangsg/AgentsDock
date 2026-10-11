@@ -95,12 +95,12 @@ class RuntimeCliUpdateTests(unittest.TestCase):
         else:
             self.fail(f"the update's child process {pid} is still running")
 
-    def chats_path(self, *directories):
+    def chats_env(self, *directories):
         """The chats' HOME and PATH, limited to `directories`: no real CLI, curl or installer is reachable."""
-        self.home = self.bin / "home"
-        self.home.mkdir(exist_ok=True)
-        path = ":".join([str(self.home / ".local" / "bin"), *map(str, directories)])
-        self.enterContext(patch.object(server, "runner_env", lambda: {"HOME": str(self.home), "PATH": path}))
+        home = self.bin / "home"
+        home.mkdir(exist_ok=True)
+        path = ":".join([str(home / ".local" / "bin"), *map(str, directories)])
+        self.enterContext(patch.object(server, "runner_env", lambda: {"HOME": str(home), "PATH": path}))
         self.enterContext(patch.object(server, "CLAUDE_BIN", "claude"))
         self.enterContext(patch.object(server, "CODEX_BIN", "codex"))
 
@@ -111,16 +111,19 @@ class RuntimeCliUpdateTests(unittest.TestCase):
         curl = tools / "curl"
         curl.write_text(f'#!/bin/sh\necho "$@" >> {tools}/curl.log\n{before}\ncat {tools}/installer.sh\n')
         curl.chmod(0o755)
-        (tools / "bash").symlink_to("/bin/bash")
-        # /bin for the installer's own sh, mkdir, cat and chmod; the fake curl comes first.
-        self.chats_path(tools, "/bin")
+        # /bin for bash and the installer's sh, mkdir and chmod; the fake curl comes first.
+        self.chats_env(tools, "/bin")
         return tools
 
     def installer(self, name, *, into="$HOME/.local/bin"):
-        """What an official installer does here: put a fake CLI reporting 2.0.0 in `into`."""
+        """What an official installer does here: put a fake CLI reporting 2.0.0 in `into`, then print whether
+        CODEX_NON_INTERACTIVE reached it."""
         return (
             f'mkdir -p "{into}"\n'
-            f'printf \'#!/bin/sh\\nif [ "$1" = "--version" ]; then echo "2.0.0"; fi\\n\' > "{into}/{name}"\n'
+            f'cat > "{into}/{name}" <<"EOF"\n'
+            '#!/bin/sh\n'
+            'if [ "$1" = "--version" ]; then echo "2.0.0"; fi\n'
+            'EOF\n'
             f'chmod 755 "{into}/{name}"\n'
             'echo "non-interactive=${CODEX_NON_INTERACTIVE:-unset}"\n'
         )
@@ -165,6 +168,7 @@ class RuntimeCliUpdateTests(unittest.TestCase):
         responses = []
         install = threading.Thread(target=lambda: responses.append(self.client.post("/api/admin/runtimes/claude/update", headers=HEADERS)))
         install.start()
+        # Cleanups run last-in first-out: on a failure, release the installer before joining its thread.
         self.addCleanup(install.join)
         self.addCleanup(go.touch)
         for _ in range(200):
@@ -181,14 +185,27 @@ class RuntimeCliUpdateTests(unittest.TestCase):
 
     def test_installing_needs_curl_and_bash(self):
         tools = Path(tempfile.mkdtemp(dir=self.bin))
-        self.chats_path(tools)
+        self.chats_env(tools)
+
         response = self.client.post("/api/admin/runtimes/claude/update", headers=HEADERS)
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "The claude CLI is not installed on this server, and installing it needs curl and bash.")
 
         (tools / "bash").symlink_to("/bin/bash")
         response = self.client.post("/api/admin/runtimes/codex/update", headers=HEADERS)
+        self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "The codex CLI is not installed on this server, and installing it needs curl.")
+
+    def test_a_cli_configured_as_a_missing_path_is_not_installed(self):
+        tools = self.fake_curl(self.installer("claude"))
+        configured = self.bin / "absent" / "claude"
+        self.enterContext(patch.object(server, "CLAUDE_BIN", str(configured)))
+
+        response = self.client.post("/api/admin/runtimes/claude/update", headers=HEADERS)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], f"The claude CLI is configured as {configured}, which does not exist on this server.")
+        self.assertFalse((tools / "curl.log").exists())
 
     def test_unknown_backend(self):
         self.assertEqual(self.client.post("/api/admin/runtimes/cursor/update", headers=HEADERS).status_code, 422)

@@ -14,20 +14,28 @@
   10-minute limit and process-group stop as an update. A failed download, a
   failed installer, or a CLI that the chats still cannot find afterwards is
   reported as an error with the installer's last lines; a server without
-  `curl` or `bash` answers which of them is missing. The row shows the
-  installer's own result line, and the update-all job log reports
-  "installed Codex <version>".
+  `curl` or `bash` answers which of them is missing, and a CLI configured as
+  a path (`CLAUDE_BIN`, `CODEX_BIN`) that does not exist is reported, not
+  installed elsewhere. The row shows the installer's own result line, and
+  the update-all job log reports "installed Codex <version>".
 - Verification. Test surface: an isolated server from the branch on this Mac
   with an empty home directory, called through the update endpoint and
   through the desktop app's Settings → server row menu. The real installers
-  ran: Codex installed in 6 s, Claude Code in 15 s; the Runtimes panel moved
-  from "Not installed" to "Sign-in required" with the installed version; a
-  second click ran each CLI's own `update`. Update-all on that isolated hub
-  logged "installed Codex". Unit tests cover the installer commands through
-  a fake `curl`, a failed download, an install the chats cannot find, the
-  missing-tool answer and the update lock. Not exercised: a Linux remote
-  server, because the deployed servers run the previous release; the change
-  takes effect on a server after it is redeployed with this version.
+  ran: Codex installed in 6 s, Claude Code in 13-15 s; the Runtimes panel
+  moved from "Not installed" to "Sign-in required" with the installed
+  version; a second click ran each CLI's own `update`; update-all on that
+  isolated hub logged "installed Codex" and "installed Claude Code". The
+  Codex and desktop runs used the branch before review, with `CODEX_BIN` and
+  `CLAUDE_BIN` set to paths in the empty home directory. The final build
+  refuses that configuration (checked: 404, nothing installed). Its Claude
+  Code install was rerun with the plain `claude` name. Its Codex install is
+  covered by unit tests only, because on this Mac a plain `codex` name
+  resolves to an existing Homebrew install. Unit tests cover the installer
+  commands through a fake `curl`, a failed download, an install the chats
+  cannot find, the missing-tool answer, a configured path and the update
+  lock. Not exercised: a Linux remote server, because the deployed servers
+  run the previous release.
+  Availability: server source; a remote takes it after a redeploy.
 
 ## 2026-10-11 — Remote servers on SkyPilot AWS clusters: `aws@<cluster>` (server source)
 

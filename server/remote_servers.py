@@ -1538,10 +1538,7 @@ class RemoteServerManager:
         return job
 
     async def update_cli(self, server: RemoteServer, backend: str) -> tuple[str, bool]:
-        """Run the CLI's own update on a remote through its tunnel, which installs a missing CLI instead.
-
-        Returns the version it reports ("" if none) and whether it installed.
-        """
+        """Run the CLI update on a remote through its tunnel (the remote installs a missing CLI); returns the version it reports ("" if none) and whether it installed."""
         response = await self.http.post(
             f"http://127.0.0.1:{server.local_port}/api/admin/runtimes/{backend}/update",
             headers={"X-AgentsDock-Token": server.token}, timeout=CLI_UPDATE_REQUEST_TIMEOUT,
@@ -1552,6 +1549,7 @@ class RemoteServerManager:
                 detail = str((response.json() or {}).get("detail") or "")
             raise RuntimeError(detail or f"HTTP {response.status_code}")
         result = response.json()
+        # load-bearing: .get - an attached or not-yet-redeployed remote runs a server that sends no "action".
         return str((result.get("diagnostic") or {}).get("version") or ""), result.get("action") == "install"
 
     async def _update_all(self, job: DeployJob, hub_update_cli: Callable[[str], Awaitable[tuple[str, bool]]],
@@ -1560,11 +1558,15 @@ class RemoteServerManager:
 
         async def update_clis(label: str, run: Callable[[str], Awaitable[tuple[str, bool]]]) -> None:
             for backend, product in CLI_PRODUCT_NAMES.items():
-                # Only the server knows whether the CLI is missing, so the install shows in the result line.
+                # The hub learns that a CLI was missing only from the server's answer, so this line says "updating"
+                # and the result line says "installed".
                 job.progress("cli", f"{label}: updating {product}…")
                 try:
                     version, installed = await run(backend)
-                    job.progress("cli", f"{label}: installed {product} {version}".rstrip() if installed else f"{label}: {product} {version or 'updated'}")
+                    if installed:
+                        job.progress("cli", f"{label}: installed {product} {version}".rstrip())
+                    else:
+                        job.progress("cli", f"{label}: {product} {version or 'updated'}")
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - the job view carries the message

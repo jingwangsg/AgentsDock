@@ -85718,8 +85718,8 @@ async def put_claude_oauth_token(req: ClaudeTokenAdminRequest, request: Request)
 
 RUNTIME_CLI_UPDATE_LOCK = asyncio.Lock()
 RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS = 600
-# The official installers. Both put the CLI in ~/.local/bin, which runner_env() puts on the chats' PATH,
-# and the CLI's own `update` keeps that install current afterwards.
+# Each product's documented unattended install command, verbatim. Both put the CLI in ~/.local/bin, which
+# runner_env() puts on the chats' PATH, and the CLI's own `update` keeps that install current afterwards.
 RUNTIME_CLI_INSTALL_COMMANDS = {
     BACKEND_CLAUDE: "curl -fsSL https://claude.ai/install.sh | bash",
     BACKEND_CODEX: "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
@@ -85748,9 +85748,14 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
         raise HTTPException(409, "A CLI update is already running on this server.")
     async with RUNTIME_CLI_UPDATE_LOCK:
         env = codex_app_server_env() if backend == BACKEND_CODEX else runner_env()
-        executable = shutil.which(runtime_executable(backend), path=env.get("PATH"))
+        configured = runtime_executable(backend)
+        executable = shutil.which(configured, path=env.get("PATH"))
         if executable:
-            action, label, command = "update", f"`{backend} update`", [executable, "update"]
+            command = [executable, "update"]
+            action, label = "update", f"`{backend} update`"
+        elif os.sep in configured:
+            # CLAUDE_BIN/CODEX_BIN name a path, and the installers never put the CLI there.
+            raise HTTPException(404, f"The {backend} CLI is configured as {configured}, which does not exist on this server.")
         else:
             missing = [tool for tool in ("curl", "bash") if not shutil.which(tool, path=env.get("PATH"))]
             if missing:
@@ -85796,9 +85801,9 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
     # 500, not 502/504: those mean the hub could not reach this server, and clients treat them so.
     if returncode:
         raise HTTPException(500, f"{label} exited with {returncode}" + (f": {output}" if output else "."))
-    if action == "install" and not shutil.which(runtime_executable(backend), path=env.get("PATH")):
+    if action == "install" and not shutil.which(configured, path=env.get("PATH")):
         raise HTTPException(
-            500, f"{label} finished, but this server's chats still cannot find `{runtime_executable(backend)}` on their PATH"
+            500, f"{label} finished, but this server's chats still cannot find `{configured}` on their PATH"
             + (f": {output}" if output else "."),
         )
     return {"output": output, "diagnostic": diagnostic, "action": action}
