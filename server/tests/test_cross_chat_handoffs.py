@@ -8188,7 +8188,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 self.interrupted = asyncio.Event()
                 self.interrupt_calls = 0
 
-            async def interrupt(self) -> bool:
+            async def interrupt(self, *, keep_follow_up: bool = False) -> bool:
                 self.interrupt_calls += 1
                 self.interrupted.set()
                 return True

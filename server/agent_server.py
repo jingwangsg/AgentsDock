@@ -17702,9 +17702,20 @@ async def append_durable_event_batch_locked(
                 await asyncio.to_thread(prepare_claude_history_metadata_repair, session_id, refresh=True)
             except Exception as exc:
                 logger.warning("history repair refresh failed (%s); committed events remain visible", type(exc).__name__)
+        # A provider-history import appends messages with their original
+        # timestamps, which can predate the chat's own latest activity; they
+        # must not date that chat back. A new chat's first import (nothing but
+        # its creation event yet) is still dated by its history.
+        sess = STORE.sessions.get(session_id) or {}
+        recency_floor = {
+            field: sess.get(field)
+            for field in ("updated_at", "latest_event_at", "latest_agent_event_at")
+        } if sess.get("latest_event_type") != "session_created" and any(
+            isinstance(event.get("_history_sync_checkpoint"), dict) for event in events
+        ) else None
         for event in events:
             try:
-                await update_session_event_metadata(session_id, event)
+                await update_session_event_metadata(session_id, event, recency_floor=recency_floor)
             except BaseException as exc:
                 if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                     raise
@@ -17864,7 +17875,12 @@ def should_bump_session_updated_at(event_type: str, event: dict[str, Any]) -> bo
     }
 
 
-async def update_session_event_metadata(session_id: str, event: dict[str, Any]) -> None:
+async def update_session_event_metadata(
+    session_id: str,
+    event: dict[str, Any],
+    *,
+    recency_floor: dict[str, Any] | None = None,
+) -> None:
     sess = STORE.sessions.get(session_id)
     if not sess:
         return
@@ -17976,16 +17992,24 @@ async def update_session_event_metadata(session_id: str, event: dict[str, Any]) 
             elif "_codex_compaction_terminal_keys" in sess:
                 sess.pop("_codex_compaction_terminal_keys", None)
                 compaction_state_changed = True
+
+    def recency(field: str) -> Any:
+        # recency_floor: an active chat's times before a history import batch.
+        floor = (recency_floor or {}).get(field)
+        if floor and (timestamp_from_iso(floor) or 0) > (timestamp_from_iso(event.get("ts")) or 0):
+            return floor
+        return event.get("ts")
+
     sess["latest_event_seq"] = int(event.get("seq") or 0)
-    sess["latest_event_at"] = event.get("ts")
+    sess["latest_event_at"] = recency("latest_event_at")
     sess["latest_event_type"] = event_type
     if is_agent_visible_event(event_type, event):
         sess["latest_agent_event_seq"] = int(event.get("seq") or 0)
-        sess["latest_agent_event_at"] = event.get("ts")
+        sess["latest_agent_event_at"] = recency("latest_agent_event_at")
         sess["latest_agent_event_type"] = event_type
     bump_updated_at = should_bump_session_updated_at(event_type, event)
     if bump_updated_at:
-        sess["updated_at"] = event.get("ts") or now_iso()
+        sess["updated_at"] = recency("updated_at") or now_iso()
     if bump_updated_at or active_run_changed or compaction_state_changed:
         # Called under the per-chat event delivery lock for nearly every
         # event; coalesce instead of rewriting sessions.json per event.
@@ -58081,6 +58105,7 @@ async def interrupt_claude_sdk_run_bounded(
     run: Any,
     *,
     timeout: float | None = None,
+    keep_follow_up: bool = False,
 ) -> bool:
     """Interrupt one SDK run without trusting third-party cancellation.
 
@@ -58098,7 +58123,7 @@ async def interrupt_claude_sdk_run_bounded(
             else timeout
         ),
     )
-    task = asyncio.create_task(run.interrupt())
+    task = asyncio.create_task(run.interrupt(keep_follow_up=keep_follow_up))
 
     def consume_result(completed: asyncio.Task[Any]) -> None:
         if not completed.cancelled():
@@ -98228,6 +98253,7 @@ async def run_explicit_stop_operation(
         stop_turn(
             session_id,
             schedule_queue=False,
+            keep_follow_up=True,
             _admission_ready=admission_ready,
         )
     )
@@ -98630,12 +98656,14 @@ async def stop_turn(
     hard_terminalize_on_timeout: bool = True,
     pause_queued_turns_on_stop: bool = True,
     preserve_active_goal: bool = False,
+    keep_follow_up: bool = False,
     _admission_ready: asyncio.Event | None = None,
 ) -> dict[str, Any]:
     deferred = False
     native_interrupt_reserved = False
     native_control_interrupt_reserved = False
     native_claude_interrupt_reserved = False
+    claude_follow_up_interrupt_reserved = False
     claude_run_released = False
     # A release this Stop did not perform: the run is already closing.
     claude_run_already_released = False
@@ -98701,6 +98729,19 @@ async def stop_turn(
                 # stop: an interrupt is a no-op and the hard-terminalize
                 # fallback would evict that process with them.
                 claude_run_already_released = True
+            elif (
+                keep_follow_up
+                and active.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK
+                and getattr(active.get("claude_sdk_run"), "interrupt_would_keep_follow_up", False) is True
+                and not active.get("native_interrupt_sent")
+                and not active.get("stop_requested")
+            ):
+                # Native Esc ends the answer in progress, then Claude answers
+                # the message queued in its turn. Fencing the run first would
+                # revoke the authority that answer runs with, so interrupt
+                # first and fence only if the answer is not coming.
+                active["native_interrupt_sent"] = True
+                claude_follow_up_interrupt_reserved = True
             elif require_provider_turn_ready and not (
                 active.get("transport") == CODEX_TRANSPORT_APP_SERVER
                 and active.get("codex_child_continuation_waiting") is True
@@ -98811,6 +98852,53 @@ async def stop_turn(
     # broad lifecycle lock before any durable queue IO or provider cleanup.
     if _admission_ready is not None:
         _admission_ready.set()
+    if claude_follow_up_interrupt_reserved:
+        claude_sdk_run = active.get("claude_sdk_run")
+        await cancel_claude_interactions(session_id, resolution="turn_stopped")
+        follow_up_kept = False
+        try:
+            follow_up_kept = await interrupt_claude_sdk_run_bounded(
+                claude_sdk_run, keep_follow_up=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Claude Agent SDK interrupt failed session=%s error=%s",
+                session_id,
+                exc,
+            )
+        async with ACTIVE_LOCK:
+            current = ACTIVE.get(session_id)
+            if current is active:
+                current["native_interrupt_sent"] = False
+        if follow_up_kept:
+            # stopped=False keeps clients showing the run as working.
+            return {
+                "ok": True,
+                "stopped": False,
+                "pending": False,
+                "message": (
+                    "Claude stopped the answer it was writing and is now "
+                    "replying to the message you sent while it worked. "
+                    "Stop again to end that reply too."
+                ),
+            }
+        # Claude had already taken the message, so the interrupt ended its
+        # answer instead, or the interrupt failed: finish as an ordinary Stop.
+        return await stop_turn(
+            session_id,
+            expected_run_id=expected_run_id,
+            emit_event=emit_event,
+            schedule_queue=schedule_queue,
+            require_provider_turn_ready=require_provider_turn_ready,
+            cascade_codex_subagents=cascade_codex_subagents,
+            cascade_claude_subagents=cascade_claude_subagents,
+            hard_terminalize_on_timeout=hard_terminalize_on_timeout,
+            pause_queued_turns_on_stop=pause_queued_turns_on_stop,
+            preserve_active_goal=preserve_active_goal,
+            # load-bearing: after a failed interrupt the follow-up may still
+            # look keepable, and True would re-enter this branch.
+            keep_follow_up=False,
+        )
     subagent_stop = empty_subagent_stop_result()
     session = STORE.sessions.get(session_id) or {}
     codex_manager = existing_codex_app_server_manager(session)
