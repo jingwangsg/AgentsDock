@@ -6,6 +6,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { Check, ChevronDown, LoaderCircle, Plus, Settings } from 'lucide-react'
 import type { PublicServerProfile, ServerConnectionState } from '@shared/types'
 import { trackEvent } from '../lib/analytics'
+import { listedServerProfiles } from '../lib/server-navigation'
 import { useAppStore } from '../store/app-store'
 import { currentShortcutPlatform, ShortcutTooltip } from './ShortcutTooltip'
 
@@ -31,6 +32,7 @@ export function ServerSelector() {
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
   const active = profiles.find(profile => profile.id === activeProfileId) ?? profiles[0] ?? null
   const switchingProfile = profiles.find(profile => profile.id === switchingProfileId) ?? null
+  const listed = listedServerProfiles(profiles, activeProfileId)
   const activeHost = active ? profileHostSubtitle(active) : null
   const [menuOpen, setMenuOpen] = useState(false)
   const [chordHeld, setChordHeld] = useState(false)
@@ -54,7 +56,8 @@ export function ServerSelector() {
         return
       }
       const digit = /^(?:Digit|Numpad)([1-9])$/.exec(event.code)?.[1]
-      const profile = digit ? useAppStore.getState().profiles[Number(digit) - 1] : undefined
+      const state = useAppStore.getState()
+      const profile = digit ? listedServerProfiles(state.profiles, state.activeProfileId)[Number(digit) - 1] : undefined
       if (!profile) return
       event.preventDefault()
       event.stopPropagation()
@@ -118,7 +121,7 @@ export function ServerSelector() {
           }}
         >
           <DropdownMenu.Label className="menu-label">{t("ui.ServerSelector.ServerSelector.servers_68d7beb")}</DropdownMenu.Label>
-          {profiles.map((profile, index) => {
+          {listed.map((profile, index) => {
             const current = profile.id === activeProfileId
             const switching = profile.id === switchingProfileId
             const host = profileHostSubtitle(profile)

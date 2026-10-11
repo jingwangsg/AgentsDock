@@ -196,6 +196,7 @@ const api: AgentsDockAPI = {
     attach: input => ipcRenderer.invoke('remote-servers:attach', input),
     cancel: () => ipcRenderer.invoke('remote-servers:cancel'),
     remove: profileId => ipcRenderer.invoke('remote-servers:remove', profileId),
+    setHidden: (profileId, hidden) => ipcRenderer.invoke('remote-servers:set-hidden', profileId, hidden),
     move: (profileId, input) => ipcRenderer.invoke('remote-servers:move', profileId, input),
     redeploy: (profileId, force) => ipcRenderer.invoke('remote-servers:redeploy', profileId, force),
     updateAll: force => ipcRenderer.invoke('remote-servers:update-all', force)

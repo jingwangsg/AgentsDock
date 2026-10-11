@@ -114,17 +114,32 @@ export function tunnelSshHostFileContent(alias: string, sshHost: string, localPo
   return lines.join('\n') + '\n'
 }
 
+/** First line of the alias files the hub writes for its remotes (SSH_ALIAS_MARKER and ssh_alias_content in server/remote_servers.py). */
+const HUB_ALIAS_LINE = /^# Added by the AgentsDock hub for the remote server \S+ \(([^()\s]+)\)\./
+
+/**
+ * The SSH host of the remote whose alias the hub keeps under this name, else null. The hub writes the alias with
+ * the route its own tunnels take, so it works without this app. The file has one owner: this app never rewrites
+ * or removes it.
+ */
+export function hubSshAliasHost(alias: string, paths: SshHostPaths = defaultSshHostPaths()): string | null {
+  if (!SSH_HOST_ALIAS_PATTERN.test(alias)) return null
+  try { return HUB_ALIAS_LINE.exec(readFileSync(join(paths.hostsDir, alias), 'utf8'))?.[1] ?? null } catch { return null }
+}
+
 function requireAlias(alias: string): void {
   if (!SSH_HOST_ALIAS_PATTERN.test(alias)) throw new Error(`"${alias}" cannot be an SSH host alias: use letters, digits, "_", "-" or "." only.`)
 }
 
 /** Writes (or rewrites) the alias file and makes sure the SSH config includes the directory. */
 export async function writeSshHost(alias: string, sshHost: string, paths: SshHostPaths = defaultSshHostPaths(), run: RunSsh = runSsh): Promise<string> {
+  if (hubSshAliasHost(alias, paths) !== null) return join(paths.hostsDir, alias)
   return writeSshHostFile(alias, sshHostFileContent(alias, sshHost, await resolvedSshOptions(sshDestination(sshHost), run)), paths)
 }
 
 /** Writes the alias so `ssh <alias>` and Zed reach the server's sshd through AgentsDock's port tunnel on `localPort`. */
 export async function writeTunnelSshHost(alias: string, sshHost: string, localPort: number, paths: SshHostPaths = defaultSshHostPaths(), run: RunSsh = runSsh): Promise<string> {
+  if (hubSshAliasHost(alias, paths) !== null) return join(paths.hostsDir, alias)
   // An osmo@ workflow has no ssh entry to resolve; its sshd accepts root with the user's default keys, the way the hub logs in.
   const options = sshHost.trim().startsWith('osmo@') ? new Map([['user', ['root']]]) : await resolvedSshOptions(sshDestination(sshHost), run)
   // The server dials port 22 only, so a host whose sshd listens elsewhere keeps its own entry.
@@ -143,7 +158,7 @@ function writeSshHostFile(alias: string, content: string, paths: SshHostPaths): 
 }
 
 export function removeSshHost(alias: string, paths: SshHostPaths = defaultSshHostPaths()): void {
-  if (!SSH_HOST_ALIAS_PATTERN.test(alias)) return
+  if (!SSH_HOST_ALIAS_PATTERN.test(alias) || hubSshAliasHost(alias, paths) !== null) return
   const file = join(paths.hostsDir, alias)
   if (existsSync(file)) unlinkSync(file)
 }

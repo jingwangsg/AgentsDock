@@ -1,5 +1,81 @@
 # Public development log
 
+## 2026-10-11 — `ssh <name>` reaches every hub remote, and a remote can be hidden from the server lists (server + desktop + Android source)
+
+- `ssh <server name>` from the hub's machine worked only for remotes whose
+  desktop profile had Forward SSH on, never for an `osmo@` workflow or an
+  `aws@` cluster, and Open in Zed rewrote the alias in a form that worked only
+  while the app ran.
+- The hub now keeps one alias file per remote, `~/.agentsdock/ssh/<remote
+  name>` (the directory Forward SSH uses, included first from
+  `~/.ssh/config`), written from the route its own main tunnel resolves on
+  every connect: an `osmo@` workflow as root through `osmo workflow exec`;
+  an `oci@` or `aws@` cluster as Sky's entry, its ProxyCommand run through the
+  hub's `remote_servers.py proxy-command`, which sets Sky's CA bundle and, for
+  `aws@`, relays a new STS session when the saved one is near its end (AWS
+  keys exported in the calling shell are dropped so they cannot win over
+  it); a plain host as its `ssh -G` options. A block is written only after
+  `ssh -F <block> -G` reads it back, since the Include comes first and an
+  unreadable block would stop every ssh on the machine. A rename moves the
+  file, removing the remote removes it. No alias is written for a remote
+  named like a host the hub dials (that name already reaches it, and an
+  alias would take over the hub's own connections; the hub also removes its
+  alias of that name before dialing a new host), for a name that cannot be a
+  host alias (such as the default `osmo@<workflow>`; the hub logs it) or that
+  two remotes share, or over another server's file of that name. Only a hub
+  on the default state directory (`~/.agentsdock`) writes aliases; an
+  isolated instance does not.
+- One owner per file: the hub's alias files begin with a hub marker, and the
+  desktop never rewrites or removes such a file (Forward SSH and Open in Zed
+  leave it alone). Open in Zed reaches a remote whose alias the hub keeps
+  for that same SSH host through that alias, without a tunnel of its own, so
+  it also works after the app quits; a profile whose name is the hub's alias
+  for another remote is refused with the reason instead of opening the wrong
+  server. With a hub from before this change nothing differs.
+- Each hub remote has a `hidden` flag on the hub (`PATCH
+  /api/admin/remote-servers/<id>` with `{"hidden": …}`, listed per server
+  and as `remote_servers_v1.hidden` in health). Settings → Server gains an
+  eye / eye-off button on every hub remote, and a hidden row shows a
+  "Hidden" tag. The server switcher, its ⇧⌥-digit keys, next/previous
+  server and the Team Network server picker leave hidden remotes out unless
+  one is in use; the hub's chat list behind the `@` picker and "Create new
+  agent" marks hidden remotes and both apps leave them out, while a client
+  on a hidden remote still finds itself there. Nothing else changes:
+  tunnels, ssh alias, chats, pairs, mail and jobs keep running. A hub too
+  old for the flag ignores it, and the apps say so. Android mirrors the
+  flag, its server picker skips hidden remotes, and Manage Servers shows the
+  tag and a Hide/Show tool.
+- Verification. Unit: server (alias block per notation and ssh's own parse
+  of it, the Include added once, removal of hub-written files only, the main
+  tunnel writing, renaming and removing the alias, a block ssh cannot read
+  refused, shared names, another server's file and a newly dialed host, the
+  proxy-command helper end to end, exported AWS keys, hiding in place, the
+  chat list's hidden mark), desktop (file ownership, Zed through the hub
+  alias and refused for another remote's, mirroring and reconcile trigger,
+  the old-hub error, the eye button, the switcher list, the `@` picker) and
+  Android (mirroring, the hide action including an old hub, picker and
+  Manage Servers; its `@` picker change is type-checked only). Real
+  servers: for this machine's registered remotes (`osmo@`, `aws@` and plain
+  hosts), aliases generated into a temporary directory connected with
+  `ssh -o BatchMode=yes <alias> true` in 6–10 s, also from a minimal
+  environment like a Dock-launched app; the plain host
+  was skipped and connects through its own entry. With the AWS session made
+  stale, the alias relayed a new one and connected (33 s). An isolated hub
+  with a temporary HOME wrote the files itself within 6 s of starting, and
+  its aliases connected; a rename, a hide and a removal through its API
+  renamed, kept and removed the files, and hiding restarted no tunnel.
+  Desktop: the worktree's built app, its hub address pointed at an isolated
+  hub in the build output, driven with real mouse input over the debugging
+  protocol: the eye hid and showed a remote on the hub, the switcher dropped
+  and restored it, a change made on the hub directly (as from another device)
+  reached the app in 20–30 s, and a second use left no duplicates. Not
+  exercised: the real hub on this code (it needs a restart), Open in Zed
+  through a hub alias in Zed itself, and the Android app (source and tests
+  only).
+- Availability: source only. The server part takes effect when the hub
+  restarts (the aliases appear as its tunnels connect); remotes need no
+  redeploy. The desktop and Android parts need new packages.
+
 ## 2026-10-11 — A sent `@Chat` chip names its chat by the current title (desktop + Android source)
 
 - A sent message showed the name a chat had when the message was sent: after

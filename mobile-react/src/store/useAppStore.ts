@@ -579,6 +579,11 @@ interface AppState {
    */
   moveHubRemote(profileId: string, input: { sshHost?: string; installDir?: string }, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<void>
   /**
+   * Server list eye toggle, whichever server is active: the hub keeps the flag, so every device leaves a hidden
+   * remote out of its server picker. The remote keeps running and its profile can still be selected.
+   */
+  setHubRemoteHidden(profileId: string, hidden: boolean): Promise<void>
+  /**
    * Server list "Update & redeploy all", whichever server is active: the hub redeploys its remotes, updates
    * Claude Code and Codex on every server, then restarts itself. The restarts stop running chats, so without
    * `force` it changes nothing and resolves to the servers that have some (`running` null: could not be
@@ -848,7 +853,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     for (let index = 0; index < inactive.length; index += 2) {
       await Promise.all(inactive.slice(index, index + 2).map(async profile => {
         let patch: Parameters<typeof updateProfileRuntime>[2]
-        let remoteIds: string | null = null
+        let remotesKey: string | null = null
         let token = ''
         try {
           token = await loadProfileToken(profile.id, profile.credentialVersion)
@@ -860,7 +865,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             : { connectionState: 'online', lastConnectionError: null, serverVersion: healthVersion(health) }
           const remotes = health.capabilities?.remote_servers_v1
           if (patch.connectionState === 'online' && remotes?.available && remotes.ids && profile.id === hubProfile(get())?.id) {
-            remoteIds = remotes.ids.join(' ')
+            // A remote hidden or shown on another device changes only `hidden`, and must reach the server list too.
+            remotesKey = `${remotes.ids.join(' ')} hidden: ${(remotes.hidden ?? []).join(' ')}`
           }
         } catch (error) {
           patch = { connectionState: 'offline', lastConnectionError: errorMessage(error) }
@@ -871,12 +877,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         // A remote added or removed on the hub while another server is active must show in the server list, as on
         // the desktop. The first pass after launch also brings each remote's SSH host. Once the hub is selected, its
         // own connection mirrors the registry instead. Until a pass mirrors everything, the next probe tries again.
-        if (remoteIds !== null && remoteIds !== lastHubRemoteIds) {
+        if (remotesKey !== null && remotesKey !== lastHubRemotesKey) {
           const hubURL = normalizeServerURL(profile.serverURL)
           const client = new AgentServerClient(hubURL, token)
           const mirrored = await reconcileHubRegistry({ profileId: profile.id, serverURL: hubURL, client }, () => get().activeProfileId !== profile.id, set, get, true)
             .finally(() => client.dispose())
-          if (mirrored) lastHubRemoteIds = remoteIds
+          if (mirrored) lastHubRemotesKey = remotesKey
         }
       }))
     }
@@ -966,6 +972,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       client.dispose()
     }
     void get().probeInactiveProfiles()
+  },
+
+  async setHubRemoteHidden(profileId, hidden) {
+    const profile = get().profiles.find(value => value.id === profileId)
+    const remoteId = profile ? hubProxyRemoteId(profile.serverURL) : null
+    const hubURL = profile ? hubProxyBaseURL(profile.serverURL) : null
+    const hub = hubURL ? get().profiles.find(value => normalizeServerURL(value.serverURL) === hubURL) : undefined
+    if (!remoteId || !hubURL || !hub) throw new Error('Only servers the hub manages can be hidden.')
+    // The hub profile's own token: a changed hub token is not copied into existing remote profiles.
+    const client = new AgentServerClient(hubURL, await loadProfileToken(hub.id, hub.credentialVersion))
+    try {
+      const { server } = await client.setRemoteServerHidden(remoteId, hidden)
+      // A hub from before hiding ignores the field.
+      if (server.hidden !== hidden) throw new Error('This hub cannot hide servers yet: restart it on a newer AgentsServer.')
+      // A registry list fetched before the change would put the old flag back.
+      hubRegistryEdits += 1
+      await reconcileHubRegistry({ profileId: hub.id, serverURL: hubURL, client }, () => true, set, get)
+    } finally {
+      client.dispose()
+    }
   },
 
   async updateAndRedeployAll(force, onProgress) {
@@ -4268,10 +4294,10 @@ async function probeServerHealth(serverURL: string, token: string): Promise<Heal
   }
 }
 
-// Bumped by removeServerProfile, reorderServerProfiles and moveHubRemote: a registry list fetched before the edit is stale.
+// Bumped by removeServerProfile, reorderServerProfiles, moveHubRemote and setHubRemoteHidden: a registry list fetched before the edit is stale.
 let hubRegistryEdits = 0
-/** The inactive hub's remote ids at its last complete mirror (probeInactiveProfiles); null until one after launch. */
-let lastHubRemoteIds: string | null = null
+/** The inactive hub's remote ids and hidden ids at its last complete mirror (probeInactiveProfiles); null until one after launch. */
+let lastHubRemotesKey: string | null = null
 
 /**
  * Mirrors the hub registry while the hub itself is the active server. A proxied
@@ -4294,7 +4320,7 @@ async function reconcileHubRemoteServers(
 /**
  * Mirrors the hub's remote-server registry into saved profiles: each
  * `/api/remote/{id}` the hub reports gets a profile carrying the hub's token,
- * saved remotes take the hub's SSH host for them, and proxied profiles the hub
+ * saved remotes take the hub's SSH host and hidden flag for them, and proxied profiles the hub
  * no longer lists are dropped, except the active one. Resolves to whether the
  * registry is now fully mirrored. `quiet` keeps a failure off the error banner.
  */
@@ -4329,10 +4355,10 @@ async function reconcileHubRegistry(
       // No health probe and no identity: a remote whose tunnel is down must
       // still get its profile; acceptHealthIdentity pins it on the first switch.
       const created = create.map(entry => createStoredServerProfile({ ...entry, serverConfigured: true }, createProfileId()))
-      const sshHosts = new Map(update.map(entry => [entry.id, entry.sshHost]))
+      const updates = new Map(update.map(entry => [entry.id, entry]))
       for (const profile of created) await saveProfileToken(profile.id, profile.credentialVersion, hubToken)
       const merged = [
-        ...stored.filter(profile => !removed.has(profile.id)).map(profile => ({ ...profile, sshHost: sshHosts.get(profile.id) ?? profile.sshHost })),
+        ...stored.filter(profile => !removed.has(profile.id)).map(profile => ({ ...profile, ...updates.get(profile.id) })),
         ...created,
       ]
       const order = hubRemoteProfileOrder(merged, hubScope.serverURL, remotes)
@@ -4351,7 +4377,7 @@ async function reconcileHubRegistry(
       }
       set(state => {
         const current = [
-          ...state.profiles.filter(profile => !removed.has(profile.id)).map(profile => ({ ...profile, sshHost: sshHosts.get(profile.id) ?? profile.sshHost })),
+          ...state.profiles.filter(profile => !removed.has(profile.id)).map(profile => ({ ...profile, ...updates.get(profile.id) })),
           ...created.map(profile => publicProfile(profile, Boolean(hubToken))),
         ]
         return { profiles: profiles.map(({ id }) => current.find(profile => profile.id === id)!) }
@@ -4654,6 +4680,7 @@ function storedProfiles(profiles: readonly PublicServerProfile[]): StoredServerP
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
     ...(profile.sshHost ? { sshHost: profile.sshHost } : {}),
+    ...(profile.hidden ? { hidden: true } : {}),
   }))
 }
 

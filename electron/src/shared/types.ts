@@ -879,6 +879,8 @@ export interface CrossServerChats {
   /** Registry name of a remote; '' for the hub, whose chats carry no server tag. */
   name: string
   chats: ChatSearchTarget[]
+  /** Hidden on the hub: offered for no new pair or chat. Absent from a hub older than hiding. */
+  hidden?: boolean
 }
 
 export interface CrossServerChatsSnapshot {
@@ -2021,6 +2023,8 @@ export interface PublicServerProfile {
   sshHost?: string | null
   /** This Mac keeps an SSH host alias named after the profile for that server (Forward SSH). */
   sshForward?: boolean
+  /** The hub leaves this remote out of the server switcher and pickers; Settings → Server still lists it. */
+  hidden?: boolean
 }
 
 export interface AddServerProfileInput {
@@ -2028,6 +2032,7 @@ export interface AddServerProfileInput {
   serverUrl: string
   accessToken?: string | null
   sshHost?: string | null
+  hidden?: boolean
   /** Canonical identity returned by a successful connection test. */
   serverIdentity?: string | null
   serverSetupComplete?: boolean
@@ -2188,6 +2193,8 @@ export interface RemoteServer {
   remote_port: number
   local_port: number
   created_at: string
+  /** Absent from a hub older than the field: shown. */
+  hidden?: boolean
   proxy_path: string
   tunnel: RemoteServerTunnelStatus | null
 }
@@ -2238,6 +2245,8 @@ export interface RemoteServersCapability {
   admin_path: string
   ssh_available: boolean
   ids: string[]
+  /** The hidden remotes' ids; absent from a hub older than hiding. */
+  hidden?: string[]
 }
 
 export interface ServerSetupDiagnostics {

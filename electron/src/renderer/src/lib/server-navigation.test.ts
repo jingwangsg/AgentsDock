@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { adjacentServerProfileId } from './server-navigation'
+import { adjacentServerProfileId, listedServerProfiles } from './server-navigation'
 
 const profiles = [{ id: 'alpha' }, { id: 'beta' }, { id: 'gamma' }]
 
@@ -15,5 +15,13 @@ describe('server keyboard navigation', () => {
     expect(adjacentServerProfileId([], null, 1)).toBeNull()
     expect(adjacentServerProfileId([{ id: 'alpha' }], 'alpha', 1)).toBeNull()
     expect(adjacentServerProfileId(profiles, 'missing', 1)).toBeNull()
+  })
+})
+
+describe('listedServerProfiles', () => {
+  it('leaves hidden servers out of the switcher unless one is in use', () => {
+    const profiles = [{ id: 'hub' }, { id: 'pod', hidden: true }, { id: 'lab' }]
+    expect(listedServerProfiles(profiles, 'hub').map(profile => profile.id)).toEqual(['hub', 'lab'])
+    expect(listedServerProfiles(profiles, 'pod').map(profile => profile.id)).toEqual(['hub', 'pod', 'lab'])
   })
 })

@@ -43,8 +43,8 @@ export function readLocalHubToken(
 }
 
 export interface HubRemotePlan {
-  add: Array<{ name: string; serverUrl: string; sshHost: string }>
-  update: Array<{ id: string; sshHost: string }>
+  add: Array<{ name: string; serverUrl: string; sshHost: string; hidden?: boolean }>
+  update: Array<{ id: string; sshHost: string; hidden: boolean }>
   remove: string[]
 }
 
@@ -58,6 +58,14 @@ export function hubRemoteId(hubUrl: string, serverUrl: string): string | null {
   const prefix = `${normalizeServerURL(hubUrl)}/api/remote/`
   const url = normalizeServerURL(serverUrl)
   return url.startsWith(prefix) ? url.slice(prefix.length) : null
+}
+
+/**
+ * What a reconcile mirrored besides the remotes' entries: their registry order and which are hidden. The hub's health
+ * reports both (remote_servers_v1 `ids` and `hidden`), so a reorder or a remote hidden from another client changes it.
+ */
+export function hubRemotesKey(ids: readonly string[], hiddenIds: readonly string[] = []): string {
+  return `${ids.join(' ')}|${hiddenIds.join(' ')}`
 }
 
 /** Profile ids with this hub's remotes in registry order, in the places they already hold; null when nothing moves. */
@@ -86,9 +94,11 @@ export function planHubRemoteProfiles(
     const remote = wanted.get(serverUrl)
     if (!remote) { plan.remove.push(profile.id); continue }
     wanted.delete(serverUrl)
-    if ((profile.sshHost ?? '') !== remote.ssh_host) plan.update.push({ id: profile.id, sshHost: remote.ssh_host })
+    if ((profile.sshHost ?? '') !== remote.ssh_host || Boolean(profile.hidden) !== Boolean(remote.hidden)) {
+      plan.update.push({ id: profile.id, sshHost: remote.ssh_host, hidden: remote.hidden === true })
+    }
   }
-  for (const [serverUrl, remote] of wanted) plan.add.push({ name: remote.name, serverUrl, sshHost: remote.ssh_host })
+  for (const [serverUrl, remote] of wanted) plan.add.push({ name: remote.name, serverUrl, sshHost: remote.ssh_host, ...(remote.hidden ? { hidden: true } : {}) })
   return plan
 }
 

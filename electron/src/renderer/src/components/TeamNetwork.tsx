@@ -54,6 +54,7 @@ import { buildTeamMailBundles, type TeamMailBundle } from '../lib/team-mail-boar
 import { validTeamReferences } from '../lib/team-references'
 import { escapeTeamMessageLinkLabel, teamMessageLinkURL } from '../lib/team-message-links'
 import { teamMailDisplayTitle } from '../lib/team-message-title'
+import { listedServerProfiles } from '../lib/server-navigation'
 import {
   invalidateTeamNetworkSnapshot,
   loadTeamNetworkCore,
@@ -2108,6 +2109,7 @@ function PendingInviteNotice({ status, onCancel }: { status: TeamHubStatus | nul
   const profiles = useAppStore(state => state.profiles)
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
+  const listed = listedServerProfiles(profiles, activeProfileId)
   const [errorCopy, setError] = useState<NetworkCopy | null>(null)
   const error = displayCopy(errorCopy)
   const selectServer = async (profileId: string) => {
@@ -2119,7 +2121,7 @@ function PendingInviteNotice({ status, onCancel }: { status: TeamHubStatus | nul
   return <aside className="teamspace-host-help" aria-label={t('teamNetwork.shell.pendingInvite')}>
     <strong>{status?.designatedHost ? t('teamNetwork.shell.chooseOtherServer') : t('teamNetwork.shell.chooseConnectServer')}</strong>
     <span>{status?.designatedHost ? t('teamNetwork.shell.inviteOnHostDescription') : t('teamNetwork.shell.inviteKeptDescription')}</span>
-    {profiles.length > 1 ? <label className="teamspace-team-picker">{t('teamNetwork.shell.serverToConnect')}<select value={activeProfileId ?? ''} disabled={Boolean(switchingProfileId)} onChange={event => void selectServer(event.target.value)}>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label> : <button type="button" className="quiet-button" onClick={() => useAppStore.getState().setModal('settings', true)}>{t('teamNetwork.shell.addServerSettings')}</button>}
+    {listed.length > 1 ? <label className="teamspace-team-picker">{t('teamNetwork.shell.serverToConnect')}<select value={activeProfileId ?? ''} disabled={Boolean(switchingProfileId)} onChange={event => void selectServer(event.target.value)}>{listed.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label> : <button type="button" className="quiet-button" onClick={() => useAppStore.getState().setModal('settings', true)}>{t('teamNetwork.shell.addServerSettings')}</button>}
     <button type="button" className="quiet-button" onClick={onCancel}>{t('teamNetwork.shell.cancelInvite')}</button>
     {error && <span role="alert">{error}</span>}
   </aside>

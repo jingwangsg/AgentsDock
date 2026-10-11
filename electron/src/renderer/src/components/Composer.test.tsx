@@ -5669,6 +5669,41 @@ describe('Composer', () => {
     expect(chats).toHaveBeenCalledTimes(1)
   })
 
+  it('offers no chat on a remote hidden on the hub, and keeps other servers on offer from a hidden one', async () => {
+    const chats = vi.fn().mockResolvedValue({ servers: [
+      { server_identity: 'server-a', name: 'pod', hidden: true, chats: [] },
+      { server_identity: 'server-hub', name: '', chats: [{ id: 'sess_hub', title: 'Launch shown', folder: 'General', backend: 'claude', cross_chat_handoff_supported: true }] },
+      { server_identity: 'server-l40', name: 'osmo_dev_l40', hidden: true, chats: [
+        { id: 'sess_hidden', title: 'Launch hidden', folder: 'General', backend: 'claude', cross_chat_handoff_supported: true }
+      ] }
+    ] } satisfies CrossServerChatsSnapshot)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        agentRoutes: { list: vi.fn().mockResolvedValue({ routes: [], max_routes: 16 }) },
+        crossServer: { chats, pair: vi.fn() }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      activeProfileId: 'profile-a', profileGeneration: 7, connected: true,
+      profiles: [{ id: 'profile-a', name: 'pod', serverIdentity: 'server-a', hidden: true } as PublicServerProfile],
+      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'codex' }, { id: 'chat-2', title: 'Launch local', backend: 'claude' }],
+      health: { ok: true, capabilities: {
+        cross_chat_handoffs_v1: durableComposerCapability(),
+        cross_server_mail_v1: { available: true, required: false, message: '', action: null }
+      } }
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+
+    await user.type(screen.getByPlaceholderText('Message'), '@launch')
+    const picker = await screen.findByRole('listbox', { name: 'Chats' })
+    await waitFor(() => expect(within(picker).getByRole('option', { name: /Launch shown/ })).toBeInTheDocument())
+    expect(within(picker).getByRole('option', { name: /Launch local/ })).toBeInTheDocument()
+    expect(within(picker).queryByRole('option', { name: /Launch hidden/ })).toBeNull()
+  })
+
   it('keeps granted chats usable while disabling new targets at route capacity', async () => {
     const granted = grantedComposerRoute('chat-2', 'Granted target')
     const routeSnapshot = { routes: [granted], max_routes: 1 }

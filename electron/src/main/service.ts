@@ -181,8 +181,8 @@ import { BrowserProxy } from './browser-proxy'
 import { FileUploadGrantRegistry } from './file-upload-grants'
 import { SettingsStore, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
-import { hubRemoteId, hubRemoteProfileOrder, isHubRemoteUrl, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
-import { removeSshHost, writeSshHost } from './ssh-hosts'
+import { hubRemoteId, hubRemoteProfileOrder, hubRemotesKey, isHubRemoteUrl, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
+import { hubSshAliasHost, removeSshHost, writeSshHost } from './ssh-hosts'
 import { openInZed as launchZed } from './open-in-zed'
 import { sshHostAlias, type OpenInZedRequest } from '../shared/ssh-host-alias'
 import { clearStorageError, localStorageWasFull, observeStorageErrors, reportStorageError } from './storage-health'
@@ -1594,7 +1594,7 @@ export class AppService {
     return Boolean(token)
   }
 
-  private lastHubRemoteIds: string | null = null
+  private lastHubRemotesKey: string | null = null
   private hubReconcile: Promise<PublicServerProfile[]> | null = null
 
   /**
@@ -1613,11 +1613,13 @@ export class AppService {
       // The active profile cannot be removed (`removeServer` throws); leave the count unset so the next pass retries.
       const removable = plan.remove.filter(id => id !== this.activeProfileId)
       for (const id of removable) await this.removeServer(id)
-      for (const { id, sshHost } of plan.update) {
+      for (const { id, sshHost, hidden } of plan.update) {
         const before = this.settings.getProfile(id)
-        this.settings.updateProfile(id, { sshHost })
-        // The hub moved or redeployed the remote: an alias this Mac keeps for it must follow.
-        void this.syncSshHostAlias(before, this.settings.getProfile(id)).catch(error => appLog('ssh-hosts', 'alias could not follow the remote', { id, error: errorText(error) }))
+        this.settings.updateProfile(id, { sshHost, hidden })
+        // The hub moved or redeployed the remote: an alias this Mac keeps for it must follow. Hiding leaves it as it is.
+        if (before?.sshHost !== sshHost) {
+          void this.syncSshHostAlias(before, this.settings.getProfile(id)).catch(error => appLog('ssh-hosts', 'alias could not follow the remote', { id, error: errorText(error) }))
+        }
       }
       if (plan.add.length) {
         const accessToken = await this.settings.accessTokenForConnectionAsync(hub.profileId)
@@ -1626,7 +1628,9 @@ export class AppService {
       }
       const order = hubRemoteProfileOrder(hub.serverUrl, servers, this.settings.listProfiles())
       if (order) this.settings.reorderProfiles(order)
-      this.lastHubRemoteIds = removable.length === plan.remove.length ? servers.map(server => server.id).join(' ') : null
+      this.lastHubRemotesKey = removable.length === plan.remove.length
+        ? hubRemotesKey(servers.map(server => server.id), servers.filter(server => server.hidden).map(server => server.id))
+        : null
       this.emitProfiles()
       return this.publicProfiles()
     })()
@@ -1719,6 +1723,28 @@ export class AppService {
       await client.removeRemoteServer(serverUrl.slice(`${normalizeServerURL(hub.serverUrl)}/api/remote/`.length))
         .catch(error => { if (!(error instanceof ServerError && error.status === 404)) throw error })
       // A reconcile already in flight may have listed the hub before the DELETE; joining it would keep the profile.
+      await this.hubReconcile?.catch(() => undefined)
+      await this.reconcileHubRemotes({ profileId: hub.id, serverUrl: hub.serverUrl, client }, () => true)
+    } finally {
+      client.dispose()
+    }
+  }
+
+  /**
+   * Server list "Hide"/"Show" for one of the hub's remotes: the hub keeps the flag, so the server switcher on every
+   * client follows it. The server, its chats and its ssh alias stay as they are.
+   */
+  async setHubRemoteHidden(profileId: string, hidden: boolean): Promise<void> {
+    const hub = this.hubProfile()
+    const serverUrl = this.settings.getProfileMetadata(profileId)?.serverUrl ?? ''
+    const remoteId = hub ? hubRemoteId(hub.serverUrl, serverUrl) : null
+    if (!hub || !remoteId) throw new Error('Only servers the hub manages can be hidden.')
+    const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+    try {
+      const { server } = await client.setRemoteServerHidden(remoteId, hidden)
+      // A hub from before hiding ignores the field.
+      if (server.hidden !== hidden) throw new Error('This hub cannot hide servers yet: restart it on a newer AgentsServer.')
+      // A reconcile already in flight may have listed the hub before the PATCH; joining it would keep the old state.
       await this.hubReconcile?.catch(() => undefined)
       await this.reconcileHubRemotes({ profileId: hub.id, serverUrl: hub.serverUrl, client }, () => true)
     } finally {
@@ -5451,8 +5477,13 @@ export class AppService {
   /** Opens a chat's directory in Zed; a remote's sshd comes through `zedTunnels` (see that field for why it is a separate manager). */
   async openInZed(request: OpenInZedRequest): Promise<void> {
     const sshHost = request.sshHost?.trim()
+    const hubAliasHost = request.hostAlias?.trim() ? hubSshAliasHost(request.hostAlias.trim()) : null
+    if (sshHost && hubAliasHost !== null && hubAliasHost !== sshHost) {
+      throw new Error(`The SSH alias "${request.hostAlias?.trim()}" belongs to another server the hub keeps; rename this server on this Mac to open it in Zed.`)
+    }
     // A chat on this Mac, or a remote whose profile name cannot be an ssh alias: Zed gets the path or the raw host directly.
-    if (!sshHost || !request.hostAlias?.trim()) return launchZed(request)
+    // A remote whose alias the hub keeps is reached through that alias, with no tunnel from this app.
+    if (!sshHost || !request.hostAlias?.trim() || hubAliasHost === sshHost) return launchZed(request)
     const scope = this.requireProfileScope(request.profileId, request.profileGeneration)
     await this.ensureValidatedScope(scope)
     this.assertCurrentScope(scope)
@@ -6185,7 +6216,7 @@ export class AppService {
     } else this.mailHints.retire()
     if (!portForwardingCapabilityAvailable(health)) this.portTunnels.disposeAll()
     const remotes = health.capabilities?.remote_servers_v1
-    if (scope.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotes.ids.join(' ') !== this.lastHubRemoteIds) {
+    if (scope.serverUrl === DEFAULT_SERVER_URL && remotes?.available && hubRemotesKey(remotes.ids, remotes.hidden) !== this.lastHubRemotesKey) {
       void this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope)).catch(error => appLog('hub', 'remote reconcile failed', { message: errorText(error) }))
     }
     return scope
@@ -7086,7 +7117,7 @@ export class AppService {
     if (this.searchBackfillTimer) clearTimeout(this.searchBackfillTimer)
     this.searchBackfillTimer = null
     this.healthFailureCount = 0
-    this.lastHubRemoteIds = null
+    this.lastHubRemotesKey = null
     this.validatedGeneration = null
     this.lastSyncState = ''
     this.runtimeRefreshNextAt = 0
@@ -7443,7 +7474,7 @@ export class AppService {
         )
         // A remote deleted or reordered on the hub while another profile is active must show in the switcher.
         const remotes = health.capabilities?.remote_servers_v1
-        if (profile.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotes.ids.join(' ') !== this.lastHubRemoteIds) {
+        if (profile.serverUrl === DEFAULT_SERVER_URL && remotes?.available && hubRemotesKey(remotes.ids, remotes.hidden) !== this.lastHubRemotesKey) {
           await this.reconcileHubRemotes({ profileId, serverUrl: profile.serverUrl, client }, () => this.profileHealthProbeIsCurrent(profileId, revision, epoch))
             .catch(error => appLog('hub', 'remote reconcile failed', { message: errorText(error) }))
         }

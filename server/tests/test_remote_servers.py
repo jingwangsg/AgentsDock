@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import shlex
+import shutil
 import socket
 import stat
 import subprocess
@@ -328,6 +329,32 @@ class RemoteServerTests(unittest.TestCase):
         response = client.patch(f"{rs.ADMIN_PATH}/abcdef123456", json={"name": "lab"})
         assert response.status_code == 200 and response.json()["server"]["name"] == "lab" and response.json()["job_id"] is None
         assert "token" not in response.json()["server"]
+
+    def test_hiding_a_remote_changes_only_what_clients_list(self) -> None:
+        manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
+        server = manager.servers["abcdef123456"] = make_server()
+        manager.servers["123456abcdef"] = make_server(id="123456abcdef", name="lab", local_port=7852)
+        live_tunnel = mock.Mock(server=server, status={"state": "connected", "restarts": 0, "last_error": None})
+        manager.tunnels["abcdef123456"] = live_tunnel
+        hub = FastAPI()
+        rs.register_remote_server_routes(hub, manager=manager, authorize_admin=lambda request: None, websocket_authorized=lambda ws: True, **vars(hub_hooks()))
+        client = TestClient(hub)
+        with mock.patch.object(manager, "start_deploy") as deploy:
+            response = client.patch(f"{rs.ADMIN_PATH}/abcdef123456", json={"hidden": True})
+        assert response.status_code == 200 and response.json()["server"]["hidden"] is True and response.json()["job_id"] is None
+        # The same entry object: the mail relay keeps its end, and the tunnel keeps running.
+        assert manager.servers["abcdef123456"] is server and server.hidden and live_tunnel.server is server
+        deploy.assert_not_called()
+        assert [entry.hidden for entry in rs.load_registry(manager.path)] == [True, False]
+        assert [entry["hidden"] for entry in client.get(rs.ADMIN_PATH).json()["servers"]] == [True, False]
+        assert rs.capability(manager)["hidden"] == ["abcdef123456"]
+        assert client.patch(f"{rs.ADMIN_PATH}/abcdef123456", json={"hidden": False}).json()["server"]["hidden"] is False
+        assert rs.capability(manager)["hidden"] == [] and manager.servers["abcdef123456"] is server
+        # A registry written before the field loads every server as shown.
+        legacy = make_server().model_dump()
+        del legacy["hidden"]
+        manager.path.write_text(json.dumps({"version": 1, "servers": [legacy]}))
+        assert rs.load_registry(manager.path)[0].hidden is False
 
     def test_order_route_reorders_the_registry_around_what_the_client_has_synced(self) -> None:
         manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
@@ -828,7 +855,8 @@ print("hostname 10.0.0.1\\nproxycommand aws ssm start-session --target i-1 --doc
             script.chmod(0o700)
         ca = self.tmp_path / "sky-ca.pem"
         ca.write_text("ca")
-        self.enterContext(mock.patch.dict(os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}))
+        # Keys a shell exports would win over the relayed session's profile.
+        self.enterContext(mock.patch.dict(os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}", "AWS_ACCESS_KEY_ID": "AKIAEXPORTED"}))
         self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(ssh)))
         self.enterContext(mock.patch.object(rs, "SKY_CA_BUNDLE", ca))
         self.enterContext(mock.patch.object(rs, "AWS_SESSION_DIR", self.tmp_path / "aws"))
@@ -839,7 +867,7 @@ print("hostname 10.0.0.1\\nproxycommand aws ssm start-session --target i-1 --doc
         credentials = self.tmp_path / "aws" / "agentsdock-aws-cluster.credentials"
         assert (route.options, route.destination) == (["-o", "ConnectTimeout=30"], "aws-cluster")
         assert (route.env["AWS_SHARED_CREDENTIALS_FILE"], route.env["AWS_PROFILE"], route.env["SSL_CERT_FILE"]) == (str(credentials), "agentsdock", str(ca))
-        assert route.env["PATH"] == rs.cli_search_path()
+        assert route.env["PATH"] == rs.cli_search_path() and "AWS_ACCESS_KEY_ID" not in route.env
         assert credentials.read_text() == "[agentsdock]\naws_access_key_id=ASIAFAKE\naws_secret_access_key=secret/fake+key\naws_session_token=token=fake\n"
         assert stat.S_IMODE(credentials.stat().st_mode) == 0o600
         # The relay key reaches sky only through its environment, never its argv.
@@ -916,6 +944,154 @@ print("hostname 10.0.0.1\\nproxycommand aws ssm start-session --target i-1 --doc
         self.enterContext(mock.patch.object(rs, "resolved_proxy_command", mock.AsyncMock(return_value="aws ssm start-session")))
         with self.assertRaisesRegex(OSError, "aws-cluster is an AWS cluster; use aws@aws-cluster"):
             asyncio.run(rs.ssh_route("oci@aws-cluster"))
+
+    def test_ssh_alias_takes_the_route_of_each_host_notation(self) -> None:
+        self.fake_osmo()
+        osmo = str(self.tmp_path / "bin" / "osmo")
+        route = asyncio.run(rs.ssh_route("osmo@wf-running"))
+        # Everything comes from the route, except the hub's own connect limit.
+        assert asyncio.run(rs.ssh_alias_content("dev_pod", "osmo@wf-running", route)) == (
+            f"{rs.SSH_ALIAS_MARKER} for the remote server dev_pod (osmo@wf-running). Rewritten when the hub reconnects to it; removed with it.\n"
+            "Host dev_pod\n  HostName wf-running\n  User root\n"
+            f"  ProxyCommand {shlex.quote(osmo)} workflow exec wf-running master --raw --raw-port 22\n"
+            "  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n"
+        )
+
+        sky_command = 'aws ssm start-session --target "$(aws ec2 describe-instances --filters Values=%h)" --parameters portNumber=%p'
+        resolved = {"hostname": ["10.0.0.7"], "user": ["ubuntu"], "port": ["22"], "identityfile": ["~/.sky/key"],
+                    "stricthostkeychecking": ["false"], "serveraliveinterval": ["0"], "proxycommand": [sky_command], "ciphers": ["x"]}
+        real_options = rs.resolved_ssh_options
+
+        # The host's options as Sky would resolve them; the check of the finished block runs the real ssh -G.
+        async def options(host: str, config_file: Path | None = None) -> dict[str, list[str]]:
+            return await real_options(host, config_file) if config_file else resolved
+
+        self.enterContext(mock.patch.object(rs, "resolved_ssh_options", options))
+        sky_route = rs.SSHRoute(["-o", "ConnectTimeout=30"], "aws-cluster", {})
+        content = asyncio.run(rs.ssh_alias_content("aws_dev", "aws@aws-cluster", sky_route))
+        helper = f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(rs.__file__).resolve()))} proxy-command aws@aws-cluster"
+        assert content.splitlines()[1:] == [
+            "Host aws_dev", "  HostName 10.0.0.7", "  User ubuntu", "  Port 22", "  IdentityFile ~/.sky/key", "  StrictHostKeyChecking no",
+            # Sky's command runs inside the helper, which sets up the hub's route environment; ssh still expands %h and %p.
+            f"  ProxyCommand {helper} {shlex.quote(sky_command)}",
+        ]
+        # A plain host's own ProxyCommand runs as it is.
+        plain = asyncio.run(rs.ssh_alias_content("lab", "me@lab-host", rs.SSHRoute([], "me@lab-host", {})))
+        assert f"  ProxyCommand {sky_command}" in plain.splitlines()
+        # ssh itself reads the block back unchanged.
+        config = self.tmp_path / "alias"
+        config.write_text(content)
+        parsed = subprocess.run(["ssh", "-F", str(config), "-G", "aws_dev"], capture_output=True, text=True, check=True).stdout
+        assert f"proxycommand {helper} {shlex.quote(sky_command)}" in parsed.splitlines()
+        # ssh -G prints a value without its quotes; a block ssh could not read back, which would stop every ssh, is refused.
+        resolved["identityfile"] = ["/keys/My Keys/id"]
+        with self.assertRaisesRegex(OSError, "ssh -G failed for aws_dev"):
+            asyncio.run(rs.ssh_alias_content("aws_dev", "aws@aws-cluster", sky_route))
+
+    def test_alias_files_are_replaced_whole_and_removed_only_when_the_hub_wrote_them(self) -> None:
+        home = self.tmp_path / "home"
+        aliases = home / ".agentsdock" / "ssh"
+        config = home / ".ssh" / "config"
+        self.enterContext(mock.patch.dict(os.environ, {"HOME": str(home)}))
+        self.enterContext(mock.patch.object(rs, "SSH_ALIAS_DIR", aliases))
+        self.enterContext(mock.patch.object(rs, "SSH_CONFIG", config))
+        config.parent.mkdir(parents=True)
+        config.write_text("Host *\n  ServerAliveInterval 60\n")
+        rs.write_ssh_alias("lab", f"{rs.SSH_ALIAS_MARKER} for lab\nHost lab\n")
+        rs.write_ssh_alias("lab", f"{rs.SSH_ALIAS_MARKER} for lab\nHost lab\n  User me\n")
+        assert (aliases / "lab").read_text().endswith("  User me\n") and stat.S_IMODE((aliases / "lab").stat().st_mode) == 0o600
+        assert sorted(path.name for path in aliases.iterdir()) == ["lab"]
+        # The desktop app's line, once, ahead of the user's own blocks.
+        assert config.read_text() == "Include ~/.agentsdock/ssh/*\nHost *\n  ServerAliveInterval 60\n"
+        (aliases / "desktop").write_text("# Added by AgentsDock for the server \"desktop\"\nHost desktop\n")
+        for name in ("lab", "desktop", "missing", "../home"):
+            rs.remove_ssh_alias(name)
+        assert sorted(path.name for path in aliases.iterdir()) == ["desktop"]
+
+    def test_main_tunnel_keeps_the_remote_ssh_alias_through_a_rename_and_its_removal(self) -> None:
+        script = self.tmp_path / "ssh"
+        script.write_text(f"""#!{sys.executable}
+import sys, time
+if "-G" in sys.argv:
+    print("hostname lab.example\\nuser me\\nport 22")
+elif "-N" in sys.argv:
+    time.sleep(30)
+""")
+        script.chmod(0o700)
+        aliases = self.tmp_path / "aliases"
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        self.enterContext(mock.patch.object(rs, "SSH_ALIAS_DIR", aliases))
+        self.enterContext(mock.patch.object(rs, "SSH_CONFIG", self.tmp_path / "ssh_config"))
+        os.environ.pop("AGENTSDOCK_INFERENCE_PROXY_PORT", None)
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, ssh_aliases=True)
+        rs.save_registry(manager.path, [
+            make_server(id="aaaaaaaaaaaa", name="lab", ssh_host="me@lab.example", local_port=free_port()),
+            # Named like the host it dials: `ssh plain_host` already reaches it, and an alias would take over the hub's own ssh.
+            make_server(id="bbbbbbbbbbbb", name="plain_host", ssh_host="plain_host", local_port=free_port()),
+            make_server(id="cccccccccccc", name="has space", ssh_host="me@other.example", local_port=free_port()),  # not a Host alias
+            make_server(id="dddddddddddd", name="twin", ssh_host="me@one.example", local_port=free_port()),
+            make_server(id="eeeeeeeeeeee", name="twin", ssh_host="me@two.example", local_port=free_port()),
+            make_server(id="ffffffffffff", name="mine", ssh_host="me@mine.example", local_port=free_port()),
+        ])
+        aliases.mkdir()
+        # The desktop app's file for the same remote gives way; its file for another server stays.
+        (aliases / "lab").write_text('# Added by AgentsDock for the server "lab" (SSH host me@lab.example). Reaches its sshd ...\nHost lab\n')
+        foreign = '# Added by AgentsDock for the server "mine" (SSH host me@elsewhere.example). ...\nHost mine\n'
+        (aliases / "mine").write_text(foreign)
+
+        async def files(expected: list[str]) -> None:
+            for _ in range(200):
+                if aliases.exists() and sorted(path.name for path in aliases.iterdir()) == expected:
+                    return
+                await asyncio.sleep(0.05)
+            self.fail(f"aliases are {sorted(path.name for path in aliases.iterdir()) if aliases.exists() else None}, not {expected}")
+
+        async def main() -> None:
+            await manager.start()
+            try:
+                await files(["lab", "mine"])
+                await asyncio.sleep(0.5)  # the other remotes' first routes have resolved too
+                assert (aliases / "lab").read_text().splitlines()[1:] == ["Host lab", "  HostName lab.example", "  User me", "  Port 22"]
+                assert (aliases / "mine").read_text() == foreign and sorted(path.name for path in aliases.iterdir()) == ["lab", "mine"]
+                tunnel = manager.tunnels["aaaaaaaaaaaa"]
+                manager.update("aaaaaaaaaaaa", rs.RemoteServerUpdate(name="lab2"))
+                await files(["lab2", "mine"])
+                assert manager.tunnels["aaaaaaaaaaaa"] is tunnel  # renamed from the live tunnel's route, not by reconnecting
+                manager.update("aaaaaaaaaaaa", rs.RemoteServerUpdate(hidden=True))
+                await files(["lab2", "mine"])  # a hidden remote keeps its alias
+                await manager.remove("aaaaaaaaaaaa")
+                await files(["mine"])
+                # A new remote dialing a host named like a hub alias: the alias goes before the hub connects there.
+                rs.write_ssh_alias("newhost", f"{rs.SSH_ALIAS_MARKER} for the remote server newhost (osmo@wf).\nHost newhost\n")
+                await manager.add(rs.RemoteServerCreate(ssh_host="me@newhost", install_dir="~/.agentsdock-server", remote_port=7850, token=REMOTE_TOKEN))
+                assert not (aliases / "newhost").exists()
+            finally:
+                await manager.stop()
+
+        asyncio.run(main())
+
+    def test_proxy_command_helper_runs_skys_command_in_the_environment_of_the_hub_route(self) -> None:
+        home = self.tmp_path / "home"
+        bundle = home / ".sky" / "certs" / "requests-ca-bundle.pem"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text("ca")
+        bin_dir = self.tmp_path / "bin"
+        bin_dir.mkdir()
+        # ssh -G as Sky's entry for a Kubernetes cluster resolves; none for an AWS one.
+        (bin_dir / "ssh").write_text(f"""#!{sys.executable}
+import sys
+if sys.argv[-1] == "k8s-cluster":
+    print("hostname 10.0.0.9\\nproxycommand ssh -W %h:%p jump")
+""")
+        (bin_dir / "ssh").chmod(0o700)
+        env = {**os.environ, "HOME": str(home), "PATH": f"{bin_dir}{os.pathsep}/usr/bin:/bin"}
+        helper = [sys.executable, rs.__file__, "proxy-command"]
+        ran = subprocess.run([*helper, "oci@k8s-cluster", "printenv SSL_CERT_FILE"], capture_output=True, text=True, env=env, timeout=60)
+        assert (ran.returncode, ran.stdout) == (0, f"{bundle}\n"), ran.stderr
+        # A route the hub cannot resolve fails with its reason rather than a traceback.
+        failed = subprocess.run([*helper, "aws@aws-cluster", "true"], capture_output=True, text=True, env=env, timeout=60)
+        assert failed.returncode == 1 and failed.stderr.strip() == (
+            "aws@aws-cluster: Sky has no AWS ssh entry for aws-cluster; check that `sky status -u` lists it as UP.")
 
     def test_osmo_workflow_deploys_and_revives_through_its_proxy_command(self) -> None:
         calls = self.fake_host(existing_port=None)
