@@ -3227,6 +3227,10 @@ describe('AgentServerClient live stream', () => {
 
     expect(() => client.portTunnelSocket('chat', 443)).toThrow('1024 through 65535')
     expect(FakeWebSocket.instances).toEqual([])
+    // The ssh port is the one exception below the floor: Open in Zed reaches a remote through it.
+    client.portTunnelSocket('chat', 22)
+    expect(FakeWebSocket.instances[0].url.pathname).toBe('/api/sessions/chat/ports/22/tunnel/ws')
+    client.dispose()
   })
 
   it('allows browser tabs to reach HTTP and HTTPS ports through the authenticated tunnel', () => {

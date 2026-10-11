@@ -51,6 +51,129 @@
   any server that offers `@Chat` route hints, another server needs the hub
   redeployed.
 
+## 2026-10-11 — Editing a queued message keeps the chat's `@Chat` pairs (server source)
+
+- A follow-up sent while a turn with an `@Chat` chip is running stays queued
+  (it cannot join that turn). When its text was edited before it ran, or
+  Force Send ran it after an edit, the turn started with no chat routes:
+  every `chats` helper call in it, `chats list` included, failed with 403
+  "provider action was not authorized", although the chat held live `@Chat`
+  pairs and the same follow-up without the edit would have received them all.
+- Cause: a queued-message edit rebuilds the message's route snapshot and kept
+  an issued route only when the edited text still carried that target's `@`
+  chip. That rule predates permanent pairs; since pairs exist, admission has
+  given every ordinary turn the chat's live pairs without a chip, and the edit
+  path had not followed. An edit without chips therefore removed the pairs,
+  and the started turn was issued no chat-route action.
+- The edit now keeps the same set an ordinary turn keeps: the message's live
+  pairs plus the edited text's exact `@` hints, each re-checked against the
+  chat's current grants, so a revoked pair still does not return and no edit
+  creates a grant. Scheduled jobs are unchanged (they never inherit
+  source-chat grants), and a message sent from a turn whose text has no chip
+  for the target still carries no user delegation.
+- Verification. Unit: a chip-less edit of a queued message keeps the pair, a
+  capability issued from that snapshot lists it through `chats list`, the
+  scheduled-job projection stays empty, and a pair removed before a second
+  edit is dropped; the test fails on the previous code. Real server: two
+  isolated servers on this Mac, one from this branch and one from the
+  unchanged main, each driven through the HTTP API with a real Claude chat:
+  an `@Peer` turn (pair created), a second `@Peer` turn kept busy by a
+  sleeping Bash command, a chip-less follow-up (queued), an edit of its text,
+  then Force Send (the run-now endpoint). On main the started turn's own
+  `chats list` returned 403
+  "provider action was not authorized"; on this branch it returned the Peer
+  route, and the stored queue-edit and turn-start events carried the pair.
+  Not exercised: the desktop composer's edit and Force Send controls (the
+  server endpoints they call were driven directly), Codex chats, and a helper
+  call from outside the provider process.
+- Availability: server source; takes effect when the hub restarts, and on a
+  remote after a redeploy. Installing the desktop app alone does not update a
+  running server.
+## 2026-10-11 — Open in Zed reaches every remote through the app's port tunnel (desktop + server source)
+
+- Open in Zed failed on an `osmo@<workflow>` remote with "An osmo@ workflow is
+  reached through `osmo workflow exec`; it has no plain SSH host": the alias
+  AgentsDock wrote for a remote copied the host's own ssh entry (`ssh -G`), and
+  an OSMO workflow has none. The same copy made Zed depend on the Sky CA
+  environment for Kubernetes clusters and did not strip `aws@`.
+- One route now serves every remote kind. Open in Zed asks the chat's server
+  for a port tunnel to its own sshd (port 22, through the hub proxy for a hub
+  remote), writes the alias as `HostName 127.0.0.1`, `Port <local port>` with
+  no host-key check (every server presents its own key on that one port), and
+  launches `zed ssh://<alias>/<path>` as before. Who logs in and with which
+  key still comes from the host's own ssh entry (`ssh -G`, with `oci@` and
+  `aws@` stripped to Sky's alias); an `osmo@` workflow logs in as root with the
+  default keys, as the hub does. A host whose entry puts sshd on another port
+  keeps that entry, since the tunnel reaches port 22 only.
+- The tunnel is kept apart from the chats' tunnels: it survives a profile
+  switch and a chat's archive, is reused by every chat opened on that server
+  (its connections name the chat opened last, which the server still admits),
+  and closes with the app. While it is open, `ssh <alias>` from a terminal
+  goes through it too; after the app quits, the alias points at the closed
+  port until the next Open in Zed or profile change rewrites it.
+- Server: a chat's tunnel may name port 22, the one port below the 1024 floor
+  (the Forwarded Ports panel may name it as well), and `/api/health`
+  advertises it as `port_forwarding_v1.ssh_port`. A desktop talking to a
+  server without it keeps the previous alias route for Sky clusters and plain
+  hosts and names the needed server update for an `osmo@` workflow.
+- Verification. Test surface: an isolated desktop build and two isolated
+  servers on this Mac (one from the branch, one from the previous source),
+  driven through the real chat header button. Against the branch server, the
+  alias carried the tunnel's loopback port and `User root` for an `osmo@`
+  host, the server accepted the chat's tunnel to port 22, Zed launched and
+  began ssh authentication, and `ssh <alias>` reached the Mac's own sshd
+  banner through the tunnel; the login itself was refused by this Mac's sshd
+  policy. A second click reused the tunnel; the listener survived a profile
+  switch and served a new connection; archiving the chat made the server
+  refuse the next connection and the desktop drop the listener; unarchiving
+  and clicking again opened a new tunnel; quitting the app closed it. A plain
+  host yielded the `ssh -G` user and key options. Against the previous server,
+  an `osmo@` host showed the update message. Unit tests cover the port floor
+  on the server, the manager and the client, the alias block, the non-22
+  sshd exception, and the service's route choice including a reused tunnel
+  after the first chat's archive. Not exercised: a real OSMO pod or Sky
+  cluster through the tunnel (the deployed remotes were not redeployed), and
+  the previous alias route for a non-`osmo@` host on an old server beyond its
+  unit test. Availability: desktop and server source; a remote takes the
+  server part after a redeploy.
+
+## 2026-10-11 — "Update Claude Code" / "Update Codex" install a missing CLI (server source)
+
+- On a server without the Codex CLI, Settings → server row → "Update Codex"
+  ended with "The codex CLI is not installed on this server." The same held
+  for Claude Code and for the CLI step of "Update & redeploy all".
+- When the CLI is missing, the server now runs the product's official
+  installer instead: `curl -fsSL https://claude.ai/install.sh | bash` for
+  Claude Code and `curl -fsSL https://chatgpt.com/codex/install.sh |
+  CODEX_NON_INTERACTIVE=1 sh` for Codex. Both put the CLI in `~/.local/bin`,
+  which is on the PATH the server's chats use, and the CLI's own `update`
+  maintains that install afterwards. The install runs under the same lock,
+  10-minute limit and process-group stop as an update. A failed download, a
+  failed installer, or a CLI that the chats still cannot find afterwards is
+  reported as an error with the installer's last lines; a server without
+  `curl` or `bash` answers which of them is missing, and a CLI configured as
+  a path (`CLAUDE_BIN`, `CODEX_BIN`) that does not exist is reported, not
+  installed elsewhere. The row shows the installer's own result line, and
+  the update-all job log reports "installed Codex <version>".
+- Verification. Test surface: an isolated server from the branch on this Mac
+  with an empty home directory, called through the update endpoint and
+  through the desktop app's Settings → server row menu. The real installers
+  ran: Codex installed in 6 s, Claude Code in 13-15 s; the Runtimes panel
+  moved from "Not installed" to "Sign-in required" with the installed
+  version; a second click ran each CLI's own `update`; update-all on that
+  isolated hub logged "installed Codex" and "installed Claude Code". The
+  Codex and desktop runs used the branch before review, with `CODEX_BIN` and
+  `CLAUDE_BIN` set to paths in the empty home directory. The final build
+  refuses that configuration (checked: 404, nothing installed). Its Claude
+  Code install was rerun with the plain `claude` name. Its Codex install is
+  covered by unit tests only, because on this Mac a plain `codex` name
+  resolves to an existing Homebrew install. Unit tests cover the installer
+  commands through a fake `curl`, a failed download, an install the chats
+  cannot find, the missing-tool answer, a configured path and the update
+  lock. Not exercised: a Linux remote server, because the deployed servers
+  run the previous release.
+  Availability: server source; a remote takes it after a redeploy.
+
 ## 2026-10-11 — Remote servers on SkyPilot AWS clusters: `aws@<cluster>` (server source)
 
 - Adding a remote server as `oci@<cluster>` for a SkyPilot cluster on AWS

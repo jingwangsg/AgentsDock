@@ -1304,6 +1304,9 @@ PORT_TUNNEL_WEBSOCKET_PROTOCOL = "agentsdock-port-tunnel-v1"
 PORT_TUNNEL_TOKEN_PROTOCOL_PREFIX = "agentsdock-token."
 PORT_TUNNEL_LOOPBACK_HOST = "127.0.0.1"
 PORT_TUNNEL_MIN_PORT = 1024
+# sshd's port: the one port below the floor a chat may forward, so the desktop's
+# Open in Zed reaches a remote's shell through the tunnel instead of its own ssh route.
+PORT_TUNNEL_SSH_PORT = 22
 PORT_TUNNEL_MAX_PORT = 65535
 PORT_TUNNEL_MAX_ACTIVE_GLOBAL = max(
     1,
@@ -6660,7 +6663,7 @@ def canonical_port_tunnel_port(value: Any, minimum_port: int = PORT_TUNNEL_MIN_P
     if not re.fullmatch(r"[0-9]{1,5}", raw):
         raise ValueError("port must be an explicit decimal TCP port")
     port = int(raw)
-    if port < minimum_port or port > PORT_TUNNEL_MAX_PORT:
+    if (port < minimum_port and port != PORT_TUNNEL_SSH_PORT) or port > PORT_TUNNEL_MAX_PORT:
         raise ValueError(
             f"port must be between {minimum_port} and "
             f"{PORT_TUNNEL_MAX_PORT}"
@@ -23462,27 +23465,19 @@ async def update_queued_turn(session_id: str, queued_id: str, req: UpdateQueuedT
                                 )
                             selected_routes.append(dict(current_route))
 
-                        # Editing a queued message never mints a grant. Keep
-                        # only still-current durable routes from its admission
-                        # ceiling, then permit newly referenced targets only
-                        # when their durable source grant already exists.
+                        # Editing a queued message never mints a grant. Filter
+                        # the issued ceiling with the same rule admission uses:
+                        # the chat's permanent pairs sit in it without any chip,
+                        # so a hint-only filter dropped them and an edited
+                        # follow-up started with no chat routes (2026-10-11).
+                        # Newly hinted targets, checked above, join only
+                        # because their source grant already exists.
                         edited_route_snapshot: list[dict[str, Any]] = []
                         seen_route_ids: set[str] = set()
-                        hinted_target_ids = set(
-                            local_route_hint_target_ids(new_references)
-                        )
-                        for issued_route in original.get(
-                            "provider_cross_chat_route_snapshot", []
+                        for issued_route in provider_cross_chat_route_snapshot_for_hints(
+                            original.get("provider_cross_chat_route_snapshot", []),
+                            new_references,
                         ):
-                            if issued_route.get("route_kind") in {
-                                PROVIDER_CROSS_CHAT_ROUTE_KIND_AMBIENT,
-                                PROVIDER_CROSS_CHAT_ROUTE_KIND_REFERENCE,
-                            }:
-                                continue
-                            if str(
-                                issued_route.get("target_session_id") or ""
-                            ) not in hinted_target_ids:
-                                continue
                             live_route = live_provider_cross_chat_route(
                                 session_id,
                                 issued_route,
@@ -84483,6 +84478,7 @@ async def health() -> dict[str, Any]:
                 "transport": "binary_websocket",
                 "destination_host": PORT_TUNNEL_LOOPBACK_HOST,
                 "minimum_port": PORT_TUNNEL_MIN_PORT,
+                "ssh_port": PORT_TUNNEL_SSH_PORT,
                 "maximum_port": PORT_TUNNEL_MAX_PORT,
                 "max_active_connections": PORT_TUNNEL_MAX_ACTIVE_GLOBAL,
                 "max_active_connections_per_session": (
@@ -85718,40 +85714,58 @@ async def put_claude_oauth_token(req: ClaudeTokenAdminRequest, request: Request)
 
 RUNTIME_CLI_UPDATE_LOCK = asyncio.Lock()
 RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS = 600
+# Each product's documented unattended install command, verbatim. Both put the CLI in ~/.local/bin, which
+# runner_env() puts on the chats' PATH, and the CLI's own `update` keeps that install current afterwards.
+RUNTIME_CLI_INSTALL_COMMANDS = {
+    BACKEND_CLAUDE: "curl -fsSL https://claude.ai/install.sh | bash",
+    BACKEND_CODEX: "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+}
 
 
 @app.post("/api/admin/runtimes/{backend}/update")
 async def update_runtime_cli(backend: Literal["claude", "codex"], request: Request):
-    """Update CLI on this server: the per-row button, and the update-all job's remote step."""
+    """Update CLI on this server, installing it when missing: the per-row button, and the update-all job's remote step."""
 
     require_native_admin_control(request)
     result = await run_runtime_cli_update(backend)
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
-async def update_hub_cli(backend: str) -> str:
-    """Update & redeploy all's hub step: run the CLI's update here and return the version it left installed."""
+async def update_hub_cli(backend: str) -> tuple[str, bool]:
+    """Update & redeploy all's hub step: update (or install) the CLI here; returns the version it left installed and whether it installed."""
     result = await run_runtime_cli_update(backend)
-    return str((result["diagnostic"] or {}).get("version") or "")
+    return str((result["diagnostic"] or {}).get("version") or ""), result["action"] == "install"
 
 
 async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
-    """Run the CLI's own `update` with the binary and PATH this server's chats spawn."""
+    """Run the CLI's own `update` with the binary and PATH this server's chats spawn, or its official installer when it is missing."""
 
     if RUNTIME_CLI_UPDATE_LOCK.locked():
         raise HTTPException(409, "A CLI update is already running on this server.")
     async with RUNTIME_CLI_UPDATE_LOCK:
         env = codex_app_server_env() if backend == BACKEND_CODEX else runner_env()
-        executable = shutil.which(runtime_executable(backend), path=env.get("PATH"))
-        if not executable:
-            raise HTTPException(404, f"The {backend} CLI is not installed on this server.")
+        configured = runtime_executable(backend)
+        executable = shutil.which(configured, path=env.get("PATH"))
+        if executable:
+            command = [executable, "update"]
+            action, label = "update", f"`{backend} update`"
+        elif os.sep in configured:
+            # CLAUDE_BIN/CODEX_BIN name a path, and the installers never put the CLI there.
+            raise HTTPException(404, f"The {backend} CLI is configured as {configured}, which does not exist on this server.")
+        else:
+            missing = [tool for tool in ("curl", "bash") if not shutil.which(tool, path=env.get("PATH"))]
+            if missing:
+                raise HTTPException(404, f"The {backend} CLI is not installed on this server, and installing it needs {' and '.join(missing)}.")
+            # pipefail: a failed download must fail the install, not hand an empty script to a shell that exits 0.
+            command = ["bash", "-o", "pipefail", "-c", RUNTIME_CLI_INSTALL_COMMANDS[backend]]
+            action, label = "install", f"The {backend} installer"
 
         started: list[subprocess.Popen[str]] = []
 
         def run_update() -> tuple[int, str]:
             # One stream keeps the CLI's own order, so the tail ends with its result line.
             proc = subprocess.Popen(
-                [executable, "update"], env=env, cwd=str(Path.home()), stdin=subprocess.DEVNULL,
+                command, env=env, cwd=str(Path.home()), stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
                 start_new_session=True,
             )
@@ -85774,7 +85788,7 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
                     os.killpg(proc.pid, signal.SIGKILL)
             raise
         except subprocess.TimeoutExpired:
-            raise HTTPException(500, f"`{backend} update` did not finish within {RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS / 60:g} minutes.") from None
+            raise HTTPException(500, f"{label} did not finish within {RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS / 60:g} minutes.") from None
         if backend == BACKEND_CODEX:
             # New Codex turns start on the updated binary; running ones finish on the old process.
             await refresh_codex_app_server_binary(force=True)
@@ -85782,8 +85796,13 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
     output = "\n".join(output.strip().splitlines()[-5:])[-2000:]
     # 500, not 502/504: those mean the hub could not reach this server, and clients treat them so.
     if returncode:
-        raise HTTPException(500, f"`{backend} update` exited with {returncode}" + (f": {output}" if output else "."))
-    return {"output": output, "diagnostic": diagnostic}
+        raise HTTPException(500, f"{label} exited with {returncode}" + (f": {output}" if output else "."))
+    if action == "install" and not shutil.which(configured, path=env.get("PATH")):
+        raise HTTPException(
+            500, f"{label} finished, but this server's chats still cannot find `{configured}` on their PATH"
+            + (f": {output}" if output else "."),
+        )
+    return {"output": output, "diagnostic": diagnostic, "action": action}
 
 
 CODEX_PROVIDER_SETTINGS_LOCK = asyncio.Lock()

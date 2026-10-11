@@ -1521,14 +1521,14 @@ class RemoteServerManager:
                 running.append({"id": server.id, "name": server.name, "running": count})
         return running
 
-    def start_update_all(self, *, hub_update_cli: Callable[[str], Awaitable[str]],
+    def start_update_all(self, *, hub_update_cli: Callable[[str], Awaitable[tuple[str, bool]]],
                          hub_restart: Callable[[], Awaitable[str | None]]) -> DeployJob:
         """One job: redeploy each remote and update its CLIs, update the hub's CLIs, then restart the hub.
 
         The hub restarts last because this job runs inside it; the client sees the job finish, then
         waits for a new server instance. `hub_update_cli(backend)` returns the version the update left
-        installed ("" if unknown); `hub_restart()` returns an error message when this process cannot
-        restart itself.
+        installed ("" if unknown) and whether it installed a missing CLI; `hub_restart()` returns an error
+        message when this process cannot restart itself.
         """
         if any(job.task is not None and not job.task.done() for job in self.jobs.values()):
             raise HTTPException(status_code=409, detail="A deployment or update is already running.")
@@ -1537,8 +1537,8 @@ class RemoteServerManager:
         job.task = asyncio.create_task(self._update_all(job, hub_update_cli, hub_restart), name=f"remote-update-all:{job.job_id}")
         return job
 
-    async def update_cli(self, server: RemoteServer, backend: str) -> str:
-        """Run the CLI's own update on a remote through its tunnel; returns the version it reports ("" if none)."""
+    async def update_cli(self, server: RemoteServer, backend: str) -> tuple[str, bool]:
+        """Run the CLI update on a remote through its tunnel (the remote installs a missing CLI); returns the version it reports ("" if none) and whether it installed."""
         response = await self.http.post(
             f"http://127.0.0.1:{server.local_port}/api/admin/runtimes/{backend}/update",
             headers={"X-AgentsDock-Token": server.token}, timeout=CLI_UPDATE_REQUEST_TIMEOUT,
@@ -1548,19 +1548,25 @@ class RemoteServerManager:
             with suppress(ValueError):
                 detail = str((response.json() or {}).get("detail") or "")
             raise RuntimeError(detail or f"HTTP {response.status_code}")
-        diagnostic = response.json().get("diagnostic") or {}
-        return str(diagnostic.get("version") or "")
+        result = response.json()
+        # load-bearing: .get - an attached or not-yet-redeployed remote runs a server that sends no "action".
+        return str((result.get("diagnostic") or {}).get("version") or ""), result.get("action") == "install"
 
-    async def _update_all(self, job: DeployJob, hub_update_cli: Callable[[str], Awaitable[str]],
+    async def _update_all(self, job: DeployJob, hub_update_cli: Callable[[str], Awaitable[tuple[str, bool]]],
                           hub_restart: Callable[[], Awaitable[str | None]]) -> None:
         failures: list[str] = []
 
-        async def update_clis(label: str, run: Callable[[str], Awaitable[str]]) -> None:
+        async def update_clis(label: str, run: Callable[[str], Awaitable[tuple[str, bool]]]) -> None:
             for backend, product in CLI_PRODUCT_NAMES.items():
+                # The hub learns that a CLI was missing only from the server's answer, so this line says "updating"
+                # and the result line says "installed".
                 job.progress("cli", f"{label}: updating {product}…")
                 try:
-                    version = await run(backend)
-                    job.progress("cli", f"{label}: {product} {version or 'updated'}")
+                    version, installed = await run(backend)
+                    if installed:
+                        job.progress("cli", f"{label}: installed {product} {version}".rstrip())
+                    else:
+                        job.progress("cli", f"{label}: {product} {version or 'updated'}")
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - the job view carries the message
@@ -1892,7 +1898,7 @@ def register_remote_server_routes(
     authorize_admin: Callable[[Request], None],
     websocket_authorized: Callable[[WebSocket], bool],
     hub_running_chat_count: Callable[[], int],
-    hub_update_cli: Callable[[str], Awaitable[str]],
+    hub_update_cli: Callable[[str], Awaitable[tuple[str, bool]]],
     hub_restart: Callable[[], Awaitable[str | None]],
 ) -> None:
     @app.get(ADMIN_PATH)

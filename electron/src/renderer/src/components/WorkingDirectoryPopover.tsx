@@ -139,7 +139,7 @@ export function WorkingDirectoryPopover({ session }: { session: Session }) {
                 disabled={!session.cwd?.trim()}
                 onClick={() => {
                   const state = useAppStore.getState()
-                  const input = openInZedInput(session, state.profiles.find(candidate => candidate.id === state.activeProfileId))
+                  const input = openInZedInput(session, state.profiles.find(candidate => candidate.id === state.activeProfileId), state.profileGeneration)
                   if (input) window.agentsDock.native.openInZed(input)
                     .catch((error: unknown) => state.setError(error instanceof Error ? error.message : String(error)))
                 }}

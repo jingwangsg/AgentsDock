@@ -132,7 +132,7 @@ import { isReasoningSummaryStream } from '../shared/reasoning-stream'
 import { deriveTeamHubBootstrapControlURL } from '../shared/team-hub-url'
 import { parseAgentTeamMessagesCapability, parseTeamBulletinAliasCapability, parseTeamAllServersAliasCapability } from '../shared/team-network'
 import { PinRevisionConflictError } from './pin-sync'
-import { PORT_TUNNEL_SUBPROTOCOL } from './port-tunnel-manager'
+import { PORT_TUNNEL_SSH_PORT, PORT_TUNNEL_SUBPROTOCOL } from './port-tunnel-manager'
 import { SecurePeerRequestAdmission } from './secure-peer-request-admission'
 import { appLog } from './logger'
 import { networkErrorDetails } from './network-error'
@@ -2206,7 +2206,7 @@ export class AgentServerClient {
   /** Opens one authenticated loopback proxy scoped to a chat or browser tab. */
   portTunnelSocket(sessionId: string, remotePort: number): WebSocket {
     const minimumPort = sessionId.startsWith('browser_') ? 1 : 1_024
-    if (!Number.isSafeInteger(remotePort) || remotePort < minimumPort || remotePort > 65_535) {
+    if (!Number.isSafeInteger(remotePort) || (remotePort < minimumPort && remotePort !== PORT_TUNNEL_SSH_PORT) || remotePort > 65_535) {
       throw new Error(`Remote port must be an integer from ${minimumPort} through 65535.`)
     }
     const configuration = this.configuration

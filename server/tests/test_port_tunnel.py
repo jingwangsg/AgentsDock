@@ -910,6 +910,12 @@ class PortTunnelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(websocket.calls[-1][0:2], ("close", 4404))
         self.assertEqual((await registry.snapshot())["active_connections"], 0)
 
+    def test_port_floor_exempts_only_ssh(self) -> None:
+        self.assertEqual(agent_server.canonical_port_tunnel_port("22"), 22)
+        with self.assertRaisesRegex(ValueError, "between 1024 and 65535"):
+            agent_server.canonical_port_tunnel_port("80")
+        self.assertEqual(agent_server.canonical_port_tunnel_port("80", 1), 80)
+
     async def test_health_advertises_additive_tunnel_contract(self) -> None:
         registry = agent_server.PortTunnelRegistry()
         with patch.object(agent_server, "PORT_TUNNELS", registry), \
@@ -931,6 +937,7 @@ class PortTunnelTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(capability["destination_host"], "127.0.0.1")
         self.assertEqual(capability["minimum_port"], 1024)
+        self.assertEqual(capability["ssh_port"], 22)
         self.assertEqual(capability["maximum_port"], 65535)
         self.assertEqual(
             capability["max_active_connections"],

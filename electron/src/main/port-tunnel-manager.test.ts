@@ -185,6 +185,16 @@ describe('PortTunnelManager', () => {
     expect(createRemote).not.toHaveBeenCalled()
   })
 
+  it('forwards the ssh port, the one port below the floor, so Zed can reach a remote', async () => {
+    const manager = new PortTunnelManager()
+    managers.push(manager)
+    const forwarded = await manager.start('server-a', 22, undefined, () => new FakeWebSocket() as unknown as WebSocket)
+    expect(forwarded).toMatchObject({ sessionId: 'server-a', remotePort: 22, state: 'open' })
+    expect(manager.url('server-a', 22)).toBe(`http://${PORT_TUNNEL_LOOPBACK_HOST}:${forwarded.localPort}`)
+    await manager.stop('server-a', 22)
+    expect(manager.list()).toEqual([])
+  })
+
   it('hard-caps forwarded listeners globally and per chat', async () => {
     const manager = new PortTunnelManager()
     managers.push(manager)

@@ -25,8 +25,12 @@ exchanges remain deferred.
   asynchronous Ask, or make no cross-chat contact.
 - Ordinary user turns are default-deny. Successful admission of an exact local
   single-`@Chat` chip from a v2 client durably grants that directional
-  source-to-target route; later turns receive only the source chat's current
-  grants. There is no ambient all-chat ceiling or required Inspector setup.
+  source-to-target route; every later ordinary turn receives the source
+  chat's current grants, so the agent can message such a chat again without
+  a new chip. A queued message edited before it runs keeps the grants it was
+  admitted with, re-checked against the chat's current grants; an edit never
+  creates one. There is no ambient all-chat ceiling or required Inspector
+  setup.
 - Scheduled jobs never inherit source-chat grants. A job stores only its own
   exact route selections through the job editor/helper, and every firing
   revalidates those exact targets, revisions, and actions. The prompt keeps the

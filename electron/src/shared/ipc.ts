@@ -2,6 +2,7 @@ import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from './
 import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, CreateSurfaceInput, InferenceProxyStatus, RuntimeCliUpdate, ServerRunningChats, Surface, UpdateSurfaceInput } from './types'
 import type { CanvasHostTheme } from './canvas'
 import type { ChatOutputsSummary } from './chat-outputs'
+import type { OpenInZedRequest } from './ssh-host-alias'
 import type {
   AgentFile,
   AgentCrossChatRoute,
@@ -702,8 +703,8 @@ export interface AgentsDockAPI {
     analyticsDisabled: boolean
     openExternal(url: string): Promise<void>
     showItemInFolder(path: string): Promise<void>
-    /** Opens a server path in Zed; remote servers go through their configured SSH host. */
-    openInZed(input: { path: string; sshHost?: string | null; hostAlias?: string | null }): Promise<void>
+    /** Opens a server path in Zed; a remote's sshd is reached through a port tunnel from this app when the server allows it, else through its own ssh entry. */
+    openInZed(input: OpenInZedRequest): Promise<void>
     setBadge(count: number): Promise<void>
     notify(payload: ProfileNotificationPayload): Promise<void>
     log(scope: string, message: string, data?: unknown): Promise<void>

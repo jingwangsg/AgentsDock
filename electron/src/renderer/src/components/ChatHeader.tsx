@@ -179,7 +179,7 @@ export function ChatHeader({
         {(() => {
           // Open this chat's directory in Zed: on this Mac directly, on a remote through its SSH host
           // (the Forward SSH alias when the server has one).
-          const zed = openInZedInput(session, profile)
+          const zed = openInZedInput(session, profile, profileGeneration)
           const host = profile ? sshHostAlias(profile) ?? profile.sshHost : null
           const title = zed ? host ? t('openInZed.headerTitleRemote', { path: zed.path, host }) : t('openInZed.headerTitle', { path: zed.path }) : t('openInZed.action')
           return <button type="button" className="icon-button" title={title} aria-label={t('openInZed.action')} disabled={!zed} onClick={() => {

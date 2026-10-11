@@ -1,7 +1,8 @@
-"""The app can run `claude update` / `codex update` on a server with the binary its chats spawn."""
+"""The app can run `claude update` / `codex update` on a server with the binary its chats spawn, or install a missing CLI."""
 
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -94,9 +95,119 @@ class RuntimeCliUpdateTests(unittest.TestCase):
         else:
             self.fail(f"the update's child process {pid} is still running")
 
-    def test_missing_cli_and_unknown_backend(self):
-        self.enterContext(patch.object(server, "CLAUDE_BIN", str(self.bin / "absent")))
-        self.assertEqual(self.client.post("/api/admin/runtimes/claude/update", headers=HEADERS).status_code, 404)
+    def chats_env(self, *directories):
+        """The chats' HOME and PATH, limited to `directories`: no real CLI, curl or installer is reachable."""
+        home = self.bin / "home"
+        home.mkdir(exist_ok=True)
+        path = ":".join([str(home / ".local" / "bin"), *map(str, directories)])
+        self.enterContext(patch.object(server, "runner_env", lambda: {"HOME": str(home), "PATH": path}))
+        self.enterContext(patch.object(server, "CLAUDE_BIN", "claude"))
+        self.enterContext(patch.object(server, "CODEX_BIN", "codex"))
+
+    def fake_curl(self, installer, *, before=""):
+        """A `curl` that logs its arguments and serves `installer` (run by the pipe's shell) after `before` runs."""
+        tools = Path(tempfile.mkdtemp(dir=self.bin))
+        (tools / "installer.sh").write_text(installer)
+        curl = tools / "curl"
+        curl.write_text(f'#!/bin/sh\necho "$@" >> {tools}/curl.log\n{before}\ncat {tools}/installer.sh\n')
+        curl.chmod(0o755)
+        # /bin for bash and the installer's sh, mkdir and chmod; the fake curl comes first.
+        self.chats_env(tools, "/bin")
+        return tools
+
+    def installer(self, name, *, into="$HOME/.local/bin"):
+        """What an official installer does here: put a fake CLI reporting 2.0.0 in `into`, then print whether
+        CODEX_NON_INTERACTIVE reached it."""
+        return (
+            f'mkdir -p "{into}"\n'
+            f'cat > "{into}/{name}" <<"EOF"\n'
+            '#!/bin/sh\n'
+            'if [ "$1" = "--version" ]; then echo "2.0.0"; fi\n'
+            'EOF\n'
+            f'chmod 755 "{into}/{name}"\n'
+            'echo "non-interactive=${CODEX_NON_INTERACTIVE:-unset}"\n'
+        )
+
+    def test_a_missing_cli_is_installed_with_its_official_installer(self):
+        for backend, url in (("claude", "https://claude.ai/install.sh"), ("codex", "https://chatgpt.com/codex/install.sh")):
+            with self.subTest(backend):
+                tools = self.fake_curl(self.installer(backend))
+                self.refresh_codex.reset_mock()
+
+                response = self.client.post(f"/api/admin/runtimes/{backend}/update", headers=HEADERS)
+
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual((tools / "curl.log").read_text(), f"-fsSL {url}\n")
+                self.assertEqual(response.json()["action"], "install")
+                self.assertEqual(response.json()["diagnostic"]["version"], "2.0.0")
+                # Codex's installer would otherwise wait on prompts.
+                self.assertEqual(response.json()["output"], f"non-interactive={1 if backend == 'codex' else 'unset'}")
+                self.assertEqual(self.refresh_codex.await_count, 1 if backend == "codex" else 0)
+                self.assertEqual(self.client.post(f"/api/admin/runtimes/{backend}/update", headers=HEADERS).json()["action"], "update")
+
+    def test_a_failed_download_fails_the_install(self):
+        self.fake_curl(self.installer("claude"), before='echo "curl: (22) The requested URL returned error: 403" >&2\nexit 22')
+
+        response = self.client.post("/api/admin/runtimes/claude/update", headers=HEADERS)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], "The claude installer exited with 22: curl: (22) The requested URL returned error: 403")
+
+    def test_an_install_the_chats_cannot_find_is_an_error(self):
+        self.fake_curl(self.installer("claude", into="$HOME/elsewhere"))
+
+        response = self.client.post("/api/admin/runtimes/claude/update", headers=HEADERS)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertTrue(response.json()["detail"].startswith(
+            "The claude installer finished, but this server's chats still cannot find `claude` on their PATH: "), response.json())
+
+    def test_an_install_holds_the_update_lock(self):
+        started, go = self.bin / "started", self.bin / "go"
+        self.fake_curl(self.installer("claude"), before=f": > {started}\nwhile [ ! -e {go} ]; do sleep 0.05; done")
+        responses = []
+        install = threading.Thread(target=lambda: responses.append(self.client.post("/api/admin/runtimes/claude/update", headers=HEADERS)))
+        install.start()
+        # Cleanups run last-in first-out: on a failure, release the installer before joining its thread.
+        self.addCleanup(install.join)
+        self.addCleanup(go.touch)
+        for _ in range(200):
+            if started.exists():
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("the installer did not start")
+
+        self.assertEqual(self.client.post("/api/admin/runtimes/codex/update", headers=HEADERS).status_code, 409)
+        go.touch()
+        install.join()
+        self.assertEqual(responses[0].status_code, 200, responses[0].text)
+
+    def test_installing_needs_curl_and_bash(self):
+        tools = Path(tempfile.mkdtemp(dir=self.bin))
+        self.chats_env(tools)
+
+        response = self.client.post("/api/admin/runtimes/claude/update", headers=HEADERS)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "The claude CLI is not installed on this server, and installing it needs curl and bash.")
+
+        (tools / "bash").symlink_to("/bin/bash")
+        response = self.client.post("/api/admin/runtimes/codex/update", headers=HEADERS)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "The codex CLI is not installed on this server, and installing it needs curl.")
+
+    def test_a_cli_configured_as_a_missing_path_is_not_installed(self):
+        tools = self.fake_curl(self.installer("claude"))
+        configured = self.bin / "absent" / "claude"
+        self.enterContext(patch.object(server, "CLAUDE_BIN", str(configured)))
+
+        response = self.client.post("/api/admin/runtimes/claude/update", headers=HEADERS)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], f"The claude CLI is configured as {configured}, which does not exist on this server.")
+        self.assertFalse((tools / "curl.log").exists())
+
+    def test_unknown_backend(self):
         self.assertEqual(self.client.post("/api/admin/runtimes/cursor/update", headers=HEADERS).status_code, 422)
 
     def test_requires_the_native_admin_token(self):
