@@ -43,7 +43,7 @@ import {
   type SteeringScope
 } from '../lib/queue-actions'
 import { parseStoredTeamReferences, teamMessagesAvailable, validComposerReferences } from '../lib/team-references'
-import { adjacentServerProfileId } from '../lib/server-navigation'
+import { adjacentServerProfileId, listedServerProfiles } from '../lib/server-navigation'
 import { captureWorkspaceScope, getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
 import { saveLocalStorage } from '../lib/local-storage'
 import {
@@ -1228,7 +1228,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   async selectAdjacentServer(direction) {
     const state = get()
     if (state.switchingProfileId || Object.values(state.modals).some(Boolean)) return
-    const target = adjacentServerProfileId(state.profiles, state.activeProfileId, direction)
+    const target = adjacentServerProfileId(listedServerProfiles(state.profiles, state.activeProfileId), state.activeProfileId, direction)
     if (!target) return
     try { await state.switchServer(target) }
     catch (error) { get().setError(errorMessage(error)) }

@@ -758,7 +758,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     const local = crossServerSnapshot.servers.find(server => server.server_identity === serverIdentity)
     // The hub lists only servers that can pair; without this one, nothing here can.
     if (!local) return null
-    return { localTag: local.name, servers: crossServerSnapshot.servers.filter(server => server !== local), createChats: crossServerSnapshot.createChats }
+    return { localTag: local.name, servers: crossServerSnapshot.servers.filter(server => server !== local && !server.hidden), createChats: crossServerSnapshot.createChats }
   }, [crossServerAvailable, crossServerKey, crossServerSnapshot, serverIdentity])
   const grantedTargetIds = useMemo(
     () => new Set(grantedRoutes.map(route => route.target_session_id)),

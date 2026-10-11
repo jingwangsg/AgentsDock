@@ -12,7 +12,7 @@ import {
 import { MenuView, type MenuAction } from '@expo/ui/community/menu'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist'
-import { Check, ChevronDown, Download, GripVertical, MoreHorizontal, Pencil, Plus, RotateCw, Server, UploadCloud, Wifi, X } from 'lucide-react-native'
+import { Check, ChevronDown, Download, Eye, EyeOff, GripVertical, MoreHorizontal, Pencil, Plus, RotateCw, Server, UploadCloud, Wifi, X } from 'lucide-react-native'
 import {
   buildUpdateServerProfileInput,
   connectionStateLabel,
@@ -83,6 +83,8 @@ export interface ServerProfilesManagerProps extends CommonServerProfileProps {
   onRedeployRemote: (profileId: string, force: boolean, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<{ redeployed: boolean; running: number | null }>
   /** Edit with a new SSH host or install dir: the hub moves the remote there under the same id, as on the desktop. */
   onMoveRemote: (profileId: string, input: { sshHost?: string; installDir?: string }, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<void>
+  /** The eye toggle: the hub keeps the flag, so every device leaves a hidden remote out of its server picker. */
+  onSetRemoteHidden: (profileId: string, hidden: boolean) => Promise<void>
   onUpdateCli: (profileId: string, backend: 'claude' | 'codex') => Promise<string>
   /** Settings → Servers "Update & redeploy all" on the hub, as on the desktop; resolves to the servers with running chats when `force` is false and some have any. */
   onUpdateAll?: (force: boolean, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<{ running: Array<ServerRunningChats & { name: string }>; failures: string | null }>
@@ -111,8 +113,10 @@ export function ServerProfileSelector({
     : active
       ? `${displayServerProfileName(active)}, ${profileConnectionLabel(active)}${active.cachedUnreadCount > 0 ? `, ${active.cachedUnreadCount} unread` : ''}. Choose agent server.`
       : 'Choose agent server'
-  const profileActions: MenuAction[] = profiles.length
-    ? profiles.map(profile => ({
+  // A hidden remote is left out; Manage Servers still lists it, and the server in use stays here as current.
+  const listed = profiles.filter(profile => !profile.hidden || profile.id === activeProfileId)
+  const profileActions: MenuAction[] = listed.length
+    ? listed.map(profile => ({
         id: `profile:${encodeURIComponent(profile.id)}`,
         title: profile.cachedUnreadCount > 0 ? `${displayServerProfileName(profile)} · ${profile.cachedUnreadCount} unread` : displayServerProfileName(profile),
         state: profile.id === activeProfileId ? 'on' : 'off',
@@ -198,6 +202,7 @@ export function ServerProfilesManager({
   onCancelDeploy,
   onRedeployRemote,
   onMoveRemote,
+  onSetRemoteHidden,
   onUpdateCli,
   onUpdateAll,
 }: ServerProfilesManagerProps) {
@@ -478,6 +483,16 @@ export function ServerProfilesManager({
     }
   }
 
+  const setHidden = async (profile: ServerProfileListItem, hidden: boolean) => {
+    noteRow(profile.id, { kind: 'hidden', working: true, text: hidden ? 'Hiding…' : 'Showing…' })
+    try {
+      await onSetRemoteHidden(profile.id, hidden)
+      noteRow(profile.id, null)
+    } catch (error) {
+      noteRow(profile.id, { kind: 'hidden', failed: true, text: errorMessage(error) })
+    }
+  }
+
   const chooseCli = (profile: ServerProfileListItem) => Alert.alert(`Update a CLI on ${profile.name}`, undefined, [
     { text: 'Claude Code', onPress: () => { void updateCli(profile, 'claude') } },
     { text: 'Codex', onPress: () => { void updateCli(profile, 'codex') } },
@@ -534,6 +549,7 @@ export function ServerProfilesManager({
       work={rowWork[profile.id] ?? null}
       redeployDisabled={redeploying || Boolean(updateAll?.working)}
       onRedeploy={hubProxyRemoteId(profile.serverUrl) !== null ? () => { void redeploy(profile, false) } : undefined}
+      onToggleHidden={hubProxyRemoteId(profile.serverUrl) !== null ? () => { void setHidden(profile, !profile.hidden) } : undefined}
       onUpdateCli={() => chooseCli(profile)}
     />
   }
@@ -840,9 +856,9 @@ export function ServerProfilesManager({
   </NestableScrollContainer>
 }
 
-interface RowWork { kind: 'redeploy' | 'cli'; text: string; working?: boolean; failed?: boolean }
+interface RowWork { kind: 'redeploy' | 'cli' | 'hidden'; text: string; working?: boolean; failed?: boolean }
 
-function ServerManagementRow({ profile, active, switching, disabled, removable, work, redeployDisabled, onSwitch, onEdit, onDrag, onRemove, onRedeploy, onUpdateCli }: {
+function ServerManagementRow({ profile, active, switching, disabled, removable, work, redeployDisabled, onSwitch, onEdit, onDrag, onRemove, onRedeploy, onToggleHidden, onUpdateCli }: {
   profile: ServerProfileListItem
   active: boolean
   switching: boolean
@@ -856,6 +872,7 @@ function ServerManagementRow({ profile, active, switching, disabled, removable, 
   onDrag?: () => void
   onRemove: () => void
   onRedeploy?: () => void
+  onToggleHidden?: () => void
   onUpdateCli: () => void
 }) {
   const colors = usePalette()
@@ -877,6 +894,7 @@ function ServerManagementRow({ profile, active, switching, disabled, removable, 
       <View style={styles.profileTitleRow}>
         <Text style={[styles.profileName, { color: colors.text }]} numberOfLines={1}>{profile.name}</Text>
         {active ? <View style={[styles.activeBadge, { backgroundColor: `${colors.blue}20` }]}><Text style={[styles.activeBadgeText, { color: colors.blue }]}>Active</Text></View> : null}
+        {profile.hidden ? <View style={[styles.activeBadge, { backgroundColor: colors.raised }]}><Text style={[styles.activeBadgeText, { color: colors.muted }]}>Hidden</Text></View> : null}
         {profile.cachedUnreadCount > 0 ? <ServerUnreadBadge count={profile.cachedUnreadCount} /> : null}
       </View>
       {address ? <Text style={[styles.profileUrl, { color: colors.muted }]} numberOfLines={1}>{address}</Text> : null}
@@ -886,6 +904,7 @@ function ServerManagementRow({ profile, active, switching, disabled, removable, 
       <View style={styles.rowTools}>
         <RowTool icon={Download} label="Update CLI" accessibilityLabel={`Update a CLI on ${profile.name}`} busy={work?.kind === 'cli' && Boolean(work.working)} disabled={disabled || Boolean(work?.working)} onPress={onUpdateCli} />
         {onRedeploy ? <RowTool icon={RotateCw} label="Redeploy" accessibilityLabel={`Redeploy ${profile.name}`} busy={work?.kind === 'redeploy' && Boolean(work.working)} disabled={disabled || redeployDisabled || Boolean(work?.working)} onPress={onRedeploy} /> : null}
+        {onToggleHidden ? <RowTool icon={profile.hidden ? Eye : EyeOff} label={profile.hidden ? 'Show' : 'Hide'} accessibilityLabel={profile.hidden ? `Show ${profile.name} in the server switcher` : `Hide ${profile.name} from the server switcher`} busy={work?.kind === 'hidden' && Boolean(work.working)} disabled={disabled || Boolean(work?.working)} onPress={onToggleHidden} /> : null}
       </View>
     </View>
     {!active ? <SecondaryButton label={switching ? 'Using…' : 'Use'} disabled={disabled} busy={switching} accessibilityLabel={`Use ${profile.name}`} compact onPress={onSwitch} /> : null}

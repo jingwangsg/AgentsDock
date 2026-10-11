@@ -21,6 +21,7 @@ import secrets
 import shlex
 import shutil
 import socket
+import sys
 import tarfile
 import tempfile
 import time
@@ -102,6 +103,15 @@ AWS_RELAY_INTERVAL = 120.0
 CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOME"}
 # No leading "-": workflow and task names are passed to the osmo CLI as arguments.
 OSMO_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+# `ssh <remote name>` from this machine: one alias file per remote (see write_ssh_alias), in the
+# directory where the desktop app keeps its own aliases and that ~/.ssh/config includes.
+SSH_ALIAS_DIR = Path.home() / ".agentsdock" / "ssh"
+SSH_CONFIG = Path.home() / ".ssh" / "config"
+# First line of every alias file the hub writes; the desktop app leaves such a file to the hub
+# (hubKeepsSshHost in electron/src/main/ssh-hosts.ts).
+SSH_ALIAS_MARKER = "# Added by the AgentsDock hub"
+# A name ssh_config takes as a Host pattern and a file name (SSH_HOST_ALIAS_PATTERN on the desktop).
+SSH_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 NO_MULTIPLEX = ["-o", "ControlMaster=no", "-o", "ControlPath=none"]
 SSH_BATCH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new", *NO_MULTIPLEX]
@@ -160,6 +170,9 @@ class RemoteServer(BaseModel):
     created_at: str
     # Registered by attach: another hub set this install up and updates it, so this hub never redeploys it.
     attached: bool = False
+    # Left out of the lists clients offer for choosing a server; Settings still lists it, and its tunnels,
+    # chats and ssh alias stay as they are.
+    hidden: bool = False
 
     @field_validator("id")
     @classmethod
@@ -243,6 +256,7 @@ class RemoteServerUpdate(BaseModel):
     name: str | None = None
     ssh_host: str | None = None
     install_dir: str | None = None
+    hidden: bool | None = None
 
     _name = field_validator("name")(classmethod(lambda cls, value: RemoteServer._name(value) if value is not None else None))
     _host = field_validator("ssh_host")(classmethod(lambda cls, value: validate_ssh_host(value) if value is not None else None))
@@ -340,6 +354,7 @@ def public_view(server: RemoteServer, tunnel: dict[str, Any] | None) -> dict[str
         "remote_port": server.remote_port,
         "local_port": server.local_port,
         "created_at": server.created_at,
+        "hidden": server.hidden,
         "proxy_path": f"{PROXY_PREFIX}/{server.id}",
         "tunnel": tunnel,
     }
@@ -400,8 +415,13 @@ def tunnel_args(
 
 async def resolved_proxy_command(ssh_host: str) -> str:
     """The ProxyCommand ssh resolves for the host; empty when it has none."""
+    return (await resolved_ssh_options(ssh_host)).get("proxycommand", [""])[0]
+
+
+async def resolved_ssh_options(ssh_host: str, config_file: Path | None = None) -> dict[str, list[str]]:
+    """`ssh -G`: every option as ssh would use it for the host, keyed in lower case; from `config_file` alone when given."""
     config = await asyncio.create_subprocess_exec(
-        ssh_binary(), "-G", ssh_host, stdout=asyncio.subprocess.PIPE,
+        ssh_binary(), *(["-F", str(config_file)] if config_file else []), "-G", ssh_host, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
@@ -412,11 +432,12 @@ async def resolved_proxy_command(ssh_host: str) -> str:
         raise
     if config.returncode:
         raise OSError(f"ssh -G failed for {ssh_host}")
-    prefix = "proxycommand "
+    options: dict[str, list[str]] = {}
     for line in output.decode("utf-8", "replace").splitlines():
-        if line.startswith(prefix):
-            return line[len(prefix):]
-    return ""
+        key, _, value = line.partition(" ")
+        if key and value:
+            options.setdefault(key, []).append(value)
+    return options
 
 
 async def isolated_proxy_args(ssh_host: str) -> list[str]:
@@ -656,6 +677,9 @@ async def ssh_route(ssh_host: str) -> SSHRoute:
         credentials = await aws_session_file(cluster, env)
         # The ProxyCommand runs the aws CLI, which runs session-manager-plugin; both install into this PATH.
         env.update(AWS_SHARED_CREDENTIALS_FILE=str(credentials), AWS_PROFILE="agentsdock", PATH=cli_search_path())
+        # Keys exported in the environment win over AWS_PROFILE; a shell running an alias's ProxyCommand may have some.
+        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            env.pop(name, None)
         return SSHRoute(slow_proxy, cluster, env)
     if ssh_host.startswith("osmo@"):
         workflow = ssh_host.removeprefix("osmo@")
@@ -668,6 +692,88 @@ async def ssh_route(ssh_host: str) -> SSHRoute:
             "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
         ], f"root@{workflow}", env)
     return SSHRoute([], ssh_host, env)
+
+
+# The options Sky writes for a cluster, in its order, as `ssh -G` names them (COPIED_OPTIONS on the desktop).
+SSH_ALIAS_OPTIONS = [
+    ("hostname", "HostName"), ("user", "User"), ("port", "Port"), ("identityfile", "IdentityFile"),
+    ("identitiesonly", "IdentitiesOnly"), ("forwardagent", "ForwardAgent"), ("stricthostkeychecking", "StrictHostKeyChecking"),
+    ("userknownhostsfile", "UserKnownHostsFile"), ("globalknownhostsfile", "GlobalKnownHostsFile"), ("setenv", "SetEnv"),
+    ("serveraliveinterval", "ServerAliveInterval"), ("proxyjump", "ProxyJump"), ("proxycommand", "ProxyCommand"),
+]
+
+
+async def ssh_alias_content(name: str, ssh_host: str, route: SSHRoute) -> str:
+    """The ssh_config block that makes `ssh <name>` take the route the hub's tunnels take."""
+
+    lines = [f"{SSH_ALIAS_MARKER} for the remote server {name} ({ssh_host}). Rewritten when the hub reconnects to it; removed with it.",
+             f"Host {name}"]
+    if ssh_host.startswith("osmo@"):
+        # The route names everything: root in the workflow's lead task, through `osmo workflow exec`.
+        user, host = route.destination.split("@", 1)
+        lines += [f"  HostName {host}", f"  User {user}"]
+        for option in route.options[1::2]:
+            key, value = option.split("=", 1)
+            # The hub's own connect limit; an interactive login waits for the pod as long as its user does.
+            if key != "ConnectTimeout":
+                lines.append(f"  {key} {value}")
+    else:
+        resolved = await resolved_ssh_options(route.destination)
+        for key, option in SSH_ALIAS_OPTIONS:
+            for value in resolved.get(key, []):
+                # ssh -G prints StrictHostKeyChecking as true/false; the config file wants yes/no.
+                value = {"true": "yes", "false": "no"}.get(value, value) if key == "stricthostkeychecking" else value
+                if value == "none" or (key == "serveraliveinterval" and value == "0"):
+                    continue
+                if key == "proxycommand" and ssh_host.startswith(("oci@", "aws@")):
+                    # Sky's proxy needs the environment the hub's route sets: Sky's CA bundle, and for aws@ the
+                    # STS session, relayed again when it nears its end. This file's __main__ sets it up and runs
+                    # the command; ssh still expands the command's % tokens.
+                    helper = [sys.executable, str(Path(__file__).resolve()), "proxy-command", ssh_host]
+                    value = " ".join(shlex.quote(part).replace("%", "%%") for part in helper) + f" {shlex.quote(value)}"
+                lines.append(f"  {option} {value}")
+    content = "\n".join(lines) + "\n"
+    # The Include comes first in ~/.ssh/config, so a block ssh cannot read would stop every ssh on this machine.
+    # ssh -G prints values without their quotes, such as a key path with a space.
+    with tempfile.TemporaryDirectory(prefix="agentsdock-alias-") as directory:
+        check = Path(directory, name)
+        check.write_text(content, "utf-8")
+        await resolved_ssh_options(name, check)
+    return content
+
+
+def write_ssh_alias(name: str, content: str) -> None:
+    """Replace the alias file atomically and add the Include if it is missing.
+
+    Any ssh started meanwhile reads every file the Include matches, so it must never see a partial one.
+    """
+
+    SSH_ALIAS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = SSH_ALIAS_DIR / name
+    # A leading dot keeps the temporary file out of the Include's `*`.
+    tmp = path.with_name(f".{name}.{secrets.token_hex(4)}.tmp")
+    tmp.touch(mode=0o600)
+    tmp.write_text(content, "utf-8")
+    os.replace(tmp, path)
+    # The Include goes first, as SkyPilot's does: an Include after a matching Host block would not apply to
+    # it. The same line as the desktop app's (ensureSshConfigInclude), so the two never add it twice.
+    home = Path.home()
+    alias_dir = f"~/{SSH_ALIAS_DIR.relative_to(home)}" if SSH_ALIAS_DIR.is_relative_to(home) else str(SSH_ALIAS_DIR)
+    include = f"Include {alias_dir}/*"
+    existing = SSH_CONFIG.read_text("utf-8") if SSH_CONFIG.exists() else ""
+    if include not in (line.strip() for line in existing.splitlines()):
+        SSH_CONFIG.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        SSH_CONFIG.write_text(f"{include}\n{existing}", "utf-8")
+        SSH_CONFIG.chmod(0o600)
+
+
+def remove_ssh_alias(name: str) -> None:
+    """Remove the alias file if the hub wrote it; a file of that name from anyone else stays."""
+
+    path = SSH_ALIAS_DIR / name
+    with suppress(OSError):
+        if SSH_ALIAS_RE.fullmatch(name) and path.read_text("utf-8").startswith(SSH_ALIAS_MARKER):
+            path.unlink()
 
 
 def revive_args(ssh_host: str, install_dir: str) -> list[str]:
@@ -791,9 +897,12 @@ class Tunnel:
     def __init__(
         self, server: RemoteServer | SSHForward, revive: Callable[[RemoteServer], Awaitable[None]] | None,
         *, role: Literal["main", "bulk", "stream", "surface", "inference"] = "main",
+        on_route: Callable[[SSHRoute], Awaitable[None]] | None = None,
     ):
         self.server = server
         self.role = role
+        # Awaited with each route resolved before ssh starts; it must not raise.
+        self._on_route = on_route
         self.label = server.id if role == "main" else f"{server.id} ({role})"
         # The route of the running ssh; the forward probe logs in with its destination and options.
         self._route: SSHRoute | None = None
@@ -817,6 +926,8 @@ class Tunnel:
         while not self._stopped:
             try:
                 route = await ssh_route(self.server.ssh_host)
+                if self._on_route is not None:
+                    await self._on_route(route)
                 env = route.env
                 if isinstance(self.server, SSHForward):
                     args = tunnel_args(
@@ -1246,12 +1357,15 @@ class RemoteServerManager:
         source_dir: Path,
         manage_tunnels: bool = True,
         revive: Callable[[RemoteServer], Awaitable[None]] = start_remote_server,
+        ssh_aliases: bool = False,
     ) -> None:
         self.path = state_dir / "remote-servers.json"
         self.forward_path = state_dir / "ssh-forwards.json"
         self.source_dir = source_dir
         self.manage_tunnels = manage_tunnels
         self._revive = revive
+        # Keep an ssh alias per remote in SSH_ALIAS_DIR (see _keep_ssh_alias).
+        self.ssh_aliases = ssh_aliases
         self.servers: dict[str, RemoteServer] = {}
         self.tunnels: dict[str, Tunnel] = {}
         self.bulk_tunnels: dict[str, Tunnel] = {}
@@ -1329,7 +1443,8 @@ class RemoteServerManager:
                       self.surface_tunnels.pop(server.id, None), self.inference_tunnels.pop(server.id, None)):
             if stale is not None:
                 asyncio.create_task(stale.stop())
-        tunnel = Tunnel(server, self._revive)
+        on_route = (lambda route, remote_id=server.id: self._keep_ssh_alias(remote_id, route)) if self.ssh_aliases else None
+        tunnel = Tunnel(server, self._revive, on_route=on_route)
         self.tunnels[server.id] = tunnel
         logger.info("ssh tunnel starting for %s (%s, local %d -> remote %d)", server.id, server.ssh_host, server.local_port, server.remote_port)
         tunnel.start()
@@ -1359,6 +1474,36 @@ class RemoteServerManager:
             self.inference_tunnels[server.id] = inference
             logger.info("ssh tunnel starting for %s (%s, reverse forward to the inference proxy)", inference.label, server.ssh_host)
             inference.start()
+
+    async def _keep_ssh_alias(self, remote_id: str, route: SSHRoute) -> None:
+        """Point `ssh <name>` at the route the remote's main tunnel resolved; a failure leaves the tunnel alone."""
+        server = self.servers.get(remote_id)
+        if server is None:
+            return
+        # A Host block named like a host the hub dials would take over the hub's own connections to it (its
+        # `ssh -G` and tunnels read the alias first); `ssh <name>` reaches such a host as it is anyway.
+        dialed = {entry.ssh_host.split("@")[-1] for entry in [*self.servers.values(), *self.forwards.values()]}
+        if server.name in dialed:
+            remove_ssh_alias(server.name)
+            return
+        # Two remotes of one name would take turns in one file.
+        if not SSH_ALIAS_RE.fullmatch(server.name) or sum(other.name == server.name for other in self.servers.values()) > 1:
+            logger.info("no ssh alias for remote %s: the name is not a host alias, or another remote has it too", server.name)
+            return
+        with suppress(OSError):
+            first_line = (SSH_ALIAS_DIR / server.name).read_text("utf-8").partition("\n")[0]
+            # Another server's file of this name stays. The desktop app's first line names its server's SSH host
+            # (electron/src/main/ssh-hosts.ts); the hub replaces such a file for the same remote.
+            if not first_line.startswith(SSH_ALIAS_MARKER) and f"(SSH host {server.ssh_host})" not in first_line:
+                logger.info("no ssh alias for remote %s: %s belongs to another server", server.name, SSH_ALIAS_DIR / server.name)
+                return
+        try:
+            content = await ssh_alias_content(server.name, server.ssh_host, route)
+            # Renamed or removed meanwhile: the newer entry writes its own.
+            if self.servers.get(remote_id) is server:
+                write_ssh_alias(server.name, content)
+        except Exception as exc:  # noqa: BLE001 - the tunnel awaits this; an alias must never stop it
+            logger.warning("ssh alias for %s not written: %s", server.name, exc)
 
     def _ensure_forward(self, forward: SSHForward) -> None:
         if not self.manage_tunnels:
@@ -1400,7 +1545,13 @@ class RemoteServerManager:
     def _save(self) -> None:
         save_registry(self.path, list(self.servers.values()))
 
+    def _unshadow(self, ssh_host: str) -> None:
+        """Remove the hub's alias named like a host the hub is about to dial (see _keep_ssh_alias)."""
+        if self.ssh_aliases:
+            remove_ssh_alias(ssh_host.split("@")[-1])
+
     async def add(self, request: RemoteServerCreate) -> RemoteServer:
+        self._unshadow(request.ssh_host)
         server = RemoteServer(
             id=secrets.token_hex(6),
             name=request.name or request.ssh_host,
@@ -1425,6 +1576,8 @@ class RemoteServerManager:
             if tunnel is not None:
                 await tunnel.stop()
         self._save()
+        if self.ssh_aliases and all(other.name != server.name for other in self.servers.values()):
+            remove_ssh_alias(server.name)
 
     def reorder(self, ids: list[str]) -> None:
         """The listed servers take this order. A client lists what it has synced so far: servers it does not
@@ -1442,11 +1595,18 @@ class RemoteServerManager:
         if server is None:
             raise HTTPException(status_code=404, detail="Unknown remote server.")
         changes = {key: value for key, value in request.model_dump(exclude_none=True).items() if getattr(server, key) != value}
+        if changes.keys() == {"hidden"}:
+            # Only what clients list changes. The entry stays the same object, so the mail relay keeps its end
+            # for it: cross_server_mail.Relay.refresh drops and probes again an entry that was replaced.
+            server.hidden = changes["hidden"]
+            self._save()
+            return server, None
         if "ssh_host" in changes and request.install_dir is None:
             try:
                 changes["install_dir"] = default_install_dir(changes["ssh_host"])
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from None
+        previous_name = server.name
         server = server.model_copy(update=changes)
         moved = "ssh_host" in changes or "install_dir" in changes
         # load-bearing order: start_deploy raises (409 busy, 503 no ssh) before the registry
@@ -1454,11 +1614,16 @@ class RemoteServerManager:
         job = self.start_deploy(None, redeploy_id=remote_id, keep_port=False) if moved else None
         self.servers[remote_id] = server
         self._save()
+        if "name" in changes and self.ssh_aliases and all(other.name != previous_name for other in self.servers.values()):
+            remove_ssh_alias(previous_name)
         if moved:
             self._ensure_tunnel(server)
         elif remote_id in self.tunnels:
             # A rename keeps the live forward; restarting it would drop every connection through it.
             self.tunnels[remote_id].server = server
+            # So the alias takes the new name from the route that forward resolved.
+            if "name" in changes and self.ssh_aliases and (route := self.tunnels[remote_id]._route) is not None:
+                asyncio.create_task(self._keep_ssh_alias(remote_id, route))
         return server, job
 
     async def probe_health(self, server: RemoteServer) -> dict[str, Any] | None:
@@ -1634,6 +1799,7 @@ class RemoteServerManager:
 
             if request is not None and request.password and ssh_host.startswith(("oci@", "aws@", "osmo@")):
                 raise RuntimeError("oci@, aws@ and osmo@ targets are reached through the cluster CLI; leave the password empty.")
+            self._unshadow(ssh_host)
             job.progress("connect", f"Probing {ssh_host}…")
             route = await ssh_route(ssh_host)
             if request is not None and request.password:
@@ -1885,6 +2051,8 @@ def capability(manager: RemoteServerManager) -> dict[str, Any]:
         "ssh_available": shutil.which("ssh") is not None or Path("/usr/bin/ssh").exists(),
         # Registry order: a client reconciles when this changes, which a reorder elsewhere does without changing the count.
         "ids": list(manager.servers),
+        # Likewise for a remote hidden or shown from another client.
+        "hidden": [remote_id for remote_id, server in manager.servers.items() if server.hidden],
     }
 
 
@@ -2117,3 +2285,15 @@ def register_remote_server_routes(
         finally:
             with suppress(Exception):
                 await upstream.close()
+
+
+if __name__ == "__main__":
+    # The ProxyCommand ssh_alias_content writes for an oci@ or aws@ remote: Sky's own command, run in the
+    # environment the hub's route sets for it.
+    if len(sys.argv) != 4 or sys.argv[1] != "proxy-command":
+        sys.exit("usage: remote_servers.py proxy-command <oci@cluster|aws@cluster> <command>")
+    try:
+        proxy_route = asyncio.run(ssh_route(sys.argv[2]))
+    except OSError as exc:
+        sys.exit(f"{sys.argv[2]}: {exc}")
+    os.execve("/bin/sh", ["/bin/sh", "-c", f"exec {sys.argv[3]}"], proxy_route.env)

@@ -102,15 +102,15 @@ export function hubProxyBaseURL(serverURL: string): string | null {
  * Diffs the saved profiles against the hub's remote-server registry. Only
  * proxied profiles of this hub can be removed; existing names are never
  * rewritten, and profiles of other hubs or direct servers are untouched.
- * A saved remote follows the hub's SSH host for it (a move or another device's edit).
+ * A saved remote follows the hub's SSH host and hidden flag for it (a move, a hide, or another device's edit).
  */
 export function reconcileHubProfiles(
-  profiles: readonly Pick<StoredServerProfile, 'id' | 'serverURL' | 'sshHost'>[],
+  profiles: readonly Pick<StoredServerProfile, 'id' | 'serverURL' | 'sshHost' | 'hidden'>[],
   hubURL: string,
-  remotes: readonly Pick<RemoteServer, 'name' | 'proxy_path' | 'ssh_host'>[],
+  remotes: readonly Pick<RemoteServer, 'name' | 'proxy_path' | 'ssh_host' | 'hidden'>[],
 ): {
-  create: { name: string; serverURL: string; sshHost: string }[]
-  update: { id: string; sshHost: string }[]
+  create: { name: string; serverURL: string; sshHost: string; hidden?: boolean }[]
+  update: { id: string; sshHost: string; hidden: boolean }[]
   removeIds: string[]
 } {
   const hub = normalizeServerURL(hubURL)
@@ -120,10 +120,12 @@ export function reconcileHubProfiles(
   return {
     create: [...registered]
       .filter(([serverURL]) => !saved.has(serverURL))
-      .map(([serverURL, remote]) => ({ name: remote.name, serverURL, sshHost: remote.ssh_host })),
+      .map(([serverURL, remote]) => ({ name: remote.name, serverURL, sshHost: remote.ssh_host, ...(remote.hidden ? { hidden: true } : {}) })),
     update: profiles.flatMap(profile => {
       const remote = registered.get(normalizeServerURL(profile.serverURL))
-      return remote && remote.ssh_host !== profile.sshHost ? [{ id: profile.id, sshHost: remote.ssh_host }] : []
+      return remote && (remote.ssh_host !== profile.sshHost || Boolean(remote.hidden) !== Boolean(profile.hidden))
+        ? [{ id: profile.id, sshHost: remote.ssh_host, hidden: Boolean(remote.hidden) }]
+        : []
     }),
     removeIds: profiles
       .filter(profile => {
@@ -197,6 +199,7 @@ export function createStoredServerProfile(
     createdAt: timestamp,
     updatedAt: timestamp,
     ...(input.sshHost ? { sshHost: input.sshHost } : {}),
+    ...(input.hidden ? { hidden: true } : {}),
   }
 }
 
@@ -366,6 +369,7 @@ function normalizeStoredServerProfile(value: unknown, timestamp: string, index: 
     createdAt,
     updatedAt: cleanTimestamp(value.updatedAt) || createdAt,
     ...(typeof value.sshHost === 'string' && value.sshHost ? { sshHost: value.sshHost } : {}),
+    ...(value.hidden === true ? { hidden: true } : {}),
   }
 }
 

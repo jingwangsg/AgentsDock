@@ -92,6 +92,7 @@ function AppShellContent() {
   const cancelHubDeploy = useAppStore(state => state.cancelHubDeploy)
   const redeployHubRemote = useAppStore(state => state.redeployHubRemote)
   const moveHubRemote = useAppStore(state => state.moveHubRemote)
+  const setHubRemoteHidden = useAppStore(state => state.setHubRemoteHidden)
   const updateServerCli = useAppStore(state => state.updateServerCli)
   const updateAndRedeployAll = useAppStore(state => state.updateAndRedeployAll)
   const [mobileChatOpen, setMobileChatOpen] = useState(false)
@@ -135,6 +136,7 @@ function AppShellContent() {
     lastConnectionError: profile.lastConnectionError,
     serverVersion: profile.serverVersion,
     sshHost: profile.sshHost,
+    hidden: profile.hidden,
   })), [profiles])
   const showServerSetup = shouldPresentServerSetup({ initialized, connected, serverConfigured, serverURL, setupDismissed })
   const canCancelPendingServerUpdate = pendingServerUpdate?.profileId === activeProfileId
@@ -464,6 +466,7 @@ function AppShellContent() {
       onCancelDeploy={cancelHubDeploy}
       onRedeployRemote={redeployHubRemote}
       onMoveRemote={moveHubRemote}
+      onSetRemoteHidden={setHubRemoteHidden}
       onUpdateCli={updateServerCli}
       onUpdateAll={updateAndRedeployAll}
     />

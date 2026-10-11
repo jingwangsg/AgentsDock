@@ -32,6 +32,11 @@ const moveRequests: unknown[] = []
 let moveJob: { error: string | null; hold: boolean } = { error: null, hold: false }
 let moveJobPolls = 0
 const cancelRequests: string[] = []
+// The remotes the hub lists as hidden, and the bodies of the hide/show requests it received.
+const hiddenRemotes = new Set<string>()
+const hideRequests: unknown[] = []
+// A hub from before hiding: it ignores the flag and answers without it.
+let hubIgnoresHidden = false
 
 function mockServer(route: (path: string) => { key: string; path: string } | null): Server {
   return createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -46,13 +51,13 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
     if (requiredToken && target.key !== 'direct' && presented !== requiredToken) return reply(401, { detail: 'invalid token' })
     if (target.path === '/api/health') {
       if (healthDown.has(target.key)) return reply(502, { detail: 'remote_unreachable' })
-      const capabilities = target.key === 'hub' && hubRemotes ? { capabilities: { remote_servers_v1: { available: true, ids: hubRemotes } } } : {}
+      const capabilities = target.key === 'hub' && hubRemotes ? { capabilities: { remote_servers_v1: { available: true, ids: hubRemotes, hidden: hubRemotes.filter(id => hiddenRemotes.has(id)) } } } : {}
       let instance = instances[target.key]
       if (target.key === 'hub' && staleHubInstanceAnswers > 0) { staleHubInstanceAnswers -= 1; instance = 'hub-instance-1' }
       return reply(200, { ok: true, server_identity: identities[target.key], server_instance_id: instance, server_version: 'hub-identity-test', api_contract_version: 8, active_sessions: [], active: running[target.key] ?? [], ...capabilities })
     }
     if (request.method === 'GET' && target.path === '/api/admin/remote-servers') {
-      const listed = (hubRemotes ?? []).map(id => ({ id, name: id, ssh_host: sshHosts[id] ?? id, install_dir: '', remote_port: 0, local_port: 0, created_at: '2026-09-30T10:00:00Z', proxy_path: `/api/remote/${id}`, tunnel: null }))
+      const listed = (hubRemotes ?? []).map(id => ({ id, name: id, ssh_host: sshHosts[id] ?? id, install_dir: '', remote_port: 0, local_port: 0, created_at: '2026-09-30T10:00:00Z', proxy_path: `/api/remote/${id}`, tunnel: null, hidden: hiddenRemotes.has(id) }))
       listings += 1
       if (failNextListing) {
         failNextListing = false
@@ -72,7 +77,14 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
       let body = ''
       request.on('data', chunk => { body += chunk })
       request.on('end', () => {
-        const move = JSON.parse(body) as { ssh_host?: string }
+        const move = JSON.parse(body) as { ssh_host?: string; hidden?: boolean }
+        if (move.hidden !== undefined) {
+          hideRequests.push(move)
+          if (hubIgnoresHidden) return reply(200, { server: { id: 'r1' }, job_id: null })
+          if (move.hidden) hiddenRemotes.add('r1')
+          else hiddenRemotes.delete('r1')
+          return reply(200, { server: { id: 'r1', hidden: hiddenRemotes.has('r1') }, job_id: null })
+        }
         moveRequests.push(move)
         if (move.ssh_host) sshHosts.r1 = move.ssh_host
         reply(200, { server: null, job_id: 'job-move' })
@@ -328,6 +340,24 @@ try {
   assert.deepEqual(moveRequests.at(-1), { install_dir: '/data/agentsdock' })
   moveJob = { error: null, hold: false }
   await assert.rejects(useAppStore.getState().moveHubRemote('direct', { sshHost: 'elsewhere' }, () => undefined), /Only servers the hub manages/)
+  // Hidden on another device: the hub's ids stay the same and only its hidden ids change, so the inactive hub's
+  // probe mirrors the flag. The active remote stays in use.
+  await useAppStore.getState().probeInactiveProfiles()
+  hiddenRemotes.add('r1')
+  await useAppStore.getState().probeInactiveProfiles()
+  assert.equal(remoteProfile()?.hidden, true)
+  assert.equal((await savedProfile('remote'))?.hidden, true)
+  assert.equal(useAppStore.getState().activeProfileId, 'remote')
+  // Shown again from this device: the hub gets only the flag, starts no job, and the profile follows.
+  await useAppStore.getState().setHubRemoteHidden('remote', false)
+  assert.deepEqual(hideRequests, [{ hidden: false }])
+  assert.equal(remoteProfile()?.hidden, false)
+  assert.ok(!(await savedProfile('remote'))?.hidden)
+  await assert.rejects(useAppStore.getState().setHubRemoteHidden('direct', true), /Only servers the hub manages/)
+  hubIgnoresHidden = true
+  await assert.rejects(useAppStore.getState().setHubRemoteHidden('remote', true), /This hub cannot hide servers yet/)
+  assert.equal(remoteProfile()?.hidden, false)
+  hubIgnoresHidden = false
   // The hub dropped the active remote: its profile stays while it is in use, and the probe keeps reading the registry.
   hubRemotes = []
   await useAppStore.getState().probeInactiveProfiles()

@@ -1569,7 +1569,7 @@ export function ChatTargetPicker({ visible, width, query, sourceSessionId, suppo
     if (!crossServerMailAvailable || crossServerSnapshot?.key !== crossServerKey) return null
     const local = crossServerSnapshot.servers.find(server => server.server_identity === serverIdentity)
     // The hub lists only servers that can pair; without this one, nothing here can.
-    return local ? { localTag: local.name, servers: crossServerSnapshot.servers.filter(server => server !== local), createChats: crossServerSnapshot.createChats } : null
+    return local ? { localTag: local.name, servers: crossServerSnapshot.servers.filter(server => server !== local && !server.hidden), createChats: crossServerSnapshot.createChats } : null
   }, [crossServerKey, crossServerMailAvailable, crossServerSnapshot, serverIdentity])
   const localTargets = useAppStore(useShallow(state => visible ? state.sessions.filter(candidate => (
     candidate.id !== sourceSessionId

@@ -100964,7 +100964,9 @@ agentsdock_canvas.register_canvas_routes(
     session_events=lambda session_id: iter_session_events(session_id), start_turn=start_canvas_comment_turn,
 )
 # Hub for SSH-only remote servers: registry, tunnels, deploy, and the /api/remote/{id} proxy.
-REMOTE_SERVERS = remote_servers.RemoteServerManager(STATE_DIR, source_dir=SERVER_ROOT)
+# Only the hub on the default state directory keeps the remotes' ssh aliases: another instance, such as an
+# isolated test hub, must not rewrite or remove them.
+REMOTE_SERVERS = remote_servers.RemoteServerManager(STATE_DIR, source_dir=SERVER_ROOT, ssh_aliases=STATE_DIR == Path.home() / ".agentsdock")
 remote_servers.register_remote_server_routes(
     app, manager=REMOTE_SERVERS, authorize_admin=require_native_admin_control, websocket_authorized=websocket_authorized,
     # Update & redeploy all: the hub's own running chats (as /api/health lists them), CLI updates and restart.
@@ -101368,7 +101370,9 @@ async def list_cross_server_chats() -> dict[str, Any]:
     results = await asyncio.gather(*(end.chats() for end in ends), return_exceptions=True)
     return {
         "servers": [
-            {"server_identity": end.identity, "name": end.name, "chats": chats}
+            {"server_identity": end.identity, "name": end.name, "chats": chats,
+             # Clients offer no new pair or chat on a hidden remote, though it may be the server a client is on.
+             "hidden": isinstance(end, cross_server_mail.RemoteEnd) and end.server.hidden}
             # An unreachable server is left out: only live servers' chats can be picked.
             for end, chats in zip(ends, results) if not isinstance(chats, BaseException)
         ],

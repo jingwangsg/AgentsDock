@@ -84,6 +84,7 @@ describe('ServerManagement', () => {
   const remoteMove = vi.fn()
   const remoteRedeploy = vi.fn()
   const remoteUpdateAll = vi.fn()
+  const remoteSetHidden = vi.fn()
   const progressListeners = new Set<(value: ServerUpdateAllProgress) => void>()
   const pairingUrl = vi.fn()
   const copyToken = vi.fn()
@@ -104,6 +105,7 @@ describe('ServerManagement', () => {
     remoteMove.mockReset().mockResolvedValue(undefined)
     remoteRedeploy.mockReset()
     remoteUpdateAll.mockReset()
+    remoteSetHidden.mockReset().mockResolvedValue(undefined)
     progressListeners.clear()
     pairingUrl.mockReset().mockResolvedValue('http://nvmac.tail46daa8.ts.net:7850')
     copyToken.mockReset().mockResolvedValue(true)
@@ -117,7 +119,7 @@ describe('ServerManagement', () => {
       configurable: true,
       value: {
         servers: { list, update, remove, reorder },
-        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove, move: remoteMove, redeploy: remoteRedeploy, updateAll: remoteUpdateAll },
+        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove, move: remoteMove, redeploy: remoteRedeploy, updateAll: remoteUpdateAll, setHidden: remoteSetHidden },
         hub: { pairingUrl, copyToken, startLocalServer, restartLocalServer },
         events: { on: (name: string, listener: (value: ServerUpdateAllProgress) => void) => {
           if (name !== 'remote-servers:update-all-progress') return () => undefined
@@ -241,6 +243,24 @@ describe('ServerManagement', () => {
     expect(on).toHaveAttribute('aria-pressed', 'true')
     await user.click(on)
     await waitFor(() => expect(update).toHaveBeenCalledWith('osmo', { sshForward: false }))
+  })
+
+  it('hides a hub remote from the server switcher and shows it again, keeping its row here', async () => {
+    list.mockResolvedValue([hub, { ...osmo, hidden: true }])
+    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })
+    const user = userEvent.setup()
+    const view = render(<ServerManagement />)
+
+    expect(screen.getAllByRole('button', { name: /server switcher/ })).toHaveLength(1) // the hub row has none
+    await user.click(screen.getByRole('button', { name: 'Hide OSMO from the server switcher' }))
+    await waitFor(() => expect(remoteSetHidden).toHaveBeenCalledWith('osmo', true))
+    await waitFor(() => expect(screen.getByText('Hidden')).toBeInTheDocument())
+
+    remoteSetHidden.mockRejectedValueOnce(new Error('This hub cannot hide servers yet: restart it on a newer AgentsServer.'))
+    await user.click(screen.getByRole('button', { name: 'Show OSMO in the server switcher' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('This hub cannot hide servers yet')
+    expect(remoteSetHidden).toHaveBeenLastCalledWith('osmo', false)
+    view.unmount()
   })
 
   it('removes a hub-managed remote through the hub and refreshes the list', async () => {

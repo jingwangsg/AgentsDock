@@ -1,5 +1,10 @@
 import type { PublicServerProfile } from '@shared/types'
 
+/** The servers offered for switching: a remote hidden on the hub stays out, unless it is the one in use. */
+export function listedServerProfiles<T extends Pick<PublicServerProfile, 'id' | 'hidden'>>(profiles: readonly T[], activeProfileId: string | null): T[] {
+  return profiles.filter(profile => !profile.hidden || profile.id === activeProfileId)
+}
+
 export function adjacentServerProfileId(
   profiles: readonly Pick<PublicServerProfile, 'id'>[],
   activeProfileId: string | null,
