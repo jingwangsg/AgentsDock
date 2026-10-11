@@ -1,5 +1,47 @@
 # Public development log
 
+## 2026-10-12 — The chat timeline recovers when its virtual list leaves the viewport empty (desktop)
+
+- Reported on a long Codex chat: scrolling to the end landed in a large empty
+  area below the last visible text, and the jump-to-latest arrow stayed up.
+  The screenshot showed the first activity segment of a running turn, closed
+  after an incoming agent message split the turn's activity, with its
+  commentary paragraphs ending a third of the way down the viewport and
+  nothing drawn below; the rows appended after it (the message, the next
+  segments) were never mounted, and the scroller still held their estimated
+  height, so the arrow had something to point at. A saved reading position
+  from an earlier chat recorded the mirror image: the first rendered row
+  started several thousand pixels below the viewport top. In both states the
+  virtual list (react-virtuoso) had stopped tracking the viewport and did not
+  recover on its own. Replaying the chat's full event stream into the real
+  renderer, with the reader's scroll, leave, return and expand actions
+  interleaved, at normal speed and under CPU throttling, and twenty minutes
+  of randomized reader actions on the live chat, all converged within a
+  frame, so the trigger is still unidentified.
+- The timeline now checks, whenever it captures the reading position (after
+  rows change and when scrolling stops), whether the rendered rows end at
+  least 64px above the viewport bottom while the list still reserves space
+  for unmounted rows below them, or start that far below the viewport top
+  while it reserves space for rows above. A gap that survives a 300ms
+  re-check remounts the virtual list at the current anchor (the same path a
+  replaced history uses), which re-measures every row; the main-process log
+  records the scroll metrics, the reserved space and the last rows under
+  `virtual list left the viewport uncovered; remounting` so the next
+  occurrence carries its own evidence. At most three remounts per opened
+  chat. The list's initial positioning pass, a chat shorter than the
+  viewport, the history header and the footer at the real end are not gaps.
+- Verified: unit tests for the gap predicate (the recorded field state, its
+  mirror, a covered viewport, the footer at the end, a short chat, the
+  history header); the Timeline component and timeline helper test files;
+  type check; and in the built app against the real chat, with the virtual
+  list's scroll tracking frozen so it keeps its rows while the viewport
+  moves: scrolling up into reserved space (rows 1231px below the viewport
+  top) and scrolling down into it (rows ending 1117px above the viewport
+  bottom with 2095px still reserved) were each detected and the list was
+  remounted within half a second, rows covering the viewport again and the
+  log line recorded. Not exercised: the original trigger, which did not
+  reproduce.
+
 ## 2026-10-11 — Desktop package 122 and Android build 66 (local package and APK)
 
 - Package the entries recorded since package 121 and Android build 65: `ssh
