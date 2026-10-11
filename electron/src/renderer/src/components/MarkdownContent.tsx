@@ -17,7 +17,7 @@ import { internalWorkspaceLinkURL } from '@shared/workspace-link-url'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import type { AgentFile, ChatReference, TeamReference } from '@shared/types'
-import { chatReferenceDisplayText, parseStoredChatReferences } from '../lib/chat-references'
+import { chatReferenceDisplayText, liveChatReferenceTitle, parseStoredChatReferences } from '../lib/chat-references'
 import { saveAgentFile } from '../lib/file-actions'
 import { parseStoredTeamReferences, teamReferenceText } from '../lib/team-references'
 import { openTeamMessageLink, parseTeamMessageLink } from '../lib/team-message-links'
@@ -76,6 +76,12 @@ export const MarkdownContent = memo(function MarkdownContent({
     () => prepareInlineChatReferences(text, inlineChatReferences, inlineTeamReferences, sessionId),
     [inlineChatReferences, inlineTeamReferences, sessionId, text]
   )
+  // Chips name their chat by its current title; the markers keep the sent text for positions.
+  // One joined string: the selector returns a stable primitive, so only a title change re-renders.
+  const liveTitles = useAppStore(state => preparedChatReferences.markers
+    .map(marker => marker.kind === 'chat' ? liveChatReferenceTitle(marker.reference, state.sessions, sessionId) : '')
+    .join('\u0000'))
+  const chatTitles = useMemo(() => liveTitles.split('\u0000'), [liveTitles])
   const normalized = useMemo(
     // After reference preparation, whose markers are matched against the original text.
     () => normalizeMathDelimiters(stripDecorativeEmojiPrefixes(rewriteCodexDirectives(preparedChatReferences.text))),
@@ -237,18 +243,20 @@ export const MarkdownContent = memo(function MarkdownContent({
             : teamReferenceTitle(marker.reference, uiLocale)
           return <span className={className} title={title} aria-label={title}>{children}</span>
         }
+        const chatTitle = (referenceIndex === null ? '' : chatTitles[referenceIndex]) || marker.reference.display_title_snapshot
+        const label = `${marker.displayText.startsWith('@@') ? '@@' : '@'}${chatTitle}`
         const remote = marker.reference.target_kind === 'secure_peer'
         const title = insideMarkdownLink
-          ? `${marker.displayText} · Route hint inside link text`
+          ? `${label} · Route hint inside link text`
           : remote
-          ? `${marker.displayText} · Secure route on paired server`
-          : `${marker.displayText} · Route hint`
+          ? `${label} · Secure route on paired server`
+          : `${label} · Route hint`
         if (insideMarkdownLink) {
-          return <span className={className} title={title}>{children}</span>
+          return <span className={className} title={title}>{label}</span>
         }
         // Only a chat on this server can be opened from its chip.
         if (marker.reference.target_kind !== undefined || !onChatReferenceClick) {
-          return <span className={className} title={title} aria-label={title}>{children}</span>
+          return <span className={className} title={title} aria-label={title}>{label}</span>
         }
         const activate = (event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>) => {
           event.preventDefault()
@@ -260,12 +268,12 @@ export const MarkdownContent = memo(function MarkdownContent({
           role="link"
           tabIndex={0}
           title={title}
-          aria-label={t("ui.MarkdownContent.route_hint_for_0284c82", { "chat": String(marker.reference.display_title_snapshot) }, uiLocale)}
+          aria-label={t("ui.MarkdownContent.route_hint_for_0284c82", { "chat": chatTitle }, uiLocale)}
           onClick={activate}
           onKeyDown={event => {
             if (event.key === 'Enter' || event.key === ' ') activate(event)
           }}
-        >{children}</span>
+        >{label}</span>
       }
       return className?.split(/\s+/).includes('katex-error')
         ? <code className="math-fallback" title={t("ui.MarkdownContent.this_equation_could_not_be_rendered_0390d07", undefined, uiLocale)}>{children}</code>
@@ -273,7 +281,7 @@ export const MarkdownContent = memo(function MarkdownContent({
     },
     table: ({ children }) => <MarkdownTable>{children}</MarkdownTable>,
     input: props => <input {...props} readOnly />
-  }), [link, onChatReferenceClick, preparedChatReferences.markers, resolveImageSource, restoredNormalized, sessionId, shown])
+  }), [chatTitles, link, onChatReferenceClick, preparedChatReferences.markers, resolveImageSource, restoredNormalized, sessionId, shown])
   return (
     <div className={`markdown ${compact ? 'compact' : ''}`}>
       <MarkdownLocaleContext.Provider value={uiLocale}>

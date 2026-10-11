@@ -3,6 +3,7 @@ import type { Event } from '../types'
 import {
   inlineRoutePresentation,
   inlineRouteReferenceIsInteractive,
+  liveChatReferenceTitle,
   prepareInlineRouteMarkdown,
   restoreInlineRouteMarkerText,
   splitInlineRouteMarkerText,
@@ -122,3 +123,15 @@ assert.equal(
   0,
   'a route beyond the folded preview must remain noninteractive until expansion',
 )
+
+// A chip names its chat by the current title while this server lists both chats, else by the sent one.
+const liveSessions = [{ id: 'source', title: 'Source' }, { id: 'alpha', title: 'Alpha plan' }]
+const alphaReference = events[0].chat_references![0]
+assert.equal(liveChatReferenceTitle(alphaReference, liveSessions, 'source'), 'Alpha plan')
+assert.equal(liveChatReferenceTitle({ ...alphaReference, session_id: 'gone' }, liveSessions, 'source'), 'Alpha')
+assert.equal(liveChatReferenceTitle(alphaReference, [{ id: 'source', title: 'Source' }, { id: 'alpha', title: ' ' }], 'source'), 'Alpha')
+assert.equal(liveChatReferenceTitle(alphaReference, liveSessions, 'elsewhere'), 'Alpha')
+assert.equal(liveChatReferenceTitle({ ...alphaReference, target_kind: 'secure_peer' }, liveSessions, 'source'), 'Alpha')
+// A current title that would not pass as a chip (leading @, control characters) is not shown.
+assert.equal(liveChatReferenceTitle(alphaReference, [{ id: 'source', title: 'Source' }, { id: 'alpha', title: '@ops' }], 'source'), 'Alpha')
+assert.equal(liveChatReferenceTitle(alphaReference, [{ id: 'source', title: 'Source' }, { id: 'alpha', title: 'a\u0000b' }], 'source'), 'Alpha')

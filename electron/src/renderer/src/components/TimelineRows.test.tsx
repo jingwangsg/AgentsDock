@@ -502,7 +502,7 @@ describe('timeline pin state', () => {
     expect(screen.getByText('AgentsDock Context Digest')).not.toBeVisible()
   })
 
-  it('renders immutable sent chat references as clickable navigation pills', async () => {
+  it('names a sent chat reference pill by the chat\'s current title and opens that chat', async () => {
     const selectSession = vi.fn().mockResolvedValue(undefined)
     useAppStore.setState({
       selectSession,
@@ -525,7 +525,8 @@ describe('timeline pin state', () => {
     }
 
     render(<TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Agent may send to Training' }))
+    // The stored record keeps the sent title; the pill shows what the chat is called now.
+    fireEvent.click(screen.getByRole('button', { name: 'Agent may send to Renamed target' }))
 
     await waitFor(() => expect(selectSession).toHaveBeenCalledWith('chat-2'))
   })

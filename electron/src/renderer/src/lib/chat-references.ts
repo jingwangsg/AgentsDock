@@ -184,6 +184,25 @@ export function chatReferenceDisplayText(
     : chatReferenceText(reference)
 }
 
+/**
+ * The name a sent reference shows: the chat's current title while this server lists both
+ * chats, else the title it had when sent. The record names its chat by id; the snapshot is
+ * only the name at send time, `New agent` for a chat created on send.
+ */
+export function liveChatReferenceTitle(
+  reference: Pick<ChatReference, 'session_id' | 'display_title_snapshot' | 'target_kind'>,
+  sessions: readonly Pick<Session, 'id' | 'title'>[],
+  sourceSessionId?: string
+): string {
+  if (reference.target_kind !== undefined || !sourceSessionId || !sessions.some(session => session.id === sourceSessionId)) {
+    return reference.display_title_snapshot
+  }
+  const title = sessions.find(session => session.id === reference.session_id)?.title.trim()
+  // The same rules a snapshot passed: no leading @ (it would read as a Team Network
+  // mention) and no control characters (the title selectors join on NUL).
+  return title && !title.startsWith('@') && !/[\u0000-\u001f\u007f]/.test(title) ? title : reference.display_title_snapshot
+}
+
 export function supportedCrossChatTargetBackends(health: Health | null | undefined): Backend[] {
   if (!crossChatHandoffsAvailable(health)) return []
   const advertised = health?.capabilities?.cross_chat_handoffs_v1?.supported_target_backends
@@ -283,9 +302,9 @@ export function insertCrossServerChatReference(
 
 /**
  * The chat does not exist yet: the composer creates it on send and points this
- * reference at it. A chat on another server is tagged like any remote chip; the
- * created chat is then named "New agent" too, because the hub attaches the user's
- * instruction to its mail only when the chip text names the paired chat's title.
+ * reference at it. A chat on another server is tagged like any remote chip and its
+ * pair is labelled "New agent" on this side, because the hub attaches the user's
+ * instruction to its mail only when the chip text names that label.
  */
 export function insertNewAgentChatReference(
   text: string,

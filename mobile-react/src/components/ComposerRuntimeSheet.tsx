@@ -48,7 +48,7 @@ export function ComposerRuntimeSheet({ section, models, efforts, model, effort, 
   </Modal>
 }
 
-function OptionRow({ option, selected, onPress, testID }: { option: RuntimeOption; selected: boolean; onPress: () => void; testID: string }) {
+export function OptionRow({ option, selected, onPress, testID }: { option: RuntimeOption; selected: boolean; onPress: () => void; testID: string }) {
   const colors = usePalette()
   const locked = Boolean(option.locked)
   const detail = locked ? option.locked_reason?.trim() : option.description?.trim()

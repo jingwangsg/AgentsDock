@@ -10,6 +10,7 @@ import {
   chatReferenceText,
   currentRouteHintReference,
   defaultCrossChatAction,
+  liveChatReferenceTitle,
   insertChatReference,
   insertCrossServerChatReference,
   insertNewAgentChatReference,
@@ -591,5 +592,26 @@ describe('chat references', () => {
     expect(validChatReferences(text, [{ ...marker, new_agent: undefined }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...marker, session_id: 'sess_real' }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...marker, target_server_identity: 'srv-l40' }], 'source-chat')).toEqual([])
+  })
+})
+
+describe('liveChatReferenceTitle', () => {
+  const sessions = [{ id: 'source', title: 'Source' }, { id: 'alpha', title: 'Alpha plan' }]
+  const reference = { session_id: 'alpha', display_title_snapshot: 'New agent' }
+
+  it('shows the chat\'s current title while this server lists both chats', () => {
+    expect(liveChatReferenceTitle(reference, sessions, 'source')).toBe('Alpha plan')
+  })
+
+  it('keeps the sent title for a remote chat, an unknown chat, a blank title, or another server\'s list', () => {
+    expect(liveChatReferenceTitle({ ...reference, target_kind: 'secure_peer' as const }, sessions, 'source')).toBe('New agent')
+    expect(liveChatReferenceTitle({ ...reference, session_id: 'gone' }, sessions, 'source')).toBe('New agent')
+    expect(liveChatReferenceTitle(reference, [{ id: 'source', title: 'Source' }, { id: 'alpha', title: ' ' }], 'source')).toBe('New agent')
+    expect(liveChatReferenceTitle(reference, sessions, 'elsewhere')).toBe('New agent')
+  })
+
+  it('keeps the sent title when the current one would not pass as a chip', () => {
+    expect(liveChatReferenceTitle(reference, [{ id: 'source', title: 'Source' }, { id: 'alpha', title: '@ops' }], 'source')).toBe('New agent')
+    expect(liveChatReferenceTitle(reference, [{ id: 'source', title: 'Source' }, { id: 'alpha', title: 'a\u0000b' }], 'source')).toBe('New agent')
   })
 })

@@ -12,8 +12,10 @@ import {
   exactQueuedDeliverySkipAvailable,
   insertChatReference,
   insertCrossServerChatReference,
+  insertNewAgentChatReference,
   interactiveClientCapabilities,
   localChatReferenceContractSupported,
+  NEW_AGENT_REFERENCE_ID,
   parseStoredChatReferences,
   reconcileChatReferences,
   removeChatReferencesForSession,
@@ -277,5 +279,30 @@ assert.deepEqual(validChatReferences(crossServerText, [{ ...crossServerBase, tar
 assert.deepEqual(parseStoredChatReferences([crossServerBase], crossServerText, 'source-chat'), [])
 // It is never a local route grant, even with grant intent on a full v7 server.
 assert.equal(localChatReferenceContractSupported(hardenedV7, { ...crossServer.reference, grant_intent: true }), false)
+
+// "Create new agent" is one placeholder chip per message until the composer creates the chat on send.
+const newAgentSettings = { model: 'gpt-5-codex', effort: 'high', server_identity: null, folder: 'Research' }
+const newAgent = insertNewAgentChatReference('ask @cre', chatMentionTrigger('ask @cre', 8)!, newAgentSettings)
+assert.equal(newAgent.text, 'ask @New agent ')
+assert.deepEqual(newAgent.reference, {
+  session_id: NEW_AGENT_REFERENCE_ID, display_title_snapshot: 'New agent', source_text_start: 4, source_text_end: 14,
+  action: 'route', grant_intent: true, target_kind: 'new_agent', new_agent: newAgentSettings,
+})
+assert.deepEqual(validChatReferences(newAgent.text, [newAgent.reference], 'source-chat'), [newAgent.reference])
+assert.deepEqual(parseStoredChatReferences([newAgent.reference], newAgent.text, 'source-chat'), [newAgent.reference])
+const secondNewAgent = { ...newAgent.reference, source_text_start: newAgent.text.length, source_text_end: newAgent.text.length + 10 }
+assert.equal(validChatReferences(`${newAgent.text}@New agent`, [newAgent.reference, secondNewAgent], 'source-chat').length, 1)
+// On another server the chip carries the server tag like any remote chat; the hub has none.
+const remoteNewAgent = insertNewAgentChatReference('@', chatMentionTrigger('@', 1)!, { ...newAgentSettings, server_identity: 'srv-l40' }, 'osmo_dev_l40')
+assert.equal(remoteNewAgent.text, '@New agent · osmo_dev_l40 ')
+assert.equal(insertNewAgentChatReference('@', chatMentionTrigger('@', 1)!, { ...newAgentSettings, server_identity: 'srv-hub' }, '').text, '@New agent ')
+// A marker without grant intent, settings, the placeholder id, or with remote route fields is refused.
+const newAgentText = '@New agent'
+const newAgentBase: ChatReference = { session_id: NEW_AGENT_REFERENCE_ID, display_title_snapshot: 'New agent', source_text_start: 0, source_text_end: newAgentText.length, action: 'route', grant_intent: true, target_kind: 'new_agent', new_agent: { model: null, effort: null, server_identity: null, folder: 'General' } }
+assert.deepEqual(validChatReferences(newAgentText, [newAgentBase], 'source-chat'), [newAgentBase])
+assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, grant_intent: undefined }], 'source-chat'), [])
+assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: undefined }], 'source-chat'), [])
+assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, session_id: 'sess_real' }], 'source-chat'), [])
+assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, target_server_identity: 'srv-l40' }], 'source-chat'), [])
 
 console.log('cross-chat reference regressions passed')
