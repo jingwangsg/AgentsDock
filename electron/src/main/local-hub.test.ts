@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { PublicServerProfile, RemoteServer } from '../shared/types'
-import { hubRemoteId, hubRemoteProfileOrder, parseConfigEnv, planHubRemoteProfiles, readLocalHubToken } from './local-hub'
+import { hubRemoteId, hubRemoteProfileOrder, hubRemotesKey, parseConfigEnv, planHubRemoteProfiles, readLocalHubToken } from './local-hub'
 
 const HUB = 'http://127.0.0.1:7850'
 
@@ -70,13 +70,32 @@ describe('planHubRemoteProfiles', () => {
       profile('legacy', 'http://127.0.0.1:7851', 'osmo_9000'),
       profile('other-hub', 'http://10.0.0.5:7850/api/remote/zzz')
     ])
-    expect(plan).toEqual({ add: [], update: [{ id: 'p-keep', sshHost: 'osmo_9000' }], remove: ['p-stale'] })
+    expect(plan).toEqual({ add: [], update: [{ id: 'p-keep', sshHost: 'osmo_9000', hidden: false }], remove: ['p-stale'] })
+  })
+
+  it('mirrors the hub\'s hidden flag on new and existing profiles', () => {
+    const wasHidden = { ...profile('p-hidden', `${HUB}/api/remote/shown`, 'shown_host'), hidden: true }
+    const plan = planHubRemoteProfiles(HUB, [remote('shown'), remote('hide', { hidden: true }), remote('fresh', { hidden: true })], [
+      profile('hub', HUB), wasHidden, profile('p-hide', `${HUB}/api/remote/hide`, 'hide_host')
+    ])
+    expect(plan).toEqual({
+      add: [{ name: 'fresh', serverUrl: `${HUB}/api/remote/fresh`, sshHost: 'fresh_host', hidden: true }],
+      update: [{ id: 'p-hidden', sshHost: 'shown_host', hidden: false }, { id: 'p-hide', sshHost: 'hide_host', hidden: true }],
+      remove: []
+    })
   })
 
   it('is a no-op when profiles already mirror the registry', () => {
     const remotes = [remote('one'), remote('two')]
     const profiles = [profile('hub', HUB), profile('p1', `${HUB}/api/remote/one`, 'one_host'), profile('p2', `${HUB}/api/remote/two/`, 'two_host')]
     expect(planHubRemoteProfiles(`${HUB}/`, remotes, profiles)).toEqual({ add: [], update: [], remove: [] })
+  })
+})
+
+describe('hubRemotesKey', () => {
+  it('changes with the registry order and with which remotes are hidden, and reads a hub without hiding as none hidden', () => {
+    expect(hubRemotesKey(['one', 'two'])).toBe(hubRemotesKey(['one', 'two'], []))
+    expect(new Set([hubRemotesKey(['one', 'two']), hubRemotesKey(['two', 'one']), hubRemotesKey(['one', 'two'], ['two'])]).size).toBe(3)
   })
 })
 

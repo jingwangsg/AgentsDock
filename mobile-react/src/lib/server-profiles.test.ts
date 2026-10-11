@@ -92,6 +92,10 @@ const settingsWithoutCredentialVersion = JSON.parse(JSON.stringify(migrated.sett
 }
 delete settingsWithoutCredentialVersion.profiles[0].credentialVersion
 assertEqual(normalizeStoredProfileSettings(settingsWithoutCredentialVersion).profiles[0].credentialVersion, 1)
+// A hidden hub remote stays hidden across a restart; profiles saved before the flag existed are visible.
+const hiddenSettings = { ...migrated.settings, profiles: [{ ...migrated.settings.profiles[0], hidden: true }] }
+assertEqual(normalizeStoredProfileSettings(hiddenSettings).profiles[0].hidden, true)
+assertEqual('hidden' in normalizeStoredProfileSettings(migrated.settings).profiles[0], false)
 
 const secureSuffix = profileCredentialKeySuffix('profile/a ☃')
 assert(/^[A-Za-z0-9._-]+$/.test(secureSuffix), 'SecureStore suffix contains unsupported characters')
@@ -187,9 +191,24 @@ assertEqual(reconcileHubProfiles([hubProfile, savedRemote], 'NVMAC.tail46daa8.ts
 assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [registered[0]]), { create: [], update: [], removeIds: [] })
 // A remote moved on the hub (same id, new SSH host), or saved before profiles kept the host, follows the hub.
 assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [{ ...registered[0], ssh_host: 'osmo@new-host' }]),
-  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo@new-host' }], removeIds: [] })
+  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo@new-host', hidden: false }], removeIds: [] })
 assertEqual(reconcileHubProfiles([hubProfile, { id: 'remote-aaa', serverURL: savedRemote.serverURL }], hubURL, [registered[0]]),
-  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo_9000' }], removeIds: [] })
+  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo_9000', hidden: false }], removeIds: [] })
+// A remote hidden or shown on the hub follows it; a new remote comes in hidden. A hub that predates the flag
+// lists every remote as visible.
+assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [{ ...registered[0], hidden: true }, { ...registered[1], hidden: true }]), {
+  create: [{ name: 'lab', serverURL: `${hubURL}/api/remote/bbb`, sshHost: 'lab', hidden: true }],
+  update: [{ id: 'remote-aaa', sshHost: 'osmo_9000', hidden: true }],
+  removeIds: [],
+})
+assertEqual(reconcileHubProfiles([hubProfile, { ...savedRemote, hidden: true }], hubURL, [{ ...registered[0], hidden: false }]),
+  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo_9000', hidden: false }], removeIds: [] })
+assertEqual(reconcileHubProfiles([hubProfile, { ...savedRemote, hidden: true }], hubURL, [registered[0]]),
+  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo_9000', hidden: false }], removeIds: [] })
+assertEqual(reconcileHubProfiles([hubProfile, { ...savedRemote, hidden: true }], hubURL, [{ ...registered[0], hidden: true }]),
+  { create: [], update: [], removeIds: [] })
+assertEqual(createStoredServerProfile({ serverURL: `${hubURL}/api/remote/bbb`, hidden: true }, 'remote-bbb', timestamp).hidden, true)
+assertEqual('hidden' in createStoredServerProfile({ serverURL: `${hubURL}/api/remote/bbb`, hidden: false }, 'remote-bbb', timestamp), false)
 
 // Remotes take the registry's order in the places they already hold; the hub and other profiles stay put.
 assertEqual(

@@ -945,6 +945,12 @@ export class AgentServerClient {
   startRemoteRedeploy(remoteId: string): Promise<{ job_id: string }> {
     return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}/redeploy`, { method: 'POST' })
   }
+  setRemoteServerHidden(remoteId: string, hidden: boolean): Promise<{ server: RemoteServer }> {
+    return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ hidden })
+    })
+  }
   /** Same id, new host or install dir: the hub deploys there and reports the job, or null when nothing moved. */
   moveRemoteServer(remoteId: string, input: RemoteServerMoveInput): Promise<{ job_id: string | null }> {
     return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, {

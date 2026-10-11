@@ -61,6 +61,8 @@ export interface StoredServerProfile {
   sshHost?: string
   /** This Mac keeps an SSH host alias named after the profile for that server. */
   sshForward?: boolean
+  /** Mirrors the hub's flag for one of its remotes (planHubRemoteProfiles). */
+  hidden?: boolean
   createdAt: string
   updatedAt: string
   /** Durable cleanup work left after an explicit server-authority reset. */
@@ -82,6 +84,7 @@ export interface AddServerProfileInput extends SharedAddServerProfileInput {
 
 export interface UpdateServerProfileInput extends UpdateServerProfilePatch {
   serverIdentity?: string | null
+  hidden?: boolean
   retiredServerNamespaces?: string[]
 }
 
@@ -270,6 +273,7 @@ export class SettingsStore {
       serverIdentity,
       serverSetupComplete: input.serverSetupComplete ?? Boolean(serverIdentity),
       ...optionalSshHost(cleanSshHost(input.sshHost)),
+      ...(input.hidden ? { hidden: true } : {}),
       createdAt: timestamp,
       updatedAt: timestamp
     }
@@ -305,6 +309,7 @@ export class SettingsStore {
       serverSetupComplete: patch.serverSetupComplete ?? current.serverSetupComplete,
       ...optionalSshHost(patch.sshHost === undefined ? current.sshHost ?? null : cleanSshHost(patch.sshHost)),
       sshForward: (patch.sshForward === undefined ? current.sshForward === true : patch.sshForward === true) || undefined,
+      hidden: (patch.hidden === undefined ? current.hidden === true : patch.hidden === true) || undefined,
       retiredServerNamespaces: patch.retiredServerNamespaces === undefined
         ? current.retiredServerNamespaces
         : normalizeRetiredNamespaces(patch.retiredServerNamespaces),
@@ -735,6 +740,7 @@ function publicProfile(profile: StoredServerProfile, hasAccessToken: boolean, ru
     serverSetupComplete: profile.serverSetupComplete,
     sshHost: profile.sshHost ?? null,
     sshForward: profile.sshForward === true,
+    ...(profile.hidden ? { hidden: true } : {}),
     connectionState: runtime?.connectionState ?? 'cached',
     cachedUnreadCount: Math.max(0, Math.trunc(runtime?.cachedUnreadCount ?? 0)),
     lastConnectionError: runtime?.lastConnectionError ?? null,
@@ -854,6 +860,7 @@ function normalizeProfile(value: unknown, timestamp: string, index: number): Sto
     serverSetupComplete: Boolean(value.serverSetupComplete),
     ...optionalSshHost(sshHost && !sshHost.startsWith('-') && SSH_HOST_PATTERN.test(sshHost) ? sshHost : null),
     ...(value.sshForward === true ? { sshForward: true } : {}),
+    ...(value.hidden === true ? { hidden: true } : {}),
     retiredServerNamespaces: normalizeRetiredNamespaces(value.retiredServerNamespaces),
     createdAt,
     updatedAt

@@ -21,6 +21,8 @@ export interface ServerProfileListItem {
   serverVersion?: string | null
   /** A hub remote's SSH host; its proxy address is never shown. */
   sshHost?: string | null
+  /** A hub remote hidden on the hub: left out of the server picker, marked in Manage Servers. */
+  hidden?: boolean
 }
 
 export interface ServerProfileDraftValues {

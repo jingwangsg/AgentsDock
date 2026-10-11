@@ -329,6 +329,8 @@ export interface StoredServerProfile {
   updatedAt: string
   /** A hub remote's SSH host, mirrored from the hub's registry: the server list shows it instead of the proxy address. */
   sshHost?: string
+  /** A hub remote hidden on the hub, mirrored from its registry: the server picker leaves it out; Manage Servers still lists it. */
+  hidden?: boolean
 }
 
 /** Profile data that is safe to expose to the runtime and UI. */
@@ -376,6 +378,7 @@ export interface AddServerProfileInput {
   serverIdentity?: string | null
   serverConfigured?: boolean
   sshHost?: string
+  hidden?: boolean
 }
 
 export interface UpdateServerProfileInput {
@@ -687,6 +690,8 @@ export interface CrossServerChats {
   /** Registry name of a remote; '' for the hub, whose chats carry no server tag. */
   name: string
   chats: ChatSearchTarget[]
+  /** Hidden on the hub: offered for no new pair or chat. Absent from a hub older than hiding. */
+  hidden?: boolean
 }
 
 export interface CrossServerChatsSnapshot {
@@ -1337,6 +1342,8 @@ export interface RemoteServer {
   created_at: string
   proxy_path: string
   tunnel: RemoteServerTunnelStatus | null
+  /** Left out of the lists clients offer for choosing a server. Older hubs omit it: visible. */
+  hidden?: boolean
 }
 
 export interface RemoteServerDeployLogEntry {
@@ -1372,6 +1379,8 @@ export interface RemoteServersCapability {
   ssh_available: boolean
   count: number
   ids?: string[]
+  /** The hidden remotes' ids: a hide or show elsewhere changes this, not `ids`. */
+  hidden?: string[]
 }
 
 export interface SessionRewindCapability {

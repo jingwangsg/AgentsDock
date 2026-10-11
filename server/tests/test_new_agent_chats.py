@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import unittest
 from contextlib import ExitStack, contextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import agent_server
@@ -78,6 +79,17 @@ class HubCreateTests(unittest.IsolatedAsyncioTestCase):
             snapshot = await agent_server.list_cross_server_chats()
         self.assertTrue(snapshot["create_chats"])
         self.assertEqual([server["server_identity"] for server in snapshot["servers"]], ["srv-remote"])
+
+    async def test_chat_list_marks_a_remote_hidden_on_the_hub(self):
+        ends = {identity: cross_server_mail.RemoteEnd(None, SimpleNamespace(name=identity, hidden=hidden), identity)
+                for identity, hidden in (("srv-shown", False), ("srv-hidden", True))}
+        for end in ends.values():
+            end.chats = AsyncMock(return_value=[])
+        with patch.object(agent_server.CROSS_SERVER_RELAY, "ends", return_value=ends):
+            snapshot = await agent_server.list_cross_server_chats()
+        # Listed all the same: a client on the hidden remote finds itself there.
+        self.assertEqual([(server["server_identity"], server["hidden"]) for server in snapshot["servers"]],
+                         [("srv-shown", False), ("srv-hidden", True)])
 
     async def test_local_end_creates_a_named_chat_in_process(self):
         with fresh_store() as store:

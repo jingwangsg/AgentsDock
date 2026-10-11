@@ -6,7 +6,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Cable, Check, Clock3, Download, GripVertical, LoaderCircle, Pencil, Plus, RefreshCw, RotateCw, Server, Trash2, Wifi } from 'lucide-react'
+import { Cable, Check, Clock3, Download, Eye, EyeOff, GripVertical, LoaderCircle, Pencil, Plus, RefreshCw, RotateCw, Server, Trash2, Wifi } from 'lucide-react'
 import type { PublicServerProfile, ServerRunningChats, ServerSetupProgress } from '@shared/types'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { SSH_HOST_ALIAS_PATTERN } from '@shared/ssh-host-alias'
@@ -35,7 +35,7 @@ const emptyDraft = (): ServerDraft => ({
   resetServerIdentity: false
 })
 
-interface RowWork { kind: 'redeploy' | 'cli' | 'ssh'; text: string; working?: boolean; failed?: boolean; confirm?: boolean }
+interface RowWork { kind: 'redeploy' | 'cli' | 'ssh' | 'visibility'; text: string; working?: boolean; failed?: boolean; confirm?: boolean }
 
 /** Remote profiles are proxied through the local hub as `${DEFAULT_SERVER_URL}/api/remote/<id>`; that path on another host is a plain saved server. */
 const isHubRemote = (url: string) => url.startsWith(`${DEFAULT_SERVER_URL}/api/remote/`)
@@ -302,6 +302,17 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       noteRow(profile.id, { kind: 'ssh', failed: true, text: cleanIPCError(errorMessage(error)) })
     }
   }
+  // The hub keeps the flag, so the switcher and pickers on every client follow it; the row stays here to show it again.
+  const toggleHidden = async (profile: PublicServerProfile) => {
+    noteRow(profile.id, { kind: 'visibility', working: true, text: t(profile.hidden ? 'serverVisibility.show' : 'serverVisibility.hide', { server: profile.name }) })
+    try {
+      await window.agentsDock.remoteServers.setHidden(profile.id, !profile.hidden)
+      await refreshProfiles()
+      noteRow(profile.id, null)
+    } catch (error) {
+      noteRow(profile.id, { kind: 'visibility', failed: true, text: cleanIPCError(errorMessage(error)) })
+    }
+  }
   const redeploying = Object.values(rowWork).some(work => work.kind === 'redeploy' && work.working)
   const redeploy = async (profile: PublicServerProfile, force: boolean) => {
     noteRow(profile.id, { kind: 'redeploy', working: true, text: t('hub.redeploying') })
@@ -422,7 +433,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         return <SortableServerRow key={profile.id} profile={profile} pinned={profile.id === hub?.id} disabled={Boolean(busy)} className={`server-management-row${current ? ' active' : ''}`}>
           <span className={`server-connection-dot ${profile.connectionState}`} title={connectionLabel(profile)} role="img" aria-label={connectionLabel(profile)} />
           <div className="server-management-copy">
-            <strong>{profile.name}{current && <span>{t("ui.ServerManagement.active_9234069")}</span>}</strong>
+            <strong>{profile.name}{current && <span>{t("ui.ServerManagement.active_9234069")}</span>}{profile.hidden && <span className="server-hidden-badge">{t('serverVisibility.hidden')}</span>}</strong>
             <small>{profile.sshHost || profile.serverUrl}</small>
             {(details || profile.lastConnectionError || rowActivationError) && <small className={rowActivationError || profile.lastConnectionError ? profile.connectionState === 'degraded' && !rowActivationError ? 'server-management-warning' : 'server-management-error' : ''}>
               {rowActivationError || profile.lastConnectionError || details}
@@ -478,6 +489,14 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
               disabled={Boolean(busy) || work?.working}
               onClick={() => void toggleSshForward(profile)}
             >{work?.kind === 'ssh' && work.working ? <LoaderCircle className="spin" size={12} /> : <Cable size={13} />}</button>}
+            {hub && isHubRemote(profile.serverUrl) && <button
+              type="button"
+              className="icon-button"
+              aria-label={t(profile.hidden ? 'serverVisibility.show' : 'serverVisibility.hide', { server: profile.name })}
+              title={t(profile.hidden ? 'serverVisibility.showTitle' : 'serverVisibility.hideTitle', { server: profile.name })}
+              disabled={Boolean(busy) || work?.working}
+              onClick={() => void toggleHidden(profile)}
+            >{work?.kind === 'visibility' && work.working ? <LoaderCircle className="spin" size={12} /> : profile.hidden ? <EyeOff size={13} /> : <Eye size={13} />}</button>}
             {profile.id !== hub?.id && <button
               type="button"
               className={confirmRemoveId === profile.id ? 'danger-button compact' : 'icon-button'}

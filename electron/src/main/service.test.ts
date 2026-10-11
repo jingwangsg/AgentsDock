@@ -92,10 +92,13 @@ vi.mock('electron', () => ({
 vi.mock('./local-hub', async importOriginal => ({ ...await importOriginal<typeof import('./local-hub')>(), startLocalServerAgent: vi.fn() }))
 // Nor launch this machine's Zed.
 vi.mock('./open-in-zed', () => ({ openInZed: vi.fn(async () => undefined) }))
+// Nor read this machine's ssh aliases.
+vi.mock('./ssh-hosts', async importOriginal => ({ ...await importOriginal<typeof import('./ssh-hosts')>(), hubSshAliasHost: vi.fn(() => null) }))
 
 import { LocalCache, TIMELINE_PAGING_SCHEMA_VERSION } from './persistence'
 import { startLocalServerAgent } from './local-hub'
 import { openInZed as launchZed } from './open-in-zed'
+import { hubSshAliasHost } from './ssh-hosts'
 import {
   ServerError,
   TeamHubBootstrapTransportError,
@@ -9518,7 +9521,7 @@ describe('server profile lifecycle', () => {
     expect(hubProbe.listRemoteServers).toHaveBeenCalledOnce()
     expect(profiles.map(profile => profile.id)).toEqual(['a', 'b'])
     // Left unset so the next pass retries once the user switches away from the stale remote.
-    expect((service as unknown as { lastHubRemoteIds: string | null }).lastHubRemoteIds).toBeNull()
+    expect((service as unknown as { lastHubRemotesKey: string | null }).lastHubRemotesKey).toBeNull()
   })
 
   it('redeploys a hub remote through the hub whichever profile is active, asking first while chats run', async () => {
@@ -9737,6 +9740,29 @@ describe('server profile lifecycle', () => {
     expect(settings.getProfile(remote.id)).toBeNull()
     expect(hub.dispose).toHaveBeenCalledOnce()
     await expect(service.removeHubRemote('a')).rejects.toThrow('Only servers the hub manages')
+  })
+
+  it('hides and shows a hub remote through the hub, mirrors the flag, and says so when the hub is too old to keep it', async () => {
+    let hidden = true
+    const hub = Object.assign(fakeClient(), {
+      setRemoteServerHidden: vi.fn(async (_remoteId: string, value: boolean) => ({ server: { ...hubRemote('r1'), hidden: value } })),
+      listRemoteServers: vi.fn(async () => ({ servers: [{ ...hubRemote('r1'), hidden }] }))
+    })
+    const oldHub = Object.assign(fakeClient(), { setRemoteServerHidden: vi.fn(async () => ({ server: hubRemote('r1') })) })
+    // One hub client per call: hide, show, then a hub that ignores the field.
+    const { service, settings } = createProfileService({ 'http://a.test:7850': [fakeClient()], [DEFAULT_SERVER_URL]: [hub, hub, oldHub] })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const remote = settings.addProfile({ name: 'r1', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1`, sshHost: 'r1.example' })
+
+    await service.setHubRemoteHidden(remote.id, true)
+    expect(hub.setRemoteServerHidden).toHaveBeenCalledWith('r1', true)
+    expect(settings.getProfile(remote.id)?.hidden).toBe(true)
+    hidden = false
+    await service.setHubRemoteHidden(remote.id, false)
+    expect(settings.getProfile(remote.id)?.hidden).toBeUndefined()
+    expect(hub.dispose).toHaveBeenCalledTimes(2)
+    await expect(service.setHubRemoteHidden(remote.id, true)).rejects.toThrow('This hub cannot hide servers yet')
+    await expect(service.setHubRemoteHidden('a', true)).rejects.toThrow('Only servers the hub manages can be hidden.')
   })
 
   it('reorders hub remotes through the hub, and a reconcile follows the registry order', async () => {
@@ -10769,6 +10795,32 @@ describe('rapid profile resource teardown', () => {
     expect(createRemoteSocket()).toBe(secondSocket)
     expect(tunnelClients[1].portTunnelSocket).toHaveBeenCalledWith('chat-b', 22)
     await expect(service.openInZed(request)).rejects.toThrow('Archived chats cannot open port forwards')
+  })
+
+  it('opens a remote chat in Zed through the alias the hub keeps for that server, with no tunnel of its own', async () => {
+    const a = fakeClient({
+      health: async () => portForwardingHealth('server-a', 16, 22),
+      sessions: async () => [{ id: 'chat-a', title: 'Chat', backend: 'codex', archived: false }]
+    })
+    const start = vi.fn()
+    const { service } = createProfileService({ 'http://a.test:7850': [a] })
+    ;(service as unknown as { zedTunnels: PortTunnelManager }).zedTunnels = { start } as unknown as PortTunnelManager
+    const initial = await service.bootstrap()
+    await service.refreshServer('a', initial.profileGeneration)
+    vi.mocked(hubSshAliasHost).mockReturnValueOnce('osmo@wf-1')
+    const request = { path: '/root/proj', sshHost: 'osmo@wf-1', hostAlias: 'osmo_dev', sessionId: 'chat-a', profileId: 'a', profileGeneration: initial.profileGeneration }
+
+    await service.openInZed(request)
+
+    expect(hubSshAliasHost).toHaveBeenLastCalledWith('osmo_dev')
+    expect(launchZed).toHaveBeenLastCalledWith(request)
+    expect(start).not.toHaveBeenCalled()
+    // The hub keeps that name for another remote: Zed would open the wrong server through it.
+    const opened = vi.mocked(launchZed).mock.calls.length
+    vi.mocked(hubSshAliasHost).mockReturnValueOnce('osmo@wf-2')
+    await expect(service.openInZed(request)).rejects.toThrow('belongs to another server the hub keeps')
+    expect(vi.mocked(launchZed).mock.calls.length).toBe(opened)
+    expect(start).not.toHaveBeenCalled()
   })
 
   it('keeps the host\'s own ssh entry for Zed on a server without the ssh port, and tells an osmo@ user to update that server', async () => {

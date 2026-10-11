@@ -386,6 +386,12 @@ export class AgentServerClient {
       method: 'PATCH', body: JSON.stringify(input),
     }, 30_000, false, 'native-control')
   }
+  /** The same PATCH with only the flag: the hub neither redeploys nor touches the remote's tunnels. */
+  setRemoteServerHidden(remoteId: string, hidden: boolean): Promise<{ server: RemoteServer }> {
+    return this.request(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, {
+      method: 'PATCH', body: JSON.stringify({ hidden }),
+    }, 30_000, false, 'native-control')
+  }
   startRemoteRedeploy(remoteId: string): Promise<{ job_id: string }> {
     return this.request(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}/redeploy`, { method: 'POST' }, 30_000, false, 'native-control')
   }

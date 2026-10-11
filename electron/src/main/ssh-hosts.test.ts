@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ensureSshConfigInclude, removeSshHost, resolvedSshOptions, sshDestination, sshHostFileContent, tunnelSshHostFileContent, writeSshHost, writeTunnelSshHost } from './ssh-hosts'
+import { ensureSshConfigInclude, hubSshAliasHost, removeSshHost, resolvedSshOptions, sshDestination, sshHostFileContent, tunnelSshHostFileContent, writeSshHost, writeTunnelSshHost } from './ssh-hosts'
 
 const RESOLVED = [
   'user root', 'hostname 10.244.141.135', 'port 22', 'addressfamily any', 'controlmaster auto',
@@ -136,5 +136,22 @@ describe('writeSshHost', () => {
     expect(readFileSync(p.sshConfig, 'utf8')).toBe(`Include ${p.hostsDir}/*\n`)
     expect(statSync(p.sshConfig).mode & 0o777).toBe(0o600)
     expect(readFileSync(join(p.hostsDir, 'nv_gb300'), 'utf8')).toContain('Host nv_gb300\n  HostName gb300.internal\n  User jingwang\n  Port 22\n')
+  })
+
+  it('leaves an alias the hub keeps to the hub: no rewrite in either form, no removal, no ssh resolution', async () => {
+    const p = paths()
+    mkdirSync(p.hostsDir, { recursive: true })
+    const hubFile = '# Added by the AgentsDock hub for the remote server osmo_dev (osmo@wf-1). Rewritten when the hub reconnects to it; removed with it.\nHost osmo_dev\n  User root\n'
+    writeFileSync(join(p.hostsDir, 'osmo_dev'), hubFile)
+    const run = vi.fn(async () => RESOLVED)
+    expect(hubSshAliasHost('osmo_dev', p)).toBe('osmo@wf-1')
+    expect(await writeSshHost('osmo_dev', 'osmo@wf-1', p, run)).toBe(join(p.hostsDir, 'osmo_dev'))
+    await writeTunnelSshHost('osmo_dev', 'osmo@wf-1', 50022, p, run)
+    removeSshHost('osmo_dev', p)
+    expect(readFileSync(join(p.hostsDir, 'osmo_dev'), 'utf8')).toBe(hubFile)
+    expect(run).not.toHaveBeenCalled()
+    // This app's own alias, a missing one and a name that is no alias are not the hub's.
+    await writeSshHost('oci_dev', 'oci@jing-debug-a236', p, run)
+    expect([hubSshAliasHost('oci_dev', p), hubSshAliasHost('missing', p), hubSshAliasHost('../hosts/osmo_dev', p)]).toEqual([null, null, null])
   })
 })
