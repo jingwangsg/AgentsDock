@@ -910,7 +910,7 @@ class PortTunnelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(websocket.calls[-1][0:2], ("close", 4404))
         self.assertEqual((await registry.snapshot())["active_connections"], 0)
 
-    def test_chat_tunnel_port_floor_exempts_only_ssh(self) -> None:
+    def test_port_floor_exempts_only_ssh(self) -> None:
         self.assertEqual(agent_server.canonical_port_tunnel_port("22"), 22)
         with self.assertRaisesRegex(ValueError, "between 1024 and 65535"):
             agent_server.canonical_port_tunnel_port("80")

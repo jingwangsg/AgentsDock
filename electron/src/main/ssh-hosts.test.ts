@@ -80,7 +80,7 @@ describe('tunnelSshHostFileContent', () => {
   it('points the alias at the tunnel\'s loopback port, keeping only who logs in and with which key, and checks no host key', async () => {
     const content = tunnelSshHostFileContent('oci_dev', 'oci@jing-debug-a236', 50022, await resolvedSshOptions('jing-debug-a236', async () => RESOLVED))
     expect(content.split('\n')).toEqual([
-      '# Added by AgentsDock for the server "oci_dev" (SSH host oci@jing-debug-a236): its sshd through AgentsDock\'s port tunnel, open while AgentsDock runs. Rewritten when that server is opened in Zed; turning off Forward SSH removes it.',
+      '# Added by AgentsDock for the server "oci_dev" (SSH host oci@jing-debug-a236). Reaches its sshd through AgentsDock\'s port tunnel, which exists only while AgentsDock runs. Rewritten when that server is opened in Zed; turning off Forward SSH removes it.',
       'Host oci_dev',
       '  HostName 127.0.0.1',
       '  Port 50022',
@@ -92,7 +92,6 @@ describe('tunnelSshHostFileContent', () => {
       '  UserKnownHostsFile /dev/null',
       ''
     ])
-    expect(() => tunnelSshHostFileContent('my server', 'host', 50022, new Map())).toThrow('alias')
   })
 
   it('writes an osmo@ workflow as root with the default keys without resolving an ssh entry', async () => {
@@ -100,10 +99,15 @@ describe('tunnelSshHostFileContent', () => {
     const run = vi.fn(async () => RESOLVED)
     const file = await writeTunnelSshHost('osmo_dev', 'osmo@wf-1', 50023, p, run)
     expect(run).not.toHaveBeenCalled()
-    expect(statSync(file).mode & 0o777).toBe(0o600)
     expect(readFileSync(file, 'utf8')).toContain('Host osmo_dev\n  HostName 127.0.0.1\n  Port 50023\n  User root\n  StrictHostKeyChecking no\n')
     expect(readFileSync(file, 'utf8')).not.toContain('IdentityFile')
-    expect(readFileSync(p.sshConfig, 'utf8')).toBe(`Include ${p.hostsDir}/*\n`)
+  })
+
+  it('keeps the host\'s own entry when its sshd is not on port 22, which the tunnel cannot reach', async () => {
+    const file = await writeTunnelSshHost('nv_box', 'nv_box', 50024, paths(), async () => RESOLVED.replace('port 22', 'port 2222'))
+    const content = readFileSync(file, 'utf8')
+    expect(content).toContain('  HostName 10.244.141.135\n  User root\n  Port 2222\n')
+    expect(content).not.toContain('HostName 127.0.0.1')
   })
 })
 

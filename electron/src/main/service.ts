@@ -385,7 +385,6 @@ export interface AppServiceOptions {
   serverRestartHealthTimeoutMs?: number
   /** Test seam for loopback-only remote port forwarding. */
   portTunnelManager?: PortTunnelManager
-  zedTunnelManager?: PortTunnelManager
   /** Remove profile-scoped Teamspace state before its parent server profile is deleted. */
   removeTeamHubProfile?: (profileId: string) => Promise<void | { rollback(): void; cleanupWarning?: string }>
   /** Test seam for main-owned native file capabilities. */
@@ -510,8 +509,14 @@ export class AppService {
   private terminalConnections = new Map<string, TerminalConnection>()
   private terminalLeases = new Map<string, number>()
   private readonly portTunnels: PortTunnelManager
-  /** Tunnels to remote sshds for Zed, apart from the chats' tunnels: they outlive profile switches and chat archives. */
-  private readonly zedTunnels: PortTunnelManager
+  /**
+   * Tunnels to remote sshds for Zed, apart from the chats' tunnels: Zed's connection must survive a
+   * profile switch and the chat's archive, so these close only with the app, and one tunnel per
+   * server (its key) serves every chat opened there.
+   */
+  private readonly zedTunnels = new PortTunnelManager()
+  /** Per server, the chat a Zed tunnel's connections name and the client they use; replaced on every Open in Zed. */
+  private readonly zedTunnelTargets = new Map<string, { sessionId: string; client: AgentServerClient }>()
   private readonly browserProxies = new Map<string, { proxy: BrowserProxy; ready: Promise<string> }>()
   private readonly removeTeamHubProfile: (profileId: string) => Promise<void | { rollback(): void; cleanupWarning?: string }>
   private readonly fileUploadGrants: FileUploadGrantRegistry
@@ -538,7 +543,6 @@ export class AppService {
       projection => this.emit('team:mail-hints', projection))
     this.pinSync = new PinSyncCoordinator(this.cache)
     this.portTunnels = options.portTunnelManager ?? new PortTunnelManager()
-    this.zedTunnels = options.zedTunnelManager ?? new PortTunnelManager()
     this.removeTeamHubProfile = options.removeTeamHubProfile ?? (async () => undefined)
     this.fileUploadGrants = options.fileUploadGrants ?? new FileUploadGrantRegistry()
     this.clipboardTempRoot = options.clipboardTempRoot ?? app.getPath('temp')
@@ -5439,28 +5443,32 @@ export class AppService {
     await shell.openExternal(url)
     this.assertCurrentScope(scope)
   }
-  /**
-   * Opens a chat's directory in Zed. A remote's sshd is reached through a tunnel of its own kind:
-   * Zed's connection must survive a profile switch and the chat's archive, so the tunnel closes
-   * only with the app, and one tunnel (keyed by server) serves every chat opened on that server.
-   */
+  /** Opens a chat's directory in Zed; a remote's sshd comes through `zedTunnels` (see that field for why it is a separate manager). */
   async openInZed(request: OpenInZedRequest): Promise<void> {
     const sshHost = request.sshHost?.trim()
+    // A chat on this Mac, or a remote whose profile name cannot be an ssh alias: Zed gets the path or the raw host directly.
     if (!sshHost || !request.hostAlias?.trim()) return launchZed(request)
     const scope = this.requireProfileScope(request.profileId, request.profileGeneration)
     await this.ensureValidatedScope(scope)
-    if (!portForwardingCapabilityAvailable(this.health) || this.health?.capabilities?.port_forwarding_v1?.ssh_port !== PORT_TUNNEL_SSH_PORT) {
+    this.assertCurrentScope(scope)
+    if (this.health?.capabilities?.port_forwarding_v1?.ssh_port !== PORT_TUNNEL_SSH_PORT) {
       // A server from before the ssh port tunnel: the alias copies the host's own ssh entry, as before.
       if (sshHost.startsWith('osmo@')) throw new Error('Opening an osmo@ workflow in Zed needs a newer AgentsServer on it: update the remote server.')
       return launchZed(request)
     }
-    const { sessionId } = request
-    this.requireActivePortTunnelSession(sessionId)
-    // The tunnel keeps a client of its own: the scope's client closes its sockets when the profile
-    // switches, and Zed must reconnect through the same listener afterwards. The server addresses
-    // the tunnel by chat, so the chat that first opened Zed names it for the server's lifetime.
-    const client = this.clientFactory(scope.serverUrl, await this.settings.accessTokenForConnectionAsync(scope.profileId))
-    const forwarded = await this.zedTunnels.start(scope.profileId, PORT_TUNNEL_SSH_PORT, undefined, () => client.portTunnelSocket(sessionId, PORT_TUNNEL_SSH_PORT))
+    this.requirePortForwardingCapability()
+    this.requireActivePortTunnelSession(request.sessionId)
+    // Each connection reads the latest target: a reused tunnel must name a chat the server still
+    // lists (the first one may be archived by now), and it needs a client that outlives the scope,
+    // whose client closes its sockets when the profile switches.
+    const target = { sessionId: request.sessionId, client: this.clientFactory(scope.serverUrl, await this.settings.accessTokenForConnectionAsync(scope.profileId)) }
+    this.zedTunnelTargets.set(scope.profileId, target)
+    // The manager's chat key is the server here: one tunnel serves every chat opened on it.
+    const forwarded = await this.zedTunnels.start(scope.profileId, PORT_TUNNEL_SSH_PORT, undefined, () => {
+      const current = this.zedTunnelTargets.get(scope.profileId) ?? target
+      return current.client.portTunnelSocket(current.sessionId, PORT_TUNNEL_SSH_PORT)
+    })
+    // launchZed rewrites the alias with the tunnel's port, then runs the CLI.
     await launchZed(request, forwarded.localPort)
   }
   async pins(expected: WorkspaceProfileScope, sessionId: string): Promise<PinnedItem[]> {

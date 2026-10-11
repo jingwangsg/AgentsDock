@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSy
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { SSH_HOST_ALIAS_PATTERN } from '../shared/ssh-host-alias'
-import { PORT_TUNNEL_LOOPBACK_HOST } from './port-tunnel-manager'
+import { PORT_TUNNEL_LOOPBACK_HOST, PORT_TUNNEL_SSH_PORT } from './port-tunnel-manager'
 
 /**
  * SkyPilot's websocket ssh proxy verifies the API server's certificate against this bundle, which
@@ -31,7 +31,7 @@ export function defaultSshHostPaths(): SshHostPaths {
 
 const SSH_DESTINATION_PATTERN = /^[A-Za-z0-9_.@%+:[\]-]+$/
 
-/** The SSH destination behind a hub notation: `oci@` and `aws@<cluster>` name the Sky alias itself; an osmo@ workflow has none. */
+/** The SSH destination behind a hub notation: `oci@<cluster>` and `aws@<cluster>` name the Sky alias itself; an osmo@ workflow has none. */
 export function sshDestination(sshHost: string): string {
   const host = sshHost.trim()
   if (host.startsWith('osmo@')) throw new Error('An osmo@ workflow is reached through `osmo workflow exec`; it has no plain SSH host.')
@@ -104,7 +104,7 @@ const IDENTITY_OPTIONS: ReadonlyArray<readonly [key: string, name: string]> = [[
 export function tunnelSshHostFileContent(alias: string, sshHost: string, localPort: number, options: ReadonlyMap<string, string[]>): string {
   requireAlias(alias)
   const lines = [
-    `# Added by AgentsDock for the server "${alias}" (SSH host ${sshHost.trim()}): its sshd through AgentsDock's port tunnel, open while AgentsDock runs. Rewritten when that server is opened in Zed; turning off Forward SSH removes it.`,
+    `# Added by AgentsDock for the server "${alias}" (SSH host ${sshHost.trim()}). Reaches its sshd through AgentsDock's port tunnel, which exists only while AgentsDock runs. Rewritten when that server is opened in Zed; turning off Forward SSH removes it.`,
     `Host ${alias}`,
     `  HostName ${PORT_TUNNEL_LOOPBACK_HOST}`,
     `  Port ${localPort}`
@@ -125,9 +125,12 @@ export async function writeSshHost(alias: string, sshHost: string, paths: SshHos
 
 /** Writes the alias so `ssh <alias>` and Zed reach the server's sshd through AgentsDock's port tunnel on `localPort`. */
 export async function writeTunnelSshHost(alias: string, sshHost: string, localPort: number, paths: SshHostPaths = defaultSshHostPaths(), run: RunSsh = runSsh): Promise<string> {
-  // An osmo@ workflow has no ssh entry to resolve; its sshd takes root with the default keys, as the hub connects.
+  // An osmo@ workflow has no ssh entry to resolve; its sshd accepts root with the user's default keys, the way the hub logs in.
   const options = sshHost.trim().startsWith('osmo@') ? new Map([['user', ['root']]]) : await resolvedSshOptions(sshDestination(sshHost), run)
-  return writeSshHostFile(alias, tunnelSshHostFileContent(alias, sshHost, localPort, options), paths)
+  // The server dials port 22 only, so a host whose sshd listens elsewhere keeps its own entry.
+  const port = options.get('port')?.[0]
+  const content = port && port !== String(PORT_TUNNEL_SSH_PORT) ? sshHostFileContent(alias, sshHost, options) : tunnelSshHostFileContent(alias, sshHost, localPort, options)
+  return writeSshHostFile(alias, content, paths)
 }
 
 function writeSshHostFile(alias: string, content: string, paths: SshHostPaths): string {

@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { SSH_HOST_ALIAS_PATTERN } from '../shared/ssh-host-alias'
 import { sshDestination, writeSshHost, writeTunnelSshHost } from './ssh-hosts'
 
+/** The part of OpenInZedRequest the CLI launch needs; the rest routes the tunnel in AppService. */
 export interface OpenInZedInput {
   /** Absolute path on the server that owns the chat. */
   path: string
@@ -49,7 +50,8 @@ export async function openInZed(input: OpenInZedInput, tunnelPort?: number): Pro
   const alias = input.hostAlias?.trim()
   const sshHost = input.sshHost?.trim()
   // The alias file carries how this Mac reaches the host now (the tunnel's port, or a Sky cluster's
-  // resolved address and keys); a change between opens must not strand Zed, so it is rewritten right before Zed connects.
+  // resolved address and keys); a change between opens must not strand Zed, so it is rewritten
+  // right before Zed connects.
   if (alias && sshHost) await (tunnelPort === undefined ? writeSshHost(alias, sshHost) : writeTunnelSshHost(alias, sshHost, tunnelPort))
   await new Promise<void>((resolve, reject) => {
     execFile(cli, [target], { timeout: 15_000 }, error => (error ? reject(error) : resolve()))

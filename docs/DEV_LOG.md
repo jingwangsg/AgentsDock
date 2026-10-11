@@ -14,19 +14,19 @@
   launches `zed ssh://<alias>/<path>` as before. Who logs in and with which
   key still comes from the host's own ssh entry (`ssh -G`, with `oci@` and
   `aws@` stripped to Sky's alias); an `osmo@` workflow logs in as root with the
-  default keys, as the hub does. The tunnel is kept apart from the chats'
-  tunnels: it survives a profile switch and the chat's archive (the server
-  refuses new connections for an archived chat, after which the next Open in
-  Zed opens a fresh tunnel), is reused by every chat opened on that server,
+  default keys, as the hub does. A host whose entry puts sshd on another port
+  keeps that entry, since the tunnel reaches port 22 only.
+- The tunnel is kept apart from the chats' tunnels: it survives a profile
+  switch and a chat's archive, is reused by every chat opened on that server
+  (its connections name the chat opened last, which the server still admits),
   and closes with the app. While it is open, `ssh <alias>` from a terminal
-  goes through it too; a profile change still rewrites the alias from the
-  host's own entry.
-- Server: a chat's tunnel may name port 22, the one port below the 1024
-  floor, and `/api/health` advertises it as `port_forwarding_v1.ssh_port`. A
-  desktop talking to a server without it keeps the previous alias route for
-  Sky clusters and plain hosts and names the needed server update for an
-  `osmo@` workflow. The server part reaches a remote only when that server is
-  redeployed.
+  goes through it too; after the app quits, the alias points at the closed
+  port until the next Open in Zed or profile change rewrites it.
+- Server: a chat's tunnel may name port 22, the one port below the 1024 floor
+  (the Forwarded Ports panel may name it as well), and `/api/health`
+  advertises it as `port_forwarding_v1.ssh_port`. A desktop talking to a
+  server without it keeps the previous alias route for Sky clusters and plain
+  hosts and names the needed server update for an `osmo@` workflow.
 - Verification. Test surface: an isolated desktop build and two isolated
   servers on this Mac (one from the branch, one from the previous source),
   driven through the real chat header button. Against the branch server, the
@@ -40,10 +40,13 @@
   and clicking again opened a new tunnel; quitting the app closed it. A plain
   host yielded the `ssh -G` user and key options. Against the previous server,
   an `osmo@` host showed the update message. Unit tests cover the port floor
-  on the server, the manager and the client, the alias block, and the service
-  route choice. Not exercised: a real OSMO pod or Sky cluster through the
-  tunnel (the deployed remotes were not redeployed), and the previous alias
-  route for a non-`osmo@` host on an old server beyond its unit test.
+  on the server, the manager and the client, the alias block, the non-22
+  sshd exception, and the service's route choice including a reused tunnel
+  after the first chat's archive. Not exercised: a real OSMO pod or Sky
+  cluster through the tunnel (the deployed remotes were not redeployed), and
+  the previous alias route for a non-`osmo@` host on an old server beyond its
+  unit test. Availability: desktop and server source; a remote takes the
+  server part after a redeploy.
 
 ## 2026-10-11 — Remote servers on SkyPilot AWS clusters: `aws@<cluster>` (server source)
 

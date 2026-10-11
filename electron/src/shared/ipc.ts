@@ -700,7 +700,7 @@ export interface AgentsDockAPI {
     analyticsDisabled: boolean
     openExternal(url: string): Promise<void>
     showItemInFolder(path: string): Promise<void>
-    /** Opens a server path in Zed; a remote's sshd is reached through a port tunnel from this app. */
+    /** Opens a server path in Zed; a remote's sshd is reached through a port tunnel from this app when the server allows it, else through its own ssh entry. */
     openInZed(input: OpenInZedRequest): Promise<void>
     setBadge(count: number): Promise<void>
     notify(payload: ProfileNotificationPayload): Promise<void>

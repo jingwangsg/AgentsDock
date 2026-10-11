@@ -15,7 +15,10 @@ export interface OpenInZedRequest {
   sshHost: string | null
   /** The local SSH alias this Mac keeps for that server; the URL names it instead of the raw host. */
   hostAlias: string | null
-  /** The chat and its server: a remote's sshd is reached through a port tunnel the server opens for that chat. */
+  /**
+   * The chat and its server: a remote's sshd is reached through a port tunnel the server opens for
+   * that chat. A stale generation is refused, as in every main-process call from the renderer.
+   */
   sessionId: string
   profileId: string
   profileGeneration: number

@@ -84486,7 +84486,6 @@ async def health() -> dict[str, Any]:
                 "transport": "binary_websocket",
                 "destination_host": PORT_TUNNEL_LOOPBACK_HOST,
                 "minimum_port": PORT_TUNNEL_MIN_PORT,
-                # Advertised so a desktop on an older server keeps its own ssh route to the host.
                 "ssh_port": PORT_TUNNEL_SSH_PORT,
                 "maximum_port": PORT_TUNNEL_MAX_PORT,
                 "max_active_connections": PORT_TUNNEL_MAX_ACTIVE_GLOBAL,
