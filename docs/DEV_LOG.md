@@ -1,5 +1,50 @@
 # Public development log
 
+## 2026-10-11 — Remote servers on SkyPilot AWS clusters: `aws@<cluster>` (server source)
+
+- Adding a remote server as `oci@<cluster>` for a SkyPilot cluster on AWS
+  failed with "Sky has no ssh entry", although Sky had written one. An AWS
+  cluster's entry reaches the head node through an AWS SSM ProxyCommand
+  (`aws ssm start-session`), which needs AWS credentials; `oci@` recognised
+  only the websocket-proxy entries of Kubernetes clusters, and the hub's
+  machine holds no AWS keys.
+- The new host notation `aws@<cluster>` resolves the cluster's Sky ssh entry
+  (writing it with `sky status -u` when it is missing) and starts each ssh
+  connection with the credentials of a one-hour STS session that the cluster
+  mints with its own AWS keys. The hub obtains it by running a short
+  `sky exec` job on the cluster in the cluster's workspace; the job prints the
+  session only encrypted, with a random key that reaches the job as a Sky
+  secret, and the hub keeps the decrypted session in
+  `~/.aws/agentsdock-<cluster>.credentials` (mode 0600). A connection that
+  starts within thirty minutes of the session's end triggers one new job,
+  shared by all tunnels of the cluster; a job that failed is repeated after
+  two minutes at the earliest, so a relay that keeps failing does not fill
+  the cluster's job queue.
+  `oci@` in front of an AWS cluster now answers "`<cluster>` is an AWS
+  cluster; use `aws@<cluster>`", and the desktop's host hint lists the
+  notation.
+- Verification. Test surface: an isolated hub from the branch on this Mac,
+  driven through the admin API the desktop calls (`POST
+  /api/admin/remote-servers/deploy`, job polling, the `/api/remote/<id>`
+  proxy), against a real 8-node AWS cluster. The relay took 31 s (the job
+  itself 3 s); a deploy to an arm64 head node took 170 s and the proxied
+  `/api/health` answered 200; after the session file was aged past the
+  refresh point and the hub restarted, its five tunnels reconnected with one
+  relay job; `aws@` with an unknown cluster failed in 6 s with "Sky has no AWS
+  ssh entry". Focused unit tests cover the relay script through openssl, the
+  refresh, the shared relay, cancellation and the two-minute limit. Not
+  exercised: the desktop's Add server dialog with `aws@`, because the desktop
+  deploys only through the hub at its default address, which was not
+  restarted for this test.
+- Limitations. An SSM session whose ssh client ended without closing the
+  connection (a stopped hub, an ssh that exited on a failed reverse forward)
+  stays open on the cluster until SSM's idle timeout, measured at about 20
+  minutes on the tested cluster. While it does, the
+  inference tunnel cannot bind its remote port again and retries, and each
+  retry leaves another such session (about 22 MB each on the head node). The
+  desktop's Forward SSH and Open in Zed do not support `aws@` hosts yet.
+  Availability: source only.
+
 ## 2026-10-11 — Editing a message keeps the chat mail read before it (server source)
 
 - A chat read a peer's mail in a mailbox wake turn. The user then sent a

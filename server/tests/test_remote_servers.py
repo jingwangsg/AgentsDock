@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 import io
 from pathlib import Path
@@ -601,7 +602,7 @@ with socket.socket() as listener:
         self.fake_host(existing_port=None)
         with mock.patch.object(rs, "ssh_route", mock.AsyncMock(return_value=rs.SSHRoute([], "root@wf", {}))):
             _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="osmo@wf", password="hunter2"))
-        assert job.error == "oci@ and osmo@ targets are reached through the cluster CLI; leave the password empty."
+        assert job.error == "oci@, aws@ and osmo@ targets are reached through the cluster CLI; leave the password empty."
 
     def test_hub_public_key_uses_the_resolved_identity_or_generates_one(self) -> None:
         self.fake_host(existing_port=None)
@@ -790,6 +791,130 @@ with open({str(calls)!r}, "a") as out:
         isolated.side_effect = [[], []]
         with self.assertRaisesRegex(OSError, "no ssh entry for gone-cluster"):
             asyncio.run(rs.ssh_route("oci@gone-cluster"))
+
+    def test_aws_cluster_route_carries_a_session_the_cluster_relays_once_per_expiry(self) -> None:
+        # The fake sky lists aws-cluster and runs an exec script with bash, where python3 answers
+        # in boto3's place; the script's own openssl encrypts what it prints.
+        bin_dir = self.tmp_path / "sky-bin"
+        bin_dir.mkdir()
+        calls = self.tmp_path / "sky-calls.jsonl"
+        sky = bin_dir / "sky"
+        sky.write_text(f"""#!{sys.executable}
+import json, os, subprocess, sys
+args = sys.argv[1:]
+with open({str(calls)!r}, "a") as out:
+    out.write(json.dumps([args, os.environ.get("SSL_CERT_FILE"), "AGENTSDOCK_RELAY_KEY" in os.environ]) + "\\n")
+if args[0] == "status":
+    print("\\x1b[33m⚠ Upgrade your SkyPilot client\\x1b[0m")  # Sky logs warnings to stdout too
+    print(json.dumps([dict(name="aws-cluster", workspace="team-ws", status="UP")] if args[-1] == "aws-cluster" else [], indent=2))
+else:
+    job = subprocess.run(["bash", "-c", args[-1]], stdout=subprocess.PIPE, text=True)
+    print("\\n".join("(agentsdock-aws-session, pid=7) " + line for line in job.stdout.splitlines()))
+    sys.exit(job.returncode)
+""")
+        python3 = bin_dir / "python3"
+        python3.write_text(f"""#!{sys.executable}
+import json, sys
+if "get_session_token(DurationSeconds=3600)" in sys.argv[-1]:
+    print(json.dumps(dict(AccessKeyId="ASIAFAKE", SecretAccessKey="secret/fake+key", SessionToken="token=fake")))
+""")
+        # ssh -G as Sky's entry for an AWS cluster resolves.
+        ssh = bin_dir / "ssh"
+        ssh.write_text(f"""#!{sys.executable}
+print("hostname 10.0.0.1\\nproxycommand aws ssm start-session --target i-1 --document-name AWS-StartSSHSession --parameters portNumber=%p")
+""")
+        for script in (sky, python3, ssh):
+            script.chmod(0o700)
+        ca = self.tmp_path / "sky-ca.pem"
+        ca.write_text("ca")
+        self.enterContext(mock.patch.dict(os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}))
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(ssh)))
+        self.enterContext(mock.patch.object(rs, "SKY_CA_BUNDLE", ca))
+        self.enterContext(mock.patch.object(rs, "AWS_SESSION_DIR", self.tmp_path / "aws"))
+        self.enterContext(mock.patch.object(rs, "AWS_RELAY_INTERVAL", 0.0))
+        self.enterContext(mock.patch.dict(rs.AWS_RELAYS, clear=True))
+
+        route = asyncio.run(rs.ssh_route("aws@aws-cluster"))
+        credentials = self.tmp_path / "aws" / "agentsdock-aws-cluster.credentials"
+        assert (route.options, route.destination) == (["-o", "ConnectTimeout=30"], "aws-cluster")
+        assert (route.env["AWS_SHARED_CREDENTIALS_FILE"], route.env["AWS_PROFILE"], route.env["SSL_CERT_FILE"]) == (str(credentials), "agentsdock", str(ca))
+        assert route.env["PATH"] == rs.cli_search_path()
+        assert credentials.read_text() == "[agentsdock]\naws_access_key_id=ASIAFAKE\naws_secret_access_key=secret/fake+key\naws_session_token=token=fake\n"
+        assert stat.S_IMODE(credentials.stat().st_mode) == 0o600
+        # The relay key reaches sky only through its environment, never its argv.
+        assert [json.loads(line) for line in calls.read_text().splitlines()] == [
+            [["status", "-u", "-o", "json", "--", "aws-cluster"], str(ca), False],
+            [["exec", "--config", "active_workspace=team-ws", "--name", "agentsdock-aws-session", "--secret", "AGENTSDOCK_RELAY_KEY",
+              "--", "aws-cluster", rs.AWS_RELAY_SCRIPT], str(ca), True],
+        ]
+
+        # A fresh session is reused; one near its end is relayed again, once for routes resolved together.
+        asyncio.run(rs.ssh_route("aws@aws-cluster"))
+        assert len(calls.read_text().splitlines()) == 2
+        aged = time.time() - (rs.AWS_SESSION_SECONDS - rs.AWS_SESSION_MARGIN) - 1
+        os.utime(credentials, (aged, aged))
+
+        async def reconnect_together() -> None:
+            await asyncio.gather(*(rs.ssh_route("aws@aws-cluster") for _ in range(3)))
+
+        asyncio.run(reconnect_together())
+        assert len(calls.read_text().splitlines()) == 4
+        assert time.time() - credentials.stat().st_mtime < 60  # rewritten by the new relay
+
+        # Only a failure holds the next relay back: a session that is gone is relayed at once.
+        credentials.unlink()
+        with mock.patch.object(rs, "AWS_RELAY_INTERVAL", 120.0):
+            asyncio.run(rs.ssh_route("aws@aws-cluster"))
+        assert len(calls.read_text().splitlines()) == 6 and credentials.exists()
+
+        # A relay that failed is not repeated within the interval: the next route raises its error again.
+        with mock.patch.object(rs, "AWS_RELAY_INTERVAL", 120.0):
+            for _ in range(2):
+                with self.assertRaisesRegex(OSError, "does not list gone-cluster"):
+                    asyncio.run(rs.ssh_route("aws@gone-cluster"))
+        assert [json.loads(line)[0][-1] for line in calls.read_text().splitlines()].count("gone-cluster") == 1
+
+    def test_a_cancelled_waiter_leaves_the_shared_aws_relay_to_the_others(self) -> None:
+        self.enterContext(mock.patch.object(rs, "AWS_SESSION_DIR", self.tmp_path))
+        self.enterContext(mock.patch.dict(rs.AWS_RELAYS, clear=True))
+        relays = []
+
+        async def relay(cluster: str, path: Path, env: dict[str, str]) -> None:
+            relays.append(cluster)
+            await asyncio.sleep(0.1)
+            path.write_text("[agentsdock]\n")
+
+        self.enterContext(mock.patch.object(rs, "relay_aws_session", relay))
+
+        async def main() -> tuple[Path, bool]:
+            stopped = asyncio.create_task(rs.aws_session_file("aws-cluster", {}))
+            waiting = asyncio.create_task(rs.aws_session_file("aws-cluster", {}))
+            await asyncio.sleep(0.01)
+            stopped.cancel()
+            return await waiting, stopped.cancelled()
+
+        path, cancelled = asyncio.run(main())
+        assert cancelled and relays == ["aws-cluster"]
+        assert path.read_text() == "[agentsdock]\n"
+
+    def test_a_missing_aws_ssh_entry_is_written_by_sky_status_before_giving_up(self) -> None:
+        self.enterContext(mock.patch.object(rs, "AWS_SESSION_DIR", self.tmp_path))
+        (self.tmp_path / "agentsdock-new-cluster.credentials").write_text("[agentsdock]\n")  # fresh: no relay
+        write = self.enterContext(mock.patch.object(rs, "write_sky_ssh_entry", mock.AsyncMock()))
+        resolved = self.enterContext(mock.patch.object(rs, "resolved_proxy_command", mock.AsyncMock(side_effect=["", "aws ssm start-session"])))
+        assert asyncio.run(rs.ssh_route("aws@new-cluster")).destination == "new-cluster"
+        assert write.await_count == 1
+
+        resolved.side_effect = ["", ""]
+        with self.assertRaisesRegex(OSError, "no AWS ssh entry for gone-cluster"):
+            asyncio.run(rs.ssh_route("aws@gone-cluster"))
+
+    def test_oci_in_front_of_an_aws_cluster_names_the_aws_notation(self) -> None:
+        self.enterContext(mock.patch.object(rs, "write_sky_ssh_entry", mock.AsyncMock()))
+        self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=[])))
+        self.enterContext(mock.patch.object(rs, "resolved_proxy_command", mock.AsyncMock(return_value="aws ssm start-session")))
+        with self.assertRaisesRegex(OSError, "aws-cluster is an AWS cluster; use aws@aws-cluster"):
+            asyncio.run(rs.ssh_route("oci@aws-cluster"))
 
     def test_osmo_workflow_deploys_and_revives_through_its_proxy_command(self) -> None:
         calls = self.fake_host(existing_port=None)
