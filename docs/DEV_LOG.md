@@ -1,5 +1,35 @@
 # Public development log
 
+## 2026-10-11 — Agents name chats after the task: `chats title` (server source)
+
+- A chat created for a handoff was named after the first words of the
+  message, and nothing could change that but a manual rename. The chats
+  helper gets a `title` command: `chats title "<title>"` names the run's own
+  chat, and `chats title --route <route_id> "<title>"` names a chat the run
+  holds an instruction route to, such as the chat the composer created for its
+  handoff. The server stores the title with provenance `agent`: generated and
+  provider titles never replace it; a user's rename still does. Titles are one
+  line of at most 120 characters; control characters and a leading `@` are
+  dropped. A route to a chat on another server is refused until the hub relays
+  title changes.
+- The agent-facing guidance (the provider-tool description, the provider
+  actions prelude, and the wake prompt a chat gets for unread peer mail) names
+  the command and recommends keeping the title current for a chat the agent
+  created or works in: set it as soon as the task is clear and update it when
+  the work's focus changes, rather than leaving a stale title for long. Both
+  clients already show a chat's current title in the sidebar and in sent
+  `@Chat` chips, so no client change is needed.
+- Verification. Unit: chats helper tests (payload, bounds), agent route tests
+  (own chat, routed chat, refusals: reply-only route, unknown route, malformed
+  id, another server, empty title, a run without the grant, a chat without
+  routes; automatic titles stay off an agent title), the goal-resume and
+  prompt-size tests, the mailbox-wake tests. Real app: an isolated server with
+  a Claude chat that created a new agent and named both chats through the
+  helper; the desktop and Android sidebars showed the new titles, and the
+  named chat kept its title through a later Claude turn. Not exercised: titles
+  across servers (refused by design), iOS. Availability: server source; a
+  remote takes it after a redeploy.
+
 ## 2026-10-11 — `Create new agent` can choose the agent (desktop + Android source)
 
 - The `Create new agent` dialog (desktop) and sheet (Android) get an `Agent`

@@ -1972,6 +1972,72 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(revoked["routes"], [])
         self.assertTrue(token)
 
+    async def test_chat_title_names_own_and_routed_chats_outlasts_automatic_titles_and_refuses_bad_routes(self) -> None:
+        instruction = self.route("a", actions=["instruction"])
+        reply_only = self.route("b", alias="reply", actions=["request_reply"])
+        agent_server.STORE.sessions["source"]["provider_cross_chat_routes"] = [instruction, reply_only]
+        agent_server.STORE.sessions["target"].update(_title_source="prompt", _title_auto_value="Target")  # an automatic title
+
+        async def titled(token: str, **fields) -> dict:
+            return await agent_server.set_provider_chat_title(
+                agent_server.ProviderChatTitleRequest(**fields), self.provider_request(token, method="POST"),
+            )
+
+        agent_server.CURRENT_TURNS["source"] = {"run_id": "run_title"}
+        authority = await agent_server.issue_cross_chat_capability(
+            "source", "run_title", [], actions={"agent_cross_chat_routes", "chat_title"},
+            provider_route_snapshot=[instruction, reply_only],
+        )
+        token = json.loads(authority.read_text())["provider_capability"]
+        with self.native_transports(), patch.object(agent_server.STORE, "save", AsyncMock()) as save:
+            # Its own chat: control characters, a leading @ and extra whitespace do not survive.
+            self.assertEqual(await titled(token, title="  @ @Fix\u0000 the   login bug  "),
+                             {"ok": True, "title": "Fix the login bug", "changed": True, "route_id": None})
+            self.assertEqual(agent_server.STORE.sessions["source"]["title"], "Fix the login bug")
+            self.assertEqual(agent_server.STORE.sessions["source"]["_title_source"], "agent")
+            self.assertFalse((await titled(token, title="Fix the login bug"))["changed"])
+            self.assertEqual(save.await_count, 1)  # the unchanged repeat did not save
+            # The chat behind an instruction route, such as the one created for this run's handoff.
+            routed = await titled(token, title="Triage flaky tests", route_id=instruction["route_id"])
+            self.assertEqual(routed, {"ok": True, "title": "Triage flaky tests", "changed": True, "route_id": instruction["route_id"]})
+            target = agent_server.STORE.sessions["target"]
+            self.assertEqual((target["title"], target["_title_source"]), ("Triage flaky tests", "agent"))
+            self.assertNotIn("_title_auto_value", target)
+            # Generated and provider titles never replace an agent's title.
+            self.assertFalse(agent_server.generated_title_eligible(target))
+            self.assertFalse(await agent_server.STORE.adopt_auto_title(
+                "target", "Generated", source="generated", backend="codex", provider_id="thread"))
+            self.assertEqual(target["title"], "Triage flaky tests")
+            # A reply-only route, an unknown route, a malformed id, a route to another server and an empty title are refused.
+            foreign = "route_" + "e" * 32
+            with patch.dict(agent_server.CROSS_SERVER_ROUTES, {foreign: {"route_id": foreign, "session_id": "source"}}):
+                for route_id, status in ((reply_only["route_id"], 403), ("route_" + "f" * 32, 403), ("nope", 400), (foreign, 409)):
+                    with self.assertRaises(HTTPException) as refused:
+                        await titled(token, title="Renamed", route_id=route_id)
+                    self.assertEqual(refused.exception.status_code, status, route_id)
+            with self.assertRaises(HTTPException) as empty:
+                await titled(token, title="@@ \u200e")
+            self.assertEqual(empty.exception.status_code, 400)
+            self.assertEqual(target["title"], "Triage flaky tests")
+            # A chat without any route still names itself: the title grant alone is enough.
+            agent_server.CURRENT_TURNS["source"] = {"run_id": "run_no_routes"}
+            authority = await agent_server.issue_cross_chat_capability(
+                "source", "run_no_routes", [], actions={"publish", "chat_title"},
+            )
+            no_routes = json.loads(authority.read_text())["provider_capability"]
+            self.assertTrue((await titled(no_routes, title="Login bug, round two"))["changed"])
+            self.assertEqual(agent_server.STORE.sessions["source"]["title"], "Login bug, round two")
+            # A run whose ceiling lacks the title grant cannot name even its own chat.
+            agent_server.CURRENT_TURNS["source"] = {"run_id": "run_routes_only"}
+            authority = await agent_server.issue_cross_chat_capability(
+                "source", "run_routes_only", [], actions={"agent_cross_chat_routes"}, provider_route_snapshot=[instruction],
+            )
+            routes_only = json.loads(authority.read_text())["provider_capability"]
+            with self.assertRaises(HTTPException) as denied:
+                await titled(routes_only, title="Renamed")
+            self.assertEqual(denied.exception.status_code, 403)
+            self.assertEqual(agent_server.STORE.sessions["source"]["title"], "Login bug, round two")
+
     async def test_provider_route_expiry_is_absolute_even_for_same_live_run(self) -> None:
         route = self.route("a")
         agent_server.STORE.sessions["source"]["provider_cross_chat_routes"] = [route]

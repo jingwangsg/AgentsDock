@@ -44,6 +44,7 @@ IDEMPOTENT_GET_RETRY_DELAYS_SECONDS = (0.1, 0.5)
 PROVIDER_RUNTIME_HANDLE_MAX_COUNT = 64
 MESSAGE_STDIN_MAX_CHARS = 100_000
 MESSAGE_STDIN_MAX_BYTES = 400 * 1024
+TITLE_MAX_CHARS = 120
 
 
 class LiveWaitRetryable(CLIError):
@@ -495,6 +496,21 @@ def read_inbox(args: argparse.Namespace) -> dict[str, Any]:
     }, capability)
 
 
+def set_title(args: argparse.Namespace) -> dict[str, Any]:
+    """Name this chat, or a chat this run holds an instruction route to, after its task."""
+    title = " ".join(str(args.title or "").split())
+    if not 1 <= len(title) <= TITLE_MAX_CHARS:
+        raise CLIError(f"the title must contain 1 to {TITLE_MAX_CHARS} characters")
+    route_id = str(getattr(args, "route", None) or "")
+    if route_id and re.fullmatch(r"route_[0-9a-f]{32}", route_id) is None:
+        raise CLIError("--route must be a route_id from chats list")
+    capability = authority(args.authority_file)
+    payload: dict[str, Any] = {"title": title}
+    if route_id:
+        payload["route_id"] = route_id
+    return post_json("/api/agent/cross-chat/title", payload, capability)
+
+
 def inbox_sequence(value: str) -> int:
     if len(value) > 19 or re.fullmatch(r"0|[1-9][0-9]*", value) is None or int(value) > 2**63 - 1:
         raise argparse.ArgumentTypeError("--cursor must be a nonnegative sequence from the previous response")
@@ -922,6 +938,14 @@ def parser() -> argparse.ArgumentParser:
     read_command.add_argument("--cursor", type=inbox_sequence, default=0)
     read_command.add_argument("--limit", type=int, choices=range(1, 26), default=25)
     read_command.set_defaults(handler=read_inbox)
+    title_command = commands.add_parser(
+        "title",
+        help="name this chat after its task; with --route, name the chat behind that instruction route",
+        allow_abbrev=False,
+    )
+    title_command.add_argument("--route", help="route_id from chats list; omit to name this chat")
+    title_command.add_argument("title", help=f"the new title; whitespace is collapsed, at most {TITLE_MAX_CHARS} characters")
+    title_command.set_defaults(handler=set_title)
     command = commands.add_parser(
         "send",
         help="send one authorized instruction",
