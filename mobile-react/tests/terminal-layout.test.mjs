@@ -86,3 +86,8 @@ test('android keeps opened terminal tabs mounted and full size while hidden, up 
   assert.match(shell, /hiddenTerminal: \{ opacity: 0 \}/)
   assert.match(source, /else if \(standalone\) updateTerminalStatus\(terminal\.id, \{ bell: true \}\)/)
 })
+
+test('the android terminal keyboard button raises the soft keyboard through a native field', () => {
+  // Blink shows the keyboard only for a focus made by a user gesture in the page; injected script has none.
+  assert.match(androidTerminal, /keyboardBridge\.current\?\.focus\(\)\s*\n\s*webView\.current\?\.requestFocus\(\)/)
+})

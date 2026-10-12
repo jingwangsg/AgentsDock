@@ -1,7 +1,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
-import { Alert, Linking, type NativeSyntheticEvent } from 'react-native'
+import { Alert, Linking, StyleSheet, type NativeSyntheticEvent } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
+import { TextInput } from '../AppText'
 import { TERMINAL_PAGE_JS, XTERM_CSS } from '../../terminal/xtermAssets'
 import { PROMPT_GLYPH_FONT_FAMILY, PROMPT_GLYPH_FONT_TTF_BASE64 } from '../../terminal/promptGlyphFont'
 import type { TerminalPageApi, TerminalPageConfig, TerminalPageMessage, TerminalPageOptions } from '../../terminal/terminalPage'
@@ -37,6 +38,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   ...viewProps
 }, ref) {
   const webView = useRef<WebView>(null)
+  const keyboardBridge = useRef<TextInput>(null)
   const copySequence = useRef(0)
   const pendingCopy = useRef<CopyRequest | null>(null)
   const [webViewKey, setWebViewKey] = useState(0)
@@ -84,8 +86,11 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   }
   useImperativeHandle(ref, () => ({
     focus: async () => {
-      // The page's focus() moves focus inside the web view only; after a native field (the find bar)
-      // had it, the keys and the soft keyboard still go there until the web view itself asks.
+      // Blink raises the soft keyboard only for a focus made by a user gesture in the page, and injected
+      // script carries none. A keyboard shown for a native field stays up when the focus moves on to the
+      // page's editor, so the keyboard comes up through a hidden field first. The page's focus() alone moves
+      // focus inside the web view only, so the web view asks for it as well.
+      keyboardBridge.current?.focus()
       webView.current?.requestFocus()
       return call('focus')
     },
@@ -181,7 +186,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
     }
   }
 
-  return <WebView
+  return <><WebView
     {...viewProps}
     key={`${socketURL}:${webViewKey}`}
     ref={webView}
@@ -206,6 +211,19 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
       return true
     }}
   />
+  <TextInput
+    ref={keyboardBridge}
+    value=""
+    caretHidden
+    autoCorrect={false}
+    accessibilityElementsHidden
+    importantForAccessibility="no-hide-descendants"
+    style={styles.keyboardBridge}
+  /></>
+})
+
+const styles = StyleSheet.create({
+  keyboardBridge: { position: 'absolute', top: 0, left: 0, width: 1, height: 1, opacity: 0 },
 })
 
 export function androidTerminalHTML(config: TerminalPageConfig): string {
