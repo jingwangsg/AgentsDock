@@ -28927,6 +28927,10 @@ TERMINAL_VIEWER_STALL_SECONDS = 30.0
 # replay byte, as on an 8 KiB/s link: 64 s more for a full scrollback.
 TERMINAL_REPLAY_ALLOWANCE_BYTES_PER_SECOND = 8 * 1024
 TERMINAL_VIEWER_STALLED_CLOSE_CODE = 1013
+# An active viewer holding live output it has not acknowledged for this long is frozen or asleep, so it will
+# not answer the program's queries either: the other viewers' answers then reach the program. A desktop
+# acknowledges within 200 ms of output stopping, plus the round trip.
+TERMINAL_UNRESPONSIVE_VIEWER_SECONDS = 1.0
 # Input that only answers a program's queries (cursor position and status, device attributes, mode,
 # window and keyboard-flag reports, OSC and DCS replies) or reports focus. Shift/Ctrl/Alt+F3 (ESC[1;<mod>R)
 # reads the same as a cursor position report and counts as one. The answers are the ones the desktop drops
@@ -29094,6 +29098,7 @@ class TerminalViewer:
     # A flow-controlled viewer that is not active and fell a window behind gets no live output from then
     # on; once it has acknowledged everything sent it is resynced from the scrollback.
     lagging_since: float | None = None
+    behind_since: float = 0.0  # when live output was last sent to it with everything before acknowledged
     sent: int = 0
     acked: int = 0
 
@@ -29109,6 +29114,11 @@ class TerminalViewer:
         if self.acked < self.replay_end:
             limit += self.replay_bytes / TERMINAL_REPLAY_ALLOWANCE_BYTES_PER_SECOND
         return now - max(self.acked_at, since) >= limit
+
+    def unresponsive(self, now: float) -> bool:
+        """Flow-controlled, with live output and no acknowledgement for TERMINAL_UNRESPONSIVE_VIEWER_SECONDS."""
+        return self.flow_control and self.behind() > 0 \
+            and now - max(self.acked_at, self.behind_since) > TERMINAL_UNRESPONSIVE_VIEWER_SECONDS
 
 
 class TerminalShell:
@@ -29250,6 +29260,8 @@ class TerminalShell:
                         continue
                     try:
                         await ws.send_bytes(data)
+                        if not viewer.behind():
+                            viewer.behind_since = now
                         viewer.sent += len(data)
                     except Exception:
                         self.remove_viewer(ws)
@@ -29326,10 +29338,10 @@ async def standalone_terminal_websocket(
             if data:
                 if shell.active is not ws:
                     # Every attached terminal answers a program's queries, a hidden or frozen one too and maybe
-                    # late: only the active viewer's answers reach the program (all of them while no viewer is
-                    # active), and answering never makes a viewer active.
+                    # late: only the active viewer's answers reach the program, unless no viewer is active or
+                    # the active one is unresponsive. Answering never makes a viewer active.
                     if TERMINAL_REPORTS_RE.fullmatch(data):
-                        if shell.active is not None:
+                        if shell.active is not None and not shell.viewers[shell.active].unresponsive(time.monotonic()):
                             continue
                     else:
                         shell.activate(ws)

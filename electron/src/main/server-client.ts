@@ -212,9 +212,9 @@ const SESSION_SUMMARY_STREAM_MAX_PACKET_CHARS = 256 * 1024
 const EVENTS_STREAM_PROTOCOL = 'agentsdock-events-v1'
 const TERMINAL_STREAM_PROTOCOL = 'agentsdock-terminal-v1'
 // A terminal tab acknowledges output in batches of this size, and its replay as soon as it arrives (the
-// server does not time a viewer that has not acknowledged its replay). The server pauses the shell while the
-// active viewer has more than its window (TERMINAL_OUTPUT_WINDOW_BYTES, which must stay well above this)
-// unacknowledged.
+// server gives a viewer with an unacknowledged replay one more second per 8 KiB of it before closing it as
+// stalled). The server pauses the shell while the active viewer has more than its window of live output
+// (TERMINAL_OUTPUT_WINDOW_BYTES, which must stay well above this) unacknowledged.
 const TERMINAL_ACK_BYTES = 16 * 1024
 // The rest of a batch is acknowledged once no output has arrived for this long: a viewer that fell behind
 // gets no more output until it has acknowledged all of it, and only then its resync.
