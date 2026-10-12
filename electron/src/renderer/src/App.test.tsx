@@ -776,6 +776,31 @@ describe('App chat workspace identity', () => {
     expect(shell).not.toHaveClass('sidebar-hidden')
   })
 
+  it('toggles the inspector with ⌘L on macOS and leaves Control-L and a focused terminal’s keys alone', () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    useAppStore.setState({ inspectorVisible: false })
+    render(<App />)
+    const terminal = document.createElement('div')
+    terminal.className = 'terminal-surface'
+    const textarea = terminal.appendChild(document.createElement('textarea'))
+    document.body.append(terminal)
+    const press = (target: Element, init: KeyboardEventInit) => {
+      const event = new KeyboardEvent('keydown', { key: 'l', bubbles: true, cancelable: true, ...init })
+      act(() => { target.dispatchEvent(event) })
+      return event
+    }
+
+    // Control-L clears the shell's screen.
+    expect(press(screen.getByTestId('code-editor'), { ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(useAppStore.getState().inspectorVisible).toBe(false)
+    // In a terminal ⌘L is left to the menu accelerator, which toggles the inspector once.
+    expect(press(textarea, { metaKey: true }).defaultPrevented).toBe(false)
+    expect(useAppStore.getState().inspectorVisible).toBe(false)
+    expect(press(screen.getByTestId('code-editor'), { metaKey: true }).defaultPrevented).toBe(true)
+    expect(useAppStore.getState().inspectorVisible).toBe(true)
+    terminal.remove()
+  })
+
   it('passes an unavailable capability without removing the chat workspace', () => {
     useAppStore.setState({
       health: {

@@ -10557,6 +10557,34 @@ describe('server profile lifecycle', () => {
     expect(popups.dispose).toHaveBeenCalledOnce()
   })
 
+  it('shows a terminal tab’s shell notification, which names a tab rather than a chat, and opens that tab', async () => {
+    electronHarness.notificationSupported = true
+    const shown: NotificationPopupRequest[] = []
+    const popups = { show: (request: NotificationPopupRequest) => { shown.push(request) }, dismissAll: vi.fn(), dispose: vi.fn() }
+    const { settings } = profileSettings()
+    settings.setProfileServerIdentity('a', 'server-a')
+    const cache = new LocalCache(':memory:')
+    const service = new AppService({ settings, cache, clientFactory: () => fakeClient() as unknown as AgentServerClient, notificationPopups: popups })
+    cleanup.push(() => { service.stop(); cache.close() })
+    const send = vi.fn()
+    const window = {
+      isDestroyed: () => false, isMinimized: () => false, show: vi.fn(), focus: vi.fn(),
+      webContents: { send, isDestroyed: () => false, isLoadingMainFrame: () => false }
+    }
+    ;(service as unknown as { windows: Set<unknown> }).windows = new Set([window])
+    service.rendererReadyForNotificationRoutes(window as never)
+
+    // Without the tab flag the id is looked up as a chat and dropped; the identity check still applies.
+    await service.notify({ title: 'Terminal', body: 'build done', profileId: 'a', serverIdentity: 'server-a', sessionId: 'term_1' })
+    await service.notify({ title: 'Terminal', body: 'build done', profileId: 'a', serverIdentity: 'spoofed', sessionId: 'term_1', surface: true })
+    expect(shown).toHaveLength(0)
+
+    await service.notify({ title: 'Terminal', body: 'build done', profileId: 'a', serverIdentity: 'server-a', sessionId: 'term_1', surface: true })
+    expect(shown.map(request => request.content)).toEqual([{ title: 'Terminal', status: 'build done', emergency: false }])
+    shown[0].onOpen()
+    expect(send).toHaveBeenCalledExactlyOnceWith('native:notification', { profileId: 'a', serverIdentity: 'server-a', sessionId: 'term_1', surface: true })
+  })
+
   it('keeps banner Open working after an iframe loads and waits again after a page reload', async () => {
     electronHarness.notificationSupported = true
     const shown: NotificationPopupRequest[] = []

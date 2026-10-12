@@ -2664,12 +2664,15 @@ export interface ProfileNotificationPayload {
   sessionId: string
   /** Optional stable key used by main to deduplicate emergency notifications. */
   emergencyAlertId?: string | null
+  /** `sessionId` names a terminal tab (OSC 9/777 from its shell), not a chat. */
+  surface?: boolean
 }
 
 export interface ProfileNotificationRoute {
   profileId: string
   serverIdentity: string | null
   sessionId: string
+  surface?: boolean
 }
 
 export interface CreateSessionInput {

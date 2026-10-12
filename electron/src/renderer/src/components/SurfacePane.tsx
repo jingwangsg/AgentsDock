@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Globe, PanelLeft, SquareTerminal } from 'lucide-react'
 import type { Surface } from '@shared/types'
 import { surfaceSubline, surfaceTitle } from '../lib/surfaces'
+import { useTerminalStatus } from '../lib/terminal-status'
 import { useAppStore } from '../store/app-store'
 import { BrowserSurface } from './BrowserSurface'
 import { ShortcutTooltip } from './ShortcutTooltip'
@@ -29,10 +30,12 @@ function SurfacePane({ surface, active, sidebarVisible, onSidebarToggle }: {
   onSidebarToggle: () => void
 }) {
   useLocale()
-  const displayTitle = surfaceTitle(surface)
-  const [title, setTitle] = useState(displayTitle)
+  const status = useTerminalStatus(surface.id)
+  const displayTitle = surfaceTitle(surface, status.title)
+  // The shell retitles its tab while it runs, so the field shows that live title until the user types.
+  const [draft, setDraft] = useState<string | null>(null)
+  const title = draft ?? displayTitle
   const titleInput = useRef<HTMLInputElement | null>(null)
-  useEffect(() => setTitle(displayTitle), [displayTitle])
   useEffect(() => {
     const rename = (event: Event) => {
       if ((event as CustomEvent<{ surfaceId?: string }>).detail?.surfaceId !== surface.id) return
@@ -45,11 +48,12 @@ function SurfacePane({ surface, active, sidebarVisible, onSidebarToggle }: {
     window.addEventListener('agentsdock:rename-surface', rename)
     return () => window.removeEventListener('agentsdock:rename-surface', rename)
   }, [surface.id])
-  // An emptied field drops the rename, so the default title (page title or "Terminal") returns.
+  // An emptied field drops the rename, so the default title (page or shell title, or "Terminal") returns.
   const save = () => {
-    const name = title.trim() || null
-    if (name === surface.name) setTitle(displayTitle)
-    else void useAppStore.getState().updateSurface(surface.id, { name })
+    setDraft(null)
+    if (draft === null) return
+    const name = draft.trim() || null
+    if (name !== surface.name) void useAppStore.getState().updateSurface(surface.id, { name })
   }
   const Icon = surface.kind === 'terminal' ? SquareTerminal : Globe
   return <div className="surface-pane" hidden={!active}>
@@ -62,12 +66,12 @@ function SurfacePane({ surface, active, sidebarVisible, onSidebarToggle }: {
             aria-label={t('surface.rename', { name: displayTitle })}
             value={title}
             size={Math.max(1, Array.from(title).length)}
-            onChange={event => setTitle(event.target.value)}
+            onChange={event => setDraft(event.target.value)}
             onBlur={save}
             onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
           />
         </div>
-        <small>{surfaceSubline(surface)}</small>
+        <small>{surfaceSubline(surface, status.cwd)}</small>
       </div>
       <div className="header-actions">
         {!sidebarVisible && <ShortcutTooltip shortcut="toggleSidebar" label={t('ui.sidebar.showChatList')}><button className="icon-button" aria-label={t('ui.sidebar.showChatList')} onClick={onSidebarToggle}><PanelLeft size={16} /></button></ShortcutTooltip>}
