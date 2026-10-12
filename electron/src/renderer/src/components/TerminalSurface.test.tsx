@@ -358,25 +358,28 @@ describe('TerminalSurface', () => {
     terminal.osc.get(133)('B')
     Object.assign(buffer, { baseY: 100, viewportY: 100, cursorY: 5 })
 
-    keydown({ key: 'ArrowUp', metaKey: true })
-    expect(terminal.scrollToLine).toHaveBeenLastCalledWith(102)
-    // That prompt is on the last screen, so the view stays at the bottom and the next jump continues from it.
-    expect(buffer.viewportY).toBe(100)
+    // The prompt at 102 is already on the bottom screen, so the first jump goes above it.
     keydown({ key: 'ArrowUp', metaKey: true })
     expect(terminal.scrollToLine).toHaveBeenLastCalledWith(40)
     keydown({ key: 'ArrowUp', metaKey: true })
     expect(terminal.scrollToLine).toHaveBeenLastCalledWith(3)
     keydown({ key: 'ArrowUp', metaKey: true })
-    expect(terminal.scrollToLine).toHaveBeenCalledTimes(3)
+    expect(terminal.scrollToLine).toHaveBeenCalledTimes(2)
     keydown({ key: 'ArrowDown', metaKey: true })
     expect(terminal.scrollToLine).toHaveBeenLastCalledWith(40)
-    // A manual scroll in between restarts from the view's top line.
+    // A manual scroll in between continues from the view's top line.
     buffer.viewportY = 20
     keydown({ key: 'ArrowDown', metaKey: true })
     expect(terminal.scrollToLine).toHaveBeenLastCalledWith(40)
     keydown({ key: 'ArrowDown', metaKey: true })
+    expect(terminal.scrollToLine).toHaveBeenLastCalledWith(102)
+    expect(buffer.viewportY).toBe(100)
+    // Below the last prompt that is still in the scrollback, ⌘↓ returns to the bottom.
+    terminal.markers[2].isDisposed = true
+    buffer.viewportY = 60
     keydown({ key: 'ArrowDown', metaKey: true })
     expect(terminal.scrollToBottom).toHaveBeenCalledOnce()
+    expect(buffer.viewportY).toBe(100)
   })
 
   it('opens ⌘-clicked links in the browser and ignores plain clicks', async () => {
@@ -434,8 +437,11 @@ describe('TerminalSurface', () => {
     act(() => search.resultsListener({ resultIndex: 1, resultCount: 7 }))
     expect(screen.getByText('2 of 7')).toBeInTheDocument()
 
+    search.clearDecorations.mockClear()
     await userEvent.setup().click(screen.getByRole('button', { name: 'Use regular expression' }))
     expect(search.findNext).toHaveBeenLastCalledWith('err', expect.objectContaining({ regex: true }))
+    // The same query with new options must search again, not keep the addon's cached highlights.
+    expect(search.clearDecorations.mock.invocationCallOrder[0]).toBeLessThan(search.findNext.mock.invocationCallOrder.at(-1)!)
     await userEvent.setup().keyboard('{Shift>}{Enter}{/Shift}')
     expect(search.findPrevious).toHaveBeenLastCalledWith('err', expect.objectContaining({ regex: true, incremental: false }))
     search.findNext.mockImplementationOnce(() => { throw new SyntaxError('Invalid regular expression') })

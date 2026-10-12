@@ -152,7 +152,6 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
 
     // OSC 133;A starts a prompt (fish 4 emits it); ⌘↑/⌘↓ move between them.
     let prompts: IMarker[] = []
-    let jumpedTo: number | null = null
     terminal.parser.registerOscHandler(133, data => {
       if (data.startsWith('A')) {
         const marker = terminal.registerMarker(0)
@@ -160,20 +159,14 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
       }
       return false
     })
+    // A prompt is scrolled to the top line. Prompts below the top line are already on screen, so
+    // ⌘↑ goes to the first one above it and ⌘↓ past the last one returns to the bottom.
     const jumpToPrompt = (direction: 1 | -1) => {
-      const buffer = terminal.buffer.active
-      // A jump past the last full screen leaves the view at the bottom; continue from that prompt.
-      if (jumpedTo !== null && buffer.viewportY !== Math.min(jumpedTo, buffer.baseY)) jumpedTo = null
-      const from = jumpedTo ?? (buffer.viewportY === buffer.baseY ? buffer.baseY + buffer.cursorY : buffer.viewportY)
+      const top = terminal.buffer.active.viewportY
       const lines = prompts.filter(marker => !marker.isDisposed).map(marker => marker.line)
-      const target = direction < 0 ? lines.findLast(line => line < from) : lines.find(line => line > from)
-      if (target === undefined) {
-        jumpedTo = null
-        if (direction > 0) terminal.scrollToBottom()
-        return
-      }
-      jumpedTo = target
-      terminal.scrollToLine(target)
+      const target = direction < 0 ? lines.findLast(line => line < top) : lines.find(line => line > top)
+      if (target !== undefined) terminal.scrollToLine(target)
+      else if (direction > 0) terminal.scrollToBottom()
     }
 
     commandRef.current = command => {
@@ -414,11 +407,11 @@ function TerminalFindBar({ search, onClose }: { search: SearchAddon; onClose: ()
     }
   }, [search])
   useEffect(() => {
+    // The addon records the new options before comparing them with the last search, so with an
+    // unchanged query it would keep the old highlights and count; clearing forces a new search.
+    search.clearDecorations()
     if (query) find(1, true)
-    else {
-      search.clearDecorations()
-      setResults(null)
-    }
+    else setResults(null)
   }, [query, caseSensitive, regex, wholeWord])
 
   const toggle = (label: string, pressed: boolean, set: (value: boolean) => void, Icon: typeof Regex) =>
