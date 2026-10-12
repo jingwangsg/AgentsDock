@@ -183,7 +183,7 @@ import { SettingsStore, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
 import { hubRemoteId, hubRemoteProfileOrder, hubRemotesKey, isHubRemoteUrl, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
 import { hubSshAliasHost, removeSshHost, writeSshHost } from './ssh-hosts'
-import { openInZed as launchZed } from './open-in-zed'
+import { openInZed as launchZed, openZedWorkspaceFolders } from './open-in-zed'
 import { sshHostAlias, type OpenInZedRequest } from '../shared/ssh-host-alias'
 import { clearStorageError, localStorageWasFull, observeStorageErrors, reportStorageError } from './storage-health'
 import { SubagentEventProjector } from './subagent-projection'
@@ -5506,6 +5506,9 @@ export class AppService {
     })
     // launchZed rewrites the alias with the tunnel's port, then runs the CLI.
     await launchZed(request, forwarded.localPort)
+  }
+  zedWorkspaceFolders(request: Pick<OpenInZedRequest, 'sshHost' | 'hostAlias'>): Promise<string[]> {
+    return openZedWorkspaceFolders(request)
   }
   async pins(expected: WorkspaceProfileScope, sessionId: string): Promise<PinnedItem[]> {
     const scope = this.requireWorkspaceScope(expected)

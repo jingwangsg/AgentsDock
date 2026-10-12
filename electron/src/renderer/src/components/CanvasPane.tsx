@@ -13,10 +13,12 @@ import {
   useState
 } from 'react'
 import { saveLocalStorage } from '../lib/local-storage'
+import { parseWorkspaceCodeReference, requestOpenCodeReference } from '../lib/workspace-file-links'
 import { notifyTimelineViewportLayout } from '../lib/workspace-layout'
 import { interactiveClientCapabilities, useAppStore } from '../store/app-store'
 import { CanvasCommentSubmit, CanvasCommentThreads, canvasAnchorLabel } from './CanvasCommentThreads'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
+import { decodeLinkTarget } from './MarkdownContent'
 import './CanvasPane.css'
 
 export interface CanvasTarget {
@@ -42,6 +44,7 @@ type PageMessage =
   | { kind: 'action'; action: CanvasAction }
   | { kind: 'error'; error: string }
   | { kind: 'selection'; elements: SelectedElement[]; complete: boolean }
+  // A web link from the runtime; any other link as written (canvas-protocol.ts BRIDGE_SHIM).
   | { kind: 'link'; url: string }
   // From the comment pins (canvas-protocol.ts COMMENT_PINS_SCRIPT).
   | { kind: 'comment-open'; id: string }
@@ -239,7 +242,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
     if (action.type === 'askAgent' && record) {
       appendDraft(session.id, `Canvas ${record.path}: ${action.prompt}`)
     } else if (action.type === 'openFile') {
-      window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', { detail: { sessionId: session.id, path: action.path } }))
+      requestOpenCodeReference(session.id, { path: action.path, line: action.line })
     }
     // openAgent targets another chat; this pane belongs to one chat, so it is ignored.
   }, [record, session.id])
@@ -290,14 +293,20 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
           setSelection(message.elements.length ? message.elements : null)
           if (message.complete) setSelecting(false)
           break
-        case 'link':
-          if (/^https?:\/\//i.test(message.url)) void window.agentsDock.native.openExternal(message.url)
+        case 'link': {
+          if (/^https?:\/\//i.test(message.url)) {
+            void window.agentsDock.native.openExternal(message.url)
+            break
+          }
+          const reference = parseWorkspaceCodeReference(decodeLinkTarget(message.url))
+          if (reference) requestOpenCodeReference(session.id, reference)
           break
+        }
       }
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [flushSave, handleAction, name, postToPage, runFind])
+  }, [flushSave, handleAction, name, postToPage, runFind, session.id])
 
   useEffect(() => { postToPage('set-comments', [pins, activeThread]) }, [activeThread, pins, postToPage])
 

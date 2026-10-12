@@ -12,6 +12,8 @@ const workspaceEditorHarness = vi.hoisted(() => ({
   onReady: null as (() => void) | null
 }))
 const appRenderHarness = vi.hoisted(() => ({ sidebarRenders: 0 }))
+// The resolver itself is covered in WorkspaceEditor.test.tsx; here each reference is given its outcome.
+const workspaceReferenceHarness = vi.hoisted(() => ({ outcomes: {} as Record<string, unknown> }))
 const analytics = vi.hoisted(() => ({ trackEvent: vi.fn() }))
 const sideChatHarness = vi.hoisted(() => ({ props: null as any }))
 const teamspaceHarness = vi.hoisted(() => ({
@@ -78,6 +80,7 @@ vi.mock('./components/TeamNetwork', () => ({
   }
 }))
 vi.mock('./components/WorkspaceEditor', () => ({
+  resolveWorkspaceReference: (reference: string) => workspaceReferenceHarness.outcomes[reference] ?? { kind: 'missing' },
   WorkspaceEditor: ({
     session,
     available,
@@ -223,6 +226,60 @@ describe('App chat workspace identity', () => {
     cleanup()
     window.history.replaceState({}, '', '/')
     vi.restoreAllMocks()
+  })
+
+  it('opens a code reference in Zed when a workspace Zed has open holds the file, else in the editor', async () => {
+    const openInZed = vi.fn().mockResolvedValue(undefined)
+    const zedWorkspaceFolders = vi.fn().mockResolvedValue([])
+    const search = vi.fn().mockResolvedValue({ entries: [] })
+    Object.assign(window.agentsDock.native, { openInZed, zedWorkspaceFolders })
+    Object.assign(window.agentsDock, { workspace: { search } })
+    workspaceReferenceHarness.outcomes = {
+      'ipc.ts': { kind: 'match', path: 'electron/src/main/ipc.ts' },
+      'index.ts': { kind: 'ambiguous', matches: [] }
+    }
+    // Registered ahead of App's own capture listener, which may hold the event for the split editor.
+    const editor = vi.fn()
+    window.addEventListener('agentsdock:open-workspace-path', editor, true)
+    try {
+      render(<App />)
+      const send = (path: string, line?: number, column?: number) => act(() => {
+        window.dispatchEvent(new CustomEvent('agentsdock:open-code-reference', { detail: { sessionId: 'chat-a', path, line, column } }))
+      })
+      const chat = { sshHost: null, hostAlias: null, sessionId: 'chat-a', profileId: 'profile-a', profileGeneration: 4 }
+      const openedInEditor = (path: string, line?: number) => expect(editor).toHaveBeenLastCalledWith(expect.objectContaining({
+        detail: { sessionId: 'chat-a', path, line, column: undefined, resolve: true }
+      }))
+
+      // Zed has no workspace open on this machine: the editor, with no search.
+      send('ipc.ts', 527)
+      await waitFor(() => openedInEditor('ipc.ts', 527))
+      expect(zedWorkspaceFolders).toHaveBeenLastCalledWith({ ...chat, path: '/work/alpha' })
+      expect(search).not.toHaveBeenCalled()
+
+      zedWorkspaceFolders.mockResolvedValue(['/work/alpha/electron', '/srv/other'])
+      send('ipc.ts', 527, 3)
+      await waitFor(() => expect(openInZed).toHaveBeenLastCalledWith({ ...chat, path: '/work/alpha/electron/src/main/ipc.ts', line: 527, column: 3 }))
+      expect(search).toHaveBeenLastCalledWith('chat-a', 'ipc.ts', 100)
+      send('/srv/other/app.py', 9)
+      await waitFor(() => expect(openInZed).toHaveBeenLastCalledWith({ ...chat, path: '/srv/other/app.py', line: 9, column: undefined }))
+
+      // Outside every open workspace, several matches, or none: the editor, which opens or lists them.
+      send('/work/alpha/README.md', 2)
+      await waitFor(() => openedInEditor('/work/alpha/README.md', 2))
+      send('index.ts', 4)
+      await waitFor(() => openedInEditor('index.ts', 4))
+      send('notes/new.md')
+      await waitFor(() => openedInEditor('notes/new.md'))
+      expect(openInZed).toHaveBeenCalledTimes(2)
+
+      openInZed.mockRejectedValueOnce(new Error('Zed CLI not found.'))
+      send('/srv/other/app.py')
+      await waitFor(() => expect(useAppStore.getState().error).toBe('Zed CLI not found.'))
+    } finally {
+      window.removeEventListener('agentsdock:open-workspace-path', editor, true)
+      workspaceReferenceHarness.outcomes = {}
+    }
   })
 
   it('opens Side chat for the explicitly clicked split pane and rejects stale routing', () => {

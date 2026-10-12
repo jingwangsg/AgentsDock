@@ -102,6 +102,17 @@ export function requestOpenAgentFile(
   ))
 }
 
+/**
+ * A clicked code reference, from any surface. App opens it in Zed when a workspace Zed has open holds
+ * the file, else in the editor (requestOpenWorkspaceReference).
+ */
+export function requestOpenCodeReference(sessionId: string, reference: WorkspaceCodeReference): void {
+  window.dispatchEvent(new CustomEvent<OpenWorkspacePathDetail>(
+    'agentsdock:open-code-reference',
+    { detail: { sessionId, path: reference.path, line: reference.line, column: reference.column } }
+  ))
+}
+
 export function parseWorkspaceCodeReference(value: string): WorkspaceCodeReference | null {
   const candidate = value.trim()
   if (!candidate || candidate.length > 1_024 || /[\r\n\0]/.test(candidate)) return null

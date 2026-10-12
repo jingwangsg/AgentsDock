@@ -168,7 +168,7 @@ describe('MarkdownContent', () => {
 
   it('does not resolve workspace links against Electron’s packaged renderer URL', () => {
     const open = vi.fn()
-    window.addEventListener('agentsdock:open-workspace-path', open)
+    window.addEventListener('agentsdock:open-code-reference', open)
     render(<MarkdownContent
       text="[Run summary](runs/080126/run016/summary.json)"
       sessionId="chat-7"
@@ -187,10 +187,9 @@ describe('MarkdownContent', () => {
       sessionId: 'chat-7',
       path: 'runs/080126/run016/summary.json',
       line: undefined,
-      column: undefined,
-      resolve: true
+      column: undefined
     })
-    window.removeEventListener('agentsdock:open-workspace-path', open)
+    window.removeEventListener('agentsdock:open-code-reference', open)
   })
 
   it('keeps web links as real anchors', () => {
@@ -415,7 +414,7 @@ describe('MarkdownContent', () => {
 
   it('makes inline workspace file references clickable without an agent-authored link', () => {
     const open = vi.fn()
-    window.addEventListener('agentsdock:open-workspace-path', open)
+    window.addEventListener('agentsdock:open-code-reference', open)
     render(<MarkdownContent text={'`launcher.py:72` defines `TrainCommand`.'} sessionId="chat-7" />)
 
     fireEvent.click(screen.getByRole('button', { name: 'launcher.py:72' }))
@@ -424,16 +423,15 @@ describe('MarkdownContent', () => {
       sessionId: 'chat-7',
       path: 'launcher.py',
       line: 72,
-      column: undefined,
-      resolve: true
+      column: undefined
     })
     expect(screen.queryByRole('button', { name: 'TrainCommand' })).not.toBeInTheDocument()
-    window.removeEventListener('agentsdock:open-workspace-path', open)
+    window.removeEventListener('agentsdock:open-code-reference', open)
   })
 
   it('routes explicit workspace file links into the internal editor at the requested line', () => {
     const open = vi.fn()
-    window.addEventListener('agentsdock:open-workspace-path', open)
+    window.addEventListener('agentsdock:open-code-reference', open)
     render(<MarkdownContent
       text="[policy runner](robot/control/atlas_vla/policy_runner.py#L167)"
       sessionId="chat-7"
@@ -445,16 +443,15 @@ describe('MarkdownContent', () => {
       sessionId: 'chat-7',
       path: 'robot/control/atlas_vla/policy_runner.py',
       line: 167,
-      column: undefined,
-      resolve: true
+      column: undefined
     })
     expect(openLinked).not.toHaveBeenCalled()
-    window.removeEventListener('agentsdock:open-workspace-path', open)
+    window.removeEventListener('agentsdock:open-code-reference', open)
   })
 
   it('routes an explicit absolute Markdown file link through the same internal editor request', () => {
     const open = vi.fn()
-    window.addEventListener('agentsdock:open-workspace-path', open)
+    window.addEventListener('agentsdock:open-code-reference', open)
     render(<MarkdownContent
       text="[project notes](/home/dev/project/README.md#L12)"
       sessionId="chat-7"
@@ -466,16 +463,15 @@ describe('MarkdownContent', () => {
       sessionId: 'chat-7',
       path: '/home/dev/project/README.md',
       line: 12,
-      column: undefined,
-      resolve: true
+      column: undefined
     })
     expect(openLinked).not.toHaveBeenCalled()
-    window.removeEventListener('agentsdock:open-workspace-path', open)
+    window.removeEventListener('agentsdock:open-code-reference', open)
   })
 
   it('routes a server-home Markdown file link through the internal editor request', () => {
     const open = vi.fn()
-    window.addEventListener('agentsdock:open-workspace-path', open)
+    window.addEventListener('agentsdock:open-code-reference', open)
     render(<MarkdownContent
       text="[Claude settings](~/.claude/settings.local.json#L4)"
       sessionId="chat-7"
@@ -487,16 +483,15 @@ describe('MarkdownContent', () => {
       sessionId: 'chat-7',
       path: '~/.claude/settings.local.json',
       line: 4,
-      column: undefined,
-      resolve: true
+      column: undefined
     })
     expect(openLinked).not.toHaveBeenCalled()
-    window.removeEventListener('agentsdock:open-workspace-path', open)
+    window.removeEventListener('agentsdock:open-code-reference', open)
   })
 
   it('keeps an inline-code link label inert and opens the reference exactly once', () => {
     const open = vi.fn()
-    window.addEventListener('agentsdock:open-workspace-path', open)
+    window.addEventListener('agentsdock:open-code-reference', open)
     render(<MarkdownContent text={'[`file.py:10`](file.py#L10)'} sessionId="chat-7" />)
 
     expect(screen.queryByRole('button', { name: 'file.py:10' })).not.toBeInTheDocument()
@@ -507,15 +502,14 @@ describe('MarkdownContent', () => {
       sessionId: 'chat-7',
       path: 'file.py',
       line: 10,
-      column: undefined,
-      resolve: true
+      column: undefined
     })
-    window.removeEventListener('agentsdock:open-workspace-path', open)
+    window.removeEventListener('agentsdock:open-code-reference', open)
   })
 
   it('keeps a reference-style inline-code link label inert and opens exactly once', () => {
     const open = vi.fn()
-    window.addEventListener('agentsdock:open-workspace-path', open)
+    window.addEventListener('agentsdock:open-code-reference', open)
     render(<MarkdownContent
       text={'[`file.py:10`][source]\n\n[source]: file.py#L10'}
       sessionId="chat-7"
@@ -529,10 +523,9 @@ describe('MarkdownContent', () => {
       sessionId: 'chat-7',
       path: 'file.py',
       line: 10,
-      column: undefined,
-      resolve: true
+      column: undefined
     })
-    window.removeEventListener('agentsdock:open-workspace-path', open)
+    window.removeEventListener('agentsdock:open-code-reference', open)
   })
 
   it('does not make fenced code file references clickable', () => {

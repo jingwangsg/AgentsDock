@@ -15,6 +15,7 @@ import {
 import { LoaderCircle, RotateCcw, Siren, X } from 'lucide-react'
 import type { AppUpdateStatus } from '@shared/types'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
+import { openInZedInput } from '@shared/ssh-host-alias'
 import { ChatHeader } from './components/ChatHeader'
 import { ChatPane } from './components/ChatPane'
 import { ChatOutputsPanel } from './components/ChatOutputsPanel'
@@ -40,7 +41,7 @@ import { TeamNetwork, type PendingSecurePeerInvite, type TeamNetworkMailboxTarge
 import { CanvasPane, canvasNameFromPath, type CanvasTarget } from './components/CanvasPane'
 import { Timeline } from './components/Timeline'
 import { WelcomeChat } from './components/WelcomeChat'
-import { WorkspaceEditor } from './components/WorkspaceEditor'
+import { WorkspaceEditor, resolveWorkspaceReference } from './components/WorkspaceEditor'
 import { trackEvent } from './lib/analytics'
 import { TEAM_NETWORK_UI_ENABLED } from './lib/team-network-ui'
 import { activeEmergencyAlert } from './lib/emergency-alert'
@@ -56,6 +57,7 @@ import { installRendererStallMonitor } from './lib/renderer-stall-monitor'
 import { nativeFileRefsFromFiles } from './lib/native-files'
 import { profileSessionKey, rendererWorkspaceKey } from './lib/profile-scope'
 import { ChatFontApplier } from './lib/chat-font'
+import { requestOpenWorkspaceReference, type OpenWorkspacePathDetail } from './lib/workspace-file-links'
 import { flushActiveWorkspace, useAppStore } from './store/app-store'
 
 interface ScopedReviewTarget {
@@ -628,6 +630,36 @@ export function App() {
     }
     window.addEventListener('agentsdock:open-canvas', open)
     return () => window.removeEventListener('agentsdock:open-canvas', open)
+  }, [])
+  useEffect(() => {
+    // A code reference opens in Zed when a workspace Zed has open on the chat's machine holds the file, else in
+    // the editor. A relative one is placed as the editor places it, by the workspace search (`ipc.ts` or
+    // `src/main/ipc.ts` under the chat's directory); one with no single match is left to the editor.
+    const open = (event: Event) => {
+      const detail = (event as CustomEvent<OpenWorkspacePathDetail>).detail
+      const state = useAppStore.getState()
+      const session = state.sessions.find(candidate => candidate.id === detail.sessionId)
+      const request = session && openInZedInput(session, state.profiles.find(profile => profile.id === state.activeProfileId), state.profileGeneration)
+      const openInEditor = () => requestOpenWorkspaceReference(detail.sessionId, detail)
+      if (!request) {
+        openInEditor()
+        return
+      }
+      void (async () => {
+        const folders = await window.agentsDock.native.zedWorkspaceFolders(request)
+        let path = detail.path
+        if (folders.length && !path.startsWith('/')) {
+          const entries = await window.agentsDock.workspace.search(detail.sessionId, path, 100).then(page => page.entries, () => [])
+          const resolution = resolveWorkspaceReference(path, entries)
+          if (resolution.kind !== 'match') return openInEditor()
+          path = `${request.path.replace(/\/+$/, '')}/${resolution.path}`
+        }
+        if (!folders.some(folder => path === folder || path.startsWith(`${folder.replace(/\/+$/, '')}/`))) return openInEditor()
+        await window.agentsDock.native.openInZed({ ...request, path, line: detail.line, column: detail.column })
+      })().catch((error: unknown) => useAppStore.getState().setError(error instanceof Error ? error.message : String(error)))
+    }
+    window.addEventListener('agentsdock:open-code-reference', open)
+    return () => window.removeEventListener('agentsdock:open-code-reference', open)
   }, [])
   useEffect(() => {
     const closeSurface = () => {

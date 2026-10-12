@@ -220,6 +220,26 @@ describe('CanvasPane find', () => {
     expect(post).toHaveBeenCalledWith({ source: 'agentsdock-canvas-host', call: 'set-toc', args: [false] }, '*')
     expect(screen.getByRole('button', { name: 'Table of contents' })).toHaveAttribute('aria-pressed', 'false')
   })
+
+  it('sends a code reference from the report, link or openFile action, to the shared code reference request', async () => {
+    const { reply } = await renderCompiled()
+    const open = vi.fn()
+    window.addEventListener('agentsdock:open-code-reference', open)
+    try {
+      reply({ kind: 'link', url: 'src/app.ts:12' })
+      reply({ kind: 'link', url: 'file:///srv/app%20one.py#L4' })
+      // A link that names no code file is left alone, as before.
+      reply({ kind: 'link', url: 'notes' })
+      reply({ kind: 'action', action: { type: 'openFile', path: 'train.py', line: 30 } })
+      expect(open.mock.calls.map(([event]) => (event as CustomEvent).detail)).toEqual([
+        { sessionId: 'chat-1', path: 'src/app.ts', line: 12, column: undefined },
+        { sessionId: 'chat-1', path: '/srv/app one.py', line: 4, column: undefined },
+        { sessionId: 'chat-1', path: 'train.py', line: 30, column: undefined }
+      ])
+    } finally {
+      window.removeEventListener('agentsdock:open-code-reference', open)
+    }
+  })
 })
 
 
