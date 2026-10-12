@@ -410,8 +410,13 @@ export interface AgentsDockAPI {
   }
   /** The local AgentsServer on 127.0.0.1:7850 that every client connects to. */
   hub: {
-    /** Re-reads the token install.sh wrote for the local server and reconnects; true when the hub has a token. */
-    adoptLocalToken(): Promise<boolean>
+    /**
+     * Re-reads the local server token files, or checks `pastedToken` instead, and reconnects with the one the server
+     * accepts; true when the hub has a token.
+     */
+    adoptLocalToken(pastedToken?: string): Promise<boolean>
+    /** The env files searched for the local server's token, in search order. */
+    localTokenFiles(): Promise<string[]>
     /** `http://<tailnet name or IP>:7850` for pairing a phone, or null when no address is known. */
     pairingUrl(): Promise<string | null>
     /** Starts the local server's LaunchAgent and resolves once 127.0.0.1:7850 accepts connections. */
@@ -707,6 +712,8 @@ export interface AgentsDockAPI {
     showItemInFolder(path: string): Promise<void>
     /** Opens a server path in Zed; a remote's sshd is reached through a port tunnel from this app when the server allows it, else through its own ssh entry. */
     openInZed(input: OpenInZedRequest): Promise<void>
+    /** Folders of the workspaces Zed has open now on that server's machine; a code reference inside one opens in Zed. */
+    zedWorkspaceFolders(input: Pick<OpenInZedRequest, 'sshHost' | 'hostAlias'>): Promise<string[]>
     setBadge(count: number): Promise<void>
     notify(payload: ProfileNotificationPayload): Promise<void>
     log(scope: string, message: string, data?: unknown): Promise<void>

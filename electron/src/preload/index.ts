@@ -212,7 +212,8 @@ const api: AgentsDockAPI = {
     copyProxyToken: () => ipcRenderer.invoke('inference-proxy:copy-proxy-token')
   },
   hub: {
-    adoptLocalToken: () => ipcRenderer.invoke('hub:adopt-local-token'),
+    adoptLocalToken: pastedToken => ipcRenderer.invoke('hub:adopt-local-token', pastedToken),
+    localTokenFiles: () => ipcRenderer.invoke('hub:local-token-files'),
     pairingUrl: () => ipcRenderer.invoke('hub:pairing-url'),
     startLocalServer: () => ipcRenderer.invoke('hub:start-local-server'),
     restartLocalServer: force => ipcRenderer.invoke('hub:restart-local-server', force),
@@ -479,6 +480,7 @@ const api: AgentsDockAPI = {
     openExternal: url => ipcRenderer.invoke('native:open-external', url),
     showItemInFolder: path => ipcRenderer.invoke('native:show-item', path),
     openInZed: input => ipcRenderer.invoke('native:open-in-zed', input),
+    zedWorkspaceFolders: input => ipcRenderer.invoke('native:zed-workspace-folders', input),
     setBadge: count => ipcRenderer.invoke('native:set-badge', count),
     notify: payload => ipcRenderer.invoke('native:notify', payload),
     log: (scope, message, data) => ipcRenderer.invoke('native:log', scope, message, data),

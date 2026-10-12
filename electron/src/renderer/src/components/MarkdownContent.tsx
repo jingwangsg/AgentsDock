@@ -25,7 +25,7 @@ import { useTransientClose } from '../lib/transient-close'
 import {
   parseWorkspaceCodeReference,
   requestOpenAgentFile,
-  requestOpenWorkspaceReference,
+  requestOpenCodeReference,
   type OpenWorkspacePathDetail
 } from '../lib/workspace-file-links'
 import { useAppStore } from '../store/app-store'
@@ -147,7 +147,7 @@ export const MarkdownContent = memo(function MarkdownContent({
       return
     }
     if (sessionId && reference) {
-      requestOpenWorkspaceReference(sessionId, reference)
+      requestOpenCodeReference(sessionId, reference)
       return
     }
     // decodeLinkTarget already dropped file://; any other scheme is not a path.
@@ -212,7 +212,7 @@ export const MarkdownContent = memo(function MarkdownContent({
           type="button"
           className="inline-code inline-code-link"
           title={`Open ${reference.path}${reference.line ? ` at line ${reference.line}` : ''}`}
-          onClick={() => { if (sessionId) requestOpenWorkspaceReference(sessionId, reference) }}
+          onClick={() => { if (sessionId) requestOpenCodeReference(sessionId, reference) }}
         >{children}</button>
         : <code className="inline-code" {...props}>{children}</code>
     },
@@ -771,7 +771,7 @@ function textFromNode(node: ReactNode): string {
   return ''
 }
 
-function decodeLinkTarget(href: string): string {
+export function decodeLinkTarget(href: string): string {
   const withoutScheme = href.replace(/^file:\/\//, '')
   try {
     return decodeURIComponent(withoutScheme)

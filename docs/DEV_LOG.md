@@ -1,6 +1,6 @@
 # Public development log
 
-## 2026-10-12 — Android terminal tabs follow the desktop terminal (Android)
+## 2026-10-13 — Android terminal tabs follow the desktop terminal (Android)
 
 - The Android terminal connection now behaves like the desktop's. It acknowledges a terminal
   tab's output, sends input in frames of at most 64 KiB, and keeps input typed during a
@@ -66,7 +66,7 @@
   a chat's tmux terminal and both themes. Not exercised: a physical phone and keyboard (key
   events were injected without scan codes), TalkBack. Availability: source.
 
-## 2026-10-12 — Desktop terminal tabs run on xterm.js 6 (desktop)
+## 2026-10-13 — Desktop terminal tabs run on xterm.js 6 (desktop)
 
 - The desktop terminal tab replaces ghostty-web 0.4.0 with @xterm/xterm 6.0.0
   and its official addons (fit, WebGL with a DOM fallback, search, web links,
@@ -116,7 +116,7 @@
   draw as separate glyphs (the grapheme addon is still experimental).
   Availability: source.
 
-## 2026-10-12 — Terminal tabs: clean replays, flow control, reliable input (server, desktop)
+## 2026-10-13 — Terminal tabs: clean replays, flow control, reliable input (server, desktop)
 
 - A reattaching terminal no longer types stray answers into the shell: the
   server leaves a terminal query (cursor position, device attributes, colour
@@ -170,6 +170,148 @@
   throttled link, and the built desktop app (isolated profile) driving a
   terminal tab. Availability: source; a remote needs a redeploy and the
   desktop a new package.
+
+## 2026-10-13 — Hub ssh tunnels restart after every ssh exit, end their ProxyCommand processes, and stay off a local port another process took (server)
+
+- Before: a tunnel learned that its ssh had exited when ssh's stderr
+  closed. ssh's ProxyCommand children inherit that stderr, and a Sky
+  websocket proxy can outlive a failed connect, so after a Sky proxy
+  interruption the hub stopped restarting the tunnels of two cluster
+  remotes. It reported them connected with no ssh running and left one
+  proxy process per tunnel open to the Sky API.
+- Separately, while another process listened on a remote's tunnel port and
+  the tunnel was down, each ssh retry connected in full and then could not
+  bind the port. The tunnel's last error read "Could not request local
+  forwarding.", and the hub proxy sent requests with the remote's token to
+  that process, whose 401 made the remote look like it refused the hub.
+- Now the supervisor checks ssh's exit status once a second instead of
+  waiting for stderr to close. Each ssh runs in a session of its own, whose
+  process group holds its ProxyCommand children. After ssh exits, the hub
+  gives those children up to 5 s to exit by themselves (a killed AWS SSM
+  plugin leaves its session on the host for about 20 minutes, and the
+  tunnel's remote port stays taken with it), then kills the group; when the
+  tunnel or the hub stops, it kills the group at once. The git rewrite and
+  remote revive ssh commands kill their group too. A small helper process
+  kills the groups of all these ssh processes that are still running once
+  the hub has exited: a SIGKILLed hub runs no shutdown, and launchd ends
+  only the hub's own process group. Every tunnel ssh start is logged with
+  its pid, and the reason a tunnel cannot start ssh is logged when it
+  changes.
+- Before each start, a remote's tunnel binds its local port as ssh would.
+  While another process holds the port, ssh is not started and the tunnel
+  reports `could not start ssh: local port N: Address already in use`.
+  From the moment a tunnel's ssh exits until the next ssh starts, the hub
+  sends no request with the remote's token to its port: proxied HTTP gets
+  502 `remote_unreachable` with the tunnel status, WebSockets are refused,
+  and health probes, CLI updates and cross-server mail see the remote as
+  unreachable. Once the port is free, the next retry (at most 10 s later)
+  takes it.
+- Limits: the tunnel status changes within 1 s of ssh's exit, or within
+  6 s when a ProxyCommand child outlives ssh. A process that takes the port
+  while a new ssh is still connecting gets requests until that ssh fails to
+  bind and exits.
+- Unit tests: four new tests fail on the previous code and pass now: an
+  ssh that exits while a child holds its stderr (its port is refused before
+  the status changes), hub shutdown ending every tunnel's children, a
+  SIGKILLed hub process leaving no tunnel ssh or child, and a port held by
+  another process.
+- On isolated hubs against a real cluster remote: with the tunnel's Sky
+  proxy process paused (SIGSTOP) and its outer and inner ssh processes
+  killed, the previous code still reported the tunnel connected with no ssh
+  45 s later, until the proxy process was killed; the new code saw the exit
+  within 1 s, killed the proxy process and restarted the tunnel after the
+  2 s backoff. With the tunnel's port held by another process for 48 s,
+  that process received no request and one log line named the cause;
+  freeing the port started ssh 7 s later, and the hub proxy reached the
+  remote 22 s later. Graceful hub shutdowns ended all tunnel ssh and Sky
+  proxy processes, and 0.3 s after a SIGKILL of the hub none of its 12
+  tunnel ssh and Sky proxy processes, nor the helper, was running. Not
+  exercised: the 5 s wait against a real AWS SSM session, the git rewrite
+  and remote revive group kills on a real remote, and a child that leaves
+  ssh's process group. The running hub gets the fix when it restarts.
+
+## 2026-10-12 — A fresh desktop attaches to the AgentsServer already running on this Mac (desktop)
+
+- Before: on first launch the desktop read one token file, the default
+  install's `~/.config/agents-server/env`, and stored its token without
+  checking it. A Mac whose server kept its token elsewhere (a named instance,
+  a hub-deployed server, a source checkout's LaunchAgent) opened the guided
+  install titled "No local AgentsServer detected on 127.0.0.1:7850",
+  although a server answered there.
+- Now, when 127.0.0.1:7850 answers 401 and the local profile has no token,
+  the desktop tries the tokens in `~/.config/agents-server/env`, then
+  `~/.config/agents-server-instances/<name>/env` by name, then a
+  hub-deployed server's `~/.agentsdock-server/env`, then the source
+  checkout LaunchAgent's env file (`AGENTS_SERVER_CONFIG_DIR`, when set,
+  replaces the list). It keeps the first one the server accepts on a health
+  check, then opens on the server's chats and lists its remote servers in
+  the switcher, as before. A server that needs no token is used without one.
+- A server that answers but accepts none of those tokens gets a token prompt
+  in place of the install: it names the files searched and checks a pasted
+  token with the server before storing it. With nothing listening on 7850
+  the guided install opens, now also when a token file exists: the desktop
+  attaches once the server answers, on Retry or at the next poll (30 s).
+  Profiles that already hold a token are not changed.
+- Checks: unit tests for the search order, the attach decision (token
+  accepted, none accepted, nothing listening, a profile with a stored token,
+  a pasted token) and the token prompt. In the built app with a fresh user
+  data directory: against the running hub it opened on the hub's chat list
+  within 3 s of launch (1.1 s and 2.9 s in two runs), with its remotes in
+  the switcher and no dialog; the token was adopted 0.2 s after the window
+  opened, before the window had loaded. With
+  the app pointed at an isolated server: a token in the configured
+  directory attached; with no matching token file the prompt listed the
+  searched files, rejected a wrong token without storing it and connected
+  with the right one; nothing listening opened the guided install; a server
+  without a token attached. Not exercised: a real named instance,
+  hub-deployed server or source-checkout LaunchAgent with its own token
+  (unit tests only), and a slow server, during which the onboarding dialog
+  can show briefly before the attach finishes.
+
+## 2026-10-12 — Code references open in Zed when Zed has their project open (desktop, Canvas runtime)
+
+- A click on a code reference opens the file in Zed at its line and column
+  when a workspace Zed has open on the chat's machine contains the file, and
+  in the AgentsDock editor otherwise, as before. Zed opens the file inside
+  that workspace; it creates no new one. This covers inline
+  `path:line[:column]` spans and Markdown or `file://` links in chat
+  messages, the side chat and Canvas comment threads, and links, inline code
+  and `openFile` actions in Canvas reports. A relative reference is resolved
+  as the editor resolves it; one with several matches opens the editor's
+  picker.
+- Zed has no command that lists its open workspaces, so the desktop reads
+  Zed's state database read-only and lists the folders of the workspaces
+  marked with Zed's current session, while a Zed process runs. A remote chat
+  matches a Zed workspace on the SSH alias or host that Open in Zed uses for
+  that server; a server without an SSH host counts as this Mac only on a
+  loopback address. If Zed cannot open the file, the editor does and the
+  error is shown.
+- Side chat answers now get the chat's links: file references open as above,
+  web links as in the chat. A Canvas link that is not a web address now
+  reaches the desktop as written (the page used to resolve it against its own
+  URL), and `openFile` keeps its line. Canvas Markdown renders inline code
+  that names a file with a directory or a line (`src/app.ts`, `app.ts:12`) as
+  a link only when the desktop's Canvas bridge says it opens them; Android
+  and older desktops show it as code, as before.
+- Not covered: the Edited files card and the diff and review file lists (they
+  open the diff view), terminal output (no link detection), Team messages (no
+  chat to resolve against), Android (no Zed).
+- Checks: unit tests for the Zed target with line and column, the database
+  lookup (open, closed and previous-session workspaces; alias,
+  `user@host:port` and dev-container connections; Zed not running; an
+  unreadable database), the routing rule, the Canvas bridge and the Canvas
+  Markdown links. In the built app against an isolated server, with the
+  chat's directory open in Zed: inline, linked and bare-name references, a
+  side chat answer and three Canvas references opened in that workspace at
+  the expected line and column; an ambiguous name opened the editor's picker
+  and a file outside every Zed workspace opened in the editor. On a hub
+  remote whose SSH alias the hub keeps: with nothing open in Zed on that
+  machine the reference opened in the editor at its line; with a Zed
+  workspace open there it opened in that workspace at 30:5, and the alias
+  file was not rewritten. Not exercised: a remote reached through the
+  desktop's own port-tunnel alias, Linux and Windows, Zed Preview (its
+  database is not read). Availability: desktop package; the Canvas Markdown
+  part reaches a server with its next update.
 
 ## 2026-10-12 — A remote in a cluster home runs with that home as HOME (server)
 

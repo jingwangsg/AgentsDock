@@ -220,6 +220,17 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
+async def gone(pid: int) -> bool:
+    """Whether the process has exited and been reaped within 2 s."""
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
 def hub_hooks(**overrides):
     """The hub-side callables Update & redeploy all needs; tests inspect the mocks."""
     return SimpleNamespace(**{
@@ -540,6 +551,221 @@ with socket.socket() as listener:
         assert all("ConnectTimeout=30" in record["args"] for record in records)
         assert all(any(arg.startswith("ProxyCommand=ssh -S none -o ControlMaster=no -o ControlPath=none")
                        for arg in record["args"]) for record in records)
+
+    def test_a_tunnel_restarts_when_its_ssh_exits_while_a_proxycommand_child_holds_stderr(self) -> None:
+        # Seen live 2026-10-13 after a Sky proxy blip: ssh exited, the websocket proxy its ProxyCommand had
+        # started lived on with ssh's stderr, and the tunnel never restarted while it still said "connected".
+        script = self.tmp_path / "ssh"
+        children = self.tmp_path / "children"
+        script.write_text(f'''#!{sys.executable}
+import subprocess, sys, time
+# Plays the ProxyCommand's child: it inherits stderr and outlives ssh.
+child = subprocess.Popen(["sleep", "30"])
+with open({str(children)!r}, "a") as out:
+    out.write(f"{{child.pid}}\\n")
+if len(open({str(children)!r}).readlines()) == 1:
+    time.sleep(0.3)
+    print("Connection closed by UNKNOWN port 65535", file=sys.stderr, flush=True)
+    sys.exit(255)
+time.sleep(30)
+''')
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        # Long enough to observe the state between the exit and the next ssh.
+        self.enterContext(mock.patch.object(rs, "MIN_BACKOFF", 0.5))
+        self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
+        server = make_server(ssh_host="lab", local_port=free_port())
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
+        tunnel = manager.tunnels[server.id] = rs.Tunnel(server, None)
+
+        async def main() -> tuple[list[dict], bool]:
+            tunnel.start()
+            seen: list[dict] = []
+            refused_while_the_child_may_exit = False
+            try:
+                # Up to 1 s to see the exit, 5 s for the child to end by itself before it is killed, then the backoff.
+                for _ in range(750):
+                    if not seen or seen[-1] != tunnel.status:
+                        seen.append(dict(tunnel.status))
+                    if tunnel.status["state"] == "connected" and manager.tunnel_down_on(server.local_port) is tunnel:
+                        refused_while_the_child_may_exit = True
+                    if tunnel.status["state"] == "connected" and tunnel.status["restarts"] == 1:
+                        break
+                    await asyncio.sleep(0.02)
+                else:
+                    self.fail(f"the tunnel did not restart: {seen}")
+                assert await gone(int(children.read_text().split()[0])), "the first ssh's child outlived it"
+            finally:
+                await manager.stop()
+            return seen, refused_while_the_child_may_exit
+
+        seen, refused_while_the_child_may_exit = asyncio.run(main())
+        assert {"state": "reconnecting", "restarts": 1, "last_error": "Connection closed by UNKNOWN port 65535"} in seen
+        # ssh had exited, so its port was refused before the status changed.
+        assert refused_while_the_child_may_exit
+
+    def test_hub_shutdown_ends_the_proxycommand_children_of_every_tunnel(self) -> None:
+        script = self.tmp_path / "ssh"
+        children = self.tmp_path / "children"
+        script.write_text(f'''#!{sys.executable}
+import subprocess, time
+child = subprocess.Popen(["sleep", "30"])
+with open({str(children)!r}, "a") as out:
+    out.write(f"{{child.pid}}\\n")
+time.sleep(30)
+''')
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        self.enterContext(mock.patch.dict(os.environ))
+        os.environ.pop("AGENTSDOCK_INFERENCE_PROXY_PORT", None)
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
+        rs.save_registry(manager.path, [make_server(ssh_host="lab", local_port=free_port())])
+
+        async def main() -> None:
+            await manager.start()
+            try:
+                # The main, bulk, stream and surface tunnels.
+                for _ in range(200):
+                    if children.exists() and len(children.read_text().split()) == 4:
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    self.fail("tunnels did not start")
+            finally:
+                await manager.stop()
+            survivors = [pid for pid in map(int, children.read_text().split()) if not await gone(pid)]
+            assert survivors == [], survivors
+
+        asyncio.run(main())
+
+    def test_a_killed_hub_leaves_no_tunnel_ssh_or_proxycommand_child_behind(self) -> None:
+        # A SIGKILLed hub runs no shutdown, and launchd ends only the hub's own process group, which the
+        # tunnels' ssh processes are not in.
+        script = self.tmp_path / "ssh"
+        pids = self.tmp_path / "pids"
+        script.write_text(f'''#!{sys.executable}
+import os, subprocess, time
+child = subprocess.Popen(["sleep", "30"])
+with open({str(pids)!r}, "a") as out:
+    out.write(f"{{os.getpid()}} {{child.pid}}\\n")
+time.sleep(30)
+''')
+        script.chmod(0o700)
+        rs.save_registry(self.tmp_path / "state" / "remote-servers.json", [make_server(ssh_host="lab", local_port=free_port())])
+        hub = self.tmp_path / "hub.py"
+        hub.write_text(f'''
+import asyncio, sys
+from pathlib import Path
+from unittest import mock
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+import remote_servers as rs
+
+async def main():
+    with mock.patch.object(rs, "ssh_binary", return_value={str(script)!r}):
+        await rs.RemoteServerManager(Path({str(self.tmp_path / "state")!r}), source_dir=Path({str(self.tmp_path)!r})).start()
+        await asyncio.sleep(60)
+
+asyncio.run(main())
+''')
+        env = {name: value for name, value in os.environ.items() if name != "AGENTSDOCK_INFERENCE_PROXY_PORT"}
+        hub_process = subprocess.Popen([sys.executable, str(hub)], env=env)
+        try:
+            # The main, bulk, stream and surface tunnels.
+            for _ in range(500):
+                if pids.exists() and len(pids.read_text().splitlines()) == 4:
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("tunnels did not start")
+        finally:
+            hub_process.kill()
+            hub_process.wait()
+
+        async def survivors() -> list[int]:
+            return [pid for pid in map(int, pids.read_text().split()) if not await gone(pid)]
+
+        assert asyncio.run(survivors()) == []
+
+    def test_a_tunnel_stays_off_a_local_port_another_process_holds_and_takes_it_once_free(self) -> None:
+        # Seen live 2026-10-13: a test harness listened on a remote's tunnel port while that tunnel was down.
+        # Each ssh connected in full and then could not bind, and the hub proxy sent the remote's token to
+        # the harness, whose 401 made the remote look like it refused the hub.
+        script = self.tmp_path / "ssh"
+        calls = self.tmp_path / "tunnel-calls.jsonl"
+        script.write_text(f'''#!{sys.executable}
+import json, socket, sys, time
+args = sys.argv[1:]
+with open({str(calls)!r}, "a") as out:
+    out.write(json.dumps(args) + "\\n")
+host, port = args[args.index("-L") + 1].split(":")[:2]
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    listener.bind((host, int(port)))
+except OSError:
+    # Reached only if the tunnel starts ssh on a taken port, as the previous code did; these are the
+    # lines ssh then prints, after the connect.
+    print(f"bind [{{host}}]:{{port}}: Address already in use", file=sys.stderr)
+    print(f"channel_setup_fwd_listener_tcpip: cannot listen to port: {{port}}", file=sys.stderr)
+    print("Could not request local forwarding.", file=sys.stderr)
+    sys.exit(255)
+listener.listen()
+time.sleep(30)
+''')
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        self.enterContext(mock.patch.object(rs, "MIN_BACKOFF", 0.2))
+        self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
+        received = 0
+
+        async def answer_401(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            nonlocal received
+            received += 1
+            body = b'{"detail":"unauthorized"}'
+            writer.write(b"HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n"
+                         + b"content-length: %d\r\n\r\n" % len(body) + body)
+            await writer.drain()
+            writer.close()
+
+        async def main() -> None:
+            manager, _remote, dead, hub_port, close = await hub_with_fake(self.tmp_path)
+            other_process = await asyncio.start_server(answer_401, "127.0.0.1", dead.local_port)
+            tunnel = manager.tunnels[dead.id] = rs.Tunnel(dead, None)
+            tunnel.start()
+            try:
+                for _ in range(500):
+                    if tunnel.status["state"] == "reconnecting":
+                        break
+                    await asyncio.sleep(0.02)
+                else:
+                    self.fail(f"the tunnel never reported the taken port: {tunnel.status}")
+                assert f"local port {dead.local_port}: Address already in use" in tunnel.status["last_error"], tunnel.status
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(f"http://127.0.0.1:{hub_port}/api/remote/{dead.id}/api/health",
+                                                headers={"X-AgentsDock-Token": HUB_TOKEN})
+                assert response.status_code == 502 and response.json()["detail"]["code"] == "remote_unreachable", response.text
+                assert response.json()["detail"]["tunnel"]["last_error"] == tunnel.status["last_error"]
+                with self.assertRaises(websockets.exceptions.InvalidStatus):
+                    async with websocket_connect(f"ws://127.0.0.1:{hub_port}/api/remote/{dead.id}/ws/echo"):
+                        pass
+                assert await manager.probe_health(dead) is None
+                # No ssh started, and no request with the remote's token reached the other process.
+                assert received == 0 and not calls.exists()
+
+                other_process.close()
+                await other_process.wait_closed()
+                for _ in range(500):
+                    if tunnel.status["state"] == "connected" and calls.exists():
+                        break
+                    await asyncio.sleep(0.02)
+                else:
+                    self.fail(f"the tunnel did not take the freed port: {tunnel.status}")
+                assert len(calls.read_text().splitlines()) == 1
+            finally:
+                other_process.close()
+                await close()
+
+        asyncio.run(main())
 
     def test_backoff_and_revive_detection(self) -> None:
         values = []

@@ -251,6 +251,17 @@ const BRIDGE_SHIM = `
     post(message);
   } } } };
 
+  // The runtime reports a link resolved against this page's URL, which loses a relative path; a link that is not a
+  // web address also goes to the host as written, where a code reference opens in Zed or the editor. The page's own
+  // handlers still run. The runtime's Markdown renders file references as links only for a host that opens them.
+  window.__agentsdockOpensCodeReferences = true;
+  document.addEventListener('click', event => {
+    if (document.body.classList.contains('zed-selecting')) return;
+    const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+    const href = link && link.getAttribute('href');
+    if (href && !/^(?:https?:|mailto:|#)/i.test(href)) post({ kind: 'workspace-link', href });
+  }, true);
+
   // In-page find: a cross-document iframe cannot be searched from the host, so
   // the 'find'/'clear-find' host calls run here. Matches are painted with the CSS
   // Custom Highlight API (it decorates ranges without touching the DOM, so it

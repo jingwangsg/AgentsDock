@@ -40,6 +40,11 @@
     /!?\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/, // 10, 11 link (an image becomes a link to its source)
     /(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/, // 12 bare URL
   ].map(function (part) { return part.source; }).join('|');
+  // Inline code naming a file as chat code references do: `src/app.ts`, `app.ts:12`, `/srv/x.py#L4`. A directory
+  // or a line tells it from code such as `np.float32`.
+  var FILE_NAME = /[^\s:\/]+\.[A-Za-z]\w*/.source;
+  var LOCATION = /(?::\d+(?::\d+)?|#L\d+(?:C\d+)?)/.source;
+  var CODE_REFERENCE = new RegExp('^(?:[^\\s:]*\\/' + FILE_NAME + LOCATION + '?|' + FILE_NAME + LOCATION + ')$');
 
   function leadingSpaces(line) { return line.length - line.replace(/^\s+/, '').length; }
 
@@ -209,16 +214,20 @@
     var codeSpan = { fontFamily: mono, fontSize: 12, padding: '1px 4px', border: '1px solid ' + theme.stroke.secondary, borderRadius: 3 };
     var codeBlock = { margin: 0, padding: 12, fontFamily: mono, fontSize: 12, lineHeight: 1.5, border: '1px solid ' + theme.stroke.secondary, borderRadius: 6, overflowX: 'auto', color: theme.text.primary };
 
-    function renderInlines(nodes, keyPrefix) {
+    function renderInlines(nodes, keyPrefix, insideLink) {
       return nodes.map(function (node, index) {
         var key = keyPrefix + index;
         switch (node.type) {
           case 'text': return node.text;
-          case 'code': return h('code', { key: key, style: codeSpan }, node.text);
+          case 'code':
+            // A link only where the host opens it (the desktop's bridge sets the flag); elsewhere it would do nothing.
+            return globalThis.__agentsdockOpensCodeReferences && !insideLink && CODE_REFERENCE.test(node.text)
+              ? h('a', { key: key, href: node.text, style: { color: theme.text.link } }, h('code', { style: codeSpan }, node.text))
+              : h('code', { key: key, style: codeSpan }, node.text);
           case 'math': return h('code', { key: key, style: codeSpan }, node.text);
-          case 'strong': return h('strong', { key: key }, renderInlines(node.inlines, key + '.'));
-          case 'em': return h('em', { key: key }, renderInlines(node.inlines, key + '.'));
-          case 'link': return h('a', { key: key, href: node.href, style: { color: theme.text.link } }, renderInlines(node.inlines, key + '.'));
+          case 'strong': return h('strong', { key: key }, renderInlines(node.inlines, key + '.', insideLink));
+          case 'em': return h('em', { key: key }, renderInlines(node.inlines, key + '.', insideLink));
+          case 'link': return h('a', { key: key, href: node.href, style: { color: theme.text.link } }, renderInlines(node.inlines, key + '.', true));
         }
       });
     }
