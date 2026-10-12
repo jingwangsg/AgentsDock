@@ -1,5 +1,70 @@
 # Public development log
 
+## 2026-10-12 — Android terminal tabs follow the desktop terminal (Android)
+
+- The Android terminal connection now behaves like the desktop's. It acknowledges a terminal
+  tab's output, sends input in frames of at most 64 KiB, and keeps input typed during a
+  reconnect, in order, until the server is ready; answers to the old connection's queries are
+  dropped. Reconnects back off from 500 ms to 10 s instead of retrying every 800 ms. Replays
+  follow the desktop's rule: the queries in a replay are not answered, except in the escape
+  sequences at its end, and a replay does not ring bells, post notifications or write the
+  clipboard again. The function that finds those trailing sequences is tested with the
+  desktop's test vectors, and contract tests keep the copied query lists and patterns equal to
+  the desktop's. A shell that exits shows "The shell exited" and a New shell button, also after
+  the tab's view is rebuilt; the app no longer starts another shell by itself. Servers that send
+  no `replay_bytes` still work.
+- A hidden tab, or a tab of an app in the background, attaches passively: it does not take the
+  shell's size from the device in use. Showing the tab sends its size once, which makes the
+  phone the device in use. When the server holds output back from a viewer that fell behind and
+  later sends a fresh replay (`resync`), the tab rebuilds its screen from it like after a
+  reconnect. A batch of output short of 16 KiB is acknowledged once output pauses for 200 ms,
+  so such a viewer can catch up.
+- The terminal uses the desktop's xterm.js addons: WebGL with a DOM fallback, search, web links,
+  OSC 52 clipboard writes (reads get an empty answer), Unicode 11 widths, and sixel and iTerm2
+  images.
+- Touch: dragging scrolls the scrollback. In a full-screen program, or one that tracks the mouse,
+  a drag sends arrow keys or wheel reports instead, and a tap sends a click. Two fingers change
+  the text size. Tapping a URL or an OSC 8 link shows the address and opens it in the browser
+  after confirmation, since any program can make any text a link. Select text shows the buffer
+  as text with the system's selection handles and Copy menu. Paste is bracketed when the program
+  asked for it.
+- A find bar (case, whole word, regular expression, match count), A−/A+ for one tab, and
+  Settings → Terminal: text size, cursor shape and blink, copy on select, scrollback and screen
+  reader support. Settings and theme switches apply without reconnecting, also to the first
+  terminal opened after a launch.
+- The key row adds ⇧Tab, F1–F12 and previous/next prompt (OSC 133). A hardware keyboard sends
+  Control-letters to the shell. Control-Shift-C, V, A, K, F, W and ↑/↓, and Control-=, −, 0 run
+  the terminal's commands, as on the Windows and Linux desktop. The keyboard button raises the
+  soft keyboard.
+- The shell's title (OSC 0/2) and directory (OSC 7) name the tab in the list and the header
+  while it is not renamed. A bell vibrates the phone when the tab is in front and marks the tab
+  in the list otherwise. OSC 9/777 post a notification when the tab is hidden or the app is in
+  the background, at most one a second; opening it opens the tab.
+- As on the desktop, a terminal tab connects the first time it is shown and stays connected
+  while another tab or chat is in front. Android keeps the most recently shown tabs this way:
+  eight with up to 10,000 lines of scrollback, three with 25,000, and only the tab in front with
+  50,000. A tab past that disconnects and reattaches, with a clean replay, when it is shown
+  again. A hidden tab keeps reading output but does not draw it.
+- Measured on an emulator against an isolated server: with a 120 KiB/s link, Ctrl-C after 6 s
+  of `seq` output reached the prompt in 1.8 s; Android build 67 took 10.8 s. With a blinking
+  cursor, the web view process used 0.4 s of CPU per 30 s with WebGL and 1.2 s with the DOM
+  renderer; a 150,000-line burst used the same CPU with either. Each hidden tab added about
+  14 MB of memory (PSS of the app and its web view process: 523 MB with none hidden, 538 MB with
+  1, 561 MB with 3, 605 MB with 6) and no measurable idle CPU. A filled 50,000-line scrollback
+  added about 50 MB (190 MB while it was written), which is why fewer tabs are kept with large
+  scrollbacks. After the app had been in the background and its connections dropped, eight
+  kept tabs reconnected within 0.3 s of each other.
+- Checks: unit tests for the replay rule, the connection (passive attach, `resync`, idle
+  acknowledgements), the key chords and the settings. On the emulator, a byte recorder at the
+  shell showed the bytes from keys, chords, pastes, mouse reports, OSC 52 and replays. `cat -v`
+  and the recorder showed no stray bytes after reattaching from a tab switch, an evicted tab,
+  dropped connections in the background (three tabs recording), the phone-width (folded)
+  layout, and 28 `resync` replays while a second viewer drove heavy output over a throttled
+  link. The checks also covered the size handover between a second viewer and the phone, the
+  bell mark and notification from a hidden tab, the keyboard button (`dumpsys input_method`),
+  a chat's tmux terminal and both themes. Not exercised: a physical phone and keyboard (key
+  events were injected without scan codes), TalkBack. Availability: source.
+
 ## 2026-10-12 — Desktop terminal tabs run on xterm.js 6 (desktop)
 
 - The desktop terminal tab replaces ghostty-web 0.4.0 with @xterm/xterm 6.0.0
