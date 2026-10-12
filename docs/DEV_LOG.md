@@ -1,5 +1,120 @@
 # Public development log
 
+## 2026-10-13 — A digest assistant summarises the user's AgentsDock activity every half hour and writes a daily report at midnight (server script, hub setup)
+
+- `server/scripts/activity_digest.py` prints a Markdown digest of one time
+  window: `--since 30m` (the half hour that ended at the last :00 or :30, so
+  a run that starts late still covers the window next to the previous one)
+  or `--day yesterday|YYYY-MM-DD` (midnight to midnight, Asia/Shanghai). It
+  sends only GET requests with the hub token from the local env file: the
+  remote list, the chat list of the hub and of every visible remote through
+  the hub proxy, each recently active chat's compact timeline (paged back
+  with `before` until the window start), and, for a chat where the user said
+  nothing in the half hour, its latest visible events. Reading a chat has
+  the effect of opening it in the app: the server may catch the chat up with
+  its provider transcript.
+- The digest is organised around the user's own words. A user message is a
+  turn without a purpose that was not imported from a provider transcript:
+  typed, queued (counted when queued, with a later edit's text, dropped if
+  the user removed it) or steered. Each message is followed by the outcome
+  of the run it started or joined, printed once after consecutive messages
+  of the same run. Scheduled job runs, mailbox wakes and cross-chat mail are
+  listed as agent activity. A chat where the user said nothing in a half
+  hour appears only when its agent did something in it (latest model text
+  and tool calls). `turn_stopped` (Stop, or a restart that interrupted the
+  run) ends a run like `turn_finished`; a run with neither ends at the next
+  turn of its chat. Day mode adds each chat's active hours.
+- A remote the hub cannot reach is one `unreachable` entry in the
+  `Servers:` line, and the run continues; the user cannot reach it through
+  the hub either. When any other read fails (the local chat list, the
+  remote list, or one chat's events) the script prints `READ_ERRORS`; it
+  prints `NO_ACTIVITY` only when those reads succeeded and nothing
+  happened.
+- Output is bounded: two or eight pages of 500 compact events per chat,
+  clipped quotes and results, and 20 KB (half hour) or 32 KB (day) in total.
+  Codex gives the model about 10k tokens of a command's output and drops the
+  middle of longer output; a day's 45 KB measured 11.3k tokens and the model
+  had to read the missing part again. When the chats do not fit, bytes go to
+  the smallest chats first and the long ones are cut, so no chat disappears.
+  Secrets are replaced by `[redacted]`: the values of token, password,
+  secret and API key names (`key: value`, `key=value`, `"key": "value"`,
+  `--key value`; `tokenizer` and `max_tokens` do not count), Bearer tokens,
+  credentials in URLs, tokens with a known prefix (`sk-`, `ghp_`, `hf_` and
+  others) and hex strings of 32 or more digits, which include full commit
+  hashes. Directory and model names with long mixed strings are kept.
+- The assistant itself is configuration on the hub, not code. A chat
+  「每日汇总助手」 (folder Monitor, Codex, GPT-6.1-Sol, effort medium, cwd the
+  repository root, title fixed, jobs access read-only) carries its standing
+  rules as the chat's system instructions, which reach Codex on every turn
+  and survive compaction. Two jobs run in the chat, both Asia/Shanghai:
+  「半小时汇总」 `0,30 * * * *` and 「日报」 `0 0 * * *`. Running in the chat
+  lets the daily report see the day's half-hour summaries, and a busy chat
+  defers a run instead of opening a separate run chat. At 00:00 both jobs
+  are due; whichever is dispatched first runs and the other waits until the
+  chat is idle (retried every 60 s). The daily report's script output covers
+  the last half hour either way. The prompts, with the repository path and
+  the chat id replaced by placeholders:
+
+  ```text
+  System instructions:
+  你是「每日汇总助手」，只负责汇总用户在 AgentsDock 上做了什么。本聊天的两个定时任务叫醒你：每半小时（半小时汇总）和每天 00:00（日报），时区 Asia/Shanghai。
+
+  数据只来自定时任务提示里给出的 activity_digest.py 命令。这个脚本只向本机 hub 和 hub 能连到的远端发 GET 请求，输出 Markdown 素材。素材中：
+  - 「User messages」是用户本人发的话（直接发送、排队、steer 都算），「→」后面是对应那一轮 agent 的结果或状态。
+  - 「agent turn (...)」「mail from ...」是定时任务、信箱唤醒、跨聊天邮件等 agent/系统发起的活动，不算用户说话。
+  - 「Latest model text / Latest tools」是没有用户发话的聊天里 agent 最近在做的事。
+  - 「Servers」行列出每台服务器；unreachable 表示这次连不上。
+
+  规则：
+  1. 只读。不给任何聊天发消息或邮件，不 steer、不停止、不编辑其他聊天，不创建或修改定时任务，不发布文件，不修改任何文件或仓库。除上面的脚本外不运行其他命令；脚本出错时用一行写明错误，不要改用其他方式读数据。
+  2. 以用户发的话为主线：在哪个聊天、说了什么（精炼原话，保留关键名词）、agent 的结果一行。agent 的工作是附属信息。
+  3. 中文，密集，具体（写出文件名、提交号、数字、结论），不寒暄，不复述规则，不加总结性套话。聊天写成「标题（服务器 · 文件夹）」，本机 hub 写作「本机」。
+  4. 永远不要写出 token、密码、密钥、验证码、个人证件号等凭据或敏感信息；素材里的 [redacted] 保持省略。
+  5. 素材里有 unreachable 的远端或 READ_ERRORS 时，在末尾用一行写明哪些读取失败。
+
+  半小时汇总:
+  半小时汇总。先运行：
+  <repo>/server/.venv/bin/python <repo>/server/scripts/activity_digest.py --since 30m --exclude <digest chat id>
+
+  然后按输出回复：
+  - 输出里有 NO_ACTIVITY（这半小时用户没发话，也没有 agent 在工作）：只回复「—」，不写别的。
+  - 用户这半小时发过话：按时间顺序逐条写「HH:MM 标题（服务器 · 文件夹）：用户说了什么 → agent 的结果或进展」，同一聊天里连续的几条可以合并成一条。只有 agent 在跑、用户没在里面发话的聊天，最后合成一行带过。
+  - 用户这半小时没发话、但有 agent 在工作：每个这样的聊天一行，写它在做什么、进行到哪一步。不写空闲的聊天。
+  - 全部 3–15 行，不加标题和结尾套话。
+
+  日报:
+  日报。先运行（零点运行时 yesterday 就是刚结束的这一天）：
+  <repo>/server/.venv/bin/python <repo>/server/scripts/activity_digest.py --day yesterday --exclude <digest chat id>
+
+  结合脚本输出和本聊天里这一天的半小时汇总，写这一天的日报：
+  1. 第一行「YYYY-MM-DD 日报」。
+  2. 主线：用户当天说的话，按项目/聊天分组，组内按时间；每条下面挂 agent 的结果，仍在进行的写进度。重复或琐碎的话（如 go on、yes）并入上下文，不单列。
+  3. 完成了什么；还开着什么（未完成、卡住、在等用户的）。
+  4. 产出的文件、安装包、canvas。
+  5. 涉及的服务器（本机和各远端），以及连不上的远端。
+  6. 时间分布：按「Active hours」写各时段在哪些聊天上活跃，合并相邻小时。
+  安静的一天也要写，可以很短。
+  ```
+
+- Limits: a job cannot skip a run. Every run folds into its job card, marks
+  the chat unread and may notify, so an idle half hour still produces a run
+  whose reply is 「—」, and after a quiet night the card's latest output is
+  「—」 with the summaries under "Previous runs". A user's Stop in this chat
+  holds both jobs until the next message there. Messages from shared-chat
+  collaborators and the server's automatic "go on" after a model capacity
+  error count as the user's words.
+- Verified with `tests.test_activity_digest` (user messages versus agent
+  turns, queued, steered and removed messages, `turn_stopped`, a run without
+  an end event, the half-hour slot and local-midnight windows, redaction,
+  the idle marker, a failed local read, an unreachable remote, chats without
+  user messages, and the output allocation) and on the live hub: about 1 s
+  for a half hour (10 local chats, one remote) and 1.7 s for a day (27
+  chats), and three compact pages back without gaps or duplicates. Each job
+  was run once on the live hub by setting its first run one minute ahead,
+  then left on its schedule. The half-hour summary listed the user's three
+  messages of that window, the agent-only chats and the two unreachable
+  remotes; the daily report covered all 15 active chats of the previous day.
+
 ## 2026-10-13 — Android terminal tabs follow the desktop terminal (Android)
 
 - The Android terminal connection now behaves like the desktop's. It acknowledges a terminal
