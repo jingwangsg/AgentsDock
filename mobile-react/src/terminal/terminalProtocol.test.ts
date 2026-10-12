@@ -225,7 +225,9 @@ test('a tab attaches passive, and a resync replay is acknowledged at once and de
   link.close()
 })
 
-test('a batch short of 16 KiB is acknowledged once output pauses, so a held-back viewer can be resynced', () => {
+test('a batch short of 16 KiB is acknowledged within 200 ms of its first byte, even while output keeps coming', () => {
+  // A spinner's acknowledgements keep advancing, so the server never takes this viewer as asleep; and a viewer
+  // the server held back for falling behind gets its resync.
   mock.timers.enable({ apis: ['setTimeout'] })
   try {
     const { link, socket } = connect(true)
@@ -234,9 +236,13 @@ test('a batch short of 16 KiB is acknowledged once output pauses, so a held-back
     socket().binary(1000)
     mock.timers.tick(100)
     socket().binary(500)
-    assert.deepEqual(acks(socket()), [], 'not while output keeps coming')
-    mock.timers.tick(200)
+    mock.timers.tick(99)
+    assert.deepEqual(acks(socket()), [])
+    mock.timers.tick(1)
     assert.deepEqual(acks(socket()), [1500])
+    socket().binary(50)
+    mock.timers.tick(200)
+    assert.deepEqual(acks(socket()), [1500, 50])
     link.close()
   } finally {
     mock.timers.reset()

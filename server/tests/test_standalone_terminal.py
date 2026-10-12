@@ -599,7 +599,8 @@ class ActiveViewerTests(ScriptedShellTests):
         self._attach(desktop, flow_control=False, columns=160, rows=45)
         self.assertEqual(await self._sizes_after_a_moment(desktop), ["45 160"])
         self._attach(phone, flow_control=False, passive=True, columns=50, rows=20)
-        phone.messages.put_nowait({"type": "websocket.receive", "bytes": b"\x1b[?62;22c\x1b[12;1R\x1b[O"})
+        phone.messages.put_nowait({"type": "websocket.receive", "bytes": b"\x1b[?62;22c\x1b[12;1R"})
+        phone.messages.put_nowait({"type": "websocket.receive", "bytes": b"\x1b[O"})
         self.assertEqual(await self._sizes_after_a_moment(desktop), ["45 160"])
         phone.messages.put_nowait({"type": "websocket.receive", "bytes": b"x"})
         self.assertEqual(await self._sizes_after_a_moment(desktop), ["45 160", "20 50"])
@@ -724,15 +725,19 @@ class TerminalReportTests(ScriptedShellTests):
             await asyncio.sleep(0.01)
         return output
 
+    @staticmethod
+    def _send(viewer: ScriptedViewer, data: bytes) -> None:
+        viewer.messages.put_nowait({"type": "websocket.receive", "bytes": data})
+
     async def test_answers_from_a_viewer_that_is_not_active_reach_the_program_only_while_none_is(self) -> None:
         desktop, phone = ScriptedViewer(), ScriptedViewer()
         desktop_attach = self._attach(desktop, flow_control=False)
         self._attach(phone, flow_control=False, passive=True)
         # A frozen phone woke and sent its answers to queries the desktop already answered.
-        phone.messages.put_nowait({"type": "websocket.receive", "bytes": b"\x1b[27;3R\x1b[?62;4;9;22c\x1b[2;1$y"})
+        self._send(phone, b"\x1b[27;3R\x1b[?62;4;9;22c\x1b[2;1$y")
         await asyncio.sleep(0.3)
-        desktop.messages.put_nowait({"type": "websocket.receive", "bytes": b"\x1b[5;1R"})
-        desktop.messages.put_nowait({"type": "websocket.receive", "bytes": b"mark\n"})
+        self._send(desktop, b"\x1b[5;1R")
+        self._send(desktop, b"mark\n")
         output = await asyncio.wait_for(self._shown(desktop, b"mark\r\n"), 5)  # the tty echoes input as it arrives
         self.assertIn(b"^[[5;1R", output)
         self.assertNotIn(b"27;3R", output)
@@ -740,12 +745,8 @@ class TerminalReportTests(ScriptedShellTests):
         self.assertNotIn(b"2;1$y", output)
         # Answering did not make the phone active, so once the desktop leaves no viewer is: its answers get through.
         await self._detach(desktop, desktop_attach)
-        phone.messages.put_nowait({"type": "websocket.receive", "bytes": b"\x1b[28;3R"})
+        self._send(phone, b"\x1b[28;3R")
         await asyncio.wait_for(self._shown(phone, b"^[[28;3R"), 5)
-
-    @staticmethod
-    def _report(viewer: ScriptedViewer, data: bytes) -> None:
-        viewer.messages.put_nowait({"type": "websocket.receive", "bytes": data})
 
     async def test_an_answer_reaches_the_program_once_the_active_viewer_has_not_acknowledged_the_query(self) -> None:
         phone, desktop = ScriptedViewer(), ScriptedViewer()
@@ -753,20 +754,20 @@ class TerminalReportTests(ScriptedShellTests):
             self._attach(phone, flow_control=True)  # active, asleep right after its last keystroke
             self._attach(desktop, flow_control=True, passive=True)
             self._acknowledging(desktop)
-            self._report(phone, b"x")  # the program's output (a query, say), never acknowledged
+            self._send(phone, b"x")  # the program's output (a query, say), never acknowledged
             await asyncio.wait_for(self._shown(desktop, b"x"), 5)
-            self._report(desktop, b"\x1b[27;3R")  # answered at once: held
+            self._send(desktop, b"\x1b[27;3R")  # answered at once: held
             await asyncio.sleep(0.1)
             self.assertNotIn(b"27;3R", await self._shown(desktop, b"x"))
             await asyncio.wait_for(self._shown(desktop, b"^[[27;3R"), 5)
-            self._report(desktop, b"\x1b[28;3R")  # unresponsive by now: passed on at once
+            self._send(desktop, b"\x1b[28;3R")  # unresponsive by now: passed on at once
             await asyncio.wait_for(self._shown(desktop, b"^[[28;3R"), 0.2)
             # Awake again, it has the output: the desktop's answers are dropped, and answering did not make it active.
             phone.acknowledge(phone.received)
             await asyncio.sleep(0.1)
-            self._report(desktop, b"\x1b[29;3R")
+            self._send(desktop, b"\x1b[29;3R")
             await asyncio.sleep(0.5)
-            self._report(phone, b"y")
+            self._send(phone, b"y")
             self.assertNotIn(b"29;3R", await asyncio.wait_for(self._shown(desktop, b"y"), 5))
 
     async def test_an_answer_is_dropped_when_the_active_viewer_acknowledges_the_query(self) -> None:
@@ -776,12 +777,50 @@ class TerminalReportTests(ScriptedShellTests):
             self._acknowledging(phone)  # awake: it answers the query itself
             self._attach(desktop, flow_control=False, passive=True)
             for key in (b"x", b"y"):
-                self._report(phone, key)
+                self._send(phone, key)
                 await asyncio.wait_for(self._shown(desktop, key), 5)
-                self._report(desktop, b"\x1b[27;3R")
+                self._send(desktop, b"\x1b[27;3R")
                 await asyncio.sleep(0.5)
-            self._report(phone, b"z")
+            self._send(phone, b"z")
             self.assertNotIn(b"27;3R", await asyncio.wait_for(self._shown(desktop, b"z"), 5))
+
+    async def test_an_answer_waits_while_the_active_viewer_s_acknowledgements_advance_on_a_slow_link(self) -> None:
+        phone, desktop = ScriptedViewer(), ScriptedViewer()
+        with mock.patch.object(agent_server, "TERMINAL_UNRESPONSIVE_VIEWER_SECONDS", 0.3):
+            self._attach(phone, flow_control=True)
+            self._attach(desktop, flow_control=False, passive=True)
+            await self._replayed(phone)
+            phone.acknowledge(phone.received)
+            acked = phone.received
+            self._send(phone, (b"x" * 600 + b"\n") * 3 + b"END\n")  # a backlog its slow link takes 1.5 s to deliver
+            await asyncio.wait_for(self._shown(desktop, b"END\r\n"), 5)
+            self._send(desktop, b"\x1b[27;3R")
+            for _ in range(15):  # its acknowledgements keep advancing, a little at a time
+                await asyncio.sleep(0.1)
+                phone.acknowledge(100)
+                acked += 100
+            phone.acknowledge(phone.received - acked)  # it had the query and answered it itself
+            await asyncio.sleep(0.5)
+            self._send(phone, b"y")
+            self.assertNotIn(b"27;3R", await asyncio.wait_for(self._shown(desktop, b"y"), 5))
+
+    async def test_only_one_other_viewer_answers_in_place_of_an_asleep_active_viewer(self) -> None:
+        phone, desktop, laptop = ScriptedViewer(), ScriptedViewer(), ScriptedViewer()
+        with mock.patch.object(agent_server, "TERMINAL_UNRESPONSIVE_VIEWER_SECONDS", 0.3):
+            self._attach(phone, flow_control=True)  # active and asleep
+            self._attach(desktop, flow_control=False, passive=True)
+            self._attach(laptop, flow_control=False, passive=True)
+            self._send(phone, b"x")
+            await asyncio.wait_for(self._shown(desktop, b"x"), 5)
+            self._send(desktop, b"\x1b[27;3R")
+            self._send(desktop, b"\x1b[?62;22c")  # its terminal's second answer to the same output
+            self._send(laptop, b"\x1b[28;3R")
+            await asyncio.sleep(0.8)
+            self._send(phone, b"y")
+            output = await asyncio.wait_for(self._shown(desktop, b"y"), 5)
+            # Whichever came first: all of that viewer's answers, none of the other's.
+            got = [answer in output for answer in (b"^[[27;3R", b"^[[?62;22c", b"^[[28;3R")]
+            self.assertIn(got, ([True, True, False], [False, False, True]))
 
     async def test_held_answers_go_before_that_viewer_s_typing_and_are_dropped_when_it_leaves(self) -> None:
         phone, desktop, laptop = ScriptedViewer(), ScriptedViewer(), ScriptedViewer()
@@ -789,15 +828,38 @@ class TerminalReportTests(ScriptedShellTests):
             self._attach(phone, flow_control=True)  # active and asleep
             self._attach(desktop, flow_control=False, passive=True)
             laptop_attach = self._attach(laptop, flow_control=False, passive=True)
-            self._report(phone, b"x")
+            self._send(phone, b"x")
             await asyncio.wait_for(self._shown(desktop, b"x"), 5)
-            self._report(laptop, b"\x1b[28;3R")  # held, then its viewer leaves
+            self._send(laptop, b"\x1b[28;3R")  # held, then its viewer leaves
             await self._detach(laptop, laptop_attach)
-            self._report(desktop, b"\x1b[27;3R")  # held, then its viewer types
-            self._report(desktop, b"z")
-            output = await asyncio.wait_for(self._shown(desktop, b"^[[27;3Rz"), 5)
+            self._send(desktop, b"\x1b[27;3R")  # held, then its viewer types
+            self._send(desktop, b"z")
+            await asyncio.wait_for(self._shown(desktop, b"^[[27;3Rz"), 5)
             await asyncio.sleep(0.7)
-            self.assertNotIn(b"28;3R", output + await self._shown(desktop, b"z"))
+            self.assertNotIn(b"28;3R", await self._shown(desktop, b"z"))
+
+    async def test_focus_reports_from_any_viewer_reach_the_program_without_making_it_active(self) -> None:
+        phone, desktop = ScriptedViewer(), ScriptedViewer()
+        self._attach(phone, flow_control=True)
+        self._acknowledging(phone)
+        self._attach(desktop, flow_control=False, passive=True)
+        self._send(desktop, b"\x1b[I")
+        await asyncio.wait_for(self._shown(desktop, b"^[[I"), 0.5)
+        # Still not active: its answer is held and dropped once the phone acknowledges the output.
+        self._send(desktop, b"\x1b[27;3R")
+        await asyncio.sleep(1.5)
+        self._send(phone, b"y")
+        self.assertNotIn(b"27;3R", await asyncio.wait_for(self._shown(desktop, b"y"), 5))
+
+    async def test_input_after_the_shell_exited_is_ignored(self) -> None:
+        phone, desktop = ScriptedViewer(), ScriptedViewer()
+        phone_attach = self._attach(phone, flow_control=True)
+        self._attach(desktop, flow_control=False, passive=True)
+        await self._replayed(desktop)
+        os.killpg(self.shell.process.pid, signal.SIGKILL)
+        await asyncio.wait_for(phone_attach, 3)
+        self.shell.input_from(desktop, b"\x1b[27;3R")  # a frame read before its handler saw the close
+        self.shell.input_from(desktop, b"x")
 
 
 class ReplayTests(ScriptedShellTests):

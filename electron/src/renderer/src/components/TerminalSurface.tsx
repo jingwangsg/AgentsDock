@@ -308,7 +308,7 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
       setConnection(payload.state)
       setConnectionError(payload.error ?? null)
       if (payload.state === 'connected') {
-        // A new attach, or a resync of this one: the replay that follows (as `replay` data) rebuilds the
+        // A new attach, or a resync of this one: when a replay follows (as `replay` data), it rebuilds the
         // screen. Flagged from here, so the rest of an earlier replay still being parsed stays flagged too.
         attachRef.current += 1
         replayingRef.current = staleQueriesRef.current = payload.replayBytes !== 0
@@ -318,13 +318,9 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
           promptsRef.current = []
         })
         fitNow()
-        if (activeRef.current && !payload.resync) {
-          // The tab attached passively. In front of the user, this device takes the pty's size, which a fit
-          // made while the link was down never sent; otherwise (a Mac left on the tab while the user is on the
-          // phone) the size stays with the device in use.
-          if (document.hasFocus()) window.agentsDock.terminal.resize(profileId, profileGeneration, surface.id, terminal.cols, terminal.rows)
-          terminal.focus()
-        }
+        // The attach is passive and sends no size: a Mac left on the tab does not take the pty from the phone
+        // after a network drop. The size in its URL applies once the user types here.
+        if (activeRef.current && !payload.resync) terminal.focus()
       }
     })
     const input = terminal.onData(data => window.agentsDock.terminal.write(profileId, profileGeneration, surface.id, data))
@@ -367,8 +363,9 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
     const frame = window.requestAnimationFrame(() => {
       if (hostRef.current && fitRef.current) fitIfLaidOut(hostRef.current, fitRef.current)
       const terminal = terminalRef.current
-      // The user showed the tab: this device takes the pty's size, even when the fit left it unchanged.
-      if (terminal && profileId) window.agentsDock.terminal.resize(profileId, profileGeneration, surface.id, terminal.cols, terminal.rows)
+      // The user showed the tab: this device takes the pty's size, even when the fit left it unchanged. Not with
+      // the window in the background, as when the app starts or reloads on this tab.
+      if (terminal && profileId && document.hasFocus()) window.agentsDock.terminal.resize(profileId, profileGeneration, surface.id, terminal.cols, terminal.rows)
       terminal?.focus()
     })
     return () => {

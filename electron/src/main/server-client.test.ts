@@ -3241,20 +3241,55 @@ describe('AgentServerClient live stream', () => {
     old.close()
   })
 
-  it('acknowledges the rest of a batch once output stops for 200 ms, so a tab the server stopped sending to is resynced', () => {
+  it('acknowledges the rest of a batch within 200 ms of its first byte, even while output keeps trickling in', () => {
     vi.useFakeTimers()
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const client = new AgentServerClient('http://example.test:7850', 'secret')
     const connection = client.terminal('term_0123abcd', { columns: 80, rows: 24 }, () => {}, () => {})
     const [socket] = FakeWebSocket.instances
     socket.emit('message', JSON.stringify({ type: 'ready', name: 'zsh', replay_bytes: 0 }))
+    // A spinner: a frame every 100 ms. Its acknowledgements keep advancing, so the server never takes this
+    // viewer as asleep (and a tab the server stopped sending to gets its resync).
     socket.emit('message', new Uint8Array(100).buffer)
-    vi.advanceTimersByTime(150)
+    vi.advanceTimersByTime(100)
     socket.emit('message', new Uint8Array(200).buffer)
-    vi.advanceTimersByTime(199)
+    vi.advanceTimersByTime(99)
     expect(socket.sent).toEqual([])
     vi.advanceTimersByTime(1)
     expect(socket.sent).toEqual([JSON.stringify({ type: 'ack', bytes: 300 })])
+    socket.emit('message', new Uint8Array(50).buffer)
+    vi.advanceTimersByTime(200)
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({ type: 'ack', bytes: 50 }))
+    connection.close()
+  })
+
+  it('sends a resize made while the tab is not connected once it is, to take the pty for this device', () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    const connection = client.terminal('term_0123abcd', { columns: 80, rows: 24 }, () => {}, () => {})
+    const [first] = FakeWebSocket.instances
+    const resizes = (socket: FakeWebSocket) => socket.sent.filter(item => typeof item === 'string' && item.includes('resize'))
+    first.readyState = 0
+    connection.resize(100, 30)  // shown while the link is still opening
+    expect(resizes(first)).toEqual([])
+    first.readyState = 1
+    first.emit('message', JSON.stringify({ type: 'ready', name: 'zsh', replay_bytes: 0 }))
+    expect(resizes(first)).toEqual([JSON.stringify({ type: 'resize', columns: 100, rows: 30 })])
+    first.emit('close', undefined, { code: 1006 })
+    connection.resize(120, 40)  // shown while the link is down: the reattach URL has the size, the resize claims it
+    vi.advanceTimersByTime(500)
+    const second = FakeWebSocket.instances[1]
+    expect(second.url.searchParams.get('columns')).toBe('120')
+    second.emit('message', JSON.stringify({ type: 'ready', name: 'zsh', replay_bytes: 0 }))
+    expect(resizes(second)).toEqual([JSON.stringify({ type: 'resize', columns: 120, rows: 40 })])
+    // A reattach with nothing pending sends no size.
+    second.emit('close', undefined, { code: 1006 })
+    vi.advanceTimersByTime(1000)
+    const third = FakeWebSocket.instances[2]
+    third.emit('message', JSON.stringify({ type: 'ready', name: 'zsh', replay_bytes: 0 }))
+    expect(resizes(third)).toEqual([])
     connection.close()
   })
 

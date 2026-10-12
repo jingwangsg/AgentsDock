@@ -216,17 +216,16 @@ describe('TerminalSurface', () => {
     expect(terminal.writes).toHaveLength(3)
   })
 
-  it('gives the shell the visible grid once attached, since a resize sent while the link was opening was lost', async () => {
+  it('sends no size when it connects: the passive attach carries it, applied once the user types here', async () => {
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     render(<TerminalSurface surface={surface} active />)
     await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(1))
-    const [terminal] = xterm.instances
-    terminal.cols = 148
-    terminal.rows = 57
+    expect(terminalApi.connect.mock.calls[0][3]).toEqual({ cwd: '/work/app', columns: 80, rows: 24 })
+    await nextFrame()
     terminalApi.resize.mockClear()
 
     emit('terminal:state', { state: 'connected', name: 'fish' })
-    expect(terminalApi.resize).toHaveBeenCalledWith('profile-a', 4, 'term_abc', 148, 57)
+    expect(terminalApi.resize).not.toHaveBeenCalled()
   })
 
   it('does not repeat the replay’s clipboard writes, bells or notifications', async () => {
@@ -566,33 +565,32 @@ describe('TerminalSurface', () => {
     expect(native.notify).toHaveBeenCalledOnce()
   })
 
-  it('takes the pty’s size when the user shows the tab or it reconnects in front of the user, not otherwise', async () => {
+  it('takes the pty’s size only when the user shows the tab', async () => {
+    // The app starts on this tab with its window in the background: no size.
     const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     const view = render(<TerminalSurface surface={surface} active />)
     await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(1))
     await nextFrame()
-    terminalApi.resize.mockClear()
-    // Shown, but the window is in the background (the user is on the phone): a reconnect leaves the size alone.
-    emit('terminal:state', { state: 'connected', replayBytes: 0 })
     expect(terminalApi.resize).not.toHaveBeenCalled()
-    hasFocus.mockReturnValue(true)
-    emit('terminal:state', { state: 'connected', replayBytes: 0 })
-    expect(terminalApi.resize).toHaveBeenCalledWith('profile-a', 4, 'term_abc', 80, 24)
+    const [terminal] = xterm.instances
 
-    // A profile change reconnects every tab; it is not the user showing this one.
-    terminalApi.resize.mockClear()
+    // A reconnect (here of every tab, on a profile change) is not the user showing this one.
+    hasFocus.mockReturnValue(true)
     act(() => { useAppStore.setState({ profileGeneration: 5 }) })
     await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(2))
     act(() => { useAppStore.setState({ profileGeneration: 4 }) })
     await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(3))
     await nextFrame()
-    expect(terminalApi.resize).not.toHaveBeenCalled()
-
-    // Hidden: a reconnect leaves the size alone, focused window or not.
-    view.rerender(<TerminalSurface surface={surface} active={false} />)
-    await nextFrame()
     emit('terminal:state', { state: 'connected', replayBytes: 0 })
     expect(terminalApi.resize).not.toHaveBeenCalled()
+
+    // Hidden: a reconnect takes neither the size nor the focus.
+    view.rerender(<TerminalSurface surface={surface} active={false} />)
+    await nextFrame()
+    terminal.focus.mockClear()
+    emit('terminal:state', { state: 'connected', replayBytes: 0 })
+    expect(terminalApi.resize).not.toHaveBeenCalled()
+    expect(terminal.focus).not.toHaveBeenCalled()
 
     // Shown again by the user: this device takes the size, even with it unchanged.
     view.rerender(<TerminalSurface surface={surface} active />)

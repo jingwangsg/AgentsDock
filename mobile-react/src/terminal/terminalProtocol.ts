@@ -13,8 +13,10 @@ const TERMINAL_SHELL_EXITED_CLOSE_CODE = 4410
 // pauses the shell while the active viewer has more than its window of live output
 // (TERMINAL_OUTPUT_WINDOW_BYTES, 128 KiB) unacknowledged.
 const TERMINAL_ACK_BYTES = 16 * 1024
-// A batch still short of that size is acknowledged once output has paused this long: a viewer the server
-// holds back for falling behind gets its resync only when every byte it was sent is acknowledged.
+// A batch still short of that size is acknowledged at most this long after its first byte arrived, even while
+// output keeps trickling in: the server takes an active viewer whose acknowledgements stop advancing for a
+// second as asleep, and a viewer it holds back for falling behind gets its resync only when every byte it was
+// sent is acknowledged.
 const TERMINAL_ACK_IDLE_MS = 200
 // Input frames stay far below the 1 MiB frame limit of chat terminals and older servers, and small enough
 // that acknowledgements get through between the frames of a large paste on a slow link.
@@ -188,10 +190,7 @@ export function openTerminalConnection(options: TerminalLinkOptions): TerminalLi
     if (!options.standalone) return
     unacknowledged += bytes.byteLength
     if (unacknowledged >= TERMINAL_ACK_BYTES || replayPending) acknowledge(current)
-    else {
-      if (ackTimer) clearTimeout(ackTimer)
-      ackTimer = setTimeout(() => acknowledge(current), TERMINAL_ACK_IDLE_MS)
-    }
+    else ackTimer ??= setTimeout(() => acknowledge(current), TERMINAL_ACK_IDLE_MS)
     replayPending = false
   }
   const send = (bytes: Uint8Array<ArrayBuffer>) => {
@@ -214,13 +213,15 @@ export function openTerminalConnection(options: TerminalLinkOptions): TerminalLi
     url.searchParams.set('columns', String(columns))
     url.searchParams.set('rows', String(rows))
     if (options.standalone) url.searchParams.set('flow_control', '1')
-    // A tab takes the pty's size when the user shows it or types in it (terminal-page-entry.ts), not by reconnecting.
+    // Every attach is passive: the tab becomes the active viewer, at the size in this URL, when the user types in
+    // it, or with a resize when it is in sight (terminal-page-entry.ts).
     if (options.standalone) url.searchParams.set('passive', '1')
     decoder = new TextDecoder()
     ready = false
     replayPending = false
     unacknowledged = 0
     if (ackTimer) clearTimeout(ackTimer)
+    ackTimer = null
     const current = createSocket(url.toString())
     current.binaryType = 'arraybuffer'
     socket = current

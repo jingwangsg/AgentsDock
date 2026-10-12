@@ -14,12 +14,13 @@
   the tab's view is rebuilt; the app no longer starts another shell by itself. Servers that send
   no `replay_bytes` still work.
 - Like the desktop's, every tab attaches passively: it does not take the shell's size from the
-  device in use. Showing the tab sends its size once, which makes the phone the device in use;
-  so does a reconnect of a tab that is shown with the app in front. A tab of an app in the
-  background takes nothing back after a network drop. When the server holds output back from a viewer that fell behind and
-  later sends a fresh replay (`resync`), the tab rebuilds its screen from it like after a
-  reconnect. A batch of output short of 16 KiB is acknowledged once output pauses for 200 ms,
-  so such a viewer can catch up.
+  device in use. The tab sends its size when it comes into sight, and when it reconnects while
+  in sight with the app in front, which makes the phone the device in use. A tab of an app in
+  the background sends no size after a network drop. When the server holds output back from a
+  viewer that fell behind and later sends a fresh replay (`resync`), the tab rebuilds its screen
+  from it like after a reconnect. A batch of output short of 16 KiB is acknowledged at most
+  200 ms after its first byte, so such a viewer can catch up and the server can tell that the
+  phone is awake.
 - The terminal uses the desktop's xterm.js addons: WebGL with a DOM fallback, search, web links,
   OSC 52 clipboard writes (reads get an empty answer), Unicode 11 widths, and sixel and iTerm2
   images.
@@ -55,7 +56,7 @@
   added about 50 MB (190 MB while it was written), which is why fewer tabs are kept with large
   scrollbacks. After the app had been in the background and its connections dropped, eight
   kept tabs reconnected within 0.3 s of each other.
-- Checks: unit tests for the replay rule, the connection (passive attach, `resync`, idle
+- Checks: unit tests for the replay rule, the connection (passive attach, `resync`, short-batch
   acknowledgements), the key chords and the settings. On the emulator, a byte recorder at the
   shell showed the bytes from keys, chords, pastes, mouse reports, OSC 52 and replays. `cat -v`
   and the recorder showed no stray bytes after reattaching from a tab switch, an evicted tab,
@@ -135,16 +136,30 @@
   "latest" client: the viewer that last typed or resized, or that attached
   without `passive=1`. Only the active viewer's size is applied to the pty.
   When it disconnects, the viewer that was active before it becomes active
-  again and its size is applied. A terminal's answers to a program's queries
-  and its focus reports do not count as typing, and while another viewer is
-  active they do not reach the program (a woken phone's late answers no longer
-  appear in the shell), unless the active viewer has not acknowledged, within
-  1 s, the output that carried the query: then it is asleep and another
-  viewer's answer, held that long, gets through, so fish does not wait 10 s
-  for an answer to its prompt query. The desktop always attaches
-  with `passive=1` and sends its size when the user shows the tab, or when the
-  tab reconnects while shown in the focused window; a Mac left on the tab no
-  longer takes the size back from the phone after a network drop.
+  again and its size is applied. The desktop and Android attach with
+  `passive=1`. The desktop sends its size when the user shows the tab in the
+  focused window. A reconnect sends no size; the size in its attach request
+  applies once the user types there. A Mac left on the tab therefore no longer
+  takes the size back from the phone after a network drop.
+- Every attached terminal answers a program's queries (cursor position,
+  device attributes and similar), one in the background too, and maybe late.
+  Answers never make a viewer active. The active viewer's answers reach the
+  program. Another viewer's answer is held: it is dropped once the active
+  viewer acknowledges the output sent before the answer arrived, and passed on
+  once the active viewer has left or is unresponsive, that is, behind with its
+  acknowledgements not advancing for 1 s. For the same output only one other
+  viewer's answers are passed on. An active viewer that does not acknowledge
+  output (an older client) keeps only its own answers. Focus reports (focus in
+  and out, which vim asks for) from any viewer reach the program.
+- Measured with an isolated server and scripted viewers that answer and
+  acknowledge like the desktop and Android tabs, with a program in the tab
+  counting the answers it got: after a spinner printing every 100 ms, one
+  answer (two before); with the active viewer on a 20 KiB/s link and 100 KiB of
+  output before the query, one answer, the active viewer's after 5.1 s (before,
+  also the other viewer's after 1.0 s); with the active viewer asleep and two
+  other viewers, one answer after 1.0 s. Through a hub with fish, when the
+  viewer that typed fell asleep, the next command ran 0.03 s after Enter
+  (10.07 s before: fish waited for an answer to its prompt query).
 - The desktop acknowledges terminal output, and the server stops reading the
   shell while the active viewer is 128 KiB behind: Ctrl-C under a 120 KiB/s
   link now reaches the prompt in about 0.8 s instead of losing the connection
@@ -155,10 +170,11 @@
   viewer that stopped reading during a flood, Ctrl-C on the active viewer took
   0.8 s at 120 KiB/s (20.4 s before), and the woken viewer's output after its
   resync matched the active viewer's byte for byte. The desktop acknowledges
-  the rest of a batch after 200 ms without output, which the resync needs. A
-  viewer whose acknowledgements stop for 30 s is disconnected and reconnects;
-  one still receiving a replay gets one second more per 8 KiB of it.
-  Mobile clients keep the previous behaviour until they acknowledge.
+  the rest of a batch at most 200 ms after its first byte, which the resync
+  needs. A viewer whose acknowledgements stop for 30 s is disconnected and
+  reconnects; one still receiving a replay gets one second more per 8 KiB of
+  it. Mobile builds older than this release do not acknowledge and keep the
+  previous behaviour.
 - Input waits for a busy program instead of closing the connection: a
   1,100,000-byte paste sent as one frame arrives whole (the regression test
   uses 1,200,000 bytes). Keys typed while a terminal reconnects are sent in
