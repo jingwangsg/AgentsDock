@@ -1456,7 +1456,7 @@ export interface TerminalStateEvent {
   state: TerminalConnectionState
   name?: string | null
   error?: string | null
-  /** `connected` only: byte length of the scrollback replay that follows (0 = none); older servers leave it out. */
+  /** With `connected`: the length of the replay that arrives next as one `terminal:data` (0: none). Absent from older servers. */
   replayBytes?: number
   profileId?: string
   profileGeneration?: number

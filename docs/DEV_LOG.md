@@ -29,10 +29,10 @@
   terminal does not answer the queries in it (device attributes, cursor
   position, mode and color reports), which used to arrive at the shell as
   typed text. Queries that end the replay are still answered: a shell that
-  has just started, such as fish 4, may be waiting on them. A file dropped on a terminal types its quoted path when the
-  server runs on this computer, quoted so that fish, bash and zsh all read it
-  as one word; uploads belong to chats, so a remote server shows a message
-  instead.
+  has just started, such as fish 4, may be waiting on them. A file dropped
+  on a terminal types its quoted path when the server runs on this computer,
+  quoted so that fish, bash and zsh all read it as one word; uploads belong to
+  chats, so a remote server shows a message instead.
 - Settings → Terminal: font family and size, cursor shape and blink, Option
   as Meta, copy on select, scrollback (10,000 lines by default), screen reader
   support. Changes and theme switches apply to open tabs at once.
@@ -49,6 +49,39 @@
   Windows and Linux key bindings. Emoji ZWJ sequences, skin tones and flags
   draw as separate glyphs (the grapheme addon is still experimental).
   Availability: source.
+
+## 2026-10-12 — Terminal tabs: clean replays, flow control, reliable input (server, desktop)
+
+- A reattaching terminal no longer types stray answers into the shell: the
+  server leaves a terminal query (cursor position, device attributes, colour
+  queries and similar) out of the scrollback it replays once later output
+  shows the program had its answer. Queries in the escape sequences that end
+  the output stay, so a new shell still waiting for its startup probe gets an
+  answer from the next terminal that attaches. Clipboard writes (OSC 52) are
+  always left out, so a reconnect does not replace the clipboard again. The
+  live stream is unchanged. This applies to every client.
+- The replay keeps its history after one very long line, starts on a line,
+  escape sequence or character boundary, and restores the modes of a running
+  full-screen program (alternate screen, mouse, bracketed paste, cursor keys
+  and others); such a program is asked to repaint. The server's `ready`
+  message states the length of the replay frame that follows.
+- The desktop acknowledges terminal output, and the server stops reading the
+  shell while the desktop is 128 KiB behind: Ctrl-C under a 120 KiB/s link
+  now reaches the prompt in about 0.8 s instead of losing the connection after
+  35 s. A desktop whose acknowledgements stop for 30 s is disconnected and
+  reconnects. Mobile clients keep the previous behaviour until they acknowledge.
+- Input waits for a busy program instead of closing the connection: a
+  1,100,000-byte paste sent as one frame arrives whole (the regression test
+  uses 1,200,000 bytes). Keys typed while a terminal reconnects are sent in
+  order once it is back; answers to the old connection's queries are dropped.
+  The desktop sends input in frames of at most 64 KiB. The reconnect queue and
+  the frame limit apply to chat (tmux) terminals too. When a second device
+  leaves, a terminal tab returns to the size of the device used last.
+- Checks: server tests with real ptys and desktop unit tests, each failing
+  without the change; measurements through an isolated hub and remote with a
+  throttled link, and the built desktop app (isolated profile) driving a
+  terminal tab. Availability: source; a remote needs a redeploy and the
+  desktop a new package.
 
 ## 2026-10-12 — A remote in a cluster home runs with that home as HOME (server)
 

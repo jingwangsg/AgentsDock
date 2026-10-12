@@ -5365,12 +5365,14 @@ export class AppService {
   }
   async connectTerminal(profileId: string, profileGeneration: number, sessionId: string, options: TerminalConnectOptions): Promise<void> {
     const scope = this.requireProfileScope(profileId, profileGeneration)
+    // Closes the connection this one replaces and takes a new lease.
+    this.disconnectTerminal(sessionId)
+    const lease = this.terminalLeases.get(sessionId)
     await this.ensureValidatedScope(scope)
+    // A disconnect or a newer connect for this tab arrived during the wait; it owns the tab now.
+    if (this.terminalLeases.get(sessionId) !== lease) return
     const tmux = this.health?.capabilities?.tmux
     if (!isStandaloneTerminalId(sessionId) && tmux?.available === false) throw new Error(tmux.action || tmux.message || 'tmux is required for terminal sessions.')
-    this.disconnectTerminal(sessionId)
-    const lease = (this.terminalLeases.get(sessionId) ?? 0) + 1
-    this.terminalLeases.set(sessionId, lease)
     const connection = scope.client.terminal(
       sessionId,
       options,

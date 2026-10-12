@@ -28855,6 +28855,75 @@ TERMINAL_SESSION_LOCK_STRIPES = tuple(threading.Lock() for _ in range(64))
 STANDALONE_TERMINAL_PREFIX = "term_"
 SURFACE_ID_PREFIXES = {"terminal": STANDALONE_TERMINAL_PREFIX, "browser": "browser_"}
 TERMINAL_SCROLLBACK_BYTES = 512 * 1024
+# A trimmed scrollback starts at a newline, else at an ESC, found within this distance of the trim point.
+# Further than that the cut is at a UTF-8 character start, so one long line does not empty the history.
+TERMINAL_TRIM_SEARCH_BYTES = 4 * 1024
+# At most this much of the end of the output stays unstripped: the escape sequences after the last other
+# output (a query among them may still be waiting for its answer) and an unfinished sequence (a query
+# split across two pty reads is recognised once its end arrives).
+TERMINAL_UNSTRIPPED_TAIL_BYTES = 4 * 1024
+# Requests a terminal answers by typing into the shell. The scrollback drops one once later output shows
+# the program had its answer; a replay would make every attaching terminal answer it again.
+TERMINAL_QUERY_RE = re.compile(
+    rb"\x1b\[\??[0-9;]*n"  # DSR: status, cursor position, colour scheme (5n, 6n, ?6n, ?996n)
+    rb"|\x1b\[[>=]?0?c"  # DA1, DA2, DA3
+    rb"|\x1b\[>0?q"  # XTVERSION
+    rb"|\x1b\[\??[0-9]*\$p"  # DECRQM
+    rb"|\x1b\[\?u"  # kitty keyboard flags
+    rb"|\x1b\[(?:1[134689]|2[01])(?:;[0-9]*)*t"  # XTWINOPS reports
+    rb"|\x1bP[$+]q[^\x1b]*\x1b\\"  # DECRQSS, XTGETTCAP
+    rb"|\x1b\](?:4|1[01279]);[^\x07\x1b]*\?(?:\x07|\x1b\\)"  # OSC colour queries
+)
+# OSC 52 clipboard writes (and reads) never reach the scrollback: a replayed write would replace the user's
+# clipboard again. One that has not ended by the end of a read is dropped as it arrives.
+TERMINAL_CLIPBOARD_RE = re.compile(rb"\x1b\]52;[^\x07\x1b]*(?:\x07|\x1b\\|(?=\x1b))")
+# The end of an OSC string: BEL or ST; an ESC followed by anything else ends it too and starts a new sequence.
+TERMINAL_STRING_END_RE = re.compile(rb"\x07|\x1b\\|(?=\x1b[^\\])")
+# Ends a replay taken while a clipboard write is still arriving: an OSC no terminal implements, so the
+# rest of the write, which the joining viewer then gets live, is swallowed instead of shown.
+TERMINAL_IGNORED_OSC_OPENER = b"\x1b]9999;"
+# A lone ESC, a CSI without its final byte, or an OSC/DCS string without its terminator (possibly ending
+# in the first byte of a split ST), at the end of the output read so far.
+TERMINAL_UNFINISHED_SEQUENCE_RE = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*|[P\]][^\x07\x1b]*\x1b?)?\Z")
+# One escape sequence as the desktop renderer counts the run that ends a replay (terminal-replay.ts):
+# CSI, OSC, a DCS/APC/PM/SOS string, or a two-byte ESC. It answers the queries in that run.
+TERMINAL_SEQUENCE_RE = re.compile(
+    rb"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"
+    rb"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
+    rb"|\x1b[P_^X][^\x1b]*\x1b\\"
+    rb"|\x1b[\x20-\x7e]"
+)
+# Sequences setting the modes a full-screen program sets once and relies on afterwards.
+TERMINAL_MODE_RE = re.compile(
+    rb"\x1b\[\?(?P<private>[0-9;]*)(?P<action>[hl])"  # DECSET, DECRST
+    rb"|\x1b\[(?P<shape>[0-9]*) q"  # DECSCUSR cursor shape
+    rb"|\x1b\[(?P<region>[0-9;]*)r"  # DECSTBM scroll region
+    rb"|(?P<soft_reset>\x1b\[!p)"  # DECSTR
+    rb"|\x1b(?P<keypad>[=>])"  # keypad application, numeric
+    rb"|(?P<reset>\x1bc)"  # RIS
+)
+# DEC private modes where, as in xterm and xterm.js, the last one set wins and resetting any clears the group.
+TERMINAL_MODE_GROUPS = {
+    mode: group
+    for group, modes in (("screen", (47, 1047, 1049)), ("mouse", (1000, 1002, 1003)), ("mouse encoding", (1005, 1006, 1015, 1016)))
+    for mode in modes
+}
+TERMINAL_MODE_FLAGS = frozenset({1, 1004, 2004})  # cursor keys, focus events, bracketed paste
+# Flow control, for viewers that attach with flow_control=1 and acknowledge the output bytes they receive.
+# While one of them has more than the window unacknowledged, the pty is not read: the program blocks on
+# its writes, and Ctrl-C reaches it with at most the window still to drain over the viewer's link.
+# Measured through a hub on 2026-10-12, it is the smallest window that keeps a 400 KiB/s link with a 200 ms
+# round trip busy (terminal output 259 KiB/s with 64 KiB, 479 KiB/s with 128 KiB, above the link rate
+# because the WebSocket compresses); Ctrl-C reached the prompt in 0.8 s at 120 KiB/s.
+TERMINAL_OUTPUT_WINDOW_BYTES = 128 * 1024
+# A flow-controlled viewer that stays behind while its acknowledgements stop advancing for this long is
+# closed (it reconnects), so one dead link does not pause the shell for every viewer. A backstop: a viewer
+# acknowledges every 16 KiB and each frame is at most one 64 KiB pty read, about 3 s on a 20 KiB/s link.
+TERMINAL_VIEWER_STALL_SECONDS = 30.0
+TERMINAL_VIEWER_STALLED_CLOSE_CODE = 1013
+# Input waiting for the program to read it: uvicorn's 16 MiB WebSocket message limit, so an old client's
+# paste sent as one frame is kept whole. Input beyond it is dropped (and logged) until the program reads.
+TERMINAL_INPUT_QUEUE_BYTES = 16 * 1024 * 1024
 # WebSocket close code telling viewers the shell itself ended, as opposed to a dropped link.
 TERMINAL_SHELL_EXITED_CLOSE_CODE = 4410
 
@@ -28884,6 +28953,131 @@ def save_surfaces() -> None:
     os.replace(scratch, SURFACES_FILE)
 
 
+class TerminalModes:
+    """The modes in force at one point of a terminal's output, kept as the sequences that set them."""
+
+    def __init__(self) -> None:
+        self.sets: dict[int | str, bytes] = {}
+
+    def apply(self, output: bytes | bytearray) -> None:
+        for match in TERMINAL_MODE_RE.finditer(output):
+            if match["action"] is not None:
+                for param in match["private"].split(b";"):
+                    if not param.isdigit():
+                        continue
+                    mode = int(param)
+                    if mode == 25:  # the cursor is visible unless hidden
+                        if match["action"] == b"l":
+                            self.sets[25] = b"\x1b[?25l"
+                        else:
+                            self.sets.pop(25, None)
+                    elif mode in TERMINAL_MODE_GROUPS or mode in TERMINAL_MODE_FLAGS:
+                        key = TERMINAL_MODE_GROUPS.get(mode, mode)
+                        if match["action"] == b"h":
+                            self.sets[key] = b"\x1b[?%dh" % mode
+                        else:
+                            self.sets.pop(key, None)
+            elif match["shape"] is not None:
+                if match["shape"] in (b"", b"0"):
+                    self.sets.pop("cursor shape", None)
+                else:
+                    self.sets["cursor shape"] = match[0]
+            elif match["region"] is not None:
+                if match["region"] in (b"", b";"):
+                    self.sets.pop("scroll region", None)
+                else:
+                    self.sets["scroll region"] = match[0]
+            elif match["soft_reset"] is not None:
+                for key in (1, 25, "keypad", "scroll region"):
+                    self.sets.pop(key, None)
+            elif match["keypad"] == b"=":
+                self.sets["keypad"] = b"\x1b="
+            elif match["keypad"] == b">":
+                self.sets.pop("keypad", None)
+            else:  # RIS
+                self.sets.clear()
+
+    def prefix(self) -> bytes:
+        # The screen first: the scroll region and the rest then apply to the screen in use.
+        return self.sets.get("screen", b"") + b"".join(sequence for key, sequence in self.sets.items() if key != "screen")
+
+
+class TerminalScrollback:
+    """A shell's recent output as a joining viewer gets it, without what a replay must not repeat."""
+
+    def __init__(self) -> None:
+        self.stored = bytearray()
+        # Raw output after `stored`, examined again with the next read: the escape sequences after the last
+        # other output, then an unfinished sequence. While a clipboard write is open: at most the ESC that
+        # may start its ST.
+        self.held = b""
+        self.clipboard_write_open = False
+        # The modes in force where `stored` starts, kept up to date from the output trimmed off it.
+        self.modes = TerminalModes()
+
+    def record(self, data: bytes) -> None:
+        # A clipboard write left open by an earlier read continues here; its opener was dropped then.
+        output = (b"\x1b]52;" if self.clipboard_write_open else b"") + self.held + data
+
+        # Hold back the raw end. A clipboard write still open at the end of this read is dropped from its
+        # opener, keeping a final ESC that may start its ST. Otherwise the run of escape sequences after the
+        # last other output stays raw, as the renderer counts it: a query in it may still await its answer.
+        opener = output.rfind(b"\x1b]52;")
+        self.clipboard_write_open = opener >= 0 and TERMINAL_STRING_END_RE.search(output, opener + 5) is None
+        if self.clipboard_write_open:
+            st_start = b"\x1b" if output.endswith(b"\x1b") else b""
+            output = TERMINAL_CLIPBOARD_RE.sub(b"", output[:opener])
+            end = len(output)
+            output += st_start
+        else:
+            output = TERMINAL_CLIPBOARD_RE.sub(b"", output)
+            lowest = max(0, len(output) - TERMINAL_UNSTRIPPED_TAIL_BYTES)
+            unfinished = TERMINAL_UNFINISHED_SEQUENCE_RE.search(output, lowest)
+            end = unfinished.start() if unfinished else len(output)
+            while (start := output.rfind(b"\x1b", lowest, end)) >= 0:
+                # An ST ends the string sequence that opened at the ESC before it.
+                string = output.rfind(b"\x1b", lowest, start) if output[start:end] == b"\x1b\\" else -1
+                if string >= 0 and TERMINAL_SEQUENCE_RE.fullmatch(output, string, end):
+                    start = string
+                elif not TERMINAL_SEQUENCE_RE.fullmatch(output, start, end):
+                    break
+                end = start
+        self.held = output[end:]
+
+        # Store the rest without its queries: later output followed them.
+        self.stored += TERMINAL_QUERY_RE.sub(b"", output[:end])
+
+        # Trim to the limit. Start the kept part at a newline, else at an escape sequence, else at a
+        # character, so a replay neither begins inside a sequence nor loses all history to one long line.
+        excess = len(self.stored) - TERMINAL_SCROLLBACK_BYTES
+        if excess <= 0:
+            return
+        newline = self.stored.find(b"\n", excess, excess + TERMINAL_TRIM_SEARCH_BYTES)
+        cut = newline + 1 if newline >= 0 else self.stored.find(b"\x1b", excess, excess + TERMINAL_TRIM_SEARCH_BYTES)
+        if cut < 0:
+            cut = excess
+            while cut < len(self.stored) and self.stored[cut] & 0xC0 == 0x80:
+                cut += 1
+        self.modes.apply(self.stored[:cut])
+        del self.stored[:cut]
+
+    def replay(self) -> bytes:
+        opener = TERMINAL_IGNORED_OSC_OPENER if self.clipboard_write_open else b""
+        return self.modes.prefix() + bytes(self.stored) + opener + self.held
+
+
+@dataclass
+class TerminalViewer:
+    columns: int
+    rows: int
+    flow_control: bool
+    active_at: float  # attach, input or resize; the most recent remaining viewer sizes the pty
+    acked_at: float  # attach or the last acknowledgement that advanced
+    replay_bytes: int
+    sent: int = 0
+    acked: int = 0
+
+
 class TerminalShell:
     """The shell behind one terminal tab; the server owns it so any client can attach, leave and come back."""
 
@@ -28891,35 +29085,84 @@ class TerminalShell:
         self.process = process
         self.master_fd = master_fd
         self.name = name
-        self.scrollback = bytearray()
-        self.viewers: set[WebSocket] = set()
+        self.scrollback = TerminalScrollback()
+        self.viewers: dict[WebSocket, TerminalViewer] = {}
+        # Set when a viewer acknowledges output or leaves: either can let a paused pump read again.
+        self.flow_changed = asyncio.Event()
+        self.input = bytearray()
         self.exited = False
         self.pump = asyncio.create_task(self._pump_output())
+
+    def queue_input(self, data: bytes) -> None:
+        # load-bearing: the pump closes master_fd after setting `exited`; a later write could reach
+        # whatever file reuses that descriptor number.
+        if self.exited:
+            return
+        if len(self.input) + len(data) > TERMINAL_INPUT_QUEUE_BYTES:
+            logger.warning("terminal %s: %d bytes of input are waiting for the program; dropped %d more", self.name, len(self.input), len(data))
+            return
+        idle = not self.input
+        self.input += data
+        if idle:
+            self._write_input()
+
+    def _write_input(self) -> None:
+        """Write queued input as far as the pty takes it; the event loop calls again when it can take more."""
+        try:
+            written = os.write(self.master_fd, self.input)
+        except BlockingIOError:
+            written = 0
+        except OSError:
+            written = len(self.input)  # the shell is gone; the pump tells the viewers
+        del self.input[:written]
+        loop = asyncio.get_running_loop()
+        if self.input:
+            loop.add_writer(self.master_fd, self._write_input)
+        else:
+            loop.remove_writer(self.master_fd)
 
     async def _pump_output(self) -> None:
         try:
             while True:
+                # Pause reading while a flow-controlled viewer is more than the window behind, and close
+                # one whose acknowledgements stopped advancing, so it reconnects instead of pausing the
+                # shell for every viewer. Its replay is one frame, acknowledged only once all of it has
+                # arrived, so that frame is not timed. Checked every second: a shell that exits while
+                # paused is read to its end at once.
+                paused_at = time.monotonic()
+                while behind := {
+                    ws: viewer for ws, viewer in self.viewers.items()
+                    if viewer.flow_control and viewer.sent - viewer.acked > TERMINAL_OUTPUT_WINDOW_BYTES
+                }:
+                    if self.process.poll() is not None:
+                        break
+                    now = time.monotonic()
+                    for ws, viewer in behind.items():
+                        stalled = now - max(viewer.acked_at, paused_at) >= TERMINAL_VIEWER_STALL_SECONDS
+                        if viewer.acked >= viewer.replay_bytes and stalled and self.viewers.pop(ws, None) is not None:
+                            with suppress(Exception):
+                                await ws.close(code=TERMINAL_VIEWER_STALLED_CLOSE_CODE, reason="terminal output not acknowledged")
+                    self.flow_changed.clear()
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(self.flow_changed.wait(), 1.0)
                 try:
                     data = await read_terminal_output(self.master_fd)
                 except OSError:
                     return  # EIO: the shell closed its side of the pty
                 if not data:
                     return
-                self.scrollback += data
-                if len(self.scrollback) > TERMINAL_SCROLLBACK_BYTES:
-                    # Drop whole lines where possible so a replay does not start inside an escape sequence.
-                    cut = len(self.scrollback) - TERMINAL_SCROLLBACK_BYTES
-                    newline = self.scrollback.find(b"\n", cut)
-                    del self.scrollback[:newline + 1 if newline >= 0 else cut]
-                for ws in list(self.viewers):
+                self.scrollback.record(data)
+                for ws, viewer in list(self.viewers.items()):
                     try:
                         await ws.send_bytes(data)
+                        viewer.sent += len(data)
                     except Exception:
-                        self.viewers.discard(ws)
+                        self.viewers.pop(ws, None)
         finally:
             # Flag first: a viewer joins only after checking this flag, with no await in
             # between, so the list below misses nobody.
             self.exited = True
+            asyncio.get_running_loop().remove_writer(self.master_fd)
             await asyncio.to_thread(stop_terminal_client, self.process, self.master_fd)
             for ws in list(self.viewers):
                 await self.dismiss_viewer(ws)
@@ -28953,6 +29196,7 @@ async def standalone_terminal_websocket(
     rows: int,
     cwd: str | None,
     subprotocol: str | None,
+    flow_control: bool = False,
 ) -> None:
     await ws.accept(subprotocol=subprotocol)
     cols, lines = terminal_dimensions(columns, rows)
@@ -28968,31 +29212,46 @@ async def standalone_terminal_websocket(
             process, master_fd, name = await asyncio.to_thread(spawn_terminal_shell, cwd or surface.get("cwd"), cols, lines)
             shell = TERMINAL_SHELLS[terminal_id] = TerminalShell(process, master_fd, name)
     try:
+        # Take the replay, join, and send `ready` and the replay with no await in between that can
+        # suspend (this server's WebSocket send never waits, see WebSocketSendAsInUvicorn051Protocol):
+        # the pump writes only to viewers, so this one gets every later byte once, after the replay.
+        replay = shell.scrollback.replay()
+        now = time.monotonic()
+        viewer = shell.viewers[ws] = TerminalViewer(cols, lines, flow_control, now, now, len(replay))
         await ws.send_json({
             "type": "ready",
             "session_id": terminal_id,
             "name": shell.name,
             "columns": cols,
             "rows": lines,
+            # The exact length of the one binary frame that follows; 0: none follows.
+            "replay_bytes": len(replay),
         })
         if shell.exited:
-            # It ended while `ready` was in flight, before this socket was a viewer.
+            # It ended while `ready` was in flight; the pump's own dismissal may not have reached this viewer yet.
             await shell.dismiss_viewer(ws)
             return
-        # Join and replay with no await in between: the pump writes only to viewers, so
-        # this one sees every byte once, in order.
-        shell.viewers.add(ws)
-        if shell.scrollback:
-            await ws.send_bytes(bytes(shell.scrollback))
+        if replay:
+            await ws.send_bytes(replay)
+            viewer.sent = len(replay)
         # The newest viewer sizes the pty; the others see its width.
         set_pty_dimensions(shell.master_fd, cols, lines)
+        # A full-screen program repaints on SIGWINCH; the replay alone may hold only part of its screen.
+        modes = TerminalModes()
+        modes.apply(replay)
+        if "screen" in modes.sets:
+            with suppress(OSError):
+                # 0 once the foreground group's leader is reaped; killpg(0) would signal this server's own group.
+                if (foreground := os.tcgetpgrp(shell.master_fd)) > 0:
+                    os.killpg(foreground, signal.SIGWINCH)
         while True:
             message = await ws.receive()
             if message["type"] == "websocket.disconnect":
                 return
             data = message.get("bytes")
             if data:
-                await write_terminal_input(shell.master_fd, data)
+                viewer.active_at = time.monotonic()
+                shell.queue_input(data)
                 continue
             text = message.get("text")
             if not text:
@@ -29001,15 +29260,34 @@ async def standalone_terminal_websocket(
                 control = json.loads(text)
             except json.JSONDecodeError:
                 continue
-            if isinstance(control, dict) and control.get("type") == "resize":
+            if not isinstance(control, dict):
+                continue
+            # load-bearing `exited`: as for queue_input, the fd may already belong to another file.
+            if control.get("type") == "resize" and not shell.exited:
                 with suppress(TypeError, ValueError):
-                    set_pty_dimensions(shell.master_fd, *terminal_dimensions(control.get("columns"), control.get("rows")))
+                    viewer.columns, viewer.rows = terminal_dimensions(control.get("columns"), control.get("rows"))
+                    viewer.active_at = time.monotonic()
+                    set_pty_dimensions(shell.master_fd, viewer.columns, viewer.rows)
+            elif control.get("type") == "ack":
+                count = control.get("bytes")
+                # Only bytes sent and not yet acknowledged: more would lift the pause for everyone, a negative
+                # count would hold it. `type` rather than isinstance keeps out JSON true/false.
+                if type(count) is int and 0 < count <= viewer.sent - viewer.acked:
+                    viewer.acked += count
+                    viewer.acked_at = time.monotonic()
+                    shell.flow_changed.set()
     except (WebSocketDisconnect, OSError, RuntimeError):
-        # OSError: input to a shell that has exited. RuntimeError: the pump closed this
-        # socket while a send above was still in flight.
+        # OSError: the pty of a shell that ended while this viewer joined. RuntimeError: the pump
+        # closed this socket while a send above was still in flight.
         pass
     finally:
-        shell.viewers.discard(ws)
+        shell.viewers.pop(ws, None)
+        shell.flow_changed.set()
+        if shell.viewers and not shell.exited:
+            # Give the pty back to the viewer used last, so a phone that looked in does not leave
+            # the desktop at the phone's size.
+            latest = max(shell.viewers.values(), key=lambda remaining: remaining.active_at)
+            set_pty_dimensions(shell.master_fd, latest.columns, latest.rows)
         with suppress(RuntimeError):
             await ws.close()
 
@@ -100493,6 +100771,8 @@ async def session_terminal(
     columns: int = 120,
     rows: int = 36,
     cwd: str | None = None,
+    # Terminal tabs only: this viewer acknowledges output (see TERMINAL_OUTPUT_WINDOW_BYTES).
+    flow_control: bool = False,
 ) -> None:
     selected_subprotocol = websocket_endpoint_subprotocol(
         ws,
@@ -100503,7 +100783,7 @@ async def session_terminal(
         await ws.close(code=4401)
         return
     if session_id.startswith(STANDALONE_TERMINAL_PREFIX):
-        await standalone_terminal_websocket(ws, session_id, columns, rows, cwd, selected_subprotocol)
+        await standalone_terminal_websocket(ws, session_id, columns, rows, cwd, selected_subprotocol, flow_control)
         return
     if session_id not in STORE.sessions:
         await ws.accept(subprotocol=selected_subprotocol)
