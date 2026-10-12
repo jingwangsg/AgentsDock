@@ -56,6 +56,32 @@
   log line recorded. Not exercised: the original trigger, which did not
   reproduce.
 
+## 2026-10-11 — Remote deploys ask uv for a Python the lock has wheels for, and a failed install step shows its output (server)
+
+- Deploying to a fresh host failed in "Preparing the Python runtime (uv sync)"
+  (seen on an aarch64 AWS host with only Python 3.10 and no compiler): the uv
+  the bootstrap had just installed picked the newest managed CPython, 3.15,
+  for which the locked pydantic-core, cffi and rpds-py ship no wheels, so it
+  built them from source and failed for want of a C compiler. The hub's remote
+  bootstrap and `install.sh` now ask uv for a Python below 3.15, the newest
+  CPython the locked compiled packages have wheels for; the bound moves with
+  `uv.lock`, which is unchanged. Verified on that host in a scratch copy: the
+  previous command fails the same way, the bounded one syncs on CPython 3.14
+  and the server modules import. Not exercised: the `install.sh` path.
+  Availability: server source. The hub reads the bootstrap from its source
+  directory at each deploy, so the bound applies to the next deploy from an
+  updated checkout without a hub restart; `install.sh` reaches a host in the
+  deploy tarball and applies to that host's own managed updates.
+- The deploy job kept only the last line a failed step printed (uv's "hint:
+  Build failures usually indicate…") in the Edit dialog, the Redeploy row and
+  the job log. The last 200 lines of the failing step's own output (what
+  follows the last "[AgentsDock setup]" line) now go into the job log, and the
+  job error is the step's first error line ("error: Failed to build
+  `<package>`") instead of the line it ends with. This runs in the hub, so it
+  shows after a hub restart. Not exercised in the real app: a failed deploy
+  through a hub running this change; a scripted-host test pins the log lines
+  and the job error.
+
 ## 2026-10-11 — Desktop package 122 and Android build 66 (local package and APK)
 
 - Package the entries recorded since package 121 and Android build 65: `ssh
