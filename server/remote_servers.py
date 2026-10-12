@@ -22,6 +22,7 @@ import shlex
 import shutil
 import signal
 import socket
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -839,12 +840,14 @@ async def start_remote_server(server: RemoteServer) -> None:
         stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=route.env,
         start_new_session=True,
     )
+    tell_group_killer(f"+{proc.pid}")
     try:
         output, _ = await asyncio.wait_for(proc.communicate(), 120)
     except asyncio.TimeoutError:
         raise RuntimeError("start.sh did not finish within 120s.")
     finally:
-        end_process_group(proc)
+        kill_process_group(proc)
+        tell_group_killer(f"-{proc.pid}")
     if proc.returncode != 0:
         raise RuntimeError(last_line(output.decode("utf-8", "replace")) or f"start.sh exited {proc.returncode}")
 
@@ -898,14 +901,50 @@ def last_line(text: str) -> str:
     return lines[-1] if lines else ""
 
 
-def end_process_group(proc: asyncio.subprocess.Process) -> None:
+def kill_process_group(proc: asyncio.subprocess.Process) -> None:
     """SIGKILL the process group of an ssh started with start_new_session=True, ssh included if it still runs.
 
     ssh's ProxyCommand children are in that group. One that outlives ssh, as Sky's websocket proxy
-    does after a failed connect, keeps its connection and ssh's stderr pipe open for good.
+    does after a failed connect, keeps its connection and ssh's stderr pipe open indefinitely. A group
+    id is not reused while any member lives, so this is safe after ssh itself was reaped.
     """
-    with suppress(ProcessLookupError):
+    # macOS answers EPERM, not ESRCH, for a group whose members have all exited but are not reaped yet.
+    with suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGKILL)
+
+
+# Source of a helper process that SIGKILLs the ssh process groups the hub has not killed once the hub has
+# exited; a SIGKILLed hub runs no shutdown. launchd ends only the hub's own process group, and each ssh has
+# a session of its own. Lines on stdin: "+pgid" when an ssh starts, "-pgid" once its group is killed, so a
+# group id reused later is never killed. End of file on stdin means the hub has exited, however it ended.
+GROUP_KILLER_SOURCE = """
+import os, signal, sys
+groups = set()
+for line in sys.stdin:
+    if line[0] == "+":
+        groups.add(int(line[1:]))
+    else:
+        groups.discard(int(line[1:]))
+for pgid in groups:
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except OSError:
+        pass
+"""
+_group_killer: subprocess.Popen[bytes] | None = None
+
+
+def tell_group_killer(line: str) -> None:
+    global _group_killer
+    # The helper not starting or having exited costs only this safety net, never the caller.
+    with suppress(OSError):
+        if _group_killer is None:
+            # In a session of its own, so launchd's kill of the hub's process group does not reach it.
+            _group_killer = subprocess.Popen([sys.executable, "-I", "-c", GROUP_KILLER_SOURCE], stdin=subprocess.PIPE,
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            # A stopped helper must not hold up the event loop once the pipe is full.
+            os.set_blocking(_group_killer.stdin.fileno(), False)
+        os.write(_group_killer.stdin.fileno(), f"{line}\n".encode())
 
 
 class Tunnel:
@@ -959,10 +998,11 @@ class Tunnel:
                         env["REQUESTS_CA_BUNDLE"] = self.server.ca_bundle_path
                 else:
                     if self.role != "inference":
-                        # ssh binds its -L port only after a full connect and then exits (ExitOnForwardFailure).
-                        # While another process holds the port, a retry costs a connection for nothing, and the
-                        # hub proxy must not reach that process (see Tunnel.down). SO_REUSEADDR as ssh binds it,
-                        # so connections left in TIME_WAIT on the port do not count.
+                        # ssh binds its -L port only after the full connect, and a taken port then ends it
+                        # (ExitOnForwardFailure). Failing here costs no connection and keeps the tunnel down
+                        # (see RemoteServerManager.tunnel_down_on), so no remote's token goes to whoever holds
+                        # the port. With SO_REUSEADDR, as ssh binds and unlike local_port_free, connections
+                        # left in TIME_WAIT on the port do not make it taken.
                         with socket.socket() as probe:
                             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                             try:
@@ -997,11 +1037,16 @@ class Tunnel:
                     stderr=asyncio.subprocess.PIPE, env=env, start_new_session=True,
                 )
             except (OSError, asyncio.TimeoutError) as exc:
-                self._mark_reconnecting(f"could not start ssh: {exc}")
+                reason = f"could not start ssh: {exc}"
+                # Logged only when the reason changes: a taken port or an ended OSMO workflow fails here on every retry.
+                if reason != self.status["last_error"]:
+                    logger.warning("ssh tunnel %s %s", self.label, reason)
+                self._mark_reconnecting(reason)
                 await asyncio.sleep(self._backoff)
                 self._backoff = next_backoff(self._backoff)
                 continue
             self._proc = proc
+            tell_group_killer(f"+{proc.pid}")
             logger.info("ssh tunnel %s started (pid %d)", self.label, proc.pid)
             # The forward is established quickly; a process that survives the
             # connect window counts as connected and resets the backoff.
@@ -1024,14 +1069,19 @@ class Tunnel:
 
             reader = asyncio.create_task(read_stderr(), name=f"ssh-tunnel-stderr:{self.label}")
             try:
-                # Not stderr's EOF, and not proc.wait(), which waits for that EOF too: a ProxyCommand child
-                # that outlives ssh holds the pipe open. The exit status is set as soon as ssh exits.
+                # Poll the exit status, which is set as soon as ssh exits. stderr's EOF, which proc.wait()
+                # also waits for, comes only when every holder of the pipe has exited, and a ProxyCommand
+                # child can outlive ssh.
                 while proc.returncode is None:
                     await asyncio.sleep(1)
+                # Let the ProxyCommand children exit by themselves first: a killed AWS SSM plugin leaves its
+                # session on the host for about 20 minutes, and the tunnel's remote port stays taken with it.
+                # The wait ends once all of them have closed stderr; Sky's websocket proxy may never exit.
+                await asyncio.wait({reader}, timeout=5)
             finally:
-                end_process_group(proc)
-                # EOF now follows the lines ssh wrote last, unless a child left the group.
-                await asyncio.wait({reader}, timeout=1)
+                # Also on stop(), whose terminate() reaches ssh but not its ProxyCommand children.
+                kill_process_group(proc)
+                tell_group_killer(f"-{proc.pid}")
                 reader.cancel()
             code = proc.returncode
             if settle is not None:
@@ -1147,12 +1197,14 @@ class Tunnel:
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, env=route.env,
             start_new_session=True,
         )
+        tell_group_killer(f"+{proc.pid}")
         try:
             _, error = await asyncio.wait_for(proc.communicate(), 120)
         except asyncio.TimeoutError:
             error = b"timed out"
         finally:
-            end_process_group(proc)
+            kill_process_group(proc)
+            tell_group_killer(f"-{proc.pid}")
             if proc.returncode is None:
                 await proc.wait()
         if proc.returncode:
@@ -1160,11 +1212,6 @@ class Tunnel:
 
     def _mark_reconnecting(self, reason: str) -> None:
         self.status = {"state": "reconnecting", "restarts": self.status["restarts"] + 1, "last_error": reason}
-
-    @property
-    def down(self) -> bool:
-        """No ssh of this tunnel runs since one failed, so whatever listens on its local port is another process."""
-        return self._proc is None and self.status["state"] == "reconnecting"
 
     def _schedule_revive(self) -> None:
         if self._revive is None:
@@ -1573,16 +1620,24 @@ class RemoteServerManager:
         tunnel = (self.bulk_tunnels if bulk else self.tunnels).get(remote_id)
         return dict(tunnel.status) if tunnel else None
 
-    def down_tunnel(self, port: int | None) -> Tunnel | None:
-        """The tunnel on this local port while it is down: no request carrying a remote's token may go there then."""
-        return next((tunnel for tunnel in [*self.tunnels.values(), *self.bulk_tunnels.values(), *self.stream_tunnels.values(),
-                                           *self.surface_tunnels.values()]
-                     if tunnel.server.local_port == port and tunnel.down), None)
+    def tunnel_down_on(self, port: int | None) -> Tunnel | None:
+        """The tunnel on this local port from its ssh's exit or failed start until the next ssh starts.
+
+        No ssh holds the port then, so a listener there is another process: no request carrying a
+        remote's token may go to it.
+        """
+        # Not the inference tunnels: they carry the main tunnel's local_port but forward no local port.
+        # Not the SSH forwards: no remote's token goes to them.
+        tunnels = [*self.tunnels.values(), *self.bulk_tunnels.values(), *self.stream_tunnels.values(), *self.surface_tunnels.values()]
+        return next((tunnel for tunnel in tunnels if tunnel.server.local_port == port and (
+            # An exited ssh stays in _proc while its ProxyCommand children get time to exit by themselves.
+            tunnel._proc.returncode is not None if tunnel._proc is not None else tunnel.status["state"] == "reconnecting")), None)
 
     async def _refuse_down_tunnel(self, request: httpx.Request) -> None:
-        # Every request this client sends goes to a tunnel port with a remote's token: the proxy's,
-        # the health probes, the CLI updates and the cross-server mail relay's.
-        if (tunnel := self.down_tunnel(request.url.port)) is not None:
+        # Every user of this client (the proxy, health probes, CLI updates, the cross-server mail relay)
+        # sends a remote's token to a tunnel port, so the check sits here and not at each call site;
+        # each already treats ConnectError as the remote being unreachable.
+        if (tunnel := self.tunnel_down_on(request.url.port)) is not None:
             raise httpx.ConnectError(f"ssh tunnel {tunnel.label} is down: {tunnel.status['last_error']}", request=request)
 
     def bulk_port(self, server: RemoteServer) -> int:
@@ -2310,7 +2365,7 @@ def register_remote_server_routes(
         port = (manager.stream_port(server) if STREAM_PATH_RE.fullmatch(path)
                 else manager.surface_port(server) if PORT_TUNNEL_PATH_RE.fullmatch(path) else server.local_port)
         # websockets connects without manager.http and its down-tunnel check.
-        if manager.down_tunnel(port) is not None:
+        if manager.tunnel_down_on(port) is not None:
             await ws.close(code=1011, reason="remote server unreachable")
             return
         url = f"ws://127.0.0.1:{port}/{path}" + (f"?{query}" if query else "")
