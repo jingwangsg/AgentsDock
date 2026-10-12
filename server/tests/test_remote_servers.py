@@ -1074,6 +1074,12 @@ elif "-N" in sys.argv:
             await manager.start()
             try:
                 await files(["lab", "mine"])
+                # Both names exist from the start (the desktop stub and the foreign file), so wait for the
+                # hub's rewrite of "lab" itself; under load it takes longer than a fixed pause.
+                for _ in range(200):
+                    if (aliases / "lab").read_text().startswith(rs.SSH_ALIAS_MARKER):
+                        break
+                    await asyncio.sleep(0.05)
                 await asyncio.sleep(0.5)  # the other remotes' first routes have resolved too
                 assert (aliases / "lab").read_text().splitlines()[1:] == ["Host lab", "  HostName lab.example", "  User me", "  Port 22"]
                 assert (aliases / "mine").read_text() == foreign and sorted(path.name for path in aliases.iterdir()) == ["lab", "mine"]
