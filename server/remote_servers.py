@@ -27,7 +27,7 @@ import sys
 import tarfile
 import tempfile
 import time
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -840,14 +840,11 @@ async def start_remote_server(server: RemoteServer) -> None:
         stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=route.env,
         start_new_session=True,
     )
-    tell_group_killer(f"+{proc.pid}")
     try:
-        output, _ = await asyncio.wait_for(proc.communicate(), 120)
+        async with ssh_process_group(proc):
+            output, _ = await asyncio.wait_for(proc.communicate(), 120)
     except asyncio.TimeoutError:
         raise RuntimeError("start.sh did not finish within 120s.")
-    finally:
-        kill_process_group(proc)
-        tell_group_killer(f"-{proc.pid}")
     if proc.returncode != 0:
         raise RuntimeError(last_line(output.decode("utf-8", "replace")) or f"start.sh exited {proc.returncode}")
 
@@ -905,7 +902,7 @@ def kill_process_group(proc: asyncio.subprocess.Process) -> None:
     """SIGKILL the process group of an ssh started with start_new_session=True, ssh included if it still runs.
 
     ssh's ProxyCommand children are in that group. One that outlives ssh, as Sky's websocket proxy
-    does after a failed connect, keeps its connection and ssh's stderr pipe open indefinitely. A group
+    does after a failed connect, keeps its connection and ssh's output pipes open indefinitely. A group
     id is not reused while any member lives, so this is safe after ssh itself was reaped.
     """
     # macOS answers EPERM, not ESRCH, for a group whose members have all exited but are not reaped yet.
@@ -945,6 +942,35 @@ def tell_group_killer(line: str) -> None:
             # A stopped helper must not hold up the event loop once the pipe is full.
             os.set_blocking(_group_killer.stdin.fileno(), False)
         os.write(_group_killer.stdin.fileno(), f"{line}\n".encode())
+
+
+@asynccontextmanager
+async def ssh_process_group(proc: asyncio.subprocess.Process) -> AsyncIterator[None]:
+    """Kill the process group of a one-shot ssh (started with start_new_session=True) when the block is left,
+    and also 5 s after ssh exits if the block is still running then.
+
+    The block reads ssh's output until end of file, and a ProxyCommand child that outlives ssh keeps that
+    output open until the block's own timeout; the kill 5 s after the exit ends the read. While the block
+    runs, the group is registered with the group killer in case the hub exits.
+    """
+
+    async def kill_after_exit() -> None:
+        # The exit status, not proc.wait(): wait() also waits for end of file on ssh's pipes, which the child keeps open.
+        while proc.returncode is None:
+            await asyncio.sleep(1)
+        # Let the children exit by themselves first, as Tunnel._supervise does: a killed AWS SSM plugin
+        # leaves its session on the host for about 20 minutes.
+        await asyncio.sleep(5)
+        kill_process_group(proc)
+
+    tell_group_killer(f"+{proc.pid}")
+    watcher = asyncio.create_task(kill_after_exit(), name=f"ssh-group:{proc.pid}")
+    try:
+        yield
+    finally:
+        watcher.cancel()
+        kill_process_group(proc)
+        tell_group_killer(f"-{proc.pid}")
 
 
 class Tunnel:
@@ -1197,17 +1223,14 @@ class Tunnel:
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, env=route.env,
             start_new_session=True,
         )
-        tell_group_killer(f"+{proc.pid}")
         try:
-            _, error = await asyncio.wait_for(proc.communicate(), 120)
+            async with ssh_process_group(proc):
+                _, error = await asyncio.wait_for(proc.communicate(), 120)
         except asyncio.TimeoutError:
             error = b"timed out"
-        finally:
-            kill_process_group(proc)
-            tell_group_killer(f"-{proc.pid}")
-            if proc.returncode is None:
-                await proc.wait()
-        if proc.returncode:
+        # None after the timeout: ssh was killed when the block was left and may not be reaped yet. Waiting
+        # for it would also wait for its pipes, which a child outside its group can keep open.
+        if proc.returncode != 0:
             logger.warning("git forward rewrite failed for %s: %s", self.server.id, last_line(error.decode("utf-8", "replace")))
 
     def _mark_reconnecting(self, reason: str) -> None:
@@ -2050,31 +2073,30 @@ class RemoteServerManager:
         proc = await asyncio.create_subprocess_exec(
             ssh_binary(), *route.options, *args,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=route.env,
+            start_new_session=True,
         )
         job.proc = proc
         lines: list[str] = []
         assert proc.stdin is not None and proc.stdout is not None
         try:
-            proc.stdin.write(stdin)
-            await proc.stdin.drain()
-            proc.stdin.close()
-            while True:
-                try:
-                    raw = await asyncio.wait_for(proc.stdout.readline(), idle_timeout)
-                except asyncio.TimeoutError:
-                    raise RuntimeError(f"No output from the host for {idle_timeout:.0f}s.") from None
-                if not raw:
-                    break
-                line = raw.decode("utf-8", "replace").rstrip("\r\n")
-                lines.append(line)
-                if on_line is not None:
-                    on_line(line)
-            code = await proc.wait()
+            async with ssh_process_group(proc):
+                proc.stdin.write(stdin)
+                await proc.stdin.drain()
+                proc.stdin.close()
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(proc.stdout.readline(), idle_timeout)
+                    except asyncio.TimeoutError:
+                        raise RuntimeError(f"No output from the host for {idle_timeout:.0f}s.") from None
+                    if not raw:
+                        break
+                    line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    lines.append(line)
+                    if on_line is not None:
+                        on_line(line)
+                code = await proc.wait()
         finally:
             job.proc = None
-            if proc.returncode is None:
-                with suppress(ProcessLookupError):
-                    proc.kill()
         if code != 0:
             detail = next((line for line in reversed(lines) if line.strip() and not line.startswith((PROBE_PREFIX, RESULT_PREFIX))), "")
             if code == 255:
@@ -2130,31 +2152,30 @@ class RemoteServerManager:
         proc = await asyncio.create_subprocess_exec(
             ssh_binary(), *route.options, *SSH_BATCH_OPTIONS, route.destination, command,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=route.env,
+            start_new_session=True,
         )
         job.proc = proc
         assert proc.stdin is not None
         output = b""
         try:
-            last_report = time.monotonic()
-            view = memoryview(data)
-            try:
-                for pos in range(offset, len(data), UPLOAD_CHUNK):
-                    proc.stdin.write(view[pos:pos + UPLOAD_CHUNK])
-                    await asyncio.wait_for(proc.stdin.drain(), 120)
-                    if time.monotonic() - last_report > 2:
-                        last_report = time.monotonic()
-                        job.progress("download", f"Uploading AgentsServer source… {min(len(data), pos + UPLOAD_CHUNK) / 1048576:.1f} MB")
-                proc.stdin.close()
-            except (BrokenPipeError, ConnectionResetError):
-                pass  # ssh died first; its exit code and output carry the reason
-            output, _ = await asyncio.wait_for(proc.communicate(), 120)
+            async with ssh_process_group(proc):
+                last_report = time.monotonic()
+                view = memoryview(data)
+                try:
+                    for pos in range(offset, len(data), UPLOAD_CHUNK):
+                        proc.stdin.write(view[pos:pos + UPLOAD_CHUNK])
+                        await asyncio.wait_for(proc.stdin.drain(), 120)
+                        if time.monotonic() - last_report > 2:
+                            last_report = time.monotonic()
+                            job.progress("download", f"Uploading AgentsServer source… {min(len(data), pos + UPLOAD_CHUNK) / 1048576:.1f} MB")
+                    proc.stdin.close()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # ssh died first; its exit code and output carry the reason
+                output, _ = await asyncio.wait_for(proc.communicate(), 120)
         except asyncio.TimeoutError:
             raise RuntimeError("Uploading the server source stalled.") from None
         finally:
             job.proc = None
-            if proc.returncode is None:
-                with suppress(ProcessLookupError):
-                    proc.kill()
         if proc.returncode != 0:
             detail = last_line(output.decode("utf-8", "replace")) or f"ssh exited {proc.returncode}"
             if proc.returncode == 255:

@@ -206,13 +206,17 @@
   gives those children up to 5 s to exit by themselves (a killed AWS SSM
   plugin leaves its session on the host for about 20 minutes, and the
   tunnel's remote port stays taken with it), then kills the group; when the
-  tunnel or the hub stops, it kills the group at once. The git rewrite and
-  remote revive ssh commands kill their group too. A small helper process
-  kills the groups of all these ssh processes that are still running once
-  the hub has exited: a SIGKILLed hub runs no shutdown, and launchd ends
-  only the hub's own process group. Every tunnel ssh start is logged with
-  its pid, and the reason a tunnel cannot start ssh is logged when it
-  changes.
+  tunnel or the hub stops, it kills the group at once. The one-shot ssh
+  commands (the git rewrite, the remote revive, and a deploy's steps and
+  upload) read ssh's output until it closes. A ProxyCommand child that
+  outlives ssh kept that output open until their timeouts (the git rewrite
+  waited 120 s). Their group is now killed when they finish, and also 5 s
+  after ssh exits, which ends the read. A small helper
+  process kills the groups of all these ssh processes that are still
+  running once the hub has exited: a SIGKILLed hub runs no shutdown, and
+  launchd ends only the hub's own process group. Every tunnel ssh start is
+  logged with its pid, and the reason a tunnel cannot start ssh is logged
+  when it changes.
 - Before each start, a remote's tunnel binds its local port as ssh would.
   While another process holds the port, ssh is not started and the tunnel
   reports `could not start ssh: local port N: Address already in use`.
@@ -226,11 +230,13 @@
   6 s when a ProxyCommand child outlives ssh. A process that takes the port
   while a new ssh is still connecting gets requests until that ssh fails to
   bind and exits.
-- Unit tests: four new tests fail on the previous code and pass now: an
+- Unit tests: five new tests fail on the previous code and pass now: an
   ssh that exits while a child holds its stderr (its port is refused before
   the status changes), hub shutdown ending every tunnel's children, a
-  SIGKILLed hub process leaving no tunnel ssh or child, and a port held by
-  another process.
+  SIGKILLed hub process leaving no tunnel ssh or child, the four one-shot
+  commands ending about 6 s after such an ssh exit instead of when the
+  child exits (30 s) and leaving no child, and a port held by another
+  process.
 - On isolated hubs against a real cluster remote: with the tunnel's Sky
   proxy process paused (SIGSTOP) and its outer and inner ssh processes
   killed, the previous code still reported the tunnel connected with no ssh
@@ -241,10 +247,15 @@
   freeing the port started ssh 7 s later, and the hub proxy reached the
   remote 22 s later. Graceful hub shutdowns ended all tunnel ssh and Sky
   proxy processes, and 0.3 s after a SIGKILL of the hub none of its 12
-  tunnel ssh and Sky proxy processes, nor the helper, was running. Not
+  tunnel ssh and Sky proxy processes, nor the helper, was running. The
+  deploy step and upload code, run over the real route with `echo`, a 1 MB
+  upload to a temporary path and its removal, returned within 0.01 s of
+  ssh's exit as on the previous code and left no Sky proxy process. Not
   exercised: the 5 s wait against a real AWS SSM session, the git rewrite
-  and remote revive group kills on a real remote, and a child that leaves
-  ssh's process group. The running hub gets the fix when it restarts.
+  and remote revive on a real remote (they use the same process-group
+  handling as the deploy steps; the unit test covers them), a full deploy,
+  and a child that leaves ssh's process group. The running hub gets the fix
+  when it restarts.
 
 ## 2026-10-12 — A fresh desktop attaches to the AgentsServer already running on this Mac (desktop)
 
