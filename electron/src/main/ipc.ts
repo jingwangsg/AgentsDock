@@ -526,6 +526,7 @@ export function registerIpc(
   })
   handle('native:show-item', path => shell.showItemInFolder(path))
   handle('native:open-in-zed', input => service.openInZed(input))
+  handle('native:zed-workspace-folders', input => service.zedWorkspaceFolders(input))
   handle('native:set-badge', count => service.setBadge(count))
   handle('native:notify', payload => service.notify(payload))
   handle('native:log', (scope, message, data) => appLog(`renderer:${scope}`, message, data))

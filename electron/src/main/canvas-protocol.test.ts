@@ -232,3 +232,35 @@ describe('floating table of contents in the canvas page', () => {
     }
   })
 })
+
+describe('links in the canvas page', () => {
+  it('reports a link that is not a web address as written and leaves the click to the page and the runtime', () => {
+    document.body.innerHTML = '<div id="root"><a href="src/app.ts:12">reference</a><a href="https://example.com">web</a></div>'
+    const html = buildCanvasPage({ shell: '<!--CANVAS_SCRIPTS-->', vendor: '', javascript: '', state: {}, theme })
+    const shim = Buffer.from(html.match(/base64,([^"]+)/)![1], 'base64').toString('utf8')
+    const posted = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    // Stands in for the runtime's own capture listener, which vendor.js adds after the shim ran.
+    const runtime = vi.fn((event: Event) => event.preventDefault())
+    try {
+      new Function(shim)()
+      document.addEventListener('click', runtime, true)
+      const [reference, web] = document.querySelectorAll('a')
+      expect((window as unknown as { __agentsdockOpensCodeReferences?: boolean }).__agentsdockOpensCodeReferences).toBe(true)
+
+      reference.click()
+      expect(posted).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas', message: { kind: 'workspace-link', href: 'src/app.ts:12' } }, '*')
+      const reported = posted.mock.calls.length
+      web.click()
+      // While the user picks elements to comment on, the runtime handles the click: the link is selected, not opened.
+      document.body.classList.add('zed-selecting')
+      reference.click()
+      expect(posted).toHaveBeenCalledTimes(reported)
+      expect(runtime).toHaveBeenCalledTimes(3)
+    } finally {
+      document.removeEventListener('click', runtime, true)
+      posted.mockRestore()
+      document.body.innerHTML = ''
+      document.body.className = ''
+    }
+  })
+})

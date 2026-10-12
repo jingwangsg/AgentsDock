@@ -707,6 +707,8 @@ export interface AgentsDockAPI {
     showItemInFolder(path: string): Promise<void>
     /** Opens a server path in Zed; a remote's sshd is reached through a port tunnel from this app when the server allows it, else through its own ssh entry. */
     openInZed(input: OpenInZedRequest): Promise<void>
+    /** Folders of the workspaces Zed has open now on that server's machine; a code reference inside one opens in Zed. */
+    zedWorkspaceFolders(input: Pick<OpenInZedRequest, 'sshHost' | 'hostAlias'>): Promise<string[]>
     setBadge(count: number): Promise<void>
     notify(payload: ProfileNotificationPayload): Promise<void>
     log(scope: string, message: string, data?: unknown): Promise<void>

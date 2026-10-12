@@ -104,7 +104,7 @@ export function SideQuestionPanel({ session, scope, controller, active = true, f
           ? <ol className="side-chat-steps">{exchange.steps.map(step => sideChatStep(step, true))}</ol>
           : <details className="side-chat-steps"><summary>{t('sideChat.steps', { count: exchange.steps.length })}</summary>
             <ol>{exchange.steps.map(step => sideChatStep(step, false))}</ol></details> : null}
-        {exchange.answer && <div className="side-chat-assistant"><MarkdownContent text={exchange.answer} fold={false} /></div>}
+        {exchange.answer && <div className="side-chat-assistant"><MarkdownContent text={exchange.answer} sessionId={session.id} fold={false} /></div>}
         {exchange.state === 'pending' && <p className="side-chat-status" role="status"><LoaderCircle className="spin" size={13} />{t('sideChat.answering')}</p>}
         {exchange.state === 'cancelled' && <p className="side-chat-status">{t('sideChat.cancelled')}</p>}
         {exchange.state === 'error' && <p className="side-chat-error" role="alert">{sideQuestionError(exchange.error)}</p>}

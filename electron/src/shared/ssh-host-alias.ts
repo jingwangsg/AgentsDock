@@ -11,6 +11,9 @@ export function sshHostAlias(profile: Pick<PublicServerProfile, 'name' | 'sshHos
 export interface OpenInZedRequest {
   /** Absolute path on the server that owns the chat. */
   path: string
+  /** Where Zed puts the cursor in that file: a code reference's line and column. */
+  line?: number
+  column?: number
   /** SSH destination of that server; null for a server on this machine. */
   sshHost: string | null
   /** The local SSH alias this Mac keeps for that server; the URL names it instead of the raw host. */

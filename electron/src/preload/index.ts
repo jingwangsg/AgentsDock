@@ -479,6 +479,7 @@ const api: AgentsDockAPI = {
     openExternal: url => ipcRenderer.invoke('native:open-external', url),
     showItemInFolder: path => ipcRenderer.invoke('native:show-item', path),
     openInZed: input => ipcRenderer.invoke('native:open-in-zed', input),
+    zedWorkspaceFolders: input => ipcRenderer.invoke('native:zed-workspace-folders', input),
     setBadge: count => ipcRenderer.invoke('native:set-badge', count),
     notify: payload => ipcRenderer.invoke('native:notify', payload),
     log: (scope, message, data) => ipcRenderer.invoke('native:log', scope, message, data),
