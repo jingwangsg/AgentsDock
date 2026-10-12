@@ -20,6 +20,7 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import socket
 import sys
 import tarfile
@@ -836,13 +837,14 @@ async def start_remote_server(server: RemoteServer) -> None:
     proc = await asyncio.create_subprocess_exec(
         ssh_binary(), *route.options, *revive_args(route.destination, server.install_dir),
         stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=route.env,
+        start_new_session=True,
     )
     try:
         output, _ = await asyncio.wait_for(proc.communicate(), 120)
     except asyncio.TimeoutError:
-        with suppress(ProcessLookupError):
-            proc.kill()
         raise RuntimeError("start.sh did not finish within 120s.")
+    finally:
+        end_process_group(proc)
     if proc.returncode != 0:
         raise RuntimeError(last_line(output.decode("utf-8", "replace")) or f"start.sh exited {proc.returncode}")
 
@@ -896,6 +898,16 @@ def last_line(text: str) -> str:
     return lines[-1] if lines else ""
 
 
+def end_process_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL the process group of an ssh started with start_new_session=True, ssh included if it still runs.
+
+    ssh's ProxyCommand children are in that group. One that outlives ssh, as Sky's websocket proxy
+    does after a failed connect, keeps its connection and ssh's stderr pipe open for good.
+    """
+    with suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
 class Tunnel:
     """Keeps one ``ssh -N`` forward (``-L``, or ``-R`` for the inference role) alive with backoff and optional remote revival."""
 
@@ -946,6 +958,17 @@ class Tunnel:
                         env["SSL_CERT_FILE"] = self.server.ca_bundle_path
                         env["REQUESTS_CA_BUNDLE"] = self.server.ca_bundle_path
                 else:
+                    if self.role != "inference":
+                        # ssh binds its -L port only after a full connect and then exits (ExitOnForwardFailure).
+                        # While another process holds the port, a retry costs a connection for nothing, and the
+                        # hub proxy must not reach that process (see Tunnel.down). SO_REUSEADDR as ssh binds it,
+                        # so connections left in TIME_WAIT on the port do not count.
+                        with socket.socket() as probe:
+                            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                            try:
+                                probe.bind(("127.0.0.1", self.server.local_port))
+                            except OSError as exc:
+                                raise OSError(f"local port {self.server.local_port}: {exc.strerror}") from exc
                     # The inference tunnel carries only its reverse forward; nothing here connects through it.
                     # The main and stream tunnels carry JSON and the surface tunnel mostly web pages,
                     # which ssh compresses well; the bulk tunnel carries file bodies, mostly already compressed.
@@ -971,7 +994,7 @@ class Tunnel:
                 proc = await asyncio.create_subprocess_exec(
                     ssh_binary(), *options, *args,
                     stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.PIPE, env=env,
+                    stderr=asyncio.subprocess.PIPE, env=env, start_new_session=True,
                 )
             except (OSError, asyncio.TimeoutError) as exc:
                 self._mark_reconnecting(f"could not start ssh: {exc}")
@@ -979,22 +1002,38 @@ class Tunnel:
                 self._backoff = next_backoff(self._backoff)
                 continue
             self._proc = proc
+            logger.info("ssh tunnel %s started (pid %d)", self.label, proc.pid)
             # The forward is established quickly; a process that survives the
             # connect window counts as connected and resets the backoff.
             settle = (None if isinstance(self.server, SSHForward)
                       else asyncio.get_running_loop().call_later(SETTLE_SECONDS, self._mark_connected, proc))
             tail = ""
-            assert proc.stderr is not None
-            async for raw in proc.stderr:
-                line = raw.decode("utf-8", "replace")
-                tail = (tail + line)[-4000:]
-                if isinstance(self.server, SSHForward) and (
-                    f"Local forwarding listening on 127.0.0.1 port {self.server.local_port}." in line
-                ):
-                    self._mark_connected(proc)
-                if needs_revive(line):
-                    self._schedule_revive()
-            code = await proc.wait()
+
+            async def read_stderr() -> None:
+                nonlocal tail
+                assert proc.stderr is not None
+                async for raw in proc.stderr:
+                    line = raw.decode("utf-8", "replace")
+                    tail = (tail + line)[-4000:]
+                    if isinstance(self.server, SSHForward) and (
+                        f"Local forwarding listening on 127.0.0.1 port {self.server.local_port}." in line
+                    ):
+                        self._mark_connected(proc)
+                    if needs_revive(line):
+                        self._schedule_revive()
+
+            reader = asyncio.create_task(read_stderr(), name=f"ssh-tunnel-stderr:{self.label}")
+            try:
+                # Not stderr's EOF, and not proc.wait(), which waits for that EOF too: a ProxyCommand child
+                # that outlives ssh holds the pipe open. The exit status is set as soon as ssh exits.
+                while proc.returncode is None:
+                    await asyncio.sleep(1)
+            finally:
+                end_process_group(proc)
+                # EOF now follows the lines ssh wrote last, unless a child left the group.
+                await asyncio.wait({reader}, timeout=1)
+                reader.cancel()
+            code = proc.returncode
             if settle is not None:
                 settle.cancel()
             if self._monitor_task is not None:
@@ -1106,21 +1145,26 @@ class Tunnel:
         proc = await asyncio.create_subprocess_exec(
             ssh_binary(), *route.options, *SSH_BATCH_OPTIONS, route.destination, script,
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, env=route.env,
+            start_new_session=True,
         )
         try:
             _, error = await asyncio.wait_for(proc.communicate(), 120)
         except asyncio.TimeoutError:
             error = b"timed out"
         finally:
+            end_process_group(proc)
             if proc.returncode is None:
-                with suppress(ProcessLookupError):
-                    proc.kill()
                 await proc.wait()
         if proc.returncode:
             logger.warning("git forward rewrite failed for %s: %s", self.server.id, last_line(error.decode("utf-8", "replace")))
 
     def _mark_reconnecting(self, reason: str) -> None:
         self.status = {"state": "reconnecting", "restarts": self.status["restarts"] + 1, "last_error": reason}
+
+    @property
+    def down(self) -> bool:
+        """No ssh of this tunnel runs since one failed, so whatever listens on its local port is another process."""
+        return self._proc is None and self.status["state"] == "reconnecting"
 
     def _schedule_revive(self) -> None:
         if self._revive is None:
@@ -1389,6 +1433,7 @@ class RemoteServerManager:
             timeout=httpx.Timeout(connect=5.0, read=None, write=None, pool=5.0),
             limits=httpx.Limits(keepalive_expiry=2.0),
             trust_env=False,
+            event_hooks={"request": [self._refuse_down_tunnel]},
         )
         # Forward exactly the client's headers: httpx's defaults would change the
         # Accept-Encoding the remote sees and add a User-Agent the client never sent.
@@ -1527,6 +1572,18 @@ class RemoteServerManager:
     def tunnel_status(self, remote_id: str, *, bulk: bool = False) -> dict[str, Any] | None:
         tunnel = (self.bulk_tunnels if bulk else self.tunnels).get(remote_id)
         return dict(tunnel.status) if tunnel else None
+
+    def down_tunnel(self, port: int | None) -> Tunnel | None:
+        """The tunnel on this local port while it is down: no request carrying a remote's token may go there then."""
+        return next((tunnel for tunnel in [*self.tunnels.values(), *self.bulk_tunnels.values(), *self.stream_tunnels.values(),
+                                           *self.surface_tunnels.values()]
+                     if tunnel.server.local_port == port and tunnel.down), None)
+
+    async def _refuse_down_tunnel(self, request: httpx.Request) -> None:
+        # Every request this client sends goes to a tunnel port with a remote's token: the proxy's,
+        # the health probes, the CLI updates and the cross-server mail relay's.
+        if (tunnel := self.down_tunnel(request.url.port)) is not None:
+            raise httpx.ConnectError(f"ssh tunnel {tunnel.label} is down: {tunnel.status['last_error']}", request=request)
 
     def bulk_port(self, server: RemoteServer) -> int:
         tunnel = self.bulk_tunnels.get(server.id)
@@ -2252,6 +2309,10 @@ def register_remote_server_routes(
         query = swap_token_query(ws.url.query, server.token)
         port = (manager.stream_port(server) if STREAM_PATH_RE.fullmatch(path)
                 else manager.surface_port(server) if PORT_TUNNEL_PATH_RE.fullmatch(path) else server.local_port)
+        # websockets connects without manager.http and its down-tunnel check.
+        if manager.down_tunnel(port) is not None:
+            await ws.close(code=1011, reason="remote server unreachable")
+            return
         url = f"ws://127.0.0.1:{port}/{path}" + (f"?{query}" if query else "")
         try:
             upstream = await websocket_connect(url, additional_headers=headers, subprotocols=protocols or None, max_size=None, open_timeout=10)
