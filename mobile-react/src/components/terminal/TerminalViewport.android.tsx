@@ -1,10 +1,12 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
-import type { NativeSyntheticEvent } from 'react-native'
+import { Alert, Linking, StyleSheet, type NativeSyntheticEvent } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
-import { FIT_JS, XTERM_CSS, XTERM_JS } from '../../terminal/xtermAssets'
+import { TextInput } from '../AppText'
+import { TERMINAL_PAGE_JS, XTERM_CSS } from '../../terminal/xtermAssets'
 import { PROMPT_GLYPH_FONT_FAMILY, PROMPT_GLYPH_FONT_TTF_BASE64 } from '../../terminal/promptGlyphFont'
-import type { TerminalConnectionStatus, TerminalModifierState, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
+import type { TerminalPageApi, TerminalPageConfig, TerminalPageMessage, TerminalPageOptions } from '../../terminal/terminalPage'
+import type { TerminalConnectionStatus, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
 
 export type { TerminalConnectionStatus, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
 
@@ -23,15 +25,38 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   fontSize = 13,
   onStatus,
   onModifiers,
+  standalone = false,
+  visible = true,
+  exited = false,
+  dark = true,
+  cursorStyle = 'bar',
+  cursorBlink = true,
+  scrollback = 10_000,
+  screenReader = false,
+  copyOnSelect = false,
+  onPageEvent,
   ...viewProps
 }, ref) {
   const webView = useRef<WebView>(null)
+  const keyboardBridge = useRef<TextInput>(null)
   const copySequence = useRef(0)
   const pendingCopy = useRef<CopyRequest | null>(null)
   const [webViewKey, setWebViewKey] = useState(0)
+  const options = useMemo<TerminalPageOptions>(() => ({
+    background: backgroundHex, foreground: foregroundHex, cursor: cursorHex, selection: selectionHex, dark,
+    fontSize, cursorStyle, cursorBlink, scrollback, screenReader, copyOnSelect,
+  }), [backgroundHex, copyOnSelect, cursorBlink, cursorHex, cursorStyle, dark, fontSize, foregroundHex, scrollback, screenReader, selectionHex])
+  const optionsRef = useRef(options)
+  const visibleRef = useRef(visible)
+  const exitedRef = useRef(exited)
+  exitedRef.current = exited
+  // The page starts with what holds when it loads; later changes are applied in place, so a theme switch,
+  // a font size change or hiding the tab keeps the connection and the screen.
   const html = useMemo(
-    () => androidTerminalHTML({ socketURL, backgroundHex, foregroundHex, cursorHex, selectionHex, fontSize }),
-    [backgroundHex, cursorHex, fontSize, foregroundHex, selectionHex, socketURL],
+    () => androidTerminalHTML({
+      socketURL, standalone, fontFamily: `monospace, "${PROMPT_GLYPH_FONT_FAMILY}"`, options: optionsRef.current, visible: visibleRef.current, exited: exitedRef.current,
+    }),
+    [socketURL, standalone, webViewKey],
   )
 
   const inject = (script: string): boolean => {
@@ -39,17 +64,45 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
     webView.current.injectJavaScript(`${script};true;`)
     return true
   }
+  const call = <K extends keyof TerminalPageApi>(method: K, ...args: Parameters<TerminalPageApi[K]>) =>
+    inject(`window.__agentsDockTerminal?.${method}(${args.map(safeInlineJSON).join(',')})`)
 
+  // Calls made before the page finished loading are lost; it reports `ready` and gets both again then.
+  useEffect(() => {
+    if (optionsRef.current === options) return
+    optionsRef.current = options
+    call('configure', options)
+  }, [options])
+  useEffect(() => {
+    if (visibleRef.current === visible) return
+    visibleRef.current = visible
+    call('setVisible', visible)
+  }, [visible])
+
+  const paste = async () => {
+    const text = await Clipboard.getStringAsync()
+    if (!text) return false
+    return call('paste', text)
+  }
   useImperativeHandle(ref, () => ({
-    focus: async () => inject('window.__agentsDockTerminal?.focus()'),
-    blur: async () => inject('window.__agentsDockTerminal?.blur()'),
-    paste: async () => {
-      const text = await Clipboard.getStringAsync()
-      if (!text) return false
-      return inject(`window.__agentsDockTerminal?.paste(${safeInlineJSON(text)})`)
+    focus: async () => {
+      // Blink raises the soft keyboard only for a focus made by a user gesture in the page, and injected
+      // script carries none. A keyboard shown for a native field stays up when the focus moves on to the
+      // page's editor, so the keyboard comes up through a hidden field first. The page's focus() alone moves
+      // focus inside the web view only, so the web view asks for it as well.
+      keyboardBridge.current?.focus()
+      webView.current?.requestFocus()
+      return call('focus')
     },
-    sendKey: async name => inject(`window.__agentsDockTerminal?.key(${safeInlineJSON(name)})`),
-    setModifier: async (name, active) => inject(`window.__agentsDockTerminal?.modifier(${safeInlineJSON(name)}, ${active ? 'true' : 'false'})`),
+    blur: async () => call('blur'),
+    paste,
+    sendKey: async name => call('key', name),
+    setModifier: async (name, active) => call('modifier', name, active),
+    find: async (query, findOptions, direction, incremental) => call('find', query, findOptions, direction, incremental),
+    clearFind: async () => call('clearFind'),
+    jumpPrompt: async direction => call('jumpPrompt', direction),
+    selectText: async on => call('selectText', on),
+    restart: async () => call('restart'),
     copy: () => new Promise(resolve => {
       if (pendingCopy.current) {
         clearTimeout(pendingCopy.current.timer)
@@ -62,7 +115,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
         resolve(false)
       }, 900)
       pendingCopy.current = { id, resolve, timer }
-      if (!inject(`window.__agentsDockTerminal?.copy(${id})`)) {
+      if (!call('copy', id)) {
         clearTimeout(timer)
         pendingCopy.current = null
         resolve(false)
@@ -81,33 +134,59 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
     onStatus?.({ nativeEvent: status } as NativeSyntheticEvent<TerminalConnectionStatus>)
   }
   const handleMessage = (event: WebViewMessageEvent) => {
-    let value: { type?: string; status?: TerminalConnectionStatus['status']; name?: string; message?: string; text?: string; requestId?: number; ctrl?: boolean; alt?: boolean }
+    let message: TerminalPageMessage
     try {
-      value = JSON.parse(event.nativeEvent.data) as typeof value
+      message = JSON.parse(event.nativeEvent.data) as TerminalPageMessage
     } catch {
       return
     }
-    if (value.type === 'status' && value.status) {
-      emitStatus({ status: value.status, name: value.name, message: value.message })
-      return
-    }
-    if (value.type === 'modifiers') {
-      onModifiers?.({ ctrl: value.ctrl === true, alt: value.alt === true } satisfies TerminalModifierState)
-      return
-    }
-    const pending = pendingCopy.current
-    if (value.type === 'copy' && pending && value.requestId === pending.id) {
-      pendingCopy.current = null
-      clearTimeout(pending.timer)
-      if (!value.text) {
-        pending.resolve(false)
+    switch (message.type) {
+      case 'ready':
+        call('configure', optionsRef.current)
+        call('setVisible', visibleRef.current)
+        return
+      case 'status':
+        emitStatus({ status: message.status, name: message.name, message: message.message })
+        return
+      case 'modifiers':
+        onModifiers?.({ ctrl: message.ctrl === true, alt: message.alt === true })
+        return
+      case 'copy': {
+        const pending = pendingCopy.current
+        if (!pending || message.requestId !== pending.id) return
+        pendingCopy.current = null
+        clearTimeout(pending.timer)
+        if (!message.text) {
+          pending.resolve(false)
+          return
+        }
+        void Clipboard.setStringAsync(message.text).then(() => pending.resolve(true), () => pending.resolve(false))
         return
       }
-      void Clipboard.setStringAsync(value.text).then(() => pending.resolve(true), () => pending.resolve(false))
+      case 'clipboard':
+        if (typeof message.text === 'string') void Clipboard.setStringAsync(message.text).catch(() => undefined)
+        return
+      case 'link': {
+        // The page offers only http(s) links; the web view itself never navigates. Any program can make any
+        // text a link (OSC 8), so a tap shows where it goes first, as the desktop asks for ⌘-click.
+        const uri = message.uri
+        if (!/^https?:\/\//i.test(uri)) return
+        Alert.alert('Open link?', uri, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open', onPress: () => { void Linking.openURL(uri).catch(() => undefined) } },
+        ])
+        return
+      }
+      case 'command':
+        if (message.command === 'paste') void paste()
+        else onPageEvent?.(message)
+        return
+      default:
+        onPageEvent?.(message)
     }
   }
 
-  return <WebView
+  return <><WebView
     {...viewProps}
     key={`${socketURL}:${webViewKey}`}
     ref={webView}
@@ -132,153 +211,39 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
       return true
     }}
   />
+  <TextInput
+    ref={keyboardBridge}
+    value=""
+    caretHidden
+    autoCorrect={false}
+    accessibilityElementsHidden
+    importantForAccessibility="no-hide-descendants"
+    style={styles.keyboardBridge}
+  /></>
 })
 
-interface AndroidTerminalConfig {
-  socketURL: string
-  backgroundHex: string
-  foregroundHex: string
-  cursorHex: string
-  selectionHex: string
-  fontSize: number
-}
+const styles = StyleSheet.create({
+  keyboardBridge: { position: 'absolute', top: 0, left: 0, width: 1, height: 1, opacity: 0 },
+})
 
-export function androidTerminalHTML(config: AndroidTerminalConfig): string {
-  const xterm = escapeClosingTag(XTERM_JS, 'script')
-  const fit = escapeClosingTag(FIT_JS, 'script')
+export function androidTerminalHTML(config: TerminalPageConfig): string {
+  // load-bearing: a "</script" anywhere in the bundle (a string in some dependency) would end the inline script.
+  const script = escapeClosingTag(TERMINAL_PAGE_JS, 'script')
   const css = escapeClosingTag(XTERM_CSS, 'style')
   // Bundled fallback so xterm's per-glyph fallback can cover powerline/PUA glyphs
   // that Android system monospace fonts lack. The base64 is [A-Za-z0-9+/=] only,
   // so it needs no </style> escaping; font-src data: in the CSP admits it.
   const promptFont = `@font-face{font-family:"${PROMPT_GLYPH_FONT_FAMILY}";src:url("data:font/ttf;base64,${PROMPT_GLYPH_FONT_TTF_BASE64}") format("truetype")}`
+  // 'wasm-unsafe-eval': the image addon decodes sixel in WebAssembly. blob: images: its iTerm2 image fallback.
+  // touch-action none: the page runs every touch gesture on the terminal itself; the selectable text layer
+  // keeps the web view's own scrolling and selection. A transparent viewport: xterm.css paints it black
+  // under the padding, a frame around the terminal in the light theme.
   return `<!doctype html><html><head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ws: wss:; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
-  <style>${css}\n${promptFont}\nhtml,body,#terminal{width:100%;height:100%;margin:0;background:${config.backgroundHex};overflow:hidden}.xterm{padding:8px;box-sizing:border-box}.xterm-viewport{overscroll-behavior:contain}</style>
-  </head><body><div id="terminal"></div><script>${xterm}</script><script>${fit}</script><script>
-  (() => {
-    'use strict';
-    const config = ${safeInlineJSON(config)};
-    const post = value => window.ReactNativeWebView?.postMessage(JSON.stringify(value));
-    const host = document.getElementById('terminal');
-    const term = new Terminal({
-      cursorBlink: true,
-      fontFamily: 'monospace, "${PROMPT_GLYPH_FONT_FAMILY}"',
-      fontSize: config.fontSize,
-      scrollback: 10000,
-      allowProposedApi: true,
-      theme: { background: config.backgroundHex, foreground: config.foregroundHex, cursor: config.cursorHex, cursorAccent: config.backgroundHex, selectionBackground: config.selectionHex }
-    });
-    const fit = new FitAddon.FitAddon();
-    term.loadAddon(fit);
-    term.open(host);
-    fit.fit();
-    let socket = null;
-    let reconnectTimer = null;
-    let disposed = false;
-    let opened = false;
-    const focus = () => { term.focus(); term.textarea?.focus({ preventScroll: true }); };
-    const visibleText = () => {
-      const buffer = term.buffer.active;
-      const start = Math.max(0, buffer.viewportY);
-      const end = Math.min(buffer.length, start + term.rows);
-      const lines = [];
-      for (let index = start; index < end; index += 1) {
-        const line = buffer.getLine(index);
-        if (line) lines.push(line.translateToString(true));
-      }
-      return lines.join('\\n').replace(/\\s+$/, '');
-    };
-    const sendSize = () => {
-      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', columns: term.cols, rows: term.rows }));
-    };
-    // The server reads typed input only from binary frames; a text frame is a JSON
-    // control message and anything else is dropped (so was every keystroke, and
-    // xterm's own answer to the shell's Primary Device Attributes query).
-    const encoder = new TextEncoder();
-    const sendInput = text => { if (text && socket?.readyState === WebSocket.OPEN) socket.send(encoder.encode(text)); };
-    const modifiers = { ctrl: false, alt: false };
-    const reportModifiers = () => post({ type: 'modifiers', ctrl: modifiers.ctrl, alt: modifiers.alt });
-    const releaseModifiers = () => { modifiers.ctrl = false; modifiers.alt = false; reportModifiers(); };
-    // A sticky Ctrl/Alt from the key row applies to the next single character, then releases.
-    const withModifiers = text => {
-      if (text.length !== 1 || (!modifiers.ctrl && !modifiers.alt)) return text;
-      const ctrl = modifiers.ctrl, alt = modifiers.alt;
-      releaseModifiers();
-      let out = text;
-      if (ctrl) {
-        const code = text.toUpperCase().charCodeAt(0);
-        if (code >= 0x40 && code <= 0x5f) out = String.fromCharCode(code & 0x1f);
-        else if (text === ' ') out = '\\x00';
-      }
-      return alt ? '\\x1b' + out : out;
-    };
-    const cursorKey = letter => {
-      if (modifiers.ctrl || modifiers.alt) {
-        const parameter = modifiers.ctrl && modifiers.alt ? '7' : modifiers.ctrl ? '5' : '3';
-        releaseModifiers();
-        return '\\x1b[1;' + parameter + letter;
-      }
-      return (term.modes.applicationCursorKeysMode ? '\\x1bO' : '\\x1b[') + letter;
-    };
-    const KEY_TEXT = { escape: '\\x1b', tab: '\\t', enter: '\\r', home: '\\x1b[H', end: '\\x1b[F', pageup: '\\x1b[5~', pagedown: '\\x1b[6~', dash: '-', slash: '/', pipe: '|', tilde: '~' };
-    const ARROWS = { up: 'A', down: 'B', right: 'C', left: 'D' };
-    const key = name => {
-      focus();
-      if (ARROWS[name]) return sendInput(cursorKey(ARROWS[name]));
-      const text = KEY_TEXT[name];
-      if (text != null) sendInput(withModifiers(text));
-    };
-    const connect = () => {
-      if (disposed) return;
-      post({ type: 'status', status: opened ? 'Reconnecting' : 'Connecting' });
-      socket = new WebSocket(config.socketURL);
-      socket.binaryType = 'arraybuffer';
-      socket.onopen = () => { opened = true; fit.fit(); sendSize(); };
-      socket.onmessage = event => {
-        if (typeof event.data === 'string') {
-          try {
-            const control = JSON.parse(event.data);
-            if (control.type === 'ready') {
-              post({ type: 'status', status: 'Connected', name: control.name, message: control.message });
-              return;
-            }
-          } catch {}
-          term.write(event.data);
-        } else {
-          term.write(new Uint8Array(event.data));
-        }
-      };
-      socket.onerror = () => post({ type: 'status', status: 'Error', message: 'Terminal connection failed.' });
-      socket.onclose = () => {
-        if (disposed) return;
-        post({ type: 'status', status: 'Reconnecting' });
-        reconnectTimer = setTimeout(connect, 800);
-      };
-    };
-    term.onData(data => sendInput(withModifiers(data)));
-    term.onResize(sendSize);
-    window.__agentsDockTerminal = {
-      focus,
-      blur: () => term.blur(),
-      paste: text => { focus(); term.paste(String(text ?? '')); },
-      copy: requestId => post({ type: 'copy', requestId, text: term.getSelection() || visibleText() }),
-      key,
-      modifier: (name, active) => { if (name in modifiers) { modifiers[name] = !!active; reportModifiers(); } }
-    };
-    host.addEventListener('pointerdown', focus);
-    host.addEventListener('touchstart', () => requestAnimationFrame(focus), { passive: true });
-    new ResizeObserver(() => { fit.fit(); sendSize(); }).observe(document.body);
-    window.addEventListener('beforeunload', () => {
-      disposed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      socket?.close();
-      term.dispose();
-    });
-    connect();
-  })();
-  </script></body></html>`
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ws: wss:; img-src data: blob:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'wasm-unsafe-eval'">
+  <style>${css}\n${promptFont}\nhtml,body,#terminal{width:100%;height:100%;margin:0;background:${config.options.background};overflow:hidden}#terminal{touch-action:none}.xterm{padding:8px;box-sizing:border-box}.xterm .xterm-viewport{background-color:transparent}#select-layer{display:none;position:fixed;inset:0;z-index:10;overflow-y:auto;padding:8px;box-sizing:border-box;margin:0;white-space:pre-wrap;word-break:break-all;line-height:1.2;user-select:text;-webkit-user-select:text;touch-action:pan-y}</style>
+  </head><body><div id="terminal"></div><script>window.__agentsDockTerminalConfig=${safeInlineJSON(config)}</script><script>${script}</script></body></html>`
 }
 
 export function safeInlineJSON(value: unknown): string {

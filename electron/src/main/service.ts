@@ -5379,18 +5379,20 @@ export class AppService {
   }
   async connectTerminal(profileId: string, profileGeneration: number, sessionId: string, options: TerminalConnectOptions): Promise<void> {
     const scope = this.requireProfileScope(profileId, profileGeneration)
+    // Closes the connection this one replaces and takes a new lease.
+    this.disconnectTerminal(sessionId)
+    const lease = this.terminalLeases.get(sessionId)
     await this.ensureValidatedScope(scope)
+    // A disconnect or a newer connect for this tab arrived during the wait; it owns the tab now.
+    if (this.terminalLeases.get(sessionId) !== lease) return
     const tmux = this.health?.capabilities?.tmux
     if (!isStandaloneTerminalId(sessionId) && tmux?.available === false) throw new Error(tmux.action || tmux.message || 'tmux is required for terminal sessions.')
-    this.disconnectTerminal(sessionId)
-    const lease = (this.terminalLeases.get(sessionId) ?? 0) + 1
-    this.terminalLeases.set(sessionId, lease)
     const connection = scope.client.terminal(
       sessionId,
       options,
-      data => {
+      (data, replay) => {
         if (this.isCurrentScope(scope) && this.terminalLeases.get(sessionId) === lease) {
-          this.emit('terminal:data', { sessionId, data, profileId: scope.profileId, profileGeneration: scope.generation })
+          this.emit('terminal:data', { sessionId, data, ...(replay ? { replay: true } : {}), profileId: scope.profileId, profileGeneration: scope.generation })
         }
       },
       state => {
@@ -5640,23 +5642,28 @@ export class AppService {
       appLog('notify', 'dropped: profile/serverIdentity mismatch', { profileFound: Boolean(profile), profileIdentity: profile?.serverIdentity ?? null, payloadIdentity: payload.serverIdentity, sessionId: payload.sessionId })
       return
     }
-    const session = payload.profileId === this.activeProfileId
-      ? this.sessions.find(candidate => candidate.id === payload.sessionId)
-      : this.cache.session(profileNamespace(profile), payload.sessionId)
-    if (!session) {
-      appLog('notify', 'dropped: session not in main session list', { sessionId: payload.sessionId, knownSessions: this.sessions.length, activeProfile: payload.profileId === this.activeProfileId })
-      return
+    // Main does not keep the tab list; the renderer checks a terminal tab when the notification is opened.
+    let session: Session | null | undefined = null
+    if (!payload.surface) {
+      session = payload.profileId === this.activeProfileId
+        ? this.sessions.find(candidate => candidate.id === payload.sessionId)
+        : this.cache.session(profileNamespace(profile), payload.sessionId)
+      if (!session) {
+        appLog('notify', 'dropped: session not in main session list', { sessionId: payload.sessionId, knownSessions: this.sessions.length, activeProfile: payload.profileId === this.activeProfileId })
+        return
+      }
     }
     const emergencyAlertId = payload.emergencyAlertId?.trim() || null
     if (emergencyAlertId) {
-      if (!/^emergency_[0-9a-f]{32}$/.test(emergencyAlertId) || session.emergency_alert?.id !== emergencyAlertId) return
+      if (!/^emergency_[0-9a-f]{32}$/.test(emergencyAlertId) || session?.emergency_alert?.id !== emergencyAlertId) return
       if (this.notifiedEmergencyAlertIds.has(emergencyAlertId)) return
       rememberEmergencyAlertId(this.notifiedEmergencyAlertIds, emergencyAlertId)
     }
     const route: ProfileNotificationRoute = {
       profileId: payload.profileId,
       serverIdentity: profile.serverIdentity ?? null,
-      sessionId: payload.sessionId
+      sessionId: payload.sessionId,
+      ...(payload.surface ? { surface: true } : {})
     }
     if (this.notificationPopups) {
       // macOS: Notification Center drops the ad-hoc build's requests, so the app
@@ -5701,6 +5708,7 @@ export class AppService {
   private notificationRouteIsCurrent(route: ProfileNotificationRoute): boolean {
     const profile = this.settings.getProfile(route.profileId)
     if (!profile || (profile.serverIdentity ?? null) !== route.serverIdentity) return false
+    if (route.surface) return true
     return route.profileId === this.activeProfileId
       ? this.sessions.some(session => session.id === route.sessionId)
       : this.cache.session(profileNamespace(profile), route.sessionId) != null

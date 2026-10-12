@@ -1,6 +1,7 @@
 import { Pressable, StyleSheet, View } from 'react-native'
 import { ChevronLeft, Globe, PanelLeftClose, PanelLeftOpen, Terminal } from 'lucide-react-native'
 import { promptSurfaceRename, surfaceSubline, surfaceTitle } from '../lib/surfaces'
+import { useTerminalStatus } from '../lib/terminalStatus'
 import { useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { Surface } from '../types'
@@ -11,8 +12,10 @@ import { useTextPrompt } from './TextPromptDialog'
 import { IconButton } from './ui'
 
 /** A terminal or browser tab in the chat's place: header with rename, then the tab itself. Closing lives in the tab row's long-press menu. */
-export function SurfaceScreen({ surface, compact, sidebarCollapsed, onToggleSidebar, onBack }: {
+export function SurfaceScreen({ surface, active, compact, sidebarCollapsed, onToggleSidebar, onBack }: {
   surface: Surface
+  /** False while a kept terminal tab is hidden behind another tab or chat. */
+  active: boolean
   compact: boolean
   sidebarCollapsed: boolean
   onToggleSidebar: () => void
@@ -22,9 +25,10 @@ export function SurfaceScreen({ surface, compact, sidebarCollapsed, onToggleSide
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const updateSurface = useAppStore(state => state.updateSurface)
   const { promptText, textPromptDialog } = useTextPrompt()
-  const title = surfaceTitle(surface)
+  const status = useTerminalStatus(surface.id)
+  const title = surfaceTitle(surface, status.title)
   const rename = () => {
-    void promptSurfaceRename(surface, promptText).then(patch => {
+    void promptSurfaceRename(surface, promptText, status.title).then(patch => {
       if (patch) void updateSurface(surface.id, patch, profileGeneration)
     })
   }
@@ -37,10 +41,10 @@ export function SurfaceScreen({ surface, compact, sidebarCollapsed, onToggleSide
       <Icon size={15} color={colors.muted} />
       <Pressable accessibilityRole="button" accessibilityLabel={`Rename ${title}`} accessibilityHint="Opens a rename prompt." onPress={rename} style={styles.titleBlock}>
         <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{title}</Text>
-        <Text style={[styles.subline, { color: colors.muted }]} numberOfLines={1}>{surfaceSubline(surface)}</Text>
+        <Text style={[styles.subline, { color: colors.muted }]} numberOfLines={1}>{surfaceSubline(surface, status.cwd)}</Text>
       </Pressable>
     </View>
-    {surface.kind === 'terminal' ? <TerminalView terminal={surface} /> : <BrowserView surface={surface} />}
+    {surface.kind === 'terminal' ? <TerminalView terminal={surface} active={active} /> : <BrowserView surface={surface} />}
     {textPromptDialog}
   </View>
 }

@@ -2,10 +2,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 
 const source = fs.readFileSync(path.resolve('src/components/TerminalView.tsx'), 'utf8')
 const shell = fs.readFileSync(path.resolve('src/components/AppShell.tsx'), 'utf8')
 const androidTerminal = fs.readFileSync(path.resolve('src/components/terminal/TerminalViewport.android.tsx'), 'utf8')
+const terminalPage = fs.readFileSync(path.resolve('scripts/terminal-page-entry.ts'), 'utf8')
+const terminalProtocol = fs.readFileSync(path.resolve('src/terminal/terminalProtocol.ts'), 'utf8')
 const promptFont = fs.readFileSync(path.resolve('src/terminal/promptGlyphFont.ts'), 'utf8')
 
 test('terminal toolbar stays outside the platform terminal hit-testing surface', () => {
@@ -30,9 +33,10 @@ test('android terminal keeps the bundled prompt-glyph fallback in its font stack
   // fallback only reaches the bundled subset if it stays in the fontFamily, the
   // @font-face is injected, and the CSP admits the data: font. Dropping any one
   // silently reintroduces missing-glyph boxes at remote shell prompts.
-  assert.match(androidTerminal, /fontFamily: 'monospace, "\$\{PROMPT_GLYPH_FONT_FAMILY\}"'/)
+  assert.match(androidTerminal, /fontFamily: `monospace, "\$\{PROMPT_GLYPH_FONT_FAMILY\}"`/)
+  assert.match(terminalPage, /fontFamily: config\.fontFamily/)
   assert.match(androidTerminal, /@font-face\{font-family:"\$\{PROMPT_GLYPH_FONT_FAMILY\}";src:url\("data:font\/ttf;base64,\$\{PROMPT_GLYPH_FONT_TTF_BASE64\}"\)/)
-  assert.match(androidTerminal, /img-src data:; font-src data:;/)
+  assert.match(androidTerminal, /img-src data: blob:; font-src data:;/)
   assert.match(promptFont, /export const PROMPT_GLYPH_FONT_FAMILY = 'AgentsDockPromptGlyphs'/)
   assert.match(promptFont, /export const PROMPT_GLYPH_FONT_TTF_BASE64 =\s*'[A-Za-z0-9+/=]{2000,}'/)
 })
@@ -48,25 +52,59 @@ test('terminal uses a full-screen modal without a sheet dismissal recognizer', (
 test('android terminal sends typed input as binary frames and has a key row', () => {
   // The server reads input only from binary frames; a text frame is a JSON control
   // message and everything else is dropped, which silently ate every keystroke.
-  assert.match(androidTerminal, /socket\.send\(encoder\.encode\(text\)\)/)
-  assert.doesNotMatch(androidTerminal, /socket\.send\(data\)/)
-  assert.match(androidTerminal, /term\.onData\(data => sendInput\(withModifiers\(data\)\)\)/)
+  assert.match(terminalProtocol, /send\(encoder\.encode\(data\)\)/)
+  assert.match(terminalProtocol, /if \(open\) socket!\.send\(frame\)/)
+  assert.match(terminalPage, /term\.onData\(data => link\.write\(withModifiers\(data\)\)\)/)
   assert.match(source, /testID="terminal-key-row"/)
   for (const label of ['Esc', 'Tab', 'Enter', 'Ctrl', 'Alt', 'Home', 'End']) assert.match(source, new RegExp(`label: '${label}'`))
-  assert.match(androidTerminal, /enter: '\\\\r'/)
+  assert.match(terminalPage, /enter: '\\r'/)
   assert.match(source, /testID="terminal-platform-viewport"[\s\S]*testID="terminal-key-row"/)
 })
 
-test('android terminal inline script keeps control escapes double-escaped for the template literal', () => {
-  // A single-backslash \x00 in the template becomes a raw NUL in the generated HTML and
-  // truncates it, so the script never runs and the tab sits on "Connecting" (build 33/34).
-  const inline = androidTerminal.slice(androidTerminal.indexOf('<script>\n  (() => {'), androidTerminal.indexOf('</script></body></html>'))
-  assert.doesNotMatch(inline, /(?<!\\)\\x[0-9a-fA-F]{2}/)
-  assert.doesNotMatch(inline, /'(?<!\\)\\t'/)
+test('the committed android terminal page bundle matches its sources', () => {
+  execFileSync(process.execPath, ['scripts/embed-xterm.mjs', '--check'], { stdio: 'pipe' })
+})
+
+test('android terminal page is bundled into the HTML rather than written inline in the template', () => {
+  // An inline script in the template literal needed every control escape doubled: a single-backslash
+  // \x00 became a raw NUL in the generated HTML and truncated it (build 33/34).
+  assert.match(androidTerminal, /const script = escapeClosingTag\(TERMINAL_PAGE_JS, 'script'\)/)
+  assert.match(androidTerminal, /<script>\$\{script\}<\/script>/)
+  assert.doesNotMatch(androidTerminal, /\\x[0-9a-fA-F]{2}/)
 })
 
 test('the key row stays above the soft keyboard inside the full-screen terminal modal', () => {
   assert.match(source, /Keyboard\.addListener\('keyboardDidShow'/)
   assert.match(source, /measureInWindow\(\(_x, y, _width, height\) => \{\s*setKeyboardOverlap\(Math\.max\(0, Math\.round\(y \+ height - event\.endCoordinates\.screenY\)\)\)/)
   assert.match(source, /paddingBottom: keyboardOverlap/)
+})
+
+test('android keeps opened terminal tabs mounted and full size while hidden, up to the measured limit', () => {
+  // A collapsed (display: none) web view would lose its size; a hidden tab stays laid out behind the one in front.
+  assert.match(shell, /const KEPT_TERMINAL_TABS = 8/)
+  assert.match(shell, /<SurfaceScreen surface=\{surface\} active=\{front\}/)
+  assert.match(shell, /hiddenTerminal: \{ opacity: 0 \}/)
+  assert.match(source, /else if \(standalone\) updateTerminalStatus\(terminal\.id, \{ bell: true \}\)/)
+})
+
+test('the android terminal keyboard button raises the soft keyboard through a native field', () => {
+  // Blink shows the keyboard only for a focus made by a user gesture in the page; injected script has none.
+  assert.match(androidTerminal, /keyboardBridge\.current\?\.focus\(\)\s*\n\s*webView\.current\?\.requestFocus\(\)/)
+})
+
+test('the android terminal keeps the desktop\'s replay and report rules byte for byte', () => {
+  // Ports, not shared modules: the page is bundled on its own, so these tests keep the copies identical.
+  const desktop = relative => fs.readFileSync(path.resolve('..', relative), 'utf8')
+  const line = (source, name) => source.match(new RegExp(`^const ${name} = .*$`, 'm'))?.[0]
+  const block = source => source.match(/^const REPLAYED_CSI_QUERIES[\s\S]*?^const REPLAYED_OSC_QUERIES = .*$/m)?.[0]
+  const replay = desktop('electron/src/renderer/src/lib/terminal-replay.ts')
+  const client = desktop('electron/src/main/server-client.ts')
+  const surface = desktop('electron/src/renderer/src/components/TerminalSurface.tsx')
+  assert.ok(line(replay, 'TRAILING_SEQUENCE') && line(client, 'TERMINAL_REPORTS') && block(surface))
+  assert.equal(line(terminalProtocol, 'TRAILING_SEQUENCE'), line(replay, 'TRAILING_SEQUENCE'))
+  assert.equal(line(terminalProtocol, 'TERMINAL_REPORTS'), line(client, 'TERMINAL_REPORTS'))
+  assert.equal(block(terminalPage), block(surface))
+  for (const name of ['TERMINAL_ACK_BYTES', 'TERMINAL_ACK_IDLE_MS', 'TERMINAL_INPUT_FRAME_BYTES', 'TERMINAL_PENDING_INPUT_BYTES']) {
+    assert.equal(line(terminalProtocol, name), line(client, name), name)
+  }
 })

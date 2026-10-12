@@ -3540,7 +3540,7 @@ interface FakeClientOptions {
     onSessions: (sessions: Session[], snapshot: boolean, removedSessionId?: string) => void,
     onState: (connected: boolean, error?: string) => void
   ) => () => void
-  terminal?: () => { write(data: string): void; resize(columns: number, rows: number): void; scroll(delta: number): void; close(): void }
+  terminal?: (sessionId: string, options: unknown, onData: (data: string, replay: boolean) => void) => { write(data: string): void; resize(columns: number, rows: number): void; scroll(delta: number): void; close(): void }
   portTunnelSocket?: (sessionId: string, remotePort: number) => WebSocket
 }
 
@@ -9508,6 +9508,75 @@ describe('server profile lifecycle', () => {
     expect(bProbe.dispose).toHaveBeenCalledOnce()
   })
 
+  it('opens no terminal for a tab that disconnected while the profile was being validated', async () => {
+    const health = deferred<Health>()
+    const a = fakeClient({ health: () => health.promise })
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [a],
+      'http://b.test:7850': [fakeClient()]
+    })
+    settings.setProfileServerIdentity('a', 'server-a')
+    const bootstrap = await service.bootstrap()
+
+    const connecting = service.connectTerminal('a', bootstrap.profileGeneration, 'term_tab', { columns: 80, rows: 24 })
+    service.disconnectTerminalForProfile('a', bootstrap.profileGeneration, 'term_tab')
+    health.resolve({ ok: true, server_identity: 'server-a' } as Health)
+    await connecting
+
+    expect(a.terminal).not.toHaveBeenCalled()
+  })
+
+  it('closes the terminal connection a reconnect of the same tab replaces', async () => {
+    const connections = [0, 1].map(() => ({ write: vi.fn(), resize: vi.fn(), scroll: vi.fn(), close: vi.fn() }))
+    const a = fakeClient({
+      health: async () => ({ ok: true, server_identity: 'server-a' } as Health),
+      terminal: () => connections[a.terminal.mock.calls.length - 1]
+    })
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [a],
+      'http://b.test:7850': [fakeClient()]
+    })
+    settings.setProfileServerIdentity('a', 'server-a')
+    const bootstrap = await service.bootstrap()
+    await service.refreshServer('a', bootstrap.profileGeneration)
+
+    await service.connectTerminal('a', bootstrap.profileGeneration, 'term_tab', { columns: 80, rows: 24 })
+    await service.connectTerminal('a', bootstrap.profileGeneration, 'term_tab', { columns: 80, rows: 24 })
+
+    expect(connections[0].close).toHaveBeenCalledOnce()
+    expect(connections[1].close).not.toHaveBeenCalled()
+  })
+
+  it('marks the terminal data that carries a replay', async () => {
+    let onData: (data: string, replay: boolean) => void = () => {}
+    const a = fakeClient({
+      health: async () => ({ ok: true, server_identity: 'server-a' } as Health),
+      terminal: (_sessionId, _options, data) => {
+        onData = data
+        return { write: vi.fn(), resize: vi.fn(), scroll: vi.fn(), close: vi.fn() }
+      }
+    })
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [a],
+      'http://b.test:7850': [fakeClient()]
+    })
+    settings.setProfileServerIdentity('a', 'server-a')
+    const bootstrap = await service.bootstrap()
+    await service.refreshServer('a', bootstrap.profileGeneration)
+    const send = vi.fn()
+    service.addWindow({ isDestroyed: () => false, on: vi.fn(), webContents: { id: 74, on: vi.fn(), send } } as never)
+
+    await service.connectTerminal('a', bootstrap.profileGeneration, 'term_tab', { columns: 80, rows: 24 })
+    onData('history', true)
+    onData('live', false)
+    const data = send.mock.calls.filter(([channel]) => channel === 'terminal:data').map(([, payload]) => payload)
+    expect(data).toEqual([
+      expect.objectContaining({ sessionId: 'term_tab', data: 'history', replay: true }),
+      expect.not.objectContaining({ replay: expect.anything() })
+    ])
+    expect(data[1].data).toBe('live')
+  })
+
   it('keeps a healthy active server connected but degraded when tmux is missing', async () => {
     const missingTmux = {
       available: false,
@@ -10652,6 +10721,34 @@ describe('server profile lifecycle', () => {
 
     service.stop()
     expect(popups.dispose).toHaveBeenCalledOnce()
+  })
+
+  it('shows a terminal tab’s shell notification, which names a tab rather than a chat, and opens that tab', async () => {
+    electronHarness.notificationSupported = true
+    const shown: NotificationPopupRequest[] = []
+    const popups = { show: (request: NotificationPopupRequest) => { shown.push(request) }, dismissAll: vi.fn(), dispose: vi.fn() }
+    const { settings } = profileSettings()
+    settings.setProfileServerIdentity('a', 'server-a')
+    const cache = new LocalCache(':memory:')
+    const service = new AppService({ settings, cache, clientFactory: () => fakeClient() as unknown as AgentServerClient, notificationPopups: popups })
+    cleanup.push(() => { service.stop(); cache.close() })
+    const send = vi.fn()
+    const window = {
+      isDestroyed: () => false, isMinimized: () => false, show: vi.fn(), focus: vi.fn(),
+      webContents: { send, isDestroyed: () => false, isLoadingMainFrame: () => false }
+    }
+    ;(service as unknown as { windows: Set<unknown> }).windows = new Set([window])
+    service.rendererReadyForNotificationRoutes(window as never)
+
+    // Without the tab flag the id is looked up as a chat and dropped; the identity check still applies.
+    await service.notify({ title: 'Terminal', body: 'build done', profileId: 'a', serverIdentity: 'server-a', sessionId: 'term_1' })
+    await service.notify({ title: 'Terminal', body: 'build done', profileId: 'a', serverIdentity: 'spoofed', sessionId: 'term_1', surface: true })
+    expect(shown).toHaveLength(0)
+
+    await service.notify({ title: 'Terminal', body: 'build done', profileId: 'a', serverIdentity: 'server-a', sessionId: 'term_1', surface: true })
+    expect(shown.map(request => request.content)).toEqual([{ title: 'Terminal', status: 'build done', emergency: false }])
+    shown[0].onOpen()
+    expect(send).toHaveBeenCalledExactlyOnceWith('native:notification', { profileId: 'a', serverIdentity: 'server-a', sessionId: 'term_1', surface: true })
   })
 
   it('keeps banner Open working after an iframe loads and waits again after a page reload', async () => {

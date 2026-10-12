@@ -211,6 +211,28 @@ const SESSION_SUMMARY_STREAM_PROTOCOL = 'agentsdock-session-summaries-v1'
 const SESSION_SUMMARY_STREAM_MAX_PACKET_CHARS = 256 * 1024
 const EVENTS_STREAM_PROTOCOL = 'agentsdock-events-v1'
 const TERMINAL_STREAM_PROTOCOL = 'agentsdock-terminal-v1'
+// A terminal tab acknowledges output in batches of this size, and its replay as soon as it arrives (the
+// server gives a viewer with an unacknowledged replay one more second per 8 KiB of it before closing it as
+// stalled). The server pauses the shell while the active viewer has more than its window of live output
+// (TERMINAL_OUTPUT_WINDOW_BYTES, which must stay well above this) unacknowledged.
+const TERMINAL_ACK_BYTES = 16 * 1024
+// The rest of a batch is acknowledged at most this long after its first byte arrived, even while output keeps
+// trickling in: the server takes an active viewer whose acknowledgements stop advancing for a second as asleep
+// (TERMINAL_UNRESPONSIVE_VIEWER_SECONDS), and a viewer that fell behind gets its resync only once it has
+// acknowledged everything.
+const TERMINAL_ACK_IDLE_MS = 200
+// Input frames stay far below the 1 MiB frame limit of chat terminals and older servers
+// (TERMINAL_INPUT_MAX_BYTES), and small enough that acknowledgements get through between the frames
+// of a large paste on a slow link.
+const TERMINAL_INPUT_FRAME_BYTES = 64 * 1024
+// Input typed while the terminal (re)connects waits for `ready`, up to the 1 MiB an older server takes in
+// one frame; beyond that it is dropped.
+const TERMINAL_PENDING_INPUT_BYTES = 1024 * 1024
+// Answers a terminal gives to a program's queries: cursor position and status, device attributes, mode,
+// window and keyboard-flag reports, OSC colour replies, DCS replies. One written while the terminal is
+// (re)connecting answers the old connection's query and would reach the program seconds later as typed
+// text, so it is not kept. Shift/Ctrl/Alt+F3 (ESC[1;<mod>R) reads the same as a cursor position report.
+const TERMINAL_REPORTS = /^(?:\x1b\[\??[\d;]*[Rn]|\x1b\[[?>=][\d;]*c|\x1b\[\??[\d;]*\$y|\x1b\[\?\d*u|\x1b\[[\d;]*t|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/
 
 function agentTokenWebSocketProtocols(token: string): string[] {
   return token
@@ -2085,7 +2107,7 @@ export class AgentServerClient {
   terminal(
     sessionId: string,
     options: TerminalConnectOptions,
-    onData: (data: string) => void,
+    onData: (data: string, replay: boolean) => void,
     onState: (state: TerminalStateEvent) => void
   ): TerminalConnection {
     const configuration = this.configuration
@@ -2100,6 +2122,34 @@ export class AgentServerClient {
     let columns = options.columns
     let rows = options.rows
     let decoder = new TextDecoder()
+    // Per socket: input is sent once the server said `ready`; terminal tabs acknowledge output. The
+    // next binary frame is a replay after `ready` or `resync` (an older server sends no replay length:
+    // then its first frame is the replay).
+    let ready = false
+    let name: string | null = null
+    let replayPending = false
+    let unacknowledged = 0
+    let acknowledgeLater: NodeJS.Timeout | undefined
+    // Input typed while no socket is ready, carried across reconnects; so is a resize (the user showed the tab).
+    const pendingInput: Uint8Array<ArrayBuffer>[] = []
+    let pendingInputBytes = 0
+    let pendingResize = false
+    const acknowledge = (socket: WebSocket): void => {
+      clearTimeout(acknowledgeLater)
+      acknowledgeLater = undefined
+      socket.send(JSON.stringify({ type: 'ack', bytes: unacknowledged }))
+      unacknowledged = 0
+    }
+    const receive = (bytes: Uint8Array, socket: WebSocket): void => {
+      if (!bytes.byteLength) return
+      const replay = replayPending
+      replayPending = false
+      onData(decoder.decode(bytes, { stream: true }), replay)
+      if (!standalone) return
+      unacknowledged += bytes.byteLength
+      if (unacknowledged >= TERMINAL_ACK_BYTES || replay) acknowledge(socket)
+      else acknowledgeLater ??= setTimeout(() => acknowledge(socket), TERMINAL_ACK_IDLE_MS)
+    }
     const link = reconnectingSocket(configuration, {
       connectTimeoutMs: 10_000,
       timedOutError: 'Terminal connection timed out',
@@ -2110,12 +2160,21 @@ export class AgentServerClient {
         url.searchParams.set('columns', String(columns))
         url.searchParams.set('rows', String(rows))
         if (options.cwd) url.searchParams.set('cwd', options.cwd)
+        if (standalone) url.searchParams.set('flow_control', '1')
+        // Every attach is passive: the tab becomes the active viewer, at the size in this URL, when the user types
+        // in it, or with a resize when the user shows it (TerminalSurface).
+        if (standalone) url.searchParams.set('passive', '1')
         const protocols = authenticatedWebSocketProtocols(
           configuration,
           url,
           TERMINAL_STREAM_PROTOCOL
         )
         decoder = new TextDecoder()
+        ready = false
+        replayPending = false
+        clearTimeout(acknowledgeLater)
+        acknowledgeLater = undefined
+        unacknowledged = 0
         const socket = new WebSocket(url, protocols)
         socket.binaryType = 'arraybuffer'
         return socket
@@ -2124,10 +2183,24 @@ export class AgentServerClient {
       onMessage: (message, socket, link) => {
         if (typeof message.data === 'string') {
           try {
-            const control = JSON.parse(message.data) as { type?: string; name?: string; message?: string }
+            const control = JSON.parse(message.data) as { type?: string; name?: string; message?: string; replay_bytes?: unknown }
+            const replayBytes = typeof control.replay_bytes === 'number' ? control.replay_bytes : null
             if (control.type === 'ready') {
               link.resetBackoff()
-              onState({ sessionId, state: 'connected', name: control.name ?? null })
+              ready = true
+              name = control.name ?? null
+              replayPending = replayBytes === null || replayBytes > 0
+              for (const frame of pendingInput.splice(0)) socket.send(frame)
+              pendingInputBytes = 0
+              if (pendingResize) socket.send(JSON.stringify({ type: 'resize', columns, rows }))
+              pendingResize = false
+              onState({ sessionId, state: 'connected', name, ...(replayBytes === null ? {} : { replayBytes }) })
+            } else if (control.type === 'resync' && replayBytes !== null) {
+              // This viewer fell behind and the server stopped its live output; the replay that follows
+              // rebuilds the screen. A character the last live frame left unfinished never completes.
+              decoder = new TextDecoder()
+              replayPending = replayBytes > 0
+              onState({ sessionId, state: 'connected', name, replayBytes, resync: true })
             } else if (control.type === 'error') {
               // Unmarked server control errors can be transient (for example,
               // a tmux attach race during managed restart). Only the explicit
@@ -2147,16 +2220,15 @@ export class AgentServerClient {
         else if (message.data instanceof Blob) {
           void message.data.arrayBuffer().then(buffer => {
             if (link.stopped || link.socket !== socket) return
-            const blobBytes = new Uint8Array(buffer)
-            if (blobBytes.byteLength) onData(decoder.decode(blobBytes, { stream: true }))
+            receive(new Uint8Array(buffer), socket)
           })
           return
         }
-        if (bytes?.byteLength) onData(decoder.decode(bytes, { stream: true }))
+        if (bytes) receive(bytes, socket)
       },
       onClose: (event, link) => {
         const tail = decoder.decode()
-        if (tail) onData(tail)
+        if (tail) onData(tail, false)
         if (event.code === TERMINAL_SHELL_EXITED_CLOSE_CODE) {
           // The shell itself ended (for example `exit`); the next connect starts a new one.
           link.stop()
@@ -2196,13 +2268,24 @@ export class AgentServerClient {
     return {
       write(data: string): void {
         if (link.stopped) return
-        if (link.socket?.readyState === 1) link.socket.send(new TextEncoder().encode(data))
+        const open = ready && link.socket?.readyState === 1
+        if (!open && TERMINAL_REPORTS.test(data)) return
+        const bytes = new TextEncoder().encode(data)
+        for (let start = 0; start < bytes.byteLength; start += TERMINAL_INPUT_FRAME_BYTES) {
+          const frame = bytes.subarray(start, start + TERMINAL_INPUT_FRAME_BYTES)
+          if (open) link.socket!.send(frame)
+          else if (pendingInputBytes + frame.byteLength <= TERMINAL_PENDING_INPUT_BYTES) {
+            pendingInput.push(frame)
+            pendingInputBytes += frame.byteLength
+          }
+        }
       },
       resize(nextColumns: number, nextRows: number): void {
         if (link.stopped) return
         columns = nextColumns
         rows = nextRows
-        if (link.socket?.readyState === 1) link.socket.send(JSON.stringify({ type: 'resize', columns, rows }))
+        pendingResize = !(ready && link.socket?.readyState === 1)
+        if (!pendingResize) link.socket!.send(JSON.stringify({ type: 'resize', columns, rows }))
         syncTerminalSize()
       },
       close: link.stop

@@ -12,6 +12,7 @@ const composer = fs.readFileSync(path.join(componentRoot, 'Composer.tsx'), 'utf8
 const sidebar = fs.readFileSync(path.join(componentRoot, 'Sidebar.tsx'), 'utf8')
 const serverProfiles = fs.readFileSync(path.join(componentRoot, 'ServerProfiles.tsx'), 'utf8')
 const terminalView = fs.readFileSync(path.join(componentRoot, 'TerminalView.tsx'), 'utf8')
+const terminalSettings = fs.readFileSync(path.resolve('src/lib/terminalSettings.ts'), 'utf8')
 const timelineRows = fs.readFileSync(path.join(componentRoot, 'TimelineRows.tsx'), 'utf8')
 const terminalModule = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/ios/AgentsDockNativeTerminalModule.swift'), 'utf8')
 const terminal = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/ios/AgentsDockTerminalView.swift'), 'utf8')
@@ -61,7 +62,8 @@ test('large app text keeps narrow navigation and chat controls usable', () => {
 })
 
 test('native terminal keeps monospace while following app scale', () => {
-  assert.match(terminalView, /fontSize=\{scaleAppFont\(13, fontScale\)\}/)
+  assert.match(terminalView, /const baseFontSize = scaleAppFont\(settings\.fontSize, fontScale\)/)
+  assert.match(terminalSettings, /fontSize: 13,/)
   assert.match(terminalModule, /Prop\("fontSize"\)/)
   assert.match(terminal, /setFontSize/)
   assert.match(terminal, /UIFont\.monospacedSystemFont/)

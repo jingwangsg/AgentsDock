@@ -39,6 +39,7 @@ import { RuntimeHealthPanel } from './RuntimeHealth'
 import { ServerManagement } from './ServerManagement'
 import { InferenceHubSettings } from './InferenceHubSettings'
 import { KeyboardShortcutsSettings } from './KeyboardShortcutsSettings'
+import { TerminalSettings } from './TerminalSettings'
 import { ShortcutKey } from './ShortcutTooltip'
 import { WorkingDirectoryInput } from './WorkingDirectoryInput'
 import { ADD_SERVER_EVENT, MANAGE_SERVERS_EVENT } from './ServerSelector'
@@ -473,7 +474,7 @@ export function Dialogs() {
   </>
 }
 
-type AppSettingsSection = 'general' | 'shortcuts' | 'server' | 'inferenceHub' | 'updates'
+type AppSettingsSection = 'general' | 'terminal' | 'shortcuts' | 'server' | 'inferenceHub' | 'updates'
 
 export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdatesVisible, onServerReleaseChecksVisible, onCoordinatedServerUpdate }: {
   serverSettings?: ReactNode; serverUpdates?: ReactNode; onServerUpdatesVisible?: (visible: boolean) => void
@@ -508,7 +509,7 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
     const selectSection = (event: Event) => {
       const next = (event as CustomEvent<AppSettingsSection | 'appearance'>).detail
       if (next === 'appearance') setSection('general')
-      else if (next === 'general' || next === 'shortcuts' || next === 'server' || next === 'inferenceHub' || next === 'updates') setSection(next)
+      else if (next === 'general' || next === 'terminal' || next === 'shortcuts' || next === 'server' || next === 'inferenceHub' || next === 'updates') setSection(next)
     }
     window.addEventListener('agentsdock:app-settings-section', selectSection)
     return () => window.removeEventListener('agentsdock:app-settings-section', selectSection)
@@ -605,6 +606,7 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
           <Dialog.Title>{t('settings.title')}</Dialog.Title>
           <nav aria-label={t('settings.sections')}>
             <button ref={section === 'general' ? activeSectionRef : undefined} type="button" className={section === 'general' ? 'active' : ''} aria-current={section === 'general' ? 'page' : undefined} onClick={() => setSection('general')}><span>{t('settings.general')}</span></button>
+            <button ref={section === 'terminal' ? activeSectionRef : undefined} type="button" className={section === 'terminal' ? 'active' : ''} aria-current={section === 'terminal' ? 'page' : undefined} onClick={() => setSection('terminal')}><span>{t('settings.terminal')}</span></button>
             <button ref={section === 'shortcuts' ? activeSectionRef : undefined} type="button" className={section === 'shortcuts' ? 'active' : ''} aria-current={section === 'shortcuts' ? 'page' : undefined} onClick={() => setSection('shortcuts')}><span>{t('settings.keyboardShortcuts')}</span></button>
             <button ref={section === 'server' ? activeSectionRef : undefined} type="button" className={section === 'server' ? 'active' : ''} aria-current={section === 'server' ? 'page' : undefined} onClick={() => setSection('server')}><span>{t('settings.server')}</span></button>
             <button ref={section === 'inferenceHub' ? activeSectionRef : undefined} type="button" className={section === 'inferenceHub' ? 'active' : ''} aria-current={section === 'inferenceHub' ? 'page' : undefined} onClick={() => setSection('inferenceHub')}><span>{t('settings.inferenceHub')}</span></button>
@@ -649,6 +651,7 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
               </div>
             </div>
           </section>}
+          {section === 'terminal' && <TerminalSettings />}
           {section === 'shortcuts' && <KeyboardShortcutsSettings />}
           {section === 'server' && <section className="app-settings-section" aria-labelledby="app-settings-server-title">
             <header><h2 id="app-settings-server-title">{t('settings.server')}</h2></header>

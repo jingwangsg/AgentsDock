@@ -1,5 +1,192 @@
 # Public development log
 
+## 2026-10-13 — Android terminal tabs follow the desktop terminal (Android)
+
+- The Android terminal connection now behaves like the desktop's. It acknowledges a terminal
+  tab's output, sends input in frames of at most 64 KiB, and keeps input typed during a
+  reconnect, in order, until the server is ready; answers to the old connection's queries are
+  dropped. Reconnects back off from 500 ms to 10 s instead of retrying every 800 ms. Replays
+  follow the desktop's rule: the queries in a replay are not answered, except in the escape
+  sequences at its end, and a replay does not ring bells, post notifications or write the
+  clipboard again. The function that finds those trailing sequences is tested with the
+  desktop's test vectors, and contract tests keep the copied query lists and patterns equal to
+  the desktop's. A shell that exits shows "The shell exited" and a New shell button, also after
+  the tab's view is rebuilt; the app no longer starts another shell by itself. Servers that send
+  no `replay_bytes` still work.
+- Like the desktop's, every tab attaches passively: it does not take the shell's size from the
+  device in use. The tab sends its size when it comes into sight, and when it reconnects while
+  in sight with the app in front, which makes the phone the device in use. A tab of an app in
+  the background sends no size after a network drop. When the server holds output back from a
+  viewer that fell behind and later sends a fresh replay (`resync`), the tab rebuilds its screen
+  from it like after a reconnect. A batch of output short of 16 KiB is acknowledged at most
+  200 ms after its first byte, so such a viewer can catch up and the server can tell that the
+  phone is awake.
+- The terminal uses the desktop's xterm.js addons: WebGL with a DOM fallback, search, web links,
+  OSC 52 clipboard writes (reads get an empty answer), Unicode 11 widths, and sixel and iTerm2
+  images.
+- Touch: dragging scrolls the scrollback. In a full-screen program, or one that tracks the mouse,
+  a drag sends arrow keys or wheel reports instead, and a tap sends a click. Two fingers change
+  the text size. Tapping a URL or an OSC 8 link shows the address and opens it in the browser
+  after confirmation, since any program can make any text a link. Select text shows the buffer
+  as text with the system's selection handles and Copy menu. Paste is bracketed when the program
+  asked for it.
+- A find bar (case, whole word, regular expression, match count), A−/A+ for one tab, and
+  Settings → Terminal: text size, cursor shape and blink, copy on select, scrollback and screen
+  reader support. Settings and theme switches apply without reconnecting, also to the first
+  terminal opened after a launch.
+- The key row adds ⇧Tab, F1–F12 and previous/next prompt (OSC 133). A hardware keyboard sends
+  Control-letters to the shell. Control-Shift-C, V, A, K, F, W and ↑/↓, and Control-=, −, 0 run
+  the terminal's commands, as on the Windows and Linux desktop. The keyboard button raises the
+  soft keyboard.
+- The shell's title (OSC 0/2) and directory (OSC 7) name the tab in the list and the header
+  while it is not renamed. A bell vibrates the phone when the tab is in front and marks the tab
+  in the list otherwise. OSC 9/777 post a notification when the tab is hidden or the app is in
+  the background, at most one a second; opening it opens the tab.
+- As on the desktop, a terminal tab connects the first time it is shown and stays connected
+  while another tab or chat is in front. Android keeps the most recently shown tabs this way:
+  eight with up to 10,000 lines of scrollback, three with 25,000, and only the tab in front with
+  50,000. A tab past that disconnects and reattaches, with a clean replay, when it is shown
+  again. A hidden tab keeps reading output but does not draw it.
+- Measured on an emulator against an isolated server: with a 120 KiB/s link, Ctrl-C after 6 s
+  of `seq` output reached the prompt in 1.8 s; Android build 67 took 10.8 s. With a blinking
+  cursor, the web view process used 0.4 s of CPU per 30 s with WebGL and 1.2 s with the DOM
+  renderer; a 150,000-line burst used the same CPU with either. Each hidden tab added about
+  14 MB of memory (PSS of the app and its web view process: 523 MB with none hidden, 538 MB with
+  1, 561 MB with 3, 605 MB with 6) and no measurable idle CPU. A filled 50,000-line scrollback
+  added about 50 MB (190 MB while it was written), which is why fewer tabs are kept with large
+  scrollbacks. After the app had been in the background and its connections dropped, eight
+  kept tabs reconnected within 0.3 s of each other.
+- Checks: unit tests for the replay rule, the connection (passive attach, `resync`, short-batch
+  acknowledgements), the key chords and the settings. On the emulator, a byte recorder at the
+  shell showed the bytes from keys, chords, pastes, mouse reports, OSC 52 and replays. `cat -v`
+  and the recorder showed no stray bytes after reattaching from a tab switch, an evicted tab,
+  dropped connections in the background (three tabs recording), the phone-width (folded)
+  layout, and 28 `resync` replays while a second viewer drove heavy output over a throttled
+  link. The checks also covered the size handover between a second viewer and the phone, the
+  bell mark and notification from a hidden tab, the keyboard button (`dumpsys input_method`),
+  a chat's tmux terminal and both themes. Not exercised: a physical phone and keyboard (key
+  events were injected without scan codes), TalkBack. Availability: source.
+
+## 2026-10-13 — Desktop terminal tabs run on xterm.js 6 (desktop)
+
+- The desktop terminal tab replaces ghostty-web 0.4.0 with @xterm/xterm 6.0.0
+  and its official addons (fit, WebGL with a DOM fallback, search, web links,
+  clipboard, Unicode 11 widths, sixel and iTerm2 images). xterm.js answers the
+  shell's device-attribute query itself, so fish 4 shows its prompt at once.
+- Keys send what Terminal.app sends: ⌘←/⌘→/⌘⌫ (line start, end, delete to
+  start), ⌥←/⌥→ (word left/right), ⌥⌫, Shift-Tab, and every Control key,
+  including Control-L, which no longer toggles the inspector from a focused
+  terminal. Option composes characters unless Settings → Terminal makes it
+  Meta. On Windows and Linux the terminal's own commands use Control-Shift
+  (C, V, A, K, F, W), so Control-letters stay with the shell.
+- ⌘C copies the selection, ⌘V pastes as a bracketed paste when the program
+  asked for one, ⌘A selects all, ⌘K clears, ⌘F finds (case, whole word,
+  regular expression, match count), ⌘+/⌘−/⌘0 size one tab, and ⌘↑/⌘↓ move
+  between prompts the shell marks (OSC 133). The right-click menu offers Copy,
+  Paste, Select All, Clear and Find; a program that tracks the mouse gets the
+  right click instead, and ⌥ forces the menu or a selection.
+- Mouse reporting (vim, tmux), ⌘-click on URLs and OSC 8 links (opened in the
+  browser), OSC 52 clipboard writes (reads get an empty answer), shell titles
+  and directories in the tab name, a bell mark on a tab out of sight, and
+  OSC 9/777 desktop notifications (at most one a second per tab) while the
+  tab is out of sight. Notifications reuse the chat path: the notify payload
+  and its click route carry `surface: true`, main skips the chat lookup for
+  them, and the renderer opens the tab. Output that the server replays on
+  reconnect does not repeat bells, notifications or clipboard writes, and the
+  terminal does not answer the queries in it (device attributes, cursor
+  position, mode and color reports), which used to arrive at the shell as
+  typed text. Queries that end the replay are still answered: a shell that
+  has just started, such as fish 4, may be waiting on them. A file dropped
+  on a terminal types its quoted path when the server runs on this computer,
+  quoted so that fish, bash and zsh all read it as one word; uploads belong to
+  chats, so a remote server shows a message instead.
+- Settings → Terminal: font family and size, cursor shape and blink, Option
+  as Meta, copy on select, scrollback (10,000 lines by default), screen reader
+  support. Changes and theme switches apply to open tabs at once.
+- A tab opens its terminal and shell the first time it is shown. Idle CPU,
+  summed over the app's main, renderer and GPU processes (`ps` CPU time over
+  30 s windows), with five terminal tabs on one server, one tab visible and
+  the window in the background, both builds run with the same Electron
+  binary: 0.1–0.6% of a core with xterm.js, 32–50% with ghostty-web, whose
+  render loop never stopped.
+- Checks: an isolated server and app drove the keys, IME, clipboard, mouse,
+  links, find, settings and replay cases with real keystrokes or CDP input
+  and read the bytes at the shell. Not exercised: the press-and-hold accent
+  popup (synthetic key events do not open it; committed text arrives once),
+  Windows and Linux key bindings. Emoji ZWJ sequences, skin tones and flags
+  draw as separate glyphs (the grapheme addon is still experimental).
+  Availability: source.
+
+## 2026-10-13 — Terminal tabs: clean replays, flow control, reliable input (server, desktop)
+
+- A reattaching terminal no longer types stray answers into the shell: the
+  server leaves a terminal query (cursor position, device attributes, colour
+  queries and similar) out of the scrollback it replays once later output
+  shows the program had its answer. Queries in the escape sequences that end
+  the output stay, so a new shell still waiting for its startup probe gets an
+  answer from the next terminal that attaches. Clipboard writes (OSC 52) are
+  always left out, so a reconnect does not replace the clipboard again. The
+  live stream is unchanged. This applies to every client.
+- The replay keeps its history after one very long line, starts on a line,
+  escape sequence or character boundary, and restores the modes of a running
+  full-screen program (alternate screen, mouse, bracketed paste, cursor keys
+  and others); such a program is asked to repaint. The server's `ready`
+  message states the length of the replay frame that follows.
+- Each terminal tab's shell has one active viewer, chosen as tmux chooses its
+  "latest" client: the viewer that last typed or resized, or that attached
+  without `passive=1`. Only the active viewer's size is applied to the pty.
+  When it disconnects, the viewer that was active before it becomes active
+  again and its size is applied. The desktop and Android attach with
+  `passive=1`. The desktop sends its size when the user shows the tab in the
+  focused window. A reconnect sends no size; the size in its attach request
+  applies once the user types there. A Mac left on the tab therefore no longer
+  takes the size back from the phone after a network drop.
+- Every attached terminal answers a program's queries (cursor position,
+  device attributes and similar), one in the background too, and maybe late.
+  Answers never make a viewer active. The active viewer's answers reach the
+  program. Another viewer's answer is held: it is dropped once the active
+  viewer acknowledges the output sent before the answer arrived, and passed on
+  once the active viewer has left or is unresponsive, that is, behind with its
+  acknowledgements not advancing for 1 s. For the same output only one other
+  viewer's answers are passed on. An active viewer that does not acknowledge
+  output (an older client) keeps only its own answers. Focus reports (focus in
+  and out, which vim asks for) from any viewer reach the program.
+- Measured with an isolated server and scripted viewers that answer and
+  acknowledge like the desktop and Android tabs, with a program in the tab
+  counting the answers it got: after a spinner printing every 100 ms, one
+  answer (two before); with the active viewer on a 20 KiB/s link and 100 KiB of
+  output before the query, one answer, the active viewer's after 5.1 s (before,
+  also the other viewer's after 1.0 s); with the active viewer asleep and two
+  other viewers, one answer after 1.0 s. Through a hub with fish, when the
+  viewer that typed fell asleep, the next command ran 0.03 s after Enter
+  (10.07 s before: fish waited for an answer to its prompt query).
+- The desktop acknowledges terminal output, and the server stops reading the
+  shell while the active viewer is 128 KiB behind: Ctrl-C under a 120 KiB/s
+  link now reaches the prompt in about 0.8 s instead of losing the connection
+  after 35 s. Any other viewer that falls 128 KiB behind (a hidden tab on a slow
+  link, a frozen phone, a sleeping laptop) no longer pauses the shell: it stops
+  getting live output, and once it has acknowledged everything sent it gets a
+  `resync` message with a new replay, then live output again. With a second
+  viewer that stopped reading during a flood, Ctrl-C on the active viewer took
+  0.8 s at 120 KiB/s (20.4 s before), and the woken viewer's output after its
+  resync matched the active viewer's byte for byte. The desktop acknowledges
+  the rest of a batch at most 200 ms after its first byte, which the resync
+  needs. A viewer whose acknowledgements stop for 30 s is disconnected and
+  reconnects; one still receiving a replay gets one second more per 8 KiB of
+  it. Mobile builds older than this release do not acknowledge and keep the
+  previous behaviour.
+- Input waits for a busy program instead of closing the connection: a
+  1,100,000-byte paste sent as one frame arrives whole (the regression test
+  uses 1,200,000 bytes). Keys typed while a terminal reconnects are sent in
+  order once it is back; answers to the old connection's queries are dropped.
+  The desktop sends input in frames of at most 64 KiB. The reconnect queue and
+  the frame limit apply to chat (tmux) terminals too.
+- Checks: server tests with real ptys and desktop unit tests, each failing
+  without the change; measurements through an isolated hub and remote with a
+  throttled link, and the built desktop app (isolated profile) driving a
+  terminal tab. Availability: source; a remote needs a redeploy and the
+  desktop a new package.
+
 ## 2026-10-13 — Hub ssh tunnels restart after every ssh exit, end their ProxyCommand processes, and stay off a local port another process took (server)
 
 - Before: a tunnel learned that its ssh had exited when ssh's stderr

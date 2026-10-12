@@ -841,6 +841,27 @@ describe('App chat workspace identity', () => {
     expect(shell).not.toHaveClass('sidebar-hidden')
   })
 
+  it('leaves Control-L and ⌘L in a focused terminal to the shell and the menu', () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    useAppStore.setState({ inspectorVisible: false })
+    render(<App />)
+    const terminal = document.createElement('div')
+    terminal.className = 'terminal-surface'
+    const textarea = terminal.appendChild(document.createElement('textarea'))
+    document.body.append(terminal)
+    const press = (init: KeyboardEventInit) => {
+      const event = new KeyboardEvent('keydown', { key: 'l', bubbles: true, cancelable: true, ...init })
+      act(() => { textarea.dispatchEvent(event) })
+      return event
+    }
+
+    // Control-L clears the shell's screen; ⌘L reaches the menu accelerator, which toggles the inspector once.
+    expect(press({ ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(press({ metaKey: true }).defaultPrevented).toBe(false)
+    expect(useAppStore.getState().inspectorVisible).toBe(false)
+    terminal.remove()
+  })
+
   it('passes an unavailable capability without removing the chat workspace', () => {
     useAppStore.setState({
       health: {

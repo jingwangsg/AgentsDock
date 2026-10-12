@@ -13,11 +13,14 @@ test('surfaceTitle prefers the rename, then the page title, then the kind', () =
   assert.equal(surfaceTitle(surface({ kind: 'browser', page_title: 'Example Domain' })), 'Example Domain')
   assert.equal(surfaceTitle(surface({ kind: 'browser', page_title: 'Example Domain', name: 'Docs' })), 'Docs')
   assert.equal(surfaceTitle(surface({ kind: 'terminal', name: 'Build' })), 'Build')
+  assert.equal(surfaceTitle(surface({ kind: 'terminal' }), 'vim notes.md'), 'vim notes.md', 'a terminal tab shows its shell title')
+  assert.equal(surfaceTitle(surface({ kind: 'terminal', name: 'Build' }), 'vim notes.md'), 'Build', 'the rename still wins')
 })
 
 test('surfaceSubline shows the shell directory tail or the page host', () => {
   assert.equal(surfaceSubline(surface({ kind: 'terminal', cwd: '/Users/me/WORKSPACE/opencli' })), 'WORKSPACE / opencli')
   assert.equal(surfaceSubline(surface({ kind: 'terminal' })), 'Terminal')
+  assert.equal(surfaceSubline(surface({ kind: 'terminal', cwd: '/Users/me/start' }), '/Users/me/WORKSPACE/opencli'), 'WORKSPACE / opencli', 'the directory the shell last reported')
   assert.equal(surfaceSubline(surface({ kind: 'browser', url: 'https://github.com/manaflow-ai/cmux' })), 'github.com')
   assert.equal(surfaceSubline(surface({ kind: 'browser', url: 'http://localhost:8000/x' })), 'localhost:8000')
   assert.equal(surfaceSubline(surface({ kind: 'browser' })), 'Browser')
@@ -34,6 +37,8 @@ test('promptSurfaceRename asks with the current title and turns the answer into 
   assert.deepEqual(await promptSurfaceRename(named, answer('  ')), { name: null }, 'an emptied name returns to the default title')
   assert.equal(await promptSurfaceRename(named, answer('Build')), null, 'the same name sends nothing')
   assert.equal(await promptSurfaceRename(surface({ kind: 'terminal' }), answer('')), null, 'emptying an unnamed tab sends nothing')
+  assert.equal(await promptSurfaceRename(surface({ kind: 'terminal' }), answer('htop'), 'htop'), null, 'the shell title accepted unchanged sends nothing')
+  assert.deepEqual(asked, { title: 'Rename Tab', initialValue: 'htop', confirmLabel: 'Rename', placeholder: 'Terminal' })
 })
 
 test('browserAddressURL keeps web URLs, adds a scheme to hosts, searches words, refuses other schemes', () => {

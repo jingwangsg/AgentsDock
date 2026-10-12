@@ -5865,6 +5865,20 @@ describe('server profile switching', () => {
     }
   })
 
+  it('opens the terminal tab a shell notification names, and nothing once that tab is closed', async () => {
+    const profile = { ...profileFor('profile-a'), serverIdentity: 'server-a' }
+    const terminal = { id: 'term_1', kind: 'terminal' as const, name: null, folder: 'General', cwd: '/work', url: null, page_title: null, created_at: '', updated_at: '' }
+    useAppStore.setState({ profiles: [profile], activeProfileId: profile.id, switchingProfileId: null, surfaces: [terminal], selectedSurfaceId: null, error: null })
+    const route = { profileId: profile.id, serverIdentity: 'server-a', sessionId: terminal.id, surface: true }
+
+    await expect(useAppStore.getState().openNotificationRoute(route)).resolves.toBe(true)
+    expect(useAppStore.getState().selectedSurfaceId).toBe(terminal.id)
+
+    useAppStore.setState({ surfaces: [], selectedSurfaceId: null })
+    await expect(useAppStore.getState().openNotificationRoute(route)).resolves.toBe(false)
+    expect(useAppStore.getState().selectedSurfaceId).toBeNull()
+  })
+
   it('reports failure from the public notification route action when the saved identity changed', async () => {
     const profile = { ...profileFor('profile-a'), serverIdentity: 'new-identity' }
     const chat = sessionFor('notified')

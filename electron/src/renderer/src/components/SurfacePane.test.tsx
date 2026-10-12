@@ -34,11 +34,13 @@ describe('SurfaceStack', () => {
   it('saves a new title on Enter, and an emptied field clears the rename', () => {
     render(<SurfaceStack surfaces={[terminal, browser]} selectedId="browser_1" sidebarVisible onSidebarToggle={() => undefined} />)
     const title = screen.getByRole('textbox', { name: 'Rename Docs' })
+    fireEvent.focus(title)
     fireEvent.change(title, { target: { value: ' Python ' } })
     fireEvent.keyDown(title, { key: 'Enter' })
     fireEvent.blur(title)
     expect(updateSurface).toHaveBeenCalledWith('browser_1', { name: 'Python' })
 
+    fireEvent.focus(title)
     fireEvent.change(title, { target: { value: '' } })
     fireEvent.blur(title)
     expect(updateSurface).toHaveBeenCalledWith('browser_1', { name: null })

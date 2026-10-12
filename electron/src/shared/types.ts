@@ -1456,6 +1456,10 @@ export interface TerminalStateEvent {
   state: TerminalConnectionState
   name?: string | null
   error?: string | null
+  /** With `connected`: the length of the replay that arrives next as one `terminal:data` with `replay` (0: none). Absent from an older server: its first data is taken as the replay. */
+  replayBytes?: number
+  /** With `connected`: the server resynced a viewer that fell behind, on the same connection. */
+  resync?: boolean
   profileId?: string
   profileGeneration?: number
 }
@@ -2122,12 +2126,19 @@ export interface ProfileTimelineEvent extends ProfileEventContext {
   /** The cached window proved stale (history revision behind the server): adopt this snapshot whole, older paged rows included. */
   authoritative?: boolean
 }
-export interface ProfileTerminalDataEvent extends ProfileEventContext { sessionId: string; data: string }
+export interface ProfileTerminalDataEvent extends ProfileEventContext {
+  sessionId: string
+  data: string
+  /** This data is a replay of the scrollback (after `connected`), not live output. */
+  replay?: true
+}
 export interface ProfileTerminalStateEvent extends ProfileEventContext {
   sessionId: string
   state: TerminalConnectionState
   name?: string | null
   error?: string | null
+  replayBytes?: number
+  resync?: boolean
 }
 export interface ProfileForwardedPortsEvent extends ProfileEventContext { ports: ForwardedPort[] }
 
@@ -2664,12 +2675,15 @@ export interface ProfileNotificationPayload {
   sessionId: string
   /** Optional stable key used by main to deduplicate emergency notifications. */
   emergencyAlertId?: string | null
+  /** `sessionId` names a terminal tab (OSC 9/777 from its shell), not a chat. */
+  surface?: boolean
 }
 
 export interface ProfileNotificationRoute {
   profileId: string
   serverIdentity: string | null
   sessionId: string
+  surface?: boolean
 }
 
 export interface CreateSessionInput {

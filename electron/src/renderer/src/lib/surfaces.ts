@@ -2,15 +2,15 @@ import { t } from '@shared/i18n'
 import type { Surface } from '@shared/types'
 import { workingDirectoryTail } from './format'
 
-/** The user's rename wins; otherwise a browser tab shows its page title and a terminal tab says "Terminal". */
-export function surfaceTitle(surface: Surface): string {
+/** The user's rename wins; otherwise a browser tab shows its page title and a terminal tab its shell's title, or "Terminal". */
+export function surfaceTitle(surface: Surface, shellTitle?: string | null): string {
   if (surface.name) return surface.name
-  return surface.kind === 'browser' ? surface.page_title || t('surface.browser') : t('surface.terminal')
+  return surface.kind === 'browser' ? surface.page_title || t('surface.browser') : shellTitle || t('surface.terminal')
 }
 
-/** Sidebar and header meta line: the shell's directory, or the page's host. */
-export function surfaceSubline(surface: Surface): string {
-  if (surface.kind === 'terminal') return workingDirectoryTail(surface.cwd) || t('surface.terminal')
+/** Sidebar and header meta line: the shell's directory (as it last reported it), or the page's host. */
+export function surfaceSubline(surface: Surface, shellCwd?: string | null): string {
+  if (surface.kind === 'terminal') return workingDirectoryTail(shellCwd || surface.cwd) || t('surface.terminal')
   if (!surface.url) return t('surface.browser')
   try {
     return new URL(surface.url).host || surface.url

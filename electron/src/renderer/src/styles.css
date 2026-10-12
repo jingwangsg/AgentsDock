@@ -663,8 +663,20 @@ body.column-resizing { cursor: col-resize; user-select: none; }
 .surface-header { height: 76px; padding-top: 35px; align-items: center; }
 .surface-header .editable-title > svg { flex: 0 0 auto; }
 .terminal-surface { min-width: 0; min-height: 0; position: relative; overflow: hidden; background: #111212; }
-.terminal-surface-host { position: absolute; inset: 0; padding: 8px 6px 6px 12px; }
+/* z-index 0 keeps xterm.js's own layers (decorations at 6–8) below the find bar and notices. */
+.terminal-surface-host { position: absolute; z-index: 0; inset: 0; padding: 8px 6px 6px 12px; }
 .terminal-surface-host canvas { display: block; }
+.terminal-surface-bell { position: absolute; z-index: 1; inset: 0; background: var(--text); opacity: 0; pointer-events: none; }
+.terminal-find { position: absolute; z-index: 3; top: 8px; right: 14px; display: flex; align-items: center; gap: 2px; padding: 4px 6px; color: var(--muted); background: var(--overlay-surface); border: 1px solid var(--overlay-border); border-radius: var(--radius-control); box-shadow: var(--shadow-popover); }
+.terminal-find input { width: 200px; height: var(--control-height-sm); margin-right: 4px; padding: 0 6px; color: var(--field-text); background: var(--field-surface); border: 1px solid var(--field-border); border-radius: var(--radius-control); font: inherit; font-size: var(--text-size-label); }
+.terminal-find-count { min-width: 64px; padding: 0 4px; font-size: var(--text-size-caption); font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
+.terminal-find button { height: var(--control-height-sm); display: inline-flex; align-items: center; padding: 0 4px; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: var(--radius-control); cursor: pointer; }
+.terminal-find button:hover:not(:disabled) { color: var(--text); background: var(--interaction-hover); }
+.terminal-find button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.terminal-find button:disabled { opacity: .5; cursor: default; }
+.surface-row-bell { flex: 0 0 auto; color: var(--amber); }
+.terminal-settings-font { min-width: 240px; padding-right: 9px; }
+.app-settings-section-help { margin: -8px 0 14px; color: var(--muted); font-size: var(--text-size-meta); line-height: var(--line-height-body); }
 .terminal-surface-notice { max-width: min(560px, calc(100% - 28px)); position: absolute; z-index: 2; bottom: 14px; left: 50%; display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 14px; color: var(--text); background: var(--overlay-surface); border: 1px solid var(--overlay-border); border-radius: var(--radius-popover); box-shadow: var(--shadow-popover); font-size: var(--text-size-label); transform: translateX(-50%); }
 .browser-surface { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .browser-toolbar { min-width: 0; display: flex; align-items: center; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
