@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState }
 import type { NativeSyntheticEvent } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
-import { FIT_JS, XTERM_CSS, XTERM_JS } from '../../terminal/xtermAssets'
+import { TERMINAL_PAGE_JS, XTERM_CSS } from '../../terminal/xtermAssets'
 import { PROMPT_GLYPH_FONT_FAMILY, PROMPT_GLYPH_FONT_TTF_BASE64 } from '../../terminal/promptGlyphFont'
 import type { TerminalConnectionStatus, TerminalModifierState, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
 
@@ -144,8 +144,8 @@ interface AndroidTerminalConfig {
 }
 
 export function androidTerminalHTML(config: AndroidTerminalConfig): string {
-  const xterm = escapeClosingTag(XTERM_JS, 'script')
-  const fit = escapeClosingTag(FIT_JS, 'script')
+  // load-bearing: a "</script" anywhere in the bundle (a string in some dependency) would end the inline script.
+  const script = escapeClosingTag(TERMINAL_PAGE_JS, 'script')
   const css = escapeClosingTag(XTERM_CSS, 'style')
   // Bundled fallback so xterm's per-glyph fallback can cover powerline/PUA glyphs
   // that Android system monospace fonts lack. The base64 is [A-Za-z0-9+/=] only,
@@ -156,129 +156,7 @@ export function androidTerminalHTML(config: AndroidTerminalConfig): string {
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ws: wss:; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
   <style>${css}\n${promptFont}\nhtml,body,#terminal{width:100%;height:100%;margin:0;background:${config.backgroundHex};overflow:hidden}.xterm{padding:8px;box-sizing:border-box}.xterm-viewport{overscroll-behavior:contain}</style>
-  </head><body><div id="terminal"></div><script>${xterm}</script><script>${fit}</script><script>
-  (() => {
-    'use strict';
-    const config = ${safeInlineJSON(config)};
-    const post = value => window.ReactNativeWebView?.postMessage(JSON.stringify(value));
-    const host = document.getElementById('terminal');
-    const term = new Terminal({
-      cursorBlink: true,
-      fontFamily: 'monospace, "${PROMPT_GLYPH_FONT_FAMILY}"',
-      fontSize: config.fontSize,
-      scrollback: 10000,
-      allowProposedApi: true,
-      theme: { background: config.backgroundHex, foreground: config.foregroundHex, cursor: config.cursorHex, cursorAccent: config.backgroundHex, selectionBackground: config.selectionHex }
-    });
-    const fit = new FitAddon.FitAddon();
-    term.loadAddon(fit);
-    term.open(host);
-    fit.fit();
-    let socket = null;
-    let reconnectTimer = null;
-    let disposed = false;
-    let opened = false;
-    const focus = () => { term.focus(); term.textarea?.focus({ preventScroll: true }); };
-    const visibleText = () => {
-      const buffer = term.buffer.active;
-      const start = Math.max(0, buffer.viewportY);
-      const end = Math.min(buffer.length, start + term.rows);
-      const lines = [];
-      for (let index = start; index < end; index += 1) {
-        const line = buffer.getLine(index);
-        if (line) lines.push(line.translateToString(true));
-      }
-      return lines.join('\\n').replace(/\\s+$/, '');
-    };
-    const sendSize = () => {
-      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', columns: term.cols, rows: term.rows }));
-    };
-    // The server reads typed input only from binary frames; a text frame is a JSON
-    // control message and anything else is dropped (so was every keystroke, and
-    // xterm's own answer to the shell's Primary Device Attributes query).
-    const encoder = new TextEncoder();
-    const sendInput = text => { if (text && socket?.readyState === WebSocket.OPEN) socket.send(encoder.encode(text)); };
-    const modifiers = { ctrl: false, alt: false };
-    const reportModifiers = () => post({ type: 'modifiers', ctrl: modifiers.ctrl, alt: modifiers.alt });
-    const releaseModifiers = () => { modifiers.ctrl = false; modifiers.alt = false; reportModifiers(); };
-    // A sticky Ctrl/Alt from the key row applies to the next single character, then releases.
-    const withModifiers = text => {
-      if (text.length !== 1 || (!modifiers.ctrl && !modifiers.alt)) return text;
-      const ctrl = modifiers.ctrl, alt = modifiers.alt;
-      releaseModifiers();
-      let out = text;
-      if (ctrl) {
-        const code = text.toUpperCase().charCodeAt(0);
-        if (code >= 0x40 && code <= 0x5f) out = String.fromCharCode(code & 0x1f);
-        else if (text === ' ') out = '\\x00';
-      }
-      return alt ? '\\x1b' + out : out;
-    };
-    const cursorKey = letter => {
-      if (modifiers.ctrl || modifiers.alt) {
-        const parameter = modifiers.ctrl && modifiers.alt ? '7' : modifiers.ctrl ? '5' : '3';
-        releaseModifiers();
-        return '\\x1b[1;' + parameter + letter;
-      }
-      return (term.modes.applicationCursorKeysMode ? '\\x1bO' : '\\x1b[') + letter;
-    };
-    const KEY_TEXT = { escape: '\\x1b', tab: '\\t', enter: '\\r', home: '\\x1b[H', end: '\\x1b[F', pageup: '\\x1b[5~', pagedown: '\\x1b[6~', dash: '-', slash: '/', pipe: '|', tilde: '~' };
-    const ARROWS = { up: 'A', down: 'B', right: 'C', left: 'D' };
-    const key = name => {
-      focus();
-      if (ARROWS[name]) return sendInput(cursorKey(ARROWS[name]));
-      const text = KEY_TEXT[name];
-      if (text != null) sendInput(withModifiers(text));
-    };
-    const connect = () => {
-      if (disposed) return;
-      post({ type: 'status', status: opened ? 'Reconnecting' : 'Connecting' });
-      socket = new WebSocket(config.socketURL);
-      socket.binaryType = 'arraybuffer';
-      socket.onopen = () => { opened = true; fit.fit(); sendSize(); };
-      socket.onmessage = event => {
-        if (typeof event.data === 'string') {
-          try {
-            const control = JSON.parse(event.data);
-            if (control.type === 'ready') {
-              post({ type: 'status', status: 'Connected', name: control.name, message: control.message });
-              return;
-            }
-          } catch {}
-          term.write(event.data);
-        } else {
-          term.write(new Uint8Array(event.data));
-        }
-      };
-      socket.onerror = () => post({ type: 'status', status: 'Error', message: 'Terminal connection failed.' });
-      socket.onclose = () => {
-        if (disposed) return;
-        post({ type: 'status', status: 'Reconnecting' });
-        reconnectTimer = setTimeout(connect, 800);
-      };
-    };
-    term.onData(data => sendInput(withModifiers(data)));
-    term.onResize(sendSize);
-    window.__agentsDockTerminal = {
-      focus,
-      blur: () => term.blur(),
-      paste: text => { focus(); term.paste(String(text ?? '')); },
-      copy: requestId => post({ type: 'copy', requestId, text: term.getSelection() || visibleText() }),
-      key,
-      modifier: (name, active) => { if (name in modifiers) { modifiers[name] = !!active; reportModifiers(); } }
-    };
-    host.addEventListener('pointerdown', focus);
-    host.addEventListener('touchstart', () => requestAnimationFrame(focus), { passive: true });
-    new ResizeObserver(() => { fit.fit(); sendSize(); }).observe(document.body);
-    window.addEventListener('beforeunload', () => {
-      disposed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      socket?.close();
-      term.dispose();
-    });
-    connect();
-  })();
-  </script></body></html>`
+  </head><body><div id="terminal"></div><script>window.__agentsDockTerminalConfig=${safeInlineJSON({ ...config, fontFamily: `monospace, "${PROMPT_GLYPH_FONT_FAMILY}"` })}</script><script>${script}</script></body></html>`
 }
 
 export function safeInlineJSON(value: unknown): string {

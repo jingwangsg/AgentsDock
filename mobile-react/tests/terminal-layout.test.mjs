@@ -2,10 +2,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 
 const source = fs.readFileSync(path.resolve('src/components/TerminalView.tsx'), 'utf8')
 const shell = fs.readFileSync(path.resolve('src/components/AppShell.tsx'), 'utf8')
 const androidTerminal = fs.readFileSync(path.resolve('src/components/terminal/TerminalViewport.android.tsx'), 'utf8')
+const terminalPage = fs.readFileSync(path.resolve('scripts/terminal-page-entry.ts'), 'utf8')
 const promptFont = fs.readFileSync(path.resolve('src/terminal/promptGlyphFont.ts'), 'utf8')
 
 test('terminal toolbar stays outside the platform terminal hit-testing surface', () => {
@@ -30,7 +32,8 @@ test('android terminal keeps the bundled prompt-glyph fallback in its font stack
   // fallback only reaches the bundled subset if it stays in the fontFamily, the
   // @font-face is injected, and the CSP admits the data: font. Dropping any one
   // silently reintroduces missing-glyph boxes at remote shell prompts.
-  assert.match(androidTerminal, /fontFamily: 'monospace, "\$\{PROMPT_GLYPH_FONT_FAMILY\}"'/)
+  assert.match(androidTerminal, /fontFamily: `monospace, "\$\{PROMPT_GLYPH_FONT_FAMILY\}"`/)
+  assert.match(terminalPage, /fontFamily: config\.fontFamily/)
   assert.match(androidTerminal, /@font-face\{font-family:"\$\{PROMPT_GLYPH_FONT_FAMILY\}";src:url\("data:font\/ttf;base64,\$\{PROMPT_GLYPH_FONT_TTF_BASE64\}"\)/)
   assert.match(androidTerminal, /img-src data:; font-src data:;/)
   assert.match(promptFont, /export const PROMPT_GLYPH_FONT_FAMILY = 'AgentsDockPromptGlyphs'/)
@@ -48,21 +51,25 @@ test('terminal uses a full-screen modal without a sheet dismissal recognizer', (
 test('android terminal sends typed input as binary frames and has a key row', () => {
   // The server reads input only from binary frames; a text frame is a JSON control
   // message and everything else is dropped, which silently ate every keystroke.
-  assert.match(androidTerminal, /socket\.send\(encoder\.encode\(text\)\)/)
-  assert.doesNotMatch(androidTerminal, /socket\.send\(data\)/)
-  assert.match(androidTerminal, /term\.onData\(data => sendInput\(withModifiers\(data\)\)\)/)
+  assert.match(terminalPage, /socket\.send\(encoder\.encode\(text\)\)/)
+  assert.doesNotMatch(terminalPage, /socket\.send\(data\)/)
+  assert.match(terminalPage, /term\.onData\(data => sendInput\(withModifiers\(data\)\)\)/)
   assert.match(source, /testID="terminal-key-row"/)
   for (const label of ['Esc', 'Tab', 'Enter', 'Ctrl', 'Alt', 'Home', 'End']) assert.match(source, new RegExp(`label: '${label}'`))
-  assert.match(androidTerminal, /enter: '\\\\r'/)
+  assert.match(terminalPage, /enter: '\\r'/)
   assert.match(source, /testID="terminal-platform-viewport"[\s\S]*testID="terminal-key-row"/)
 })
 
-test('android terminal inline script keeps control escapes double-escaped for the template literal', () => {
-  // A single-backslash \x00 in the template becomes a raw NUL in the generated HTML and
-  // truncates it, so the script never runs and the tab sits on "Connecting" (build 33/34).
-  const inline = androidTerminal.slice(androidTerminal.indexOf('<script>\n  (() => {'), androidTerminal.indexOf('</script></body></html>'))
-  assert.doesNotMatch(inline, /(?<!\\)\\x[0-9a-fA-F]{2}/)
-  assert.doesNotMatch(inline, /'(?<!\\)\\t'/)
+test('the committed android terminal page bundle matches its sources', () => {
+  execFileSync(process.execPath, ['scripts/embed-xterm.mjs', '--check'], { stdio: 'pipe' })
+})
+
+test('android terminal page is bundled into the HTML rather than written inline in the template', () => {
+  // An inline script in the template literal needed every control escape doubled: a single-backslash
+  // \x00 became a raw NUL in the generated HTML and truncated it (build 33/34).
+  assert.match(androidTerminal, /const script = escapeClosingTag\(TERMINAL_PAGE_JS, 'script'\)/)
+  assert.match(androidTerminal, /<script>\$\{script\}<\/script>/)
+  assert.doesNotMatch(androidTerminal, /\\x[0-9a-fA-F]{2}/)
 })
 
 test('the key row stays above the soft keyboard inside the full-screen terminal modal', () => {
