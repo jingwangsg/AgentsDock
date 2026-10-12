@@ -151,7 +151,7 @@ const keydown = (patch: Partial<KeyboardEvent>) => {
 async function openConnected(active = true) {
   const view = render(<TerminalSurface surface={surface} active={active} />)
   await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(1))
-  emit('terminal:state', { state: 'connected', name: 'zsh' })
+  emit('terminal:state', { state: 'connected', name: 'zsh', replayBytes: 19 })
   const terminal = xterm.instances[0]
   emit('terminal:data', { data: 'replayed scrollback', replay: true })
   act(() => terminal.finishWrites())
@@ -167,7 +167,7 @@ describe('TerminalSurface', () => {
     expect(terminalApi.connect).not.toHaveBeenCalled()
 
     view.rerender(<TerminalSurface surface={surface} active />)
-    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledWith('profile-a', 4, 'term_abc', { cwd: '/work/app', columns: 80, rows: 24, passive: false }))
+    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledWith('profile-a', 4, 'term_abc', { cwd: '/work/app', columns: 80, rows: 24 }))
     const [terminal] = xterm.instances
     expect(terminal.open).toHaveBeenCalledOnce()
 
@@ -193,7 +193,7 @@ describe('TerminalSurface', () => {
     const [terminal] = xterm.instances
     expect(screen.getByRole('status')).toHaveTextContent('Starting shell…')
 
-    emit('terminal:state', { state: 'connected', name: 'zsh' })
+    emit('terminal:state', { state: 'connected', name: 'zsh', replayBytes: 0 })
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(terminal.focus).toHaveBeenCalled()
     // RIS through the write queue, before the replayed scrollback.
@@ -217,6 +217,7 @@ describe('TerminalSurface', () => {
   })
 
   it('gives the shell the visible grid once attached, since a resize sent while the link was opening was lost', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     render(<TerminalSurface surface={surface} active />)
     await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(1))
     const [terminal] = xterm.instances
@@ -231,8 +232,9 @@ describe('TerminalSurface', () => {
   it('does not repeat the replay’s clipboard writes, bells or notifications', async () => {
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     const { terminal } = await openConnected()
-    emit('terminal:state', { state: 'connected', name: 'zsh' })
-    emit('terminal:data', { data: '\x1b]52;c;b2xk\x07\x07\x1b]9;old\x07', replay: true })
+    const replay = '\x1b]52;c;b2xk\x07\x07\x1b]9;old\x07'
+    emit('terminal:state', { state: 'connected', name: 'zsh', replayBytes: replay.length })
+    emit('terminal:data', { data: replay, replay: true })
     const clipboard = addon('clipboard').provider
     act(() => {
       clipboard.writeText('c', 'old')
@@ -519,8 +521,9 @@ describe('TerminalSurface', () => {
 
   it('swallows answered queries in a replay, answers the ones that end it, and answers live ones', async () => {
     const { terminal } = await openConnected()
-    emit('terminal:state', { state: 'connected', name: 'zsh' })
-    emit('terminal:data', { data: 'old \x1b[c answered\r\n\x1b[0c', replay: true })
+    const replay = 'old \x1b[c answered\r\n\x1b[0c'
+    emit('terminal:state', { state: 'connected', name: 'zsh', replayBytes: replay.length })
+    emit('terminal:data', { data: replay, replay: true })
     // The query that ends the replay is parsed apart from the rest: the program may still wait for it.
     expect(terminal.writes.slice(-2)).toEqual(['old \x1b[c answered\r\n', '\x1b[0c'])
     for (const id of ['n', '?n', 'c', '>c', '=c', '>q', '$p', '?$p', '?u', '?S']) expect(terminal.consumesCsi(id), id).toBe(true)
@@ -552,8 +555,9 @@ describe('TerminalSurface', () => {
     emit('terminal:data', { data: 'prompt' })
     expect(terminal.consumesCsi('c')).toBe(false)
 
-    // A replay that ends inside a character: the main process completes it in the next, live, data.
-    emit('terminal:state', { state: 'connected', replayBytes: 6 })
+    // A replay that ends inside a character ('h' and the first byte of 'é'): the main process completes it in
+    // the next, live, data.
+    emit('terminal:state', { state: 'connected', replayBytes: 2 })
     emit('terminal:data', { data: 'h', replay: true })
     emit('terminal:data', { data: 'éllo \x1b[6n' })
     act(() => terminal.finishWrites())
@@ -562,25 +566,35 @@ describe('TerminalSurface', () => {
     expect(native.notify).toHaveBeenCalledOnce()
   })
 
-  it('attaches passively while hidden and takes the size and focus only as the shown tab', async () => {
+  it('takes the pty’s size when the user shows the tab or it reconnects in front of the user, not otherwise', async () => {
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     const view = render(<TerminalSurface surface={surface} active />)
     await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(1))
-    const [terminal] = xterm.instances
-    view.rerender(<TerminalSurface surface={surface} active={false} />)
     await nextFrame()
-    // Reconnected while hidden (a new profile generation): it must not take the pty's size from the device in use.
-    act(() => { useAppStore.setState({ profileGeneration: 5 }) })
-    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(2))
-    expect(terminalApi.connect.mock.calls[1][3]).toEqual(expect.objectContaining({ passive: true }))
-    act(() => { useAppStore.setState({ profileGeneration: 4 }) })
-    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(3))
     terminalApi.resize.mockClear()
-    terminal.focus.mockClear()
+    // Shown, but the window is in the background (the user is on the phone): a reconnect leaves the size alone.
     emit('terminal:state', { state: 'connected', replayBytes: 0 })
     expect(terminalApi.resize).not.toHaveBeenCalled()
-    expect(terminal.focus).not.toHaveBeenCalled()
+    hasFocus.mockReturnValue(true)
+    emit('terminal:state', { state: 'connected', replayBytes: 0 })
+    expect(terminalApi.resize).toHaveBeenCalledWith('profile-a', 4, 'term_abc', 80, 24)
 
-    // Shown again: this device becomes the size owner, even with the size unchanged.
+    // A profile change reconnects every tab; it is not the user showing this one.
+    terminalApi.resize.mockClear()
+    act(() => { useAppStore.setState({ profileGeneration: 5 }) })
+    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(2))
+    act(() => { useAppStore.setState({ profileGeneration: 4 }) })
+    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(3))
+    await nextFrame()
+    expect(terminalApi.resize).not.toHaveBeenCalled()
+
+    // Hidden: a reconnect leaves the size alone, focused window or not.
+    view.rerender(<TerminalSurface surface={surface} active={false} />)
+    await nextFrame()
+    emit('terminal:state', { state: 'connected', replayBytes: 0 })
+    expect(terminalApi.resize).not.toHaveBeenCalled()
+
+    // Shown again by the user: this device takes the size, even with it unchanged.
     view.rerender(<TerminalSurface surface={surface} active />)
     await nextFrame()
     expect(terminalApi.resize).toHaveBeenCalledWith('profile-a', 4, 'term_abc', 80, 24)
@@ -596,6 +610,19 @@ describe('TerminalSurface', () => {
     expect(terminal.writes.slice(-2)).toEqual(['\x1bc', 'again'])
     expect(terminalApi.resize).not.toHaveBeenCalled()
     expect(terminal.focus).not.toHaveBeenCalled()
+  })
+
+  it('suppresses replayed side effects from a resync’s announcement on, before its replay arrives', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const { terminal } = await openConnected()
+    emit('terminal:state', { state: 'connected', replayBytes: 5, resync: true })
+    // Output parsed between the announcement and the replay: the end of an earlier replay.
+    act(() => terminal.osc.get(9)('replayed'))
+    expect(native.notify).not.toHaveBeenCalled()
+    emit('terminal:data', { data: 'again', replay: true })
+    act(() => terminal.finishWrites())
+    act(() => terminal.osc.get(9)('live'))
+    expect(native.notify).toHaveBeenCalledOnce()
   })
 
   it('keeps a newer replay’s side effects suppressed when an older replay finishes during it', async () => {

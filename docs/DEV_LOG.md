@@ -131,13 +131,16 @@
   and others); such a program is asked to repaint. The server's `ready`
   message states the length of the replay frame that follows.
 - Each terminal tab's shell has one active viewer, chosen as tmux chooses its
-  "latest" client: the viewer that last typed or resized, or that attached as
-  the shown tab. Only the active viewer's size is applied to the pty. When it
-  disconnects, the viewer that was active before it becomes active again and
-  its size is applied. A hidden tab attaches with `passive=1` and leaves the
-  size unchanged; a terminal's answers to a program's queries and its focus
-  reports do not count as typing. Showing a tab on the desktop sends its size,
-  so the desktop becomes the active viewer again.
+  "latest" client: the viewer that last typed or resized, or that attached
+  without `passive=1`. Only the active viewer's size is applied to the pty.
+  When it disconnects, the viewer that was active before it becomes active
+  again and its size is applied. A terminal's answers to a program's queries
+  and its focus reports do not count as typing, and while another viewer is
+  active they do not reach the program (a woken phone's late answers no longer
+  appear in the shell). The desktop always attaches with `passive=1` and sends
+  its size when the user shows the tab, or when the tab reconnects while shown
+  in the focused window; a Mac left on the tab no longer takes the size back
+  from the phone after a network drop.
 - The desktop acknowledges terminal output, and the server stops reading the
   shell while the active viewer is 128 KiB behind: Ctrl-C under a 120 KiB/s
   link now reaches the prompt in about 0.8 s instead of losing the connection
@@ -149,7 +152,8 @@
   0.8 s at 120 KiB/s (20.4 s before), and the woken viewer's output after its
   resync matched the active viewer's byte for byte. The desktop acknowledges
   the rest of a batch after 200 ms without output, which the resync needs. A
-  viewer whose acknowledgements stop for 30 s is disconnected and reconnects.
+  viewer whose acknowledgements stop for 30 s is disconnected and reconnects;
+  one still receiving a replay gets one second more per 8 KiB of it.
   Mobile clients keep the previous behaviour until they acknowledge.
 - Input waits for a busy program instead of closing the connection: a
   1,100,000-byte paste sent as one frame arrives whole (the regression test

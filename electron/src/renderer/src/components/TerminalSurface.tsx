@@ -294,7 +294,6 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
         return
       }
       const attach = attachRef.current
-      replayingRef.current = staleQueriesRef.current = true
       const pending = trailingSequencesStart(payload.data)
       const tail = payload.data.slice(pending)
       terminal.write(payload.data.slice(0, pending), () => {
@@ -309,20 +308,21 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
       setConnection(payload.state)
       setConnectionError(payload.error ?? null)
       if (payload.state === 'connected') {
-        // A new attach, or a resync of this one: the replay that follows (as `replay` data) rebuilds the screen.
+        // A new attach, or a resync of this one: the replay that follows (as `replay` data) rebuilds the
+        // screen. Flagged from here, so the rest of an earlier replay still being parsed stays flagged too.
         attachRef.current += 1
-        replayingRef.current = staleQueriesRef.current = false
+        replayingRef.current = staleQueriesRef.current = payload.replayBytes !== 0
         // RIS goes through the write queue, so output still queued from before cannot land after it.
         terminal.write('\x1bc', () => {
           for (const marker of promptsRef.current) marker.dispose()
           promptsRef.current = []
         })
         fitNow()
-        // A shown tab makes this device the pty's size owner. A fit made while the link was still opening
-        // (a hidden tab shown on a slow remote) never reached the server, and fit() will not repeat it.
-        // A resync arrives on a live connection and leaves the size and the focus alone.
         if (activeRef.current && !payload.resync) {
-          window.agentsDock.terminal.resize(profileId, profileGeneration, surface.id, terminal.cols, terminal.rows)
+          // The tab attached passively. In front of the user, this device takes the pty's size, which a fit
+          // made while the link was down never sent; otherwise (a Mac left on the tab while the user is on the
+          // phone) the size stays with the device in use.
+          if (document.hasFocus()) window.agentsDock.terminal.resize(profileId, profileGeneration, surface.id, terminal.cols, terminal.rows)
           terminal.focus()
         }
       }
@@ -336,12 +336,10 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
     setConnection('connecting')
     setConnectionError(null)
     fitNow()
-    // A hidden tab attaches passively: it does not take the pty's size from the device in use.
     void window.agentsDock.terminal.connect(profileId, profileGeneration, surface.id, {
       cwd: surface.cwd,
       columns: terminal.cols,
-      rows: terminal.rows,
-      passive: !activeRef.current
+      rows: terminal.rows
     }).catch(error => {
       setConnection('error')
       setConnectionError(errorText(error))
@@ -369,7 +367,7 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
     const frame = window.requestAnimationFrame(() => {
       if (hostRef.current && fitRef.current) fitIfLaidOut(hostRef.current, fitRef.current)
       const terminal = terminalRef.current
-      // Shown: this device becomes the size owner, even when the fit left the size unchanged.
+      // The user showed the tab: this device takes the pty's size, even when the fit left it unchanged.
       if (terminal && profileId) window.agentsDock.terminal.resize(profileId, profileGeneration, surface.id, terminal.cols, terminal.rows)
       terminal?.focus()
     })
@@ -378,7 +376,8 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
       window.removeEventListener('focus', clearBell)
       textarea?.removeEventListener('focus', clearBell)
     }
-  }, [active, ready, surface.id, profileId, profileGeneration])
+    // Not on a profile change (it reads profileId and profileGeneration): only showing the tab takes the size.
+  }, [active, ready, surface.id])
 
   useEffect(() => {
     if (!active) return

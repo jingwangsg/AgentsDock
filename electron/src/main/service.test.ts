@@ -9469,8 +9469,7 @@ describe('server profile lifecycle', () => {
     const send = vi.fn()
     service.addWindow({ isDestroyed: () => false, on: vi.fn(), webContents: { id: 74, on: vi.fn(), send } } as never)
 
-    await service.connectTerminal('a', bootstrap.profileGeneration, 'term_tab', { columns: 80, rows: 24, passive: true })
-    expect(a.terminal).toHaveBeenCalledWith('term_tab', { columns: 80, rows: 24, passive: true }, expect.any(Function), expect.any(Function))
+    await service.connectTerminal('a', bootstrap.profileGeneration, 'term_tab', { columns: 80, rows: 24 })
     onData('history', true)
     onData('live', false)
     const data = send.mock.calls.filter(([channel]) => channel === 'terminal:data').map(([, payload]) => payload)

@@ -217,7 +217,7 @@ const TERMINAL_STREAM_PROTOCOL = 'agentsdock-terminal-v1'
 // unacknowledged.
 const TERMINAL_ACK_BYTES = 16 * 1024
 // The rest of a batch is acknowledged once no output has arrived for this long: a viewer that fell behind
-// gets no more output until it has acknowledged all of it, and only then its resync. Android uses the same.
+// gets no more output until it has acknowledged all of it, and only then its resync.
 const TERMINAL_ACK_IDLE_MS = 200
 // Input frames stay far below the 1 MiB frame limit of chat terminals and older servers
 // (TERMINAL_INPUT_MAX_BYTES), and small enough that acknowledgements get through between the frames
@@ -229,8 +229,8 @@ const TERMINAL_PENDING_INPUT_BYTES = 1024 * 1024
 // Answers a terminal gives to a program's queries: cursor position and status, device attributes, mode,
 // window and keyboard-flag reports, OSC colour replies, DCS replies. One written while the terminal is
 // (re)connecting answers the old connection's query and would reach the program seconds later as typed
-// text, so it is not kept.
-const TERMINAL_REPORTS = /^(?:\x1b\[\??[\d;]*[Rn]|\x1b\[[?>=][\d;]*c|\x1b\[\?[\d;]*\$y|\x1b\[\?\d*u|\x1b\[[\d;]*t|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/
+// text, so it is not kept. Shift/Ctrl/Alt+F3 (ESC[1;<mod>R) reads the same as a cursor position report.
+const TERMINAL_REPORTS = /^(?:\x1b\[\??[\d;]*[Rn]|\x1b\[[?>=][\d;]*c|\x1b\[\??[\d;]*\$y|\x1b\[\?\d*u|\x1b\[[\d;]*t|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/
 
 function agentTokenWebSocketProtocols(token: string): string[] {
   return token
@@ -2161,8 +2161,8 @@ export class AgentServerClient {
         url.searchParams.set('rows', String(rows))
         if (options.cwd) url.searchParams.set('cwd', options.cwd)
         if (standalone) url.searchParams.set('flow_control', '1')
-        // A reattach after a dropped link is passive too: the tab takes the size back when it is shown.
-        if (standalone && (options.passive || attempt > 0)) url.searchParams.set('passive', '1')
+        // A tab takes the pty's size when the user shows it or types in it (TerminalSurface), not by reconnecting.
+        if (standalone) url.searchParams.set('passive', '1')
         const protocols = authenticatedWebSocketProtocols(
           configuration,
           url,
