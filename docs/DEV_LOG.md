@@ -1,5 +1,31 @@
 # Public development log
 
+## 2026-10-12 — A remote in a cluster home runs with that home as HOME (server)
+
+- Observed on an `oci@` pod: the server's HOME was the container's own `/root`,
+  so the Claude Code and Codex CLIs it installed, and their logins, sat on the
+  container's disk and would be lost with the container. The install itself was
+  in the configured persistent cluster home. The deploy probe used the
+  install's parent as HOME only once it held a Claude or Codex login, and a
+  fresh cluster home holds none.
+- A deploy or redeploy whose install sits directly in the hub's configured
+  cluster home (`AGENTSDOCK_OCI_HOME`, `AGENTSDOCK_OSMO_HOME`) now always
+  passes that home to the bootstrap. When a deploy chooses the install's
+  parent as HOME for an existing install, the bootstrap rewrites the env
+  file's `HOME`, the `.local/bin` entries of its `PATH`, and
+  `AGENTSDOCK_AGENT_CWD` when it still named the old home; a shared home then
+  also gets the per-install Codex SQLite state, as a fresh install does. This
+  applies to any install whose parent the probe picks, not only cluster ones.
+  The rewrite never moves HOME back to the machine's own `~`, and an attach
+  leaves the owning hub's HOME unchanged.
+- Checks: the bootstrap env test runs the real script for a container-home
+  install, an attach, deploys into the cluster home and back, and a
+  user-chosen working directory; the deploy test checks the HOME handed to
+  the bootstrap for deploy and attach; both fail without the change. The remote
+  server suites pass. Not exercised: a real deploy into a fresh pod; the
+  affected pod was corrected by hand with the same env changes. Availability:
+  server source; a remote picks it up on its next redeploy.
+
 ## 2026-10-12 — Desktop package 123 and Android build 67 (local package and APK)
 
 - Package the entry recorded since package 122: the chat timeline recovers

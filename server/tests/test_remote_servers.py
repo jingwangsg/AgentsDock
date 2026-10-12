@@ -1157,10 +1157,17 @@ if sys.argv[-1] == "k8s-cluster":
         # Sky's websocket proxy runs inside the oci@ ssh calls (the last two) and needs the CA bundle there.
         records = [json.loads(line) for line in calls.read_text().splitlines()]
         assert [record["ca"] for record in records[2:]] == [str(ca), str(ca)]
-        # Without a configured home the usual default stays.
+        # An attached install keeps the HOME its own hub chose: the probe's.
+        assert [record["tail"][2] for record in records if record["tail"] and len(record["tail"]) > 2] == ["/h", "/h"]
+        # A deploy runs the server with the cluster home even though the probe, finding no login there yet, offered the container's ~.
+        _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="oci@sky-cluster"))
+        assert job.done and job.error is None, job.log
+        assert json.loads(calls.read_text().splitlines()[-1])["tail"][2] == "/mnt/oci-home/u"
+        # Without a configured home the usual default stays, and so does the probe's HOME.
         del os.environ["AGENTSDOCK_OSMO_HOME"]
         manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo@wf-running"))
         assert [server.install_dir for server in rs.load_registry(manager.path) if server.ssh_host == "osmo@wf-running"][-1] == rs.DEFAULT_INSTALL_DIR
+        assert json.loads(calls.read_text().splitlines()[-1])["tail"][2] == "/h"
 
     def test_oci_server_tunnel_carries_the_configured_site_forwards(self) -> None:
         script = self.tmp_path / "ssh"
