@@ -97,7 +97,7 @@ AWS_SESSION_MARGIN = 1800
 # few seconds, and a relay that keeps failing must not flood the cluster's job queue.
 AWS_RELAY_INTERVAL = 120.0
 # A cluster container's own ~ does not outlive it. When the hub's environment names
-# the persistent cluster home that holds the Claude and Codex logins, a default
+# the persistent cluster home where the Claude and Codex logins are kept, a default
 # install goes there, one per cluster or workflow (see default_install_dir); mount points are
 # site-specific, so they stay out of the source.
 CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOME"}
@@ -1813,10 +1813,11 @@ class RemoteServerManager:
             probe_lines = await self._run_ssh(job, route, [*remote_shell_args(route.destination), install_dir], stdin=PROBE_SCRIPT.read_bytes(), idle_timeout=60)
             probe = parse_probe(probe_lines)
             # The probe takes the install's parent as HOME only once it holds a Claude or Codex
-            # login. A fresh container's persistent home has none yet, and the container's own ~
-            # (often /root) then took the CLIs and logins, which the next container drops.
+            # login. A fresh cluster home has none yet; the container's own ~ (often /root) would
+            # then receive the CLIs and logins, and the next container drops them. An attached
+            # install belongs to another hub, which keeps choosing its HOME.
             home = cluster_home(ssh_host)
-            if home and install_dir.rpartition("/")[0] == home:
+            if home and not attach and install_dir.rpartition("/")[0] == home:
                 probe["home"] = home
             if attach and not probe.get("existing_port"):
                 raise RuntimeError(f"No AgentsServer install was found at {install_dir} on {ssh_host}. Deploy a new server instead.")

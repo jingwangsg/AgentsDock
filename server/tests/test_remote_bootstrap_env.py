@@ -29,8 +29,8 @@ class RemoteBootstrapEnvTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def bootstrap(self, home_dir: Path) -> str:
-        install = home_dir / ".agentsdock-server-test"
+    def bootstrap(self, home_dir: Path, install_parent: Path | None = None) -> str:
+        install = (install_parent or home_dir) / ".agentsdock-server-test"
         (install / "server" / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
         (install / "server" / "agent_server.py").touch()
         python = install / "server" / ".venv" / "bin" / "python"
@@ -66,6 +66,24 @@ class RemoteBootstrapEnvTests(unittest.TestCase):
         (state / "state_5.sqlite").write_bytes(b"kept")
         self.bootstrap(self.shared)
         self.assertEqual((state / "state_5.sqlite").read_bytes(), b"kept")
+
+    def test_an_existing_install_follows_the_home_this_deploy_chose(self) -> None:
+        # Deployed while the shared home held no login yet, the install ran with the machine's own ~.
+        env = self.bootstrap(self.home, install_parent=self.shared)
+        self.assertIn(f"export HOME={self.home}\n", env)
+        # start.sh's health check then runs with the shared home's PATH, where the stubs must be too.
+        (self.shared / ".local").mkdir()
+        (self.shared / ".local" / "bin").symlink_to(self.home / ".local" / "bin")
+        env = self.bootstrap(self.shared)
+        self.assertIn(f"export HOME={self.shared}\n", env)
+        self.assertIn(f"export AGENTSDOCK_AGENT_CWD={self.shared}\n", env)
+        self.assertIn(f"export PATH={self.shared}/.local/bin:{self.shared}/.local/bin:", env)
+        self.assertNotIn(f"{self.home}/.local/bin", env)
+        self.assertIn("CODEX_SQLITE_HOME", env)
+        # A working directory the user chose is not the old home and stays.
+        env_path = self.shared / ".agentsdock-server-test" / "env"
+        env_path.write_text(env.replace(f"AGENTSDOCK_AGENT_CWD={self.shared}", "AGENTSDOCK_AGENT_CWD=/work"))
+        self.assertIn("export AGENTSDOCK_AGENT_CWD=/work\n", self.bootstrap(self.home, install_parent=self.shared))
 
     def test_the_machines_own_home_leaves_codex_state_where_codex_puts_it(self) -> None:
         self.assertNotIn("CODEX_SQLITE_HOME", self.bootstrap(self.home))

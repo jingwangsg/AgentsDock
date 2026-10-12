@@ -14,6 +14,8 @@ fi
 # The server's HOME decides where claude/codex look for their logins. Prefer the
 # install directory's parent when it already holds those logins (a persistent
 # home on a network filesystem, chosen by the user), otherwise the shell HOME.
+# A deploy into a configured cluster home always uses that home (see _deploy in
+# remote_servers.py).
 HOME_DIR="$HOME"
 PARENT_DIR="$(dirname "$INSTALL_DIR")"
 if [ -d "$PARENT_DIR/.claude" ] || [ -d "$PARENT_DIR/.codex" ]; then HOME_DIR="$PARENT_DIR"; fi

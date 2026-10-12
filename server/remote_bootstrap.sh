@@ -130,12 +130,20 @@ if [ ! -f env ]; then
 fi
 # Keep the requested port even for an existing install that was moved.
 sed -i.bak "s|^export AGENTSDOCK_AGENT_PORT=.*|export AGENTSDOCK_AGENT_PORT=$PORT|" env && rm -f env.bak
+# Follow the HOME this deploy chose even for an existing install: one made while its cluster
+# home held no login yet runs with the container's own ~, which the next container drops.
+ENV_HOME="$(sed -n 's/^export HOME=//p' env | tail -n 1)"
+if [ "$ENV_HOME" != "$HOME_DIR" ]; then
+  sed -i.bak -e "s|^export HOME=.*|export HOME=$HOME_DIR|" \
+    -e "s|^export AGENTSDOCK_AGENT_CWD=$ENV_HOME\$|export AGENTSDOCK_AGENT_CWD=$HOME_DIR|" \
+    -e "/^export PATH=/s|$ENV_HOME/.local/bin|$HOME_DIR/.local/bin|g" env && rm -f env.bak
+fi
 # The server saves settings such as a Claude token pasted in the app into its config env
 # file; point that at this env so start.sh reads them back.
 if ! grep -qxF "export AGENTS_SERVER_CONFIG_DIR=$INSTALL_DIR" env; then
   (umask 077; { grep -v '^export AGENTS_SERVER_CONFIG_DIR=' env || true; printf 'export AGENTS_SERVER_CONFIG_DIR=%s\n' "$INSTALL_DIR"; } > env.new && mv env.new env)
 fi
-# A home shared between machines (the probe picked it because it holds the logins) cannot
+# A home shared between machines (the install's parent, not the container's ~) cannot
 # hold Codex's SQLite state as well: WAL mode needs shared memory, so the second machine's
 # `codex app-server` exits with "failed to initialize sqlite state runtime". Each install
 # keeps its own copy; rollouts stay in the shared ~/.codex/sessions.
