@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActionSheetIOS, Alert, Image, Platform, Pressable, StyleSheet, View } from 'react-native'
 import DraggableFlatList, { ScaleDecorator, type DragEndParams } from 'react-native-draggable-flatlist'
 import { MenuView, type MenuAction, type MenuComponentRef } from '@expo/ui/community/menu'
-import { ChevronDown, ChevronRight, FolderPlus, Globe, Network, Plus, RefreshCw, Search, Server, Settings, Terminal, GripVertical, Undo2 } from 'lucide-react-native'
+import { Bell, ChevronDown, ChevronRight, FolderPlus, Globe, Network, Plus, RefreshCw, Search, Server, Settings, Terminal, GripVertical, Undo2 } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAppStore } from '../store/useAppStore'
 import { radius, usePalette } from '../theme'
@@ -11,6 +11,7 @@ import { backendLabel, formatChatDateTime, isUnread, runtimeSummary } from '../l
 import { sidebarVisibleSessions, compareSessions, orderedSessionSections, resolveSidebarDrop, sessionSection } from '../lib/session-order'
 import { readyChatBackends } from '../lib/runtime-catalog'
 import { promptSurfaceRename, surfaceSubline, surfaceTitle } from '../lib/surfaces'
+import { useTerminalStatus } from '../lib/terminalStatus'
 import { sessionNeedsProviderInteraction, sessionPendingInteractionCount } from '../lib/claude-controls'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { isServerSetupRequired } from '../lib/first-launch'
@@ -887,12 +888,13 @@ function SurfaceRow({ surface, profileScope, selected, onDismissKeyboard, onLift
   const updateSurface = useAppStore(state => state.updateSurface)
   const removeSurface = useAppStore(state => state.removeSurface)
   const menu = useRef<MenuComponentRef>(null)
-  const title = surfaceTitle(surface)
+  const status = useTerminalStatus(surface.id)
+  const title = surfaceTitle(surface, status.title)
   const rename = () => {
     const scope = profileScope
     if (!profileScopeIsCurrent(scope)) return
     onDismissKeyboard()
-    void promptSurfaceRename(surface, promptText).then(patch => {
+    void promptSurfaceRename(surface, promptText, status.title).then(patch => {
       if (patch && profileScopeIsCurrent(scope)) void updateSurface(surface.id, patch, scope.profileGeneration)
     })
   }
@@ -937,8 +939,9 @@ function SurfaceRow({ surface, profileScope, selected, onDismissKeyboard, onLift
     <View style={[styles.backendStatus, styles.tabIcon]}><Icon size={18} color={colors.muted} /></View>
     <View style={styles.sessionText}>
       <Text style={[styles.sessionTitle, { color: colors.text }]} numberOfLines={1}>{title}</Text>
-      <Text style={[styles.sessionMeta, styles.tabMeta, { color: colors.muted }]} numberOfLines={1}>{surfaceSubline(surface)}</Text>
+      <Text style={[styles.sessionMeta, styles.tabMeta, { color: colors.muted }]} numberOfLines={1}>{surfaceSubline(surface, status.cwd)}</Text>
     </View>
+    {status.bell ? <Bell size={14} color={colors.orange} accessibilityLabel="Bell" testID={`tab-bell-${surface.id}`} /> : null}
     <DragHandle onDragStart={onDragStart} />
   </Pressable>
   if (Platform.OS === 'ios') return row

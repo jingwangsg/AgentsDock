@@ -35,6 +35,8 @@ export interface TerminalPageConfig {
   /** The system monospace font, then a bundled fallback for prompt glyphs it lacks. */
   fontFamily: string
   options: TerminalPageOptions
+  /** Whether the tab is in front when the page loads (a renderer restart can reload a hidden tab). */
+  visible: boolean
   /** The shell exited and the user has not asked for a new one: the page does not connect until restart(). */
   exited: boolean
 }
@@ -65,6 +67,10 @@ export type TerminalPageMessage =
   /** Hardware-keyboard commands the host carries out: paste reads the clipboard, find opens its bar. */
   | { type: 'command'; command: Extract<TerminalCommand, 'paste' | 'find' | 'close' | 'zoom-in' | 'zoom-out' | 'zoom-reset'> }
   | { type: 'link'; uri: string }
+  | { type: 'title'; title: string | null }
+  | { type: 'cwd'; cwd: string }
+  | { type: 'bell' }
+  | { type: 'notify'; title: string; body: string }
   | { type: 'find-results'; index: number; count: number }
   /** A pinch set this font size. */
   | { type: 'font-size'; fontSize: number }
@@ -83,6 +89,8 @@ export interface TerminalPageApi {
   jumpPrompt(direction: 'previous' | 'next'): void
   /** Shows the buffer as selectable text with the system's selection handles, or returns to the terminal. */
   selectText(on: boolean): void
+  /** False while the tab is kept hidden behind another tab or chat. */
+  setVisible(on: boolean): void
   /** Connects again after the shell exited or the connection failed; a new shell starts if the old one ended. */
   restart(): void
 }

@@ -50,6 +50,8 @@ const config = window.__agentsDockTerminalConfig
 const post = (message: TerminalPageMessage) => window.ReactNativeWebView?.postMessage(JSON.stringify(message))
 const host = document.getElementById('terminal')!
 let options = config.options
+// In front of the user: shown by the host, and the app not in the background.
+let shown = config.visible
 const selectLayer = document.createElement('div')
 selectLayer.id = 'select-layer'
 selectLayer.style.fontFamily = config.fontFamily
@@ -120,6 +122,42 @@ term.parser.registerCsiHandler({ final: 't' }, params => stale() && WINDOW_REPOR
 for (const id of REPLAYED_DCS_QUERIES) term.parser.registerDcsHandler(id, stale)
 for (const ident of REPLAYED_OSC_QUERIES) term.parser.registerOscHandler(ident, data => stale() && data.split(';').includes('?'))
 
+// Shell status: OSC 0/2 title and OSC 7 working directory name the tab; a bell reaches the host.
+term.onTitleChange(title => post({ type: 'title', title: title.trim() || null }))
+term.parser.registerOscHandler(7, data => {
+  try {
+    const url = new URL(data)
+    if (url.protocol === 'file:') post({ type: 'cwd', cwd: decodeURIComponent(url.pathname) })
+  } catch {
+    // Not a file URL: nothing to track.
+  }
+  return true
+})
+let lastBell = 0
+term.onBell(() => {
+  const now = Date.now()
+  if (replay.replaying || now - lastBell < 200) return
+  lastBell = now
+  post({ type: 'bell' })
+})
+// Notifications (OSC 9, OSC 777). The host posts them while the app is not in front: it learns that at
+// once, while a call into this page waits until the app is back in front.
+const notify = (title: string, body: string) => {
+  if (!replay.replaying) post({ type: 'notify', title, body })
+}
+// iTerm2's OSC 9 message; ConEmu reuses OSC 9 with a numeric first field (progress), which is not one.
+term.parser.registerOscHandler(9, data => {
+  if (/^\d+(;|$)/.test(data)) return false
+  notify('', data)
+  return true
+})
+// urxvt/foot/Ghostty: OSC 777;notify;<title>;<body>
+term.parser.registerOscHandler(777, data => {
+  const [kind, title = '', ...body] = data.split(';')
+  if (kind !== 'notify') return false
+  notify(title, body.join(';'))
+  return true
+})
 // OSC 133 prompt marks. A reset (RIS) keeps markers on the lines it erased, so each attach drops them.
 // Only observes, so it returns false and leaves the sequence to any other handler.
 let prompts: IMarker[] = []
@@ -334,7 +372,7 @@ const STATUS: Record<TerminalLinkState['state'], TerminalPageStatus> = {
   connecting: 'Connecting', reconnecting: 'Reconnecting', connected: 'Connected', exited: 'Exited', error: 'Error',
 }
 // A viewer out of sight attaches passive: it neither sizes the pty nor holds the shell back for the others.
-const passive = () => document.hidden
+const passive = () => !shown || document.hidden
 // A replay, after `ready` or a `resync`, rebuilds the screen. RIS goes through the write queue, so output still
 // queued from before cannot land after it.
 const startReplay = (replayBytes: number | null) => {
@@ -375,6 +413,17 @@ let link: TerminalLink = config.exited ? { write() {}, writeBinary() {}, resize(
 term.onData(data => link.write(withModifiers(data)))
 term.onBinary(data => link.writeBinary(data))
 term.onResize(({ cols, rows }) => link.resize(cols, rows))
+
+// A hidden tab keeps reading its output but draws nothing: with the terminal out of the layout, xterm.js pauses
+// its renderer until it is shown again.
+const setDisplay = () => {
+  host.style.display = shown ? '' : 'none'
+  if (shown) fitIfLaidOut()
+}
+// A tab that comes into sight sends its size once, which makes this device the one that sizes the pty.
+const claimSize = (wasPassive: boolean) => {
+  if (wasPassive && !passive()) link.resize(term.cols, term.rows)
+}
 
 window.__agentsDockTerminal = {
   focus,
@@ -429,6 +478,12 @@ window.__agentsDockTerminal = {
   clearFind: () => search.clearDecorations(),
   jumpPrompt,
   selectText,
+  setVisible: on => {
+    const wasPassive = passive()
+    shown = on
+    setDisplay()
+    claimSize(wasPassive)
+  },
   restart: () => {
     link.close()
     link = connect()
@@ -442,10 +497,13 @@ window.addEventListener('beforeunload', () => {
   link.close()
   term.dispose()
 })
-// The app coming back to the front sends the size once, which makes this device the one that sizes the pty.
+// The app coming back to the front with this tab shown.
+let hiddenPage = document.hidden
 document.addEventListener('visibilitychange', () => {
-  if (!passive()) link.resize(term.cols, term.rows)
+  claimSize(!shown || hiddenPage)
+  hiddenPage = document.hidden
 })
+setDisplay()
 if (config.exited) post({ type: 'status', status: 'Exited' })
 post({ type: 'ready' })
 

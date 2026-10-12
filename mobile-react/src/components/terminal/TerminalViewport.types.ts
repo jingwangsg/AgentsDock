@@ -12,8 +12,8 @@ export type TerminalConnectionStatus = {
 
 export type TerminalModifierState = { ctrl: boolean; alt: boolean }
 
-/** What the Android terminal reports about its own controls. */
-export type TerminalPageEvent = Extract<TerminalPageMessage, { type: 'find-results' | 'font-size' | 'command' }>
+/** What the Android terminal reports about its shell and its own controls. */
+export type TerminalPageEvent = Extract<TerminalPageMessage, { type: 'title' | 'cwd' | 'bell' | 'notify' | 'find-results' | 'font-size' | 'command' }>
 
 export type TerminalViewportHandle = {
   focus(): Promise<boolean>
@@ -41,6 +41,8 @@ export type TerminalViewportProps = ViewProps & {
   onModifiers?: (state: TerminalModifierState) => void
   /** Android web view terminal only, from here on. A terminal tab, which acknowledges output; not a chat's tmux session. */
   standalone?: boolean
+  /** False while a kept terminal tab is hidden behind another tab or chat. */
+  visible?: boolean
   /** The shell exited and no new one was asked for: the terminal does not connect until restart(). */
   exited?: boolean
   dark?: boolean

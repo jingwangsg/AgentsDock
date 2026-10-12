@@ -25,6 +25,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   onStatus,
   onModifiers,
   standalone = false,
+  visible = true,
   exited = false,
   dark = true,
   cursorStyle = 'bar',
@@ -44,13 +45,14 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
     fontSize, cursorStyle, cursorBlink, scrollback, screenReader, copyOnSelect,
   }), [backgroundHex, copyOnSelect, cursorBlink, cursorHex, cursorStyle, dark, fontSize, foregroundHex, scrollback, screenReader, selectionHex])
   const optionsRef = useRef(options)
+  const visibleRef = useRef(visible)
   const exitedRef = useRef(exited)
   exitedRef.current = exited
-  // The page starts with what holds when it loads; later changes are applied in place, so a theme switch
-  // or a font size change keeps the connection and the screen.
+  // The page starts with what holds when it loads; later changes are applied in place, so a theme switch,
+  // a font size change or hiding the tab keeps the connection and the screen.
   const html = useMemo(
     () => androidTerminalHTML({
-      socketURL, standalone, fontFamily: `monospace, "${PROMPT_GLYPH_FONT_FAMILY}"`, options: optionsRef.current, exited: exitedRef.current,
+      socketURL, standalone, fontFamily: `monospace, "${PROMPT_GLYPH_FONT_FAMILY}"`, options: optionsRef.current, visible: visibleRef.current, exited: exitedRef.current,
     }),
     [socketURL, standalone, webViewKey],
   )
@@ -63,12 +65,17 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   const call = <K extends keyof TerminalPageApi>(method: K, ...args: Parameters<TerminalPageApi[K]>) =>
     inject(`window.__agentsDockTerminal?.${method}(${args.map(safeInlineJSON).join(',')})`)
 
-  // Calls made before the page finished loading are lost; it reports `ready` and gets them again then.
+  // Calls made before the page finished loading are lost; it reports `ready` and gets both again then.
   useEffect(() => {
     if (optionsRef.current === options) return
     optionsRef.current = options
     call('configure', options)
   }, [options])
+  useEffect(() => {
+    if (visibleRef.current === visible) return
+    visibleRef.current = visible
+    call('setVisible', visible)
+  }, [visible])
 
   const paste = async () => {
     const text = await Clipboard.getStringAsync()
@@ -131,6 +138,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
     switch (message.type) {
       case 'ready':
         call('configure', optionsRef.current)
+        call('setVisible', visibleRef.current)
         return
       case 'status':
         emitStatus({ status: message.status, name: message.name, message: message.message })

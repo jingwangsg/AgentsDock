@@ -78,3 +78,11 @@ test('the key row stays above the soft keyboard inside the full-screen terminal 
   assert.match(source, /measureInWindow\(\(_x, y, _width, height\) => \{\s*setKeyboardOverlap\(Math\.max\(0, Math\.round\(y \+ height - event\.endCoordinates\.screenY\)\)\)/)
   assert.match(source, /paddingBottom: keyboardOverlap/)
 })
+
+test('android keeps opened terminal tabs mounted and full size while hidden, up to the measured limit', () => {
+  // A collapsed (display: none) web view would lose its size; a hidden tab stays laid out behind the one in front.
+  assert.match(shell, /const KEPT_TERMINAL_TABS = 8/)
+  assert.match(shell, /<SurfaceScreen surface=\{surface\} active=\{front\}/)
+  assert.match(shell, /hiddenTerminal: \{ opacity: 0 \}/)
+  assert.match(source, /else if \(standalone\) updateTerminalStatus\(terminal\.id, \{ bell: true \}\)/)
+})

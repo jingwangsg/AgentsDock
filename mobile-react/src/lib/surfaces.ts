@@ -1,15 +1,15 @@
 import type { Surface, UpdateSurfaceInput } from '../types'
 
-/** The user's rename wins; otherwise a browser tab shows its page title and a terminal tab says "Terminal". */
-export function surfaceTitle(surface: Surface): string {
+/** The user's rename wins; otherwise a browser tab shows its page title and a terminal tab its shell's title, or "Terminal". */
+export function surfaceTitle(surface: Surface, shellTitle?: string | null): string {
   if (surface.name) return surface.name
-  return surface.kind === 'browser' ? surface.page_title || 'Browser' : 'Terminal'
+  return surface.kind === 'browser' ? surface.page_title || 'Browser' : shellTitle || 'Terminal'
 }
 
-/** List and header meta line: the shell's directory, or the page's host. */
-export function surfaceSubline(surface: Surface): string {
+/** List and header meta line: the shell's directory (as it last reported it), or the page's host. */
+export function surfaceSubline(surface: Surface, shellCwd?: string | null): string {
   if (surface.kind === 'terminal') {
-    const parts = (surface.cwd ?? '').split('/').filter(Boolean)
+    const parts = (shellCwd || surface.cwd || '').split('/').filter(Boolean)
     return parts.slice(-2).join(' / ') || 'Terminal'
   }
   if (!surface.url) return 'Browser'
@@ -18,19 +18,22 @@ export function surfaceSubline(surface: Surface): string {
 
 /**
  * Asks for a tab's name and resolves the patch to send, or null when cancelled or unchanged.
- * An emptied name drops the rename, so the default title (page title or "Terminal") returns.
+ * An emptied name drops the rename, so the default title (page or shell title, or "Terminal") returns.
  */
 export async function promptSurfaceRename(
   surface: Surface,
   promptText: (options: { title: string; initialValue: string; confirmLabel: string; placeholder: string }) => Promise<string | null>,
+  shellTitle?: string | null,
 ): Promise<UpdateSurfaceInput | null> {
+  const initialValue = surfaceTitle(surface, shellTitle)
   const value = await promptText({
     title: 'Rename Tab',
-    initialValue: surfaceTitle(surface),
+    initialValue,
     confirmLabel: 'Rename',
     placeholder: surface.kind === 'terminal' ? 'Terminal' : 'Browser',
   })
-  if (value === null) return null
+  // Accepting the shell's live title unchanged would freeze it as the name.
+  if (value === null || (shellTitle && value === initialValue)) return null
   const name = value.trim() || null
   return name === surface.name ? null : { name }
 }

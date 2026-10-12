@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
-import { Keyboard, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { AppState, Keyboard, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import * as Haptics from 'expo-haptics'
 import { AArrowDown, AArrowUp, CaseSensitive, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ClipboardCopy, ClipboardPaste, Columns2, Keyboard as KeyboardIcon, Plus, Regex, Rows2, Search, TextCursor, Trash2, WholeWord, X, type LucideIcon } from 'lucide-react-native'
 import { AgentServerClientDisposedError, type AgentServerClient } from '../api/AgentServerClient'
+import { surfaceTitle } from '../lib/surfaces'
 import { useTerminalSettings } from '../lib/terminalSettings'
+import { updateTerminalStatus } from '../lib/terminalStatus'
 import { scaleAppFont } from '../lib/typography'
-import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
+import { capturedConnectionIsCurrent, client, notifyTerminalTab, useAppStore } from '../store/useAppStore'
 import { TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, clampTerminalFontSize, type TerminalFindOptions } from '../terminal/terminalPage'
 import { useAppColorScheme, usePalette } from '../theme'
 import type { TerminalWindow } from '../types'
@@ -37,6 +40,7 @@ type TerminalTarget = { id: string; cwd?: string | null }
 interface ScopedTerminalViewProps {
   terminal: TerminalTarget
   tmux: boolean
+  active: boolean
   onClose?: () => void
   connection: AgentServerClient
   connectionKey: string
@@ -45,7 +49,7 @@ interface ScopedTerminalViewProps {
   fontScale: number
 }
 
-export function TerminalView({ terminal, tmux = false, onClose }: { terminal: TerminalTarget; tmux?: boolean; onClose?: () => void }) {
+export function TerminalView({ terminal, tmux = false, active = true, onClose }: { terminal: TerminalTarget; tmux?: boolean; active?: boolean; onClose?: () => void }) {
   const colors = usePalette()
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
@@ -72,6 +76,7 @@ export function TerminalView({ terminal, tmux = false, onClose }: { terminal: Te
     key={`${connectionKey}:${terminal.id}`}
     terminal={terminal}
     tmux={tmux}
+    active={active}
     onClose={onClose}
     connection={connection}
     connectionKey={connectionKey}
@@ -81,7 +86,7 @@ export function TerminalView({ terminal, tmux = false, onClose }: { terminal: Te
   />
 }
 
-function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey, activeProfileId, profileGeneration, fontScale }: ScopedTerminalViewProps) {
+function ScopedTerminalView({ terminal, tmux, active, onClose, connection, connectionKey, activeProfileId, profileGeneration, fontScale }: ScopedTerminalViewProps) {
   const colors = usePalette()
   const dark = useAppColorScheme() === 'dark'
   const settings = useTerminalSettings()
@@ -97,6 +102,8 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
   const [findRequest, setFindRequest] = useState(0)
   const [findResults, setFindResults] = useState<{ index: number; count: number } | null>(null)
   const [selecting, setSelecting] = useState(false)
+  const shellTitle = useRef<string | null>(null)
+  const lastNotice = useRef(0)
   // A terminal tab, not a chat's tmux session.
   const standalone = !tmux
   const android = Platform.OS === 'android'
@@ -118,6 +125,18 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
     return () => { shown.remove(); hidden.remove() }
   }, [])
   useEffect(() => { fontZooms.set(terminal.id, fontZoom) }, [fontZoom, terminal.id])
+  useEffect(() => {
+    if (!active) {
+      void viewport.current?.blur().catch(() => undefined)
+      return
+    }
+    // The bell mark is for a tab out of sight; showing the tab, or coming back to the app with it in front, clears it.
+    if (standalone) updateTerminalStatus(terminal.id, { bell: false })
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active' && standalone) updateTerminalStatus(terminal.id, { bell: false })
+    })
+    return () => subscription.remove()
+  }, [active, standalone, terminal.id])
   const refresh = useCallback(async () => {
     try {
       const next = await connection.terminalWindows(terminal.id)
@@ -201,6 +220,27 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
   const pageEvent = (event: TerminalPageEvent) => {
     if (!capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) return
     switch (event.type) {
+      case 'title':
+        shellTitle.current = event.title
+        if (standalone) updateTerminalStatus(terminal.id, { title: event.title })
+        return
+      case 'cwd':
+        if (standalone) updateTerminalStatus(terminal.id, { cwd: event.cwd })
+        return
+      case 'bell':
+        if (active && AppState.currentState === 'active') void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined)
+        else if (standalone) updateTerminalStatus(terminal.id, { bell: true })
+        return
+      case 'notify': {
+        // While the tab is hidden or the app is not in front, at most one a second. A notification opens a
+        // terminal tab; a chat's tmux terminal has no tab to open.
+        const surface = useAppStore.getState().surfaces.find(item => item.id === terminal.id)
+        const now = Date.now()
+        if (!standalone || !surface || (active && AppState.currentState === 'active') || now - lastNotice.current < 1000) return
+        lastNotice.current = now
+        notifyTerminalTab(terminal.id, event.title || surfaceTitle(surface, shellTitle.current), event.body)
+        return
+      }
       case 'find-results':
         setFindResults({ index: event.index, count: event.count })
         return
@@ -274,6 +314,7 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
         selectionHex={`${colors.blue}3d`}
         fontSize={fontSize}
         standalone={standalone}
+        visible={active}
         exited={exitedTerminals.has(terminal.id)}
         dark={dark}
         cursorStyle={settings.cursorStyle}

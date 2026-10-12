@@ -14,6 +14,7 @@ import { isServerSetupRequired, shouldPresentServerSetup } from '../lib/first-la
 import { fullscreenModalTopPadding } from '../lib/fullscreen-modal-layout'
 import { profileNamespace } from '../lib/server-profiles'
 import { readSidebarCollapsed, writeSidebarCollapsed } from '../lib/sidebar-preference'
+import { useTerminalSettings } from '../lib/terminalSettings'
 import { hubProfile, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { ChatScreen } from './ChatScreen'
@@ -43,6 +44,13 @@ type InspectorAction = {
 }
 
 const IOS_INSPECTOR_HANDOFF_FALLBACK_MS = 1_000
+// Terminal tabs kept connected while hidden (Android): the most recently shown ones, at most eight and 80,000
+// lines of scrollback between them. They share one web view process; on the emulator (2026-10-12) each added
+// about 14 MB of PSS and no measurable idle CPU, and a full 50,000-line scrollback about 50 MB more (190 MB
+// while it was written), so eight such tabs could get that process killed. A tab let go reattaches, with a
+// clean replay, when it is shown again.
+const KEPT_TERMINAL_TABS = 8
+const KEPT_TERMINAL_SCROLLBACK_LINES = 80_000
 
 export function AppShell() {
   return <FileViewerProvider><AppShellContent /></FileViewerProvider>
@@ -119,9 +127,30 @@ function AppShellContent() {
   const pendingInspectorFallback = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [modalGeneration, setModalGeneration] = useState(profileGeneration)
   const modalScopeCurrent = modalGeneration === profileGeneration
+  const connectionKey = `${activeProfileId ?? 'none'}:${profileGeneration}`
   const chatLayout = chatWorkspaceLayout(width, height)
   const compact = chatLayout.compact
   const onScreenSessionId = compact && !mobileChatOpen ? null : (selectedSurface ? null : selected?.id ?? null)
+  // Android keeps each terminal tab opened in this app run mounted and connected while another tab or chat is in
+  // front, as the desktop does, so a hidden shell still rings its bell and posts notifications. A tab never opened
+  // does not connect. iOS shows one native terminal at a time.
+  const surfaces = useAppStore(state => state.surfaces)
+  const { scrollback } = useTerminalSettings()
+  const keptTerminalTabs = Math.max(1, Math.min(KEPT_TERMINAL_TABS, Math.floor(KEPT_TERMINAL_SCROLLBACK_LINES / scrollback)))
+  const terminalInFront = Platform.OS === 'android' && selectedSurface?.kind === 'terminal' && (!compact || mobileChatOpen) ? selectedSurface.id : null
+  const [openedTerminals, setOpenedTerminals] = useState<{ scope: string; ids: string[] }>({ scope: connectionKey, ids: [] })
+  const openedTerminalIds = openedTerminals.scope === connectionKey ? openedTerminals.ids : []
+  useEffect(() => {
+    // Most recently shown last. Closed tabs leave, and past the limit the least recently shown tab is let go.
+    setOpenedTerminals(current => {
+      const open = new Set(useAppStore.getState().surfaces.map(surface => surface.id))
+      const ids = (current.scope === connectionKey ? current.ids : []).filter(id => id !== terminalInFront && open.has(id))
+      return { scope: connectionKey, ids: [...ids, ...(terminalInFront ? [terminalInFront] : [])].slice(-keptTerminalTabs) }
+    })
+  }, [connectionKey, keptTerminalTabs, terminalInFront])
+  const keptTerminals = surfaces
+    .filter(surface => surface.kind === 'terminal' && (surface.id === terminalInFront || openedTerminalIds.includes(surface.id)))
+    .sort((a, b) => a.id.localeCompare(b.id))
   useEffect(() => { useAppStore.setState({ onScreenSessionId }) }, [onScreenSessionId])
   const showInspector = chatLayout.inlineInspectorAvailable && inspectorVisible
   const serverProfileItems = useMemo<ServerProfileListItem[]>(() => profiles.map(profile => ({
@@ -374,6 +403,16 @@ function AppShellContent() {
       let current = useAppStore.getState()
       let currentTarget = current.profiles.find(profile => profile.id === profileId)
       if (current.activeProfileId !== profileId || current.switchingProfileId || !currentTarget || profileNamespace(currentTarget) !== serverIdentity) return
+      if (data.surface === true) {
+        if (!current.surfaces.some(surface => surface.id === sessionId)) await current.refreshSurfaces()
+        if (intent !== notificationIntent) return
+        current = useAppStore.getState()
+        currentTarget = current.profiles.find(profile => profile.id === profileId)
+        if (current.activeProfileId !== profileId || current.switchingProfileId || !currentTarget || profileNamespace(currentTarget) !== serverIdentity || !current.surfaces.some(surface => surface.id === sessionId)) return
+        current.selectSurface(sessionId)
+        openMobileChat()
+        return
+      }
       if (!current.sessions.some(session => session.id === sessionId)) await current.refreshSessions()
       if (intent !== notificationIntent) return
       current = useAppStore.getState()
@@ -400,7 +439,6 @@ function AppShellContent() {
 
   if (!initialized) return <View style={[styles.fill, { backgroundColor: colors.background }]}><Loading label="Starting AgentsDock" /></View>
 
-  const connectionKey = `${activeProfileId ?? 'none'}:${profileGeneration}`
   const sidebar = <Sidebar key={`sidebar:${connectionKey}`} profiles={serverProfileItems} activeProfileId={activeProfileId} switchingProfileId={switchingProfileId} onSwitchServer={switchServer} onSetupServer={() => openServers('edit-active')} onManageServers={() => openServers('manage')} onSettings={openSettings} onTeamNetwork={openTeamNetwork} onNewChat={() => void quickNewChat()} onResumeChat={() => { setResumeChat(true); requestAnimationFrame(dismissAppKeyboard) }} onNewChatIn={(folder, backend) => void quickNewChat({ folder, backend })} onNewSurfaceIn={(folder, kind) => void quickNewSurface(folder, kind)} onOpenChat={() => { trackEvent('chat_opened'); openMobileChat() }} />
   // The collapsed rail stays mounted (see sidebarWidth), so it must also leave
   // the accessibility tree or screen readers land on invisible controls.
@@ -410,14 +448,23 @@ function AppShellContent() {
     : <NoChat connecting={connecting} onSettings={() => openServers('manage')} onShowChatList={!compact && sidebarCollapsed ? toggleSidebar : undefined} />
   // A selected terminal or browser tab takes the chat's place until a chat is opened again.
   const content = selectedSurface
-    ? <SurfaceScreen key={`${connectionKey}:${selectedSurface.id}`} surface={selectedSurface} compact={compact} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} onBack={closeMobileChat} />
+    ? terminalInFront ? null : <SurfaceScreen key={`${connectionKey}:${selectedSurface.id}`} surface={selectedSurface} active compact={compact} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} onBack={closeMobileChat} />
     : chat
+  // Kept terminal tabs, in a fixed order so that switching tabs never moves a web view; the hidden ones stay laid
+  // out at full size, so their shells keep their width.
+  const terminalLayer = keptTerminals.map(surface => {
+    const front = surface.id === terminalInFront
+    return <View key={`${connectionKey}:${surface.id}`} style={[styles.terminalLayer, !front && styles.hiddenTerminal]} pointerEvents={front ? 'auto' : 'none'} accessibilityElementsHidden={!front} importantForAccessibility={front ? 'auto' : 'no-hide-descendants'}>
+      <SurfaceScreen surface={surface} active={front} compact={compact} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} onBack={closeMobileChat} />
+    </View>
+  })
+  const mobilePaneOpen = mobileChatOpen && Boolean(selectedSurface || selected)
 
   return <View style={[styles.fill, { backgroundColor: colors.background }]}>
     <AndroidUpdateCoordinator />
     {error && !showServerSetup ? <View testID="global-error-slot" style={styles.errorSlot}><View style={[styles.error, { backgroundColor: colors.surface, borderColor: colors.red }]}><AlertCircle size={17} color={colors.red} /><View style={styles.errorContent}><Text style={[styles.errorText, { color: colors.text }]} numberOfLines={canCancelPendingServerUpdate ? 4 : 3}>{error}</Text>{canCancelPendingServerUpdate ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel scheduled server update" accessibilityHint="Cancels the pending update so messages can be sent again" accessibilityState={{ disabled: cancelingServerUpdate, busy: cancelingServerUpdate }} testID="error-cancel-server-update" disabled={cancelingServerUpdate} onPress={() => { void cancelCurrentServerUpdate() }} style={({ pressed }) => [styles.errorAction, { backgroundColor: colors.raised, borderColor: colors.border, opacity: cancelingServerUpdate ? 0.45 : pressed ? 0.68 : 1 }]}>{cancelingServerUpdate ? <ActivityIndicator size="small" color={colors.blue} /> : <Text style={[styles.errorActionText, { color: colors.blue }]}>Cancel update</Text>}</Pressable> : null}</View>{!canCancelPendingServerUpdate ? <IconButton icon={Settings} size={15} onPress={openSettings} label="Settings" testID="error-settings" /> : null}<IconButton icon={X} size={15} onPress={clearError} disabled={cancelingServerUpdate} label="Dismiss" testID="error-dismiss" /></View></View> : null}
     {!showServerSetup ? <WaitingForYouBanner onScreenSessionId={onScreenSessionId} onOpen={sessionId => { void useAppStore.getState().selectSession(sessionId); openMobileChat() }} /> : null}
-    {compact ? <View style={styles.fill}>{sidebar}{modalScopeCurrent && mobileChatOpen && (selectedSurface || selected) ? <MobileChatPane width={width} backgroundColor={colors.background} onClose={closeMobileChat}>{content}</MobileChatPane> : null}</View> : <View style={styles.workspace}>{sidebarRail}<View style={styles.chat}>{content}</View>{showInspector && selected && !selectedSurface && !isWelcomeSession(selected.id) ? <View style={{ width: Math.min(350, width * 0.29) }}><Inspector key={`inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => openInspectorAction('digest')} onJob={jobId => openInspectorAction('job', jobId)} onTerminal={() => openInspectorAction('terminal')} onProcesses={() => openInspectorAction('processes')} onTmux={() => openInspectorAction('tmux')} onChanges={() => openInspectorAction('changes')} /></View> : null}</View>}
+    {compact ? <View style={styles.fill}>{sidebar}{modalScopeCurrent && (mobilePaneOpen || terminalLayer.length) ? <MobileChatPane open={mobilePaneOpen} width={width} backgroundColor={colors.background} onClose={closeMobileChat}>{mobilePaneOpen ? content : null}{terminalLayer}</MobileChatPane> : null}</View> : <View style={styles.workspace}>{sidebarRail}<View style={styles.chat}>{content}{terminalLayer}</View>{showInspector && selected && !selectedSurface && !isWelcomeSession(selected.id) ? <View style={{ width: Math.min(350, width * 0.29) }}><Inspector key={`inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => openInspectorAction('digest')} onJob={jobId => openInspectorAction('job', jobId)} onTerminal={() => openInspectorAction('terminal')} onProcesses={() => openInspectorAction('processes')} onTmux={() => openInspectorAction('tmux')} onChanges={() => openInspectorAction('changes')} /></View> : null}</View>}
 
     <ServerSetupDialog
       visible={showServerSetup}
@@ -496,12 +543,14 @@ function AppShellContent() {
   </View>
 }
 
-function MobileChatPane({ children, width, backgroundColor, onClose }: { children: ReactNode; width: number; backgroundColor: string; onClose: () => void }) {
-  const translateX = useSharedValue(0)
+// Closed, the pane stays mounted off screen only while it holds hidden terminal tabs (Android).
+function MobileChatPane({ children, open, width, backgroundColor, onClose }: { children: ReactNode; open: boolean; width: number; backgroundColor: string; onClose: () => void }) {
+  const translateX = useSharedValue(open ? 0 : width)
   useEffect(() => {
-    translateX.value = 0
-  }, [translateX, width])
+    translateX.value = open ? 0 : width
+  }, [open, translateX, width])
   const edgeBackGesture = useMemo(() => Gesture.Pan()
+    .enabled(open)
     .hitSlop({ left: 0, width: 28 })
     .activeOffsetX(10)
     .failOffsetY([-18, 18])
@@ -522,11 +571,11 @@ function MobileChatPane({ children, width, backgroundColor, onClose }: { childre
     })
     .onTouchesCancelled(() => {
       translateX.value = withTiming(0, { duration: 140, easing: Easing.out(Easing.cubic) })
-    }), [onClose, translateX, width])
+    }), [onClose, open, translateX, width])
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ translateX: translateX.value }] }))
 
   return <GestureDetector gesture={edgeBackGesture}>
-    <Animated.View style={[styles.mobileChatPane, { backgroundColor }, animatedStyle]}>{children}</Animated.View>
+    <Animated.View pointerEvents={open ? 'auto' : 'none'} accessibilityElementsHidden={!open} importantForAccessibility={open ? 'auto' : 'no-hide-descendants'} style={[styles.mobileChatPane, { backgroundColor }, animatedStyle]}>{children}</Animated.View>
   </GestureDetector>
 }
 
@@ -537,6 +586,7 @@ function NoChat({ connecting, onSettings, onShowChatList }: { connecting: boolea
 
 const styles = StyleSheet.create({
   fill: { flex: 1 }, workspace: { flex: 1, flexDirection: 'row' }, chat: { flex: 1, minWidth: 0 }, mobileChatPane: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 2 },
+  terminalLayer: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }, hiddenTerminal: { opacity: 0 },
   // Same box as ChatHeader.root so the toggle does not jump when a chat opens.
   noChatBar: { minHeight: 68, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center' },
   errorSlot: { flexShrink: 0, paddingHorizontal: 12, paddingVertical: 8 },

@@ -4786,6 +4786,19 @@ useAppStore.subscribe((state, previous) => {
   }
 })
 
+/**
+ * A terminal tab's OSC 9/777 notice, posted while the app is not in front. `surface: true` tells the
+ * notification route that `sessionId` names a terminal tab, not a chat.
+ */
+export function notifyTerminalTab(surfaceId: string, title: string, body: string): void {
+  const scope = captureConnection()
+  requestNotificationPermissionOnce()
+  Notifications.scheduleNotificationAsync({
+    content: { title, body, data: { profileId: scope.profileId, serverIdentity: scope.namespace, sessionId: surfaceId, surface: true } },
+    trigger: null,
+  }).catch(() => { /* permissions can be denied */ })
+}
+
 function saveCurrentWorkspace(get: () => AppState): Promise<void> {
   const scope = captureConnection()
   if (scope.namespaceAdopting) return Promise.resolve()
