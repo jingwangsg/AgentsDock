@@ -61,6 +61,7 @@ describe('localHubConfigDirs', () => {
     const home = mkdtempSync(join(tmpdir(), 'agentsdock-home-'))
     homes.push(home)
     for (const name of ['zeta', 'alpha']) mkdirSync(join(home, '.config', 'agents-server-instances', name), { recursive: true })
+    writeFileSync(join(home, '.config', 'agents-server-instances', '.DS_Store'), '')
     expect(localHubConfigDirs(home, undefined)).toEqual([
       join(home, '.config', 'agents-server'),
       join(home, '.config', 'agents-server-instances', 'alpha'),

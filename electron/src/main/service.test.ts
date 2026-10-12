@@ -8419,6 +8419,7 @@ describe('attaching to the server already running on this Mac', () => {
     await vi.waitFor(() => expect(service.listServers().map(profile => profile.serverUrl)).toEqual([DEFAULT_SERVER_URL, `${DEFAULT_SERVER_URL}/api/remote/r1`]))
     expect(service.listServers()[0]).toMatchObject({ hasAccessToken: true, serverSetupComplete: true, serverIdentity: 'server-hub' })
     expect(await settings.accessTokenForConnectionAsync(hubId)).toBe(CURRENT)
+    // '' is the first health check, made with the profile's empty token.
     expect(triedTokens().slice(0, 3)).toEqual(['', STALE, CURRENT])
   })
 

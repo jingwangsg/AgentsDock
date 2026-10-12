@@ -34,15 +34,15 @@ export function parseConfigEnv(text: string): Record<string, string> {
 
 /**
  * Config dirs whose `env` may hold the token of the server on this Mac's 7850, in the order they are tried:
- * install.sh's default and named instances (server_instances.py), a server a hub deployed here
- * (remote_servers.py DEFAULT_INSTALL_DIR), and the hand-written LaunchAgent that runs a source checkout.
- * AGENTS_SERVER_CONFIG_DIR names the one server to use instead.
+ * install.sh's default and named instances (server_instances.py), a hub-deployed server (remote_servers.py
+ * DEFAULT_INSTALL_DIR), and the config dir of the hand-written com.agentsdock.local-server LaunchAgent that runs a
+ * source checkout (no script in this repo creates it). AGENTS_SERVER_CONFIG_DIR names the one server to use instead.
  */
 export function localHubConfigDirs(home = homedir(), configDir = process.env.AGENTS_SERVER_CONFIG_DIR): string[] {
   if (configDir) return [configDir]
   const instances = join(home, '.config', 'agents-server-instances')
   let names: string[] = []
-  try { names = readdirSync(instances).sort() } catch { /* no named instances */ }
+  try { names = readdirSync(instances, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name).sort() } catch { /* no named instances */ }
   return [
     join(home, '.config', 'agents-server'),
     ...names.map(name => join(instances, name)),

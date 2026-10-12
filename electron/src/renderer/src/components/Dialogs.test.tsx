@@ -478,7 +478,7 @@ describe('ServerOnboardingDialog', () => {
     const user = userEvent.setup()
     render(<ServerOnboardingDialog />)
 
-    expect(await screen.findByText('AgentsServer on 127.0.0.1:7850 needs its access token')).toBeInTheDocument()
+    expect(await screen.findByText('The local AgentsServer on 127.0.0.1:7850 needs its access token')).toBeInTheDocument()
     expect(await screen.findByText('/Users/me/.agentsdock-server/env')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Install on this computer' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Connect' })).toBeDisabled()

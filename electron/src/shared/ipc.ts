@@ -411,10 +411,10 @@ export interface AgentsDockAPI {
   /** The local AgentsServer on 127.0.0.1:7850 that every client connects to. */
   hub: {
     /**
-     * Re-reads the local server token files, or checks `token` pasted by the user instead, and reconnects with the one
-     * the server accepts; true when the hub has a token.
+     * Re-reads the local server token files, or checks `pastedToken` instead, and reconnects with the one the server
+     * accepts; true when the hub has a token.
      */
-    adoptLocalToken(token?: string): Promise<boolean>
+    adoptLocalToken(pastedToken?: string): Promise<boolean>
     /** The env files searched for the local server's token, in search order. */
     localTokenFiles(): Promise<string[]>
     /** `http://<tailnet name or IP>:7850` for pairing a phone, or null when no address is known. */

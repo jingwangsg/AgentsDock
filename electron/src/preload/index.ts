@@ -212,7 +212,7 @@ const api: AgentsDockAPI = {
     copyProxyToken: () => ipcRenderer.invoke('inference-proxy:copy-proxy-token')
   },
   hub: {
-    adoptLocalToken: token => ipcRenderer.invoke('hub:adopt-local-token', token),
+    adoptLocalToken: pastedToken => ipcRenderer.invoke('hub:adopt-local-token', pastedToken),
     localTokenFiles: () => ipcRenderer.invoke('hub:local-token-files'),
     pairingUrl: () => ipcRenderer.invoke('hub:pairing-url'),
     startLocalServer: () => ipcRenderer.invoke('hub:start-local-server'),

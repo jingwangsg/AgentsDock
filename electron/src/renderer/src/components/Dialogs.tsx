@@ -751,7 +751,8 @@ export function ServerOnboardingDialog() {
     const hub = state.profiles.find(profile => profile.serverUrl === DEFAULT_SERVER_URL)
     return Boolean(hub && hub.id === state.activeProfileId && !hub.hasAccessToken && !state.connected)
   })
-  // A server answers on 7850 but accepts none of this Mac's token files: it needs its token, not an install.
+  // The server on 7850 answered 401 to the hub profile without a token: ask for the token, not an install. The main
+  // process tries the local token files on that same 401, so this can show briefly until that search ends.
   const hubNeedsToken = useAppStore(state => {
     const hub = state.profiles.find(profile => profile.serverUrl === DEFAULT_SERVER_URL)
     return Boolean(hub && !hub.hasAccessToken && hub.lastConnectionError && /\b(?:401|unauthori[sz]ed)\b/i.test(hub.lastConnectionError))
@@ -966,6 +967,7 @@ export function ServerOnboardingDialog() {
 
   const betaUpdate = intent === 'update-beta'
   const hostSetup = intent === 'host-team-network'
+  // A freshly installed server answers 401 until install() adopts its token; keep the progress view meanwhile.
   const tokenPrompt = intent === 'setup' && hubNeedsToken && !installing
   const validTeamNetworkServerName = Boolean(teamNetworkServerName.trim())
     && new TextEncoder().encode(teamNetworkServerName.trim()).byteLength <= 160
@@ -1018,7 +1020,6 @@ export function ServerOnboardingDialog() {
           <footer>
             <button type="button" className="quiet-button" onClick={() => setOpen(false)}>{t("ui.Dialogs.ServerOnboardingDialog.not_now_a0e63d7")}</button>
             <div className="server-setup-footer-actions">
-              <button type="button" className="quiet-button" onClick={() => void retry()}><RefreshCw size={13} /> {t('hub.onboarding.retry')}</button>
               <button type="button" className="primary-button" disabled={!pastedToken.trim()} onClick={() => void retry(pastedToken.trim())}><KeyRound size={14} /> {t('hub.onboarding.connect')}</button>
             </div>
           </footer>
