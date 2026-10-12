@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test, { mock } from 'node:test'
-import { TerminalReplay, openTerminalConnection, trailingSequencesStart, type TerminalLinkState } from './terminalProtocol'
+import { TerminalReplay, openTerminalConnection, terminalKeyAction, trailingSequencesStart, type TerminalLinkState } from './terminalProtocol'
 
 // Same cases as the desktop suite (electron/src/renderer/src/lib/terminal-replay.test.ts).
 test('trailingSequencesStart takes a new shell’s whole startup probe as still waiting', () => {
@@ -11,6 +11,30 @@ test('trailingSequencesStart takes a new shell’s whole startup probe as still 
   assert.equal(trailingSequencesStart(`${fishProbe}\r\n❮ `), fishProbe.length + 4)
   assert.equal(trailingSequencesStart('a\x1b[c b\x1b[0m\x1b]0;title\x07'), 6)
   assert.equal(trailingSequencesStart(''), 0)
+})
+
+// Same cases as the desktop's non-macOS chords (electron/src/renderer/src/lib/terminal-input.test.ts).
+test('terminalKeyAction keeps Control-letters for the shell and moves the terminal commands to Control-Shift', () => {
+  const key = (key: string, modifiers: { meta?: boolean; ctrl?: boolean; alt?: boolean; shift?: boolean } = {}, code = '') => ({
+    key, code, metaKey: Boolean(modifiers.meta), ctrlKey: Boolean(modifiers.ctrl), altKey: Boolean(modifiers.alt), shiftKey: Boolean(modifiers.shift),
+  })
+  for (const letter of ['c', 'v', 'a', 'k', 'l', 'f', 'w']) assert.equal(terminalKeyAction(key(letter, { ctrl: true }, `Key${letter.toUpperCase()}`)), null, letter)
+  assert.equal(terminalKeyAction(key('C', { ctrl: true, shift: true }, 'KeyC')), 'copy')
+  assert.equal(terminalKeyAction(key('V', { ctrl: true, shift: true }, 'KeyV')), 'paste')
+  assert.equal(terminalKeyAction(key('A', { ctrl: true, shift: true }, 'KeyA')), 'select-all')
+  assert.equal(terminalKeyAction(key('K', { ctrl: true, shift: true }, 'KeyK')), 'clear')
+  assert.equal(terminalKeyAction(key('F', { ctrl: true, shift: true }, 'KeyF')), 'find')
+  assert.equal(terminalKeyAction(key('W', { ctrl: true, shift: true }, 'KeyW')), 'close')
+  assert.equal(terminalKeyAction(key('ArrowUp', { ctrl: true, shift: true })), 'previous-prompt')
+  assert.equal(terminalKeyAction(key('ArrowDown', { ctrl: true, shift: true })), 'next-prompt')
+  assert.equal(terminalKeyAction(key('=', { ctrl: true })), 'zoom-in')
+  assert.equal(terminalKeyAction(key('-', { ctrl: true })), 'zoom-out')
+  assert.equal(terminalKeyAction(key('0', { ctrl: true })), 'zoom-reset')
+  assert.equal(terminalKeyAction(key('ArrowLeft', { meta: true })), null)
+  assert.equal(terminalKeyAction(key('ArrowLeft', { alt: true })), null)
+  assert.equal(terminalKeyAction(key('Tab', { shift: true })), null)
+  assert.equal(terminalKeyAction(key('C', { ctrl: true, shift: true })), 'copy', 'a key event without a scan code has no `code`')
+  assert.equal(terminalKeyAction(key('c', { ctrl: true })), null)
 })
 
 function fakeTerminal() {

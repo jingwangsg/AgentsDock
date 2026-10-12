@@ -36,7 +36,7 @@ test('android terminal keeps the bundled prompt-glyph fallback in its font stack
   assert.match(androidTerminal, /fontFamily: `monospace, "\$\{PROMPT_GLYPH_FONT_FAMILY\}"`/)
   assert.match(terminalPage, /fontFamily: config\.fontFamily/)
   assert.match(androidTerminal, /@font-face\{font-family:"\$\{PROMPT_GLYPH_FONT_FAMILY\}";src:url\("data:font\/ttf;base64,\$\{PROMPT_GLYPH_FONT_TTF_BASE64\}"\)/)
-  assert.match(androidTerminal, /img-src data:; font-src data:;/)
+  assert.match(androidTerminal, /img-src data: blob:; font-src data:;/)
   assert.match(promptFont, /export const PROMPT_GLYPH_FONT_FAMILY = 'AgentsDockPromptGlyphs'/)
   assert.match(promptFont, /export const PROMPT_GLYPH_FONT_TTF_BASE64 =\s*'[A-Za-z0-9+/=]{2000,}'/)
 })

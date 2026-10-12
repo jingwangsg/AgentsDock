@@ -1,9 +1,10 @@
-// The Android terminal page's rules for its WebSocket and the server's replay.
+// The Android terminal page's rules for its WebSocket, the server's replay and hardware-keyboard chords.
 // Ports of the desktop's, kept identical so both clients treat a terminal the same way:
 // - trailingSequencesStart: electron/src/renderer/src/lib/terminal-replay.ts
 // - TerminalReplay and the REPLAYED_* query lists in scripts/terminal-page-entry.ts: the replay handling in
 //   electron/src/renderer/src/components/TerminalSurface.tsx
 // - openTerminalConnection: terminal() and reconnectingSocket() in electron/src/main/server-client.ts
+// - terminalKeyAction: the non-macOS chords of electron/src/renderer/src/lib/terminal-input.ts
 
 /** WebSocket close code the server uses when the shell itself ended, as opposed to a dropped link. */
 const TERMINAL_SHELL_EXITED_CLOSE_CODE = 4410
@@ -315,4 +316,38 @@ export function openTerminalConnection(options: TerminalLinkOptions): TerminalLi
     },
     close: stop,
   }
+}
+
+export type TerminalCommand =
+  | 'copy' | 'paste' | 'select-all' | 'clear' | 'find' | 'close'
+  | 'zoom-in' | 'zoom-out' | 'zoom-reset'
+  | 'previous-prompt' | 'next-prompt'
+
+type KeyInput = Pick<KeyboardEvent, 'key' | 'code' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>
+
+/**
+ * A hardware keyboard's terminal commands. Control-letters belong to the shell, so the terminal's own
+ * commands take Control-Shift, as in GNOME Terminal and Windows Terminal. Null leaves the key to xterm.js.
+ */
+export function terminalKeyAction(event: KeyInput): TerminalCommand | null {
+  const { metaKey: meta, ctrlKey: ctrl, altKey: alt, shiftKey: shift } = event
+  // The web view leaves `code` empty for key events without a scan code (injected ones, some keyboards).
+  const code = event.code || (/^[a-z]$/i.test(event.key) ? `Key${event.key.toUpperCase()}` : '')
+  if (ctrl && shift && !alt && !meta) {
+    if (code === 'KeyC') return 'copy'
+    if (code === 'KeyV') return 'paste'
+    if (code === 'KeyA') return 'select-all'
+    if (code === 'KeyK') return 'clear'
+    if (code === 'KeyF') return 'find'
+    if (code === 'KeyW') return 'close'
+    if (event.key === 'ArrowUp') return 'previous-prompt'
+    if (event.key === 'ArrowDown') return 'next-prompt'
+    if (event.key === '+') return 'zoom-in'
+  }
+  if (ctrl && !shift && !alt && !meta) {
+    if (event.key === '=') return 'zoom-in'
+    if (event.key === '-') return 'zoom-out'
+    if (event.key === '0') return 'zoom-reset'
+  }
+  return null
 }

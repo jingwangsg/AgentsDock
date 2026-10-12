@@ -1,24 +1,33 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { Keyboard, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
-import { ChevronLeft, ChevronRight, ClipboardCopy, ClipboardPaste, Columns2, Keyboard as KeyboardIcon, Plus, Rows2, Trash2, X } from 'lucide-react-native'
+import { AArrowDown, AArrowUp, CaseSensitive, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ClipboardCopy, ClipboardPaste, Columns2, Keyboard as KeyboardIcon, Plus, Regex, Rows2, Search, TextCursor, Trash2, WholeWord, X, type LucideIcon } from 'lucide-react-native'
 import { AgentServerClientDisposedError, type AgentServerClient } from '../api/AgentServerClient'
+import { useTerminalSettings } from '../lib/terminalSettings'
 import { scaleAppFont } from '../lib/typography'
 import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, clampTerminalFontSize, type TerminalFindOptions } from '../terminal/terminalPage'
+import { useAppColorScheme, usePalette } from '../theme'
 import type { TerminalWindow } from '../types'
-import { Text } from './AppText'
+import { Text, TextInput } from './AppText'
 import { TerminalViewport, type TerminalViewportHandle } from './terminal/TerminalViewport'
-import type { TerminalKeyName, TerminalModifierState } from './terminal/TerminalViewport.types'
+import type { TerminalKeyName, TerminalModifierState, TerminalPageEvent } from './terminal/TerminalViewport.types'
 import { IconButton } from './ui'
 
+type TerminalRowKey = TerminalKeyName | 'ctrl' | 'alt' | 'prompt-previous' | 'prompt-next'
+
 /** Keys a soft keyboard lacks; Ctrl and Alt stay pressed for the next key. Android only: the web view terminal sends them. */
-const TERMINAL_KEYS: { name: TerminalKeyName | 'ctrl' | 'alt'; label: string }[] = [
-  { name: 'escape', label: 'Esc' }, { name: 'tab', label: 'Tab' }, { name: 'enter', label: 'Enter' }, { name: 'ctrl', label: 'Ctrl' }, { name: 'alt', label: 'Alt' },
+const TERMINAL_KEYS: { name: TerminalRowKey; label: string; description?: string }[] = [
+  { name: 'escape', label: 'Esc' }, { name: 'tab', label: 'Tab' }, { name: 'backtab', label: '⇧Tab', description: 'Shift Tab' }, { name: 'enter', label: 'Enter' },
+  { name: 'ctrl', label: 'Ctrl' }, { name: 'alt', label: 'Alt' },
   { name: 'left', label: '←' }, { name: 'down', label: '↓' }, { name: 'up', label: '↑' }, { name: 'right', label: '→' },
   { name: 'home', label: 'Home' }, { name: 'end', label: 'End' }, { name: 'pageup', label: 'PgUp' }, { name: 'pagedown', label: 'PgDn' },
   { name: 'dash', label: '-' }, { name: 'slash', label: '/' }, { name: 'pipe', label: '|' }, { name: 'tilde', label: '~' },
+  // Prompts the shell marks with OSC 133, as ⌘↑/⌘↓ on the desktop.
+  { name: 'prompt-previous', label: '⤒ Prompt', description: 'Previous prompt' }, { name: 'prompt-next', label: '⤓ Prompt', description: 'Next prompt' },
+  ...Array.from({ length: 12 }, (_, index) => ({ name: `f${index + 1}` as TerminalKeyName, label: `F${index + 1}` })),
 ]
-
+// A tab's own zoom (A−/A+, pinch, Ctrl+=/−/0) for this app run, kept when the tab's view is let go and made again.
+const fontZooms = new Map<string, number>()
 // Terminal tabs whose shell exited, until the user asks for a new shell: a view made again must not start one.
 const exitedTerminals = new Set<string>()
 
@@ -74,6 +83,8 @@ export function TerminalView({ terminal, tmux = false, onClose }: { terminal: Te
 
 function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey, activeProfileId, profileGeneration, fontScale }: ScopedTerminalViewProps) {
   const colors = usePalette()
+  const dark = useAppColorScheme() === 'dark'
+  const settings = useTerminalSettings()
   const viewport = useRef<TerminalViewportHandle>(null)
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [windows, setWindows] = useState<TerminalWindow[]>([])
@@ -81,9 +92,16 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
   const [statusMessage, setStatusMessage] = useState('')
   const [notice, setNotice] = useState('')
   const [modifiers, setModifiers] = useState<TerminalModifierState>({ ctrl: false, alt: false })
+  const [fontZoom, setFontZoom] = useState(() => fontZooms.get(terminal.id) ?? 0)
+  // 0 while the find bar is closed; each Find request bumps it so an open bar takes the focus again.
+  const [findRequest, setFindRequest] = useState(0)
+  const [findResults, setFindResults] = useState<{ index: number; count: number } | null>(null)
+  const [selecting, setSelecting] = useState(false)
   // A terminal tab, not a chat's tmux session.
   const standalone = !tmux
   const android = Platform.OS === 'android'
+  const baseFontSize = scaleAppFont(settings.fontSize, fontScale)
+  const fontSize = clampTerminalFontSize(baseFontSize + fontZoom)
   const rootRef = useRef<View>(null)
   const [keyboardOverlap, setKeyboardOverlap] = useState(0)
   useEffect(() => {
@@ -99,6 +117,7 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
     const hidden = Keyboard.addListener('keyboardDidHide', () => setKeyboardOverlap(0))
     return () => { shown.remove(); hidden.remove() }
   }, [])
+  useEffect(() => { fontZooms.set(terminal.id, fontZoom) }, [fontZoom, terminal.id])
   const refresh = useCallback(async () => {
     try {
       const next = await connection.terminalWindows(terminal.id)
@@ -152,7 +171,14 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
     const pasted = await viewport.current?.paste()
     if (capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) flash(pasted ? 'Pasted' : 'Clipboard empty')
   }
-  const pressKey = (name: TerminalKeyName | 'ctrl' | 'alt') => {
+  const zoom = (step: -1 | 0 | 1) => setFontZoom(current => step === 0 ? 0 : clampTerminalFontSize(baseFontSize + current + step) - baseFontSize)
+  const toggleSelecting = () => {
+    const next = !selecting
+    setSelecting(next)
+    if (next) Keyboard.dismiss()
+    void viewport.current?.selectText?.(next)
+  }
+  const pressKey = (name: TerminalRowKey) => {
     const handle = viewport.current
     if (!handle?.sendKey || !handle.setModifier) return
     if (name === 'ctrl' || name === 'alt') {
@@ -161,12 +187,36 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
       void handle.setModifier(name, next)
       return
     }
+    if (name === 'prompt-previous' || name === 'prompt-next') {
+      void handle.jumpPrompt?.(name === 'prompt-previous' ? 'previous' : 'next')
+      return
+    }
     void handle.sendKey(name)
   }
   const close = () => {
     const nativeTerminal = viewport.current
     if (nativeTerminal) void nativeTerminal.blur().catch(() => undefined)
     onClose?.()
+  }
+  const pageEvent = (event: TerminalPageEvent) => {
+    if (!capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) return
+    switch (event.type) {
+      case 'find-results':
+        setFindResults({ index: event.index, count: event.count })
+        return
+      case 'font-size':
+        setFontZoom(event.fontSize - baseFontSize)
+        return
+      case 'command':
+        if (event.command === 'find') setFindRequest(request => request + 1)
+        else if (event.command === 'zoom-in') zoom(1)
+        else if (event.command === 'zoom-out') zoom(-1)
+        else if (event.command === 'zoom-reset') zoom(0)
+        else if (event.command === 'close') {
+          if (onClose) close()
+          else if (standalone) void useAppStore.getState().removeSurface(terminal.id, profileGeneration)
+        }
+    }
   }
   const ended = status === 'Exited' || status === 'Error'
   return <View ref={rootRef} collapsable={false} style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border, paddingBottom: keyboardOverlap }]}>
@@ -187,10 +237,31 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
         <IconButton icon={Trash2} size={14} label="Close terminal window" onPress={() => void action('kill-window')} /></> : null}
         <IconButton icon={ClipboardCopy} size={14} label="Copy selection or terminal buffer" onPress={() => void copy()} />
         <IconButton icon={ClipboardPaste} size={14} label="Paste" onPress={() => void paste()} />
+        {android ? <>
+          <IconButton icon={TextCursor} size={14} label={selecting ? 'Done selecting text' : 'Select text'} testID="terminal-select-text" selected={selecting} onPress={toggleSelecting} />
+          <IconButton icon={Search} size={14} label="Find" testID="terminal-find" onPress={() => setFindRequest(request => request + 1)} />
+          <IconButton icon={AArrowDown} size={14} label="Smaller text" testID="terminal-zoom-out" disabled={fontSize <= TERMINAL_FONT_SIZE_MIN} onPress={() => zoom(-1)} />
+          <IconButton icon={AArrowUp} size={14} label="Larger text" testID="terminal-zoom-in" disabled={fontSize >= TERMINAL_FONT_SIZE_MAX} onPress={() => zoom(1)} />
+        </> : null}
       </ScrollView>
       <IconButton icon={KeyboardIcon} size={14} label="Focus terminal keyboard" onPress={() => void viewport.current?.focus()} />
       {onClose ? <IconButton icon={X} size={17} touchSize={44} label="Close terminal" testID="terminal-close" onPress={close} /> : null}
     </View>
+    {findRequest > 0 && android ? <TerminalFindBar
+      viewport={viewport}
+      focusRequest={findRequest}
+      results={findResults}
+      onResults={setFindResults}
+      onClose={() => {
+        setFindRequest(0)
+        setFindResults(null)
+        void viewport.current?.focus()
+      }}
+    /> : null}
+    {selecting ? <View testID="terminal-select-hint" style={[styles.selectHint, { backgroundColor: colors.raised, borderColor: colors.border }]}>
+      <Text style={[styles.selectHintText, { color: colors.muted }]} numberOfLines={2}>Long-press to select, drag the handles, then Copy.</Text>
+      <Pressable accessibilityRole="button" accessibilityLabel="Done selecting text" testID="terminal-select-done" onPress={toggleSelecting} style={styles.selectDone}><Text style={{ color: colors.blue, fontWeight: '700' }}>Done</Text></Pressable>
+    </View> : null}
     <View collapsable={false} pointerEvents="box-none" testID="terminal-platform-viewport" style={styles.terminalViewport}>
       <TerminalViewport
         key={`${connectionKey}:${terminal.id}`}
@@ -201,9 +272,15 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
         cursorHex={colors.blue}
         // Zed's text selection: the accent at 0x3d alpha.
         selectionHex={`${colors.blue}3d`}
-        fontSize={scaleAppFont(13, fontScale)}
+        fontSize={fontSize}
         standalone={standalone}
         exited={exitedTerminals.has(terminal.id)}
+        dark={dark}
+        cursorStyle={settings.cursorStyle}
+        cursorBlink={settings.cursorBlink}
+        scrollback={settings.scrollback}
+        screenReader={settings.screenReader}
+        copyOnSelect={settings.copyOnSelect}
         style={styles.terminal}
         onStatus={event => {
           if (!capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) return
@@ -216,6 +293,7 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
           if (value.status === 'Connected' && tmux) void refresh()
         }}
         onModifiers={setModifiers}
+        onPageEvent={pageEvent}
       />
       {ended && android ? <View testID="terminal-ended" style={[styles.ended, { backgroundColor: colors.raised, borderColor: colors.border }]}>
         <Text style={[styles.endedText, { color: colors.text }]} numberOfLines={3}>{status === 'Exited' ? 'The shell exited.' : statusMessage || 'Terminal connection failed.'}</Text>
@@ -238,7 +316,7 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
           return <Pressable
             key={key.name}
             accessibilityRole="button"
-            accessibilityLabel={`${key.label} key`}
+            accessibilityLabel={`${key.description ?? key.label} key`}
             accessibilityState={{ selected: active }}
             testID={`terminal-key-${key.name}`}
             onPress={() => pressKey(key.name)}
@@ -249,6 +327,68 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
         })}
       </ScrollView>
     </View> : null}
+  </View>
+}
+
+/** Port of the desktop's terminal find bar: case, whole word, regular expression and the match count. */
+function TerminalFindBar({ viewport, focusRequest, results, onResults, onClose }: {
+  viewport: RefObject<TerminalViewportHandle | null>
+  focusRequest: number
+  results: { index: number; count: number } | null
+  onResults: (results: { index: number; count: number } | null) => void
+  onClose: () => void
+}) {
+  const colors = usePalette()
+  const input = useRef<TextInput>(null)
+  const [query, setQuery] = useState('')
+  const [options, setOptions] = useState<TerminalFindOptions>({ caseSensitive: false, wholeWord: false, regex: false })
+  const find = (direction: 1 | -1, incremental = false) => {
+    if (query) void viewport.current?.find?.(query, options, direction, incremental)
+  }
+  // The first request is autoFocus: a focus() made while the field mounts does not raise the soft keyboard.
+  const firstFocusRequest = useRef(focusRequest)
+  useEffect(() => {
+    if (focusRequest !== firstFocusRequest.current) input.current?.focus()
+  }, [focusRequest])
+  useEffect(() => {
+    // The addon records the new options before comparing them with the last search, so with an
+    // unchanged query it would keep the old highlights and count; clearing forces a new search.
+    void viewport.current?.clearFind?.()
+    if (query) find(1, true)
+    else onResults(null)
+  }, [query, options])
+  // Closing stops the addon re-searching after every write.
+  useEffect(() => () => { void viewport.current?.clearFind?.() }, [viewport])
+  const toggle = (key: keyof TerminalFindOptions, label: string, icon: LucideIcon) =>
+    <IconButton icon={icon} size={14} label={label} selected={options[key]} testID={`terminal-find-${key}`} onPress={() => setOptions(current => ({ ...current, [key]: !current[key] }))} />
+  // The addon stops counting at its highlight limit (1000 matches) and then reports the active match's index as -1.
+  const count = results && results.count > 0
+    ? `${results.index >= 0 ? results.index + 1 : '?'} of ${results.count >= 1000 ? '1000+' : results.count}`
+    : query ? 'No results' : ''
+  return <View testID="terminal-find-bar" style={[styles.findBar, { backgroundColor: colors.background, borderColor: colors.border }]}>
+    <TextInput
+      ref={input}
+      autoFocus
+      testID="terminal-find-input"
+      accessibilityLabel="Find in terminal"
+      placeholder="Find"
+      placeholderTextColor={colors.muted}
+      value={query}
+      onChangeText={setQuery}
+      onSubmitEditing={() => find(1)}
+      submitBehavior="submit"
+      returnKeyType="search"
+      autoCapitalize="none"
+      autoCorrect={false}
+      style={[styles.findInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.raised }]}
+    />
+    <Text testID="terminal-find-count" style={[styles.findCount, { color: colors.muted }]} numberOfLines={1}>{count}</Text>
+    {toggle('caseSensitive', 'Match case', CaseSensitive)}
+    {toggle('wholeWord', 'Whole word', WholeWord)}
+    {toggle('regex', 'Regular expression', Regex)}
+    <IconButton icon={ChevronUp} size={14} label="Previous match" testID="terminal-find-previous" disabled={!results?.count} onPress={() => find(-1)} />
+    <IconButton icon={ChevronDown} size={14} label="Next match" testID="terminal-find-next" disabled={!results?.count} onPress={() => find(1)} />
+    <IconButton icon={X} size={14} label="Close find" testID="terminal-find-close" onPress={onClose} />
   </View>
 }
 
@@ -272,6 +412,12 @@ const styles = StyleSheet.create({
   tabScroller: { flex: 1 },
   tabContent: { alignItems: 'center', gap: 4, paddingHorizontal: 2 },
   tab: { maxWidth: 120, minHeight: 44, borderRadius: 5, paddingHorizontal: 10, paddingVertical: 3, justifyContent: 'center' },
+  findBar: { flexShrink: 0, minHeight: 48, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 2 },
+  findInput: { flex: 1, minWidth: 80, height: 36, borderWidth: StyleSheet.hairlineWidth, borderRadius: 5, paddingHorizontal: 8, paddingVertical: 0, fontSize: 13 },
+  findCount: { minWidth: 56, fontSize: 11, textAlign: 'center', fontVariant: ['tabular-nums'] },
+  selectHint: { flexShrink: 0, minHeight: 44, borderBottomWidth: StyleSheet.hairlineWidth, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  selectHintText: { flex: 1, fontSize: 12 },
+  selectDone: { minHeight: 44, paddingHorizontal: 14, justifyContent: 'center' },
   terminalViewport: { position: 'relative', zIndex: 0, flex: 1, minHeight: 0, overflow: 'hidden' },
   terminal: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
   ended: { position: 'absolute', left: 14, right: 14, bottom: 14, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, paddingLeft: 14, flexDirection: 'row', alignItems: 'center', gap: 10 },

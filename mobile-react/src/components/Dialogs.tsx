@@ -12,6 +12,8 @@ import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { backendLabel } from '../lib/format'
 import { serverSearchQuery } from '../lib/server-search'
 import { APP_FONT_SCALE_MAX, APP_FONT_SCALE_MIN, APP_FONT_SCALE_STEP, fonts } from '../lib/typography'
+import { TERMINAL_SCROLLBACK_OPTIONS, updateTerminalSettings, useTerminalSettings } from '../lib/terminalSettings'
+import { TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN } from '../terminal/terminalPage'
 import { orderedSessionSections } from '../lib/session-order'
 import { runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeSelectionError, selectableChatBackends } from '../lib/runtime-catalog'
 import { chatMentionTrigger, insertChatReference, parseStoredChatReferences, reconcileChatReferences, supportedCrossChatTargetBackends, type ChatMentionTrigger } from '../lib/chat-references'
@@ -126,6 +128,7 @@ export function SettingsDialog({ visible, onClose }: { visible: boolean; onClose
       <IconButton icon={Plus} disabled={fontScale >= APP_FONT_SCALE_MAX} label="Increase app text size" onPress={() => setFontScale(fontScale + APP_FONT_SCALE_STEP)} />
     </View>
     <Text style={[styles.help, { color: colors.muted }]}>Applies to chats, navigation, settings, server management, and terminal text.</Text>
+    {Platform.OS === 'android' ? <TerminalSettings /> : null}
     <Label text="New chat defaults" />
     <View style={styles.segment}>{chatDefaultBackendOptions.map(value => { const unavailable = value === 'cursor' && Boolean(runtimeSelectionError(health, runtime, value)); return <Pressable key={value} accessibilityRole="button" accessibilityLabel={`${backendLabel(value)}${unavailable ? ', unavailable' : ''}`} accessibilityState={{ selected: chatDefaults.backend === value, disabled: unavailable }} disabled={unavailable} onPress={() => setChatDefaults({ backend: value, model: '', effort: '' })} style={[styles.segmentButton, { backgroundColor: chatDefaults.backend === value ? colors.blue : colors.raised, opacity: unavailable ? 0.4 : 1 }]}><BackendMark backend={value} size={20} /><Text style={{ color: chatDefaults.backend === value ? colors.textOnAccent : colors.text, fontWeight: '700' }}>{backendLabel(value)}</Text></Pressable> })}</View>
     <Label text="Model" /><Select testID="settings-default-model" title="Choose model" value={chatDefaults.model} options={chatDefaultModelOptions} onChange={next => setChatDefaults({ model: next, effort: runtimeEffortAfterModelChange(runtime, chatDefaults.backend, next, chatDefaults.effort) ?? '' })} />
@@ -151,6 +154,33 @@ export function SettingsDialog({ visible, onClose }: { visible: boolean; onClose
     <PrimaryButton testID="settings-apply" label={connecting ? 'Connecting…' : 'Apply & reconnect'} disabled={connecting || !url.trim()} onPress={() => void apply(url, token).then(onClose)} />
     <Text testID="settings-build" style={[styles.build, { color: colors.muted }]}>AgentsDock {appConfig.expo.version} · build {Platform.OS === 'android' ? appConfig.expo.android.versionCode : appConfig.expo.ios.buildNumber}</Text>
   </Sheet>
+}
+
+/** Settings → Terminal, as on the desktop. Every change applies to an open terminal at once. */
+function TerminalSettings() {
+  const colors = usePalette()
+  const settings = useTerminalSettings()
+  const toggle = (key: 'cursorBlink' | 'copyOnSelect' | 'screenReader', label: string, help: string) =>
+    <View style={styles.toggle}><View style={{ flex: 1 }}><Text style={{ color: colors.text, fontWeight: '700' }}>{label}</Text><Text style={[styles.help, { color: colors.muted }]}>{help}</Text></View><Switch testID={`settings-terminal-${key}`} accessibilityLabel={label} value={settings[key]} onValueChange={value => updateTerminalSettings({ [key]: value })} /></View>
+  return <>
+    <Label text="Terminal text size" />
+    <View style={[styles.fontScale, { backgroundColor: colors.raised, borderColor: colors.border }]}>
+      <IconButton icon={Minus} disabled={settings.fontSize <= TERMINAL_FONT_SIZE_MIN} label="Decrease terminal text size" testID="settings-terminal-font-smaller" onPress={() => updateTerminalSettings({ fontSize: settings.fontSize - 1 })} />
+      <View style={styles.fontScalePreview}>
+        <Text style={[styles.fontScaleValue, { color: colors.muted }]}>{settings.fontSize} px</Text>
+        <Text style={{ color: colors.text, fontSize: 13, lineHeight: 18 }}>A tab's A−/A+ buttons and pinch size that tab only.</Text>
+      </View>
+      <IconButton icon={Plus} disabled={settings.fontSize >= TERMINAL_FONT_SIZE_MAX} label="Increase terminal text size" testID="settings-terminal-font-larger" onPress={() => updateTerminalSettings({ fontSize: settings.fontSize + 1 })} />
+    </View>
+    <Label text="Terminal cursor" />
+    <View style={styles.modeRow}>{(['bar', 'block', 'underline'] as const).map(value => <ModeButton key={value} testID={`settings-terminal-cursor-${value}`} label={value === 'bar' ? 'Bar' : value === 'block' ? 'Block' : 'Underline'} selected={settings.cursorStyle === value} onPress={() => updateTerminalSettings({ cursorStyle: value })} />)}</View>
+    {toggle('cursorBlink', 'Blinking cursor', 'The cursor blinks while the terminal has the keyboard.')}
+    {toggle('copyOnSelect', 'Copy on select', 'Text selected with a mouse or a double tap goes to the clipboard.')}
+    {toggle('screenReader', 'Screen reader support', 'Lets TalkBack read the terminal; it costs some speed with fast output.')}
+    <Label text="Terminal scrollback" />
+    <View style={styles.modeRow}>{TERMINAL_SCROLLBACK_OPTIONS.map(lines => <ModeButton key={lines} testID={`settings-terminal-scrollback-${lines}`} label={`${lines.toLocaleString('en-US')} lines`} selected={settings.scrollback === lines} onPress={() => updateTerminalSettings({ scrollback: lines })} />)}</View>
+    <Text style={[styles.help, { color: colors.muted }]}>Hidden terminal tabs stay connected, up to eight with 10,000 lines or less, three with 25,000 and only the tab in front with 50,000.</Text>
+  </>
 }
 
 interface ConnectionBinding {
