@@ -17,7 +17,7 @@
   also gets the per-install Codex SQLite state, as a fresh install does. This
   applies to any install whose parent the probe picks, not only cluster ones.
   The rewrite never moves HOME back to the machine's own `~`, and an attach
-  leaves the owning hub's env file unchanged.
+  leaves the owning hub's HOME unchanged.
 - Checks: the bootstrap env test runs the real script for a container-home
   install, an attach, deploys into the cluster home and back, and a
   user-chosen working directory; the deploy test checks the HOME handed to
