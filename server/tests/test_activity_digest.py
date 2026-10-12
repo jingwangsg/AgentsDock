@@ -7,12 +7,10 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
-from zoneinfo import ZoneInfo
 
 from scripts import activity_digest
 
 
-SHANGHAI = ZoneInfo("Asia/Shanghai")
 SINCE = datetime(2026, 10, 12, 19, 30, tzinfo=timezone.utc)
 UNTIL = SINCE + timedelta(minutes=30)
 
@@ -27,27 +25,29 @@ class SummarizeChatTests(unittest.TestCase):
     def summarize(self, events, last_minute=29):
         return activity_digest.summarize_chat(events, SINCE, UNTIL, SINCE + timedelta(minutes=last_minute))
 
-    def test_user_words_are_typed_queued_and_steered_messages(self):
+    def test_user_messages_are_typed_queued_and_steered_turns(self):
         digest = self.summarize([
             event(1, "turn_started", 1, run_id="run_a", prompt="fix the tunnel", purpose=None),
             event(2, "turn_queued", 2, queued_id="queued_s", prompt="also the logs", purpose=None),
             event(3, "turn_steered", 2, run_id="run_a", queued_id="queued_s", prompt="also the logs"),
             event(4, "turn_queued", 3, queued_id="queued_q", prompt="then the dev log", purpose=None),
             event(5, "turn_queue_updated", 4, queued_id="queued_q", prompt="then the DEV_LOG"),
-            event(6, "turn_finished", 10, run_id="run_a", result_text="Fixed both."),
+            event(6, "turn_queued", 4, queued_id="queued_x", prompt="never mind", purpose=None),
+            event(7, "turn_unqueued", 5, queued_id="queued_x"),
+            event(8, "turn_finished", 10, run_id="run_a", result_text="Fixed both."),
             # The queued message runs later; it was already counted when queued.
-            event(7, "turn_started", 10, run_id="run_b", prompt="then the DEV_LOG", queued_id="queued_q", purpose=None),
+            event(9, "turn_started", 10, run_id="run_b", prompt="then the DEV_LOG", queued_id="queued_q", purpose=None),
         ])
 
         self.assertEqual(
-            [word["text"] for word in digest["words"]],
+            [message["text"] for message in digest["messages"]],
             ["fix the tunnel", "also the logs", "then the DEV_LOG"],
         )
-        self.assertEqual(digest["words"][1]["run"]["result"], "Fixed both.")
-        self.assertTrue(digest["words"][2]["run"]["running"])
+        self.assertEqual(digest["messages"][1]["run"]["result"], "Fixed both.")
+        self.assertTrue(digest["messages"][2]["run"]["running"])
         self.assertTrue(digest["running"])
 
-    def test_agent_turns_and_imported_rows_are_not_user_words(self):
+    def test_agent_turns_and_imported_rows_are_not_user_messages(self):
         digest = self.summarize([
             event(1, "turn_started", 1, run_id="run_job", prompt="check the queue", purpose="scheduled_job", job_title="Hourly check"),
             event(2, "turn_finished", 2, run_id="run_job", result_text="Queue empty."),
@@ -57,12 +57,21 @@ class SummarizeChatTests(unittest.TestCase):
             event(6, "turn_started", 6, run_id="import_1", prompt="typed in the CLI", imported=True),
         ], last_minute=6)
 
-        self.assertEqual(digest["words"], [])
+        self.assertEqual(digest["messages"], [])
         self.assertEqual([run["purpose"] for run in digest["agent_runs"]], ["scheduled_job", "chat_mailbox_wake"])
         self.assertEqual(digest["mail"][0][1], "main thread")
         self.assertFalse(digest["running"])
 
-    def test_run_without_turn_finished_ends_at_the_next_turn(self):
+    def test_turn_stopped_ends_a_run(self):
+        digest = self.summarize([
+            event(1, "turn_started", 2, run_id="run_a", prompt="long task", purpose=None),
+            event(2, "turn_stopped", 5, run_id="run_a", stopped=True, recovered_after_restart=True),
+        ])
+
+        self.assertFalse(digest["running"])
+        self.assertEqual(activity_digest.outcome(digest["messages"][0]["run"], 100), "03:35 stopped")
+
+    def test_run_without_an_end_event_ends_at_the_next_turn(self):
         digest = self.summarize([
             event(1, "turn_started", -50, run_id="run_lost", prompt="earlier", purpose=None),
             event(2, "turn_started", -40, run_id="run_next", prompt="later", purpose=None),
@@ -71,13 +80,15 @@ class SummarizeChatTests(unittest.TestCase):
 
         # Both runs ended before the window: nothing is active in it.
         self.assertEqual(digest["active"], [])
-        self.assertEqual(
-            activity_digest.outcome(self.summarize([
-                event(1, "turn_started", 1, run_id="run_lost", prompt="earlier", purpose=None),
-                event(2, "turn_started", 5, run_id="run_next", prompt="later", purpose=None),
-            ])["words"][0]["run"], SHANGHAI, 100),
-            "ended without a recorded result",
-        )
+
+    def test_run_without_an_end_event_has_no_recorded_result(self):
+        digest = self.summarize([
+            event(1, "turn_started", 1, run_id="run_lost", prompt="earlier", purpose=None),
+            event(2, "turn_started", 5, run_id="run_next", prompt="later", purpose=None),
+        ])
+
+        lost_run = digest["messages"][0]["run"]
+        self.assertEqual(activity_digest.outcome(lost_run, 100), "ended without a recorded result")
 
     def test_run_started_before_the_window_and_still_running_is_active(self):
         digest = self.summarize([
@@ -86,13 +97,18 @@ class SummarizeChatTests(unittest.TestCase):
 
         self.assertEqual(len(digest["active"]), 1)
         self.assertTrue(digest["running"])
-        self.assertEqual(digest["words"], [])
+        self.assertEqual(digest["messages"], [])
 
 
 class WindowBoundsTests(unittest.TestCase):
-    def bounds(self, now, **values):
-        args = argparse.Namespace(since=values.get("since"), day=values.get("day"))
-        return activity_digest.window_bounds(args, now, SHANGHAI)
+    def bounds(self, now, since=None, day=None):
+        return activity_digest.window_bounds(argparse.Namespace(since=since, day=day), now)
+
+    def test_half_hour_window_ends_at_the_last_slot(self):
+        # A run that starts at 04:07:49 in Shanghai covers 03:30-04:00.
+        now = datetime(2026, 10, 12, 20, 7, 49, tzinfo=timezone.utc)
+
+        self.assertEqual(self.bounds(now, since="30m"), (SINCE, UNTIL, "window"))
 
     def test_day_is_local_midnight_to_midnight(self):
         since, until, mode = self.bounds(SINCE, day="2026-10-13")
@@ -110,73 +126,151 @@ class WindowBoundsTests(unittest.TestCase):
         self.assertEqual(since, datetime(2026, 10, 11, 16, 0, tzinfo=timezone.utc))
         self.assertEqual(until, datetime(2026, 10, 12, 16, 0, tzinfo=timezone.utc))
 
-    def test_since_ends_now(self):
-        self.assertEqual(self.bounds(UNTIL, since="30m"), (SINCE, UNTIL, "window"))
+
+class RedactionTests(unittest.TestCase):
+    def test_secrets_are_redacted_and_counts_and_chinese_text_are_kept(self):
+        for text, expected in [
+            ("fix it, token=abc123", "fix it, [redacted]"),
+            ('{"password": "hunter2"}', '{"[redacted]"}'),
+            ("login --password hunter2 now", "login [redacted] now"),
+            ("key sk1234567890abcdefghijklmnopqrstuv", "key [redacted]"),
+            ("max_tokens=4096", "max_tokens=4096"),
+            ("第一轮去重约50022小时第二轮约48112小时固定Stage2只含第一轮最初16批目标表", None),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(activity_digest.clip(text, 200), expected or text)
 
 
 class DigestOutputTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="activity-digest-")
         self.addCleanup(temporary.cleanup)
-        self.env_file = Path(temporary.name) / "env"
-        self.env_file.write_text("export AGENTSDOCK_AGENT_TOKEN=test-token\nexport AGENTSDOCK_AGENT_PORT=1\n")
-        self.now = datetime.now(timezone.utc)
-        self.responses = {}
+        env_file = Path(temporary.name) / "env"
+        env_file.write_text("export AGENTSDOCK_AGENT_TOKEN=test-token\nexport AGENTSDOCK_AGENT_PORT=1\n")
+        patcher = mock.patch.object(activity_digest, "ENV_FILE", env_file)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Fake chats live in the half hour that ended at the last :00 or :30.
+        now = datetime.now(timezone.utc)
+        self.until = datetime.fromtimestamp(now.timestamp() // 1800 * 1800, timezone.utc)
+        self.responses = {"/api/admin/remote-servers": {"servers": []}}
 
-    def iso(self, minutes_ago):
-        return (self.now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    def before_until(self, minutes):
+        """A timestamp `minutes` minutes before the end of the window."""
+        return (self.until - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def run_digest(self, *args):
         def fake_get(hub, path, **query):
             response = self.responses[path]
+            if callable(response):
+                response = response(query)
             if isinstance(response, Exception):
                 raise response
             return response
 
         output = io.StringIO()
-        argv = ["activity_digest.py", "--env-file", str(self.env_file), *args]
         with mock.patch.object(activity_digest.Hub, "get", fake_get), \
-                mock.patch("sys.argv", argv), contextlib.redirect_stdout(output):
+                mock.patch("sys.argv", ["activity_digest.py", *args]), contextlib.redirect_stdout(output):
             self.assertEqual(activity_digest.main(), 0)
         return output.getvalue()
 
     def test_idle_window_prints_only_the_no_activity_marker(self):
-        self.responses = {
-            "/api/admin/remote-servers": {"servers": []},
-            "/api/sessions": {"sessions": [
-                {"id": "sess_old", "title": "Old", "latest_event_at": self.iso(90)},
-                {"id": "sess_digest", "title": "Digest", "latest_event_at": self.iso(1)},
-            ]},
-        }
+        self.responses["/api/sessions"] = {"sessions": [
+            {"id": "sess_old", "title": "Old", "latest_event_at": self.before_until(90)},
+            {"id": "sess_digest", "title": "Digest", "latest_event_at": self.before_until(1)},
+        ]}
 
         output = self.run_digest("--since", "30m", "--exclude", "sess_digest")
 
         self.assertIn("NO_ACTIVITY", output)
         self.assertNotIn("## ", output)
 
-    def test_unreachable_remote_is_one_line_and_local_chats_still_appear(self):
-        self.responses = {
+    def test_unreadable_local_chat_is_reported_instead_of_no_activity(self):
+        self.responses["/api/sessions"] = {"sessions": [
+            {"id": "sess_a", "title": "Busy chat", "latest_event_at": self.before_until(5)},
+        ]}
+        self.responses["/api/sessions/sess_a"] = TimeoutError("timed out")
+
+        output = self.run_digest("--since", "30m")
+
+        self.assertIn("local hub chat “Busy chat” unreadable (timed out)", output)
+        self.assertIn("READ_ERRORS", output)
+        self.assertNotIn("NO_ACTIVITY", output)
+
+    def test_unreachable_remote_is_one_entry_and_local_chats_still_appear(self):
+        self.responses.update({
             "/api/admin/remote-servers": {"servers": [
                 {"id": "r1", "name": "gpu-box", "hidden": False},
                 {"id": "r2", "name": "hidden-box", "hidden": True},
             ]},
             "/api/remote/r1/api/sessions": OSError("All connection attempts failed"),
             "/api/sessions": {"sessions": [
-                {"id": "sess_a", "title": "Tunnel fix", "folder": "AgentsDock", "backend": "claude", "latest_event_at": self.iso(5)},
+                {"id": "sess_a", "title": "Tunnel fix", "folder": "AgentsDock", "latest_event_at": self.before_until(5)},
             ]},
             "/api/sessions/sess_a": {"events_omitted_before": 0, "events": [
-                {"seq": 1, "type": "turn_started", "ts": self.iso(10), "run_id": "run_a", "prompt": "fix it, token=abc123", "purpose": None},
-                {"seq": 2, "type": "turn_finished", "ts": self.iso(5), "run_id": "run_a", "result_text": "Fixed."},
+                {"seq": 1, "type": "turn_started", "ts": self.before_until(10), "run_id": "run_a", "prompt": "fix it", "purpose": None},
+                {"seq": 2, "type": "turn_finished", "ts": self.before_until(5), "run_id": "run_a", "result_text": "Fixed."},
             ]},
-        }
+        })
 
         output = self.run_digest("--since", "30m")
 
         self.assertIn("gpu-box: unreachable (All connection attempts failed)", output)
         self.assertNotIn("hidden-box", output)
-        self.assertIn("## Tunnel fix · local hub · folder AgentsDock", output)
-        self.assertIn("「fix it, [redacted]」", output)
+        self.assertNotIn("READ_ERRORS", output)
+        self.assertIn("## Tunnel fix · local hub · folder AgentsDock · idle at the end", output)
+        self.assertIn("「fix it」", output)
         self.assertIn("finished: Fixed.", output)
+
+    def test_chat_without_user_messages_appears_only_with_agent_work_in_the_window(self):
+        def chat(text_minutes_before_until):
+            def respond(query):
+                if query.get("visible") == "true":
+                    return {"events": [{
+                        "seq": 3, "type": "reasoning_summary", "ts": self.before_until(text_minutes_before_until),
+                        "run_id": "run_a", "text": "Running shard 5",
+                    }]}
+                return {"events_omitted_before": 0, "events": [
+                    {"seq": 1, "type": "turn_started", "ts": self.before_until(90), "run_id": "run_a", "prompt": "run tests", "purpose": None},
+                ]}
+            return respond
+
+        self.responses.update({
+            "/api/sessions": {"sessions": [
+                {"id": "sess_working", "title": "Working", "latest_event_at": self.before_until(2)},
+                {"id": "sess_quiet", "title": "Quiet", "latest_event_at": self.before_until(2)},
+            ]},
+            "/api/sessions/sess_working": chat(text_minutes_before_until=2),
+            "/api/sessions/sess_quiet": chat(text_minutes_before_until=60),
+        })
+
+        output = self.run_digest("--since", "30m")
+
+        self.assertIn("## Working · local hub · folder - · running at the end\nLatest model text: Running shard 5", output)
+        self.assertNotIn("## Quiet", output)
+
+    def test_a_long_chat_cannot_push_later_chats_out_of_the_output(self):
+        long_events = [
+            {"seq": seq, "type": "turn_started", "ts": self.before_until(29 - seq), "run_id": f"run_{seq}",
+             "prompt": "很长的消息" * 200, "purpose": None}
+            for seq in range(1, 25)
+        ]
+        self.responses.update({
+            "/api/sessions": {"sessions": [
+                {"id": "sess_long", "title": "Long", "latest_event_at": self.before_until(1)},
+                {"id": "sess_short", "title": "Short", "latest_event_at": self.before_until(1)},
+            ]},
+            "/api/sessions/sess_long": {"events_omitted_before": 0, "events": long_events},
+            "/api/sessions/sess_short": {"events_omitted_before": 0, "events": [
+                {"seq": 1, "type": "turn_started", "ts": self.before_until(1), "run_id": "run_s", "prompt": "short one", "purpose": None},
+            ]},
+        })
+
+        output = self.run_digest("--since", "30m")
+
+        self.assertLessEqual(len(output.encode()), activity_digest.LIMITS["window"]["output_bytes"] + 1000)
+        self.assertIn("more lines left out to fit the output limit", output)
+        self.assertIn("「short one」", output)
 
 
 if __name__ == "__main__":
