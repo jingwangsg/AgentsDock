@@ -372,8 +372,8 @@ const fitIfLaidOut = () => {
 const STATUS: Record<TerminalLinkState['state'], TerminalPageStatus> = {
   connecting: 'Connecting', reconnecting: 'Reconnecting', connected: 'Connected', exited: 'Exited', error: 'Error',
 }
-// A viewer out of sight attaches passive: it neither sizes the pty nor holds the shell back for the others.
-const passive = () => !shown || document.hidden
+// Every attach is passive. A tab out of sight leaves the pty's size, and so the active viewer, to the device in use.
+const outOfSight = () => !shown || document.hidden
 // A replay, after `ready` or a `resync`, rebuilds the screen. RIS goes through the write queue, so output still
 // queued from before cannot land after it.
 const startReplay = (replayBytes: number | null) => {
@@ -388,14 +388,13 @@ const connect = (): TerminalLink => openTerminalConnection({
   standalone: config.standalone,
   columns: term.cols,
   rows: term.rows,
-  passive,
   onState: state => {
     if (state.state === 'connected') {
       startReplay(state.replayBytes)
       fitIfLaidOut()
-      // The server sized the pty from the connect request; a fit made while the link was opening never reached
-      // it. A passive viewer leaves the size to the one in use.
-      if (!passive()) link.resize(term.cols, term.rows)
+      // In front of the user, this device takes the pty's size, which a fit made while the link was down never
+      // sent. Not on a resync: that arrives on a live connection and leaves the size alone.
+      if (!outOfSight()) link.resize(term.cols, term.rows)
     }
     post({
       type: 'status',
@@ -422,8 +421,8 @@ const setDisplay = () => {
   if (shown) fitIfLaidOut()
 }
 // A tab that comes into sight sends its size once, which makes this device the one that sizes the pty.
-const claimSize = (wasPassive: boolean) => {
-  if (wasPassive && !passive()) link.resize(term.cols, term.rows)
+const claimSize = (wasOutOfSight: boolean) => {
+  if (wasOutOfSight && !outOfSight()) link.resize(term.cols, term.rows)
 }
 
 window.__agentsDockTerminal = {
@@ -480,10 +479,10 @@ window.__agentsDockTerminal = {
   jumpPrompt,
   selectText,
   setVisible: on => {
-    const wasPassive = passive()
+    const wasOutOfSight = outOfSight()
     shown = on
     setDisplay()
-    claimSize(wasPassive)
+    claimSize(wasOutOfSight)
   },
   restart: () => {
     link.close()

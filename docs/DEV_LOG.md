@@ -13,9 +13,10 @@
   the desktop's. A shell that exits shows "The shell exited" and a New shell button, also after
   the tab's view is rebuilt; the app no longer starts another shell by itself. Servers that send
   no `replay_bytes` still work.
-- A hidden tab, or a tab of an app in the background, attaches passively: it does not take the
-  shell's size from the device in use. Showing the tab sends its size once, which makes the
-  phone the device in use. When the server holds output back from a viewer that fell behind and
+- Like the desktop's, every tab attaches passively: it does not take the shell's size from the
+  device in use. Showing the tab sends its size once, which makes the phone the device in use;
+  so does a reconnect of a tab that is shown with the app in front. A tab of an app in the
+  background takes nothing back after a network drop. When the server holds output back from a viewer that fell behind and
   later sends a fresh replay (`resync`), the tab rebuilds its screen from it like after a
   reconnect. A batch of output short of 16 KiB is acknowledged once output pauses for 200 ms,
   so such a viewer can catch up.

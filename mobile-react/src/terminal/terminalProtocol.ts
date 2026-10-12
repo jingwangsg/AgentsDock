@@ -8,9 +8,10 @@
 
 /** WebSocket close code the server uses when the shell itself ended, as opposed to a dropped link. */
 const TERMINAL_SHELL_EXITED_CLOSE_CODE = 4410
-// A terminal tab acknowledges output in batches of this size, and its replay as soon as it arrives (the
-// server does not time a viewer that has not acknowledged its replay). The server pauses the shell while
-// more than its window (TERMINAL_OUTPUT_WINDOW_BYTES, 128 KiB) is unacknowledged.
+// A terminal tab acknowledges output in batches of this size, and its replay as soon as it arrives (until
+// then the server allows a viewer 1 s more per 8 KiB of replay before closing it as stalled). The server
+// pauses the shell while the active viewer has more than its window of live output
+// (TERMINAL_OUTPUT_WINDOW_BYTES, 128 KiB) unacknowledged.
 const TERMINAL_ACK_BYTES = 16 * 1024
 // A batch still short of that size is acknowledged once output has paused this long: a viewer the server
 // holds back for falling behind gets its resync only when every byte it was sent is acknowledged.
@@ -24,8 +25,8 @@ const TERMINAL_PENDING_INPUT_BYTES = 1024 * 1024
 // Answers a terminal gives to a program's queries: cursor position and status, device attributes, mode,
 // window and keyboard-flag reports, OSC colour replies, DCS replies. One written while the terminal is
 // (re)connecting answers the old connection's query and would reach the program seconds later as typed
-// text, so it is not kept.
-const TERMINAL_REPORTS = /^(?:\x1b\[\??[\d;]*[Rn]|\x1b\[[?>=][\d;]*c|\x1b\[\?[\d;]*\$y|\x1b\[\?\d*u|\x1b\[[\d;]*t|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/
+// text, so it is not kept. Shift/Ctrl/Alt+F3 (ESC[1;<mod>R) reads the same as a cursor position report.
+const TERMINAL_REPORTS = /^(?:\x1b\[\??[\d;]*[Rn]|\x1b\[[?>=][\d;]*c|\x1b\[\??[\d;]*\$y|\x1b\[\?\d*u|\x1b\[[\d;]*t|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/
 const TERMINAL_CONNECT_TIMEOUT_MS = 10_000
 
 type TerminalControl = { type?: string; name?: string; message?: string; replay_bytes?: unknown }
@@ -116,8 +117,6 @@ interface TerminalLinkOptions {
   standalone: boolean
   columns: number
   rows: number
-  /** Asked on every attempt: a viewer out of sight attaches passive, so it neither sizes the pty nor paces the shell. */
-  passive(): boolean
   onState(state: TerminalLinkState): void
   /**
    * A viewer that is not the active one and fell behind gets no live output until it has acknowledged
@@ -215,7 +214,8 @@ export function openTerminalConnection(options: TerminalLinkOptions): TerminalLi
     url.searchParams.set('columns', String(columns))
     url.searchParams.set('rows', String(rows))
     if (options.standalone) url.searchParams.set('flow_control', '1')
-    if (options.passive()) url.searchParams.set('passive', '1')
+    // A tab takes the pty's size when the user shows it or types in it (terminal-page-entry.ts), not by reconnecting.
+    if (options.standalone) url.searchParams.set('passive', '1')
     decoder = new TextDecoder()
     ready = false
     replayPending = false

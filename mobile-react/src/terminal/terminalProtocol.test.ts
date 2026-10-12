@@ -118,7 +118,7 @@ class FakeSocket extends EventTarget {
   }
 }
 
-function connect(standalone: boolean, passive = () => false) {
+function connect(standalone: boolean) {
   FakeSocket.sockets = []
   const states: TerminalLinkState[] = []
   const data: [string, number][] = []
@@ -128,7 +128,6 @@ function connect(standalone: boolean, passive = () => false) {
     standalone,
     columns: 80,
     rows: 24,
-    passive,
     onState: state => { states.push(state) },
     onResync: bytes => { resyncs.push(bytes) },
     onData: (text, bytes) => { data.push([text, bytes]) },
@@ -211,8 +210,8 @@ test('an open socket is not timed out, a stalled viewer reconnects at the curren
   }
 })
 
-test('a hidden viewer attaches passive, and a resync replay is acknowledged at once and decoded afresh', () => {
-  const { link, socket, data, resyncs } = connect(true, () => true)
+test('a tab attaches passive, and a resync replay is acknowledged at once and decoded afresh', () => {
+  const { link, socket, data, resyncs } = connect(true)
   assert.equal(new URL(socket().url).searchParams.get('passive'), '1')
   socket().open()
   socket().text(JSON.stringify({ type: 'ready', replay_bytes: 0 }))
