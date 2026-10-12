@@ -510,6 +510,9 @@ export function App() {
         return
       }
       if (!(event.metaKey || event.ctrlKey)) return
+      // A focused terminal keeps Control-L for the shell's clear screen; ⌘L there is left to the
+      // menu accelerator, which toggles the inspector the same way.
+      if ((event.target as Element | null)?.closest?.('.terminal-surface')) return
       const key = event.key.toLowerCase()
       if (!event.shiftKey && key === 'l') {
         event.preventDefault()

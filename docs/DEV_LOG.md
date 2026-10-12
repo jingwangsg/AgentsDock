@@ -1,5 +1,55 @@
 # Public development log
 
+## 2026-10-12 — Desktop terminal tabs run on xterm.js 6 (desktop)
+
+- The desktop terminal tab replaces ghostty-web 0.4.0 with @xterm/xterm 6.0.0
+  and its official addons (fit, WebGL with a DOM fallback, search, web links,
+  clipboard, Unicode 11 widths, sixel and iTerm2 images). xterm.js answers the
+  shell's device-attribute query itself, so fish 4 shows its prompt at once.
+- Keys send what Terminal.app sends: ⌘←/⌘→/⌘⌫ (line start, end, delete to
+  start), ⌥←/⌥→ (word left/right), ⌥⌫, Shift-Tab, and every Control key,
+  including Control-L, which no longer toggles the inspector from a focused
+  terminal. Option composes characters unless Settings → Terminal makes it
+  Meta. On Windows and Linux the terminal's own commands use Control-Shift
+  (C, V, A, K, F, W), so Control-letters stay with the shell.
+- ⌘C copies the selection, ⌘V pastes as a bracketed paste when the program
+  asked for one, ⌘A selects all, ⌘K clears, ⌘F finds (case, whole word,
+  regular expression, match count), ⌘+/⌘−/⌘0 size one tab, and ⌘↑/⌘↓ move
+  between prompts the shell marks (OSC 133). The right-click menu offers Copy,
+  Paste, Select All, Clear and Find; a program that tracks the mouse gets the
+  right click instead, and ⌥ forces the menu or a selection.
+- Mouse reporting (vim, tmux), ⌘-click on URLs and OSC 8 links (opened in the
+  browser), OSC 52 clipboard writes (reads get an empty answer), shell titles
+  and directories in the tab name, a bell mark on a tab out of sight, and
+  OSC 9/777 desktop notifications (at most one a second per tab) while the
+  tab is out of sight. Notifications reuse the chat path: the notify payload
+  and its click route carry `surface: true`, main skips the chat lookup for
+  them, and the renderer opens the tab. Output that the server replays on
+  reconnect does not repeat bells, notifications or clipboard writes, and the
+  terminal does not answer the queries in it (device attributes, cursor
+  position, mode and color reports), which used to arrive at the shell as
+  typed text. Queries that end the replay are still answered: a shell that
+  has just started, such as fish 4, may be waiting on them. A file dropped on a terminal types its quoted path when the
+  server runs on this computer, quoted so that fish, bash and zsh all read it
+  as one word; uploads belong to chats, so a remote server shows a message
+  instead.
+- Settings → Terminal: font family and size, cursor shape and blink, Option
+  as Meta, copy on select, scrollback (10,000 lines by default), screen reader
+  support. Changes and theme switches apply to open tabs at once.
+- A tab opens its terminal and shell the first time it is shown. Idle CPU,
+  summed over the app's main, renderer and GPU processes (`ps` CPU time over
+  30 s windows), with five terminal tabs on one server, one tab visible and
+  the window in the background, both builds run with the same Electron
+  binary: 0.1–0.6% of a core with xterm.js, 32–50% with ghostty-web, whose
+  render loop never stopped.
+- Checks: an isolated server and app drove the keys, IME, clipboard, mouse,
+  links, find, settings and replay cases with real keystrokes or CDP input
+  and read the bytes at the shell. Not exercised: the press-and-hold accent
+  popup (synthetic key events do not open it; committed text arrives once),
+  Windows and Linux key bindings. Emoji ZWJ sequences, skin tones and flags
+  draw as separate glyphs (the grapheme addon is still experimental).
+  Availability: source.
+
 ## 2026-10-12 — A remote in a cluster home runs with that home as HOME (server)
 
 - Observed on an `oci@` pod: the server's HOME was the container's own `/root`,

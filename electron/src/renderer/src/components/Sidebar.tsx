@@ -8,7 +8,7 @@ import {
   type CollisionDetection, type DragEndEvent, type DragOverEvent, type DragStartEvent
 } from '@dnd-kit/core'
 import {
-  Archive, ArchiveRestore, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Folder, FolderPlus, Globe, GripVertical, Inbox, LoaderCircle, MoreHorizontal,
+  Archive, ArchiveRestore, ArrowDown, ArrowUp, Bell, ChevronDown, ChevronRight, Download, Folder, FolderPlus, Globe, GripVertical, Inbox, LoaderCircle, MoreHorizontal,
   Columns2, History, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, SquareTerminal, Trash2, Undo2, UsersRound, X
 } from 'lucide-react'
 import type { Session, Surface } from '@shared/types'
@@ -22,6 +22,7 @@ import { openSessionHistoryResult } from '../lib/session-history-search'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 import { rankSessionsForSearch, sidebarFolders } from '../lib/sessions'
 import { surfaceSubline, surfaceTitle } from '../lib/surfaces'
+import { useTerminalStatus } from '../lib/terminal-status'
 import { getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
 import { handleMenuCommand, selectMailHintPending, selectBulletinHintPending, sessionUnread, useAppStore } from '../store/app-store'
 import { BackendMark } from './BackendMark'
@@ -317,6 +318,7 @@ function SidebarSection({ section, selectedId, selectedSurfaceId, chatPanes, col
 
 function SurfaceRow({ surface, selected }: { surface: Surface; selected: boolean }) {
   useLocale()
+  const status = useTerminalStatus(surface.id)
   const select = () => {
     window.dispatchEvent(new Event('agentsdock:close-teamspace'))
     useAppStore.getState().selectSurface(surface.id)
@@ -333,7 +335,8 @@ function SurfaceRow({ surface, selected }: { surface: Surface; selected: boolean
           onKeyDown={event => { if (event.key === 'Enter') select() }}
         >
           <Icon size={18} aria-hidden="true" />
-          <span className="session-copy"><strong>{surfaceTitle(surface)}</strong><small title={surface.kind === 'terminal' ? surface.cwd || undefined : surface.url || undefined}>{surfaceSubline(surface)}</small></span>
+          <span className="session-copy"><strong>{surfaceTitle(surface, status.title)}</strong><small title={surface.kind === 'terminal' ? status.cwd || surface.cwd || undefined : surface.url || undefined}>{surfaceSubline(surface, status.cwd)}</small></span>
+          {status.bell && <Bell className="surface-row-bell" size={13} role="img" aria-label={t('surface.terminal.bell')} />}
         </div>
       </ContextMenu.Trigger>
       <ContextMenu.Portal>

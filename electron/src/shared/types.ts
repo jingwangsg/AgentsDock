@@ -1456,6 +1456,8 @@ export interface TerminalStateEvent {
   state: TerminalConnectionState
   name?: string | null
   error?: string | null
+  /** `connected` only: byte length of the scrollback replay that follows (0 = none); older servers leave it out. */
+  replayBytes?: number
   profileId?: string
   profileGeneration?: number
 }
@@ -2128,6 +2130,7 @@ export interface ProfileTerminalStateEvent extends ProfileEventContext {
   state: TerminalConnectionState
   name?: string | null
   error?: string | null
+  replayBytes?: number
 }
 export interface ProfileForwardedPortsEvent extends ProfileEventContext { ports: ForwardedPort[] }
 
@@ -2664,12 +2667,15 @@ export interface ProfileNotificationPayload {
   sessionId: string
   /** Optional stable key used by main to deduplicate emergency notifications. */
   emergencyAlertId?: string | null
+  /** `sessionId` names a terminal tab (OSC 9/777 from its shell), not a chat. */
+  surface?: boolean
 }
 
 export interface ProfileNotificationRoute {
   profileId: string
   serverIdentity: string | null
   sessionId: string
+  surface?: boolean
 }
 
 export interface CreateSessionInput {

@@ -3085,6 +3085,12 @@ async function openProfileNotificationRoute(route: ProfileNotificationRoute, get
     current.setError(`The identity for “${target.name}” changed, so the notification was not opened.`)
     return false
   }
+  if (route.surface) {
+    if (!current.surfaces.some(surface => surface.id === route.sessionId)) return false
+    window.dispatchEvent(new Event('agentsdock:close-teamspace'))
+    current.selectSurface(route.sessionId)
+    return true
+  }
   if (!current.sessions.some(session => session.id === route.sessionId)) {
     current.setError(`The notified chat is not available in “${target.name}”.`)
     return false
