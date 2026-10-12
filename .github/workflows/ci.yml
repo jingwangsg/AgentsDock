@@ -64,6 +64,8 @@ jobs:
         working-directory: mobile-react
       - run: pnpm test:server-setup
         working-directory: mobile-react
+      - run: pnpm test:terminal
+        working-directory: mobile-react
       - run: node scripts/run-history-tests.mjs src/lib/team-references.test.ts
         working-directory: mobile-react
       - name: Verify cross-chat protocol, projection, and store races

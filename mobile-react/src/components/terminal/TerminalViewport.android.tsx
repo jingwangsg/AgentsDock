@@ -4,6 +4,7 @@ import * as Clipboard from 'expo-clipboard'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { TERMINAL_PAGE_JS, XTERM_CSS } from '../../terminal/xtermAssets'
 import { PROMPT_GLYPH_FONT_FAMILY, PROMPT_GLYPH_FONT_TTF_BASE64 } from '../../terminal/promptGlyphFont'
+import type { TerminalPageConfig } from '../../terminal/terminalPage'
 import type { TerminalConnectionStatus, TerminalModifierState, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
 
 export type { TerminalConnectionStatus, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
@@ -23,15 +24,19 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   fontSize = 13,
   onStatus,
   onModifiers,
+  standalone = false,
+  exited = false,
   ...viewProps
 }, ref) {
   const webView = useRef<WebView>(null)
   const copySequence = useRef(0)
   const pendingCopy = useRef<CopyRequest | null>(null)
   const [webViewKey, setWebViewKey] = useState(0)
+  const exitedRef = useRef(exited)
+  exitedRef.current = exited
   const html = useMemo(
-    () => androidTerminalHTML({ socketURL, backgroundHex, foregroundHex, cursorHex, selectionHex, fontSize }),
-    [backgroundHex, cursorHex, fontSize, foregroundHex, selectionHex, socketURL],
+    () => androidTerminalHTML({ socketURL, standalone, exited: exitedRef.current, backgroundHex, foregroundHex, cursorHex, selectionHex, fontSize }),
+    [backgroundHex, cursorHex, fontSize, foregroundHex, selectionHex, socketURL, standalone],
   )
 
   const inject = (script: string): boolean => {
@@ -50,6 +55,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
     },
     sendKey: async name => inject(`window.__agentsDockTerminal?.key(${safeInlineJSON(name)})`),
     setModifier: async (name, active) => inject(`window.__agentsDockTerminal?.modifier(${safeInlineJSON(name)}, ${active ? 'true' : 'false'})`),
+    restart: async () => inject('window.__agentsDockTerminal?.restart()'),
     copy: () => new Promise(resolve => {
       if (pendingCopy.current) {
         clearTimeout(pendingCopy.current.timer)
@@ -134,16 +140,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   />
 })
 
-interface AndroidTerminalConfig {
-  socketURL: string
-  backgroundHex: string
-  foregroundHex: string
-  cursorHex: string
-  selectionHex: string
-  fontSize: number
-}
-
-export function androidTerminalHTML(config: AndroidTerminalConfig): string {
+export function androidTerminalHTML(config: Omit<TerminalPageConfig, 'fontFamily'>): string {
   // load-bearing: a "</script" anywhere in the bundle (a string in some dependency) would end the inline script.
   const script = escapeClosingTag(TERMINAL_PAGE_JS, 'script')
   const css = escapeClosingTag(XTERM_CSS, 'style')

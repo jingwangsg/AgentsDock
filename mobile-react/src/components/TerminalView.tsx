@@ -19,6 +19,9 @@ const TERMINAL_KEYS: { name: TerminalKeyName | 'ctrl' | 'alt'; label: string }[]
   { name: 'dash', label: '-' }, { name: 'slash', label: '/' }, { name: 'pipe', label: '|' }, { name: 'tilde', label: '~' },
 ]
 
+// Terminal tabs whose shell exited, until the user asks for a new shell: a view made again must not start one.
+const exitedTerminals = new Set<string>()
+
 /** What a terminal shows: a chat's tmux session or a terminal tab's shell on the server. */
 type TerminalTarget = { id: string; cwd?: string | null }
 
@@ -75,8 +78,12 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [windows, setWindows] = useState<TerminalWindow[]>([])
   const [status, setStatus] = useState('Connecting')
+  const [statusMessage, setStatusMessage] = useState('')
   const [notice, setNotice] = useState('')
   const [modifiers, setModifiers] = useState<TerminalModifierState>({ ctrl: false, alt: false })
+  // A terminal tab, not a chat's tmux session.
+  const standalone = !tmux
+  const android = Platform.OS === 'android'
   const rootRef = useRef<View>(null)
   const [keyboardOverlap, setKeyboardOverlap] = useState(0)
   useEffect(() => {
@@ -161,6 +168,7 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
     if (nativeTerminal) void nativeTerminal.blur().catch(() => undefined)
     onClose?.()
   }
+  const ended = status === 'Exited' || status === 'Error'
   return <View ref={rootRef} collapsable={false} style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border, paddingBottom: keyboardOverlap }]}>
     <View
       collapsable={false}
@@ -168,7 +176,7 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
       testID="terminal-toolbar"
       style={[styles.tabs, { backgroundColor: colors.background, borderColor: colors.border }]}
     >
-      <View style={styles.status}><View style={[styles.statusDot, { backgroundColor: status === 'Connected' ? colors.green : colors.orange }]} /><Text style={{ color: colors.muted, fontSize: 10 }} numberOfLines={1}>{notice || status}</Text></View>
+      <View style={styles.status}><View style={[styles.statusDot, { backgroundColor: status === 'Connected' ? colors.green : ended && android ? colors.red : colors.orange }]} /><Text style={{ color: colors.muted, fontSize: 10 }} numberOfLines={1}>{notice || status}</Text></View>
       <ScrollView horizontal keyboardShouldPersistTaps="always" showsHorizontalScrollIndicator={false} style={styles.tabScroller} contentContainerStyle={styles.tabContent}>
         {tmux ? <>{windows.map(window => <Pressable key={window.id} accessibilityRole="button" accessibilityLabel={`Terminal window ${window.name}`} accessibilityState={{ selected: window.active }} onPress={() => void action('select-window', String(window.index))} style={[styles.tab, { backgroundColor: window.active ? colors.raised : 'transparent' }]}><Text style={{ color: window.active ? colors.text : colors.muted, fontSize: 11 }} numberOfLines={1}>{window.name}</Text></Pressable>)}
         <IconButton icon={Plus} size={14} label="New window" onPress={() => void action('new-window')} />
@@ -194,18 +202,36 @@ function ScopedTerminalView({ terminal, tmux, onClose, connection, connectionKey
         // Zed's text selection: the accent at 0x3d alpha.
         selectionHex={`${colors.blue}3d`}
         fontSize={scaleAppFont(13, fontScale)}
+        standalone={standalone}
+        exited={exitedTerminals.has(terminal.id)}
         style={styles.terminal}
         onStatus={event => {
           if (!capturedConnectionIsCurrent(connection, activeProfileId, profileGeneration)) return
           const value = event.nativeEvent
           setStatus(value.status)
-          if (value.message) setNotice(value.message)
+          setStatusMessage(value.message ?? '')
+          // Android: a reconnect's reason is stale once the terminal is back.
+          if (value.message || (android && value.status === 'Connected')) setNotice(value.message ?? '')
+          if (standalone && value.status === 'Exited') exitedTerminals.add(terminal.id)
           if (value.status === 'Connected' && tmux) void refresh()
         }}
         onModifiers={setModifiers}
       />
+      {ended && android ? <View testID="terminal-ended" style={[styles.ended, { backgroundColor: colors.raised, borderColor: colors.border }]}>
+        <Text style={[styles.endedText, { color: colors.text }]} numberOfLines={3}>{status === 'Exited' ? 'The shell exited.' : statusMessage || 'Terminal connection failed.'}</Text>
+        <Pressable
+          accessibilityRole="button"
+          testID="terminal-restart"
+          onPress={() => {
+            setNotice('')
+            exitedTerminals.delete(terminal.id)
+            void viewport.current?.restart?.()
+          }}
+          style={[styles.endedButton, { borderColor: colors.border }]}
+        ><Text style={{ color: colors.blue, fontWeight: '700' }}>{status === 'Exited' ? 'New shell' : 'Retry'}</Text></Pressable>
+      </View> : null}
     </View>
-    {Platform.OS === 'android' ? <View collapsable={false} testID="terminal-key-row" style={[styles.keyRow, { backgroundColor: colors.background, borderColor: colors.border }]}>
+    {android ? <View collapsable={false} testID="terminal-key-row" style={[styles.keyRow, { backgroundColor: colors.background, borderColor: colors.border }]}>
       <ScrollView horizontal keyboardShouldPersistTaps="always" showsHorizontalScrollIndicator={false} contentContainerStyle={styles.keyRowContent}>
         {TERMINAL_KEYS.map(key => {
           const active = key.name === 'ctrl' ? modifiers.ctrl : key.name === 'alt' ? modifiers.alt : false
@@ -248,6 +274,9 @@ const styles = StyleSheet.create({
   tab: { maxWidth: 120, minHeight: 44, borderRadius: 5, paddingHorizontal: 10, paddingVertical: 3, justifyContent: 'center' },
   terminalViewport: { position: 'relative', zIndex: 0, flex: 1, minHeight: 0, overflow: 'hidden' },
   terminal: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
+  ended: { position: 'absolute', left: 14, right: 14, bottom: 14, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, paddingLeft: 14, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  endedText: { flex: 1, fontSize: 13, paddingVertical: 10 },
+  endedButton: { minHeight: 44, paddingHorizontal: 14, justifyContent: 'center', borderLeftWidth: StyleSheet.hairlineWidth },
   keyRow: { flexShrink: 0, borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: 4 },
   keyRowContent: { alignItems: 'center', gap: 6, paddingHorizontal: 8 },
   key: { minWidth: 40, minHeight: 36, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },

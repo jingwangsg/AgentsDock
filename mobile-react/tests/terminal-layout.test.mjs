@@ -8,6 +8,7 @@ const source = fs.readFileSync(path.resolve('src/components/TerminalView.tsx'), 
 const shell = fs.readFileSync(path.resolve('src/components/AppShell.tsx'), 'utf8')
 const androidTerminal = fs.readFileSync(path.resolve('src/components/terminal/TerminalViewport.android.tsx'), 'utf8')
 const terminalPage = fs.readFileSync(path.resolve('scripts/terminal-page-entry.ts'), 'utf8')
+const terminalProtocol = fs.readFileSync(path.resolve('src/terminal/terminalProtocol.ts'), 'utf8')
 const promptFont = fs.readFileSync(path.resolve('src/terminal/promptGlyphFont.ts'), 'utf8')
 
 test('terminal toolbar stays outside the platform terminal hit-testing surface', () => {
@@ -51,9 +52,9 @@ test('terminal uses a full-screen modal without a sheet dismissal recognizer', (
 test('android terminal sends typed input as binary frames and has a key row', () => {
   // The server reads input only from binary frames; a text frame is a JSON control
   // message and everything else is dropped, which silently ate every keystroke.
-  assert.match(terminalPage, /socket\.send\(encoder\.encode\(text\)\)/)
-  assert.doesNotMatch(terminalPage, /socket\.send\(data\)/)
-  assert.match(terminalPage, /term\.onData\(data => sendInput\(withModifiers\(data\)\)\)/)
+  assert.match(terminalProtocol, /send\(encoder\.encode\(data\)\)/)
+  assert.match(terminalProtocol, /if \(open\) socket!\.send\(frame\)/)
+  assert.match(terminalPage, /term\.onData\(data => link\.write\(withModifiers\(data\)\)\)/)
   assert.match(source, /testID="terminal-key-row"/)
   for (const label of ['Esc', 'Tab', 'Enter', 'Ctrl', 'Alt', 'Home', 'End']) assert.match(source, new RegExp(`label: '${label}'`))
   assert.match(terminalPage, /enter: '\\r'/)

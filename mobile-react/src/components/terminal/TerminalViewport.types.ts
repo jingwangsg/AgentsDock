@@ -1,15 +1,14 @@
 import type { NativeSyntheticEvent, ViewProps } from 'react-native'
+import type { TerminalKeyName } from '../../terminal/terminalPage'
+
+export type { TerminalKeyName } from '../../terminal/terminalPage'
 
 export type TerminalConnectionStatus = {
-  status: 'Connecting' | 'Connected' | 'Reconnecting' | 'Error' | 'Disconnected'
+  /** Exited: the shell ended (Android web view terminal only). */
+  status: 'Connecting' | 'Connected' | 'Reconnecting' | 'Error' | 'Disconnected' | 'Exited'
   name?: string
   message?: string
 }
-
-/** Keys the terminal key row can send; Ctrl and Alt are sticky modifiers applied to the next key. */
-export type TerminalKeyName =
-  | 'escape' | 'tab' | 'enter' | 'up' | 'down' | 'left' | 'right' | 'home' | 'end' | 'pageup' | 'pagedown'
-  | 'dash' | 'slash' | 'pipe' | 'tilde'
 
 export type TerminalModifierState = { ctrl: boolean; alt: boolean }
 
@@ -21,6 +20,7 @@ export type TerminalViewportHandle = {
   /** Only the Android web view terminal implements the key row; others leave these undefined. */
   sendKey?(name: TerminalKeyName): Promise<boolean>
   setModifier?(name: keyof TerminalModifierState, active: boolean): Promise<boolean>
+  restart?(): Promise<boolean>
 }
 
 export type TerminalViewportProps = ViewProps & {
@@ -32,4 +32,8 @@ export type TerminalViewportProps = ViewProps & {
   fontSize?: number
   onStatus?: (event: NativeSyntheticEvent<TerminalConnectionStatus>) => void
   onModifiers?: (state: TerminalModifierState) => void
+  /** Android web view terminal only, from here on. A terminal tab, which acknowledges output; not a chat's tmux session. */
+  standalone?: boolean
+  /** The shell exited and no new one was asked for: the terminal does not connect until restart(). */
+  exited?: boolean
 }
