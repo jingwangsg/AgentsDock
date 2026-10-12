@@ -1955,16 +1955,18 @@ class RemoteServerManager:
             detail = next((line for line in reversed(lines) if line.strip() and not line.startswith((PROBE_PREFIX, RESULT_PREFIX))), "")
             if code == 255:
                 raise SSHConnectionLost(detail or "ssh exited 255")
-            # The host script failed in the step it announced last: what follows that
-            # "[AgentsDock setup]" line is the step's own output (uv's build error, a tar
-            # error, the server log tail). It goes into the job log, capped so the log, which
-            # clients read by count, stays under its own limit; the error names the step's
-            # first error line, e.g. uv's "Failed to build `<package>`", not the hint it ends with.
+            # The host script failed in the step it announced last; what follows that
+            # "[AgentsDock setup]" line is the step's own output (uv's build error, a tar error,
+            # the server log tail). Its last 200 lines go into the job log, under log_limit so the
+            # earlier phases stay visible; the PROBE and RESULT lines stay out, the latter carries
+            # the access token. The error is the step's first error line: uv opens its block with
+            # "error: Failed to build `<package>`" (older releases: an indented "× Failed to build")
+            # and the "hint:" line it ends with says nothing about the cause.
             start = max((index + 1 for index, line in enumerate(lines) if line.startswith(SETUP_LOG_PREFIX)), default=0)
-            step = [line for line in lines[start:] if line.strip() and not line.startswith((PROBE_PREFIX, RESULT_PREFIX))]
-            for line in step[-200:]:
+            step_output = [line for line in lines[start:] if line.strip() and not line.startswith((PROBE_PREFIX, RESULT_PREFIX))]
+            for line in step_output[-200:]:
                 job.progress(job.phase, line)
-            detail = next((line for line in step if line.lstrip().lower().startswith(("error", "×"))), detail)
+            detail = next((line.strip() for line in step_output if line.startswith("error") or line.lstrip().startswith("×")), detail)
             raise RuntimeError(detail or f"ssh exited {code}")
         return lines
 

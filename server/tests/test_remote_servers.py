@@ -579,7 +579,7 @@ with socket.socket() as listener:
     def fake_host(self, existing_port: int | None, bootstrap_failure: list[str] | None = None) -> Path:
         """Point ssh at a script playing the host; returns the argv log it appends to."""
         state = self.tmp_path / "host"
-        state.mkdir()
+        state.mkdir(exist_ok=True)  # a test may script the host again with another failure shape
         (state / "host.json").write_text(json.dumps({"token": REMOTE_TOKEN, "existing_port": existing_port, "bootstrap_failure": bootstrap_failure}))
         script = self.tmp_path / "ssh"
         script.write_text(FAKE_SSH.format(python=sys.executable, state=str(state)))
@@ -632,20 +632,23 @@ with socket.socket() as listener:
     def test_a_failed_bootstrap_step_logs_its_output_and_names_its_error(self) -> None:
         # Seen live: uv built pydantic-core from source on a host without a compiler, and the
         # job kept only uv's trailing hint line, so nothing said which package failed or why.
-        output = [
-            "[AgentsDock setup] Unpacking AgentsServer source",
-            "[AgentsDock setup] Preparing the Python runtime (uv sync)",
-            "error: Failed to build `pydantic-core==2.46.4`",
-            "  cause: Call to `maturin.build_wheel` failed (exit status: 1)",
-            "",
-            "         error: linker `cc` not found",
-            "hint: Build failures usually indicate a problem with the package or the build environment",
-        ]
-        self.fake_host(existing_port=None, bootstrap_failure=output)
-        _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="dev@build-host"))
-        assert job.error == "error: Failed to build `pydantic-core==2.46.4`"
-        messages = [entry["message"] for entry in job.log]
-        assert messages[-6:] == ["Preparing the Python runtime (uv sync)", *[line for line in output[2:] if line], job.error]
+        # uv 0.13 opens its block with "error: Failed to build …", uv 0.11 with an indented "×".
+        for headline in ("error: Failed to build `pydantic-core==2.46.4`", "  × Failed to build `pydantic-core==2.46.4`"):
+            output = [
+                "[AgentsDock setup] Unpacking AgentsServer source",
+                "[AgentsDock setup] Preparing the Python runtime (uv sync)",
+                headline,
+                "  ├─▶ The build backend returned an error",
+                "",
+                "         error: linker `cc` not found",
+                "hint: Build failures usually indicate a problem with the package or the build environment",
+            ]
+            self.fake_host(existing_port=None, bootstrap_failure=output)
+            _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="dev@build-host"))
+            assert job.error == headline.strip(), job.log
+            # The step heading (streamed by on_line), the step's non-blank output in order, then the error the deploy appends.
+            messages = [entry["message"] for entry in job.log]
+            assert messages[-6:] == ["Preparing the Python runtime (uv sync)", *[line for line in output[2:] if line], job.error]
 
     def test_a_cluster_target_rejects_a_password(self) -> None:
         self.fake_host(existing_port=None)
