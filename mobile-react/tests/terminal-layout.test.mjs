@@ -91,3 +91,20 @@ test('the android terminal keyboard button raises the soft keyboard through a na
   // Blink shows the keyboard only for a focus made by a user gesture in the page; injected script has none.
   assert.match(androidTerminal, /keyboardBridge\.current\?\.focus\(\)\s*\n\s*webView\.current\?\.requestFocus\(\)/)
 })
+
+test('the android terminal keeps the desktop\'s replay and report rules byte for byte', () => {
+  // Ports, not shared modules: the page is bundled on its own, so these tests keep the copies identical.
+  const desktop = relative => fs.readFileSync(path.resolve('..', relative), 'utf8')
+  const line = (source, name) => source.match(new RegExp(`^const ${name} = .*$`, 'm'))?.[0]
+  const block = source => source.match(/^const REPLAYED_CSI_QUERIES[\s\S]*?^const REPLAYED_OSC_QUERIES = .*$/m)?.[0]
+  const replay = desktop('electron/src/renderer/src/lib/terminal-replay.ts')
+  const client = desktop('electron/src/main/server-client.ts')
+  const surface = desktop('electron/src/renderer/src/components/TerminalSurface.tsx')
+  assert.ok(line(replay, 'TRAILING_SEQUENCE') && line(client, 'TERMINAL_REPORTS') && block(surface))
+  assert.equal(line(terminalProtocol, 'TRAILING_SEQUENCE'), line(replay, 'TRAILING_SEQUENCE'))
+  assert.equal(line(terminalProtocol, 'TERMINAL_REPORTS'), line(client, 'TERMINAL_REPORTS'))
+  assert.equal(block(terminalPage), block(surface))
+  for (const name of ['TERMINAL_ACK_BYTES', 'TERMINAL_ACK_IDLE_MS', 'TERMINAL_INPUT_FRAME_BYTES', 'TERMINAL_PENDING_INPUT_BYTES']) {
+    assert.equal(line(terminalProtocol, name), line(client, name), name)
+  }
+})

@@ -21,14 +21,15 @@ declare global {
 }
 
 // Queries a program sent before this attach. xterm.js answers them while it parses the replayed
-// scrollback, and those answers would arrive at the shell as typed text.
+// scrollback, and those answers would arrive at the shell as typed text. Copied byte for byte from the
+// desktop's TerminalSurface.tsx (tests/terminal-layout.test.mjs compares them).
 const REPLAYED_CSI_QUERIES: IFunctionIdentifier[] = [
   { final: 'n' }, { prefix: '?', final: 'n' }, // DSR, CPR
   { final: 'c' }, { prefix: '>', final: 'c' }, { prefix: '=', final: 'c' }, // DA1-3
   { prefix: '>', final: 'q' }, // XTVERSION
   { intermediates: '$', final: 'p' }, { prefix: '?', intermediates: '$', final: 'p' }, // DECRQM
   { prefix: '?', final: 'u' }, // kitty keyboard flags
-  { prefix: '?', final: 'S' }, // XTSMGRAPHICS (image addon)
+  { prefix: '?', final: 'S' } // XTSMGRAPHICS (image addon)
 ]
 const REPLAYED_DCS_QUERIES: IFunctionIdentifier[] = [{ intermediates: '$', final: 'q' }, { intermediates: '+', final: 'q' }] // DECRQSS, XTGETTCAP
 const WINDOW_REPORT_REQUESTS = new Set([11, 13, 14, 15, 16, 18, 19, 20, 21]) // CSI Ps t
