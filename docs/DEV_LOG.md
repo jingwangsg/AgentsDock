@@ -1,5 +1,64 @@
 # Public development log
 
+## 2026-10-13 — Hub ssh tunnels restart after every ssh exit, end their ProxyCommand processes, and stay off a local port another process took (server)
+
+- Before: a tunnel learned that its ssh had exited when ssh's stderr
+  closed. ssh's ProxyCommand children inherit that stderr, and a Sky
+  websocket proxy can outlive a failed connect, so after a Sky proxy
+  interruption the hub stopped restarting the tunnels of two cluster
+  remotes. It reported them connected with no ssh running and left one
+  proxy process per tunnel open to the Sky API.
+- Separately, while another process listened on a remote's tunnel port and
+  the tunnel was down, each ssh retry connected in full and then could not
+  bind the port. The tunnel's last error read "Could not request local
+  forwarding.", and the hub proxy sent requests with the remote's token to
+  that process, whose 401 made the remote look like it refused the hub.
+- Now the supervisor checks ssh's exit status once a second instead of
+  waiting for stderr to close. Each ssh runs in a session of its own, whose
+  process group holds its ProxyCommand children. After ssh exits, the hub
+  gives those children up to 5 s to exit by themselves (a killed AWS SSM
+  plugin leaves its session on the host for about 20 minutes, and the
+  tunnel's remote port stays taken with it), then kills the group; when the
+  tunnel or the hub stops, it kills the group at once. The git rewrite and
+  remote revive ssh commands kill their group too. A small helper process
+  kills the groups of all these ssh processes that are still running once
+  the hub has exited: a SIGKILLed hub runs no shutdown, and launchd ends
+  only the hub's own process group. Every tunnel ssh start is logged with
+  its pid, and the reason a tunnel cannot start ssh is logged when it
+  changes.
+- Before each start, a remote's tunnel binds its local port as ssh would.
+  While another process holds the port, ssh is not started and the tunnel
+  reports `could not start ssh: local port N: Address already in use`.
+  From the moment a tunnel's ssh exits until the next ssh starts, the hub
+  sends no request with the remote's token to its port: proxied HTTP gets
+  502 `remote_unreachable` with the tunnel status, WebSockets are refused,
+  and health probes, CLI updates and cross-server mail see the remote as
+  unreachable. Once the port is free, the next retry (at most 10 s later)
+  takes it.
+- Limits: the tunnel status changes within 1 s of ssh's exit, or within
+  6 s when a ProxyCommand child outlives ssh. A process that takes the port
+  while a new ssh is still connecting gets requests until that ssh fails to
+  bind and exits.
+- Unit tests: four new tests fail on the previous code and pass now: an
+  ssh that exits while a child holds its stderr (its port is refused before
+  the status changes), hub shutdown ending every tunnel's children, a
+  SIGKILLed hub process leaving no tunnel ssh or child, and a port held by
+  another process.
+- On isolated hubs against a real cluster remote: with the tunnel's Sky
+  proxy process paused (SIGSTOP) and its outer and inner ssh processes
+  killed, the previous code still reported the tunnel connected with no ssh
+  45 s later, until the proxy process was killed; the new code saw the exit
+  within 1 s, killed the proxy process and restarted the tunnel after the
+  2 s backoff. With the tunnel's port held by another process for 48 s,
+  that process received no request and one log line named the cause;
+  freeing the port started ssh 7 s later, and the hub proxy reached the
+  remote 22 s later. Graceful hub shutdowns ended all tunnel ssh and Sky
+  proxy processes, and 0.3 s after a SIGKILL of the hub none of its 12
+  tunnel ssh and Sky proxy processes, nor the helper, was running. Not
+  exercised: the 5 s wait against a real AWS SSM session, the git rewrite
+  and remote revive group kills on a real remote, and a child that leaves
+  ssh's process group. The running hub gets the fix when it restarts.
+
 ## 2026-10-12 — A fresh desktop attaches to the AgentsServer already running on this Mac (desktop)
 
 - Before: on first launch the desktop read one token file, the default
