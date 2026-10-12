@@ -3208,7 +3208,7 @@ describe('AgentServerClient live stream', () => {
     }
     expect(tabSocket.sent).toEqual([JSON.stringify({ type: 'ack', bytes: 20 * 1024 })])
     expect(chatSocket.sent).toEqual([])
-    // One frame, one emit: `replayBytes` describes exactly the next terminal:data.
+    // One frame, one emit: a replay is exactly one terminal:data.
     expect(tabOutput.map(data => data.length)).toEqual([10 * 1024, 10 * 1024])
     tabSocket.sent.length = 0
 
@@ -3278,22 +3278,19 @@ describe('AgentServerClient live stream', () => {
     old.close()
   })
 
-  it('attaches passively when asked and on every reattach, and only terminal tabs', () => {
+  it('attaches every terminal tab passively, reattaches included, and chat terminals as before', () => {
     vi.useFakeTimers()
     vi.spyOn(Math, 'random').mockReturnValue(0)
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const client = new AgentServerClient('http://example.test:7850', 'secret')
-    const shown = client.terminal('term_0123abcd', { columns: 80, rows: 24 }, () => {}, () => {})
-    const hidden = client.terminal('term_4567cdef', { columns: 80, rows: 24, passive: true }, () => {}, () => {})
-    const chat = client.terminal('chat', { columns: 80, rows: 24, passive: true }, () => {}, () => {})
-    const [shownSocket, hiddenSocket, chatSocket] = FakeWebSocket.instances
-    expect([shownSocket, hiddenSocket, chatSocket].map(socket => socket.url.searchParams.get('passive'))).toEqual([null, '1', null])
-    // After a dropped link the tab takes the size back only when it is shown (it sends a resize).
-    shownSocket.emit('close', undefined, { code: 1006 })
+    const tab = client.terminal('term_0123abcd', { columns: 80, rows: 24 }, () => {}, () => {})
+    const chat = client.terminal('chat', { columns: 80, rows: 24 }, () => {}, () => {})
+    const [tabSocket, chatSocket] = FakeWebSocket.instances
+    expect([tabSocket, chatSocket].map(socket => socket.url.searchParams.get('passive'))).toEqual(['1', null])
+    tabSocket.emit('close', undefined, { code: 1006 })
     vi.advanceTimersByTime(500)
-    expect(FakeWebSocket.instances[3].url.searchParams.get('passive')).toBe('1')
-    shown.close()
-    hidden.close()
+    expect(FakeWebSocket.instances[2].url.searchParams.get('passive')).toBe('1')
+    tab.close()
     chat.close()
   })
 
@@ -3334,7 +3331,7 @@ describe('AgentServerClient live stream', () => {
 
     first.emit('close', undefined, { code: 1006 })
     // Answers to the old connection's queries are dropped; a key mixed in is kept.
-    connection.write('\x1b[12;40R')
+    connection.write('\x1b[12;40R\x1b[2;1$y')
     connection.write('\x1b[?62;22c\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\\x1bP>|xterm.js(6.0.0)\x1b\\')
     connection.write('c')
     vi.advanceTimersByTime(500)

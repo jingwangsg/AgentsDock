@@ -1449,8 +1449,6 @@ export interface TerminalConnectOptions {
   cwd?: string | null
   columns: number
   rows: number
-  /** Attach without taking the pty's size or becoming the active viewer (a hidden tab). */
-  passive?: boolean
 }
 
 export interface TerminalStateEvent {
@@ -1458,7 +1456,7 @@ export interface TerminalStateEvent {
   state: TerminalConnectionState
   name?: string | null
   error?: string | null
-  /** With `connected`: the length of the replay that arrives next as one `terminal:data` (0: none). Absent from older servers. */
+  /** With `connected`: the length of the replay that arrives next as one `terminal:data` with `replay` (0: none). Absent from an older server: its first data is taken as the replay. */
   replayBytes?: number
   /** With `connected`: the server resynced a viewer that fell behind, on the same connection. */
   resync?: boolean
