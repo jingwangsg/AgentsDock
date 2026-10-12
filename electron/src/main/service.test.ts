@@ -88,15 +88,15 @@ vi.mock('electron', () => ({
   }
 }))
 
-// A test must never kickstart this machine's real local server.
-vi.mock('./local-hub', async importOriginal => ({ ...await importOriginal<typeof import('./local-hub')>(), startLocalServerAgent: vi.fn() }))
+// A test must never kickstart this machine's real local server, nor read its token files.
+vi.mock('./local-hub', async importOriginal => ({ ...await importOriginal<typeof import('./local-hub')>(), startLocalServerAgent: vi.fn(), localHubConfigDirs: vi.fn(() => []) }))
 // Nor launch this machine's Zed.
 vi.mock('./open-in-zed', () => ({ openInZed: vi.fn(async () => undefined) }))
 // Nor read this machine's ssh aliases.
 vi.mock('./ssh-hosts', async importOriginal => ({ ...await importOriginal<typeof import('./ssh-hosts')>(), hubSshAliasHost: vi.fn(() => null) }))
 
 import { LocalCache, TIMELINE_PAGING_SCHEMA_VERSION } from './persistence'
-import { startLocalServerAgent } from './local-hub'
+import { localHubConfigDirs, startLocalServerAgent } from './local-hub'
 import { openInZed as launchZed } from './open-in-zed'
 import { hubSshAliasHost } from './ssh-hosts'
 import {
@@ -8366,6 +8366,102 @@ describe('credential-free profile metadata and asynchronous authentication', () 
     expect((await service.bootstrap()).activeProfileId).toBe('c')
   })
 
+})
+
+describe('attaching to the server already running on this Mac', () => {
+  const STALE = 's'.repeat(64)
+  const CURRENT = 'c'.repeat(64)
+
+  // A first launch: no settings file yet, so the only profile is the local one, not set up. `accepted` is the token the
+  // server on 7850 takes (null: nothing answers there); each of `tokens` sits in its own local config dir, in search order.
+  function prepare(accepted: string | null, tokens: string[], storedToken?: string) {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-attach-'))
+    vi.mocked(localHubConfigDirs).mockReturnValue(tokens.map((token, index) => {
+      const configDir = join(directory, `config-${index}`)
+      mkdirSync(configDir)
+      writeFileSync(join(configDir, 'env'), `export AGENTSDOCK_AGENT_TOKEN=${token}\n`)
+      return configDir
+    }))
+    const values = new Map<string, string>()
+    const settings = new SettingsStore({ path: join(directory, 'settings.json'), isMacAppStoreBuild: () => false,
+      keychain: { read: account => values.get(account) ?? '', readAsync: async account => values.get(account) ?? '',
+        write: (account, token) => { values.set(account, token); return true }, delete: account => { values.delete(account) } },
+      safeStorage: { isEncryptionAvailable: () => false, encryptString: () => { throw new Error('Unexpected encryption') },
+        decryptString: () => { throw new Error('Unexpected decryption') } }
+    })
+    const hub = settings.listProfiles()[0]
+    if (storedToken) settings.updateProfile(hub.id, { accessToken: storedToken, serverSetupComplete: true })
+    const health = async (token: string): Promise<Health> => {
+      if (accepted === null) throw new TypeError('fetch failed')
+      if (token !== accepted) throw new ServerError(401, 'unauthorized')
+      return { ok: true, server_identity: 'server-hub', capabilities: { remote_servers_v1: hubRemotesCapability('r1') } }
+    }
+    const clientFactory = vi.fn((_url: string, token: string) => Object.assign(fakeClient({ health: () => health(token) }), {
+      listRemoteServers: vi.fn(async () => ({ servers: [hubRemote('r1')] }))
+    }) as unknown as AgentServerClient)
+    const cache = new LocalCache(':memory:')
+    const service = new AppService({ settings, cache, clientFactory })
+    cleanup.push(() => {
+      service.stop()
+      cache.close()
+      rmSync(directory, { recursive: true, force: true })
+      vi.mocked(localHubConfigDirs).mockReturnValue([])
+    })
+    const triedTokens = () => clientFactory.mock.calls.map(([, token]) => token)
+    return { service, settings, hubId: hub.id, triedTokens }
+  }
+
+  it('adopts the local token the server accepts and lists its remotes as servers', async () => {
+    const { service, settings, hubId, triedTokens } = prepare(CURRENT, [STALE, CURRENT])
+
+    service.start()
+
+    await vi.waitFor(() => expect(service.listServers().map(profile => profile.serverUrl)).toEqual([DEFAULT_SERVER_URL, `${DEFAULT_SERVER_URL}/api/remote/r1`]))
+    expect(service.listServers()[0]).toMatchObject({ hasAccessToken: true, serverSetupComplete: true, serverIdentity: 'server-hub' })
+    expect(await settings.accessTokenForConnectionAsync(hubId)).toBe(CURRENT)
+    expect(triedTokens().slice(0, 3)).toEqual(['', STALE, CURRENT])
+  })
+
+  it('stays without a token when the server accepts none of the local ones, so onboarding asks for it', async () => {
+    const { service, triedTokens } = prepare(CURRENT, [STALE])
+
+    service.start()
+
+    await vi.waitFor(() => expect(triedTokens()).toContain(STALE))
+    await settleBackgroundWork()
+    expect(service.listServers()).toEqual([expect.objectContaining({ hasAccessToken: false, serverSetupComplete: false, lastConnectionError: 'unauthorized' })])
+  })
+
+  it('tries no local token when nothing answers on 7850, so onboarding offers the install', async () => {
+    const { service, triedTokens } = prepare(null, [CURRENT])
+
+    service.start()
+
+    await vi.waitFor(() => expect(service.listServers()[0].lastConnectionError).toBe('fetch failed'))
+    await settleBackgroundWork()
+    expect(triedTokens()).toEqual([''])
+    expect(service.listServers()[0]).toMatchObject({ hasAccessToken: false, serverSetupComplete: false })
+  })
+
+  it('leaves a profile that already holds a token alone', async () => {
+    const { service, settings, hubId, triedTokens } = prepare(CURRENT, [CURRENT], STALE)
+
+    service.start()
+
+    await vi.waitFor(() => expect(service.listServers()[0].lastConnectionError).toBe('unauthorized'))
+    await settleBackgroundWork()
+    expect(triedTokens()).toEqual([STALE])
+    expect(await settings.accessTokenForConnectionAsync(hubId)).toBe(STALE)
+  })
+
+  it('keeps a pasted token only when the server accepts it', async () => {
+    const { service, settings, hubId } = prepare(CURRENT, [])
+
+    await expect(service.retryLocalHubToken(STALE)).resolves.toBe(false)
+    expect(service.listServers()[0].hasAccessToken).toBe(false)
+    await expect(service.retryLocalHubToken(CURRENT)).resolves.toBe(true)
+    expect(await settings.accessTokenForConnectionAsync(hubId)).toBe(CURRENT)
+  })
 })
 
 describe('server profile lifecycle', () => {

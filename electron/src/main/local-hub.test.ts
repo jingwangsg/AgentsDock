@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { PublicServerProfile, RemoteServer } from '../shared/types'
-import { hubRemoteId, hubRemoteProfileOrder, hubRemotesKey, parseConfigEnv, planHubRemoteProfiles, readLocalHubToken } from './local-hub'
+import { hubRemoteId, hubRemoteProfileOrder, hubRemotesKey, localHubConfigDirs, parseConfigEnv, planHubRemoteProfiles, readLocalHubToken } from './local-hub'
 
 const HUB = 'http://127.0.0.1:7850'
 
@@ -50,6 +50,28 @@ describe('readLocalHubToken', () => {
     expect(readLocalHubToken(configDir('AGENTSDOCK_AGENT_TOKEN=short\n'))).toBe('')
     expect(readLocalHubToken(configDir('AGENTSDOCK_AGENT_PORT=7850\n'))).toBe('')
     expect(readLocalHubToken(configDir(null))).toBe('')
+  })
+})
+
+describe('localHubConfigDirs', () => {
+  const homes: string[] = []
+  afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }) })
+
+  it('searches the default install, then named instances by name, then a hub-deployed server, then a source checkout', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentsdock-home-'))
+    homes.push(home)
+    for (const name of ['zeta', 'alpha']) mkdirSync(join(home, '.config', 'agents-server-instances', name), { recursive: true })
+    expect(localHubConfigDirs(home, undefined)).toEqual([
+      join(home, '.config', 'agents-server'),
+      join(home, '.config', 'agents-server-instances', 'alpha'),
+      join(home, '.config', 'agents-server-instances', 'zeta'),
+      join(home, '.agentsdock-server'),
+      join(home, '.config', 'agentsdock-local')
+    ])
+  })
+
+  it('uses only AGENTS_SERVER_CONFIG_DIR when it is set', () => {
+    expect(localHubConfigDirs('/home/me', '/srv/agents-config')).toEqual(['/srv/agents-config'])
   })
 })
 

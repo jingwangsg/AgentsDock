@@ -3,7 +3,8 @@ import type { AppService } from './service'
 import { appLog } from './logger'
 import type { AppUpdateManager } from './updater'
 import { ServerSetupManager } from './server-setup'
-import { localHubPairingUrl } from './local-hub'
+import { join } from 'node:path'
+import { localHubConfigDirs, localHubPairingUrl } from './local-hub'
 import { InferenceProxyManager } from './inference-proxy'
 import { acknowledgeWindowCloseFlush, closeWindowAfterRendererFlush } from './window-close'
 import type { LazyTeamHubService } from './team-hub-lazy-service'
@@ -268,7 +269,8 @@ export function registerIpc(
     if (!event.sender.isDestroyed()) event.sender.send('remote-servers:update-all-progress', progress)
   }))
   handle('servers:update-cli', (profileId, backend) => service.updateServerRuntimeCli(profileId, backend))
-  handle('hub:adopt-local-token', () => service.retryLocalHubToken())
+  handle('hub:adopt-local-token', token => service.retryLocalHubToken(typeof token === 'string' ? token : undefined))
+  handle('hub:local-token-files', () => localHubConfigDirs().map(dir => join(dir, 'env')))
   handle('hub:pairing-url', () => localHubPairingUrl())
   handle('hub:start-local-server', () => service.startLocalHub())
   handle('hub:restart-local-server', force => service.restartLocalHub(force === true))

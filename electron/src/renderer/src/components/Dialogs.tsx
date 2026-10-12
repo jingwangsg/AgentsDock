@@ -751,7 +751,14 @@ export function ServerOnboardingDialog() {
     const hub = state.profiles.find(profile => profile.serverUrl === DEFAULT_SERVER_URL)
     return Boolean(hub && hub.id === state.activeProfileId && !hub.hasAccessToken && !state.connected)
   })
+  // A server answers on 7850 but accepts none of this Mac's token files: it needs its token, not an install.
+  const hubNeedsToken = useAppStore(state => {
+    const hub = state.profiles.find(profile => profile.serverUrl === DEFAULT_SERVER_URL)
+    return Boolean(hub && !hub.hasAccessToken && hub.lastConnectionError && /\b(?:401|unauthori[sz]ed)\b/i.test(hub.lastConnectionError))
+  })
   const [intent, setIntent] = useState<ServerSetupIntent>('setup')
+  const [tokenFiles, setTokenFiles] = useState<string[]>([])
+  const [pastedToken, setPastedToken] = useState('')
   const [open, setOpen] = useState(false)
   const [teamHubHost, setTeamHubHost] = useState(true)
   const [hostOrigin, setHostOrigin] = useState<TeamNetworkHostOrigin | null>(null)
@@ -775,6 +782,12 @@ export function ServerOnboardingDialog() {
   useEffect(() => {
     if (hubNeedsSetup) setOpen(true)
   }, [hubNeedsSetup])
+  useEffect(() => {
+    if (!hubNeedsToken) return
+    let active = true
+    void window.agentsDock.hub.localTokenFiles().then(files => { if (active) setTokenFiles(files) })
+    return () => { active = false }
+  }, [hubNeedsToken])
   useEffect(() => {
     if (connected && intent === 'setup' && !installing) setOpen(false)
   }, [connected, installing, intent])
@@ -852,11 +865,11 @@ export function ServerOnboardingDialog() {
     }
   }
 
-  // The user started the local server by hand: re-read its token file.
-  const retry = async () => {
+  // The user started the local server by hand: re-read its token files. Or they pasted its token: check that one.
+  const retry = async (token?: string) => {
     setSetupError(null)
     try {
-      if (!await window.agentsDock.hub.adoptLocalToken()) setSetupError(t('hub.onboarding.stillMissing'))
+      if (!await window.agentsDock.hub.adoptLocalToken(token)) setSetupError(t(token ? 'hub.onboarding.tokenRejected' : 'hub.onboarding.stillMissing'))
     } catch (error) {
       setSetupError(message(error))
     }
@@ -953,6 +966,7 @@ export function ServerOnboardingDialog() {
 
   const betaUpdate = intent === 'update-beta'
   const hostSetup = intent === 'host-team-network'
+  const tokenPrompt = intent === 'setup' && hubNeedsToken && !installing
   const validTeamNetworkServerName = Boolean(teamNetworkServerName.trim())
     && new TextEncoder().encode(teamNetworkServerName.trim()).byteLength <= 160
     && !/[\u0000-\u001f\u007f]/.test(teamNetworkServerName.trim())
@@ -987,6 +1001,26 @@ export function ServerOnboardingDialog() {
               {installing ? <LoaderCircle className="spin" size={14} /> : setupError ? <RefreshCw size={14} /> : <Server size={14} />}
               {installing ? t('teamNetwork.setup.creating') : setupError ? t('teamNetwork.retry') : t('teamNetwork.setup.create')}
             </button>
+          </footer>
+        </> : tokenPrompt ? <>
+          <section className="server-setup-intro">
+            <h3>{t('hub.onboarding.tokenTitle')}</h3>
+            <p>{t('hub.onboarding.tokenBody')}</p>
+            <ul>{tokenFiles.map(file => <li key={file}><code>{file}</code></li>)}</ul>
+          </section>
+          <div className="server-setup-fields token-fields">
+            <label><span>{t('hub.onboarding.tokenLabel')}</span><input type="password" autoFocus autoComplete="off" spellCheck={false} value={pastedToken} onChange={event => setPastedToken(event.target.value)} /></label>
+          </div>
+          {setupError && <div className="server-setup-error" role="alert">
+            <CircleAlert size={17} />
+            <div><p>{setupError}</p></div>
+          </div>}
+          <footer>
+            <button type="button" className="quiet-button" onClick={() => setOpen(false)}>{t("ui.Dialogs.ServerOnboardingDialog.not_now_a0e63d7")}</button>
+            <div className="server-setup-footer-actions">
+              <button type="button" className="quiet-button" onClick={() => void retry()}><RefreshCw size={13} /> {t('hub.onboarding.retry')}</button>
+              <button type="button" className="primary-button" disabled={!pastedToken.trim()} onClick={() => void retry(pastedToken.trim())}><KeyRound size={14} /> {t('hub.onboarding.connect')}</button>
+            </div>
           </footer>
         </> : <>
           <section className="server-setup-intro">

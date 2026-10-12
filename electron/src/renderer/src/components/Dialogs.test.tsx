@@ -470,6 +470,31 @@ describe('ServerOnboardingDialog', () => {
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Set up AgentsServer' })).not.toBeInTheDocument())
   })
 
+  it('asks for the token, naming the files it searched, when a server on 7850 accepts none of them', async () => {
+    const adoptLocalToken = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    const localTokenFiles = vi.fn().mockResolvedValue(['/Users/me/.config/agents-server/env', '/Users/me/.agentsdock-server/env'])
+    mockAgentsDock({ hub: { adoptLocalToken, localTokenFiles } })
+    useAppStore.setState({ profiles: [hub({ connectionState: 'retrying', lastConnectionError: 'unauthorized' })], activeProfileId: 'hub' })
+    const user = userEvent.setup()
+    render(<ServerOnboardingDialog />)
+
+    expect(await screen.findByText('AgentsServer on 127.0.0.1:7850 needs its access token')).toBeInTheDocument()
+    expect(await screen.findByText('/Users/me/.agentsdock-server/env')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Install on this computer' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect' })).toBeDisabled()
+
+    await user.type(screen.getByLabelText('Access token'), ' wrong-token ')
+    await user.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(adoptLocalToken).toHaveBeenLastCalledWith('wrong-token')
+    expect(await screen.findByRole('alert')).toHaveTextContent('The server on 127.0.0.1:7850 did not accept this token.')
+
+    await user.clear(screen.getByLabelText('Access token'))
+    await user.type(screen.getByLabelText('Access token'), 'right-token')
+    await user.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(adoptLocalToken).toHaveBeenLastCalledWith('right-token')
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
   it('shows a dedicated signed Beta update flow for the local server', async () => {
     const run = vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', accessToken: 'generated-private-token-0123456789', service: 'launch-agent', tailscaleIP: '' })
     const adoptLocalToken = vi.fn().mockResolvedValue(true)

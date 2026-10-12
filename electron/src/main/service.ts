@@ -181,7 +181,7 @@ import { BrowserProxy } from './browser-proxy'
 import { FileUploadGrantRegistry } from './file-upload-grants'
 import { SettingsStore, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
-import { hubRemoteId, hubRemoteProfileOrder, hubRemotesKey, isHubRemoteUrl, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
+import { hubRemoteId, hubRemoteProfileOrder, hubRemotesKey, isHubRemoteUrl, localHubConfigDirs, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
 import { hubSshAliasHost, removeSshHost, writeSshHost } from './ssh-hosts'
 import { openInZed as launchZed, readZedWorkspaceFolders } from './open-in-zed'
 import { sshHostAlias, type OpenInZedRequest } from '../shared/ssh-host-alias'
@@ -664,8 +664,7 @@ export class AppService {
 
   start(): void {
     if (this.running) return
-    const adopted = this.adoptLocalHubToken()
-    if (!this.clientAvailable || (adopted && this.hubProfile()?.id === this.activeProfileId)) this.activateProfile(this.activeProfileId, false, true)
+    if (!this.clientAvailable) this.activateProfile(this.activeProfileId, false, true)
     this.running = true
     void this.runBackgroundRefresh(this.captureScope())
     void this.refreshInactiveProfileHealth()
@@ -1549,22 +1548,25 @@ export class AppService {
     return hub !== undefined && isHubRemoteUrl(hub.serverUrl, serverUrl)
   }
 
-  /** The hub profile has no token yet: take the one install.sh wrote for the local server. True when a token was adopted. */
-  private adoptLocalHubToken(): boolean {
+  /** The hub profile has no token yet: take the local server token the hub accepts. True when a token was adopted. */
+  private async adoptLocalHubToken(): Promise<boolean> {
     const hub = this.hubProfile()
     if (!hub || hub.hasAccessToken) return false
-    const token = readLocalHubToken()
+    const token = await this.acceptedHubToken(hub.serverUrl, localHubConfigDirs().map(readLocalHubToken))
     if (!token) return false
     this.settings.updateProfile(hub.id, { accessToken: token, serverSetupComplete: true })
     appLog('hub', 'adopted the local server token', { profileId: hub.id })
     return true
   }
 
-  /** Onboarding Retry / after a local install: re-read the env file so a reinstalled server's rotated token is picked up. */
-  async retryLocalHubToken(): Promise<boolean> {
+  /**
+   * Onboarding Retry / after a local install: re-read the env files so a reinstalled server's rotated token is picked up.
+   * A token pasted in onboarding is checked the same way.
+   */
+  async retryLocalHubToken(pastedToken?: string): Promise<boolean> {
     const hub = this.hubProfile()
     if (!hub) return false
-    const token = readLocalHubToken()
+    const token = await this.acceptedHubToken(hub.serverUrl, pastedToken ? [pastedToken] : localHubConfigDirs().map(readLocalHubToken))
     if (!token) return hub.hasAccessToken
     const current = hub.hasAccessToken ? await this.settings.accessTokenForConnectionAsync(hub.id).catch(() => '') : ''
     if (token !== current) {
@@ -1576,6 +1578,18 @@ export class AppService {
       void this.runBackgroundRefresh(scope)
     } else this.invalidateProfileHealthProbe(hub.id)
     return true
+  }
+
+  /** The first of `tokens` the server at `serverUrl` accepts; '' when it takes none or does not answer. */
+  private async acceptedHubToken(serverUrl: string, tokens: readonly string[]): Promise<string> {
+    // A Mac can hold several installs (named instances, a source checkout); only the server's answer tells which one runs.
+    for (const token of new Set(tokens.filter(Boolean))) {
+      const client = this.clientFactory(serverUrl, token)
+      try {
+        if ((await client.health()).ok === true) return token
+      } catch { /* rejected or unreachable: try the next token */ } finally { client.dispose() }
+    }
+    return ''
   }
 
   /** Settings → Server "Start": launchd starts the local server, then every profile re-checks now instead of on the next poll. */
@@ -5964,8 +5978,9 @@ export class AppService {
       if (this.healthFailureCount >= 2 && !this.hasConnectedTimelineSubscription()) this.emitConnection(scope, false, undefined, message)
     }
 
-    if (announcedError && !announce && scope.serverUrl === DEFAULT_SERVER_URL
-      && !this.settings.getProfile(scope.profileId)?.hasAccessToken && this.adoptLocalHubToken()) {
+    // A server answers on 7850 and wants a token this profile lacks (first launch on a Mac that already runs one).
+    if (announcedError instanceof ServerError && announcedError.status === 401 && !announce && scope.serverUrl === DEFAULT_SERVER_URL
+      && !this.settings.getProfile(scope.profileId)?.hasAccessToken && await this.adoptLocalHubToken() && this.isCurrentScope(scope)) {
       const adopted = this.activateProfile(scope.profileId, false, true)
       void this.runBackgroundRefresh(adopted)
       return
