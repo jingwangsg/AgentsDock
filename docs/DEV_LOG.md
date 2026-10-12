@@ -1,5 +1,43 @@
 # Public development log
 
+## 2026-10-12 — Desktop terminal tabs run on xterm.js 6 (desktop)
+
+- The desktop terminal tab replaces ghostty-web 0.4.0 with @xterm/xterm 6.0.0
+  and its official addons (fit, WebGL with a DOM fallback, search, web links,
+  clipboard, Unicode 11 widths, sixel and iTerm2 images). xterm.js answers the
+  shell's device-attribute query itself, so fish 4 shows its prompt at once.
+- Keys send what Terminal.app sends: ⌘←/⌘→/⌘⌫ (line start, end, delete to
+  start), ⌥←/⌥→ (word left/right), ⌥⌫, Shift-Tab, and every Control key,
+  including Control-L, which no longer toggles the inspector (⌘L does, on
+  macOS). Option composes characters unless Settings → Terminal makes it Meta.
+- ⌘C copies the selection, ⌘V pastes as a bracketed paste when the program
+  asked for one, ⌘A selects all, ⌘K clears, ⌘F finds (case, whole word,
+  regular expression, match count), ⌘+/⌘−/⌘0 size one tab, and ⌘↑/⌘↓ move
+  between prompts the shell marks (OSC 133). The right-click menu offers Copy,
+  Paste, Select All, Clear and Find; a program that tracks the mouse gets the
+  right click instead, and ⌥ forces the menu or a selection.
+- Mouse reporting (vim, tmux), ⌘-click on URLs and OSC 8 links (opened in the
+  browser), OSC 52 clipboard writes (reads get an empty answer), shell titles
+  and directories in the tab name, a bell mark on a tab out of sight, and
+  OSC 9/777 desktop notifications while the tab is out of sight. Output that
+  the server replays on reconnect does not repeat bells, notifications or
+  clipboard writes. A file dropped on a terminal types its quoted path when
+  the server runs on this computer; uploads belong to chats, so a remote
+  server shows a message instead.
+- Settings → Terminal: font family and size, cursor shape and blink, Option
+  as Meta, copy on select, scrollback (10,000 lines by default), screen reader
+  support. Changes and theme switches apply to open tabs at once.
+- A tab opens its terminal and shell the first time it is shown. Idle, the
+  app with five terminal tabs (one visible) used 0.1–0.6% of a core, against
+  32–50% with ghostty-web, whose render loop never stopped.
+- Checks: an isolated server and app drove the keys, IME, clipboard, mouse,
+  links, find, settings and replay cases with real keystrokes or CDP input
+  and read the bytes at the shell. Not exercised: the press-and-hold accent
+  popup (synthetic key events do not open it; committed text arrives once),
+  Windows and Linux key bindings. Emoji ZWJ sequences, skin tones and flags
+  draw as separate glyphs (the grapheme addon is still experimental).
+  Availability: source.
+
 ## 2026-10-12 — A remote in a cluster home runs with that home as HOME (server)
 
 - Observed on an `oci@` pod: the server's HOME was the container's own `/root`,
