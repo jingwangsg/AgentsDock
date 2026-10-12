@@ -38,14 +38,19 @@ LIMITS = {
     "window": {"pages": 2, "quote_chars": 800, "result_chars": 600, "output_bytes": 20_000},
     "day": {"pages": 8, "quote_chars": 300, "result_chars": 160, "output_bytes": 32_000},
 }
-# key: value, key=value and "key": "value" (a value without a letter, as in
-# max_tokens=4096, is a count); --token value; and long random-looking ASCII
-# strings, which include full commit hashes. Classes stay ASCII: Python's \w
-# would also match a long run of Chinese text.
+# Values of secret-named keys (key: value, key=value, "key": "value",
+# --key value, where the name may continue only after _ or -, so tokenizer
+# and max_tokens are left alone), Bearer tokens, URL credentials, tokens
+# with a known prefix, and hex strings of 32 or more digits (which include
+# full commit hashes). Character classes stay ASCII: Python's \w would also
+# match a run of Chinese text.
 SECRET_RE = re.compile(
-    r"""(?i)(?:token|password|passwd|secret|api[_-]?key)[a-z0-9_]*["']?\s*[:=]\s*["']?(?=[^\s"']*[a-z])[^\s"',}]+"""
-    r"|--(?:token|password|passwd|secret|api-?key)[a-z0-9_-]*\s+\S+"
-    r"|(?<![a-z0-9_-])(?=[a-z0-9_-]*\d)(?=[a-z0-9_-]*[a-z])[a-z0-9_-]{32,}(?![a-z0-9_-])"
+    r"""(?i)(?:token|password|passwd|secret|api[_-]?key|密码)(?:[_-][a-z0-9_-]*)?["']?\s*[:=：]\s*["']?[^\s"',}]+"""
+    r"|--(?:token|password|passwd|secret|api-?key)(?:-[a-z0-9-]*)?\s+\S+"
+    r"|\bbearer\s+\S+"
+    r"|(?<=://)[^\s/:@]+:[^\s/@]+(?=@)"
+    r"|(?<![a-z0-9_-])(?:sk-|ghp_|gho_|github_pat_|xox[abp]-|hf_|AKIA)[a-z0-9_-]{16,}"
+    r"|(?<![a-z0-9])[0-9a-f]{32,}(?![a-z0-9])"
 )
 
 
@@ -145,8 +150,9 @@ def summarize_chat(events: list[dict], since: datetime, until: datetime, last_ev
             messages[event["queued_id"]] = {"at": at, "text": event["prompt"], "queued_id": event["queued_id"]}
         elif kind == "turn_queue_updated" and event.get("queued_id") in messages:
             messages[event["queued_id"]]["text"] = event.get("prompt") or messages[event["queued_id"]]["text"]
-        elif kind == "turn_unqueued":
-            # The user removed the queued message before it ran.
+        elif kind == "turn_unqueued" and event.get("reason") != "native_delivery_fence":
+            # The user removed the queued message before it ran. A fence
+            # precedes a steer into a running Codex goal; the steer follows.
             messages.pop(event.get("queued_id"), None)
         elif kind == "turn_steered" and run_id and event.get("queued_id"):
             queued_runs[event["queued_id"]] = run_id
@@ -278,8 +284,7 @@ def main() -> int:
             sessions = hub.get(f"{prefix}/api/sessions").get("sessions") or []
         except Exception as exc:
             notes.append(f"{server}: unreachable ({error_text(exc)})")
-            # A remote the hub cannot reach is out of the user's reach too;
-            # only a local failure can hide what the user did.
+            # A remote the hub cannot reach is out of the user's reach too.
             if not prefix:
                 complete = False
             continue
@@ -343,7 +348,8 @@ def main() -> int:
         kept = []
         for line in lines:
             allowance -= len(line.encode()) + 1
-            if allowance < 0:
+            # The chat's header line is kept even when its share is smaller.
+            if allowance < 0 and kept:
                 kept.append(f"({len(lines) - len(kept)} more lines left out to fit the output limit)")
                 break
             kept.append(line)

@@ -17,8 +17,8 @@
   turn without a purpose that was not imported from a provider transcript:
   typed, queued (counted when queued, with a later edit's text, dropped if
   the user removed it) or steered. Each message is followed by the outcome
-  of the run it started or joined, printed once for messages steered into
-  the same run. Scheduled job runs, mailbox wakes and cross-chat mail are
+  of the run it started or joined, printed once after consecutive messages
+  of the same run. Scheduled job runs, mailbox wakes and cross-chat mail are
   listed as agent activity. A chat where the user said nothing in a half
   hour appears only when its agent did something in it (latest model text
   and tool calls). `turn_stopped` (Stop, or a restart that interrupted the
@@ -26,20 +26,22 @@
   turn of its chat. Day mode adds each chat's active hours.
 - A remote the hub cannot reach is one `unreachable` entry in the
   `Servers:` line, and the run continues; the user cannot reach it through
-  the hub either. When a local read fails the script prints `READ_ERRORS`
-  instead of `NO_ACTIVITY`, which it prints only when every local read
-  succeeded and nothing happened.
+  the hub either. When any other read fails (the local chat list, the
+  remote list, or one chat's events) the script prints `READ_ERRORS`; it
+  prints `NO_ACTIVITY` only when those reads succeeded and nothing
+  happened.
 - Output is bounded: two or eight pages of 500 compact events per chat,
   clipped quotes and results, and 20 KB (half hour) or 32 KB (day) in total.
   Codex gives the model about 10k tokens of a command's output and drops the
   middle of longer output; a day's 45 KB measured 11.3k tokens and the model
   had to read the missing part again. When the chats do not fit, bytes go to
   the smallest chats first and the long ones are cut, so no chat disappears.
-  Secrets are replaced by `[redacted]`: `key: value`, `key=value` and
-  `"key": "value"` for token, password, secret and API key names when the
-  value contains a letter; `--token value` style arguments; and ASCII
-  strings of 32 or more letters, digits, `_` and `-` that mix letters and
-  digits, which also removes full commit hashes.
+  Secrets are replaced by `[redacted]`: the values of token, password,
+  secret and API key names (`key: value`, `key=value`, `"key": "value"`,
+  `--key value`; `tokenizer` and `max_tokens` do not count), Bearer tokens,
+  credentials in URLs, tokens with a known prefix (`sk-`, `ghp_`, `hf_` and
+  others) and hex strings of 32 or more digits, which include full commit
+  hashes. Directory and model names with long mixed strings are kept.
 - The assistant itself is configuration on the hub, not code. A chat
   「每日汇总助手」 (folder Monitor, Codex, GPT-6.1-Sol, effort medium, cwd the
   repository root, title fixed, jobs access read-only) carries its standing

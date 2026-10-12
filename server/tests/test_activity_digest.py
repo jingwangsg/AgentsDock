@@ -33,15 +33,19 @@ class SummarizeChatTests(unittest.TestCase):
             event(4, "turn_queued", 3, queued_id="queued_q", prompt="then the dev log", purpose=None),
             event(5, "turn_queue_updated", 4, queued_id="queued_q", prompt="then the DEV_LOG"),
             event(6, "turn_queued", 4, queued_id="queued_x", prompt="never mind", purpose=None),
-            event(7, "turn_unqueued", 5, queued_id="queued_x"),
-            event(8, "turn_finished", 10, run_id="run_a", result_text="Fixed both."),
+            event(7, "turn_unqueued", 5, queued_id="queued_x", message="Removed queued message."),
+            # A steer into a running Codex goal is fenced first, then delivered.
+            event(8, "turn_queued", 6, queued_id="queued_g", prompt="also check goal", purpose=None),
+            event(9, "turn_unqueued", 6, queued_id="queued_g", reason="native_delivery_fence"),
+            event(10, "turn_steered", 6, run_id="run_a", queued_id="queued_g", prompt="also check goal"),
+            event(11, "turn_finished", 10, run_id="run_a", result_text="Fixed both."),
             # The queued message runs later; it was already counted when queued.
-            event(9, "turn_started", 10, run_id="run_b", prompt="then the DEV_LOG", queued_id="queued_q", purpose=None),
+            event(12, "turn_started", 10, run_id="run_b", prompt="then the DEV_LOG", queued_id="queued_q", purpose=None),
         ])
 
         self.assertEqual(
             [message["text"] for message in digest["messages"]],
-            ["fix the tunnel", "also the logs", "then the DEV_LOG"],
+            ["fix the tunnel", "also the logs", "then the DEV_LOG", "also check goal"],
         )
         self.assertEqual(digest["messages"][1]["run"]["result"], "Fixed both.")
         self.assertTrue(digest["messages"][2]["run"]["running"])
@@ -128,13 +132,20 @@ class WindowBoundsTests(unittest.TestCase):
 
 
 class RedactionTests(unittest.TestCase):
-    def test_secrets_are_redacted_and_counts_and_chinese_text_are_kept(self):
+    def test_secrets_are_redacted_and_ordinary_content_is_kept(self):
         for text, expected in [
             ("fix it, token=abc123", "fix it, [redacted]"),
+            ("export AGENTSDOCK_AGENT_TOKEN=abc123", "export AGENTSDOCK_AGENT_[redacted]"),
             ('{"password": "hunter2"}', '{"[redacted]"}'),
+            ("密码：hunter2", "[redacted]"),
             ("login --password hunter2 now", "login [redacted] now"),
-            ("key sk1234567890abcdefghijklmnopqrstuv", "key [redacted]"),
-            ("max_tokens=4096", "max_tokens=4096"),
+            ("Authorization: Bearer abc.def", "Authorization: [redacted]"),
+            ("clone https://jing:S3cret@github.com/x", "clone https://[redacted]@github.com/x"),
+            ("key sk-1234567890abcdefghij", "key [redacted]"),
+            ("max_tokens=4096,temperature=0.7", None),
+            ("tokenizer: Qwen/Qwen3-8B", None),
+            ("/data/wam_admitted_l40_window_filter_20261013/run.py", None),
+            ("Qwen3-VL-235B-A22B-Instruct-2507", None),
             ("第一轮去重约50022小时第二轮约48112小时固定Stage2只含第一轮最初16批目标表", None),
         ]:
             with self.subTest(text=text):
