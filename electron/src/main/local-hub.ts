@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { connect } from 'node:net'
 import { homedir, networkInterfaces } from 'node:os'
 import { join } from 'node:path'
@@ -32,10 +32,27 @@ export function parseConfigEnv(text: string): Record<string, string> {
   return values
 }
 
-/** Token install.sh wrote for the local server, or '' when the file or key is absent or malformed. */
-export function readLocalHubToken(
-  configDir = process.env.AGENTS_SERVER_CONFIG_DIR || join(homedir(), '.config', 'agents-server')
-): string {
+/**
+ * Config dirs whose `env` may hold the token of the server on this Mac's 7850, in the order they are tried:
+ * install.sh's default and named instances (server_instances.py), a hub-deployed server (remote_servers.py
+ * DEFAULT_INSTALL_DIR), and the config dir of the hand-written com.agentsdock.local-server LaunchAgent that runs a
+ * source checkout (no script in this repo creates it). AGENTS_SERVER_CONFIG_DIR names the one server to use instead.
+ */
+export function localHubConfigDirs(home = homedir(), configDir = process.env.AGENTS_SERVER_CONFIG_DIR): string[] {
+  if (configDir) return [configDir]
+  const instances = join(home, '.config', 'agents-server-instances')
+  let names: string[] = []
+  try { names = readdirSync(instances, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name).sort() } catch { /* no named instances */ }
+  return [
+    join(home, '.config', 'agents-server'),
+    ...names.map(name => join(instances, name)),
+    join(home, '.agentsdock-server'),
+    join(home, '.config', 'agentsdock-local')
+  ]
+}
+
+/** Token in `<configDir>/env`, or '' when the file or key is absent or malformed. */
+export function readLocalHubToken(configDir: string): string {
   let text: string
   try { text = readFileSync(join(configDir, 'env'), 'utf8') } catch { return '' }
   const token = parseConfigEnv(text).AGENTSDOCK_AGENT_TOKEN ?? ''

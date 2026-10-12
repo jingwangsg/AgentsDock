@@ -1,5 +1,43 @@
 # Public development log
 
+## 2026-10-12 — A fresh desktop attaches to the AgentsServer already running on this Mac (desktop)
+
+- Before: on first launch the desktop read one token file, the default
+  install's `~/.config/agents-server/env`, and stored its token without
+  checking it. A Mac whose server kept its token elsewhere (a named instance,
+  a hub-deployed server, a source checkout's LaunchAgent) opened the guided
+  install titled "No local AgentsServer detected on 127.0.0.1:7850",
+  although a server answered there.
+- Now, when 127.0.0.1:7850 answers 401 and the local profile has no token,
+  the desktop tries the tokens in `~/.config/agents-server/env`, then
+  `~/.config/agents-server-instances/<name>/env` by name, then a
+  hub-deployed server's `~/.agentsdock-server/env`, then the source
+  checkout LaunchAgent's env file (`AGENTS_SERVER_CONFIG_DIR`, when set,
+  replaces the list). It keeps the first one the server accepts on a health
+  check, then opens on the server's chats and lists its remote servers in
+  the switcher, as before. A server that needs no token is used without one.
+- A server that answers but accepts none of those tokens gets a token prompt
+  in place of the install: it names the files searched and checks a pasted
+  token with the server before storing it. With nothing listening on 7850
+  the guided install opens, now also when a token file exists: the desktop
+  attaches once the server answers, on Retry or at the next poll (30 s).
+  Profiles that already hold a token are not changed.
+- Checks: unit tests for the search order, the attach decision (token
+  accepted, none accepted, nothing listening, a profile with a stored token,
+  a pasted token) and the token prompt. In the built app with a fresh user
+  data directory: against the running hub it opened on the hub's chat list
+  within 3 s of launch (1.1 s and 2.9 s in two runs), with its remotes in
+  the switcher and no dialog; the token was adopted 0.2 s after the window
+  opened, before the window had loaded. With
+  the app pointed at an isolated server: a token in the configured
+  directory attached; with no matching token file the prompt listed the
+  searched files, rejected a wrong token without storing it and connected
+  with the right one; nothing listening opened the guided install; a server
+  without a token attached. Not exercised: a real named instance,
+  hub-deployed server or source-checkout LaunchAgent with its own token
+  (unit tests only), and a slow server, during which the onboarding dialog
+  can show briefly before the attach finishes.
+
 ## 2026-10-12 — Code references open in Zed when Zed has their project open (desktop, Canvas runtime)
 
 - A click on a code reference opens the file in Zed at its line and column
