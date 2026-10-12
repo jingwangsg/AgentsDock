@@ -686,6 +686,50 @@ asyncio.run(main())
 
         assert asyncio.run(survivors()) == []
 
+    def test_one_shot_ssh_commands_end_when_ssh_exits_while_a_proxycommand_child_holds_their_output(self) -> None:
+        # They read ssh's output until end of file; seen live 2026-10-13 on a hub running older code, the git
+        # rewrite waited out its 120 s timeout behind a Sky websocket proxy that outlived ssh.
+        script = self.tmp_path / "ssh"
+        children = self.tmp_path / "children"
+        script.write_text(f'''#!{sys.executable}
+import subprocess, sys
+# Plays the ProxyCommand's child: it inherits ssh's output and outlives ssh.
+child = subprocess.Popen(["sleep", "30"])
+with open({str(children)!r}, "a") as out:
+    out.write(f"{{child.pid}}\\n")
+sys.stdin.buffer.read()
+print("done")
+''')
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        server = make_server(ssh_host="lab", local_port=free_port())
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
+        tunnel = rs.Tunnel(server, None)
+        # One -R site forward, so the git rewrite has a command to run.
+        tunnel._site_args = ["-R", "12052:git.example:12051"]
+
+        async def main() -> None:
+            route = await rs.ssh_route(server.ssh_host)
+            started = time.monotonic()
+            try:
+                # The child sleeps 30 s. ssh's exit is seen within 1 s and the group killed 5 s later, so all
+                # four end in about 6 s; the old code waited for the child.
+                lines, *_ = await asyncio.wait_for(asyncio.gather(
+                    manager._run_ssh(rs.DeployJob(job_id="deploystep01"), route, [route.destination, "true"], stdin=b"", idle_timeout=60),
+                    manager._upload_from(rs.DeployJob(job_id="upload000001"), route, "/tmp/install", b"source", 0),
+                    rs.start_remote_server(server),
+                    tunnel._point_git_at_forwards(route),
+                ), 15)
+            finally:
+                await manager.stop()
+            assert time.monotonic() - started >= 5, "the children got no time to exit by themselves"
+            assert lines == ["done"]
+            pids = list(map(int, children.read_text().split()))
+            assert len(pids) == 4
+            assert [pid for pid in pids if not await gone(pid)] == []
+
+        asyncio.run(main())
+
     def test_a_tunnel_stays_off_a_local_port_another_process_holds_and_takes_it_once_free(self) -> None:
         # Seen live 2026-10-13: a test harness listened on a remote's tunnel port while that tunnel was down.
         # Each ssh connected in full and then could not bind, and the hub proxy sent the remote's token to
