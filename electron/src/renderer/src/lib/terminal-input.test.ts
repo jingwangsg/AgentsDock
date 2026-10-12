@@ -39,6 +39,7 @@ describe('terminalKeyAction on macOS', () => {
   it('leaves the app’s ⌘ chords to the menu accelerators', () => {
     for (const letter of ['w', 'b', 'r', 't', 'n', 'p', 'o', 'f', 'l', ',']) expect(mac(key(letter, { meta: true })), letter).toBeNull()
     expect(mac(key('C', { meta: true, shift: true }))).toBeNull()
+    expect(mac(key('ArrowLeft', { meta: true, shift: true }))).toBeNull()
     expect(mac(key('ArrowLeft', { meta: true, alt: true }))).toBeNull()
   })
 })
@@ -52,6 +53,9 @@ describe('terminalKeyAction elsewhere', () => {
     expect(other(key('V', { ctrl: true, shift: true }, 'KeyV'))).toEqual({ command: 'paste' })
     expect(other(key('A', { ctrl: true, shift: true }, 'KeyA'))).toEqual({ command: 'select-all' })
     expect(other(key('K', { ctrl: true, shift: true }, 'KeyK'))).toEqual({ command: 'clear' })
+    expect(other(key('F', { ctrl: true, shift: true }, 'KeyF'))).toEqual({ command: 'find' })
+    expect(other(key('W', { ctrl: true, shift: true }, 'KeyW'))).toEqual({ command: 'close' })
+    for (const letter of ['f', 'w']) expect(other(key(letter, { ctrl: true }, `Key${letter.toUpperCase()}`))).toBeNull()
     expect(other(key('=', { ctrl: true }))).toEqual({ command: 'zoom-in' })
     expect(other(key('0', { ctrl: true }))).toEqual({ command: 'zoom-reset' })
   })
@@ -68,5 +72,16 @@ describe('shellQuotePath', () => {
     expect(shellQuotePath('/tmp/my file.txt')).toBe(`'/tmp/my file.txt'`)
     expect(shellQuotePath(`/tmp/it's $HOME;rm`)).toBe(`'/tmp/it'\\''s $HOME;rm'`)
     expect(shellQuotePath('/tmp/中文.png')).toBe(`'/tmp/中文.png'`)
+  })
+
+  it('keeps backslashes out of the quotes, where fish reads \\\\ and \\\' as escapes', () => {
+    // fish ran `echo PWNED` for the files `x\\`, `;echo PWNED;`, `y\\` when backslashes stayed inside the quotes.
+    expect(shellQuotePath('/tmp/x\\')).toBe(`'/tmp/x'\\\\''`)
+    expect(shellQuotePath(`/tmp/a\\'b`)).toBe(`'/tmp/a'\\\\''\\''b'`)
+  })
+
+  it('refuses names with control characters', () => {
+    expect(shellQuotePath('/tmp/a\nb')).toBeNull()
+    expect(shellQuotePath('/tmp/a\x1b[31m')).toBeNull()
   })
 })

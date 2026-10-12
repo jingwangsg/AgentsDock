@@ -1,6 +1,6 @@
 import { t } from '@shared/i18n'
 import * as Switch from '@radix-ui/react-switch'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useLocale } from '../lib/i18n'
 import {
   DEFAULT_TERMINAL_FONT_FAMILY, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_SCROLLBACK_OPTIONS,
@@ -14,13 +14,19 @@ const FONT_SIZES = Array.from({ length: TERMINAL_FONT_SIZE_MAX - TERMINAL_FONT_S
 export function TerminalSettings() {
   useLocale()
   const settings = useTerminalSettings()
-  const [fontFamily, setFontFamily] = useState(settings.fontFamily)
-  useEffect(() => setFontFamily(settings.fontFamily), [settings.fontFamily])
-  const commitFontFamily = () => { if (fontFamily.trim() !== settings.fontFamily) updateTerminalSettings({ fontFamily }) }
+  const mac = currentShortcutPlatform() === 'mac'
+  // Typed text applies on Enter or blur; until then the field shows the stored value.
+  const [fontFamily, setFontFamily] = useState<string | null>(null)
+  const commitFontFamily = () => {
+    if (fontFamily !== null && fontFamily.trim() !== settings.fontFamily) updateTerminalSettings({ fontFamily })
+    setFontFamily(null)
+  }
 
   return <section className="app-settings-section" aria-labelledby="app-settings-terminal-title">
     <header><h2 id="app-settings-terminal-title">{t('settings.terminal')}</h2></header>
-    <p className="app-settings-section-help">{t('settings.terminalHelp')}</p>
+    <p className="app-settings-section-help">{t('settings.terminalHelp', mac
+      ? { zoomIn: '⌘+', zoomOut: '⌘−', zoomReset: '⌘0' }
+      : { zoomIn: 'Ctrl+=', zoomOut: 'Ctrl+−', zoomReset: 'Ctrl+0' })}</p>
     <div className="app-settings-list">
       <label className="app-settings-row">
         <div className="app-settings-row-copy"><strong>{t('settings.terminalFontFamily')}</strong><span id="terminal-font-family-help">{t('settings.terminalFontFamilyHelp')}</span></div>
@@ -30,7 +36,7 @@ export function TerminalSettings() {
           aria-describedby="terminal-font-family-help"
           placeholder={DEFAULT_TERMINAL_FONT_FAMILY}
           spellCheck={false}
-          value={fontFamily}
+          value={fontFamily ?? settings.fontFamily}
           onChange={event => setFontFamily(event.target.value)}
           onBlur={commitFontFamily}
           onKeyDown={event => { if (event.key === 'Enter') commitFontFamily() }}
@@ -51,7 +57,7 @@ export function TerminalSettings() {
         </select>
       </label>
       <SwitchRow settingKey="cursorBlink" settings={settings} label={t('settings.terminalCursorBlink')} />
-      {currentShortcutPlatform() === 'mac' && <SwitchRow settingKey="optionAsMeta" settings={settings} label={t('settings.terminalOptionAsMeta')} help={t('settings.terminalOptionAsMetaHelp')} />}
+      {mac && <SwitchRow settingKey="optionAsMeta" settings={settings} label={t('settings.terminalOptionAsMeta')} help={t('settings.terminalOptionAsMetaHelp')} />}
       <SwitchRow settingKey="copyOnSelect" settings={settings} label={t('settings.terminalCopyOnSelect')} help={t('settings.terminalCopyOnSelectHelp')} />
       <label className="app-settings-row">
         <strong className="app-settings-row-title">{t('settings.terminalScrollback')}</strong>

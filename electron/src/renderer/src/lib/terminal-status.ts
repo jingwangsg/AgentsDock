@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 
 /** What a terminal tab's shell reports about itself; it lives only in this window. */
-export interface TerminalStatus {
+interface TerminalStatus {
   /** OSC 0/2 window title. */
   title: string | null
   /** OSC 7 working directory. */

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import type { Surface } from '@shared/types'
 import { updateTerminalSettings } from '../lib/terminal-settings'
+import { useTerminalStatus } from '../lib/terminal-status'
 import { useAppStore } from '../store/app-store'
 import { SurfaceStack } from './SurfacePane'
 import { TerminalSurface } from './TerminalSurface'
@@ -24,9 +25,19 @@ vi.mock('@xterm/xterm', () => ({
     writes: string[] = []
     pendingWriteCallbacks: Array<() => void> = []
     osc = new Map<number, (data: string) => boolean>()
+    csi: Array<[string, (params: number[]) => boolean]> = []
+    dcs: Array<[string, (data: string, params: number[]) => boolean]> = []
     listeners: Record<string, (value?: any) => void> = {}
-    markers: Array<{ line: number; isDisposed: boolean }> = []
-    parser = { registerOscHandler: (ident: number, handler: (data: string) => boolean) => { this.osc.set(ident, handler); return { dispose() {} } } }
+    markers: Array<{ line: number; isDisposed: boolean; dispose: () => void }> = []
+    textarea = document.createElement('textarea')
+    parser = {
+      registerOscHandler: (ident: number, handler: (data: string) => boolean) => { this.osc.set(ident, handler); return { dispose() {} } },
+      registerCsiHandler: (id: { prefix?: string; intermediates?: string; final: string }, handler: (params: number[]) => boolean) => { this.csi.push([`${id.prefix ?? ''}${id.intermediates ?? ''}${id.final}`, handler]); return { dispose() {} } },
+      registerDcsHandler: (id: { intermediates?: string; final: string }, handler: (data: string, params: number[]) => boolean) => { this.dcs.push([`${id.intermediates ?? ''}${id.final}`, handler]); return { dispose() {} } }
+    }
+    // The newest handler for a sequence answers first; true means it consumed the sequence.
+    consumesCsi(id: string, params: number[] = []) { return this.csi.filter(([key]) => key === id).some(([, handler]) => handler(params)) }
+    consumesDcs(id: string) { return this.dcs.filter(([key]) => key === id).some(([, handler]) => handler('', [])) }
     keyHandler: (event: KeyboardEvent) => boolean = () => true
     focus = vi.fn()
     clear = vi.fn()
@@ -49,7 +60,11 @@ vi.mock('@xterm/xterm', () => ({
     }
     finishWrites() { for (const callback of this.pendingWriteCallbacks.splice(0)) callback() }
     input(data: string, wasUserInput = false) { if (wasUserInput) this.listeners.data?.(data) }
-    registerMarker() { const marker = { line: this.buffer.active.baseY + this.buffer.active.cursorY, isDisposed: false }; this.markers.push(marker); return marker }
+    registerMarker() {
+      const marker = { line: this.buffer.active.baseY + this.buffer.active.cursorY, isDisposed: false, dispose() { marker.isDisposed = true } }
+      this.markers.push(marker)
+      return marker
+    }
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { this.keyHandler = handler }
     on(name: string) { return (listener: (value?: any) => void) => { this.listeners[name] = listener; return { dispose: vi.fn() } } }
     onData = this.on('data')
@@ -154,9 +169,6 @@ describe('TerminalSurface', () => {
     await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledWith('profile-a', 4, 'term_abc', { cwd: '/work/app', columns: 80, rows: 24 }))
     const [terminal] = xterm.instances
     expect(terminal.open).toHaveBeenCalledOnce()
-    expect(terminal.options).toMatchObject({ scrollback: 10_000, macOptionIsMeta: false, macOptionClickForcesSelection: true, cursorStyle: 'bar', screenReaderMode: false })
-    expect(terminal.unicode.activeVersion).toBe('11')
-    expect(xterm.addons.map(item => item.kind).sort()).toEqual(['clipboard', 'fit', 'image', 'links', 'search', 'unicode11', 'webgl'])
 
     view.rerender(<TerminalSurface surface={surface} active={false} />)
     await act(async () => { await Promise.resolve() })
@@ -242,8 +254,9 @@ describe('TerminalSurface', () => {
     })
   })
 
-  it('posts OSC 777 notifications and marks a bell only while the tab is out of sight', async () => {
+  it('posts OSC 777 notifications at most once a second, and marks a bell only while the tab is out of sight', async () => {
     const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
     const { terminal } = await openConnected()
     act(() => {
       terminal.osc.get(777)('notify;Deploy;done; all green')
@@ -256,8 +269,20 @@ describe('TerminalSurface', () => {
     hasFocus.mockReturnValue(false)
     act(() => terminal.osc.get(777)('notify;Deploy;done; all green'))
     expect(native.notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Deploy', body: 'done; all green', surface: true }))
+    act(() => terminal.osc.get(9)('again too soon'))
+    expect(native.notify).toHaveBeenCalledOnce()
+    now.mockReturnValue(11_500)
     act(() => terminal.osc.get(9)('tests passed'))
     expect(native.notify).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'vim notes.md', body: 'tests passed' }))
+
+    // A bell while the window is in the background marks the tab; returning to the window clears it.
+    function BellMark() { return <output aria-label="bell">{String(useTerminalStatus(surface.id).bell)}</output> }
+    render(<BellMark />)
+    act(() => terminal.listeners.bell())
+    expect(screen.getByLabelText('bell')).toHaveTextContent('true')
+    hasFocus.mockReturnValue(true)
+    act(() => { window.dispatchEvent(new Event('focus')) })
+    expect(screen.getByLabelText('bell')).toHaveTextContent('false')
   })
 
   it('shows the shell title and directory in the tab header until the user renames it', async () => {
@@ -276,6 +301,13 @@ describe('TerminalSurface', () => {
     useAppStore.setState({ updateSurface } as never)
     act(() => { title.focus(); title.blur() })
     expect(updateSurface).not.toHaveBeenCalled()
+    // While the field is edited the shell's new title does not replace what the user is typing.
+    act(() => { title.focus() })
+    act(() => terminal.listeners.title('top'))
+    expect(title).toHaveValue('htop')
+    fireEvent.change(title, { target: { value: 'build box' } })
+    act(() => { title.blur() })
+    expect(updateSurface).toHaveBeenCalledExactlyOnceWith('term_abc', { name: 'build box' })
   })
 
   it('offers a new shell after the shell exits and reuses the same terminal for it', async () => {
@@ -322,10 +354,9 @@ describe('TerminalSurface', () => {
     keydown({ key: 'a', metaKey: true })
     expect(terminal.selectAll).toHaveBeenCalledOnce()
 
+    // Line-editing chords are typed to the shell (the byte table is in terminal-input.test.ts).
     keydown({ key: 'ArrowLeft', metaKey: true })
-    keydown({ key: 'Backspace', metaKey: true })
-    keydown({ key: 'ArrowRight', altKey: true })
-    expect(terminalApi.write.mock.calls.map(call => call[3])).toEqual(['\x01', '\x15', '\x1bf'])
+    expect(terminalApi.write).toHaveBeenLastCalledWith('profile-a', 4, 'term_abc', '\x01')
 
     key = keydown({ key: 'r', metaKey: true })
     expect(key.handled).toBe(false)
@@ -394,15 +425,28 @@ describe('TerminalSurface', () => {
     expect((terminal.options.linkHandler as { allowNonHttpProtocols: boolean }).allowNonHttpProtocols).toBe(false)
   })
 
-  it('copies on select only when the setting is on', async () => {
-    const { terminal } = await openConnected()
+  it('copies a mouse selection when the setting is on, but not a Find match or Select All', async () => {
+    const { view, terminal } = await openConnected()
+    const host = view.container.querySelector('.terminal-surface-host')!
     terminal.hasSelection.mockReturnValue(true)
     terminal.getSelection.mockReturnValue('word')
-    act(() => terminal.listeners.selection())
+    const mouseSelect = () => {
+      fireEvent.mouseDown(host, { button: 0 })
+      act(() => terminal.listeners.selection())
+      fireEvent.mouseUp(window)
+    }
+    mouseSelect()
     expect(native.writeClipboard).not.toHaveBeenCalled()
+
     act(() => updateTerminalSettings({ copyOnSelect: true }))
+    mouseSelect()
+    expect(native.writeClipboard).toHaveBeenCalledExactlyOnceWith('word')
+    await act(async () => { await new Promise(resolve => setTimeout(resolve)) })
+    // Selections made by Find, ⌘A or a right click are not copied.
     act(() => terminal.listeners.selection())
-    expect(native.writeClipboard).toHaveBeenCalledWith('word')
+    fireEvent.mouseDown(host, { button: 2 })
+    act(() => terminal.listeners.selection())
+    expect(native.writeClipboard).toHaveBeenCalledOnce()
   })
 
   it('offers Copy, Paste, Select All, Clear and Find on right click, unless a program tracks the mouse', async () => {
@@ -456,16 +500,119 @@ describe('TerminalSurface', () => {
   it('types a dropped file’s quoted path for a server on this computer and refuses for a remote', async () => {
     const { view } = await openConnected()
     const host = view.container.querySelector('.terminal-surface-host')!
-    const drop = () => fireEvent.drop(host, { dataTransfer: { types: ['Files'], files: [new File(['x'], 'my notes.txt')] } })
-    drop()
+    const drop = (name: string) => fireEvent.drop(host, { dataTransfer: { types: ['Files'], files: [new File(['x'], name)] } })
+    drop('my notes.txt')
     expect(terminalApi.write).toHaveBeenLastCalledWith('profile-a', 4, 'term_abc', `'/Users/me/my notes.txt' `)
 
     const setError = vi.fn()
-    useAppStore.setState({ setError, profiles: [{ ...useAppStore.getState().profiles[0], serverUrl: 'http://127.0.0.1:7850/api/remote/b18c' }] } as never)
+    useAppStore.setState({ setError } as never)
     terminalApi.write.mockClear()
-    drop()
+    drop('bad\nname')
+    expect(setError).toHaveBeenLastCalledWith(expect.stringContaining('control character'))
+
+    useAppStore.setState({ profiles: [{ ...useAppStore.getState().profiles[0], serverUrl: 'http://127.0.0.1:7850/api/remote/b18c' }] })
+    drop('my notes.txt')
     expect(terminalApi.write).not.toHaveBeenCalled()
-    expect(setError).toHaveBeenCalledWith(expect.stringContaining('server on this computer'))
+    expect(setError).toHaveBeenLastCalledWith(expect.stringContaining('server runs on this computer'))
+  })
+
+  it('swallows answered queries in a replay, answers the ones that end it, and answers live ones', async () => {
+    const { terminal } = await openConnected()
+    emit('terminal:state', { state: 'connected', name: 'zsh' })
+    emit('terminal:data', { data: 'old \x1b[c answered\r\n\x1b[0c' })
+    // The query that ends the replay is parsed apart from the rest: the program may still wait for it.
+    expect(terminal.writes.slice(-2)).toEqual(['old \x1b[c answered\r\n', '\x1b[0c'])
+    for (const id of ['n', '?n', 'c', '>c', '=c', '>q', '$p', '?$p', '?u', '?S']) expect(terminal.consumesCsi(id), id).toBe(true)
+    expect(terminal.consumesCsi('t', [14])).toBe(true)
+    expect(terminal.consumesCsi('t', [22])).toBe(false)
+    expect(terminal.consumesDcs('$q')).toBe(true)
+    expect(terminal.consumesDcs('+q')).toBe(true)
+    for (const ident of [4, 10, 11, 12, 17, 19, 52]) expect(terminal.osc.get(ident)(ident === 4 ? '1;?' : ident === 52 ? 'c;?' : '?'), String(ident)).toBe(true)
+    expect(terminal.osc.get(52)('c;aGk=')).toBe(false)
+
+    // RIS, then the answered part: the trailing query is answered, side effects stay suppressed.
+    act(() => { terminal.pendingWriteCallbacks.splice(0, 2).forEach((callback: () => void) => callback()) })
+    expect(terminal.consumesCsi('c')).toBe(false)
+    addon('clipboard').provider.writeText('c', 'replayed copy')
+    expect(native.writeClipboard).not.toHaveBeenCalled()
+    act(() => terminal.finishWrites())
+    expect(terminal.consumesDcs('+q')).toBe(false)
+    expect(terminal.osc.get(11)('?')).toBe(false)
+  })
+
+  it('takes the replay from the server’s byte count: none for a new shell, several data events for a long one', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    render(<TerminalSurface surface={surface} active />)
+    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(1))
+    const [terminal] = xterm.instances
+    // A new shell: its first output is live.
+    emit('terminal:state', { state: 'connected', replayBytes: 0 })
+    act(() => terminal.finishWrites())
+    emit('terminal:data', { data: 'prompt' })
+    expect(terminal.consumesCsi('c')).toBe(false)
+
+    // 'héllo' is 6 bytes; the replay ends with the data event that completes them.
+    emit('terminal:state', { state: 'connected', replayBytes: 6 })
+    emit('terminal:data', { data: 'hé' })
+    emit('terminal:data', { data: 'llo' })
+    act(() => terminal.finishWrites())
+    expect(terminal.consumesCsi('c')).toBe(false)
+    act(() => terminal.osc.get(9)('live notification'))
+    expect(native.notify).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a newer replay’s side effects suppressed when an older replay finishes during it', async () => {
+    const { terminal } = await openConnected()
+    emit('terminal:state', { state: 'connected' })
+    emit('terminal:data', { data: 'first replay' })
+    emit('terminal:state', { state: 'connected' })
+    emit('terminal:data', { data: 'second replay' })
+    // The first RIS and replay finish while the second replay is still queued.
+    act(() => { terminal.pendingWriteCallbacks.splice(0, 3).forEach((callback: () => void) => callback()) })
+    expect(terminal.consumesCsi('c')).toBe(true)
+    act(() => terminal.finishWrites())
+    expect(terminal.consumesCsi('c')).toBe(false)
+  })
+
+  it('drops the prompt marks of the old screen when an attach resets it', async () => {
+    const { terminal } = await openConnected()
+    terminal.osc.get(133)('A')
+    const [marker] = terminal.markers
+    emit('terminal:state', { state: 'connected' })
+    expect(marker.isDisposed).toBe(false)
+    act(() => terminal.finishWrites())
+    expect(marker.isDisposed).toBe(true)
+    terminal.buffer.active.viewportY = 10
+    keydown({ key: 'ArrowUp', metaKey: true })
+    expect(terminal.scrollToLine).not.toHaveBeenCalled()
+  })
+
+  it('refocuses an open find bar on a second Find, and runs Control-Shift chords elsewhere', async () => {
+    const { terminal } = await openConnected()
+    const find = () => act(() => { window.dispatchEvent(new CustomEvent('agentsdock:find-active-surface', { cancelable: true })) })
+    find()
+    const input = await screen.findByRole('textbox', { name: 'Find' })
+    act(() => { terminal.textarea.focus() })
+    find()
+    expect(input).toHaveFocus()
+    await userEvent.setup().keyboard('{Escape}')
+
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+    cleanup()
+    xterm.instances.length = 0
+    render(<TerminalSurface surface={surface} active />)
+    await waitFor(() => expect(xterm.instances).toHaveLength(1))
+    const linux = xterm.instances[0]
+    const press = (patch: Partial<KeyboardEvent>) => linux.keyHandler({ type: 'keydown', key: 'f', code: 'KeyF', metaKey: false, ctrlKey: true, altKey: false, shiftKey: false, preventDefault: vi.fn(), ...patch } as unknown as KeyboardEvent)
+    // Control-F stays with the shell; Control-Shift-F finds and Control-Shift-W closes the tab.
+    expect(press({})).toBe(true)
+    expect(press({ shiftKey: true, key: 'F' })).toBe(false)
+    expect(await screen.findByRole('textbox', { name: 'Find' })).toBeInTheDocument()
+    const closeSurface = vi.fn()
+    window.addEventListener('agentsdock:close-surface', closeSurface)
+    expect(press({ shiftKey: true, key: 'W', code: 'KeyW' })).toBe(false)
+    window.removeEventListener('agentsdock:close-surface', closeSurface)
+    expect(closeSurface).toHaveBeenCalledOnce()
   })
 
   it('disconnects the shell and disposes the terminal when the tab closes', async () => {

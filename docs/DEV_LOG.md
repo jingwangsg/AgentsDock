@@ -8,8 +8,10 @@
   shell's device-attribute query itself, so fish 4 shows its prompt at once.
 - Keys send what Terminal.app sends: ⌘←/⌘→/⌘⌫ (line start, end, delete to
   start), ⌥←/⌥→ (word left/right), ⌥⌫, Shift-Tab, and every Control key,
-  including Control-L, which no longer toggles the inspector (⌘L does, on
-  macOS). Option composes characters unless Settings → Terminal makes it Meta.
+  including Control-L, which no longer toggles the inspector from a focused
+  terminal. Option composes characters unless Settings → Terminal makes it
+  Meta. On Windows and Linux the terminal's own commands use Control-Shift
+  (C, V, A, K, F, W), so Control-letters stay with the shell.
 - ⌘C copies the selection, ⌘V pastes as a bracketed paste when the program
   asked for one, ⌘A selects all, ⌘K clears, ⌘F finds (case, whole word,
   regular expression, match count), ⌘+/⌘−/⌘0 size one tab, and ⌘↑/⌘↓ move
@@ -19,17 +21,27 @@
 - Mouse reporting (vim, tmux), ⌘-click on URLs and OSC 8 links (opened in the
   browser), OSC 52 clipboard writes (reads get an empty answer), shell titles
   and directories in the tab name, a bell mark on a tab out of sight, and
-  OSC 9/777 desktop notifications while the tab is out of sight. Output that
-  the server replays on reconnect does not repeat bells, notifications or
-  clipboard writes. A file dropped on a terminal types its quoted path when
-  the server runs on this computer; uploads belong to chats, so a remote
-  server shows a message instead.
+  OSC 9/777 desktop notifications (at most one a second per tab) while the
+  tab is out of sight. Notifications reuse the chat path: the notify payload
+  and its click route carry `surface: true`, main skips the chat lookup for
+  them, and the renderer opens the tab. Output that the server replays on
+  reconnect does not repeat bells, notifications or clipboard writes, and the
+  terminal does not answer the queries in it (device attributes, cursor
+  position, mode and color reports), which used to arrive at the shell as
+  typed text. Queries that end the replay are still answered: a shell that
+  has just started, such as fish 4, may be waiting on them. A file dropped on a terminal types its quoted path when the
+  server runs on this computer, quoted so that fish, bash and zsh all read it
+  as one word; uploads belong to chats, so a remote server shows a message
+  instead.
 - Settings → Terminal: font family and size, cursor shape and blink, Option
   as Meta, copy on select, scrollback (10,000 lines by default), screen reader
   support. Changes and theme switches apply to open tabs at once.
-- A tab opens its terminal and shell the first time it is shown. Idle, the
-  app with five terminal tabs (one visible) used 0.1–0.6% of a core, against
-  32–50% with ghostty-web, whose render loop never stopped.
+- A tab opens its terminal and shell the first time it is shown. Idle CPU,
+  summed over the app's main, renderer and GPU processes (`ps` CPU time over
+  30 s windows), with five terminal tabs on one server, one tab visible and
+  the window in the background, both builds run with the same Electron
+  binary: 0.1–0.6% of a core with xterm.js, 32–50% with ghostty-web, whose
+  render loop never stopped.
 - Checks: an isolated server and app drove the keys, IME, clipboard, mouse,
   links, find, settings and replay cases with real keystrokes or CDP input
   and read the bytes at the shell. Not exercised: the press-and-hold accent

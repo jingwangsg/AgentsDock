@@ -509,10 +509,10 @@ export function App() {
         toggleSidebar()
         return
       }
-      // Control-L is the shell's clear-screen on macOS, and a focused terminal keeps it everywhere;
-      // ⌘L there still reaches the menu accelerator.
-      const chord = platform === 'mac' ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey
-      if (!chord || (event.target as Element | null)?.closest?.('.terminal-surface')) return
+      if (!(event.metaKey || event.ctrlKey)) return
+      // A focused terminal keeps Control-L for the shell's clear screen; ⌘L there is left to the
+      // menu accelerator, which toggles the inspector the same way.
+      if ((event.target as Element | null)?.closest?.('.terminal-surface')) return
       const key = event.key.toLowerCase()
       if (!event.shiftKey && key === 'l') {
         event.preventDefault()

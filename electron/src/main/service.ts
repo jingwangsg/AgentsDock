@@ -5624,12 +5624,15 @@ export class AppService {
       return
     }
     // Main does not keep the tab list; the renderer checks a terminal tab when the notification is opened.
-    const session = payload.surface ? null : payload.profileId === this.activeProfileId
-      ? this.sessions.find(candidate => candidate.id === payload.sessionId)
-      : this.cache.session(profileNamespace(profile), payload.sessionId)
-    if (!session && !payload.surface) {
-      appLog('notify', 'dropped: session not in main session list', { sessionId: payload.sessionId, knownSessions: this.sessions.length, activeProfile: payload.profileId === this.activeProfileId })
-      return
+    let session: Session | null | undefined = null
+    if (!payload.surface) {
+      session = payload.profileId === this.activeProfileId
+        ? this.sessions.find(candidate => candidate.id === payload.sessionId)
+        : this.cache.session(profileNamespace(profile), payload.sessionId)
+      if (!session) {
+        appLog('notify', 'dropped: session not in main session list', { sessionId: payload.sessionId, knownSessions: this.sessions.length, activeProfile: payload.profileId === this.activeProfileId })
+        return
+      }
     }
     const emergencyAlertId = payload.emergencyAlertId?.trim() || null
     if (emergencyAlertId) {

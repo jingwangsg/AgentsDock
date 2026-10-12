@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_TERMINAL_SETTINGS, normalizeTerminalSettings, readTerminalSettings, updateTerminalSettings } from './terminal-settings'
+import { DEFAULT_TERMINAL_SETTINGS, readTerminalSettings, updateTerminalSettings } from './terminal-settings'
 
 describe('terminal settings', () => {
   beforeEach(() => localStorage.clear())
@@ -17,10 +17,9 @@ describe('terminal settings', () => {
     expect(JSON.parse(localStorage.getItem('agentsdock.terminalSettings')!)).toMatchObject({ fontSize: 15, copyOnSelect: true })
   })
 
-  it('replaces values a hand-edited or older store cannot use', () => {
-    expect(normalizeTerminalSettings({ fontSize: 400, cursorStyle: 'beam', scrollback: 12, optionAsMeta: 'yes', fontFamily: '  Iosevka  ' })).toEqual({
-      ...DEFAULT_TERMINAL_SETTINGS, fontSize: 32, fontFamily: 'Iosevka'
-    })
+  it('replaces stored values it cannot use', () => {
+    localStorage.setItem('agentsdock.terminalSettings', JSON.stringify({ fontSize: 400, cursorStyle: 'beam', scrollback: 12, optionAsMeta: 'yes', fontFamily: '  Iosevka  ' }))
+    expect(readTerminalSettings()).toEqual({ ...DEFAULT_TERMINAL_SETTINGS, fontSize: 32, fontFamily: 'Iosevka' })
     localStorage.setItem('agentsdock.terminalSettings', '{not json')
     expect(readTerminalSettings()).toEqual(DEFAULT_TERMINAL_SETTINGS)
   })

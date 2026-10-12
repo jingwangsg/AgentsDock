@@ -32,8 +32,10 @@ function SurfacePane({ surface, active, sidebarVisible, onSidebarToggle }: {
   useLocale()
   const status = useTerminalStatus(surface.id)
   const displayTitle = surfaceTitle(surface, status.title)
-  // The shell retitles its tab while it runs, so the field shows that live title until the user types.
+  // The shell retitles its tab while it runs. The field shows that live title, and freezes it
+  // while focused so an edit never lands in a title that changed underneath it.
   const [draft, setDraft] = useState<string | null>(null)
+  const draftStart = useRef('')
   const title = draft ?? displayTitle
   const titleInput = useRef<HTMLInputElement | null>(null)
   useEffect(() => {
@@ -51,7 +53,7 @@ function SurfacePane({ surface, active, sidebarVisible, onSidebarToggle }: {
   // An emptied field drops the rename, so the default title (page or shell title, or "Terminal") returns.
   const save = () => {
     setDraft(null)
-    if (draft === null) return
+    if (draft === null || draft === draftStart.current) return
     const name = draft.trim() || null
     if (name !== surface.name) void useAppStore.getState().updateSurface(surface.id, { name })
   }
@@ -66,6 +68,7 @@ function SurfacePane({ surface, active, sidebarVisible, onSidebarToggle }: {
             aria-label={t('surface.rename', { name: displayTitle })}
             value={title}
             size={Math.max(1, Array.from(title).length)}
+            onFocus={() => { draftStart.current = displayTitle; setDraft(displayTitle) }}
             onChange={event => setDraft(event.target.value)}
             onBlur={save}
             onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}

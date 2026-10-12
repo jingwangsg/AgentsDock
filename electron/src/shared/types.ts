@@ -1456,6 +1456,8 @@ export interface TerminalStateEvent {
   state: TerminalConnectionState
   name?: string | null
   error?: string | null
+  /** `connected` only: byte length of the scrollback replay that follows (0 = none); older servers leave it out. */
+  replayBytes?: number
   profileId?: string
   profileGeneration?: number
 }
@@ -2128,6 +2130,7 @@ export interface ProfileTerminalStateEvent extends ProfileEventContext {
   state: TerminalConnectionState
   name?: string | null
   error?: string | null
+  replayBytes?: number
 }
 export interface ProfileForwardedPortsEvent extends ProfileEventContext { ports: ForwardedPort[] }
 

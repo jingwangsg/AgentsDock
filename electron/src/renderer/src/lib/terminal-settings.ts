@@ -41,7 +41,7 @@ export function clampTerminalFontSize(value: number): number {
   return Math.min(TERMINAL_FONT_SIZE_MAX, Math.max(TERMINAL_FONT_SIZE_MIN, Math.round(value)))
 }
 
-export function normalizeTerminalSettings(value: unknown): TerminalSettings {
+function normalizeTerminalSettings(value: unknown): TerminalSettings {
   const input = value && typeof value === 'object' ? value as Partial<Record<keyof TerminalSettings, unknown>> : {}
   const defaults = DEFAULT_TERMINAL_SETTINGS
   const flag = (key: 'cursorBlink' | 'optionAsMeta' | 'copyOnSelect' | 'screenReader') => typeof input[key] === 'boolean' ? input[key] as boolean : defaults[key]

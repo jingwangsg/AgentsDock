@@ -4,7 +4,7 @@ import { useLocale } from '../lib/i18n'
 import { useEffect, useRef, useState, type DragEvent } from 'react'
 import * as ContextMenu from '@radix-ui/react-context-menu'
 import { CaseSensitive, ChevronDown, ChevronUp, ClipboardPaste, Copy, Eraser, Regex, Search, TextSelect, WholeWord, X } from 'lucide-react'
-import { Terminal, type IMarker, type ITheme } from '@xterm/xterm'
+import { Terminal, type IFunctionIdentifier, type IMarker, type ITerminalOptions, type ITheme } from '@xterm/xterm'
 import { ClipboardAddon } from '@xterm/addon-clipboard'
 import { FitAddon } from '@xterm/addon-fit'
 import { ImageAddon } from '@xterm/addon-image'
@@ -14,13 +14,30 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import type { Surface, TerminalConnectionState } from '@shared/types'
+import { isLoopbackHostname } from '@shared/team-hub-url'
 import { COLOR_THEMES } from '../lib/color-themes.data'
 import { surfaceTitle } from '../lib/surfaces'
 import { shellQuotePath, terminalKeyAction, type TerminalCommand } from '../lib/terminal-input'
-import { DEFAULT_TERMINAL_FONT_FAMILY, clampTerminalFontSize, readTerminalSettings, useTerminalSettings } from '../lib/terminal-settings'
+import { trailingSequencesStart } from '../lib/terminal-replay'
+import { DEFAULT_TERMINAL_FONT_FAMILY, clampTerminalFontSize, readTerminalSettings, useTerminalSettings, type TerminalSettings } from '../lib/terminal-settings'
 import { clearTerminalStatus, updateTerminalStatus } from '../lib/terminal-status'
 import { currentShortcutPlatform } from './ShortcutTooltip'
-import { useAppStore } from '../store/app-store'
+import { handleMenuCommand, useAppStore } from '../store/app-store'
+
+// Queries a program sent before this attach. xterm.js answers them while it parses the replayed
+// scrollback, and those answers would arrive at the shell as typed text.
+const REPLAYED_CSI_QUERIES: IFunctionIdentifier[] = [
+  { final: 'n' }, { prefix: '?', final: 'n' }, // DSR, CPR
+  { final: 'c' }, { prefix: '>', final: 'c' }, { prefix: '=', final: 'c' }, // DA1-3
+  { prefix: '>', final: 'q' }, // XTVERSION
+  { intermediates: '$', final: 'p' }, { prefix: '?', intermediates: '$', final: 'p' }, // DECRQM
+  { prefix: '?', final: 'u' }, // kitty keyboard flags
+  { prefix: '?', final: 'S' } // XTSMGRAPHICS (image addon)
+]
+const REPLAYED_DCS_QUERIES: IFunctionIdentifier[] = [{ intermediates: '$', final: 'q' }, { intermediates: '+', final: 'q' }] // DECRQSS, XTGETTCAP
+const WINDOW_REPORT_REQUESTS = new Set([11, 13, 14, 15, 16, 18, 19, 20, 21]) // CSI Ps t
+const REPLAYED_OSC_QUERIES = [4, 10, 11, 12, 17, 19, 52] // colors and OSC 52, each queried with '?'
+const utf8 = new TextEncoder()
 
 /**
  * One shell on the active server. The tab opens its terminal and shell the first time it is shown,
@@ -38,9 +55,16 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
   const fitRef = useRef<FitAddon | null>(null)
   const searchRef = useRef<SearchAddon | null>(null)
   const commandRef = useRef<(command: TerminalCommand) => void>(() => undefined)
+  // OSC 133 prompt marks. A reset (RIS) keeps markers on the lines it erased, so each attach drops them.
+  const promptsRef = useRef<IMarker[]>([])
   // The server replays the shell's scrollback on every attach: its bells, notifications and
-  // clipboard writes already happened once.
+  // clipboard writes already happened once. True while this attach's replay is parsed.
   const replayingRef = useRef(false)
+  // The replay's queries were answered when the program sent them, except the ones that end it,
+  // which the program may still be waiting on. True while the part before those is parsed.
+  const staleQueriesRef = useRef(false)
+  // Counts attaches, so a replay that finishes after a newer attach began cannot end that one's.
+  const attachRef = useRef(0)
   const activeRef = useRef(active)
   const surfaceRef = useRef(surface)
   const [opened, setOpened] = useState(active)
@@ -51,7 +75,8 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
   const [connectionError, setConnectionError] = useState<string | null>(null)
   // ⌘+ / ⌘− size this tab only, as in Terminal.app; ⌘0 returns to the setting.
   const [fontZoom, setFontZoom] = useState(0)
-  const [findOpen, setFindOpen] = useState(false)
+  // 0 while the find bar is closed; each Find request bumps it so an open bar takes the focus again.
+  const [findRequest, setFindRequest] = useState(0)
   const [menuHasSelection, setMenuHasSelection] = useState(false)
 
   useEffect(() => {
@@ -64,17 +89,10 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
     const host = hostRef.current
     if (!opened || !host) return
     const mac = currentShortcutPlatform() === 'mac'
-    const initial = readTerminalSettings()
     const terminal = new Terminal({
+      ...xtermOptions(readTerminalSettings(), 0),
       allowProposedApi: true,
-      fontFamily: initial.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY,
-      fontSize: initial.fontSize,
-      cursorStyle: initial.cursorStyle,
-      cursorBlink: initial.cursorBlink,
-      macOptionIsMeta: initial.optionAsMeta,
       macOptionClickForcesSelection: true,
-      scrollback: initial.scrollback,
-      screenReaderMode: initial.screenReader,
       theme: terminalTheme(),
       linkHandler: { activate: (event, uri) => openLink(event, uri, mac), allowNonHttpProtocols: false }
     })
@@ -101,6 +119,16 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
       // No WebGL2: xterm.js keeps its DOM renderer.
     }
 
+    // Replayed queries. Registered after the addons: the parser asks the newest handler first, and
+    // these return true (consumed) only for an already answered query, so live ones are answered.
+    const stale = () => staleQueriesRef.current
+    for (const id of REPLAYED_CSI_QUERIES) terminal.parser.registerCsiHandler(id, stale)
+    terminal.parser.registerCsiHandler({ final: 't' }, params => stale() && WINDOW_REPORT_REQUESTS.has(Number(params[0])))
+    for (const id of REPLAYED_DCS_QUERIES) terminal.parser.registerDcsHandler(id, stale)
+    for (const ident of REPLAYED_OSC_QUERIES) terminal.parser.registerOscHandler(ident, data => stale() && data.split(';').includes('?'))
+
+    // Shell status: OSC 0/2 title and OSC 7 working directory name the tab; a bell flashes it and
+    // marks it while it is out of sight.
     let shellTitle: string | null = null
     terminal.onTitleChange(title => {
       shellTitle = title.trim() || null
@@ -123,10 +151,15 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
       bellRef.current?.animate?.([{ opacity: 0.16 }, { opacity: 0 }], { duration: 240, easing: 'ease-out' })
       if (!activeRef.current || !document.hasFocus()) updateTerminalStatus(surface.id, { bell: true })
     })
+
+    // Notifications (OSC 9, OSC 777) while the tab is out of sight, at most one a second per tab.
+    let lastNotice = 0
     const notify = (title: string, body: string) => {
-      if (replayingRef.current || (activeRef.current && document.hasFocus())) return
+      const now = Date.now()
+      if (replayingRef.current || (activeRef.current && document.hasFocus()) || now - lastNotice < 1000) return
       const state = useAppStore.getState()
       if (!state.activeProfileId) return
+      lastNotice = now
       void window.agentsDock.native.notify({
         title: title || surfaceTitle(surfaceRef.current, shellTitle),
         body,
@@ -150,39 +183,52 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
       return true
     })
 
-    // OSC 133;A starts a prompt (fish 4 emits it); ⌘↑/⌘↓ move between them.
-    let prompts: IMarker[] = []
+    // Prompt marks and terminal commands. OSC 133 only observes, so it returns false and leaves the
+    // sequence to any other handler; the handlers above consume theirs.
     terminal.parser.registerOscHandler(133, data => {
       if (data.startsWith('A')) {
         const marker = terminal.registerMarker(0)
-        if (marker) prompts = [...prompts.filter(item => !item.isDisposed), marker]
+        if (marker) promptsRef.current = [...promptsRef.current.filter(item => !item.isDisposed), marker]
       }
       return false
     })
-    // A prompt is scrolled to the top line. Prompts below the top line are already on screen, so
-    // ⌘↑ goes to the first one above it and ⌘↓ past the last one returns to the bottom.
-    const jumpToPrompt = (direction: 1 | -1) => {
-      const top = terminal.buffer.active.viewportY
-      const lines = prompts.filter(marker => !marker.isDisposed).map(marker => marker.line)
-      const target = direction < 0 ? lines.findLast(line => line < top) : lines.find(line => line > top)
-      if (target !== undefined) terminal.scrollToLine(target)
-      else if (direction > 0) terminal.scrollToBottom()
+    commandRef.current = command => {
+      switch (command) {
+        case 'copy':
+          if (terminal.hasSelection()) void window.agentsDock.native.writeClipboard(terminal.getSelection())
+          break
+        case 'paste':
+          void window.agentsDock.native.readClipboard().then(text => { if (text) terminal.paste(text) })
+          break
+        case 'select-all': terminal.selectAll(); break
+        case 'clear': terminal.clear(); break
+        case 'find': setFindRequest(request => request + 1); break
+        case 'close': handleMenuCommand('close-surface', useAppStore.getState, value => useAppStore.setState(value)); break
+        case 'zoom-in':
+        case 'zoom-out': {
+          const base = readTerminalSettings().fontSize
+          setFontZoom(zoom => clampTerminalFontSize(base + zoom + (command === 'zoom-in' ? 1 : -1)) - base)
+          break
+        }
+        case 'zoom-reset': setFontZoom(0); break
+        case 'previous-prompt':
+        case 'next-prompt': {
+          // A prompt is scrolled to the top line. Prompts below the top line are already on screen,
+          // so ⌘↑ goes to the first one above it, and ⌘↓ past the last one returns to the bottom.
+          const top = terminal.buffer.active.viewportY
+          const lines = promptsRef.current.filter(marker => !marker.isDisposed).map(marker => marker.line)
+          const target = command === 'previous-prompt' ? lines.findLast(line => line < top) : lines.find(line => line > top)
+          if (target !== undefined) terminal.scrollToLine(target)
+          else if (command === 'next-prompt') terminal.scrollToBottom()
+          break
+        }
+      }
     }
 
-    commandRef.current = command => {
-      if (command === 'copy') { if (terminal.hasSelection()) void window.agentsDock.native.writeClipboard(terminal.getSelection()) }
-      else if (command === 'paste') void window.agentsDock.native.readClipboard().then(text => { if (text) terminal.paste(text) })
-      else if (command === 'select-all') terminal.selectAll()
-      else if (command === 'clear') terminal.clear()
-      else if (command === 'zoom-in' || command === 'zoom-out') {
-        const step = command === 'zoom-in' ? 1 : -1
-        setFontZoom(zoom => clampTerminalFontSize(readTerminalSettings().fontSize + zoom + step) - readTerminalSettings().fontSize)
-      }
-      else if (command === 'zoom-reset') setFontZoom(0)
-      else jumpToPrompt(command === 'previous-prompt' ? -1 : 1)
-    }
-    // xterm.js runs the key itself only when this returns true. Handled keys are prevented here,
-    // which also keeps them from the menu accelerators; unhandled ⌘ chords still reach the menu.
+    // Keys and selection. xterm.js runs a key itself only when the handler returns true. Handled
+    // keys are prevented here, which also keeps them from the menu accelerators; unhandled ⌘ chords
+    // still reach the menu. Copy on select copies what the mouse selected, not a Find match,
+    // Select All or a right-click word.
     terminal.attachCustomKeyEventHandler(event => {
       const action = terminalKeyAction(event, mac)
       if (!action) return true
@@ -193,23 +239,34 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
       }
       return false
     })
-    // Fires when a drag, double/triple click or shift-click ends, not on every mouse move.
+    let mouseSelecting = false
+    const startMouseSelection = (event: MouseEvent) => { if (event.button === 0) mouseSelecting = true }
+    // xterm.js reports the selection from its own mouseup listener, which runs before this timer.
+    const endMouseSelection = () => { if (mouseSelecting) window.setTimeout(() => { mouseSelecting = false }) }
+    host.addEventListener('mousedown', startMouseSelection, true)
+    window.addEventListener('mouseup', endMouseSelection)
     terminal.onSelectionChange(() => {
-      if (readTerminalSettings().copyOnSelect && terminal.hasSelection()) void window.agentsDock.native.writeClipboard(terminal.getSelection())
+      if (mouseSelecting && readTerminalSettings().copyOnSelect && terminal.hasSelection()) void window.agentsDock.native.writeClipboard(terminal.getSelection())
     })
+
+    // Theme: follows the app's light/dark and color theme.
     const themeObserver = new MutationObserver(() => applyTheme(terminal, containerRef.current))
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-color-theme'] })
     applyTheme(terminal, containerRef.current)
+
     terminalRef.current = terminal
     fitRef.current = fit
     searchRef.current = search
     setReady(true)
     return () => {
+      host.removeEventListener('mousedown', startMouseSelection, true)
+      window.removeEventListener('mouseup', endMouseSelection)
       themeObserver.disconnect()
       terminalRef.current = null
       fitRef.current = null
       searchRef.current = null
       commandRef.current = () => undefined
+      promptsRef.current = []
       setReady(false)
       terminal.dispose()
       clearTerminalStatus(surface.id)
@@ -219,13 +276,7 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
   useEffect(() => {
     const terminal = terminalRef.current
     if (!ready || !terminal) return
-    terminal.options.fontFamily = settings.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY
-    terminal.options.fontSize = clampTerminalFontSize(settings.fontSize + fontZoom)
-    terminal.options.cursorStyle = settings.cursorStyle
-    terminal.options.cursorBlink = settings.cursorBlink
-    terminal.options.macOptionIsMeta = settings.optionAsMeta
-    terminal.options.scrollback = settings.scrollback
-    terminal.options.screenReaderMode = settings.screenReader
+    Object.assign(terminal.options, xtermOptions(settings, fontZoom))
     if (hostRef.current && fitRef.current) fitIfLaidOut(hostRef.current, fitRef.current)
   }, [ready, settings, fontZoom])
 
@@ -237,21 +288,45 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
     const mine = (payload: { profileId?: string; profileGeneration?: number; sessionId: string }) =>
       payload.profileId === profileId && payload.profileGeneration === profileGeneration && payload.sessionId === surface.id
     const fitNow = () => fitIfLaidOut(host, fit)
+    // Bytes of this attach's replay still to come. A server that reports `replayBytes` sends the
+    // replay as the data right after `connected` (0: no replay); for an older one that does not,
+    // its first data event is the replay (null).
+    let replayLeft: number | null = 0
     const removeData = window.agentsDock.events.on('terminal:data', payload => {
       if (!mine(payload)) return
-      // The replay arrives as the first data after an attach.
-      if (replayingRef.current) terminal.write(payload.data, () => { replayingRef.current = false })
-      else terminal.write(payload.data)
+      if (replayLeft === 0) {
+        terminal.write(payload.data)
+        return
+      }
+      replayLeft = replayLeft === null ? 0 : Math.max(0, replayLeft - utf8.encode(payload.data).length)
+      if (replayLeft > 0) {
+        terminal.write(payload.data)
+        return
+      }
+      const attach = attachRef.current
+      const pending = trailingSequencesStart(payload.data)
+      const tail = payload.data.slice(pending)
+      terminal.write(payload.data.slice(0, pending), () => {
+        if (attachRef.current !== attach) return
+        staleQueriesRef.current = false
+        if (!tail) replayingRef.current = false
+      })
+      if (tail) terminal.write(tail, () => { if (attachRef.current === attach) replayingRef.current = false })
     })
     const removeState = window.agentsDock.events.on('terminal:state', payload => {
       if (!mine(payload)) return
       setConnection(payload.state)
       setConnectionError(payload.error ?? null)
       if (payload.state === 'connected') {
+        attachRef.current += 1
+        replayLeft = payload.replayBytes ?? null
+        replayingRef.current = staleQueriesRef.current = replayLeft !== 0
         // The replay rebuilds the screen. RIS goes through the write queue, so output still
         // queued from the previous attach cannot land after it.
-        replayingRef.current = true
-        terminal.write('\x1bc')
+        terminal.write('\x1bc', () => {
+          for (const marker of promptsRef.current) marker.dispose()
+          promptsRef.current = []
+        })
         fitNow()
         // The server sized the pty from the connect request. A fit made while the link was still
         // opening (a hidden tab shown on a slow remote) never reached it, and fit() will not repeat it.
@@ -283,19 +358,28 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
       resized.dispose()
       removeData()
       removeState()
-      replayingRef.current = false
+      replayingRef.current = staleQueriesRef.current = false
       void window.agentsDock.terminal.disconnect(profileId, profileGeneration, surface.id).catch(() => undefined)
     }
   }, [ready, profileId, profileGeneration, surface.id, surface.cwd, shellRun])
 
   useEffect(() => {
     if (!active || !ready) return
-    updateTerminalStatus(surface.id, { bell: false })
+    // The bell mark is for a tab out of sight; coming back to the window or the terminal clears it.
+    const clearBell = () => updateTerminalStatus(surface.id, { bell: false })
+    clearBell()
+    const textarea = terminalRef.current?.textarea
+    window.addEventListener('focus', clearBell)
+    textarea?.addEventListener('focus', clearBell)
     const frame = window.requestAnimationFrame(() => {
       if (hostRef.current && fitRef.current) fitIfLaidOut(hostRef.current, fitRef.current)
       terminalRef.current?.focus()
     })
-    return () => window.cancelAnimationFrame(frame)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('focus', clearBell)
+      textarea?.removeEventListener('focus', clearBell)
+    }
   }, [active, ready, surface.id])
 
   useEffect(() => {
@@ -303,14 +387,14 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
     // ⌘F arrives as the Find menu command; with a terminal in front it searches the terminal.
     const find = (event: Event) => {
       event.preventDefault()
-      setFindOpen(true)
+      setFindRequest(request => request + 1)
     }
     window.addEventListener('agentsdock:find-active-surface', find)
     return () => window.removeEventListener('agentsdock:find-active-surface', find)
   }, [active])
 
   const closeFind = () => {
-    setFindOpen(false)
+    setFindRequest(0)
     terminalRef.current?.focus()
   }
   const runCommand = (command: TerminalCommand) => {
@@ -323,13 +407,26 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
     const paths = [...event.dataTransfer.files].map(file => window.agentsDock.files.pathForFile(file)).filter(Boolean)
     const terminal = terminalRef.current
     if (!paths.length || !terminal) return
-    // Uploads belong to a chat, so a terminal can only name files that are already on the server's disk.
+    // Uploads belong to a chat, so a terminal can only name files already on the server's disk:
+    // the local hub, or another loopback server that is not a hub remote (`/api/remote/<id>`).
     const state = useAppStore.getState()
-    if (!serverOnThisComputer(state.profiles.find(profile => profile.id === state.activeProfileId)?.serverUrl)) {
+    let local = false
+    try {
+      const url = new URL(state.profiles.find(profile => profile.id === state.activeProfileId)?.serverUrl ?? '')
+      local = isLoopbackHostname(url.hostname) && !url.pathname.startsWith('/api/remote/')
+    } catch {
+      // No usable server address: treat it as remote.
+    }
+    if (!local) {
       state.setError(t('surface.terminal.dropRemote'))
       return
     }
-    terminal.input(`${paths.map(shellQuotePath).join(' ')} `, true)
+    const words = paths.map(shellQuotePath)
+    if (words.includes(null)) {
+      state.setError(t('surface.terminal.dropControlCharacter'))
+      return
+    }
+    terminal.input(`${words.join(' ')} `, true)
     terminal.focus()
   }
 
@@ -361,12 +458,12 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
           <ContextMenu.Item className="menu-item" onSelect={() => runCommand('select-all')}><TextSelect size={14} />{t('surface.terminal.selectAll')}</ContextMenu.Item>
           <ContextMenu.Separator className="menu-separator" />
           <ContextMenu.Item className="menu-item" onSelect={() => runCommand('clear')}><Eraser size={14} />{t('surface.terminal.clear')}</ContextMenu.Item>
-          <ContextMenu.Item className="menu-item" onSelect={() => setFindOpen(true)}><Search size={14} />{t('surface.terminal.find')}</ContextMenu.Item>
+          <ContextMenu.Item className="menu-item" onSelect={() => setFindRequest(request => request + 1)}><Search size={14} />{t('surface.terminal.find')}</ContextMenu.Item>
         </ContextMenu.Content>
       </ContextMenu.Portal>
     </ContextMenu.Root>
     <div ref={bellRef} className="terminal-surface-bell" aria-hidden="true" />
-    {findOpen && searchRef.current && <TerminalFindBar search={searchRef.current} onClose={closeFind} />}
+    {findRequest > 0 && searchRef.current && <TerminalFindBar search={searchRef.current} focusRequest={findRequest} onClose={closeFind} />}
     {connection !== 'connected' && <div className="terminal-surface-notice" role="status">
       <span>{starting ? t('surface.terminal.connecting') : connectionError ?? t('surface.terminal.exited')}</span>
       {!starting && <button type="button" className="quiet-button" onClick={() => setShellRun(run => run + 1)}>
@@ -376,7 +473,7 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
   </div>
 }
 
-function TerminalFindBar({ search, onClose }: { search: SearchAddon; onClose: () => void }) {
+function TerminalFindBar({ search, focusRequest, onClose }: { search: SearchAddon; focusRequest: number; onClose: () => void }) {
   useLocale()
   const [query, setQuery] = useState('')
   const [caseSensitive, setCaseSensitive] = useState(false)
@@ -399,13 +496,16 @@ function TerminalFindBar({ search, onClose }: { search: SearchAddon; onClose: ()
   }
   useEffect(() => {
     const subscription = search.onDidChangeResults(event => setResults({ index: event.resultIndex, count: event.resultCount }))
-    inputRef.current?.focus()
     // Closing stops the addon re-searching after every write.
     return () => {
       subscription.dispose()
       search.clearDecorations()
     }
   }, [search])
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [focusRequest])
   useEffect(() => {
     // The addon records the new options before comparing them with the last search, so with an
     // unchanged query it would keep the old highlights and count; clearing forces a new search.
@@ -416,6 +516,8 @@ function TerminalFindBar({ search, onClose }: { search: SearchAddon; onClose: ()
 
   const toggle = (label: string, pressed: boolean, set: (value: boolean) => void, Icon: typeof Regex) =>
     <button type="button" className={pressed ? 'active' : ''} aria-pressed={pressed} title={label} aria-label={label} onClick={() => { set(!pressed); inputRef.current?.focus() }}><Icon size={14} /></button>
+  // The addon stops counting at its highlight limit (1000 matches) and then reports the active
+  // match's index as -1.
   const count = results && results.count > 0
     ? t('surface.terminal.findCount', { index: results.index >= 0 ? results.index + 1 : '?', count: results.count >= 1000 ? '1000+' : results.count })
     : query ? t('surface.terminal.findNone') : ''
@@ -448,13 +550,16 @@ function openLink(event: MouseEvent, uri: string, mac: boolean): void {
   void window.agentsDock.native.openExternal(uri).catch(() => undefined)
 }
 
-// The local hub, or another server on loopback that is not a hub remote (`/api/remote/<id>`).
-function serverOnThisComputer(serverUrl: string | undefined): boolean {
-  try {
-    const url = new URL(serverUrl ?? '')
-    return ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && !url.pathname.startsWith('/api/remote/')
-  } catch {
-    return false
+// The terminal options that follow Settings → Terminal and the tab's ⌘+/⌘− zoom.
+function xtermOptions(settings: TerminalSettings, fontZoom: number): ITerminalOptions {
+  return {
+    fontFamily: settings.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY,
+    fontSize: clampTerminalFontSize(settings.fontSize + fontZoom),
+    cursorStyle: settings.cursorStyle,
+    cursorBlink: settings.cursorBlink,
+    macOptionIsMeta: settings.optionAsMeta,
+    scrollback: settings.scrollback,
+    screenReaderMode: settings.screenReader
   }
 }
 
