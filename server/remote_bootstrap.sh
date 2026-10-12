@@ -130,13 +130,15 @@ if [ ! -f env ]; then
 fi
 # Keep the requested port even for an existing install that was moved.
 sed -i.bak "s|^export AGENTSDOCK_AGENT_PORT=.*|export AGENTSDOCK_AGENT_PORT=$PORT|" env && rm -f env.bak
-# Follow the HOME this deploy chose even for an existing install: one made while its cluster
-# home held no login yet runs with the container's own ~, which the next container drops.
+# An install made while its cluster home held no login yet runs with the container's own ~,
+# which the next container drops. A deploy that chose the install's parent moves it there; the
+# move never goes back, and an attach (nothing unpacked) leaves the owning hub's choice alone.
 ENV_HOME="$(sed -n 's/^export HOME=//p' env | tail -n 1)"
-if [ "$ENV_HOME" != "$HOME_DIR" ]; then
+if [ "$UNPACKED" = 1 ] && [ -n "$ENV_HOME" ] && [ "$ENV_HOME" != "$HOME_DIR" ] && [ "$HOME_DIR" = "$(dirname "$INSTALL_DIR")" ]; then
   sed -i.bak -e "s|^export HOME=.*|export HOME=$HOME_DIR|" \
     -e "s|^export AGENTSDOCK_AGENT_CWD=$ENV_HOME\$|export AGENTSDOCK_AGENT_CWD=$HOME_DIR|" \
-    -e "/^export PATH=/s|$ENV_HOME/.local/bin|$HOME_DIR/.local/bin|g" env && rm -f env.bak
+    -e "/^export PATH=/s|=$ENV_HOME/.local/bin|=$HOME_DIR/.local/bin|" \
+    -e "/^export PATH=/s|:$ENV_HOME/.local/bin|:$HOME_DIR/.local/bin|g" env && rm -f env.bak
 fi
 # The server saves settings such as a Claude token pasted in the app into its config env
 # file; point that at this env so start.sh reads them back.
