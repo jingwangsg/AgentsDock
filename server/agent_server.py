@@ -28927,6 +28927,11 @@ TERMINAL_VIEWER_STALL_SECONDS = 30.0
 # replay byte, as on an 8 KiB/s link: 64 s more for a full scrollback.
 TERMINAL_REPLAY_ALLOWANCE_BYTES_PER_SECOND = 8 * 1024
 TERMINAL_VIEWER_STALLED_CLOSE_CODE = 1013
+# An active viewer holding live output it has not acknowledged for this long is frozen or asleep, so it will
+# not answer the program's queries either: the other viewers' answers then reach the program. Another viewer's
+# answer is held this long to find out. A desktop acknowledges within 200 ms of output stopping, plus the
+# round trip.
+TERMINAL_UNRESPONSIVE_VIEWER_SECONDS = 1.0
 # Input that only answers a program's queries (cursor position and status, device attributes, mode,
 # window and keyboard-flag reports, OSC and DCS replies) or reports focus. Shift/Ctrl/Alt+F3 (ESC[1;<mod>R)
 # reads the same as a cursor position report and counts as one. The answers are the ones the desktop drops
@@ -29094,6 +29099,7 @@ class TerminalViewer:
     # A flow-controlled viewer that is not active and fell a window behind gets no live output from then
     # on; once it has acknowledged everything sent it is resynced from the scrollback.
     lagging_since: float | None = None
+    behind_since: float = 0.0  # when live output was last sent to it with everything before acknowledged
     sent: int = 0
     acked: int = 0
 
@@ -29110,6 +29116,11 @@ class TerminalViewer:
             limit += self.replay_bytes / TERMINAL_REPLAY_ALLOWANCE_BYTES_PER_SECOND
         return now - max(self.acked_at, since) >= limit
 
+    def unresponsive(self, now: float) -> bool:
+        """Flow-controlled, with live output and no acknowledgement for TERMINAL_UNRESPONSIVE_VIEWER_SECONDS."""
+        return self.flow_control and self.behind() > 0 \
+            and now - max(self.acked_at, self.behind_since) > TERMINAL_UNRESPONSIVE_VIEWER_SECONDS
+
 
 class TerminalShell:
     """The shell behind one terminal tab; the server owns it so any client can attach, leave and come back."""
@@ -29125,6 +29136,9 @@ class TerminalShell:
         self.active: WebSocket | None = None
         # Set when a viewer acknowledges output, leaves or becomes active: each can let a paused pump read again.
         self.flow_changed = asyncio.Event()
+        # Answers from a viewer that is not active, waiting to learn whether the active one answers itself:
+        # (answer, the active viewer then, its `sent` then, the timer that settles the answer).
+        self.held_reports: dict[WebSocket, list[tuple[bytes, TerminalViewer, int, asyncio.TimerHandle]]] = {}
         self.input = bytearray()
         self.exited = False
         self.pump = asyncio.create_task(self._pump_output())
@@ -29140,6 +29154,8 @@ class TerminalShell:
         set_pty_dimensions(self.master_fd, viewer.columns, viewer.rows)
 
     def remove_viewer(self, ws: WebSocket) -> None:
+        for *_, timer in self.held_reports.pop(ws, ()):
+            timer.cancel()
         if self.viewers.pop(ws, None) is None:
             return
         self.flow_changed.set()
@@ -29176,6 +29192,35 @@ class TerminalShell:
                 # 0 once the foreground group's leader is reaped; killpg(0) would signal this server's own group.
                 if (foreground := os.tcgetpgrp(self.master_fd)) > 0:
                     os.killpg(foreground, signal.SIGWINCH)
+
+    def input_from(self, ws: WebSocket, data: bytes) -> None:
+        """Every attached terminal answers a program's queries, a hidden or frozen one too and maybe late. Answers
+        from a viewer that is not active reach the program only when no viewer is active or the active one will
+        not answer: it is unresponsive, or it still has not acknowledged the output that held the query
+        TERMINAL_UNRESPONSIVE_VIEWER_SECONDS later. Answering never makes a viewer active."""
+        if self.active is not ws and self.active is not None and TERMINAL_REPORTS_RE.fullmatch(data):
+            active = self.viewers[self.active]
+            if not active.unresponsive(time.monotonic()):
+                # One without flow control shows nothing either way; one that acknowledged the output had the query.
+                if active.flow_control and active.acked < active.sent:
+                    timer = asyncio.get_running_loop().call_later(TERMINAL_UNRESPONSIVE_VIEWER_SECONDS, self.settle_reports, ws, 1)
+                    self.held_reports.setdefault(ws, []).append((data, active, active.sent, timer))
+                return
+        # Its held answers go first, as its terminal sent them: decided now rather than dropped, so a phone that
+        # fell asleep does not leave the program waiting on the answer of the viewer now typing.
+        self.settle_reports(ws)
+        if self.active is not ws and not TERMINAL_REPORTS_RE.fullmatch(data):
+            self.activate(ws)
+        self.queue_input(data)
+
+    def settle_reports(self, ws: WebSocket, count: int | None = None) -> None:
+        """Pass on or drop the oldest `count` (default all) held answers of `ws`."""
+        held = self.held_reports.get(ws, [])
+        for data, active, sent, timer in held[:count]:
+            timer.cancel()
+            if active.acked < sent:
+                self.queue_input(data)
+        del held[:count]
 
     def queue_input(self, data: bytes) -> None:
         # load-bearing: the pump closes master_fd after setting `exited`; a later write could reach
@@ -29250,6 +29295,8 @@ class TerminalShell:
                         continue
                     try:
                         await ws.send_bytes(data)
+                        if not viewer.behind():
+                            viewer.behind_since = now
                         viewer.sent += len(data)
                     except Exception:
                         self.remove_viewer(ws)
@@ -29257,6 +29304,9 @@ class TerminalShell:
             # Flag first: a viewer joins only after checking this flag, with no await in
             # between, so the list below misses nobody.
             self.exited = True
+            for held in self.held_reports.values():
+                for *_, timer in held:
+                    timer.cancel()
             asyncio.get_running_loop().remove_writer(self.master_fd)
             await asyncio.to_thread(stop_terminal_client, self.process, self.master_fd)
             for ws in list(self.viewers):
@@ -29324,16 +29374,7 @@ async def standalone_terminal_websocket(
                 return
             data = message.get("bytes")
             if data:
-                if shell.active is not ws:
-                    # Every attached terminal answers a program's queries, a hidden or frozen one too and maybe
-                    # late: only the active viewer's answers reach the program (all of them while no viewer is
-                    # active), and answering never makes a viewer active.
-                    if TERMINAL_REPORTS_RE.fullmatch(data):
-                        if shell.active is not None:
-                            continue
-                    else:
-                        shell.activate(ws)
-                shell.queue_input(data)
+                shell.input_from(ws, data)
                 continue
             text = message.get("text")
             if not text:

@@ -138,10 +138,13 @@
   again and its size is applied. A terminal's answers to a program's queries
   and its focus reports do not count as typing, and while another viewer is
   active they do not reach the program (a woken phone's late answers no longer
-  appear in the shell). The desktop always attaches with `passive=1` and sends
-  its size when the user shows the tab, or when the tab reconnects while shown
-  in the focused window; a Mac left on the tab no longer takes the size back
-  from the phone after a network drop.
+  appear in the shell), unless the active viewer has not acknowledged, within
+  1 s, the output that carried the query: then it is asleep and another
+  viewer's answer, held that long, gets through, so fish does not wait 10 s
+  for an answer to its prompt query. The desktop always attaches
+  with `passive=1` and sends its size when the user shows the tab, or when the
+  tab reconnects while shown in the focused window; a Mac left on the tab no
+  longer takes the size back from the phone after a network drop.
 - The desktop acknowledges terminal output, and the server stops reading the
   shell while the active viewer is 128 KiB behind: Ctrl-C under a 120 KiB/s
   link now reaches the prompt in about 0.8 s instead of losing the connection
