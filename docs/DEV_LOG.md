@@ -2,34 +2,48 @@
 
 ## 2026-10-12 — Code references open in Zed when Zed has their project open (desktop, Canvas runtime)
 
-- A click on a code reference opens the file in Zed at its line and column when a workspace Zed has open
-  on the chat's machine contains the file, and in the AgentsDock editor otherwise, as before. Zed opens
-  the file inside that workspace; no new workspace is created. This applies to inline `path:line[:column]`
-  spans and Markdown or `file://` links in chat messages, the side chat and Canvas comment threads, and to
-  links, inline code and `openFile` actions in Canvas reports. A relative reference is resolved as the
-  editor resolves it (exact path, then the workspace search); one with several matches opens the editor's
+- A click on a code reference opens the file in Zed at its line and column
+  when a workspace Zed has open on the chat's machine contains the file, and
+  in the AgentsDock editor otherwise, as before. Zed opens the file inside
+  that workspace; it creates no new one. This covers inline
+  `path:line[:column]` spans and Markdown or `file://` links in chat
+  messages, the side chat and Canvas comment threads, and links, inline code
+  and `openFile` actions in Canvas reports. A relative reference is resolved
+  as the editor resolves it; one with several matches opens the editor's
   picker.
-- Zed has no command that lists its open workspaces, so the desktop reads Zed's state database read-only
-  and counts the workspaces marked with Zed's running session, after checking that a Zed process runs. A
-  remote chat matches a Zed workspace on the SSH alias or host that Open in Zed uses for that server. When
-  Zed is not running, has nothing open on that machine, or its database cannot be read, references open in
-  the editor. Only Zed's stable channel on macOS is read.
-- Side chat answers now render file references as links (they had no chat to resolve against before). In
-  Canvas, a link that is not a web address reaches the desktop as written; before, the page resolved it
-  against its own URL and the desktop ignored it. The `openFile` action keeps its line. Inline code in
-  Canvas Markdown that names a file with a directory or a line (`src/app.ts`, `app.ts:12`) renders as a
-  link; a bare name such as `train.py` stays code there. That part lives in the server's Canvas runtime
-  and reaches a server on its next update.
-- Not covered: the Edited files card and the diff and review file lists (they open the diff view), terminal
-  output (no link detection), Team messages (no chat to resolve against), and Android (no Zed; unchanged).
-- Checks: unit tests for the Zed target with line and column, the database lookup (open, closed and
-  previous-session workspaces, alias and `user@host:port` matching, Zed not running, unreadable database),
-  the routing rule, the Canvas link bridge and the Canvas Markdown links. In the built app against an
-  isolated server, with the chat's directory open in Zed: inline, linked and bare-name references, a side
-  chat answer and three Canvas references opened in that Zed workspace at the expected line and column; an
-  ambiguous name opened the editor's picker and a file outside every Zed workspace opened in the editor. On
-  a hub remote: with no Zed workspace on that machine the reference opened in the editor at its line; with
-  a Zed workspace open there it opened in that workspace at 30:5. The hub-kept SSH alias was unchanged.
+- Zed has no command that lists its open workspaces, so the desktop reads
+  Zed's state database read-only and lists the folders of the workspaces
+  marked with Zed's current session, while a Zed process runs. A remote chat
+  matches a Zed workspace on the SSH alias or host that Open in Zed uses for
+  that server; a server without an SSH host counts as this Mac only on a
+  loopback address. If Zed cannot open the file, the editor does and the
+  error is shown.
+- Side chat answers now get the chat's links: file references open as above,
+  web links as in the chat. A Canvas link that is not a web address now
+  reaches the desktop as written (the page used to resolve it against its own
+  URL), and `openFile` keeps its line. Canvas Markdown renders inline code
+  that names a file with a directory or a line (`src/app.ts`, `app.ts:12`) as
+  a link only when the desktop's Canvas bridge says it opens them; Android
+  and older desktops show it as code, as before.
+- Not covered: the Edited files card and the diff and review file lists (they
+  open the diff view), terminal output (no link detection), Team messages (no
+  chat to resolve against), Android (no Zed).
+- Checks: unit tests for the Zed target with line and column, the database
+  lookup (open, closed and previous-session workspaces; alias,
+  `user@host:port` and dev-container connections; Zed not running; an
+  unreadable database), the routing rule, the Canvas bridge and the Canvas
+  Markdown links. In the built app against an isolated server, with the
+  chat's directory open in Zed: inline, linked and bare-name references, a
+  side chat answer and three Canvas references opened in that workspace at
+  the expected line and column; an ambiguous name opened the editor's picker
+  and a file outside every Zed workspace opened in the editor. On a hub
+  remote whose SSH alias the hub keeps: with nothing open in Zed on that
+  machine the reference opened in the editor at its line; with a Zed
+  workspace open there it opened in that workspace at 30:5, and the alias
+  file was not rewritten. Not exercised: a remote reached through the
+  desktop's own port-tunnel alias, Linux and Windows, Zed Preview (its
+  database is not read). Availability: desktop package; the Canvas Markdown
+  part reaches a server with its next update.
 
 ## 2026-10-12 — A remote in a cluster home runs with that home as HOME (server)
 

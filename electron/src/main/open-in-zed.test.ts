@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
-import { findZedCli, openZedWorkspaceFolders, zedTarget } from './open-in-zed'
+import { findZedCli, readZedWorkspaceFolders, zedTarget } from './open-in-zed'
 
 vi.mock('node:child_process', async importOriginal => ({ ...await importOriginal<typeof import('node:child_process')>(), execFile: vi.fn() }))
 
@@ -57,7 +57,7 @@ describe('findZedCli', () => {
   })
 })
 
-describe('openZedWorkspaceFolders', () => {
+describe('readZedWorkspaceFolders', () => {
   // The part of Zed's state database the lookup reads.
   function zedDatabase(): { path: string; remove: () => void } {
     const directory = mkdtempSync(join(tmpdir(), 'zed-db-'))
@@ -68,13 +68,14 @@ describe('openZedWorkspaceFolders', () => {
       create table remote_connections (id integer primary key, kind text, host text, port integer, user text);
       create table workspaces (workspace_id integer primary key, paths text, remote_connection_id integer, session_id text);
       insert into kv_store values ('session_id', 'now');
-      insert into remote_connections values (1, 'ssh', 'osmo_dev_h100', null, null), (2, 'ssh', '10.0.0.5', 2222, 'root');
+      insert into remote_connections values (1, 'ssh', 'cluster_alias', null, null), (2, 'ssh', '10.0.0.5', 2222, 'root'), (3, 'docker', null, null, null);
       insert into workspaces values
         (1, '/Users/me/proj' || char(10) || '/Users/me/notes', null, 'now'),
         (2, '/Users/me/closed', null, null),
         (3, '/Users/me/last-run', null, 'before'),
         (4, '/mnt/lustre/proj', 1, 'now'),
-        (5, '/srv', 2, 'now');
+        (5, '/srv', 2, 'now'),
+        (6, '/workspaces/app', 3, 'now');
     `)
     database.close()
     return { path, remove: () => rmSync(directory, { recursive: true, force: true }) }
@@ -87,11 +88,11 @@ describe('openZedWorkspaceFolders', () => {
     const database = zedDatabase()
     try {
       zedRunning(true)
-      expect(await openZedWorkspaceFolders({}, database.path)).toEqual(['/Users/me/proj', '/Users/me/notes'])
-      expect(await openZedWorkspaceFolders({ sshHost: 'oci@jing-debug-a236', hostAlias: 'osmo_dev_h100' }, database.path)).toEqual(['/mnt/lustre/proj'])
-      expect(await openZedWorkspaceFolders({ sshHost: 'root@10.0.0.5:2222' }, database.path)).toEqual(['/srv'])
-      expect(await openZedWorkspaceFolders({ sshHost: 'nv_gb300' }, database.path)).toEqual([])
-      expect(vi.mocked(execFile)).toHaveBeenLastCalledWith('pgrep', ['-x', 'zed'], expect.any(Function))
+      expect(await readZedWorkspaceFolders({}, database.path)).toEqual(['/Users/me/proj', '/Users/me/notes'])
+      expect(await readZedWorkspaceFolders({ sshHost: 'oci@pod-a', hostAlias: 'cluster_alias' }, database.path)).toEqual(['/mnt/lustre/proj'])
+      expect(await readZedWorkspaceFolders({ sshHost: 'root@10.0.0.5:2222' }, database.path)).toEqual(['/srv'])
+      expect(await readZedWorkspaceFolders({ sshHost: 'other_host' }, database.path)).toEqual([])
+      expect(vi.mocked(execFile)).toHaveBeenLastCalledWith('pgrep', ['-f', '/Zed\\.app/Contents/MacOS/zed'], expect.any(Function))
     } finally {
       database.remove()
     }
@@ -100,11 +101,11 @@ describe('openZedWorkspaceFolders', () => {
   it('finds none when Zed is not running or its database cannot be read', async () => {
     const database = zedDatabase()
     try {
-      // The last session's workspaces stay marked so they reopen on Zed's next start.
+      // The last session's workspaces stay marked after Zed quits, so they reopen on its next start.
       zedRunning(false)
-      expect(await openZedWorkspaceFolders({}, database.path)).toEqual([])
+      expect(await readZedWorkspaceFolders({}, database.path)).toEqual([])
       zedRunning(true)
-      expect(await openZedWorkspaceFolders({}, join(tmpdir(), 'missing-zed-db', 'db.sqlite'))).toEqual([])
+      expect(await readZedWorkspaceFolders({}, join(tmpdir(), 'missing-zed-db', 'db.sqlite'))).toEqual([])
     } finally {
       database.remove()
     }

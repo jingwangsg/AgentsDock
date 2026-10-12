@@ -17,6 +17,7 @@ export interface OpenInZedInput {
   hostAlias?: string | null
 }
 
+// Stable channel only: Zed Preview keeps a separate 0-preview database.
 const ZED_DATABASE = `${homedir()}/Library/Application Support/Zed/db/0-stable/db.sqlite`
 
 const ZED_CLI_CANDIDATES = [
@@ -44,23 +45,29 @@ export function zedTarget(input: OpenInZedInput): string {
 
 /**
  * Folders of the workspaces Zed has open now on the machine `input` names (this Mac without an SSH host),
- * as zedTarget names that machine. Zed has no command that lists them; its state database marks an open
- * workspace with the running session's id. Empty when Zed is not running or the database cannot be read.
+ * matched by the host zedTarget puts in its ssh:// URL (the alias, else the SSH destination). Zed has no
+ * command that lists them; its state database marks an open workspace with the running session's id.
+ * Empty when Zed is not running or the database cannot be read.
  */
-export async function openZedWorkspaceFolders(input: Pick<OpenInZedInput, 'sshHost' | 'hostAlias'>, database = ZED_DATABASE): Promise<string[]> {
-  // Workspaces keep that id after Zed quits, so they reopen on its next start.
-  if (!await new Promise<boolean>(resolve => execFile('pgrep', ['-x', 'zed'], error => resolve(!error)))) return []
+export async function readZedWorkspaceFolders(input: Pick<OpenInZedInput, 'sshHost' | 'hostAlias'>, database = ZED_DATABASE): Promise<string[]> {
+  // Zed leaves its last session's workspaces marked with that id after it quits (to reopen them), so without
+  // a running Zed the database would list them as open.
+  if (!await new Promise<boolean>(resolve => execFile('pgrep', ['-f', '/Zed\\.app/Contents/MacOS/zed'], error => resolve(!error)))) return []
   let connection: DatabaseSync | undefined
   try {
     const sshHost = input.sshHost?.trim()
     const destination = sshHost ? input.hostAlias?.trim() || sshDestination(sshHost) : null
     connection = new DatabaseSync(database, { readOnly: true })
     const workspaces = connection.prepare(`
-      select w.paths, r.host, r.user, r.port from workspaces w left join remote_connections r on r.id = w.remote_connection_id
+      select w.paths, r.kind, r.host, r.user, r.port from workspaces w left join remote_connections r on r.id = w.remote_connection_id
       where w.session_id = (select value from kv_store where key = 'session_id')
-    `).all() as Array<{ paths: string | null; host: string | null; user: string | null; port: number | null }>
+    `).all() as Array<{ paths: string | null; kind: string | null; host: string | null; user: string | null; port: number | null }>
     return workspaces
-      .filter(({ host, user, port }) => (host === null ? null : `${user ? `${user}@` : ''}${host}${port ? `:${port}` : ''}`) === destination)
+      .filter(({ kind, host, user, port }) => {
+        // A workspace on this Mac has no remote connection; one in a dev container or WSL matches no chat.
+        const machine = kind === null ? null : kind === 'ssh' ? `${user ? `${user}@` : ''}${host}${port ? `:${port}` : ''}` : undefined
+        return machine === destination
+      })
       .flatMap(workspace => (workspace.paths ?? '').split('\n').filter(Boolean))
   } catch {
     return []

@@ -44,8 +44,9 @@ type PageMessage =
   | { kind: 'action'; action: CanvasAction }
   | { kind: 'error'; error: string }
   | { kind: 'selection'; elements: SelectedElement[]; complete: boolean }
-  // A web link from the runtime; any other link as written (canvas-protocol.ts BRIDGE_SHIM).
   | { kind: 'link'; url: string }
+  // A link that is not a web address, as written in the page (canvas-protocol.ts BRIDGE_SHIM).
+  | { kind: 'workspace-link'; href: string }
   // From the comment pins (canvas-protocol.ts COMMENT_PINS_SCRIPT).
   | { kind: 'comment-open'; id: string }
   | { kind: 'comment-anchors'; located: string[] }
@@ -293,12 +294,11 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
           setSelection(message.elements.length ? message.elements : null)
           if (message.complete) setSelecting(false)
           break
-        case 'link': {
-          if (/^https?:\/\//i.test(message.url)) {
-            void window.agentsDock.native.openExternal(message.url)
-            break
-          }
-          const reference = parseWorkspaceCodeReference(decodeLinkTarget(message.url))
+        case 'link':
+          if (/^https?:\/\//i.test(message.url)) void window.agentsDock.native.openExternal(message.url)
+          break
+        case 'workspace-link': {
+          const reference = parseWorkspaceCodeReference(decodeLinkTarget(message.href))
           if (reference) requestOpenCodeReference(session.id, reference)
           break
         }

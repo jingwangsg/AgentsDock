@@ -257,7 +257,7 @@ console.log(JSON.stringify({{ blocks, outline: outline(tree).children, edge }}))
         assert [block["type"] for block in edge["pipe_rule"]] == ["paragraph", "rule"]
 
     @needs_node
-    def test_markdown_renders_a_file_reference_span_as_a_link(self) -> None:
+    def test_markdown_renders_a_file_reference_span_as_a_link_for_a_host_that_opens_it(self) -> None:
         source = "`src/app.ts:12` `np.float32` `app.ts#L3` [`x.ts:4`](https://example.com)"
         script = NODE_DOM_STUB + f"""
 require({json.dumps(str(canvas.RUNTIME_DIR / 'vendor.js'))});
@@ -266,17 +266,22 @@ const React = globalThis.__zedCanvasModules.react;
 const theme = {{ text: {{ primary: '#111', secondary: '#666', link: '#06c' }}, stroke: {{ primary: '#ccc', secondary: '#ddd' }} }};
 const outline = node => typeof node === 'string' ? node
   : {{ tag: node.type, href: node.props.href, children: React.Children.toArray(node.props.children).map(outline) }};
-console.log(JSON.stringify(outline(markdown.renderMarkdown(React, theme, markdown.parseMarkdown({json.dumps(source)}))).children[0].children));
+const paragraph = () => outline(markdown.renderMarkdown(React, theme, markdown.parseMarkdown({json.dumps(source)}))).children[0].children;
+const before = paragraph();
+globalThis.__agentsdockOpensCodeReferences = true;
+console.log(JSON.stringify({{ before, after: paragraph() }}));
 """
         completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
         assert completed.returncode == 0, completed.stdout + completed.stderr
-        spans = [node for node in json.loads(completed.stdout) if node != " "]
-        # A path or a line makes a span a link the desktop app opens in its editor or Zed; inside a link it stays code.
-        assert [(node["tag"], node.get("href")) for node in spans] == [
+        result = json.loads(completed.stdout)
+        spans = {name: [node for node in nodes if node != " "] for name, nodes in result.items()}
+        # Without the desktop bridge's flag (Android, older desktops) the spans stay code: a link there would do nothing.
+        assert [node["tag"] for node in spans["before"]] == ["code", "code", "code", "a"]
+        # A path or a line makes a span a link the desktop opens in Zed or its editor; inside a link it stays code.
+        assert [(node["tag"], node.get("href")) for node in spans["after"]] == [
             ("a", "src/app.ts:12"), ("code", None), ("a", "app.ts#L3"), ("a", "https://example.com"),
         ]
-        assert spans[0]["children"][0]["tag"] == "code" and spans[3]["children"][0]["tag"] == "code"
-
+        assert spans["after"][0]["children"][0]["tag"] == "code" and spans["after"][3]["children"][0]["tag"] == "code"
 
 ANCHOR = {"canvas_id": "summary", "tag": "td", "text": "loss 2.41", "html": "<td>loss 2.41</td>"}
 

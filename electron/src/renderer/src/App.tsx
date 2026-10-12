@@ -16,6 +16,7 @@ import { LoaderCircle, RotateCcw, Siren, X } from 'lucide-react'
 import type { AppUpdateStatus } from '@shared/types'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
 import { openInZedInput } from '@shared/ssh-host-alias'
+import { isLoopbackHostname } from '@shared/team-hub-url'
 import { ChatHeader } from './components/ChatHeader'
 import { ChatPane } from './components/ChatPane'
 import { ChatOutputsPanel } from './components/ChatOutputsPanel'
@@ -57,7 +58,7 @@ import { installRendererStallMonitor } from './lib/renderer-stall-monitor'
 import { nativeFileRefsFromFiles } from './lib/native-files'
 import { profileSessionKey, rendererWorkspaceKey } from './lib/profile-scope'
 import { ChatFontApplier } from './lib/chat-font'
-import { requestOpenWorkspaceReference, type OpenWorkspacePathDetail } from './lib/workspace-file-links'
+import { requestOpenWorkspaceReference, type WorkspaceCodeReference } from './lib/workspace-file-links'
 import { flushActiveWorkspace, useAppStore } from './store/app-store'
 
 interface ScopedReviewTarget {
@@ -633,29 +634,40 @@ export function App() {
   }, [])
   useEffect(() => {
     // A code reference opens in Zed when a workspace Zed has open on the chat's machine holds the file, else in
-    // the editor. A relative one is placed as the editor places it, by the workspace search (`ipc.ts` or
+    // the editor. A relative one is resolved as the editor resolves it, by the workspace search (`ipc.ts` or
     // `src/main/ipc.ts` under the chat's directory); one with no single match is left to the editor.
     const open = (event: Event) => {
-      const detail = (event as CustomEvent<OpenWorkspacePathDetail>).detail
+      const detail = (event as CustomEvent<{ sessionId: string } & WorkspaceCodeReference>).detail
       const state = useAppStore.getState()
       const session = state.sessions.find(candidate => candidate.id === detail.sessionId)
-      const request = session && openInZedInput(session, state.profiles.find(profile => profile.id === state.activeProfileId), state.profileGeneration)
+      const profile = state.profiles.find(candidate => candidate.id === state.activeProfileId)
+      const request = session && openInZedInput(session, profile, state.profileGeneration)
       const openInEditor = () => requestOpenWorkspaceReference(detail.sessionId, detail)
-      if (!request) {
+      // A server without an SSH host is this Mac only when it is reached on loopback: another machine's paths
+      // must not match this Mac's Zed workspaces.
+      if (!request || !profile || (!request.sshHost && !isLoopbackHostname(new URL(profile.serverUrl).hostname))) {
         openInEditor()
         return
       }
       void (async () => {
         const folders = await window.agentsDock.native.zedWorkspaceFolders(request)
+        if (!folders.length) return openInEditor()
         let path = detail.path
-        if (folders.length && !path.startsWith('/')) {
-          const entries = await window.agentsDock.workspace.search(detail.sessionId, path, 100).then(page => page.entries, () => [])
-          const resolution = resolveWorkspaceReference(path, entries)
-          if (resolution.kind !== 'match') return openInEditor()
-          path = `${request.path.replace(/\/+$/, '')}/${resolution.path}`
+        if (!path.startsWith('/')) {
+          const page = await window.agentsDock.workspace.search(detail.sessionId, path, 100).catch(() => null)
+          const resolution = resolveWorkspaceReference(path, page?.entries ?? [])
+          if (!page || resolution.kind !== 'match') return openInEditor()
+          // Entries are relative to the server's resolved directory, the form Zed also stores for its folders.
+          path = `${page.root.replace(/\/+$/, '')}/${resolution.path}`
         }
         if (!folders.some(folder => path === folder || path.startsWith(`${folder.replace(/\/+$/, '')}/`))) return openInEditor()
-        await window.agentsDock.native.openInZed({ ...request, path, line: detail.line, column: detail.column })
+        try {
+          await window.agentsDock.native.openInZed({ ...request, path, line: detail.line, column: detail.column })
+        } catch (error) {
+          // Zed could not open it (no CLI, an alias another server owns, a failed tunnel): the editor still does.
+          openInEditor()
+          throw error
+        }
       })().catch((error: unknown) => useAppStore.getState().setError(error instanceof Error ? error.message : String(error)))
     }
     window.addEventListener('agentsdock:open-code-reference', open)

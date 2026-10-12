@@ -429,7 +429,7 @@ describe('MarkdownContent', () => {
     window.removeEventListener('agentsdock:open-code-reference', open)
   })
 
-  it('routes explicit workspace file links into the internal editor at the requested line', () => {
+  it('sends an explicit workspace file link as a code reference with its line', () => {
     const open = vi.fn()
     window.addEventListener('agentsdock:open-code-reference', open)
     render(<MarkdownContent
@@ -449,7 +449,7 @@ describe('MarkdownContent', () => {
     window.removeEventListener('agentsdock:open-code-reference', open)
   })
 
-  it('routes an explicit absolute Markdown file link through the same internal editor request', () => {
+  it('sends an explicit absolute Markdown file link as a code reference', () => {
     const open = vi.fn()
     window.addEventListener('agentsdock:open-code-reference', open)
     render(<MarkdownContent
@@ -469,7 +469,7 @@ describe('MarkdownContent', () => {
     window.removeEventListener('agentsdock:open-code-reference', open)
   })
 
-  it('routes a server-home Markdown file link through the internal editor request', () => {
+  it('sends a server-home Markdown file link as a code reference', () => {
     const open = vi.fn()
     window.addEventListener('agentsdock:open-code-reference', open)
     render(<MarkdownContent
