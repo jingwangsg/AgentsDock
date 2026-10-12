@@ -9411,6 +9411,45 @@ describe('server profile lifecycle', () => {
     expect(bProbe.dispose).toHaveBeenCalledOnce()
   })
 
+  it('opens no terminal for a tab that disconnected while the profile was being validated', async () => {
+    const health = deferred<Health>()
+    const a = fakeClient({ health: () => health.promise })
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [a],
+      'http://b.test:7850': [fakeClient()]
+    })
+    settings.setProfileServerIdentity('a', 'server-a')
+    const bootstrap = await service.bootstrap()
+
+    const connecting = service.connectTerminal('a', bootstrap.profileGeneration, 'term_tab', { columns: 80, rows: 24 })
+    service.disconnectTerminalForProfile('a', bootstrap.profileGeneration, 'term_tab')
+    health.resolve({ ok: true, server_identity: 'server-a' } as Health)
+    await connecting
+
+    expect(a.terminal).not.toHaveBeenCalled()
+  })
+
+  it('closes the terminal connection a reconnect of the same tab replaces', async () => {
+    const connections = [0, 1].map(() => ({ write: vi.fn(), resize: vi.fn(), scroll: vi.fn(), close: vi.fn() }))
+    const a = fakeClient({
+      health: async () => ({ ok: true, server_identity: 'server-a' } as Health),
+      terminal: () => connections[a.terminal.mock.calls.length - 1]
+    })
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [a],
+      'http://b.test:7850': [fakeClient()]
+    })
+    settings.setProfileServerIdentity('a', 'server-a')
+    const bootstrap = await service.bootstrap()
+    await service.refreshServer('a', bootstrap.profileGeneration)
+
+    await service.connectTerminal('a', bootstrap.profileGeneration, 'term_tab', { columns: 80, rows: 24 })
+    await service.connectTerminal('a', bootstrap.profileGeneration, 'term_tab', { columns: 80, rows: 24 })
+
+    expect(connections[0].close).toHaveBeenCalledOnce()
+    expect(connections[1].close).not.toHaveBeenCalled()
+  })
+
   it('keeps a healthy active server connected but degraded when tmux is missing', async () => {
     const missingTmux = {
       available: false,

@@ -1456,6 +1456,8 @@ export interface TerminalStateEvent {
   state: TerminalConnectionState
   name?: string | null
   error?: string | null
+  /** With `connected`: the length of the replay that arrives next as one `terminal:data` (0: none). Absent from older servers. */
+  replayBytes?: number
   profileId?: string
   profileGeneration?: number
 }

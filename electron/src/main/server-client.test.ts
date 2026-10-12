@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import type { Readable } from 'node:stream'
 import { setTimeout as delay } from 'node:timers/promises'
 import { TOOL_OUTPUT_PREVIEW_CHARS } from '../shared/event-compaction'
-import type { Event, PinnedItem, ServerUpdateStatus, Session } from '../shared/types'
+import type { Event, PinnedItem, ServerUpdateStatus, Session, TerminalStateEvent } from '../shared/types'
 import {
   AgentServerClient,
   LOCAL_SESSION_IMPORT_RESPONSE_MAX_BYTES,
@@ -3189,6 +3189,88 @@ describe('AgentServerClient live stream', () => {
     expect(FakeWebSocket.instances).toHaveLength(2)
     expect(states.at(-1)).toEqual({ sessionId: 'term_0123abcd', state: 'disconnected' })
     expect(second.closed).toBe(true)
+  })
+
+  it('acknowledges a terminal tab\'s output in batches and sends large input in bounded frames', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    const tabOutput: string[] = []
+    const tab = client.terminal('term_0123abcd', { columns: 80, rows: 24 }, data => tabOutput.push(data), () => {})
+    const chat = client.terminal('chat', { columns: 80, rows: 24 }, () => {}, () => {})
+    const [tabSocket, chatSocket] = FakeWebSocket.instances
+    expect(tabSocket.url.searchParams.get('flow_control')).toBe('1')
+    expect(chatSocket.url.searchParams.has('flow_control')).toBe(false)
+
+    for (const socket of [tabSocket, chatSocket]) {
+      socket.emit('message', JSON.stringify({ type: 'ready', name: 'zsh' }))
+      socket.emit('message', new Uint8Array(10 * 1024).buffer)
+      socket.emit('message', new Uint8Array(10 * 1024).buffer)
+    }
+    expect(tabSocket.sent).toEqual([JSON.stringify({ type: 'ack', bytes: 20 * 1024 })])
+    expect(chatSocket.sent).toEqual([])
+    // One frame, one emit: `replayBytes` describes exactly the next terminal:data.
+    expect(tabOutput.map(data => data.length)).toEqual([10 * 1024, 10 * 1024])
+    tabSocket.sent.length = 0
+
+    const paste = 'x'.repeat(150 * 1024)
+    tab.write(paste)
+    const frames = tabSocket.sent as Uint8Array[]
+    expect(frames.map(frame => frame.byteLength)).toEqual([64 * 1024, 64 * 1024, 22 * 1024])
+    expect(frames.map(frame => new TextDecoder().decode(frame)).join('')).toBe(paste)
+    tab.close()
+    chat.close()
+  })
+
+  it('reports the replay length from the server\'s ready and acknowledges the replay as soon as it arrives', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const states: TerminalStateEvent[] = []
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    const current = client.terminal('term_0123abcd', { columns: 80, rows: 24 }, () => {}, state => states.push(state))
+    const old = client.terminal('term_4567cdef', { columns: 80, rows: 24 }, () => {}, state => states.push(state))
+    FakeWebSocket.instances[0].emit('message', JSON.stringify({ type: 'ready', name: 'zsh', replay_bytes: 4096 }))
+    FakeWebSocket.instances[1].emit('message', JSON.stringify({ type: 'ready', name: 'zsh' }))
+    expect(states.filter(state => state.state === 'connected')).toEqual([
+      { sessionId: 'term_0123abcd', state: 'connected', name: 'zsh', replayBytes: 4096 },
+      { sessionId: 'term_4567cdef', state: 'connected', name: 'zsh' }
+    ])
+    // Below the 16 KiB batch, but the server does not time this viewer until its replay is acknowledged.
+    FakeWebSocket.instances[0].emit('message', new Uint8Array(4096).buffer)
+    FakeWebSocket.instances[0].emit('message', new Uint8Array(100).buffer)
+    expect(FakeWebSocket.instances[0].sent).toEqual([JSON.stringify({ type: 'ack', bytes: 4096 })])
+    current.close()
+    old.close()
+  })
+
+  it('keeps input typed while a terminal (re)connects and sends it in order once the server is ready', () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    const connection = client.terminal('term_0123abcd', { columns: 80, rows: 24 }, () => {}, () => {})
+    const sentText = (socket: FakeWebSocket) => socket.sent.map(frame => new TextDecoder().decode(frame as Uint8Array))
+    const first = FakeWebSocket.instances[0]
+
+    connection.write('a')
+    expect(first.sent).toEqual([])
+    first.emit('message', JSON.stringify({ type: 'ready', name: 'zsh' }))
+    connection.write('b')
+    expect(sentText(first)).toEqual(['a', 'b'])
+
+    first.emit('close', undefined, { code: 1006 })
+    // Answers to the old connection's queries are dropped; a key mixed in is kept.
+    connection.write('\x1b[12;40R')
+    connection.write('\x1b[?62;22c\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\\x1bP>|xterm.js(6.0.0)\x1b\\')
+    connection.write('c')
+    vi.advanceTimersByTime(500)
+    const second = FakeWebSocket.instances[1]
+    connection.write('d')
+    // 1 MiB waits at most: of these sixteen 64 KiB frames the last no longer fits and is dropped.
+    connection.write('x'.repeat(1024 * 1024))
+    expect(second.sent).toEqual([])
+    second.emit('message', JSON.stringify({ type: 'ready', name: 'zsh' }))
+    connection.write('e')
+    expect(sentText(second).join('')).toBe(`cd${'x'.repeat(15 * 64 * 1024)}e`)
+    connection.close()
   })
 
   it('explains a 4404 on a terminal tab as a missing tab or a server that needs updating', () => {
