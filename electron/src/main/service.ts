@@ -5376,9 +5376,9 @@ export class AppService {
     const connection = scope.client.terminal(
       sessionId,
       options,
-      data => {
+      (data, replay) => {
         if (this.isCurrentScope(scope) && this.terminalLeases.get(sessionId) === lease) {
-          this.emit('terminal:data', { sessionId, data, profileId: scope.profileId, profileGeneration: scope.generation })
+          this.emit('terminal:data', { sessionId, data, ...(replay ? { replay: true } : {}), profileId: scope.profileId, profileGeneration: scope.generation })
         }
       },
       state => {

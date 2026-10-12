@@ -212,9 +212,13 @@ const SESSION_SUMMARY_STREAM_MAX_PACKET_CHARS = 256 * 1024
 const EVENTS_STREAM_PROTOCOL = 'agentsdock-events-v1'
 const TERMINAL_STREAM_PROTOCOL = 'agentsdock-terminal-v1'
 // A terminal tab acknowledges output in batches of this size, and its replay as soon as it arrives (the
-// server does not time a viewer that has not acknowledged its replay). The server pauses the shell while
-// more than its window (TERMINAL_OUTPUT_WINDOW_BYTES, which must stay well above this) is unacknowledged.
+// server does not time a viewer that has not acknowledged its replay). The server pauses the shell while the
+// active viewer has more than its window (TERMINAL_OUTPUT_WINDOW_BYTES, which must stay well above this)
+// unacknowledged.
 const TERMINAL_ACK_BYTES = 16 * 1024
+// The rest of a batch is acknowledged once no output has arrived for this long: a viewer that fell behind
+// gets no more output until it has acknowledged all of it, and only then its resync. Android uses the same.
+const TERMINAL_ACK_IDLE_MS = 200
 // Input frames stay far below the 1 MiB frame limit of chat terminals and older servers
 // (TERMINAL_INPUT_MAX_BYTES), and small enough that acknowledgements get through between the frames
 // of a large paste on a slow link.
@@ -2101,7 +2105,7 @@ export class AgentServerClient {
   terminal(
     sessionId: string,
     options: TerminalConnectOptions,
-    onData: (data: string) => void,
+    onData: (data: string, replay: boolean) => void,
     onState: (state: TerminalStateEvent) => void
   ): TerminalConnection {
     const configuration = this.configuration
@@ -2116,23 +2120,35 @@ export class AgentServerClient {
     let columns = options.columns
     let rows = options.rows
     let decoder = new TextDecoder()
-    // Per socket: input is sent once the server said `ready`; terminal tabs acknowledge output.
+    // Per socket: input is sent once the server said `ready`; terminal tabs acknowledge output. The
+    // next binary frame is a replay after `ready` or `resync` (an older server sends no replay length:
+    // then its first frame is the replay).
     let ready = false
+    let name: string | null = null
     let replayPending = false
     let unacknowledged = 0
+    let acknowledgeLater: NodeJS.Timeout | undefined
     // Input typed while no socket is ready, carried across reconnects.
     const pendingInput: Uint8Array<ArrayBuffer>[] = []
     let pendingInputBytes = 0
+    const acknowledge = (socket: WebSocket): void => {
+      clearTimeout(acknowledgeLater)
+      socket.send(JSON.stringify({ type: 'ack', bytes: unacknowledged }))
+      unacknowledged = 0
+    }
     const receive = (bytes: Uint8Array, socket: WebSocket): void => {
       if (!bytes.byteLength) return
-      onData(decoder.decode(bytes, { stream: true }))
+      const replay = replayPending
+      replayPending = false
+      onData(decoder.decode(bytes, { stream: true }), replay)
       if (!standalone) return
       unacknowledged += bytes.byteLength
-      if (unacknowledged >= TERMINAL_ACK_BYTES || replayPending) {
-        socket.send(JSON.stringify({ type: 'ack', bytes: unacknowledged }))
-        unacknowledged = 0
+      if (unacknowledged >= TERMINAL_ACK_BYTES || replay) {
+        acknowledge(socket)
+      } else {
+        clearTimeout(acknowledgeLater)
+        acknowledgeLater = setTimeout(() => acknowledge(socket), TERMINAL_ACK_IDLE_MS)
       }
-      replayPending = false
     }
     const link = reconnectingSocket(configuration, {
       connectTimeoutMs: 10_000,
@@ -2145,6 +2161,8 @@ export class AgentServerClient {
         url.searchParams.set('rows', String(rows))
         if (options.cwd) url.searchParams.set('cwd', options.cwd)
         if (standalone) url.searchParams.set('flow_control', '1')
+        // A reattach after a dropped link is passive too: the tab takes the size back when it is shown.
+        if (standalone && (options.passive || attempt > 0)) url.searchParams.set('passive', '1')
         const protocols = authenticatedWebSocketProtocols(
           configuration,
           url,
@@ -2153,6 +2171,7 @@ export class AgentServerClient {
         decoder = new TextDecoder()
         ready = false
         replayPending = false
+        clearTimeout(acknowledgeLater)
         unacknowledged = 0
         const socket = new WebSocket(url, protocols)
         socket.binaryType = 'arraybuffer'
@@ -2163,18 +2182,21 @@ export class AgentServerClient {
         if (typeof message.data === 'string') {
           try {
             const control = JSON.parse(message.data) as { type?: string; name?: string; message?: string; replay_bytes?: unknown }
+            const replayBytes = typeof control.replay_bytes === 'number' ? control.replay_bytes : null
             if (control.type === 'ready') {
               link.resetBackoff()
               ready = true
-              replayPending = typeof control.replay_bytes === 'number' && control.replay_bytes > 0
+              name = control.name ?? null
+              replayPending = replayBytes === null || replayBytes > 0
               for (const frame of pendingInput.splice(0)) socket.send(frame)
               pendingInputBytes = 0
-              onState({
-                sessionId,
-                state: 'connected',
-                name: control.name ?? null,
-                ...(typeof control.replay_bytes === 'number' ? { replayBytes: control.replay_bytes } : {})
-              })
+              onState({ sessionId, state: 'connected', name, ...(replayBytes === null ? {} : { replayBytes }) })
+            } else if (control.type === 'resync' && replayBytes !== null) {
+              // This viewer fell behind and the server stopped its live output; the replay that follows
+              // rebuilds the screen. A character the last live frame left unfinished never completes.
+              decoder = new TextDecoder()
+              replayPending = replayBytes > 0
+              onState({ sessionId, state: 'connected', name, replayBytes, resync: true })
             } else if (control.type === 'error') {
               // Unmarked server control errors can be transient (for example,
               // a tmux attach race during managed restart). Only the explicit
@@ -2202,7 +2224,7 @@ export class AgentServerClient {
       },
       onClose: (event, link) => {
         const tail = decoder.decode()
-        if (tail) onData(tail)
+        if (tail) onData(tail, false)
         if (event.code === TERMINAL_SHELL_EXITED_CLOSE_CODE) {
           // The shell itself ended (for example `exit`); the next connect starts a new one.
           link.stop()
