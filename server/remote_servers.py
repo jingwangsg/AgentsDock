@@ -131,14 +131,19 @@ def validate_remote_dir(value: str) -> str:
     return directory
 
 
+def cluster_home(ssh_host: str) -> str:
+    """The persistent home the hub's environment names for this cluster target, without a trailing /, or ""."""
+    return next((os.environ.get(name, "") for prefix, name in CLUSTER_HOME_ENV.items() if ssh_host.startswith(prefix)), "").rstrip("/")
+
+
 def default_install_dir(ssh_host: str) -> str:
     """The home of a cluster target is shared storage: one install per target keeps each
     machine's chats apart, and no two servers ever write one state directory. The install
-    stays a direct child of the home, which the probe then uses as HOME."""
-    home = next((os.environ.get(name, "") for prefix, name in CLUSTER_HOME_ENV.items() if ssh_host.startswith(prefix)), "")
+    stays a direct child of the home, which the deploy then uses as HOME."""
+    home = cluster_home(ssh_host)
     if not home:
         return DEFAULT_INSTALL_DIR
-    return validate_remote_dir(f"{home.rstrip('/')}/.agentsdock-server-{ssh_host.split('@', 1)[1]}")
+    return validate_remote_dir(f"{home}/.agentsdock-server-{ssh_host.split('@', 1)[1]}")
 
 
 def validate_port(value: int) -> int:
@@ -1807,6 +1812,12 @@ class RemoteServerManager:
                 await self._install_key(job, route, request.password)
             probe_lines = await self._run_ssh(job, route, [*remote_shell_args(route.destination), install_dir], stdin=PROBE_SCRIPT.read_bytes(), idle_timeout=60)
             probe = parse_probe(probe_lines)
+            # The probe takes the install's parent as HOME only once it holds a Claude or Codex
+            # login. A fresh container's persistent home has none yet, and the container's own ~
+            # (often /root) then took the CLIs and logins, which the next container drops.
+            home = cluster_home(ssh_host)
+            if home and install_dir.rpartition("/")[0] == home:
+                probe["home"] = home
             if attach and not probe.get("existing_port"):
                 raise RuntimeError(f"No AgentsServer install was found at {install_dir} on {ssh_host}. Deploy a new server instead.")
             remote_port = requested_port or probe.get("existing_port") or probe["free_port"]
