@@ -3540,7 +3540,7 @@ interface FakeClientOptions {
     onSessions: (sessions: Session[], snapshot: boolean, removedSessionId?: string) => void,
     onState: (connected: boolean, error?: string) => void
   ) => () => void
-  terminal?: () => { write(data: string): void; resize(columns: number, rows: number): void; scroll(delta: number): void; close(): void }
+  terminal?: (sessionId: string, options: unknown, onData: (data: string, replay: boolean) => void) => { write(data: string): void; resize(columns: number, rows: number): void; scroll(delta: number): void; close(): void }
   portTunnelSocket?: (sessionId: string, remotePort: number) => WebSocket
 }
 
@@ -9448,6 +9448,37 @@ describe('server profile lifecycle', () => {
 
     expect(connections[0].close).toHaveBeenCalledOnce()
     expect(connections[1].close).not.toHaveBeenCalled()
+  })
+
+  it('marks the terminal data that carries a replay', async () => {
+    let onData: (data: string, replay: boolean) => void = () => {}
+    const a = fakeClient({
+      health: async () => ({ ok: true, server_identity: 'server-a' } as Health),
+      terminal: (_sessionId, _options, data) => {
+        onData = data
+        return { write: vi.fn(), resize: vi.fn(), scroll: vi.fn(), close: vi.fn() }
+      }
+    })
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [a],
+      'http://b.test:7850': [fakeClient()]
+    })
+    settings.setProfileServerIdentity('a', 'server-a')
+    const bootstrap = await service.bootstrap()
+    await service.refreshServer('a', bootstrap.profileGeneration)
+    const send = vi.fn()
+    service.addWindow({ isDestroyed: () => false, on: vi.fn(), webContents: { id: 74, on: vi.fn(), send } } as never)
+
+    await service.connectTerminal('a', bootstrap.profileGeneration, 'term_tab', { columns: 80, rows: 24, passive: true })
+    expect(a.terminal).toHaveBeenCalledWith('term_tab', { columns: 80, rows: 24, passive: true }, expect.any(Function), expect.any(Function))
+    onData('history', true)
+    onData('live', false)
+    const data = send.mock.calls.filter(([channel]) => channel === 'terminal:data').map(([, payload]) => payload)
+    expect(data).toEqual([
+      expect.objectContaining({ sessionId: 'term_tab', data: 'history', replay: true }),
+      expect.not.objectContaining({ replay: expect.anything() })
+    ])
+    expect(data[1].data).toBe('live')
   })
 
   it('keeps a healthy active server connected but degraded when tmux is missing', async () => {

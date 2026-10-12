@@ -1449,6 +1449,8 @@ export interface TerminalConnectOptions {
   cwd?: string | null
   columns: number
   rows: number
+  /** Attach without taking the pty's size or becoming the active viewer (a hidden tab). */
+  passive?: boolean
 }
 
 export interface TerminalStateEvent {
@@ -1458,6 +1460,8 @@ export interface TerminalStateEvent {
   error?: string | null
   /** With `connected`: the length of the replay that arrives next as one `terminal:data` (0: none). Absent from older servers. */
   replayBytes?: number
+  /** With `connected`: the server resynced a viewer that fell behind, on the same connection. */
+  resync?: boolean
   profileId?: string
   profileGeneration?: number
 }
@@ -2124,13 +2128,19 @@ export interface ProfileTimelineEvent extends ProfileEventContext {
   /** The cached window proved stale (history revision behind the server): adopt this snapshot whole, older paged rows included. */
   authoritative?: boolean
 }
-export interface ProfileTerminalDataEvent extends ProfileEventContext { sessionId: string; data: string }
+export interface ProfileTerminalDataEvent extends ProfileEventContext {
+  sessionId: string
+  data: string
+  /** This data is a replay of the scrollback (after `connected`), not live output. */
+  replay?: true
+}
 export interface ProfileTerminalStateEvent extends ProfileEventContext {
   sessionId: string
   state: TerminalConnectionState
   name?: string | null
   error?: string | null
   replayBytes?: number
+  resync?: boolean
 }
 export interface ProfileForwardedPortsEvent extends ProfileEventContext { ports: ForwardedPort[] }
 

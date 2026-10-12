@@ -37,7 +37,6 @@ const REPLAYED_CSI_QUERIES: IFunctionIdentifier[] = [
 const REPLAYED_DCS_QUERIES: IFunctionIdentifier[] = [{ intermediates: '$', final: 'q' }, { intermediates: '+', final: 'q' }] // DECRQSS, XTGETTCAP
 const WINDOW_REPORT_REQUESTS = new Set([11, 13, 14, 15, 16, 18, 19, 20, 21]) // CSI Ps t
 const REPLAYED_OSC_QUERIES = [4, 10, 11, 12, 17, 19, 52] // colors and OSC 52, each queried with '?'
-const utf8 = new TextEncoder()
 
 /**
  * One shell on the active server. The tab opens its terminal and shell the first time it is shown,
@@ -288,22 +287,14 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
     const mine = (payload: { profileId?: string; profileGeneration?: number; sessionId: string }) =>
       payload.profileId === profileId && payload.profileGeneration === profileGeneration && payload.sessionId === surface.id
     const fitNow = () => fitIfLaidOut(host, fit)
-    // Bytes of this attach's replay still to come. A server that reports `replayBytes` sends the
-    // replay as the data right after `connected` (0: no replay); for an older one that does not,
-    // its first data event is the replay (null).
-    let replayLeft: number | null = 0
     const removeData = window.agentsDock.events.on('terminal:data', payload => {
       if (!mine(payload)) return
-      if (replayLeft === 0) {
-        terminal.write(payload.data)
-        return
-      }
-      replayLeft = replayLeft === null ? 0 : Math.max(0, replayLeft - utf8.encode(payload.data).length)
-      if (replayLeft > 0) {
+      if (!payload.replay) {
         terminal.write(payload.data)
         return
       }
       const attach = attachRef.current
+      replayingRef.current = staleQueriesRef.current = true
       const pending = trailingSequencesStart(payload.data)
       const tail = payload.data.slice(pending)
       terminal.write(payload.data.slice(0, pending), () => {
@@ -318,20 +309,22 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
       setConnection(payload.state)
       setConnectionError(payload.error ?? null)
       if (payload.state === 'connected') {
+        // A new attach, or a resync of this one: the replay that follows (as `replay` data) rebuilds the screen.
         attachRef.current += 1
-        replayLeft = payload.replayBytes ?? null
-        replayingRef.current = staleQueriesRef.current = replayLeft !== 0
-        // The replay rebuilds the screen. RIS goes through the write queue, so output still
-        // queued from the previous attach cannot land after it.
+        replayingRef.current = staleQueriesRef.current = false
+        // RIS goes through the write queue, so output still queued from before cannot land after it.
         terminal.write('\x1bc', () => {
           for (const marker of promptsRef.current) marker.dispose()
           promptsRef.current = []
         })
         fitNow()
-        // The server sized the pty from the connect request. A fit made while the link was still
-        // opening (a hidden tab shown on a slow remote) never reached it, and fit() will not repeat it.
-        window.agentsDock.terminal.resize(profileId, profileGeneration, surface.id, terminal.cols, terminal.rows)
-        if (activeRef.current) terminal.focus()
+        // A shown tab makes this device the pty's size owner. A fit made while the link was still opening
+        // (a hidden tab shown on a slow remote) never reached the server, and fit() will not repeat it.
+        // A resync arrives on a live connection and leaves the size and the focus alone.
+        if (activeRef.current && !payload.resync) {
+          window.agentsDock.terminal.resize(profileId, profileGeneration, surface.id, terminal.cols, terminal.rows)
+          terminal.focus()
+        }
       }
     })
     const input = terminal.onData(data => window.agentsDock.terminal.write(profileId, profileGeneration, surface.id, data))
@@ -343,10 +336,12 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
     setConnection('connecting')
     setConnectionError(null)
     fitNow()
+    // A hidden tab attaches passively: it does not take the pty's size from the device in use.
     void window.agentsDock.terminal.connect(profileId, profileGeneration, surface.id, {
       cwd: surface.cwd,
       columns: terminal.cols,
-      rows: terminal.rows
+      rows: terminal.rows,
+      passive: !activeRef.current
     }).catch(error => {
       setConnection('error')
       setConnectionError(errorText(error))
@@ -373,14 +368,17 @@ export function TerminalSurface({ surface, active }: { surface: Surface; active:
     textarea?.addEventListener('focus', clearBell)
     const frame = window.requestAnimationFrame(() => {
       if (hostRef.current && fitRef.current) fitIfLaidOut(hostRef.current, fitRef.current)
-      terminalRef.current?.focus()
+      const terminal = terminalRef.current
+      // Shown: this device becomes the size owner, even when the fit left the size unchanged.
+      if (terminal && profileId) window.agentsDock.terminal.resize(profileId, profileGeneration, surface.id, terminal.cols, terminal.rows)
+      terminal?.focus()
     })
     return () => {
       window.cancelAnimationFrame(frame)
       window.removeEventListener('focus', clearBell)
       textarea?.removeEventListener('focus', clearBell)
     }
-  }, [active, ready, surface.id])
+  }, [active, ready, surface.id, profileId, profileGeneration])
 
   useEffect(() => {
     if (!active) return

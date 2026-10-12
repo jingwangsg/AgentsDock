@@ -155,8 +155,9 @@ class StandaloneTerminalWebSocketTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.client.delete(f"/api/surfaces/{self.terminal_id}", headers=self.headers)
 
-    def _attach(self, terminal_id: str | None = None, columns: int = 80, rows: int = 24):
-        return self.client.websocket_connect(f"/api/sessions/{terminal_id or self.terminal_id}/terminal/ws?columns={columns}&rows={rows}", headers=self.headers, subprotocols=PROTOCOLS)
+    def _attach(self, terminal_id: str | None = None, columns: int = 80, rows: int = 24, passive: bool = False):
+        query = f"columns={columns}&rows={rows}" + ("&passive=1" if passive else "")
+        return self.client.websocket_connect(f"/api/sessions/{terminal_id or self.terminal_id}/terminal/ws?{query}", headers=self.headers, subprotocols=PROTOCOLS)
 
     def _receive(self, websocket, timeout: float = 20.0) -> dict:
         try:
@@ -238,10 +239,6 @@ class StandaloneTerminalWebSocketTests(unittest.TestCase):
                 gone.receive_json()
             self.assertEqual(raised.exception.code, 4404)
 
-    def _stty_size(self, websocket) -> str:
-        websocket.send_bytes(b"stty size; echo __size_$((1+1))\n")
-        return re.findall(r"(\d+ \d+)\r\n", self._read_until(websocket, "__size_2"))[-1]
-
     def test_ready_announces_the_length_of_the_replay_frame_that_follows(self) -> None:
         with self._attach() as first:
             self.assertEqual(first.receive_json()["replay_bytes"], 0)  # a new shell has nothing to replay
@@ -301,14 +298,38 @@ class StandaloneTerminalWebSocketTests(unittest.TestCase):
             websocket.send_bytes(b"echo __still_$((3+3))\n")
             self._read_until(websocket, "__still_6")
 
-    def test_the_pty_returns_to_the_size_of_the_viewer_used_last(self) -> None:
+    def _watch_size(self, websocket) -> None:
+        """Run a program that prints the pty's size on every change, so the size shows without anyone typing."""
+        script = os.path.join(self.cwd, "watch_size.sh")
+        with open(script, "w") as handle:
+            handle.write("trap 'echo \"__size $(stty size)\"' WINCH\necho __watching\nwhile :; do sleep 0.1; done\n")
+        websocket.send_bytes(f"sh {script}\n".encode())
+        self._read_until(websocket, "__watching")
+
+    def test_a_passive_attach_keeps_the_size_until_that_viewer_resizes(self) -> None:
         with self._attach(columns=160, rows=45) as desktop:
             self.assertEqual(desktop.receive_json()["type"], "ready")
-            self.assertEqual(self._stty_size(desktop), "45 160")
-            with self._attach(columns=50, rows=20) as phone:
+            self._watch_size(desktop)
+            with self._attach(columns=50, rows=20, passive=True) as phone:
                 self.assertEqual(phone.receive_json()["type"], "ready")
-                self.assertEqual(self._stty_size(desktop), "20 50")
-            self.assertEqual(self._stty_size(desktop), "45 160")
+                phone.send_json({"type": "resize", "columns": 50, "rows": 21})  # a resize makes it active
+                self.assertNotIn("__size 20 50", self._read_until(desktop, "__size 21 50"))  # the attach did not
+                desktop.send_bytes(b" ")  # so does input
+                self._read_until(desktop, "__size 45 160")
+            desktop.send_bytes(b"\x03")
+
+    def test_when_the_active_viewer_leaves_the_one_active_before_it_takes_over(self) -> None:
+        with self._attach(columns=160, rows=45) as desktop:
+            self.assertEqual(desktop.receive_json()["type"], "ready")
+            self._watch_size(desktop)
+            with self._attach(columns=70, rows=22, passive=True) as hidden:  # never active
+                self.assertEqual(hidden.receive_json()["type"], "ready")
+                with self._attach(columns=50, rows=20) as phone:
+                    self.assertEqual(phone.receive_json()["type"], "ready")
+                    self._read_until(desktop, "__size 20 50")
+                output = self._read_until(desktop, "__size 45 160")
+                self.assertNotIn("__size 22 70", output)
+            desktop.send_bytes(b"\x03")
 
 
 class FakeViewer:
@@ -403,6 +424,7 @@ class ScriptedViewer:
         self.frames: list[int] = []
         self.received = 0
         self.controls: list[dict] = []
+        self.sent: list[dict | bytes] = []  # everything, in order
         self.messages: asyncio.Queue[dict] = asyncio.Queue()
         self.close_codes: list[int] = []
 
@@ -411,10 +433,12 @@ class ScriptedViewer:
 
     async def send_json(self, payload: dict) -> None:
         self.controls.append(payload)
+        self.sent.append(payload)
 
     async def send_bytes(self, data: bytes) -> None:
         self.frames.append(len(data))
         self.received += len(data)
+        self.sent.append(data)
 
     async def receive(self) -> dict:
         return await self.messages.get()
@@ -458,8 +482,8 @@ class ScriptedShellTests(unittest.IsolatedAsyncioTestCase):
         self.shell = agent_server.TERMINAL_SHELLS[self.terminal_id] = agent_server.TerminalShell(process, master_fd, "sh")
         self.addAsyncCleanup(self.shell.kill)
 
-    def _attach(self, viewer: ScriptedViewer, flow_control: bool) -> asyncio.Task:
-        attach = asyncio.create_task(agent_server.standalone_terminal_websocket(viewer, self.terminal_id, 80, 24, None, None, flow_control))  # type: ignore[arg-type]
+    def _attach(self, viewer: ScriptedViewer, flow_control: bool, passive: bool = False, columns: int = 80, rows: int = 24) -> asyncio.Task:
+        attach = asyncio.create_task(agent_server.standalone_terminal_websocket(viewer, self.terminal_id, columns, rows, None, None, flow_control, passive))  # type: ignore[arg-type]
         self.addAsyncCleanup(self._detach, viewer, attach)
         return attach
 
@@ -505,7 +529,7 @@ class FlowControlTests(ScriptedShellTests):
         with mock.patch.object(agent_server, "TERMINAL_VIEWER_STALL_SECONDS", 0.5):
             silent_attach = self._attach(silent, flow_control=True)
             silent.acknowledge(await self._replayed(silent))
-            self._attach(plain, flow_control=False)
+            self._attach(plain, flow_control=False, passive=True)  # the silent one stays active
             await asyncio.wait_for(silent_attach, 5)
         self.assertEqual(silent.close_codes, [agent_server.TERMINAL_VIEWER_STALLED_CLOSE_CODE])
         before = plain.received
@@ -542,6 +566,131 @@ class FlowControlTests(ScriptedShellTests):
         os.killpg(self.shell.process.pid, signal.SIGKILL)
         await asyncio.wait_for(attach, 3)
         self.assertEqual(viewer.close_codes, [agent_server.TERMINAL_SHELL_EXITED_CLOSE_CODE])
+
+
+class ActiveViewerTests(ScriptedShellTests):
+    """Only the active viewer's size reaches the pty: the last to type or resize, or a non-passive attach."""
+
+    command = "trap 'echo \"__size $(stty size)\"' WINCH; echo __watching; while :; do sleep 0.1; done"
+
+    def _sizes(self, viewer: ScriptedViewer) -> list[str]:
+        return re.findall(r"__size (\d+ \d+)", b"".join(item for item in viewer.sent if isinstance(item, bytes)).decode())
+
+    async def _sizes_after_a_moment(self, viewer: ScriptedViewer) -> list[str]:
+        await asyncio.sleep(0.5)
+        return self._sizes(viewer)
+
+    async def test_a_passive_viewer_takes_the_size_only_once_it_types_and_its_reports_do_not_count(self) -> None:
+        desktop, phone = ScriptedViewer(), ScriptedViewer()
+        while b"__watching" not in self.shell.scrollback.replay():  # the trap is set
+            await asyncio.sleep(0.01)
+        self._attach(desktop, flow_control=False, columns=160, rows=45)
+        self.assertEqual(await self._sizes_after_a_moment(desktop), ["45 160"])
+        self._attach(phone, flow_control=False, passive=True, columns=50, rows=20)
+        phone.messages.put_nowait({"type": "websocket.receive", "bytes": b"\x1b[?62;22c\x1b[12;1R\x1b[O"})
+        self.assertEqual(await self._sizes_after_a_moment(desktop), ["45 160"])
+        phone.messages.put_nowait({"type": "websocket.receive", "bytes": b"x"})
+        self.assertEqual(await self._sizes_after_a_moment(desktop), ["45 160", "20 50"])
+
+
+class ResyncTests(ScriptedShellTests):
+    """A flow-controlled viewer that is not active and falls behind no longer paces the shell; it is resynced instead."""
+
+    command = "i=0; while :; do i=$((i+1)); echo $i; done"
+
+    async def _keep_acknowledging(self, viewer: ScriptedViewer) -> None:
+        acked = 0
+        while True:
+            await asyncio.sleep(0.02)
+            if viewer.received > acked:
+                viewer.acknowledge(viewer.received - acked)
+                acked = viewer.received
+
+    def _acknowledging(self, viewer: ScriptedViewer) -> None:
+        self.addCleanup(asyncio.create_task(self._keep_acknowledging(viewer)).cancel)
+
+    @staticmethod
+    def _numbers(items: list[dict | bytes]) -> list[int]:
+        output = b"".join(item for item in items if isinstance(item, bytes))
+        # macOS's pty now and then ends a line with "\r\r\n"; every viewer gets it so.
+        return [int(number) for number in re.findall(rb"(?m)^(\d+)\r+$", output)]
+
+    async def test_a_lagging_viewer_does_not_pause_the_shell_and_resumes_after_a_clean_resync(self) -> None:
+        active, plain, lagging = ScriptedViewer(), ScriptedViewer(), ScriptedViewer()
+        self._attach(active, flow_control=True)
+        self._acknowledging(active)
+        self._attach(plain, flow_control=False, passive=True)
+        self._attach(lagging, flow_control=True, passive=True)
+        behind = await lagging.settled()
+        self.assertLessEqual(behind - await self._replayed(lagging), agent_server.TERMINAL_OUTPUT_WINDOW_BYTES + agent_server.TERMINAL_READ_BYTES)
+        before = active.received
+        await asyncio.sleep(0.5)
+        self.assertGreater(active.received, before)  # the shell keeps running for the active viewer
+        self.assertEqual(lagging.received, behind)
+
+        self._acknowledging(lagging)  # it wakes up
+        while len(lagging.controls) < 2:
+            await asyncio.sleep(0.01)
+        self.assertEqual(lagging.controls[1]["type"], "resync")
+        resync = lagging.sent.index(lagging.controls[1])
+        replay = lagging.sent[resync + 1]
+        self.assertEqual(len(replay), lagging.controls[1]["replay_bytes"])
+        await asyncio.sleep(0.5)
+        # From the replay on, every line the shell printed arrives once and in order, the live ones included.
+        after = lagging.sent[resync + 1:]
+        if len(lagging.controls) > 2:  # it fell behind again
+            after = after[:after.index(lagging.controls[2])]
+        numbers = self._numbers(after)
+        self.assertGreater(len(numbers) - len(self._numbers([replay])), 1000)
+        self.assertEqual(numbers, list(range(numbers[0], numbers[0] + len(numbers))))
+        # A viewer without flow control got all of it live.
+        everything = self._numbers(plain.sent)
+        self.assertEqual(everything, list(range(everything[0], everything[0] + len(everything))))
+        self.assertEqual([control["type"] for control in plain.controls], ["ready"])
+
+    async def test_a_viewer_that_keeps_up_is_never_resynced_however_long_its_replay(self) -> None:
+        active, passive = ScriptedViewer(), ScriptedViewer()
+        self._attach(active, flow_control=True)
+        self._acknowledging(active)
+        while len(self.shell.scrollback.replay()) <= 2 * agent_server.TERMINAL_OUTPUT_WINDOW_BYTES:
+            await asyncio.sleep(0.01)
+        self._attach(passive, flow_control=True, passive=True)
+        self._acknowledging(passive)
+        await asyncio.sleep(1.0)
+        self.assertEqual([control["type"] for control in passive.controls], ["ready"])
+        self.assertGreater(passive.received - passive.controls[0]["replay_bytes"], 2 * agent_server.TERMINAL_OUTPUT_WINDOW_BYTES)
+
+    async def test_the_active_viewer_paces_the_shell_until_another_one_types(self) -> None:
+        desktop, phone = ScriptedViewer(), ScriptedViewer()
+        self._attach(desktop, flow_control=True)  # never acknowledges
+        self._attach(phone, flow_control=True, passive=True)
+        self._acknowledging(phone)
+        paused_at = await desktop.settled()  # `echo` never stops, so a settled count means the pty is not read
+        self.assertLessEqual(paused_at, agent_server.TERMINAL_SCROLLBACK_BYTES + agent_server.TERMINAL_OUTPUT_WINDOW_BYTES + agent_server.TERMINAL_READ_BYTES)
+        phone.messages.put_nowait({"type": "websocket.receive", "bytes": b"x"})
+        resumed_at = phone.received
+        await asyncio.sleep(0.5)
+        self.assertGreater(phone.received - resumed_at, 2 * agent_server.TERMINAL_OUTPUT_WINDOW_BYTES)
+        self.assertEqual(desktop.received, paused_at)  # behind and no longer active: no live output
+
+    async def test_a_lagging_viewer_that_stops_acknowledging_is_closed(self) -> None:
+        active, lagging = ScriptedViewer(), ScriptedViewer()
+        close = lagging.close
+
+        async def typed_then_closed(code: int = 1000, reason: str | None = None) -> None:
+            # Input the viewer sent just before the close is read after the server dropped it.
+            lagging.messages.put_nowait({"type": "websocket.receive", "bytes": b"x"})
+            await close(code, reason)
+
+        lagging.close = typed_then_closed  # type: ignore[method-assign]
+        with mock.patch.object(agent_server, "TERMINAL_VIEWER_STALL_SECONDS", 0.5):
+            self._attach(active, flow_control=True)
+            self._acknowledging(active)
+            lagging_attach = self._attach(lagging, flow_control=True, passive=True)
+            lagging.acknowledge(await self._replayed(lagging))
+            await asyncio.wait_for(lagging_attach, 5)
+        self.assertEqual(lagging.close_codes, [agent_server.TERMINAL_VIEWER_STALLED_CLOSE_CODE])
+        self.assertIs(self.shell.active, active)
 
 
 class ReplayTests(ScriptedShellTests):

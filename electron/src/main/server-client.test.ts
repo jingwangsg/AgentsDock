@@ -3202,7 +3202,7 @@ describe('AgentServerClient live stream', () => {
     expect(chatSocket.url.searchParams.has('flow_control')).toBe(false)
 
     for (const socket of [tabSocket, chatSocket]) {
-      socket.emit('message', JSON.stringify({ type: 'ready', name: 'zsh' }))
+      socket.emit('message', JSON.stringify({ type: 'ready', name: 'zsh', replay_bytes: 0 }))
       socket.emit('message', new Uint8Array(10 * 1024).buffer)
       socket.emit('message', new Uint8Array(10 * 1024).buffer)
     }
@@ -3239,6 +3239,82 @@ describe('AgentServerClient live stream', () => {
     expect(FakeWebSocket.instances[0].sent).toEqual([JSON.stringify({ type: 'ack', bytes: 4096 })])
     current.close()
     old.close()
+  })
+
+  it('acknowledges the rest of a batch once output stops for 200 ms, so a tab the server stopped sending to is resynced', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    const connection = client.terminal('term_0123abcd', { columns: 80, rows: 24 }, () => {}, () => {})
+    const [socket] = FakeWebSocket.instances
+    socket.emit('message', JSON.stringify({ type: 'ready', name: 'zsh', replay_bytes: 0 }))
+    socket.emit('message', new Uint8Array(100).buffer)
+    vi.advanceTimersByTime(150)
+    socket.emit('message', new Uint8Array(200).buffer)
+    vi.advanceTimersByTime(199)
+    expect(socket.sent).toEqual([])
+    vi.advanceTimersByTime(1)
+    expect(socket.sent).toEqual([JSON.stringify({ type: 'ack', bytes: 300 })])
+    connection.close()
+  })
+
+  it('marks replay data, including the first frame from a server that sends no replay length', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const data: Array<[string, boolean]> = []
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    const current = client.terminal('term_0123abcd', { columns: 80, rows: 24 }, (text, replay) => data.push([text, replay]), () => {})
+    const old = client.terminal('term_4567cdef', { columns: 80, rows: 24 }, (text, replay) => data.push([text, replay]), () => {})
+    const [currentSocket, oldSocket] = FakeWebSocket.instances
+    currentSocket.emit('message', JSON.stringify({ type: 'ready', name: 'zsh', replay_bytes: 3 }))
+    currentSocket.emit('message', new TextEncoder().encode('old').buffer)
+    currentSocket.emit('message', new TextEncoder().encode('new').buffer)
+    currentSocket.emit('message', JSON.stringify({ type: 'ready', name: 'zsh', replay_bytes: 0 }))
+    currentSocket.emit('message', new TextEncoder().encode('live').buffer)
+    oldSocket.emit('message', JSON.stringify({ type: 'ready', name: 'zsh' }))
+    oldSocket.emit('message', new TextEncoder().encode('first').buffer)
+    oldSocket.emit('message', new TextEncoder().encode('second').buffer)
+    expect(data).toEqual([['old', true], ['new', false], ['live', false], ['first', true], ['second', false]])
+    current.close()
+    old.close()
+  })
+
+  it('attaches passively when asked and on every reattach, and only terminal tabs', () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    const shown = client.terminal('term_0123abcd', { columns: 80, rows: 24 }, () => {}, () => {})
+    const hidden = client.terminal('term_4567cdef', { columns: 80, rows: 24, passive: true }, () => {}, () => {})
+    const chat = client.terminal('chat', { columns: 80, rows: 24, passive: true }, () => {}, () => {})
+    const [shownSocket, hiddenSocket, chatSocket] = FakeWebSocket.instances
+    expect([shownSocket, hiddenSocket, chatSocket].map(socket => socket.url.searchParams.get('passive'))).toEqual([null, '1', null])
+    // After a dropped link the tab takes the size back only when it is shown (it sends a resize).
+    shownSocket.emit('close', undefined, { code: 1006 })
+    vi.advanceTimersByTime(500)
+    expect(FakeWebSocket.instances[3].url.searchParams.get('passive')).toBe('1')
+    shown.close()
+    hidden.close()
+    chat.close()
+  })
+
+  it('rebuilds a lagging tab from a resync: connected again, then the replay, with a fresh decoder', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const data: Array<[string, boolean]> = []
+    const states: TerminalStateEvent[] = []
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    const connection = client.terminal('term_0123abcd', { columns: 80, rows: 24 }, (text, replay) => data.push([text, replay]), state => states.push(state))
+    const [socket] = FakeWebSocket.instances
+    socket.emit('message', JSON.stringify({ type: 'ready', name: 'zsh', replay_bytes: 0 }))
+    socket.emit('message', Uint8Array.of(0x61, 0xe2).buffer)  // live output that stops inside '€'
+    socket.sent.length = 0
+    socket.emit('message', JSON.stringify({ type: 'resync', replay_bytes: 4 }))
+    socket.emit('message', new TextEncoder().encode('screen').buffer.slice(0, 4))
+    socket.emit('message', new TextEncoder().encode('live').buffer)
+    expect(states.at(-1)).toEqual({ sessionId: 'term_0123abcd', state: 'connected', name: 'zsh', replayBytes: 4, resync: true })
+    expect(data).toEqual([['a', false], ['scre', true], ['live', false]])
+    // The replay is acknowledged as it arrives, below the 16 KiB batch, with the live bytes before it.
+    expect(socket.sent).toEqual([JSON.stringify({ type: 'ack', bytes: 6 })])
+    connection.close()
   })
 
   it('keeps input typed while a terminal (re)connects and sends it in order once the server is ready', () => {

@@ -153,10 +153,11 @@ async function openConnected(active = true) {
   await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(1))
   emit('terminal:state', { state: 'connected', name: 'zsh' })
   const terminal = xterm.instances[0]
-  emit('terminal:data', { data: 'replayed scrollback' })
+  emit('terminal:data', { data: 'replayed scrollback', replay: true })
   act(() => terminal.finishWrites())
   return { view, terminal }
 }
+const nextFrame = () => act(async () => { await new Promise(resolve => window.requestAnimationFrame(resolve)) })
 
 describe('TerminalSurface', () => {
   it('opens its terminal and shell the first time the tab is shown, then keeps them while hidden', async () => {
@@ -166,7 +167,7 @@ describe('TerminalSurface', () => {
     expect(terminalApi.connect).not.toHaveBeenCalled()
 
     view.rerender(<TerminalSurface surface={surface} active />)
-    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledWith('profile-a', 4, 'term_abc', { cwd: '/work/app', columns: 80, rows: 24 }))
+    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledWith('profile-a', 4, 'term_abc', { cwd: '/work/app', columns: 80, rows: 24, passive: false }))
     const [terminal] = xterm.instances
     expect(terminal.open).toHaveBeenCalledOnce()
 
@@ -231,7 +232,7 @@ describe('TerminalSurface', () => {
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     const { terminal } = await openConnected()
     emit('terminal:state', { state: 'connected', name: 'zsh' })
-    emit('terminal:data', { data: '\x1b]52;c;b2xk\x07\x07\x1b]9;old\x07' })
+    emit('terminal:data', { data: '\x1b]52;c;b2xk\x07\x07\x1b]9;old\x07', replay: true })
     const clipboard = addon('clipboard').provider
     act(() => {
       clipboard.writeText('c', 'old')
@@ -519,7 +520,7 @@ describe('TerminalSurface', () => {
   it('swallows answered queries in a replay, answers the ones that end it, and answers live ones', async () => {
     const { terminal } = await openConnected()
     emit('terminal:state', { state: 'connected', name: 'zsh' })
-    emit('terminal:data', { data: 'old \x1b[c answered\r\n\x1b[0c' })
+    emit('terminal:data', { data: 'old \x1b[c answered\r\n\x1b[0c', replay: true })
     // The query that ends the replay is parsed apart from the rest: the program may still wait for it.
     expect(terminal.writes.slice(-2)).toEqual(['old \x1b[c answered\r\n', '\x1b[0c'])
     for (const id of ['n', '?n', 'c', '>c', '=c', '>q', '$p', '?$p', '?u', '?S']) expect(terminal.consumesCsi(id), id).toBe(true)
@@ -540,7 +541,7 @@ describe('TerminalSurface', () => {
     expect(terminal.osc.get(11)('?')).toBe(false)
   })
 
-  it('takes the replay from the server’s byte count: none for a new shell, several data events for a long one', async () => {
+  it('takes the replay from the replay flag alone: none for a new shell, and live data right after one', async () => {
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     render(<TerminalSurface surface={surface} active />)
     await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(1))
@@ -551,22 +552,58 @@ describe('TerminalSurface', () => {
     emit('terminal:data', { data: 'prompt' })
     expect(terminal.consumesCsi('c')).toBe(false)
 
-    // 'héllo' is 6 bytes; the replay ends with the data event that completes them.
+    // A replay that ends inside a character: the main process completes it in the next, live, data.
     emit('terminal:state', { state: 'connected', replayBytes: 6 })
-    emit('terminal:data', { data: 'hé' })
-    emit('terminal:data', { data: 'llo' })
+    emit('terminal:data', { data: 'h', replay: true })
+    emit('terminal:data', { data: 'éllo \x1b[6n' })
     act(() => terminal.finishWrites())
-    expect(terminal.consumesCsi('c')).toBe(false)
+    expect(terminal.consumesCsi('n')).toBe(false)
     act(() => terminal.osc.get(9)('live notification'))
     expect(native.notify).toHaveBeenCalledOnce()
+  })
+
+  it('attaches passively while hidden and takes the size and focus only as the shown tab', async () => {
+    const view = render(<TerminalSurface surface={surface} active />)
+    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(1))
+    const [terminal] = xterm.instances
+    view.rerender(<TerminalSurface surface={surface} active={false} />)
+    await nextFrame()
+    // Reconnected while hidden (a new profile generation): it must not take the pty's size from the device in use.
+    act(() => { useAppStore.setState({ profileGeneration: 5 }) })
+    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(2))
+    expect(terminalApi.connect.mock.calls[1][3]).toEqual(expect.objectContaining({ passive: true }))
+    act(() => { useAppStore.setState({ profileGeneration: 4 }) })
+    await waitFor(() => expect(terminalApi.connect).toHaveBeenCalledTimes(3))
+    terminalApi.resize.mockClear()
+    terminal.focus.mockClear()
+    emit('terminal:state', { state: 'connected', replayBytes: 0 })
+    expect(terminalApi.resize).not.toHaveBeenCalled()
+    expect(terminal.focus).not.toHaveBeenCalled()
+
+    // Shown again: this device becomes the size owner, even with the size unchanged.
+    view.rerender(<TerminalSurface surface={surface} active />)
+    await nextFrame()
+    expect(terminalApi.resize).toHaveBeenCalledWith('profile-a', 4, 'term_abc', 80, 24)
+  })
+
+  it('rebuilds the screen on a resync without taking the size or the focus', async () => {
+    const { terminal } = await openConnected()
+    await nextFrame()
+    terminalApi.resize.mockClear()
+    terminal.focus.mockClear()
+    emit('terminal:state', { state: 'connected', replayBytes: 5, resync: true })
+    emit('terminal:data', { data: 'again', replay: true })
+    expect(terminal.writes.slice(-2)).toEqual(['\x1bc', 'again'])
+    expect(terminalApi.resize).not.toHaveBeenCalled()
+    expect(terminal.focus).not.toHaveBeenCalled()
   })
 
   it('keeps a newer replay’s side effects suppressed when an older replay finishes during it', async () => {
     const { terminal } = await openConnected()
     emit('terminal:state', { state: 'connected' })
-    emit('terminal:data', { data: 'first replay' })
+    emit('terminal:data', { data: 'first replay', replay: true })
     emit('terminal:state', { state: 'connected' })
-    emit('terminal:data', { data: 'second replay' })
+    emit('terminal:data', { data: 'second replay', replay: true })
     // The first RIS and replay finish while the second replay is still queued.
     act(() => { terminal.pendingWriteCallbacks.splice(0, 3).forEach((callback: () => void) => callback()) })
     expect(terminal.consumesCsi('c')).toBe(true)
