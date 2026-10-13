@@ -881,6 +881,120 @@ class RewindEditTests(RewindFixture):
         self.assertEqual(sess["fork_resume_session_at"], "before-third-uuid")
 
 
+class SteerRewindTests(RewindFixture):
+    """Rewinding to a steer (a message sent while Claude worked), as native /rewind does."""
+
+    def steered_chat(self, backend: str = "claude", steers: tuple[str, ...] = ("Also check the logs",)) -> tuple[dict, list[int], int]:
+        """The third turn takes each steer during a tool call, then finishes; returns the steer seqs and the latest seq."""
+        events = self.events()[:7] + [
+            {"seq": 8, "id": "e8", "type": "turn_started", "run_id": "third", "ts": "2026-09-08T10:04:00Z", "prompt": "Third question"},
+            {"seq": 9, "id": "e9", "type": "tool_started", "run_id": "third", "ts": "2026-09-08T10:04:05Z"},
+        ]
+        steer_seqs = []
+        for index, prompt in enumerate(steers):
+            seq = len(events) + 1
+            steer_seqs.append(seq + 1)
+            events += [
+                {"seq": seq, "id": f"e{seq}", "type": "turn_queued", "queued_id": f"queued-{index}", "ts": "2026-09-08T10:04:10Z",
+                 "prompt": prompt, "request_prompt": prompt, "file_ids": [], "backend": backend},
+                {"seq": seq + 1, "id": f"e{seq + 1}", "type": "turn_steered", "run_id": "third", "ts": "2026-09-08T10:04:10Z",
+                 "queued_id": f"queued-{index}", "prompt": prompt, "backend": backend, "native_steer": True, "provider_user_authored": True},
+            ]
+        seq = len(events) + 1
+        events += [
+            {"seq": seq, "id": f"e{seq}", "type": "tool_finished", "run_id": "third", "ts": "2026-09-08T10:04:20Z"},
+            {"seq": seq + 1, "id": f"e{seq + 1}", "type": "turn_finished", "run_id": "third", "ts": "2026-09-08T10:05:00Z",
+             "exit_code": 0, "result_text": "Third answer"},
+        ]
+        latest = seq + 1
+        sess = self.chat(backend, latest_event_seq=latest, latest_agent_event_seq=latest, last_read_agent_event_seq=latest)
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        return sess, steer_seqs, latest
+
+    def stored_seqs(self) -> list[int]:
+        return [event["seq"] for event in self.stored_events() if event["type"] != "_event_sequence_checkpoint"]
+
+    @staticmethod
+    def queued_command_row(uuid: str, parent: str, prompt: str) -> dict:
+        # How Claude Code records a steer that waited for the tool call to return.
+        return {"type": "attachment", "uuid": uuid, "parentUuid": parent, "timestamp": "2026-09-08T10:04:19.600Z",
+                "attachment": {"type": "queued_command", "prompt": prompt, "commandMode": "prompt"}}
+
+    TOOL_RESULT = {"type": "user", "uuid": "tool-result-uuid", "parentUuid": "tool-use-uuid", "timestamp": "2026-09-08T10:04:19.500Z",
+                   "message": {"role": "user", "content": [{"type": "tool_result", "content": "done"}]}}
+
+    async def test_a_steer_rewind_forks_before_the_steer_and_keeps_the_runs_earlier_work(self) -> None:
+        sess, [steer_seq], latest = self.steered_chat()
+        with self.claude_transcript(self.TOOL_RESULT, self.queued_command_row("steer-uuid", "tool-result-uuid", "Also check the logs")):
+            result = await server.rewind_session("chat", rewind_request(to_seq=steer_seq, expected_latest_seq=latest))
+        self.assertEqual(result["provider_rewind"], "claude_fork")
+        self.assertEqual((sess["fork_from"], sess["fork_resume_session_at"]), ("claude-parent", "tool-result-uuid"))
+        # The run's start, its tool call and the steer's queued row stay; the steer and everything after it go.
+        self.assertEqual(self.stored_seqs()[:steer_seq], list(range(1, steer_seq)) + [latest + 1])
+        stored = self.stored_events()
+        self.assertEqual([event["type"] for event in stored[-2:]], ["history_rewound", "turn_unqueued"])
+        self.assertEqual((stored[-2]["from_seq"], stored[-2]["to_run_id"]), (steer_seq, "third"))
+        # The kept turn_queued row must not come back as a pending message after a restart.
+        self.assertEqual(server.scan_queued_turns_from_events([("chat", sess)]), {})
+
+    async def test_rewinding_to_the_second_of_two_steers_keeps_the_first(self) -> None:
+        sess, [_, second], latest = self.steered_chat(steers=("Also", "Also check the logs"))
+        rows = (self.TOOL_RESULT,
+                self.queued_command_row("first-steer-uuid", "tool-result-uuid", "Also"),
+                self.queued_command_row("second-steer-uuid", "first-steer-uuid", "Also check the logs"))
+        with self.claude_transcript(*rows):
+            await server.rewind_session("chat", rewind_request(to_seq=second, expected_latest_seq=latest))
+        self.assertEqual(sess["fork_resume_session_at"], "first-steer-uuid")
+        self.assertEqual(self.stored_seqs()[:second], list(range(1, second)) + [latest + 1])
+
+    async def test_a_steer_whose_text_starts_a_later_steer_forks_at_its_own_row(self) -> None:
+        # "Also" is a prefix of the second steer's text, which must not count as a second match.
+        sess, [first, _], latest = self.steered_chat(steers=("Also", "Also check the logs"))
+        rows = (self.TOOL_RESULT,
+                self.queued_command_row("first-steer-uuid", "tool-result-uuid", "Also"),
+                self.queued_command_row("second-steer-uuid", "first-steer-uuid", "Also check the logs"))
+        with self.claude_transcript(*rows):
+            await server.rewind_session("chat", rewind_request(to_seq=first, expected_latest_seq=latest))
+        self.assertEqual(sess["fork_resume_session_at"], "tool-result-uuid")
+
+    async def test_a_steer_with_attached_files_matches_the_row_carrying_their_list(self) -> None:
+        sess, [steer_seq], latest = self.steered_chat()
+        # build_user_provider_prompt's text for a steer with one attached file.
+        sent = "Also check the logs\n\n[Attached files]\n- /tmp/a.png\nUse these local paths directly when needed.\n"
+        with self.claude_transcript(self.TOOL_RESULT, self.queued_command_row("steer-uuid", "tool-result-uuid", sent)):
+            await server.rewind_session("chat", rewind_request(to_seq=steer_seq, expected_latest_seq=latest))
+        self.assertEqual(sess["fork_resume_session_at"], "tool-result-uuid")
+
+    async def test_a_steer_whose_row_is_missing_or_ambiguous_leaves_the_chat_unchanged(self) -> None:
+        for rows in [
+            (self.TOOL_RESULT,),
+            # The same text sent twice: either row could be this steer.
+            (self.TOOL_RESULT,
+             self.queued_command_row("twin-1", "tool-result-uuid", "Also check the logs"),
+             self.queued_command_row("twin-2", "twin-1", "Also check the logs")),
+        ]:
+            sess, [steer_seq], latest = self.steered_chat()
+            with self.claude_transcript(*rows):
+                await self.assertRewindRejected(rewind_request(to_seq=steer_seq, expected_latest_seq=latest), 409, "rewind_boundary_ambiguous")
+            # No reset and no fallback to the previous completed reply.
+            self.assertEqual(sess["claude_session_id"], "claude-parent")
+            self.assertNotIn("fork_resume_session_at", sess)
+            self.assertEqual(self.stored_seqs(), list(range(1, latest + 1)))
+
+    async def test_a_codex_steer_is_refused(self) -> None:
+        _, [steer_seq], latest = self.steered_chat(backend="codex")
+        await self.assertRewindRejected(rewind_request(to_seq=steer_seq, expected_latest_seq=latest), 409, "rewind_steer_unsupported")
+        self.assertEqual(self.stored_seqs(), list(range(1, latest + 1)))
+
+    async def test_a_restart_after_a_steer_rewind_does_not_stop_the_kept_run(self) -> None:
+        # The steered run keeps its start and tool call but has no terminal row. A server killed
+        # before the tombstone's metadata flush still reports that tool call as the latest event.
+        sess, [steer_seq], latest = self.steered_chat()
+        with self.claude_transcript(self.TOOL_RESULT, self.queued_command_row("steer-uuid", "tool-result-uuid", "Also check the logs")):
+            await server.rewind_session("chat", rewind_request(to_seq=steer_seq, expected_latest_seq=latest))
+        self.assertIsNone(server.abandoned_turn_after_restart("chat", {**sess, "latest_event_type": "tool_started"}))
+
+
 if __name__ == "__main__":
     unittest.main()
 

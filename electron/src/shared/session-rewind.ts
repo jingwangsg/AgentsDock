@@ -13,3 +13,11 @@ export function sessionRewindAvailable(health: Health | null | undefined, backen
 export function checkpointRestoreAvailable(health: Health | null | undefined, backend: Backend | undefined): boolean {
   return sessionRewindAvailable(health, backend) && health?.capabilities?.session_rewind_v1?.checkpoint_restore === true
 }
+
+export function steerRewindAvailable(health: Health | null | undefined, backend: Backend | undefined): boolean {
+  const steerBackends = health?.capabilities?.session_rewind_v1?.steer_backends
+  return sessionRewindAvailable(health, backend)
+    && backend !== undefined
+    && Array.isArray(steerBackends)
+    && steerBackends.includes(backend)
+}

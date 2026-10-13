@@ -26956,6 +26956,12 @@ def abandoned_turn_after_restart(
     closed_runs: set[str] = set()
     for event in records:
         event_type = str(event.get("type") or "")
+        if event_type == "history_rewound":
+            # A rewind runs only in an idle chat, so every run before it has
+            # ended; a run cut at a steer keeps its rows without a terminal one.
+            closed_runs.update(open_runs)
+            open_runs.clear()
+            continue
         run_id = str(event.get("run_id") or "").strip()
         if not run_id:
             continue
@@ -84613,6 +84619,8 @@ async def health() -> dict[str, Any]:
                 "version": 1,
                 "supported_backends": [BACKEND_CLAUDE, BACKEND_CODEX],
                 "checkpoint_restore": True,
+                # Backends whose rewind also accepts a steer (a message sent while the agent worked).
+                "steer_backends": [BACKEND_CLAUDE],
             },
             "automatic_pairing_completion_v1": secure_peer_automatic_completion_capability(),
             "local_provider_commands_v1": {
@@ -94153,6 +94161,78 @@ def claude_rewound_message_boundary(
     return None
 
 
+def claude_steered_message_boundary(
+    parent: dict[str, Any],
+    provider_id: str,
+    steer: dict[str, Any],
+    prefix: list[dict[str, Any]],
+    next_turn: dict[str, Any] | None,
+) -> str | None:
+    """Fork cutoff for a steer: the parent of the transcript row that recorded it.
+
+    A steer is a message sent while the agent worked; it joins the running
+    run. Claude Code records it as a ``queued_command`` attachment after the
+    tool result it waited for, or as a prompt row when the turn ended before
+    the CLI took it, and native /rewind forks at that row's parent, so the
+    run's work before the steer stays. The row is written after the steer was
+    queued and before the chat's next turn, and its text is the provider
+    prompt the steer sent. None unless exactly one row matches: steers with
+    the same text cannot be told apart, and a wrong row would keep or drop
+    another message.
+    """
+    queue_rows = [
+        event for event in prefix
+        if event.get("type") in {"turn_queued", "turn_queue_updated"}
+        and event.get("queued_id") == steer.get("queued_id")
+    ]
+    if not queue_rows:
+        return None
+    # The latest edit (turn_queue_updated) wins; older rows lack request_prompt.
+    prompt = str(next(
+        (row["request_prompt"] for row in reversed(queue_rows) if row.get("request_prompt") is not None),
+        queue_rows[-1].get("prompt") or "",
+    ))
+    queued = parse_job_timestamp(str(queue_rows[0].get("ts") or ""))
+    ended = parse_job_timestamp(str((next_turn or {}).get("ts") or ""))
+    if not prompt.strip() or queued is None:
+        return None
+    # Keyed by uuid: a forked transcript repeats the rows it was forked from.
+    matches: dict[str, tuple[Path, str]] = {}
+    for path in claude_fork_transcript_paths(parent, provider_id):
+        for record in bounded_jsonl_events(path):
+            record_uuid = str(record.get("uuid") or "")
+            if not record_uuid or record.get("isSidechain") or record.get("isMeta") or record.get("isCompactSummary"):
+                continue
+            attachment = record.get("attachment")
+            if record.get("type") == "attachment" and isinstance(attachment, dict):
+                if (
+                    attachment.get("type") != "queued_command"
+                    or attachment.get("isMeta")
+                    or attachment.get("commandMode") not in {None, "prompt"}
+                ):
+                    continue
+                text = attachment.get("prompt")
+            elif record.get("type") == "user" and isinstance(record.get("message"), dict):
+                text = record["message"].get("content")
+            else:
+                continue
+            # build_user_provider_prompt appends the attached-file list to the prompt.
+            if not isinstance(text, str) or split_legacy_attached_files(text, recover_file_ids=False)[0] != prompt:
+                continue
+            record_time = parse_job_timestamp(str(record.get("timestamp") or ""))
+            if record_time is None or record_time < queued or (ended is not None and record_time >= ended):
+                continue
+            matches[record_uuid] = (path, str(record.get("parentUuid") or ""))
+    if len(matches) != 1:
+        return None
+    path, cutoff = next(iter(matches.values()))
+    if not cutoff:
+        return None
+    if claude_cutoff_behind_compaction(path, cutoff):
+        raise HTTPException(status_code=409, detail=CLAUDE_CUTOFF_COMPACTED_DETAIL)
+    return cutoff
+
+
 @app.post("/api/sessions/{session_id}/fork")
 async def fork_session(session_id: str, req: ForkSessionRequest) -> dict[str, Any]:
     cleanup_state: dict[str, str | None] = {}
@@ -94708,7 +94788,7 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
         events = await asyncio.to_thread(lambda: list(iter_session_events(session_id)))
         target_index = next((
             index for index, event in enumerate(events)
-            if event.get("type") == "turn_started"
+            if (event.get("type") == "turn_started" or is_native_steer_event(event))
             and str(event.get("run_id") or "") == req.to_run_id
             and durable_event_seq(event) is not None
             and (req.to_seq is None or durable_event_seq(event) == req.to_seq)
@@ -94739,6 +94819,15 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
             raise HTTPException(status_code=409, detail={
                 "code": "rewind_target_not_found",
                 "message": "That turn is no longer in this chat's history.",
+            })
+        # A steer (a message sent while the agent worked) joined that run.
+        # Claude's native /rewind offers it and keeps the run's work before it;
+        # a Codex steer is part of one native turn, which its fork cannot split.
+        steer_target = is_native_steer_event(events[target_index])
+        if steer_target and backend != BACKEND_CLAUDE:
+            raise HTTPException(status_code=409, detail={
+                "code": "rewind_steer_unsupported",
+                "message": "This chat cannot rewind to a message sent while the agent worked; edit the message that started that turn.",
             })
         before_seq = int(events[target_index]["seq"])
         prefix = events[:target_index]
@@ -94776,9 +94865,11 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                 if is_completed_fork_terminal(prefix[index])
             ), None)
             claude_provider_id = claude_provider_id_for_session(sess)
-            # A completed reply with no provider session cannot be re-anchored;
-            # with no completed reply, a missing id only means the reset below.
-            if terminal_index is not None and not claude_provider_id:
+            # A completed reply, or the steered run's work before the steer,
+            # stays and must be re-anchored on the provider session; with
+            # neither, a missing id or transcript only means the reset below.
+            keeps_provider_history = terminal_index is not None or steer_target
+            if keeps_provider_history and not claude_provider_id:
                 logger.warning("session rewind: claude provider id missing session=%s", session_id)
                 raise HTTPException(status_code=409, detail={
                     "code": "rewind_provider_unavailable",
@@ -94788,11 +94879,32 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                     ),
                 })
             try:
-                # The row the rewound message continued from (its row's
-                # parentUuid) is the state before it, stopped turns included;
-                # the last completed reply is the fallback when that row
-                # cannot be found.
-                if claude_provider_id:
+                if steer_target:
+                    # Bounded by the next turn, not the next steer: the CLI writes
+                    # a steer's row when the running tool call returns, which can
+                    # be after later steers were recorded.
+                    next_turn = next((event for event in events[target_index + 1:] if event.get("type") == "turn_started"), None)
+                    claude_cutoff = await asyncio.to_thread(
+                        claude_steered_message_boundary,
+                        dict(sess),
+                        claude_provider_id,
+                        events[target_index],
+                        prefix,
+                        next_turn,
+                    )
+                    if claude_cutoff is None:
+                        # No fallback: forking at an earlier reply, or resetting,
+                        # would drop the run's work the timeline keeps. Re-raised
+                        # below as rewind_boundary_ambiguous.
+                        raise HTTPException(status_code=409, detail=(
+                            "That message could not be matched to exactly one row of the Claude "
+                            "transcript. The chat was left unchanged."
+                        ))
+                elif claude_provider_id:
+                    # The row the rewound message continued from (its row's
+                    # parentUuid) is the state before it, stopped turns included;
+                    # the last completed reply is the fallback when that row
+                    # cannot be found.
                     following = next((
                         event for event in events[target_index + 1:]
                         if event.get("type") == "turn_started" or is_native_steer_event(event)
@@ -94813,7 +94925,7 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                     )
             except (OSError, ValueError) as exc:
                 logger.warning("session rewind: claude boundary failed session=%s: %s", session_id, concise_error_message(exc))
-                if terminal_index is not None:
+                if keeps_provider_history:
                     raise HTTPException(status_code=409, detail={
                         "code": "rewind_provider_unavailable",
                         "message": "The Claude transcript snapshot is unavailable. The chat was left unchanged.",

@@ -1,5 +1,49 @@
 # Public development log
 
+## 2026-10-13 — A message sent while Claude works can be edited, as in Claude Code (server and desktop)
+
+- In Claude chats, a message sent while a turn ran (a steer) joins that turn,
+  and it had no edit button: a rewind accepted only the message that started
+  a turn.
+- Claude Code's own `/rewind` lists a steer and restores the conversation to
+  just before it, keeping the turn's earlier work and leaving files as they
+  are. AgentsServer now does the same: it forks the Claude session at the
+  transcript row before the steer, keeps the turn's earlier events and
+  earlier steers, and removes the steer and everything after it.
+- A server that supports this lists `steer_backends` in `session_rewind_v1`.
+  Only then does the desktop show the edit button on a steer, and it offers
+  no checkpoint restore there.
+- The rewind is refused, and the chat left unchanged, when the steer cannot be
+  matched to exactly one transcript row, for example when the same text was
+  sent twice in one turn. It never falls back to an earlier reply. In Codex
+  chats a steer is part of one native turn, and the server refuses to rewind
+  to it, as before.
+- Claude reads a steer only after the tool calls running at that moment
+  return. The forked conversation therefore keeps those tool results, while
+  the timeline, which places the steer where it was sent, removes their
+  completion rows; the turn's activity then ends at its last kept row.
+  Canvases stay as the turn left them; files the turn published after the
+  steer are removed with it.
+- Verification: server tests for the fork point (one steer, the second of
+  two, a steer whose text starts another's), missing and ambiguous rows,
+  Codex, and restart recovery after a steer rewind; desktop tests for the
+  edit button with and without the capability. Claude Code 2.1.296 in a
+  terminal: `/rewind` listed steers sent with Enter and with Send now and
+  forked before them. In the desktop app against an isolated server with a
+  real Claude CLI: a steer typed while the turn ran showed the edit button;
+  editing the second of two steers kept the first one and the turn's tool
+  results in the agent's context (its answer quoted both), and editing the
+  first one afterwards, on the forked session, worked too. When the
+  transcript row could not be found, the app showed the server's refusal and
+  kept the edit open.
+- Not covered: a chat whose working directory path goes through a symlink
+  cannot find its Claude transcript, which already affects every rewind
+  there. A command Claude moved to the background to read a steer may not be
+  reported to the forked session when it was registered after the steer (not
+  reproduced). The Android app is unchanged.
+- Availability: source only; the edit button appears after the server is
+  updated.
+
 ## 2026-10-13 — One-use @Chat actions and index handles removed (server, desktop and Android)
 
 - One-use `@Chat` actions (`instruction`, `request_reply`) and the index
