@@ -60,7 +60,8 @@ test('selected chats are removable grant references; modern local actions stay o
 
 test('composer edits reconcile grants and sends only validated references', () => {
   assert.match(composer, /const previousDraft = draftRef\.current/)
-  assert.match(composer, /atomicComposerReferenceEdit\(previousDraft, nativeText, selectionRef\.current/)
+  assert.match(composer, /atomicComposerReferenceEdit\(previousText, nativeText, selectionRef\.current/)
+  assert.match(composer, /field\.edit\(previousDraft, nativeText, referencesRef\.current, teamReferencesRef\.current\)/)
   assert.match(composer, /chatMentionTrigger\(text, caret, nextReferences\)/)
   assert.match(composer, /setChatReferencesForSession\(sessionId, nextReferences, profileGeneration\)/)
   assert.match(composer, /const currentDraft = consumeComposer \? currentState\.drafts\[sessionId\] \?\? draftRef\.current : ''/)
@@ -73,7 +74,7 @@ test('composer edits reconcile grants and sends only validated references', () =
 
 test('queued edits preserve, reconcile, validate, and explicitly save chat actions', () => {
   assert.match(composer, /parseStoredChatReferences\(turn\.chat_references, text, sessionId\)/)
-  assert.match(composer, /const nextReferences = reconcileChatReferences\(editTextRef\.current, next, editReferencesRef\.current\)/)
+  assert.match(composer, /field\.edit\(editTextRef\.current, nativeText, editReferencesRef\.current, editTeamReferencesRef\.current\)/)
   assert.match(composer, /editTextRef\.current = next[\s\S]*?editReferencesRef\.current = nextReferences/)
   assert.match(composer, /await update\(sessionId, turn\.queued_id, prompt, references, profileGeneration, teamReferences\)/)
   assert.match(composer, /testID=\{`queued-chat-references-\$\{turn\.queued_id\}`\}/)

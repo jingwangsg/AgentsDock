@@ -30,7 +30,7 @@ FUNCTIONS = {
     "submit_provider_route_handoff", "finish_cross_chat_acceptance", "append_cross_chat_event_once",
     "append_cross_chat_lifecycle", "finish_cross_chat_delivery", "cross_chat_delivery_state",
     "issued_provider_capability_snapshot", "provider_authority_runtime_env",
-    "resolve_provider_tool_arguments", "provider_tool_argument_value",
+    "resolve_provider_tool_arguments",
     "validated_cross_chat_source_user_instruction", "mail_chat_title",
 }
 ROUTE = "route_" + "a" * 32
@@ -206,7 +206,7 @@ class AsyncRouteRuntimeTests(unittest.IsolatedAsyncioTestCase):
         })
 
     async def test_negotiated_mode_and_exact_response_route_stay_in_private_runtime(self):
-        runtime = await self.ns["provider_authority_runtime_env"]("run_one", self.path, "a", [])
+        runtime = await self.ns["provider_authority_runtime_env"]("run_one", self.path, "a")
         self.assertEqual(runtime["AGENTSDOCK_CROSS_CHAT_MODE"], "async_route_v1")
         self.assertEqual(runtime["AGENTSDOCK_CROSS_CHAT_RESPONSE_ROUTE_ID"], ROUTE)
         self.assertEqual(runtime["AGENTSDOCK_CROSS_CHAT_RESPONSE_MODE"], "async_route_v1")
@@ -216,7 +216,7 @@ class AsyncRouteRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_legacy_runtime_never_advertises_async_mode_or_reverse_route(self):
         self.capability["async_route_v1"] = False
-        runtime = await self.ns["provider_authority_runtime_env"]("run_one", self.path, "a", [])
+        runtime = await self.ns["provider_authority_runtime_env"]("run_one", self.path, "a")
         self.assertNotIn("AGENTSDOCK_CROSS_CHAT_MODE", runtime)
         self.assertNotIn("AGENTSDOCK_CROSS_CHAT_RESPONSE_MODE", runtime)
         self.assertNotIn("AGENTSDOCK_CROSS_CHAT_RESPONSE_ROUTE_ID", runtime)
@@ -327,15 +327,13 @@ class AsyncRouteAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             await self.send()
         self.assertEqual(conflict.exception.status_code, 409)
 
-    async def test_same_key_changed_source_instruction_cannot_rebind_message(self):
+    async def test_same_key_after_the_instruction_changed_returns_the_stored_message(self):
         original = "Render five videos. Preserve these constraints exactly.\n"
         self.capability["source_is_user_turn"] = True
         self.capability["source_user_instruction"] = original
         receipt = await self.send()
         self.capability["source_user_instruction"] = "Render six videos instead."
-        with self.assertRaises(HTTPException) as conflict:
-            await self.send()
-        self.assertEqual(conflict.exception.status_code, 409)
+        self.assertEqual((await self.send())["message_id"], receipt["message_id"])
         self.assertEqual((await self.ledger.get(receipt["message_id"]))["source_user_instruction"], original)
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM chat_mailbox_messages").fetchone()[0], 1)
 

@@ -110,6 +110,15 @@ class ProviderRouteDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["routes"][0]["route_id"], self.route_id(64))
         self.assertEqual(second["next_cursor"], self.route_id(127))
 
+    async def test_a_cursor_whose_route_was_removed_between_pages_still_continues(self):
+        # A chat run reads its routes live, so the cursor's route can be gone
+        # by the time the next page is asked for.
+        first = await self.page()
+        self.assertEqual(first["next_cursor"], self.route_id(63))
+        del self.routes[first["next_cursor"]]
+        second = await self.page(cursor=first["next_cursor"])
+        self.assertEqual(second["routes"][0]["route_id"], self.route_id(64))
+
     async def test_exact_lookup_beyond_first_page_preserves_live_authorization(self):
         route_id = self.route_id(144)
         result = await self.page(route_id=route_id)
@@ -129,8 +138,8 @@ class ProviderRouteDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         result = await self.page(route_id=self.route_id(1))
         self.assertEqual(result["max_handoffs_per_run"], 4)
         self.assertNotIn("mode", result["routes"][0])
-        for query in ({"cursor": "bad"}, {"cursor": self.route_id(999)},
-                      {"route_id": "bad"}, {"route_id": self.route_id(1), "cursor": self.route_id(0)}):
+        for query in ({"cursor": "bad"}, {"route_id": "bad"},
+                      {"route_id": self.route_id(1), "cursor": self.route_id(0)}):
             with self.subTest(query=query), self.assertRaises(HTTPException) as invalid:
                 await self.page(**query)
             self.assertEqual(invalid.exception.status_code, 400)

@@ -156,29 +156,15 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(SystemExit):
                     parser.parse_args(arguments)
 
-    async def test_provider_selects_async_chat_mode_from_grant_only(self):
-        runtime_env = {
-            "AGENTSDOCK_CROSS_CHAT_HANDLE_1": "opaque-handle",
-            "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ACTION": "request_reply",
-            "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ASYNC": "0",
-        }
+    async def test_provider_tool_refuses_agent_chosen_async_flags(self):
         for flag in ("--async-response", "--async"):
             with self.subTest(flag=flag):
                 with self.assertRaises(agent_server.ProviderToolError):
                     agent_server.resolve_provider_tool_arguments(
                         "chats",
-                        ["ask", "--target-index", "1", flag],
-                        runtime_env,
+                        ["ask", "--route", "route_" + "a" * 32, flag],
+                        {},
                     )
-        runtime_env["AGENTSDOCK_CROSS_CHAT_HANDLE_1_ASYNC"] = "1"
-        self.assertEqual(
-            agent_server.resolve_provider_tool_arguments(
-                "chats",
-                ["ask", "--target-index", "1"],
-                runtime_env,
-            ),
-            ["ask", "--target", "opaque-handle", "--async-response"],
-        )
 
     async def test_provider_tool_cached_result_never_outlives_live_authority(self):
         value = {"helper": "jobs", "arguments": ["list"]}
@@ -457,14 +443,6 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(agent_server.ProviderRuntimeContextError):
             agent_server.validate_provider_runtime_context("\ud800")
 
-    async def test_provider_tool_rejects_huge_target_index_as_safe_error(self):
-        with self.assertRaises(agent_server.ProviderToolError):
-            agent_server.resolve_provider_tool_arguments(
-                "chats",
-                ["ask", "--target-index", "9" * 5_000],
-                {},
-            )
-
     async def test_provider_tool_preserves_supported_message_and_job_boundaries(self):
         route_body = "r" * agent_server.PROVIDER_CROSS_CHAT_ROUTE_BODY_MAX_CHARS
         helper, arguments, stdin = agent_server.validate_provider_tool_input({
@@ -502,8 +480,8 @@ class ServerOpsSecurityTests(unittest.IsolatedAsyncioTestCase):
             "helper": "chats",
             "arguments": [
                 "send",
-                "--target-index",
-                "1",
+                "--route",
+                "route_" + "a" * 32,
                 "--message",
                 direct_body,
             ],

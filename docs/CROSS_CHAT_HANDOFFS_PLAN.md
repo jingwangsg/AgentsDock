@@ -50,13 +50,17 @@ Watches, artifact grants, and group exchanges remain deferred.
   text. A one-use action or a secure-peer handle keeps the message queued for
   its own turn, and so does a running turn that is not the user's (a job, a
   delivery, a mailbox wake) when the message carries chips.
-- When a routes-v2 client sends a one-use `@Chat` action (`instruction`,
-  `request_reply`), the server admits it as the same pair grant as a route
-  `@`; a chat that also has a route `@` in the message keeps that one. Only a
-  new message is converted, not one queued before the update. The agents'
-  rules no longer describe index handles (`--target-index`); a current
-  client's turn has none, so such a call is refused with a pointer to
-  `chats list`. An older client's turn can still carry them.
+- One-use `@Chat` actions (`instruction`, `request_reply`) and the index
+  handles (`--target-index`) they gave agents are gone. A new message with
+  one is admitted as the same pair grant as a route `@` (a chat that also has
+  a route `@` in the message keeps that one); a client too old for route `@`s
+  is asked to update. A scheduled job's one-use `@` becomes the job's own
+  route for that action; two for one chat become one route with both. A
+  message queued before the change starts with that `@` as text and its
+  request/reply exchange closed as not sent; a queued-message edit that adds
+  one is refused. Agents reach other chats only with `chats list`; a call
+  with `--target-index` is refused with a pointer to it. `final_result`,
+  which forwards the final answer, is unchanged.
 - Scheduled jobs never inherit source-chat grants. A job stores only its own
   exact route selections through the job editor/helper, and every firing
   revalidates those exact targets, revisions, and actions. The prompt keeps the
@@ -309,9 +313,9 @@ titles never replace it; a user's rename still does. Titles are one line of at
 most 120 characters. A route to a chat on another server is refused (409)
 until the hub relays title changes.
 
-`--target OPAQUE_HANDLE` remains accepted only when a legacy action-specific
-or secure delivery capability prints that exact command; it is not a chat ID
-and is not the command shape for a current `@Chat` hint. Route messages are
+`--target OPAQUE_HANDLE` remains only for secure-peer handles, which the
+disabled secure-peer relay would print; it is not a chat ID and reaches no
+chat on this server. Route messages are
 non-empty, bounded to 16,000 characters and 64 KiB UTF-8, and artifact grants
 are rejected.
 
@@ -320,8 +324,8 @@ are rejected.
 `send`, `ask` and `respond-current` on an `async_route_v1` route take a
 repeatable `--attach PATH` for files of any type. The helper requires absolute
 paths to regular files, drops duplicates and allows at most 16, as the Team
-Network helper does; it refuses `--attach` on legacy exchanges and one-use
-`--target`/`--target-index` handles. The server refuses:
+Network helper does; it refuses `--attach` on legacy exchanges and
+secure-peer `--target` handles. The server refuses:
 
 - a request without the mailbox mode (422);
 - a path inside its private state, with the same protected roots as Team

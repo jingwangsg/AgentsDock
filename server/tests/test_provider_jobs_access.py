@@ -79,8 +79,6 @@ class ProviderJobsAccessTests(unittest.IsolatedAsyncioTestCase):
                     "jobs",
                     "publish",
                     "emergency",
-                    "cross_chat_instruction",
-                    "cross_chat_request_reply",
                     "agent_cross_chat_routes",
                 }
                 if provider_route_snapshot
@@ -1511,7 +1509,9 @@ class ProviderJobsAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(updated["enabled"])
         self.assertEqual(
             updated["chat_references"],
-            agent_server.chat_reference_dicts([reference]),
+            agent_server.chat_reference_dicts([
+                reference.model_copy(update={"action": "route", "route_action": reference.action})
+            ]),
         )
 
     async def test_routed_job_can_revoke_routes_and_edit_atomically(self) -> None:

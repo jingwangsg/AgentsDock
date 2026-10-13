@@ -438,39 +438,23 @@ class StandaloneProviderContextTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(len(capabilities), 1)
                 capability = capabilities[0]
+                # The job's one-use @ is its own route for that action,
+                # which the run finds with chats list.
                 self.assertEqual(
-                    capability["grants"],
-                    {("sess_target", "instruction")},
+                    [(route["target_session_id"], route["actions"], route["route_kind"])
+                     for route in capability["provider_route_grants"].values()],
+                    [("sess_target", ["instruction"], agent_server.PROVIDER_CROSS_CHAT_ROUTE_KIND_REFERENCE)],
                 )
-                self.assertEqual(
-                    len(capability["provider_direct_grants"]),
-                    1,
-                )
-                direct_handle, direct_grant = next(iter(
-                    capability["provider_direct_grants"].items()
-                ))
-                self.assertEqual(direct_grant, {
-                    "target_session_id": "sess_target",
-                    "action": "instruction",
-                })
+                self.assertIn("agent_cross_chat_routes", capability["actions"])
                 launched_prompt = run_claude.await_args.args[2]
                 self.assertEqual(launched_prompt, "scheduled prompt")
                 launched_env = run_claude.await_args.kwargs[
                     "provider_runtime_env"
                 ]
-                self.assertEqual(
-                    launched_env["AGENTSDOCK_CROSS_CHAT_HANDLE_1"],
-                    direct_handle,
-                )
                 self.assertNotIn("sess_target", str(launched_env))
-                self.assertEqual(capability["provider_route_grants"], {})
                 self.assertNotIn(
-                    "agent_cross_chat_routes",
-                    capability["actions"],
-                )
-                self.assertNotIn(
-                    ("sess_unrelated", "instruction"),
-                    capability["grants"],
+                    "sess_unrelated",
+                    [route["target_session_id"] for route in capability["provider_route_grants"].values()],
                 )
             finally:
                 provider_release.set()
@@ -501,7 +485,9 @@ class StandaloneProviderContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(started["job_revision"], job_revision)
         self.assertEqual(started["job_scheduled_run_at"], 1_000.0)
         self.assertEqual(started["chat_references"], [
-            agent_server.chat_reference_dict(reference)
+            agent_server.chat_reference_dict(
+                reference.model_copy(update={"action": "route", "route_action": "instruction"})
+            )
         ])
 
     def test_standalone_backend_change_clears_inherited_runtime_defaults(self) -> None:

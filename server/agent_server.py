@@ -921,7 +921,6 @@ PROVIDER_CROSS_CHAT_GRANT_ADMISSION_ID_RE = re.compile(
 PENDING_PROVIDER_CROSS_CHAT_GRANT_KEY = (
     "_pending_provider_cross_chat_route_grant"
 )
-PROVIDER_DIRECT_GRANT_ID_RE = re.compile(r"^grant_[0-9a-f]{64}$")
 CODEX_APPROVAL_POLICIES = {"never", "on-request", "untrusted"}
 CODEX_SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
 CODEX_APPROVAL_REVIEWERS = {"user", "auto_review", "guardian_subagent"}
@@ -1613,7 +1612,6 @@ PROVIDER_RUNTIME_ENV_EXACT_NAMES = frozenset({
     "AGENTSDOCK_PROVIDER_SERVER_ORIGIN",
     "AGENTSDOCK_PROVIDER_FINAL_RESULT_HANDOFF",
     "AGENTSDOCK_PROVIDER_TEAM_MAIL_PREBOUND",
-    "AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT",
     "AGENTSDOCK_CROSS_CHAT_MODE",
     "AGENTSDOCK_CROSS_CHAT_RESPONSE_EXCHANGE_ID",
     "AGENTSDOCK_CROSS_CHAT_RESPONSE_INBOUND_LEG_ID",
@@ -1621,16 +1619,11 @@ PROVIDER_RUNTIME_ENV_EXACT_NAMES = frozenset({
     "AGENTSDOCK_CROSS_CHAT_RESPONSE_ROUTE_ID",
     "AGENTSDOCK_CROSS_CHAT_RESPONSE_MODE",
 })
-PROVIDER_RUNTIME_ENV_PREFIXES = (
-    "AGENTSDOCK_CROSS_CHAT_HANDLE_",
-)
 
 
 def is_provider_runtime_env_name(name: Any) -> bool:
     clean = str(name or "")
-    return clean in PROVIDER_RUNTIME_ENV_EXACT_NAMES or any(
-        clean.startswith(prefix) for prefix in PROVIDER_RUNTIME_ENV_PREFIXES
-    )
+    return clean in PROVIDER_RUNTIME_ENV_EXACT_NAMES
 
 
 def scrub_provider_runtime_environment(
@@ -15281,14 +15274,19 @@ class CrossChatStore:
                 ).fetchone()
                 if existing is not None:
                     record = dict(existing)
+                    # A same-key retry of mailbox mail returns the stored
+                    # message, which keeps the user instruction it was sent
+                    # with: a message steered into the turn since may have
+                    # changed the run's instruction.
                     if (
                         record["kind"] != "instruction"
                         or record["target_session_id"] != target_session_id
                         or record["body"] != body
-                        or record.get("source_user_instruction", "")
-                        != source_user_instruction
-                        or record.get("source_user_delegation_action", "")
-                        != source_user_delegation_action
+                        or (initial_status != "stored" and (
+                            record.get("source_user_instruction", "") != source_user_instruction
+                            or record.get("source_user_delegation_action", "")
+                            != source_user_delegation_action
+                        ))
                         or record.get("authorization_kind")
                         != authorization_kind
                         or record.get("authorization_route_id")
@@ -15820,36 +15818,6 @@ class CrossChatStore:
             return exchange, leg, True
 
         return await self._call(operation)
-
-    async def rebind_exchange_source_run(
-        self,
-        exchange_ids: list[str],
-        *,
-        old_source_run_id: str,
-        new_source_run_id: str,
-    ) -> None:
-        if not exchange_ids:
-            return
-        placeholders = ",".join("?" for _ in exchange_ids)
-
-        def operation() -> None:
-            with self._transaction() as connection:
-                cursor = connection.execute(
-                    f"""
-                    UPDATE cross_chat_exchanges
-                    SET authorization_source_run_id=?, updated_at=?
-                    WHERE authorization_source_run_id=?
-                      AND id IN ({placeholders})
-                      AND status='waiting_request'
-                    """,
-                    [new_source_run_id, now_iso(), old_source_run_id, *exchange_ids],
-                )
-                if int(cursor.rowcount or 0) != len(exchange_ids):
-                    raise RuntimeError(
-                        "cross-chat exchanges changed before source run binding"
-                    )
-
-        await self._call(operation)
 
     async def get_exchange(self, exchange_id: str) -> dict[str, Any] | None:
         def operation() -> dict[str, Any] | None:
@@ -17069,7 +17037,6 @@ CROSS_CHAT_EVENT_TYPE_CACHE_LIMIT = 20_000
 # it is not an OS sandbox against hostile processes running as the same Unix
 # account. Host account permissions remain the outer trust boundary.
 CROSS_CHAT_CAPABILITIES: dict[str, dict[str, Any]] = {}
-CROSS_CHAT_DIRECT_GRANT_HANDLE_KEY = secrets.token_bytes(32)
 PROVIDER_TOOL_REPLAY_LOCK = asyncio.Lock()
 PROVIDER_TOOL_REPLAY: OrderedDict[
     tuple[str, str, str],
@@ -18189,7 +18156,6 @@ async def enqueue_turn(
         opencode_attachment_paths(session_id, req.file_ids)
     queued_id = f"queued_{uuid.uuid4().hex[:16]}"
     obligation_ids: list[str] = []
-    exchange_ids: list[str] = []
     route_grant_mutation: dict[str, Any] | None = None
     route_grant_admission_id = (
         "grant_admission_" + uuid.uuid4().hex
@@ -18237,12 +18203,6 @@ async def enqueue_turn(
                 team_mail_route_snapshot = team_mail_grants.admission_snapshot(
                     team_mail_grant_mutation, STORE.sessions.get(session_id))
             obligation_ids = await register_final_result_obligations(
-                session_id,
-                queued_id,
-                req.chat_references,
-                source_user_instruction=req.prompt,
-            )
-            exchange_ids = await register_request_reply_exchanges(
                 session_id,
                 queued_id,
                 req.chat_references,
@@ -18319,15 +18279,6 @@ async def enqueue_turn(
                         status="failed",
                         error="source queue admission was interrupted",
                     )
-            for exchange_id in exchange_ids:
-                with suppress(BaseException):
-                    await CROSS_CHAT.update_exchange(
-                        exchange_id,
-                        expected={"waiting_request"},
-                        status="failed",
-                        error_code="source_failed",
-                        error="source queue admission was interrupted",
-                    )
             await rollback_durable_provider_cross_chat_reference_grants(
                 session_id,
                 route_grant_mutation,
@@ -18366,7 +18317,7 @@ async def enqueue_turn(
                 dict(snapshot) for snapshot in secure_snapshots
             ],
             "cross_chat_obligation_ids": obligation_ids,
-            "cross_chat_exchange_ids": exchange_ids,
+            "cross_chat_exchange_ids": [],
             "client_capabilities": list(req.client_capabilities),
             "provider_cross_chat_route_snapshot": [
                 dict(route)
@@ -18461,7 +18412,7 @@ async def enqueue_turn(
                     dict(snapshot) for snapshot in secure_snapshots
                 ],
                 "cross_chat_obligation_ids": obligation_ids,
-                "cross_chat_exchange_ids": exchange_ids,
+                "cross_chat_exchange_ids": [],
                 "client_capabilities": list(req.client_capabilities),
                 "provider_cross_chat_grant_admission_id": (
                     route_grant_admission_id
@@ -18657,14 +18608,6 @@ async def enqueue_turn(
                         envelope_id,
                         expected={"waiting_source"},
                         status="failed",
-                        error="source turn could not be durably queued",
-                    )
-                for exchange_id in exchange_ids:
-                    await CROSS_CHAT.update_exchange(
-                        exchange_id,
-                        expected={"waiting_request"},
-                        status="failed",
-                        error_code="source_failed",
                         error="source turn could not be durably queued",
                     )
                 if cross_chat_queue_bound:
@@ -19369,7 +19312,6 @@ def validate_chat_references(
         # The requester becomes the return target for a bounded exchange.
         cross_chat_delivery_client_capabilities(source)
     seen: set[tuple[str, ...]] = set()
-    destination_namespaces: dict[tuple[str, str], str] = {}
     ranges: list[tuple[int, int]] = []
     normalized_references: list[ChatReference] = []
     for reference in references:
@@ -19449,17 +19391,15 @@ def validate_chat_references(
                     detail="duplicate secure peer chat reference grant",
                 )
             seen.add(key)
-            destination = (str(reference.target_route_id), reference.action)
-            if destination_namespaces.get(destination) == "local":
-                raise HTTPException(
-                    status_code=400,
-                    detail="cross-chat target is ambiguous across local and secure peer routes",
-                )
-            destination_namespaces[destination] = "secure_peer"
             ranges.append((reference.source_text_start, reference.source_text_end))
             normalized_references.append(reference)
             continue
         normalized_reference = canonical_chat_reference(reference)
+        if normalized_reference.action in {"instruction", "request_reply"}:
+            raise HTTPException(
+                status_code=409,
+                detail="one-use @Chat actions were replaced by route @; select the chat with @ again",
+            )
         target_id = normalized_reference.session_id.strip()
         if target_id == source_session_id:
             raise HTTPException(status_code=400, detail="a chat cannot hand off to itself")
@@ -19480,13 +19420,6 @@ def validate_chat_references(
         if key in seen:
             raise HTTPException(status_code=400, detail="duplicate chat reference grant")
         seen.add(key)
-        destination = (target_id, normalized_reference.action)
-        if destination_namespaces.get(destination) == "secure_peer":
-            raise HTTPException(
-                status_code=400,
-                detail="cross-chat target is ambiguous across local and secure peer routes",
-            )
-        destination_namespaces[destination] = "local"
         ranges.append((reference.source_text_start, reference.source_text_end))
         normalized_references.append(normalized_reference)
     ordered_ranges = sorted(ranges)
@@ -19681,6 +19614,30 @@ def validate_scheduled_job_chat_references(
             status_code=400,
             detail="scheduled jobs support same-server chat references only",
         )
+    # A job saved with a one-use @ gets its own route, which its run finds
+    # with chats list like any other job route. A chat it names more than
+    # once keeps one route at its first @: one action keeps route_action,
+    # two (or a route @ without one) grant both. The other @s stay text.
+    one_use = {reference.session_id for reference in normalized
+               if reference.action in {"instruction", "request_reply"}}
+    route_actions: dict[str, set[str | None]] = {}
+    for reference in normalized:
+        if reference.session_id in one_use and reference.action in {"instruction", "request_reply", "route"}:
+            route_actions.setdefault(reference.session_id, set()).add(
+                reference.route_action if reference.action == "route" else reference.action
+            )
+    converted: list[ChatReference] = []
+    for reference in normalized:
+        if reference.session_id in one_use and reference.action in {"instruction", "request_reply", "route"}:
+            actions = route_actions.pop(reference.session_id, None)
+            if actions is None:
+                continue
+            reference = reference.model_copy(update={
+                "action": "route",
+                "route_action": next(iter(actions)) if len(actions) == 1 else None,
+            })
+        converted.append(reference)
+    normalized = converted
     if source_session_id not in STORE.sessions:
         raise ScheduledJobChatReferenceRepairRequired(
             status_code=404,
@@ -20517,47 +20474,6 @@ def cross_chat_authority_path(run_id: str, nonce: str | None = None) -> Path:
     return CROSS_CHAT_AUTHORITY_ROOT / f"{run_id}{suffix}.json"
 
 
-def provider_direct_cross_chat_grants(
-    references: list[ChatReference],
-    authority_path: Path,
-) -> dict[str, dict[str, str]]:
-    """Derive fresh provider-visible handles for exact local ``@`` grants.
-
-    The keyed digest lets capability issuance and prompt rendering independently
-    derive the same run-local handle without returning private grant metadata to
-    the caller.  The authority filename contains a fresh random nonce, and the
-    key is process-local, so a handle cannot be correlated across runs or
-    reversed into an internal chat id.
-    """
-
-    grants: dict[str, dict[str, str]] = {}
-    for reference in references:
-        if (
-            reference.target_kind is not None
-            or reference.action not in {"instruction", "request_reply"}
-        ):
-            continue
-        digest_input = json.dumps(
-            [authority_path.name, reference.session_id, reference.action],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        grant_id = "grant_" + hmac.new(
-            CROSS_CHAT_DIRECT_GRANT_HANDLE_KEY,
-            digest_input,
-            hashlib.sha256,
-        ).hexdigest()
-        grant = {
-            "target_session_id": reference.session_id,
-            "action": reference.action,
-        }
-        prior = grants.get(grant_id)
-        if prior is not None and prior != grant:
-            raise RuntimeError("provider direct grant handle collision")
-        grants[grant_id] = grant
-    return grants
-
-
 async def issued_provider_capability_snapshot(
     run_id: str,
     authority_path: Path,
@@ -20585,16 +20501,6 @@ async def issued_provider_capability_snapshot(
         return {
             "actions": set(actions),
             "provider_jobs_access": str(jobs_access),
-            "provider_direct_grants": {
-                str(key): dict(value)
-                for key, value in dict(
-                    record.get("provider_direct_grants") or {}
-                ).items()
-            },
-            "secure_peer_grants": set(
-                tuple(value)
-                for value in dict(record.get("secure_peer_grants") or {})
-            ),
             "exchange_response_grants": set(
                 tuple(value)
                 for value in set(record.get("exchange_response_grants") or set())
@@ -20617,7 +20523,6 @@ async def provider_authority_runtime_env(
     run_id: str,
     authority_path: Path | None,
     source_session_id: str,
-    references: list[ChatReference],
     *,
     exchange_response_grant: tuple[str, str] | None = None,
     exchange_response_followup_allowed: bool = True,
@@ -20639,7 +20544,6 @@ async def provider_authority_runtime_env(
         "AGENTSDOCK_PROVIDER_JOBS_ACCESS": (
             provider_jobs_access if "jobs" in actions else "blocked"
         ),
-        "AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT": "0",
     }
     if capability["team_mail_prebound"] and "team_mail" in actions:
         runtime_env["AGENTSDOCK_PROVIDER_TEAM_MAIL_PREBOUND"] = "1"
@@ -20647,38 +20551,6 @@ async def provider_authority_runtime_env(
         runtime_env["AGENTSDOCK_CROSS_CHAT_MODE"] = "async_route_v1"
     if final_result_handoff:
         runtime_env["AGENTSDOCK_PROVIDER_FINAL_RESULT_HANDOFF"] = "1"
-
-    direct_handles = {
-        (
-            str(grant.get("target_session_id") or ""),
-            str(grant.get("action") or ""),
-        ): grant_id
-        for grant_id, grant in capability["provider_direct_grants"].items()
-    }
-    handles: list[tuple[str, str, bool]] = []
-    for reference in references:
-        if reference.action not in {"instruction", "request_reply"}:
-            continue
-        if reference.target_kind == "secure_peer":
-            handle = str(reference.target_route_id or "")
-            is_async = reference.action == "request_reply"
-            if (handle, reference.action) not in capability["secure_peer_grants"]:
-                continue
-        elif reference.target_kind is None:
-            handle = str(
-                direct_handles.get((reference.session_id, reference.action)) or ""
-            )
-            is_async = False
-        else:
-            continue
-        if handle:
-            handles.append((handle, reference.action, is_async))
-    runtime_env["AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT"] = str(len(handles))
-    for index, (handle, action, is_async) in enumerate(handles, start=1):
-        prefix = f"AGENTSDOCK_CROSS_CHAT_HANDLE_{index}"
-        runtime_env[prefix] = handle
-        runtime_env[f"{prefix}_ACTION"] = action
-        runtime_env[f"{prefix}_ASYNC"] = "1" if is_async else "0"
 
     response_route_id = str(capability.get("async_route_response_route_id") or "")
     if response_route_id and "agent_cross_chat_routes" in actions:
@@ -20706,7 +20578,7 @@ async def provider_authority_runtime_env(
             ),
         })
     validated = validate_provider_runtime_env(runtime_env)
-    # Keep the opaque handle/reply projection beside the in-memory capability
+    # Keep the reply projection beside the in-memory capability
     # for the provider tool's server-side placeholder resolution. It is never
     # serialized into the authority file or provider history.
     async with CROSS_CHAT_CAPABILITY_LOCK:
@@ -20738,7 +20610,6 @@ async def issue_cross_chat_capability(
     secure_peer_response_grants: dict[tuple[str, str], dict[str, Any]] | None = None,
     team_mail_enabled: bool = False,
     team_mail_command: dict[str, str] | None = None,
-    exchange_request_grants: dict[str, str] | None = None,
     native_transition_nonce: str | None = None,
     team_references: list[TeamReference] | None = None,
     team_mail_route_snapshot: list[dict[str, Any]] | None = None,
@@ -20805,18 +20676,11 @@ async def issue_cross_chat_capability(
                 ),
                 detail="Team Network reference is unavailable or changed",
             ) from exc
-    grants = {
-        (reference.session_id, reference.action)
-        for reference in references
-        if reference.target_kind is None
-        if reference.action in {"instruction", "request_reply"}
-    } if AGENT_TOKEN else set()
     response_grants = set(exchange_response_grants or ()) if AGENT_TOKEN else set()
     secure_response_grants = {
         tuple(key): dict(value)
         for key, value in (secure_peer_response_grants or {}).items()
     } if AGENT_TOKEN and SECURE_PEER_AGENT_RELAY_ENABLED else {}
-    request_grants = dict(exchange_request_grants or {}) if AGENT_TOKEN else {}
     route_grants = {
         str(route["route_id"]): dict(route)
         for route in normalized_provider_cross_chat_route_snapshot(
@@ -20836,15 +20700,12 @@ async def issue_cross_chat_capability(
         STORE.sessions.get(source_session_id)
     )
     effective_actions = set(actions or {
-        "jobs", "publish", "emergency", "cross_chat_instruction",
-        "cross_chat_request_reply", "agent_cross_chat_routes",
+        "jobs", "publish", "emergency", "agent_cross_chat_routes",
         "team_mail",
     })
     if jobs_access == "blocked" or not AGENT_TOKEN:
         effective_actions.discard("jobs")
     if not AGENT_TOKEN:
-        effective_actions.discard("cross_chat_instruction")
-        effective_actions.discard("cross_chat_request_reply")
         effective_actions.discard("cross_chat_response")
         effective_actions.discard("agent_cross_chat_routes")
         effective_actions.discard("secure_peer_instruction")
@@ -20897,11 +20758,6 @@ async def issue_cross_chat_capability(
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     expires_at = time.time() + CROSS_CHAT_CAPABILITY_TTL_SECONDS
     authority_path = cross_chat_authority_path(run_id, secrets.token_hex(16))
-    provider_direct_grants = (
-        provider_direct_cross_chat_grants(references, authority_path)
-        if AGENT_TOKEN
-        else {}
-    )
     CROSS_CHAT_AUTHORITY_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     # mkdir's mode is ignored when the directory already exists. Keep the
     # authority directory private even after an older or user-created install.
@@ -20959,12 +20815,9 @@ async def issue_cross_chat_capability(
             "source_user_instruction": source_user_instruction,
             "source_is_user_turn": source_is_user_turn is True and bool(AGENT_TOKEN),
             "expires_at": expires_at,
-            "grants": grants,
             "exchange_response_grants": response_grants,
-            "exchange_request_grants": request_grants,
             "secure_peer_grants": secure_grants,
             "secure_peer_response_grants": secure_response_grants,
-            "provider_direct_grants": provider_direct_grants,
             "provider_route_grants": route_grants,
             "chat_routes_live": bool(chat_routes_live),
             "provider_route_mentions": provider_route_mentions(references) | set(earlier_mentions or ()),
@@ -21524,39 +21377,6 @@ async def provider_tool_capability_snapshot(
     return authority_path, runtime_env
 
 
-def provider_tool_argument_value(
-    arguments: list[str],
-    flag: str,
-) -> tuple[str | None, list[str]]:
-    """Remove exactly one `--flag value`/`--flag=value` occurrence."""
-
-    value: str | None = None
-    output: list[str] = []
-    index = 0
-    while index < len(arguments):
-        argument = arguments[index]
-        if argument == flag:
-            if value is not None or index + 1 >= len(arguments):
-                raise ProviderToolError(f"{flag} is invalid")
-            value = arguments[index + 1]
-            index += 2
-            continue
-        if argument.startswith(flag + "="):
-            if value is not None:
-                raise ProviderToolError(f"{flag} is invalid")
-            value = argument[len(flag) + 1 :]
-            index += 1
-            continue
-        output.append(argument)
-        index += 1
-    return value, output
-
-
-PROVIDER_TOOL_NO_CHAT_HANDLE = (
-    "this turn has no @Chat handle at that index; run chats list and use send or ask --route ROUTE_ID"
-)
-
-
 def resolve_provider_tool_arguments(
     helper: str,
     arguments: list[str],
@@ -21571,40 +21391,16 @@ def resolve_provider_tool_arguments(
             raise ProviderToolError(
                 "provider async mode is selected only by the live server grant"
             )
+    if any(argument.partition("=")[0] == "--target-index" for argument in resolved):
+        raise ProviderToolError(
+            "@Chat index handles no longer exist; run chats list and use send or ask --route ROUTE_ID"
+        )
     if helper != "chats":
-        if any(argument.startswith("--target-index") for argument in resolved):
-            raise ProviderToolError("--target-index is available only for Chats")
         return resolved
     command = resolved[0]
-    target_index, resolved = provider_tool_argument_value(
-        resolved,
-        "--target-index",
-    )
-    if target_index is not None:
-        if (
-            command not in {"send", "ask"}
-            or len(target_index) > 3
-            or re.fullmatch(r"[1-9][0-9]*", target_index) is None
-        ):
-            raise ProviderToolError("--target-index is invalid for this Chats command")
-        handle_index = int(target_index)
-        if handle_index > MAX_PROVIDER_RUNTIME_ENV_VARS:
-            raise ProviderToolError(PROVIDER_TOOL_NO_CHAT_HANDLE)
-        prefix = f"AGENTSDOCK_CROSS_CHAT_HANDLE_{handle_index}"
-        handle = str(runtime_env.get(prefix) or "")
-        action = str(runtime_env.get(f"{prefix}_ACTION") or "")
-        expected_action = "instruction" if command == "send" else "request_reply"
-        if not handle or action != expected_action:
-            raise ProviderToolError(PROVIDER_TOOL_NO_CHAT_HANDLE)
-        resolved.extend(["--target", handle])
-        if command == "ask" and runtime_env.get(f"{prefix}_ASYNC") == "1":
-            if "--async-response" not in resolved:
-                resolved.append("--async-response")
     if command == "respond":
         raise ProviderToolError("use respond-current for the current inbound reply")
     if command == "respond-current":
-        if target_index is not None:
-            raise ProviderToolError("respond-current does not accept --target-index")
         if runtime_env.get("AGENTSDOCK_CROSS_CHAT_RESPONSE_MODE") == "async_route_v1":
             route_id = str(runtime_env.get("AGENTSDOCK_CROSS_CHAT_RESPONSE_ROUTE_ID") or "")
             if not PROVIDER_CROSS_CHAT_ROUTE_ID_RE.fullmatch(route_id):
@@ -22211,7 +22007,6 @@ async def issue_native_steer_provider_authority(
             candidate_run_id,
             authority_path,
             source_session_id,
-            [],
         )
         payload = ProviderTurnPayload(request_prompt, "", runtime_env)
         assert_provider_user_message_unchanged(
@@ -22384,42 +22179,15 @@ def cross_chat_provider_authority_block(
 
     if authority_path is None:
         return ""
-    provider_direct_grants = provider_direct_cross_chat_grants(
-        references,
-        authority_path,
-    )
-    direct_handles = {
-        (
-            str(grant.get("target_session_id") or ""),
-            str(grant.get("action") or ""),
-        ): grant_id
-        for grant_id, grant in provider_direct_grants.items()
-    }
-    allowed = []
-    for reference in references:
-        if reference.action not in {"instruction", "request_reply"}:
-            continue
-        # Display-title snapshots are user-controlled metadata and therefore
-        # never belong in the provider control block.
-        if reference.target_kind == "secure_peer":
-            allowed.append(
-                f"- handle={reference.target_route_id}; action={reference.action}; "
-                f"secure peer server={reference.target_server_identity}; one use"
-                + (
-                    "; use --async-response"
-                    if reference.action == "request_reply"
-                    else ""
-                )
-            )
-        elif reference.target_kind is None:
-            grant_id = direct_handles.get(
-                (reference.session_id, reference.action)
-            )
-            if grant_id is None:
-                continue
-            allowed.append(
-                f"- handle={grant_id}; action={reference.action}; one use"
-            )
+    # Display-title snapshots are user-controlled metadata and therefore
+    # never belong in the provider control block.
+    allowed = [
+        f"- handle={reference.target_route_id}; action={reference.action}; "
+        f"secure peer server={reference.target_server_identity}; one use"
+        + ("; use --async-response" if reference.action == "request_reply" else "")
+        for reference in references
+        if reference.target_kind == "secure_peer"
+    ]
     normalized_routes = normalized_provider_cross_chat_route_snapshot(
         provider_route_snapshot
     )
@@ -22574,10 +22342,7 @@ def cross_chat_provider_authority_block(
                     else ()
                 ),
             ))
-    if actions.intersection({
-        "cross_chat_request_reply",
-        "cross_chat_response",
-    }):
+    if "cross_chat_response" in actions:
         helper_lines.append(
             "- If a live `ask` or `respond --request-response` result has "
             "`request_response=true`, continue only with: `\"$AGENTSDOCK_CHATS_CLI\" "
@@ -22586,13 +22351,7 @@ def cross_chat_provider_authority_block(
             "Replace both placeholders with the exact opaque values returned by "
             "that result; add `--request-response` only when another reply is needed."
         )
-    if (
-        "agent_cross_chat_routes" in actions
-        or actions.intersection({
-            "cross_chat_request_reply",
-            "cross_chat_response",
-        })
-    ):
+    if "agent_cross_chat_routes" in actions or "cross_chat_response" in actions:
         helper_lines.append(
             "- A live `ask` or follow-up can return `pending=true` with exact "
             "`exchange_id`, `inbound_leg_id`, and `live_response_lease_id` fields. "
@@ -22622,11 +22381,11 @@ def cross_chat_provider_authority_block(
             else ""
         )
         + (
-            "The user explicitly granted these one-use opaque cross-chat handles:\n"
+            "The user explicitly granted these one-use secure-peer handles:\n"
             + "\n".join(allowed)
-            + "\nUse `send --target OPAQUE_HANDLE --message TEXT` for action=instruction. "
-            + "Use `ask --target OPAQUE_HANDLE --message TEXT` for a same-server action=request_reply. "
-            + "For a secure-peer action=request_reply, add `--async-response`; its reply arrives in a later delivery. "
+            + "\nUse `send --target OPAQUE_HANDLE --message TEXT` for action=instruction and "
+            + "`ask --target OPAQUE_HANDLE --message TEXT --async-response` for action=request_reply; "
+            + "its reply arrives in a later delivery. "
             + "Never infer or substitute an internal chat ID.\n"
             + "Run either through: `\"$AGENTSDOCK_CHATS_CLI\" --authority-file "
             + shlex.quote(str(authority_path))
@@ -22927,59 +22686,6 @@ async def register_final_result_obligations(
                     )
         raise
     return envelope_ids
-
-
-async def register_request_reply_exchanges(
-    source_session_id: str,
-    source_run_id: str,
-    references: list[ChatReference],
-    *,
-    source_user_instruction: str = "",
-) -> list[str]:
-    exchange_ids: list[str] = []
-    pending_creation: asyncio.Task[dict[str, Any]] | None = None
-    expires_at = datetime.fromtimestamp(
-        time.time() + CROSS_CHAT_EXCHANGE_TTL_SECONDS,
-        timezone.utc,
-    ).isoformat()
-    try:
-        for reference in references:
-            if (
-                reference.action != "request_reply"
-                or reference.target_kind == "secure_peer"
-            ):
-                continue
-            exchange_id = "exchange_" + uuid.uuid4().hex
-            exchange_ids.append(exchange_id)
-            pending_creation = asyncio.create_task(
-                CROSS_CHAT.create_exchange_obligation(
-                    exchange_id=exchange_id,
-                    requester_session_id=source_session_id,
-                    authorization_source_run_id=source_run_id,
-                    responder_session_id=reference.session_id,
-                    max_legs=CROSS_CHAT_EXCHANGE_DEFAULT_LEGS,
-                    expires_at=expires_at,
-                    source_user_instruction=source_user_instruction,
-                )
-            )
-            record = await asyncio.shield(pending_creation)
-            pending_creation = None
-            exchange_ids[-1] = str(record["id"])
-    except BaseException:
-        if pending_creation is not None:
-            with suppress(BaseException):
-                await join_task_despite_caller_cancellation(pending_creation)
-        for exchange_id in exchange_ids:
-            with suppress(BaseException):
-                await CROSS_CHAT.update_exchange(
-                    exchange_id,
-                    expected={"waiting_request"},
-                    status="failed",
-                    error_code="source_failed",
-                    error="request/reply exchange registration was interrupted",
-                )
-        raise
-    return exchange_ids
 
 
 LEGACY_STEERING_PREFIX = (
@@ -23633,46 +23339,13 @@ async def update_queued_turn(session_id: str, queued_id: str, req: UpdateQueuedT
                                 new_references,
                             )
                         )
-                        new_obligation_ids: list[str] = []
-                        new_exchange_ids: list[str] = []
-                        try:
-                            new_obligation_ids = await register_final_result_obligations(
-                                session_id,
-                                queued_id,
-                                new_references,
-                                source_user_instruction=str(
-                                    candidate.get("prompt") or ""
-                                ),
-                            )
-                            new_exchange_ids = await register_request_reply_exchanges(
-                                session_id,
-                                queued_id,
-                                new_references,
-                                source_user_instruction=str(
-                                    candidate.get("prompt") or ""
-                                ),
-                            )
-                        except BaseException:
-                            for new_obligation_id in new_obligation_ids:
-                                with suppress(BaseException):
-                                    await CROSS_CHAT.update(
-                                        new_obligation_id,
-                                        expected={"waiting_source"},
-                                        status="failed",
-                                        error="queued edit registration was interrupted",
-                                    )
-                            for new_exchange_id in new_exchange_ids:
-                                with suppress(BaseException):
-                                    await CROSS_CHAT.update_exchange(
-                                        new_exchange_id,
-                                        expected={"waiting_request"},
-                                        status="failed",
-                                        error_code="source_failed",
-                                        error="queued edit registration was interrupted",
-                                    )
-                            raise
-                        candidate["cross_chat_obligation_ids"] = new_obligation_ids
-                        candidate["cross_chat_exchange_ids"] = new_exchange_ids
+                        candidate["cross_chat_obligation_ids"] = await register_final_result_obligations(
+                            session_id,
+                            queued_id,
+                            new_references,
+                            source_user_instruction=str(candidate.get("prompt") or ""),
+                        )
+                        candidate["cross_chat_exchange_ids"] = []
                     elif req.client_capabilities is not None:
                         # Capability-only edits are useful after a client
                         # upgrade, but they must not be able to strip the v2
@@ -24969,9 +24642,9 @@ def user_chat_references_are_live_routes(turn: dict[str, Any]) -> bool:
     """Whether a user's turn or message carries only chat references its
     chat's live routes cover: a route @ granted at admission (grant_intent)
     or a chat on another server paired by the hub. A message that passes may
-    join a running user turn. One-use actions from older clients and
-    secure-peer handles carry per-run work; a job's or delivery's references
-    are its own exact grants.
+    join a running user turn. A one-use action in a message queued before
+    route @s replaced it, and a secure-peer handle, carry per-run work; a
+    job's or delivery's references are its own exact grants.
     """
     return turn.get("purpose") is None and all(
         isinstance(reference, dict) and (
@@ -40522,6 +40195,9 @@ def cross_chat_handoffs_capability() -> dict[str, Any]:
         "message": message,
         "action": action,
         "version": 13,
+        # load-bearing: clients label a route @ "Send + Ask" when this lists
+        # request_reply. Admission turns instruction/request_reply chips into
+        # route @s.
         "actions": [
             "route",
             "request_reply",
@@ -45258,14 +44934,10 @@ async def create_authorized_cross_chat_instruction(
     if not body:
         raise HTTPException(status_code=400, detail="cross-chat message is empty")
     token_hash = hashlib.sha256(capability_token.encode("utf-8")).hexdigest()
-    destination_handle = request.target_session_id
-    target_session_id = ""
-    grant: tuple[str, str] = ("", request.action)
+    grant = (request.target_session_id, request.action)
     now = time.time()
-    secure_snapshot: dict[str, Any] | None = None
     secure_outbound_expires_at: int | None = None
     reservation_was_new = False
-    source_user_instruction = ""
     async with CROSS_CHAT_CAPABILITY_LOCK:
         capability = CROSS_CHAT_CAPABILITIES.get(token_hash)
         if not capability:
@@ -45274,9 +44946,6 @@ async def create_authorized_cross_chat_instruction(
             raise HTTPException(status_code=403, detail="cross-chat capability belongs to another server")
         source_session_id = str(capability.get("source_session_id") or "")
         source_run_id = str(capability.get("source_run_id") or "")
-        source_user_instruction = validated_cross_chat_source_user_instruction(
-            capability.get("source_user_instruction")
-        )
         if not provider_capability_is_attached_to_live_run(
             source_session_id,
             source_run_id,
@@ -45288,70 +44957,34 @@ async def create_authorized_cross_chat_instruction(
         # Exact live-run binding is authoritative. Long and overnight turns
         # remain usable beyond the stale-orphan TTL; terminalization revokes
         # the capability synchronously.
-        secure_grant = (destination_handle, request.action)
-        secure_value = capability.get("secure_peer_grants", {}).get(
-            secure_grant
+        secure_value = capability.get("secure_peer_grants", {}).get(grant)
+        if not isinstance(secure_value, dict):
+            # Agents reach chats on this server only through their routes;
+            # this endpoint serves secure-peer handles alone.
+            raise HTTPException(
+                status_code=403,
+                detail="message chats on this server with chats list and send --route ROUTE_ID",
+            )
+        if not SECURE_PEER_AGENT_RELAY_ENABLED:
+            raise HTTPException(
+                status_code=409,
+                detail=SECURE_PEER_AGENT_RELAY_UNAVAILABLE,
+            )
+        secure_snapshot = dict(secure_value)
+        required_action = (
+            "secure_peer_request_reply"
+            if request.action == "request_reply"
+            else "secure_peer_instruction"
         )
-        if isinstance(secure_value, dict):
-            if not SECURE_PEER_AGENT_RELAY_ENABLED:
-                raise HTTPException(
-                    status_code=409,
-                    detail=SECURE_PEER_AGENT_RELAY_UNAVAILABLE,
-                )
-            secure_snapshot = dict(secure_value)
-            target_session_id = destination_handle
-            grant = secure_grant
-            required_action = (
-                "secure_peer_request_reply"
-                if request.action == "request_reply"
-                else "secure_peer_instruction"
-            )
-            authorized = required_action in capability.get("actions", set())
-        else:
-            direct_value = (
-                capability.get("provider_direct_grants", {}) or {}
-            ).get(destination_handle)
-            if (
-                not PROVIDER_DIRECT_GRANT_ID_RE.fullmatch(destination_handle)
-                or not isinstance(direct_value, dict)
-                or direct_value.get("action") != request.action
-            ):
-                direct_value = None
-            target_session_id = str(
-                (direct_value or {}).get("target_session_id") or ""
-            )
-            grant = (target_session_id, request.action)
-            required_action = (
-                "cross_chat_request_reply"
-                if request.action == "request_reply"
-                else "cross_chat_instruction"
-            )
-            authorized = (
-                direct_value is not None
-                and required_action in capability.get("actions", set())
-                and grant in capability.get("grants", set())
-            )
-        if not authorized:
+        if required_action not in capability.get("actions", set()):
             raise HTTPException(status_code=403, detail="cross-chat route was not authorized by the user")
-        if secure_snapshot is not None and request.wait_for_response:
+        if request.wait_for_response:
             raise HTTPException(
                 status_code=400,
                 detail="live response waits are limited to same-server chats",
             )
-        if secure_snapshot is None:
-            target = STORE.sessions.get(target_session_id)
-            if (
-                not target
-                or target_session_id in DELETING_SESSIONS
-                or target_session_id in DELETED_SESSION_TOMBSTONES
-            ):
-                raise HTTPException(status_code=404, detail="target chat was not found")
-            if target.get("archived"):
-                raise HTTPException(status_code=409, detail="target chat is archived")
         consumed = capability.setdefault("consumed", {})
-        consumed_grant: tuple[Any, ...] = (
-            ("secure_peer", *grant) if secure_snapshot is not None else grant
-        )
+        consumed_grant = ("secure_peer", *grant)
         prior_key = consumed.get(consumed_grant)
         if prior_key is not None and prior_key != request.idempotency_key:
             raise HTTPException(status_code=403, detail="cross-chat route capability was already used")
@@ -45360,121 +44993,85 @@ async def create_authorized_cross_chat_instruction(
         # transaction is still committing. Same-key retry remains safe.
         reservation_was_new = prior_key is None
         consumed[consumed_grant] = request.idempotency_key
-        if secure_snapshot is not None:
-            # Expiry participates in the peer's idempotency digest. Freeze it
-            # under the same reservation lock as the one-use grant so a retry
-            # one second later replays the exact request instead of becoming a
-            # conflicting use of its deterministic request UUID.
-            expiries = capability.setdefault("secure_outbound_expiries", {})
-            frozen_expiry = expiries.get(consumed_grant)
-            if not isinstance(frozen_expiry, int) or isinstance(
-                frozen_expiry,
-                bool,
-            ):
-                frozen_expiry = int(now) + (72 * 60 * 60)
-                expiries[consumed_grant] = frozen_expiry
-            secure_outbound_expires_at = frozen_expiry
+        # Expiry participates in the peer's idempotency digest. Freeze it
+        # under the same reservation lock as the one-use grant so a retry
+        # one second later replays the exact request instead of becoming a
+        # conflicting use of its deterministic request UUID.
+        expiries = capability.setdefault("secure_outbound_expiries", {})
+        frozen_expiry = expiries.get(consumed_grant)
+        if not isinstance(frozen_expiry, int) or isinstance(
+            frozen_expiry,
+            bool,
+        ):
+            frozen_expiry = int(now) + (72 * 60 * 60)
+            expiries[consumed_grant] = frozen_expiry
+        secure_outbound_expires_at = frozen_expiry
     # Never hold the global capability lock across filesystem/SQLite I/O.
     # The consumed reservation above is already durable for this process;
     # same-key retries converge through the ledger UNIQUE constraint.
-    if secure_snapshot is not None:
-        secure_request_id = secure_peer_request_uuid(
-            request.idempotency_key,
-            namespace="\0".join((
-                "initial",
-                str(secure_snapshot.get("source_server_identity") or ""),
-                str(secure_snapshot.get("source_route_id") or ""),
-                str(secure_snapshot.get("target_server_identity") or ""),
-                str(secure_snapshot.get("target_route_id") or ""),
-            )),
-        )
-        if secure_outbound_expires_at is None:
-            raise RuntimeError("secure peer handoff expiry reservation was lost")
-        try:
-            intent, _created = await asyncio.to_thread(
-                SECURE_PEER_RUNTIME.prepare_outbound_handoff,
-                request_id=secure_request_id,
-                source_session_id=source_session_id,
-                source_run_id=source_run_id,
-                snapshot=secure_snapshot,
-                body=body,
-                action=request.action,
-                expires_at=secure_outbound_expires_at,
-            )
-            if intent.get("state") == "committed":
-                accepted = dict(intent.get("response") or {})
-            elif intent.get("state") == "pending":
-                accepted = await submit_secure_peer_outbound_intent(intent)
-            else:
-                raise SecurePeerError(
-                    "outbound_handoff_failed",
-                    "Secure peer handoff was already rejected",
-                    409,
-                )
-        except SecurePeerError as exc:
-            # Definite validation/CAS failures cannot have committed an
-            # envelope.  Re-open only the same live one-use grant so the
-            # provider can correct a stale route or request shape.  Unknown
-            # cancellation/transport outcomes remain burned.
-            if reservation_was_new and not secure_peer_error_is_retryable(exc):
-                async with CROSS_CHAT_CAPABILITY_LOCK:
-                    current = CROSS_CHAT_CAPABILITIES.get(token_hash)
-                    if (
-                        current is capability
-                        and current.get("consumed", {}).get(consumed_grant)
-                        == request.idempotency_key
-                    ):
-                        current["consumed"].pop(consumed_grant, None)
-                        # A definite pre-commit rejection reopens this one-use
-                        # route for a corrected request. Its expiry belongs to
-                        # the rejected reservation too; retaining it would make
-                        # a new idempotency key inherit an old (possibly
-                        # expired) wire digest.
-                        (current.get("secure_outbound_expiries") or {}).pop(
-                            consumed_grant,
-                            None,
-                        )
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-        return {
-            "_secure_peer": True,
-            "source_session_id": source_session_id,
-            "source_run_id": source_run_id,
-            **dict(accepted),
-        }, reservation_was_new
-    if request.action == "request_reply":
-        async with CROSS_CHAT_CAPABILITY_LOCK:
-            current_capability = CROSS_CHAT_CAPABILITIES.get(token_hash) or {}
-            exchange_id = str(
-                current_capability.get("exchange_request_grants", {}).get(
-                    target_session_id,
-                    "",
-                )
-            )
-        exchange = await CROSS_CHAT.get_exchange(str(exchange_id)) if exchange_id else None
-        if exchange is None:
-            raise HTTPException(status_code=403, detail="request/reply exchange was not authorized")
-        exchange, leg, created = await CROSS_CHAT.create_initial_exchange_leg(
-            exchange_id=str(exchange["id"]),
+    secure_request_id = secure_peer_request_uuid(
+        request.idempotency_key,
+        namespace="\0".join((
+            "initial",
+            str(secure_snapshot.get("source_server_identity") or ""),
+            str(secure_snapshot.get("source_route_id") or ""),
+            str(secure_snapshot.get("target_server_identity") or ""),
+            str(secure_snapshot.get("target_route_id") or ""),
+        )),
+    )
+    if secure_outbound_expires_at is None:
+        raise RuntimeError("secure peer handoff expiry reservation was lost")
+    try:
+        intent, _created = await asyncio.to_thread(
+            SECURE_PEER_RUNTIME.prepare_outbound_handoff,
+            request_id=secure_request_id,
             source_session_id=source_session_id,
             source_run_id=source_run_id,
-            target_session_id=target_session_id,
+            snapshot=secure_snapshot,
             body=body,
-            idempotency_key=request.idempotency_key,
-            live_response_lease=bool(request.wait_for_response),
+            action=request.action,
+            expires_at=secure_outbound_expires_at,
         )
-        return {"exchange": exchange, "leg": leg}, created
-    record, created = await CROSS_CHAT.create_instruction(
-        envelope_id="handoff_" + uuid.uuid4().hex,
-        source_session_id=source_session_id,
-        source_run_id=source_run_id,
-        target_session_id=target_session_id,
-        body=body,
-        idempotency_key=request.idempotency_key,
-        source_user_instruction=source_user_instruction,
-    )
-    if created:
-        prime_cross_chat_event_cache(record)
-    return record, created
+        if intent.get("state") == "committed":
+            accepted = dict(intent.get("response") or {})
+        elif intent.get("state") == "pending":
+            accepted = await submit_secure_peer_outbound_intent(intent)
+        else:
+            raise SecurePeerError(
+                "outbound_handoff_failed",
+                "Secure peer handoff was already rejected",
+                409,
+            )
+    except SecurePeerError as exc:
+        # Definite validation/CAS failures cannot have committed an
+        # envelope.  Re-open only the same live one-use grant so the
+        # provider can correct a stale route or request shape.  Unknown
+        # cancellation/transport outcomes remain burned.
+        if reservation_was_new and not secure_peer_error_is_retryable(exc):
+            async with CROSS_CHAT_CAPABILITY_LOCK:
+                current = CROSS_CHAT_CAPABILITIES.get(token_hash)
+                if (
+                    current is capability
+                    and current.get("consumed", {}).get(consumed_grant)
+                    == request.idempotency_key
+                ):
+                    current["consumed"].pop(consumed_grant, None)
+                    # A definite pre-commit rejection reopens this one-use
+                    # route for a corrected request. Its expiry belongs to
+                    # the rejected reservation too; retaining it would make
+                    # a new idempotency key inherit an old (possibly
+                    # expired) wire digest.
+                    (current.get("secure_outbound_expiries") or {}).pop(
+                        consumed_grant,
+                        None,
+                    )
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return {
+        "_secure_peer": True,
+        "source_session_id": source_session_id,
+        "source_run_id": source_run_id,
+        **dict(accepted),
+    }, reservation_was_new
 
 
 async def create_authorized_cross_chat_exchange_response(
@@ -76076,24 +75673,23 @@ async def _start_turn_locked(
             if accepted_provider_route_snapshot is not None:
                 # A queued message's chip for a chat on another server only
                 # marks it mentioned; a pair removed since leaves it as text
-                # rather than holding the queue.
+                # rather than holding the queue. A one-use @ queued before
+                # route @s replaced it is text too: the server no longer issues
+                # a grant the agent could act on.
                 req.chat_references = [
                     reference for reference in req.chat_references
-                    if reference.target_kind != "cross_server" or cross_server_peer_route(
+                    if (reference.target_kind != "cross_server" or cross_server_peer_route(
                         session_id,
                         cross_server_mail.sender_key(str(reference.target_server_identity), reference.session_id),
-                    ) is not None
+                    ) is not None)
+                    and not (reference.target_kind is None
+                             and reference.action in {"instruction", "request_reply"})
                 ]
-            if (
-                provider_context_mode == "chat"
-                and accepted_provider_route_snapshot is None
-                and AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY in set(req.client_capabilities)
-            ):
-                # Agents are not told about one-use handles, so a routes-v2
-                # client's one-use @ (instruction, request_reply) becomes the
-                # pair a route @ makes, which the agent finds with chats list.
-                # Only a new message: a queued one has registered its
-                # exchanges. A chat that also has a route @ keeps that one.
+            if provider_context_mode == "chat" and accepted_provider_route_snapshot is None:
+                # Agents reach other chats only with chats list, so a one-use @
+                # (instruction, request_reply) becomes the pair a route @ makes;
+                # a client too old for route @s is asked to update. A chat that
+                # also has a route @ in the message keeps that one.
                 routed = {reference.session_id for reference in req.chat_references
                           if reference.target_kind is None and reference.action == "route"}
                 converted: list[ChatReference] = []
@@ -76249,7 +75845,23 @@ async def _start_turn_locked(
     reserved = False
     turn_direct_message_ids: list[str] = []
     turn_obligation_ids = list(accepted_obligation_ids or [])
-    turn_exchange_ids = list(accepted_exchange_ids or [])
+    # A queued message's request/reply exchanges belong to one-use @s from
+    # before route @s replaced them. Admission dropped those chips, so the
+    # agent cannot send the request; close them rather than bind them.
+    for exchange_id in accepted_exchange_ids or []:
+        failed_exchange = await CROSS_CHAT.update_exchange(
+            str(exchange_id),
+            expected={"waiting_request"},
+            status="failed",
+            error_code="exchange_not_sent",
+            error="one-use @Chat actions were replaced by route @",
+        )
+        if failed_exchange is not None:
+            with suppress(Exception):
+                await append_cross_chat_exchange_terminal_lifecycle(
+                    failed_exchange,
+                    "Cross-chat exchange was not sent: one-use @Chat actions were replaced by route @.",
+                )
     should_queue = False
     has_prior_queue = False
     reservation_admission_id = uuid.uuid4().hex
@@ -76572,13 +76184,6 @@ async def _start_turn_locked(
                 req.chat_references,
                 source_user_instruction=req.prompt,
             )
-        if not turn_exchange_ids:
-            turn_exchange_ids = await register_request_reply_exchanges(
-                session_id,
-                run_id,
-                req.chat_references,
-                source_user_instruction=req.prompt,
-            )
         if req.purpose is None and provider_context_mode == "chat":
             # Recovered/edited queued snapshots are untrusted historical
             # ceilings. Rebind final issuance to the exact currently validated
@@ -76616,13 +76221,6 @@ async def _start_turn_locked(
         ] = {}
         exchange_response_followup_allowed = True
         exchange_response_followup_async = False
-        exchange_request_grants: dict[str, str] = {}
-        for exchange_id in turn_exchange_ids:
-            exchange_grant_record = await CROSS_CHAT.get_exchange(str(exchange_id))
-            if exchange_grant_record is not None:
-                exchange_request_grants[
-                    str(exchange_grant_record.get("responder_session_id") or "")
-                ] = str(exchange_grant_record.get("id") or "")
         if (
             req.purpose == "cross_chat_handoff_delivery"
             and delivery_record is not None
@@ -76694,15 +76292,6 @@ async def _start_turn_locked(
             if exchange_response_grant is not None:
                 provider_actions.add("secure_peer_response")
         else:
-            if any(
-                reference.target_kind is None
-                and reference.action in {"instruction", "request_reply"}
-                for reference in req.chat_references
-            ):
-                provider_actions.update({
-                    "cross_chat_instruction",
-                    "cross_chat_request_reply",
-                })
             if chat_routes_live or provider_authority_route_snapshot or cross_server_routes_for(session_id):
                 provider_actions.add("agent_cross_chat_routes")
             for snapshot in secure_route_snapshots:
@@ -76750,7 +76339,6 @@ async def _start_turn_locked(
                 if exchange_response_grant is not None
                 else set()
             ),
-            exchange_request_grants=exchange_request_grants,
             secure_peer_response_grants=secure_peer_response_grants,
             team_mail_enabled="team_mail" in provider_actions,
             team_mail_command=team_mail_command,
@@ -76806,7 +76394,6 @@ async def _start_turn_locked(
             run_id,
             authority_path,
             session_id,
-            req.chat_references,
             exchange_response_grant=exchange_response_grant,
             exchange_response_followup_allowed=(
                 exchange_response_followup_allowed
@@ -76921,7 +76508,7 @@ async def _start_turn_locked(
             "cross_chat_exchange_status": req.cross_chat_exchange_status,
             "secure_peer_envelope_id": req.secure_peer_envelope_id,
             "cross_chat_obligation_ids": turn_obligation_ids,
-            "cross_chat_exchange_ids": turn_exchange_ids,
+            "cross_chat_exchange_ids": [],
             "cross_chat_direct_message_ids": turn_direct_message_ids,
         }
         if req.purpose == "scheduled_job":
@@ -77037,20 +76624,6 @@ async def _start_turn_locked(
                     "message": "Cross-chat final-result binding failed before provider launch.",
                 })
                 raise
-        if turn_exchange_ids and queued_id:
-            try:
-                await CROSS_CHAT.rebind_exchange_source_run(
-                    turn_exchange_ids,
-                    old_source_run_id=str(queued_id),
-                    new_source_run_id=run_id,
-                )
-            except Exception:
-                await append_event(session_id, "turn_stopped", {
-                    **started_payload,
-                    "stopped": True,
-                    "message": "Cross-chat request/reply binding failed before provider launch.",
-                })
-                raise
         for envelope_id in turn_obligation_ids:
             record = await CROSS_CHAT.get(envelope_id)
             if record is not None:
@@ -77070,14 +76643,6 @@ async def _start_turn_locked(
                         "cross_chat_handoff_registered",
                         "registered",
                         "The @chat message was accepted for delivery.",
-                        run_id=run_id,
-                    )
-        for exchange_id in turn_exchange_ids:
-            exchange = await CROSS_CHAT.get_exchange(str(exchange_id))
-            if exchange is not None:
-                with suppress(Exception):
-                    await append_cross_chat_exchange_registered(
-                        exchange,
                         run_id=run_id,
                     )
         if req.purpose == "cross_chat_handoff_delivery":
@@ -77337,20 +76902,6 @@ async def _start_turn_locked(
                         await append_cross_chat_terminal_lifecycle(
                             failed_obligation,
                             "Final-result handoff failed because the source agent did not start.",
-                        )
-            for exchange_id in turn_exchange_ids:
-                with suppress(BaseException):
-                    failed_exchange = await CROSS_CHAT.update_exchange(
-                        exchange_id,
-                        expected={"waiting_request"},
-                        status="failed",
-                        error_code="source_failed",
-                        error="source agent could not start",
-                    )
-                    if failed_exchange is not None:
-                        await append_cross_chat_exchange_terminal_lifecycle(
-                            failed_exchange,
-                            "Cross-chat exchange failed because the source agent could not start.",
                         )
             if reserved:
                 # Fenced cleanup cannot release a newer provider that took
@@ -93108,7 +92659,7 @@ async def _put_codex_goal_locked(
                 team_read_enabled=True,
             )
             # load-bearing: binds the helper-subprocess env onto the capability, as every issuer does.
-            await provider_authority_runtime_env(operation_id, authority_path, session_id, [])
+            await provider_authority_runtime_env(operation_id, authority_path, session_id)
             await append_event(session_id, "turn_started", {
                 "run_id": operation_id,
                 "backend": BACKEND_CODEX,
@@ -96683,17 +96234,9 @@ async def list_provider_cross_chat_routes(request: Request) -> dict[str, Any]:
             # route ceiling and live intersection still authorize this read.
             issued_routes = [issued[route_id]] if route_id in issued else []
         else:
-            def discovery_order(route: dict[str, Any]) -> tuple[str, str]:
-                return str(route.get("alias") or ""), str(route.get("route_id") or "")
-
-            if cursor and cursor not in issued:
-                raise HTTPException(status_code=400, detail="invalid route discovery cursor; restart listing")
-            after = discovery_order(issued[cursor]) if cursor else None
-            ordered = sorted(
-                (route for route in issued.values()
-                 if after is None or discovery_order(route) > after),
-                key=discovery_order,
-            )
+            # Pages follow route ids, so a cursor whose route was revoked
+            # between pages still marks where the next page starts.
+            ordered = [issued[key] for key in sorted(issued) if not cursor or key > cursor]
             # Bound output below the provider tool's 128 KiB ceiling, not the
             # number of permissions. Advance over revoked entries too, so a
             # sparse/empty page can still lead to later authorized routes.
@@ -98396,127 +97939,10 @@ async def submit_authorized_cross_chat_handoff(
         raise HTTPException(status_code=403, detail="cross-chat capability is required")
 
     async def accept_and_finish_handoff() -> dict[str, Any]:
-        accepted, created = await create_authorized_cross_chat_instruction(
-            capability,
-            req,
-        )
-        if accepted.get("_secure_peer"):
-            return {
-                "ok": True,
-                "action": req.action,
-                "accepted": True,
-            }
-        if req.action == "request_reply":
-            exchange = dict(accepted["exchange"])
-            leg = dict(accepted["leg"])
-            live_waiter: dict[str, Any] | None = None
-            live_wait_deferred = bool(
-                req.wait_for_response
-                and exchange.get("live_response_requested")
-                and not exchange.get("live_response_lease")
-            )
-            try:
-                if req.wait_for_response and not live_wait_deferred:
-                    async with cross_chat_live_lease_lock(str(exchange["id"])):
-                        live_waiter = await register_or_replay_cross_chat_live_waiter_locked(
-                            exchange,
-                            leg,
-                            owner_session_id=str(leg.get("source_session_id") or ""),
-                            owner_run_id=str(leg.get("source_run_id") or ""),
-                            capability_token=capability,
-                            timeout_seconds=req.response_timeout_seconds,
-                        )
-                        if live_waiter is None:
-                            exchange = (
-                                await CROSS_CHAT.get_exchange(str(exchange["id"]))
-                            ) or exchange
-                            live_wait_deferred = bool(
-                                str(exchange.get("status") or "") == "active"
-                                and bool(exchange.get("live_response_requested"))
-                                and not bool(exchange.get("live_response_lease"))
-                            )
-                await append_cross_chat_exchange_registered(
-                    exchange,
-                    run_id=str(
-                        exchange.get("authorization_source_run_id") or ""
-                    ),
-                )
-                await append_cross_chat_exchange_leg_lifecycle(
-                    exchange,
-                    leg,
-                    "cross_chat_exchange_leg_registered",
-                    "registered",
-                    "Cross-chat exchange request was accepted for delivery.",
-                )
-                if created or leg.get("status") in {"registered", "submitting"}:
-                    exchange, leg = await submit_cross_chat_exchange_leg(exchange, leg)
-            except BaseException as exc:
-                defer_reason = cross_chat_exchange_submission_defer_reason(exc)
-                deferred_submission = False
-                if req.wait_for_response and defer_reason is not None:
-                    outcome = await defer_cross_chat_live_acceptance(
-                        str(exchange["id"]),
-                        str(leg.get("id") or ""),
-                        live_waiter,
-                    )
-                    if outcome.get("state") in {"deferred", "live"}:
-                        exchange = outcome.get("exchange") or exchange
-                        leg = outcome.get("leg") or leg
-                        live_wait_deferred = outcome.get("state") == "deferred"
-                        if live_wait_deferred:
-                            live_waiter = None
-                        if str(leg.get("status") or "") == "registered":
-                            schedule_cross_chat_exchange_leg_retry(
-                                str(leg.get("id") or "")
-                            )
-                        deferred_submission = True
-                if isinstance(exc, asyncio.CancelledError):
-                    raise
-                if deferred_submission:
-                    pass
-                elif req.wait_for_response and not live_wait_deferred:
-                    failed = await fail_cross_chat_exchange(
-                        str(exchange["id"]),
-                        leg_id=str(leg.get("id") or ""),
-                        error_code="live_lease_submission_failed",
-                        error="live cross-chat request could not acquire its peer delivery",
-                    )
-                    if failed is not None:
-                        await settle_cross_chat_live_waiter_failure(
-                            failed,
-                            error_code="live_lease_submission_failed",
-                            error="live cross-chat request could not acquire its peer delivery",
-                        )
-                    raise
-                else:
-                    raise
-            receipt = {
-                "ok": True,
-                "action": "request_reply",
-                "accepted": True,
-            }
-            if live_waiter is not None:
-                receipt["_live_exchange"] = exchange
-                receipt["_live_waiter"] = live_waiter
-            elif live_wait_deferred:
-                receipt.update(deferred_cross_chat_live_response(
-                    str(exchange.get("id") or ""),
-                    str(leg.get("id") or ""),
-                ))
-            return receipt
-        await append_cross_chat_event_once(
-            str(accepted["source_session_id"]),
-            accepted,
-            "cross_chat_handoff_registered",
-            "registered",
-            "Cross-chat instruction was accepted for delivery.",
-            run_id=accepted.get("source_run_id"),
-        )
-        if created or accepted.get("status") in {"ready", "submitting"}:
-            accepted = await submit_cross_chat_delivery(accepted)
+        await create_authorized_cross_chat_instruction(capability, req)
         return {
             "ok": True,
-            "action": "instruction",
+            "action": req.action,
             "accepted": True,
         }
 
