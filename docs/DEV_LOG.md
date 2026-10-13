@@ -1,5 +1,28 @@
 # Public development log
 
+## 2026-10-13 — Copy a zoomed table as Markdown (desktop and Android)
+
+- The expanded table view (desktop dialog, Android sheet) has a Copy as
+  Markdown button next to Close. It copies the table's own Markdown lines
+  from the message: alignment row, escaped pipes and inline formatting stay
+  as written, an inline @chat reference goes back to its @mention text, and a
+  table nested in a list is dedented so it pastes as a table rather than a
+  code block. The icon turns into a check for a moment, like the code-block
+  copy button.
+- On the desktop, a table cut short by a folded long message is copied in
+  full, through its first blank line in the complete message, like the
+  code-block copy. The Android sheet already received the whole table's
+  source.
+- Verification: desktop component tests (formatting, nested list, folded
+  message, chat reference) and an Android rendered-sheet test with a
+  clipboard mock. An isolated native desktop run built from this branch
+  against an isolated server with a real Claude reply: zoom, copy, and the
+  system clipboard held the exact table lines for a formatted table, a
+  list-nested table and a 90-row table in a folded message (the dialog
+  showed 70 rows); each result parsed as one GFM table. Light theme and the
+  Chinese label were checked. Not exercised: the Android app on a device or
+  emulator. Availability: source only.
+
 ## 2026-10-13 — Desktop package 125 and Android build 69 (local package and APK)
 
 - Package the tree at the chat state carry-over merge. No desktop or Android
