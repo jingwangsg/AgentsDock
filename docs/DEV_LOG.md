@@ -1,5 +1,23 @@
 # Public development log
 
+## 2026-10-13 — Desktop package 126 and Android build 70 (local package and APK)
+
+- Package the entries recorded since package 125 and Android build 69: the
+  expanded table view copies the table as its own Markdown (desktop and
+  Android); a Mac banner no longer deactivates AgentsDock, moves a
+  full-screen window off its Space or hides the Dock icon; the desktop shows
+  the attachments of chat mail and keeps the receiving chat's Media & files
+  current. The server side of chat mail attachments needs a restarted hub;
+  the pkg bundles no server code.
+- The pkg is unsigned like every local package, built with the fuses
+  re-signing flag and reports CFBundleVersion 126; the APK is signed with the
+  project debug keystore (SHA-256 fac61745…) and reports versionCode 70.
+  Checks run before packaging: both type checks; the desktop unit suite
+  (remaining failures are the known stale scheduled-job card tests and the
+  two sqlite bundling failures); the Android contract suite; the version
+  pins. Not exercised: installing on a phone or Mac. Availability: local
+  package and APK.
+
 ## 2026-10-13 — Agents can attach files to chat mail (server and desktop)
 
 - Chat mail between agents (`chats send`, `ask`, `respond-current`) carried
