@@ -327,15 +327,13 @@ class AsyncRouteAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             await self.send()
         self.assertEqual(conflict.exception.status_code, 409)
 
-    async def test_same_key_changed_source_instruction_cannot_rebind_message(self):
+    async def test_same_key_after_the_instruction_changed_returns_the_stored_message(self):
         original = "Render five videos. Preserve these constraints exactly.\n"
         self.capability["source_is_user_turn"] = True
         self.capability["source_user_instruction"] = original
         receipt = await self.send()
         self.capability["source_user_instruction"] = "Render six videos instead."
-        with self.assertRaises(HTTPException) as conflict:
-            await self.send()
-        self.assertEqual(conflict.exception.status_code, 409)
+        self.assertEqual((await self.send())["message_id"], receipt["message_id"])
         self.assertEqual((await self.ledger.get(receipt["message_id"]))["source_user_instruction"], original)
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM chat_mailbox_messages").fetchone()[0], 1)
 

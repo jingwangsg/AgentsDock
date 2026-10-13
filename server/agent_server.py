@@ -15281,14 +15281,19 @@ class CrossChatStore:
                 ).fetchone()
                 if existing is not None:
                     record = dict(existing)
+                    # A same-key retry of mailbox mail returns the stored
+                    # message, which keeps the user instruction it was sent
+                    # with: a message the user sent into the turn since may
+                    # have changed the run's instruction.
+                    mailbox = initial_status == "stored"
                     if (
                         record["kind"] != "instruction"
                         or record["target_session_id"] != target_session_id
                         or record["body"] != body
-                        or record.get("source_user_instruction", "")
-                        != source_user_instruction
-                        or record.get("source_user_delegation_action", "")
-                        != source_user_delegation_action
+                        or (not mailbox and record.get("source_user_instruction", "")
+                            != source_user_instruction)
+                        or (not mailbox and record.get("source_user_delegation_action", "")
+                            != source_user_delegation_action)
                         or record.get("authorization_kind")
                         != authorization_kind
                         or record.get("authorization_route_id")
@@ -96683,16 +96688,12 @@ async def list_provider_cross_chat_routes(request: Request) -> dict[str, Any]:
             # route ceiling and live intersection still authorize this read.
             issued_routes = [issued[route_id]] if route_id in issued else []
         else:
-            def discovery_order(route: dict[str, Any]) -> tuple[str, str]:
-                return str(route.get("alias") or ""), str(route.get("route_id") or "")
-
-            if cursor and cursor not in issued:
-                raise HTTPException(status_code=400, detail="invalid route discovery cursor; restart listing")
-            after = discovery_order(issued[cursor]) if cursor else None
+            # Pages follow route ids, so a cursor whose route was revoked
+            # between pages still marks where the next page starts.
             ordered = sorted(
                 (route for route in issued.values()
-                 if after is None or discovery_order(route) > after),
-                key=discovery_order,
+                 if not cursor or str(route.get("route_id") or "") > cursor),
+                key=lambda route: str(route.get("route_id") or ""),
             )
             # Bound output below the provider tool's 128 KiB ceiling, not the
             # number of permissions. Advance over revoked entries too, so a

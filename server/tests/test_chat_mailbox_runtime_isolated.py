@@ -249,18 +249,18 @@ class ChatMailboxRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply["messages"][0]["reply_to_message_id"], original["message_id"])
         self.assertNotIn("user_delegation", reply["messages"][0])
 
-    async def test_same_key_cannot_upgrade_a_peer_message_or_change_its_source_instruction(self):
+    async def test_same_key_returns_the_stored_message_and_never_upgrades_it(self):
+        # A message the user sends into the turn changes the run's instruction;
+        # a retry of an earlier send returns that send as it was stored.
         original = await self.send()
         self.delegate()
-        with self.assertRaises(HTTPException) as conflict:
-            await self.send()
-        self.assertEqual(conflict.exception.status_code, 409)
+        self.assertEqual((await self.send())["message_id"], original["message_id"])
         self.assertEqual((await self.ledger.get(original["message_id"]))["source_user_delegation_action"], "")
+        first_instruction = self.delegate()
         delegated = await self.send("delegated")
-        self.assertEqual((await self.send("delegated"))["message_id"], delegated["message_id"])
         self.delegate("Ask @Recipient to deploy instead.")
-        with self.assertRaises(HTTPException):
-            await self.send("delegated")
+        self.assertEqual((await self.send("delegated"))["message_id"], delegated["message_id"])
+        self.assertEqual((await self.ledger.get(delegated["message_id"]))["source_user_instruction"], first_instruction)
 
     async def test_unread_edit_removes_attestation_without_losing_message(self):
         self.delegate()
