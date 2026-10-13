@@ -1,5 +1,34 @@
 # Public development log
 
+## 2026-10-14 — Android browser tabs no longer use up their connections after tab switches (Android source)
+
+- An Android browser tab showing a page from the server's localhost (here a
+  Ray dashboard on a remote server) failed with "Error loading page …
+  net::ERR_EMPTY_RESPONSE" after the user had switched between the tab and
+  chats a few times. The server refused the page's new connections with
+  "Port tunnel session connection limit reached": it allows 16 open tunnels
+  per browser tab, and all 16 were held.
+- The app carries each of the page's connections over its own tunnel. It
+  closed a tunnel only when the page closed the connection normally.
+  Switching away from the tab stops the app's local proxy, which ends those
+  connections with an error instead, and their tunnels stayed open for as
+  long as the destination kept the idle connection open. A Ray dashboard
+  never closes one, so each switch could leave up to six tunnels open until
+  the app was closed.
+- The app now closes the tunnel however the connection ends.
+- Verified on the Android emulator with a sideload build, an isolated server
+  and a local page that polls six URLs and never closes idle connections.
+  Before the change, switching away left the page's tunnels open: 12 stayed
+  open while a chat was shown, a later return reached the 16-tunnel limit,
+  and the page then failed to load. With the
+  change, the count was 6 while the tab was shown and 0 after each of five
+  switches away, and the page loaded on every return. A JVM test of the
+  proxy fails before the change and passes after it.
+- Not changed: the 16-tunnel limit is per tab and is shared by every device
+  showing that tab and by every host the page loads from.
+  Availability: takes effect in the next Android build; tunnels an older
+  build already holds are released when the app is closed or updated.
+
 ## 2026-10-14 — A message Claude has not read yet shows what it waits for (server and desktop)
 
 - In Claude chats, a message sent with Enter while a tool call ran appeared
