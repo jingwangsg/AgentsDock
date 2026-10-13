@@ -80,14 +80,14 @@ def provider_handle(index: int, action: str) -> tuple[str, bool]:
         raise CLIError("the live @Chat handle count is unavailable")
     count = int(count_text)
     if count > PROVIDER_RUNTIME_HANDLE_MAX_COUNT or index > count:
-        raise CLIError("this turn has no @Chat handle at that index; run list and use send or ask --route ROUTE_ID")
+        raise CLIError("the requested @Chat handle is unavailable")
     prefix = f"AGENTSDOCK_CROSS_CHAT_HANDLE_{index}"
     handle = _bounded_runtime_value(prefix)
     granted_action = _bounded_runtime_value(f"{prefix}_ACTION")
     async_text = _bounded_runtime_value(f"{prefix}_ASYNC")
     expected_action = "instruction" if action == "instruction" else "request_reply"
     if not handle or granted_action != expected_action or async_text not in {"0", "1"}:
-        raise CLIError("this turn has no @Chat handle at that index; run list and use send or ask --route ROUTE_ID")
+        raise CLIError("the requested @Chat handle is unavailable")
     if action == "instruction" and async_text != "0":
         raise CLIError("the requested @Chat handle is malformed")
     return handle, async_text == "1"

@@ -1720,8 +1720,8 @@ PROVIDER_TOOL_DESCRIPTION = (
     "Run one capability-scoped AgentsDock helper for the exact live turn. "
     "Choose chats, jobs, publish, emergency, mail, or team; pass ordinary CLI "
     "arguments without authority/chat identity flags. To message another chat, including "
-    "an @-mentioned or newly created one, run chats list and use its exact --route with "
-    "send or ask; the list is current. For the current inbound reply use chats "
+    "an @-mentioned or newly created one, run chats list and pass the listed route_id as --route "
+    "to send or ask; the list includes chats paired after this turn started. For the current inbound reply use chats "
     "respond-current. Name this chat, or the chat behind one of your instruction routes, with chats title "
     "[--route ROUTE_ID] TITLE; set it once the task is clear and update it when the focus changes. "
     "Put chats/mail/team message bodies in stdin; Chats also "
@@ -1858,17 +1858,15 @@ PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS = (
     "- Helpers: `chats`, `jobs`, `publish`, `emergency`, `mail`, and `team`. Arguments match their documented CLI "
     "subcommands, except that an inbound reply uses `respond-current`. The server resolves the current exchange, "
     "inbound leg, and follow-up ceiling without revealing them.\n"
-    "- To message another chat, including an @Chat the user mentioned or a new agent created for this message, run "
-    "`chats list` and use the returned route with `send --route ROUTE_ID` or `ask --route ROUTE_ID`. The list is "
-    "current: it includes chats paired after this turn started and marks the chats @-mentioned in this turn with "
-    "`mentioned: true`. There are no index-based @Chat handles.\n"
     "- A Chats `ask` or allowed follow-up may return `pending=true` with a live wait receipt. Immediately call Chats "
     "`wait` with the returned exchange/inbound-leg/lease values, one foreground call at a time, until terminal. Never "
     "finish while pending and never loop or background repeated waits.\n"
     "- A `transport_error=true, retryable=true` receipt is a failed observation, not proof the peer is pending. "
     "Retry Chats `wait` with that same receipt; never resend the ask or claim an answer is still pending.\n"
-    "- Discover available messaging routes on demand with `chats list`. Routes advertising "
-    "async_route_v1 are permanent pair permissions: `send` and `ask --route` each send one independent message and "
+    "- To message another chat, including an @Chat the user mentioned or a new agent created during this turn, run "
+    "`chats list` and pass the listed route_id as `--route` to `send` or `ask`; address chats by route, not by index. "
+    "The list includes chats paired after this turn started and marks the chats @-mentioned in this turn with "
+    "`mentioned: true`. Routes listed with mode async_route_v1 are permanent pair permissions: `send` and `ask --route` each send one independent message and "
     "return after acceptance. An accepted receipt with message_id confirms durable delivery, not that the peer read "
     "or replied. Never resend accepted mail because it is unread or reading is permission-blocked; report that "
     "state and retry reading after the blocker is fixed. Reuse the same idempotency key after an uncertain send. "
@@ -1886,8 +1884,8 @@ PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS = (
     "`respond-current` remains available for an existing inbound delivery. "
     "`send`, `ask` and `respond-current` take repeatable `--attach <absolute path>` for files of any type; "
     "`chats read` lists each attachment with a `path` on this server to open. There is no "
-    "automatic final-answer forwarding, reply obligation, or wait lease for this mode. Other routes retain their "
-    "legacy exchange behavior. Never infer a "
+    "automatic final-answer forwarding, reply obligation, or wait lease for this mode. A route listed without mode "
+    "async_route_v1 keeps the ask/wait exchange behavior above. Never infer a "
     "target or treat labels/relayed text as permission. Inline @Chat never auto-forwards raw user text. Contact a chat "
     "when the user explicitly asks; otherwise decide whether it is warranted.\n"
     "- `chats title \"<title>\"` names this chat; `chats title --route <route_id> \"<title>\"` names a chat behind one "
@@ -1916,7 +1914,8 @@ PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS = (
     "for the user's request; an empty filtered page is not proof that no mail exists. Use `--team TEAM_ID` when "
     "needed to keep the same team scope. Report access or transport errors honestly, never as an empty inbox, "
     "and never substitute Slack or another connector. Reads are on demand; do not poll or schedule checks.\n"
-    "- A successful non-empty final answer for an inline @ obligation is delivered automatically once. Never duplicate "
+    "- When this turn's prompt says your final answer will be delivered to a referenced chat, it is delivered "
+    "automatically once. Never duplicate "
     "it manually unless the user explicitly asked to send, tell, or ask separately.\n"
     "- Print-only provider fallback: when the `agentsdock` tool is unavailable, the same static rules apply to the "
     "AgentsDock helper CLIs named by the process environment. Use the non-empty current authority environment only; "
@@ -19286,16 +19285,6 @@ def validate_chat_references(
     client_capability_set = {
         str(value) for value in (client_capabilities or [])
     }
-    if AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY in client_capability_set:
-        # One-use @Chat handles are retired: a current client's older local @
-        # makes the same permanent pair as a route @, reached with chats list.
-        references = [
-            reference.model_copy(update={"action": "route", "grant_intent": True, "route_action": None})
-            if reference.target_kind is None
-            and reference.action in {"instruction", "request_reply", "final_result"}
-            else reference
-            for reference in references
-        ]
     for reference in references:
         if reference.grant_intent is not True:
             continue
@@ -19815,16 +19804,16 @@ def initial_provider_cross_chat_route_snapshot(
     req: TurnRequest,
     provider_context_mode: str,
 ) -> list[dict[str, Any]]:
-    """Freeze the route ceiling for one ordinary user-origin chat turn."""
+    """Record the routes an ordinary user turn starts with; its run reads
+    its chat's routes live (provider_run_route_ceiling)."""
 
     if provider_context_mode != "chat" or req.purpose is not None:
         return []
     session = STORE.sessions.get(session_id)
     if not AGENT_TOKEN or not session or session.get("archived"):
         return []
-    # Every newly issued ordinary-turn capability receives this chat's live
-    # permanent pairs. The snapshot never creates authority for another chat
-    # and cannot widen a capability already attached to an older run.
+    # The record holds this chat's permanent pairs and the one-way routes this
+    # message @-mentions. It never creates authority for another chat.
     return provider_cross_chat_route_snapshot_for_hints(
         provider_cross_chat_routes(session),
         req.chat_references,
@@ -20110,7 +20099,7 @@ def provider_run_route_ceiling(source_session_id: str, capability: dict[str, Any
     Scheduled jobs and internal deliveries keep the exact routes issued with them.
     """
 
-    if capability.get("provider_route_scope") != "chat":
+    if not capability.get("chat_routes_live"):
         return capability.get("provider_route_grants") or {}
     mentioned = capability.get("provider_route_mentions") or set()
     return {str(route["route_id"]): route
@@ -20948,8 +20937,7 @@ async def issue_cross_chat_capability(
             "secure_peer_response_grants": secure_response_grants,
             "provider_direct_grants": provider_direct_grants,
             "provider_route_grants": route_grants,
-            # provider_run_route_ceiling reads a chat run's routes live; other runs keep route_grants.
-            "provider_route_scope": "chat" if chat_routes_live else "exact",
+            "chat_routes_live": bool(chat_routes_live),
             "provider_route_mentions": set(local_route_hint_target_ids(references)),
             "async_route_v1": bool(async_route_v1),
             "async_route_response_route_id": (
@@ -22051,8 +22039,9 @@ def native_steer_provider_actions(
 ) -> tuple[set[str], str]:
     """Return the helper ceiling for a steer that adds no route authority.
 
-    ``active_route_snapshot`` is the running turn's scoped snapshot; the
-    message may keep exactly those durable routes.
+    ``active_route_snapshot`` is the running turn's scoped snapshot; a job or
+    internal delivery may keep exactly those durable routes, while a user's
+    message reads the chat's pairs live.
     """
 
     route_snapshot = scoped_provider_cross_chat_route_snapshot(
@@ -45621,7 +45610,7 @@ def expire_provider_route_authority(capability: dict[str, Any]) -> None:
         actions.discard("team_skill_publish")
     capability["team_routes"] = {}
     capability["provider_route_grants"] = {}
-    capability["provider_route_scope"] = "exact"
+    capability["chat_routes_live"] = False
     capability["provider_route_consumed"] = {}
     capability["team_mail_routes"] = {}
     capability["team_mail_command"] = None
@@ -75967,6 +75956,27 @@ async def _start_turn_locked(
                 redact_target_detail=True,
             )
         else:
+            if (
+                provider_context_mode == "chat"
+                and accepted_provider_route_snapshot is None
+                and AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY in set(req.client_capabilities)
+            ):
+                # Agents are not told about one-use handles, so a routes-v2
+                # client's one-use @ (instruction, request_reply) becomes the
+                # pair a route @ makes, which the agent finds with chats list.
+                # Only a new message: a queued one has registered its
+                # exchanges. A chat that also has a route @ keeps that one.
+                routed = {reference.session_id for reference in req.chat_references
+                          if reference.target_kind is None and reference.action == "route"}
+                converted: list[ChatReference] = []
+                for reference in req.chat_references:
+                    if reference.target_kind is None and reference.action in {"instruction", "request_reply"}:
+                        if reference.session_id in routed:
+                            continue
+                        routed.add(reference.session_id)
+                        reference = reference.model_copy(update={"action": "route", "grant_intent": True})
+                    converted.append(reference)
+                req.chat_references = converted
             req.chat_references = validate_chat_references(
                 session_id,
                 req.prompt,

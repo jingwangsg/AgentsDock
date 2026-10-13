@@ -5,20 +5,21 @@
 - An agent could not message a chat that was paired while its turn ran. A
   message sent into a working Claude turn that created a new agent (on this
   server or another one) left the agent with `chats list` refused (403),
-  because a turn's reachable chats were fixed when it started. A chat's turn,
+  because a turn's reachable chats were fixed when it started. A user's turn,
   a message steered into it and a mailbox wake now read the chat's pairs when
   the agent lists or messages, so a new pair is reachable at once and a
-  revoked one is gone at once. Scheduled jobs and internal deliveries keep
-  the exact routes issued with them.
+  revoked one stops being reachable at once. Scheduled jobs and internal
+  deliveries keep the exact routes issued with them.
 - Agents have one path to another chat: `chats list`, then `send` or `ask`
   with the returned `--route`. The list marks the chats @-mentioned in the
   turn with `mentioned: true`. The rules no longer describe index handles
-  (`--target-index`); a call that still uses one is refused with a pointer
-  to `chats list`. An older one-use `@Chat` action from a current client is
-  admitted as the same pair as a route `@`.
+  (`--target-index`). When a routes-v2 client sends a one-use `@Chat` action
+  (`instruction`, `request_reply`), the server admits it as the same pair
+  grant as a route `@`, so a current client's turn has no index handles and
+  such a call is refused with a pointer to `chats list`.
 - Verification: server tests for a pair made after the turn started, its
-  revocation, the job and delivery fence, the older-action conversion and the
-  rule text; the full server suite. On a Mac, an isolated server with a real
+  revocation, jobs and deliveries keeping their exact routes, the one-use
+  action conversion and the rule text; the full server suite. On a Mac, an isolated server with a real
   Claude CLI ran the reported case, a chat pairing while its turn slept and a
   follow-up joining that turn: on main `chats list` was refused (403) and
   nothing was sent; on this change the agent listed the new pair and its
