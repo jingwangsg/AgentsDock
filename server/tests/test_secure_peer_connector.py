@@ -599,49 +599,6 @@ class SecurePeerConnectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(authority)
         return json.loads(authority.read_text())["provider_capability"]
 
-    async def test_local_and_secure_destination_namespace_collision_is_rejected(self) -> None:
-        # A renderer must not be able to make a local chat ID and an opaque
-        # remote route ID share a capability key.
-        agent_server.STORE.sessions[self.target_route_id] = {
-            "id": self.target_route_id,
-            "title": "Local",
-            "backend": "codex",
-        }
-        snapshot = self.snapshot(action="instruction")
-        self.runtime.validations[
-            ("source", self.target_route_id, "instruction")
-        ] = snapshot
-        references = [
-            agent_server.ChatReference(
-                session_id=self.target_route_id,
-                display_title_snapshot="Local",
-                source_text_start=0,
-                source_text_end=6,
-                action="instruction",
-            ),
-            agent_server.ChatReference(
-                session_id=self.target_route_id,
-                display_title_snapshot="Remote",
-                source_text_start=7,
-                source_text_end=14,
-                action="instruction",
-                target_kind="secure_peer",
-                target_server_identity=self.remote_identity,
-                target_connection_id=self.connection_id,
-                target_route_id=self.target_route_id,
-                target_route_revision=self.target_revision,
-            ),
-        ]
-        with self.native_transport(), self.assertRaises(HTTPException) as raised:
-            agent_server.validate_chat_references(
-                "source",
-                "@Local @Remote",
-                references,
-                [],
-            )
-        self.assertEqual(raised.exception.status_code, 400)
-        self.assertIn("ambiguous", str(raised.exception.detail))
-
     async def test_provider_idempotency_key_is_namespaced_by_exact_route(self) -> None:
         raw = "provider-may-reuse-this-key"
         first = agent_server.secure_peer_request_uuid(

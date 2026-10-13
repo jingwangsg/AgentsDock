@@ -23,10 +23,10 @@ ROUTE = "route_" + "a" * 32
 FUNCTIONS = {
     "execute_provider_tool", "agent_runner_env", "is_provider_runtime_env_name",
     "scrub_provider_runtime_environment", "validate_provider_runtime_env",
-    "resolve_provider_tool_arguments", "provider_tool_argument_value",
+    "resolve_provider_tool_arguments",
 }
 CONSTANTS = {
-    "PROVIDER_SECRET_ENV_NAMES", "PROVIDER_RUNTIME_ENV_EXACT_NAMES", "PROVIDER_RUNTIME_ENV_PREFIXES",
+    "PROVIDER_SECRET_ENV_NAMES", "PROVIDER_RUNTIME_ENV_EXACT_NAMES",
     "MAX_PROVIDER_RUNTIME_ENV_VARS", "MAX_PROVIDER_RUNTIME_ENV_KEY_CHARS",
     "MAX_PROVIDER_RUNTIME_ENV_VALUE_CHARS", "MAX_PROVIDER_RUNTIME_ENV_BYTES",
     "PROVIDER_TOOL_MAX_OUTPUT_BYTES", "PROVIDER_TOOL_TIMEOUT_SECONDS", "PROVIDER_CROSS_CHAT_ROUTE_ID_RE",

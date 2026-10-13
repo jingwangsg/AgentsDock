@@ -1256,33 +1256,33 @@ API contract v11 added durable, same-server handoffs selected by the user in
 the AgentsDock composer. API contract v13 upgraded
 `capabilities.cross_chat_handoffs_v1` to version 2 and added bounded
 request/reply exchanges. These historical structured references authorized
-one exact exchange, instruction, or automatic final-result delivery. They are
-retained for readable stored records and secure action-specific compatibility;
-they are not the current `@Chat` authoring model. Self, archived, deleted,
-legacy-transport, and unpaired foreign-server targets fail closed.
+one exact exchange, instruction, or automatic final-result delivery. Admission
+now turns an `instruction` or `request_reply` reference into a route `@` (a
+scheduled job's into its own route for that action), refuses it in a
+queued-message edit, and starts a message queued before the change with it as
+text, closing its exchange as `exchange_not_sent`. `final_result` is
+unchanged. Index handles (`--target-index`) are refused. Self, archived,
+deleted, legacy-transport, and unpaired foreign-server targets fail closed.
 
-When such an action-specific grant is replayed, the provider-authority block
-may print a one-use opaque target handle:
+The provider-authority block prints a one-use opaque target handle only for a
+secure-peer grant, and the secure-peer agent relay is disabled:
 
 ```bash
 "$AGENTSDOCK_CHATS_CLI" --authority-file /path/from/turn.json \
   send --target OPAQUE_HANDLE --message "Verify the API contract."
 ```
 
-`OPAQUE_HANDLE` is capability data, never a session ID. Delivery is a normal
+`OPAQUE_HANDLE` is capability data, never a session ID; a chat on this server
+is reached only with `--route`. Delivery is a normal
 durable target turn using the target chat's own provider, permission policy,
 queue, and timeline. A server restart reconciles the ledger and lifecycle
 outbox without silently duplicating a handoff. The desktop bearer remains
 required to inspect or cancel handoffs.
 
-Request/reply grants use the exact exchange ID reserved when the source turn
-is admitted. The source agent starts it with `ask`; a recipient may answer or
-ask a clarification with the exact `respond` command printed in that delivery
-turn's provider-authority block:
+A recipient may answer or ask a clarification with the exact `respond`
+command printed in that delivery turn's provider-authority block:
 
 ```bash
-"$AGENTSDOCK_CHATS_CLI" --authority-file /path/from/turn.json \
-  ask --target OPAQUE_HANDLE --message "Which rollout is blocked?"
 "$AGENTSDOCK_CHATS_CLI" --authority-file /path/from/turn.json \
   respond --exchange exchange_exact --inbound-leg leg_exact \
   --message "Do you mean the desktop or server rollout?" --request-response

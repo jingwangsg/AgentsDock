@@ -44,7 +44,6 @@ LIVE_RESPONSE_POST_SOCKET_SECONDS = 10
 ATTACHMENT_POST_SOCKET_SECONDS = 600
 IDEMPOTENT_POST_RETRY_DELAYS_SECONDS = (0.1, 0.5)
 IDEMPOTENT_GET_RETRY_DELAYS_SECONDS = (0.1, 0.5)
-PROVIDER_RUNTIME_HANDLE_MAX_COUNT = 64
 MESSAGE_STDIN_MAX_CHARS = 100_000
 MESSAGE_STDIN_MAX_BYTES = 400 * 1024
 TITLE_MAX_CHARS = 120
@@ -63,43 +62,13 @@ def authority(path: str | None) -> str:
     return capability
 
 
-def positive_target_index(value: str) -> int:
-    if len(value) > 2 or re.fullmatch(r"[1-9][0-9]*", value) is None:
-        raise argparse.ArgumentTypeError("--target-index must be a positive integer")
-    index = int(value)
-    if index > PROVIDER_RUNTIME_HANDLE_MAX_COUNT:
-        raise argparse.ArgumentTypeError(
-            f"--target-index must be at most {PROVIDER_RUNTIME_HANDLE_MAX_COUNT}"
-        )
-    return index
-
-
-def provider_handle(index: int, action: str) -> tuple[str, bool]:
-    count_text = _bounded_runtime_value("AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT")
-    if re.fullmatch(r"0|[1-9][0-9]*", count_text) is None:
-        raise CLIError("the live @Chat handle count is unavailable")
-    count = int(count_text)
-    if count > PROVIDER_RUNTIME_HANDLE_MAX_COUNT or index > count:
-        raise CLIError("the requested @Chat handle is unavailable")
-    prefix = f"AGENTSDOCK_CROSS_CHAT_HANDLE_{index}"
-    handle = _bounded_runtime_value(prefix)
-    granted_action = _bounded_runtime_value(f"{prefix}_ACTION")
-    async_text = _bounded_runtime_value(f"{prefix}_ASYNC")
-    expected_action = "instruction" if action == "instruction" else "request_reply"
-    if not handle or granted_action != expected_action or async_text not in {"0", "1"}:
-        raise CLIError("the requested @Chat handle is unavailable")
-    if action == "instruction" and async_text != "0":
-        raise CLIError("the requested @Chat handle is malformed")
-    return handle, async_text == "1"
-
-
 def respond_current(args: argparse.Namespace) -> dict[str, Any]:
     if _bounded_runtime_value("AGENTSDOCK_CROSS_CHAT_RESPONSE_MODE") == "async_route_v1":
         route_id = _bounded_runtime_value("AGENTSDOCK_CROSS_CHAT_RESPONSE_ROUTE_ID")
         if re.fullmatch(r"route_[0-9a-f]{32}", route_id) is None:
             raise CLIError("the current inbound conversation route is unavailable")
         values = vars(args).copy()
-        values.update({"route": route_id, "target": None, "target_index": None,
+        values.update({"route": route_id, "target": None,
                        "mode": "async_route_v1", "async_response": True})
         return send_action(argparse.Namespace(**values), "instruction")
     exchange_id = _bounded_runtime_value(
@@ -552,19 +521,8 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
     attachments = attachment_paths(list(getattr(args, "attach", None) or []))
     route = str(getattr(args, "route", None) or "")
     target = str(getattr(args, "target", None) or "")
-    target_index = getattr(args, "target_index", None)
-    if sum((bool(route), bool(target), target_index is not None)) != 1:
-        raise CLIError(
-            "provide exactly one of --route, --target, or --target-index"
-        )
-    if target_index is not None:
-        if bool(getattr(args, "async_response", False)):
-            raise CLIError(
-                "--async-response is selected by the live @Chat grant"
-            )
-        target, grant_is_async = provider_handle(int(target_index), action)
-        if action == "request_reply":
-            args.async_response = grant_is_async
+    if bool(route) == bool(target):
+        raise CLIError("provide exactly one of --route or --target")
     destination = route if route else target
     requested_mode = str(getattr(args, "mode", None) or "")
     reply_to = str(getattr(args, "reply_to", None) or "").strip()
@@ -980,7 +938,6 @@ def parser() -> argparse.ArgumentParser:
     send_destination = command.add_mutually_exclusive_group(required=True)
     send_destination.add_argument("--route")
     send_destination.add_argument("--target")
-    send_destination.add_argument("--target-index", type=positive_target_index)
     add_message_arguments(command)
     add_attach_argument(command)
     command.add_argument("--idempotency-key")
@@ -996,7 +953,6 @@ def parser() -> argparse.ArgumentParser:
     ask_destination = ask_command.add_mutually_exclusive_group(required=True)
     ask_destination.add_argument("--route")
     ask_destination.add_argument("--target")
-    ask_destination.add_argument("--target-index", type=positive_target_index)
     add_message_arguments(ask_command)
     add_attach_argument(ask_command)
     ask_command.add_argument("--idempotency-key")

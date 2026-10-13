@@ -89,28 +89,6 @@ class ProviderAuthorityLifecycleTests(unittest.IsolatedAsyncioTestCase):
         ).hexdigest()
         return agent_server.CROSS_CHAT_CAPABILITIES[token_hash]
 
-    @classmethod
-    def direct_handle_for_token(
-        cls,
-        token: str,
-        *,
-        target_session_id: str,
-        action: str = "instruction",
-    ) -> str:
-        matches = [
-            grant_id
-            for grant_id, grant in cls.record_for_token(token)[
-                "provider_direct_grants"
-            ].items()
-            if grant == {
-                "target_session_id": target_session_id,
-                "action": action,
-            }
-        ]
-        if len(matches) != 1:
-            raise AssertionError("expected one exact provider direct grant")
-        return matches[0]
-
     async def issue(
         self,
         run_id: str,
@@ -154,7 +132,6 @@ class ProviderAuthorityLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "run_origin",
                 authority_path,
                 "source",
-                [],
             )
 
         expected = "http://[::1]:17850"
@@ -214,23 +191,13 @@ class ProviderAuthorityLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_exact_native_transition_allows_candidate_jobs_and_quarantines_ambient_access(
         self,
     ) -> None:
-        predecessor_reference = agent_server.ChatReference(
-            session_id="neighbor",
-            display_title_snapshot="Neighbor",
-            source_text_start=0,
-            source_text_end=8,
-            action="instruction",
-        )
         predecessor_path = await agent_server.issue_cross_chat_capability(
             "source",
             "run_old",
-            [predecessor_reference],
+            [],
+            chat_routes_live=True,
         )
         predecessor_token = self.token_for_path(predecessor_path)
-        predecessor_handle = self.direct_handle_for_token(
-            predecessor_token,
-            target_session_id="neighbor",
-        )
         transition_nonce = "1" * 32
         transition_ready = asyncio.Event()
         agent_server.CURRENT_TURNS = {
@@ -298,16 +265,8 @@ class ProviderAuthorityLifecycleTests(unittest.IsolatedAsyncioTestCase):
         ] = True
         await self.assert_denied(predecessor_token, action="jobs")
         await self.assert_denied(predecessor_token, action="publish")
-        with self.assertRaises(HTTPException) as cross_chat_denied:
-            await agent_server.create_authorized_cross_chat_instruction(
-                predecessor_token,
-                agent_server.CrossChatHandoffRequest(
-                    target_session_id=predecessor_handle,
-                    body="must not cross the logical-run boundary",
-                    idempotency_key="pending-boundary",
-                ),
-            )
-        self.assertEqual(cross_chat_denied.exception.status_code, 403)
+        # Nor can it reach another chat across the logical-run boundary.
+        await self.assert_denied(predecessor_token, action="agent_cross_chat_routes")
         await self.assert_denied(
             candidate_token,
             action="agent_cross_chat_routes",

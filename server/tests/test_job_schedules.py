@@ -447,9 +447,11 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
                 prompt=prompt,
                 chat_references=[reference],
             ))
+            # A one-use @ is stored as the job's own route for that action.
+            as_route = reference.model_copy(update={"action": "route", "route_action": reference.action})
             self.assertEqual(
                 created["chat_references"],
-                [agent_server.chat_reference_dict(reference)],
+                [agent_server.chat_reference_dict(as_route)],
             )
 
             metadata_only = await store.update(
@@ -458,7 +460,7 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 metadata_only["chat_references"],
-                [agent_server.chat_reference_dict(reference)],
+                [agent_server.chat_reference_dict(as_route)],
             )
 
             before_invalid_edit = dict(store.jobs[created["id"]])
@@ -482,7 +484,9 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
             })
             self.assertEqual(
                 shifted_job["chat_references"],
-                [agent_server.chat_reference_dict(shifted)],
+                [agent_server.chat_reference_dict(
+                    shifted.model_copy(update={"action": "route", "route_action": shifted.action})
+                )],
             )
 
             revoked = await store.update(
@@ -1101,7 +1105,9 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
                 ):
                     await store.run_job("job_handoff")
                     turn_request = start_turn.await_args.args[1]
-                    self.assertEqual(turn_request.chat_references, [reference])
+                    self.assertEqual(turn_request.chat_references, [
+                        reference.model_copy(update={"action": "route", "route_action": reference.action})
+                    ])
                     self.assertEqual(
                         turn_request.client_capabilities,
                         [agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY],
@@ -1385,6 +1391,50 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
                     "@Remote/Target do work",
                     [reference],
                 )
+
+    def test_scheduled_job_one_use_ats_for_one_chat_keep_one_route(self) -> None:
+        def mention(start: int, action: str) -> agent_server.ChatReference:
+            return agent_server.ChatReference(
+                session_id="target",
+                display_title_snapshot="Target",
+                source_text_start=start,
+                source_text_end=start + len("@Target"),
+                action=action,
+            )
+
+        sessions = {
+            "source": {"id": "source", "title": "Source", "backend": agent_server.BACKEND_CODEX},
+            "target": {"id": "target", "title": "Target", "backend": agent_server.BACKEND_CODEX},
+        }
+        with (
+            patch.object(agent_server.STORE, "sessions", sessions),
+            patch.object(agent_server, "AGENT_TOKEN", "test-token"),
+            patch.object(
+                agent_server,
+                "cross_chat_delivery_client_capabilities",
+                return_value=[agent_server.CODEX_INTERACTIVE_CLIENT_CAPABILITY],
+            ),
+        ):
+            # Two actions for one chat grant both on one route at the first @.
+            both = agent_server.validate_scheduled_job_chat_references(
+                "source",
+                "@Target fix it, @Target ask for status",
+                [mention(0, "instruction"), mention(len("@Target fix it, "), "request_reply")],
+            )
+            self.assertEqual(
+                [(reference.action, reference.route_action, reference.source_text_start)
+                 for reference in both],
+                [("route", None, 0)],
+            )
+            single = agent_server.validate_scheduled_job_chat_references(
+                "source",
+                "@Target ask for status",
+                [mention(0, "request_reply")],
+            )
+            self.assertEqual(
+                [(reference.action, reference.route_action) for reference in single],
+                [("route", "request_reply")],
+            )
 
     async def test_archived_session_job_cannot_be_enabled_but_can_be_edited(
         self,

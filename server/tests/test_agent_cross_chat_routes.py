@@ -1446,6 +1446,62 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             {"target", "other"},
         )
 
+    async def test_an_old_clients_one_use_mention_asks_for_an_update(self) -> None:
+        prompt = "@Target check the build"
+        for action in ("instruction", "request_reply"):
+            reference = agent_server.ChatReference(
+                session_id="target", display_title_snapshot="Target", source_text_start=0,
+                source_text_end=len("@Target"), action=action,
+            )
+            with self.subTest(action=action):
+                with self.assertRaises(HTTPException) as refused:
+                    await self.capture_start_admission("source", agent_server.TurnRequest(
+                        prompt=prompt, chat_references=[reference],
+                        client_capabilities=[agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY],
+                    ))
+                self.assertEqual(refused.exception.status_code, 409)
+                self.assertIn("require an updated client", str(refused.exception.detail))
+                _issued, events = await self.capture_start_admission("source", agent_server.TurnRequest(
+                    prompt=prompt, chat_references=[reference],
+                    client_capabilities=[agent_server.AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY],
+                ))
+                started = next(payload for event_type, payload in events if event_type == "turn_started")
+                self.assertEqual(
+                    [(ref["action"], ref.get("grant_intent")) for ref in started["chat_references"]],
+                    [("route", True)],
+                )
+
+    async def test_a_queued_one_use_request_closes_its_exchange_at_promotion(self) -> None:
+        # A message queued before route @s replaced one-use actions still
+        # carries the exchange its request/reply @ registered.
+        prompt = "@Target ask for status"
+        exchange_id = "exchange_" + "a" * 32
+        await agent_server.CROSS_CHAT.create_exchange_obligation(
+            exchange_id=exchange_id, requester_session_id="source",
+            authorization_source_run_id="queued_one_use", responder_session_id="target",
+            max_legs=agent_server.CROSS_CHAT_EXCHANGE_DEFAULT_LEGS, expires_at="2099-01-01T00:00:00Z",
+        )
+        _issued, events = await self.capture_start_admission(
+            "source",
+            agent_server.TurnRequest(
+                prompt=prompt,
+                chat_references=[agent_server.ChatReference(
+                    session_id="target", display_title_snapshot="Target", source_text_start=0,
+                    source_text_end=len("@Target"), action="request_reply",
+                )],
+                client_capabilities=[agent_server.AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY,
+                                     agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY],
+            ),
+            queued_id="queued_one_use",
+            accepted_exchange_ids=[exchange_id],
+            accepted_provider_route_snapshot=[],
+        )
+        exchange = await agent_server.CROSS_CHAT.get_exchange(exchange_id)
+        self.assertEqual((exchange["status"], exchange["error_code"]), ("failed", "exchange_not_sent"))
+        started = next(payload for event_type, payload in events if event_type == "turn_started")
+        self.assertEqual(started["cross_chat_exchange_ids"], [])
+        self.assertEqual(started["chat_references"], [])
+
     async def test_a_chat_on_another_server_is_a_chip_once_the_hub_paired_it(self) -> None:
         remote = {"route_id": "route_" + "e" * 32, "pair_id": "pair_" + "e" * 32, "session_id": "source",
                   "peer_server_identity": "server-b-identity", "peer_server_name": "gb300",

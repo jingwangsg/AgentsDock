@@ -203,27 +203,34 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(admitted)
         return {"queued": False}
 
-    @staticmethod
-    def direct_grant_handle(
-        authority_path: Path,
-        *,
-        target_session_id: str = "target",
-        action: str = "instruction",
-    ) -> str:
+    async def issue_route_capability(
+        self,
+        run_id: str,
+        actions: list[str],
+    ) -> tuple[dict, str, Request]:
+        route = {
+            "route_id": "route_" + "d" * 32, "revision": "rev_" + "d" * 32, "alias": "target",
+            "target_session_id": "target", "actions": actions,
+            "created_at": "2026-08-21T00:00:00Z", "updated_at": "2026-08-21T00:00:00Z",
+        }
+        agent_server.STORE.sessions["source"]["provider_cross_chat_routes"] = [route]
+        agent_server.CURRENT_TURNS["source"] = {"run_id": run_id}
+        authority_path = await agent_server.issue_cross_chat_capability(
+            "source",
+            run_id,
+            [],
+            actions={"agent_cross_chat_routes"},
+            provider_route_snapshot=[route],
+        )
         token = json.loads(authority_path.read_text())["provider_capability"]
-        token_hash = agent_server.hashlib.sha256(token.encode()).hexdigest()
-        capability = agent_server.CROSS_CHAT_CAPABILITIES[token_hash]
-        handles = [
-            grant_id
-            for grant_id, grant in capability["provider_direct_grants"].items()
-            if grant == {
-                "target_session_id": target_session_id,
-                "action": action,
-            }
-        ]
-        if len(handles) != 1:
-            raise AssertionError("expected one exact provider direct grant")
-        return handles[0]
+        request = Request({
+            "type": "http",
+            "headers": [
+                (b"x-agentsdock-provider-capability", token.encode("utf-8"))
+            ],
+            "client": ("127.0.0.1", 1234),
+        })
+        return route, token, request
 
     async def issue_live_waiter_owner(
         self,
@@ -347,133 +354,82 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 409)
 
     async def test_capability_is_bound_and_one_use_per_route(self) -> None:
-        reference = agent_server.ChatReference(
-            session_id="target",
-            display_title_snapshot="Target",
-            source_text_start=0,
-            source_text_end=7,
-            action="instruction",
+        route, token, request = await self.issue_route_capability(
+            "run_one", ["instruction"]
         )
-        authority_path = await agent_server.issue_cross_chat_capability(
-            "source", "run_one", [reference]
-        )
-        self.assertIsNotNone(authority_path)
-        token = json.loads(authority_path.read_text())["capability"]
         self.assertNotIn(token, repr(agent_server.CROSS_CHAT_CAPABILITIES))
-        handle = self.direct_grant_handle(authority_path)
-        authority_block = agent_server.cross_chat_provider_authority_block(
-            [reference],
-            authority_path,
-            "source",
-            {"cross_chat_instruction"},
-        )
-        self.assertIn(f"handle={handle}", authority_block)
-        self.assertNotIn("target=target", authority_block)
-        second_authority = await agent_server.issue_cross_chat_capability(
-            "source", "run_two", [reference]
-        )
-        self.assertNotEqual(
-            handle,
-            self.direct_grant_handle(second_authority),
-        )
-        await agent_server.revoke_cross_chat_capability("run_two")
-        agent_server.CURRENT_TURNS = {"source": {"run_id": "run_one"}}
-        with self.assertRaises(HTTPException) as raw_target:
-            await agent_server.create_authorized_cross_chat_instruction(
-                token,
-                agent_server.CrossChatHandoffRequest(
-                    target_session_id="target",
-                    body="Raw ids are not provider grants",
-                    idempotency_key="raw-target-key",
-                ),
-            )
-        self.assertEqual(raw_target.exception.status_code, 403)
-        with self.assertRaises(HTTPException) as wrong_action:
-            await agent_server.create_authorized_cross_chat_instruction(
-                token,
-                agent_server.CrossChatHandoffRequest(
-                    target_session_id=handle,
-                    action="request_reply",
-                    body="Wrong action",
-                    idempotency_key="wrong-action-key",
-                ),
-            )
-        self.assertEqual(wrong_action.exception.status_code, 403)
-        request = agent_server.CrossChatHandoffRequest(
-            target_session_id=handle,
+        handoff = agent_server.AgentRouteHandoffRequest(
             body="Do the check",
             idempotency_key="stable-key",
         )
-        first, created = await agent_server.create_authorized_cross_chat_instruction(token, request)
-        replay, replay_created = await agent_server.create_authorized_cross_chat_instruction(token, request)
-        self.assertTrue(created)
-        self.assertFalse(replay_created)
-        self.assertEqual(first["id"], replay["id"])
-        with self.assertRaises(HTTPException) as raised:
-            await agent_server.create_authorized_cross_chat_instruction(
-                token,
-                agent_server.CrossChatHandoffRequest(
-                    target_session_id=handle,
-                    body="Different",
-                    idempotency_key="other-key",
-                ),
-            )
-        self.assertEqual(raised.exception.status_code, 403)
-        await agent_server.revoke_cross_chat_capability("run_one")
-        self.assertFalse(authority_path.exists())
-
-    async def test_direct_provider_receipt_is_minimal_and_opaque(self) -> None:
-        reference = agent_server.ChatReference(
-            session_id="target",
-            display_title_snapshot="Target",
-            source_text_start=0,
-            source_text_end=7,
-            action="instruction",
-        )
-        authority_path = await agent_server.issue_cross_chat_capability(
-            "source", "run_receipt", [reference]
-        )
-        token = json.loads(authority_path.read_text())["provider_capability"]
-        handle = self.direct_grant_handle(authority_path)
-        agent_server.CURRENT_TURNS = {
-            "source": {"run_id": "run_receipt"},
-        }
-        provider_request = Request({
-            "type": "http",
-            "headers": [
-                (b"x-agentsdock-provider-capability", token.encode("utf-8"))
-            ],
-            "client": ("127.0.0.1", 1234),
-        })
         with (
             patch.object(
                 agent_server,
-                "append_cross_chat_event_once",
-                new_callable=AsyncMock,
+                "cross_chat_target_backend_supported",
+                return_value=True,
             ),
+            patch.object(agent_server, "append_cross_chat_exchange_registered", AsyncMock()),
+            patch.object(agent_server, "append_cross_chat_exchange_leg_lifecycle", AsyncMock()),
             patch.object(
                 agent_server,
-                "submit_cross_chat_delivery",
-                new_callable=AsyncMock,
-                side_effect=lambda record: record,
+                "submit_cross_chat_exchange_leg",
+                AsyncMock(side_effect=lambda exchange, leg: (exchange, leg)),
             ),
         ):
-            response = await agent_server.submit_authorized_cross_chat_handoff(
-                agent_server.CrossChatHandoffRequest(
-                    target_session_id=handle,
-                    body="Do the check",
-                    idempotency_key="minimal-receipt-key",
-                ),
-                provider_request,
+            with self.assertRaises(HTTPException) as raw_target:
+                await agent_server.submit_provider_route_handoff(
+                    "target",
+                    agent_server.AgentRouteHandoffRequest(
+                        body="Raw ids are not routes",
+                        idempotency_key="raw-target-key",
+                    ),
+                    request,
+                )
+            self.assertEqual(raw_target.exception.status_code, 404)
+            with self.assertRaises(HTTPException) as wrong_action:
+                await agent_server.submit_provider_route_handoff(
+                    route["route_id"],
+                    agent_server.AgentRouteHandoffRequest(
+                        action="request_reply",
+                        body="Wrong action",
+                        idempotency_key="wrong-action-key",
+                    ),
+                    request,
+                )
+            self.assertEqual(wrong_action.exception.status_code, 403)
+            # A failed acceptance still holds the route for its exact request.
+            with patch.object(
+                agent_server.CROSS_CHAT,
+                "create_route_exchange_request",
+                AsyncMock(side_effect=RuntimeError("sqlite unavailable")),
+            ):
+                with self.assertRaises(RuntimeError):
+                    await agent_server.submit_provider_route_handoff(
+                        route["route_id"], handoff, request,
+                    )
+            with self.assertRaises(HTTPException) as other_key:
+                await agent_server.submit_provider_route_handoff(
+                    route["route_id"],
+                    agent_server.AgentRouteHandoffRequest(
+                        body="Different",
+                        idempotency_key="other-key",
+                    ),
+                    request,
+                )
+            self.assertEqual(other_key.exception.status_code, 403)
+            first = await agent_server.submit_provider_route_handoff(
+                route["route_id"], handoff, request,
             )
-
-        self.assertEqual(response, {
-            "ok": True,
-            "action": "instruction",
-            "accepted": True,
-        })
-        self.assertNotIn("source", json.dumps(response))
-        self.assertNotIn("target", json.dumps(response))
+            replay = await agent_server.submit_provider_route_handoff(
+                route["route_id"], handoff, request,
+            )
+        self.assertEqual(replay, first)
+        exchanges = await agent_server.CROSS_CHAT.exchanges_for_authorization_run(
+            "run_one"
+        )
+        self.assertEqual(len(exchanges), 1)
+        legs = await agent_server.CROSS_CHAT.exchange_legs(exchanges[0]["id"])
+        self.assertEqual([leg["body"] for leg in legs], ["Do the check"])
 
     async def test_direct_response_receipt_is_minimal_and_keeps_exchange(self) -> None:
         exchange, inbound = await self.create_exchange("exchange_receipt")
@@ -540,68 +496,6 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("source", json.dumps(response))
         self.assertNotIn("target", json.dumps(response))
-
-    async def test_cancelled_instruction_creation_burns_exact_route_key(self) -> None:
-        reference = agent_server.ChatReference(
-            session_id="target",
-            display_title_snapshot="Target",
-            source_text_start=0,
-            source_text_end=7,
-            action="instruction",
-        )
-        authority_path = await agent_server.issue_cross_chat_capability(
-            "source", "run_cancel", [reference]
-        )
-        token = json.loads(authority_path.read_text())["capability"]
-        handle = self.direct_grant_handle(authority_path)
-        agent_server.CURRENT_TURNS = {"source": {"run_id": "run_cancel"}}
-        entered = asyncio.Event()
-        never = asyncio.Event()
-        original_create = agent_server.CROSS_CHAT.create_instruction
-
-        async def blocked_create(**_kwargs):
-            entered.set()
-            await never.wait()
-
-        first_request = agent_server.CrossChatHandoffRequest(
-            target_session_id=handle,
-            body="Do it",
-            idempotency_key="cancel-key",
-        )
-        with patch.object(
-            agent_server.CROSS_CHAT,
-            "create_instruction",
-            side_effect=blocked_create,
-        ):
-            task = asyncio.create_task(
-                agent_server.create_authorized_cross_chat_instruction(
-                    token, first_request
-                )
-            )
-            await entered.wait()
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-            with self.assertRaises(HTTPException) as raised:
-                await agent_server.create_authorized_cross_chat_instruction(
-                    token,
-                    agent_server.CrossChatHandoffRequest(
-                        target_session_id=handle,
-                        body="Different",
-                        idempotency_key="different-key",
-                    ),
-                )
-            self.assertEqual(raised.exception.status_code, 403)
-        with patch.object(
-            agent_server.CROSS_CHAT,
-            "create_instruction",
-            wraps=original_create,
-        ):
-            record, created = await agent_server.create_authorized_cross_chat_instruction(
-                token, first_request
-            )
-        self.assertTrue(created)
-        self.assertEqual(record["body"], "Do it")
 
     async def test_final_result_obligation_becomes_ready_once(self) -> None:
         reference = agent_server.ChatReference(
@@ -675,27 +569,10 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["status"], "failed")
 
-    async def test_accepted_instruction_finishes_submission_after_request_cancel(self) -> None:
-        reference = agent_server.ChatReference(
-            session_id="target",
-            display_title_snapshot="Target",
-            source_text_start=0,
-            source_text_end=7,
-            action="instruction",
+    async def test_accepted_route_handoff_finishes_submission_after_request_cancel(self) -> None:
+        route, _token, request = await self.issue_route_capability(
+            "run_accept_cancel", ["instruction"]
         )
-        authority_path = await agent_server.issue_cross_chat_capability(
-            "source", "run_accept_cancel", [reference]
-        )
-        token = json.loads(authority_path.read_text())["capability"]
-        handle = self.direct_grant_handle(authority_path)
-        agent_server.CURRENT_TURNS = {"source": {"run_id": "run_accept_cancel"}}
-        request = Request({
-            "type": "http",
-            "headers": [
-                (b"x-agentsdock-provider-capability", token.encode("utf-8"))
-            ],
-            "client": ("127.0.0.1", 1234),
-        })
         entered = asyncio.Event()
         release = asyncio.Event()
 
@@ -703,20 +580,28 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             entered.set()
             await release.wait()
 
-        submit = AsyncMock(side_effect=lambda record: record)
+        submit = AsyncMock(side_effect=lambda exchange, leg: (exchange, leg))
         with patch.object(
             agent_server,
-            "append_cross_chat_event_once",
+            "cross_chat_target_backend_supported",
+            return_value=True,
+        ), patch.object(
+            agent_server,
+            "append_cross_chat_exchange_registered",
             side_effect=delayed_registered,
         ), patch.object(
             agent_server,
-            "submit_cross_chat_delivery",
+            "append_cross_chat_exchange_leg_lifecycle",
+            new_callable=AsyncMock,
+        ), patch.object(
+            agent_server,
+            "submit_cross_chat_exchange_leg",
             submit,
         ):
             task = asyncio.create_task(
-                agent_server.submit_authorized_cross_chat_handoff(
-                    agent_server.CrossChatHandoffRequest(
-                        target_session_id=handle,
+                agent_server.submit_provider_route_handoff(
+                    route["route_id"],
+                    agent_server.AgentRouteHandoffRequest(
                         body="do it",
                         idempotency_key="accept-cancel-key",
                     ),
@@ -732,30 +617,13 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 await task
         submit.assert_awaited_once()
 
-    async def test_request_cancel_during_instruction_create_still_submits_once(self) -> None:
-        reference = agent_server.ChatReference(
-            session_id="target",
-            display_title_snapshot="Target",
-            source_text_start=0,
-            source_text_end=7,
-            action="instruction",
+    async def test_request_cancel_during_route_exchange_create_still_submits_once(self) -> None:
+        route, _token, request = await self.issue_route_capability(
+            "run_create_cancel", ["instruction"]
         )
-        authority_path = await agent_server.issue_cross_chat_capability(
-            "source", "run_create_cancel", [reference]
-        )
-        token = json.loads(authority_path.read_text())["capability"]
-        handle = self.direct_grant_handle(authority_path)
-        agent_server.CURRENT_TURNS = {"source": {"run_id": "run_create_cancel"}}
-        request = Request({
-            "type": "http",
-            "headers": [
-                (b"x-agentsdock-provider-capability", token.encode("utf-8"))
-            ],
-            "client": ("127.0.0.1", 1234),
-        })
         entered = asyncio.Event()
         release = asyncio.Event()
-        original_create = agent_server.CROSS_CHAT.create_instruction
+        original_create = agent_server.CROSS_CHAT.create_route_exchange_request
 
         async def delayed_create(**kwargs):
             entered.set()
@@ -764,28 +632,36 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
 
         submitted = asyncio.Event()
 
-        async def record_submit(record):
+        async def record_submit(exchange, leg):
             submitted.set()
-            return record
+            return exchange, leg
 
         submit = AsyncMock(side_effect=record_submit)
         with patch.object(
+            agent_server,
+            "cross_chat_target_backend_supported",
+            return_value=True,
+        ), patch.object(
             agent_server.CROSS_CHAT,
-            "create_instruction",
+            "create_route_exchange_request",
             side_effect=delayed_create,
         ), patch.object(
             agent_server,
-            "append_cross_chat_event_once",
+            "append_cross_chat_exchange_registered",
             new_callable=AsyncMock,
         ), patch.object(
             agent_server,
-            "submit_cross_chat_delivery",
+            "append_cross_chat_exchange_leg_lifecycle",
+            new_callable=AsyncMock,
+        ), patch.object(
+            agent_server,
+            "submit_cross_chat_exchange_leg",
             submit,
         ):
             task = asyncio.create_task(
-                agent_server.submit_authorized_cross_chat_handoff(
-                    agent_server.CrossChatHandoffRequest(
-                        target_session_id=handle,
+                agent_server.submit_provider_route_handoff(
+                    route["route_id"],
+                    agent_server.AgentRouteHandoffRequest(
                         body="do it after cancel",
                         idempotency_key="create-cancel-key",
                     ),
@@ -801,8 +677,10 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 await task
             self.assertTrue(submitted.is_set())
         submit.assert_awaited_once()
-        records = await agent_server.CROSS_CHAT.for_source_run("run_create_cancel")
-        self.assertEqual(len(records), 1)
+        exchanges = await agent_server.CROSS_CHAT.exchanges_for_authorization_run(
+            "run_create_cancel"
+        )
+        self.assertEqual(len(exchanges), 1)
 
     async def test_request_cancel_waits_for_exchange_response_acceptance(self) -> None:
         request = Request({
@@ -960,7 +838,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             display_title_snapshot="Target",
             source_text_start=start,
             source_text_end=end,
-            action="instruction",
+            action="route",
         )
         with patch.object(
             agent_server,
@@ -1016,7 +894,9 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 action="direct_message",
             )
 
-    def test_request_reply_requires_additive_v2_client_capability(self) -> None:
+    def test_one_use_actions_are_refused_and_a_job_request_reply_route_needs_v2(self) -> None:
+        # One-use @ actions were replaced by route @ (agents reach chats only
+        # with chats list); a job's request/reply route still needs the v2 client.
         prompt = "ask @Target"
         instruction = agent_server.ChatReference(
             session_id="target",
@@ -1025,7 +905,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             source_text_end=11,
             action="instruction",
         )
-        request_reply = instruction.model_copy(update={"action": "request_reply"})
+        job_request_reply = instruction.model_copy(update={"action": "route", "route_action": "request_reply"})
         with (
             patch.object(
                 agent_server,
@@ -1038,20 +918,21 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 agent_server.CLAUDE_TRANSPORT_AGENT_SDK,
             ),
         ):
-            self.assertEqual(
-                agent_server.validate_chat_references(
-                    "source",
-                    prompt,
-                    [instruction],
-                    [agent_server.CROSS_CHAT_HANDOFFS_V1_CLIENT_CAPABILITY],
-                ),
-                [instruction],
-            )
+            for action in ("instruction", "request_reply"):
+                with self.subTest(action=action), self.assertRaises(HTTPException) as refused:
+                    agent_server.validate_chat_references(
+                        "source",
+                        prompt,
+                        [instruction.model_copy(update={"action": action})],
+                        [agent_server.CROSS_CHAT_HANDOFFS_V1_CLIENT_CAPABILITY,
+                         agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY],
+                    )
+                self.assertEqual(refused.exception.status_code, 409)
             with self.assertRaises(HTTPException) as raised:
                 agent_server.validate_chat_references(
                     "source",
                     prompt,
-                    [request_reply],
+                    [job_request_reply],
                     [agent_server.CROSS_CHAT_HANDOFFS_V1_CLIENT_CAPABILITY],
                 )
             self.assertEqual(raised.exception.status_code, 400)
@@ -1060,16 +941,16 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 agent_server.validate_chat_references(
                     "source",
                     prompt,
-                    [request_reply],
+                    [job_request_reply],
                     [
                         agent_server.CROSS_CHAT_HANDOFFS_V1_CLIENT_CAPABILITY,
                         agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY,
                     ],
                 ),
-                [request_reply],
+                [job_request_reply],
             )
 
-    async def test_queue_edit_requires_and_durably_preserves_v2_capability(self) -> None:
+    async def test_queue_edit_cannot_add_a_one_use_action(self) -> None:
         prompt = "ask @Target"
         instruction = {
             "session_id": "target",
@@ -1083,7 +964,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         original_event = {
             "type": "turn_queued",
-            "queued_id": "queued_v2_upgrade",
+            "queued_id": "queued_one_use",
             "prompt": prompt,
             "request_prompt": prompt,
             "chat_references": [instruction],
@@ -1115,71 +996,18 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException) as raised:
                 await agent_server.update_queued_turn(
                     "source",
-                    "queued_v2_upgrade",
-                    agent_server.UpdateQueuedTurnRequest(
-                        chat_references=[request_reply],
-                    ),
-                )
-            self.assertEqual(raised.exception.status_code, 400)
-            self.assertEqual(item["chat_references"][0]["action"], "instruction")
-
-            response = await agent_server.update_queued_turn(
-                "source",
-                "queued_v2_upgrade",
-                agent_server.UpdateQueuedTurnRequest(
-                    client_capabilities=[
-                        agent_server.CROSS_CHAT_HANDOFFS_V1_CLIENT_CAPABILITY,
-                        agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY,
-                    ],
-                    chat_references=[request_reply],
-                ),
-            )
-            updated = response["item"]
-            with self.assertRaises(HTTPException) as downgrade:
-                await agent_server.update_queued_turn(
-                    "source",
-                    "queued_v2_upgrade",
+                    "queued_one_use",
                     agent_server.UpdateQueuedTurnRequest(
                         client_capabilities=[
                             agent_server.CROSS_CHAT_HANDOFFS_V1_CLIENT_CAPABILITY,
+                            agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY,
                         ],
+                        chat_references=[request_reply],
                     ),
                 )
-            self.assertEqual(downgrade.exception.status_code, 400)
-        self.assertEqual(updated["chat_references"][0]["action"], "request_reply")
-        self.assertIn(
-            agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY,
-            updated["client_capabilities"],
-        )
-        update_payload = append.await_args.args[2]
-        self.assertIn(
-            agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY,
-            update_payload["client_capabilities"],
-        )
-
-        event_file = self.root / "queued-v2-recovery.jsonl"
-        event_file.write_text(
-            json.dumps(original_event) + "\n"
-            + json.dumps({"type": "turn_queue_updated", **update_payload}) + "\n"
-        )
-        with patch.object(agent_server, "events_path", return_value=event_file):
-            recovered = agent_server.scan_queued_turns_from_events([
-                ("source", agent_server.STORE.sessions["source"]),
-            ])["source"][0]
-        self.assertIn(
-            agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY,
-            recovered["client_capabilities"],
-        )
-
-        agent_server.QUEUED_TURNS = {"source": deque([recovered])}
-        start = AsyncMock(return_value={"ok": True})
-        with patch.object(agent_server, "_start_turn_locked", start):
-            await agent_server.start_next_queued_turn("source")
-        promoted_request = start.await_args.args[1]
-        self.assertIn(
-            agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY,
-            promoted_request.client_capabilities,
-        )
+            self.assertEqual(raised.exception.status_code, 409)
+            self.assertEqual(item["chat_references"][0]["action"], "instruction")
+            append.assert_not_awaited()
 
     def test_capability_ttl_supports_overnight_live_turns(self) -> None:
         self.assertGreaterEqual(agent_server.CROSS_CHAT_CAPABILITY_TTL_SECONDS, 7 * 24 * 60 * 60)
@@ -5299,6 +5127,8 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             capability = agent_server.cross_chat_handoffs_capability()
         self.assertTrue(capability["available"])
         self.assertEqual(capability["version"], 13)
+        # Installed clients label a route @ "Send + Ask" when this lists
+        # request_reply; admission turns those chips into route @s.
         self.assertEqual(
             capability["actions"],
             [
@@ -5565,63 +5395,8 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("secure peer server=", authority_copy)
         self.assertIn("use --async-response", authority_copy)
         self.assertIn(
-            "For a secure-peer action=request_reply, add `--async-response`",
+            "`ask --target OPAQUE_HANDLE --message TEXT --async-response` for action=request_reply",
             authority_copy,
-        )
-
-    async def test_request_reply_capability_uses_exact_exchange_generation(self) -> None:
-        reference = agent_server.ChatReference(
-            session_id="target",
-            display_title_snapshot="Target",
-            source_text_start=0,
-            source_text_end=7,
-            action="request_reply",
-        )
-        old_ids = await agent_server.register_request_reply_exchanges(
-            "source", "queued_generation", [reference]
-        )
-        await agent_server.CROSS_CHAT.update_exchange(
-            old_ids[0],
-            expected={"waiting_request"},
-            status="cancelled",
-            error_code="cancelled_by_user",
-            error="edited away",
-        )
-        new_ids = await agent_server.register_request_reply_exchanges(
-            "source", "run_generation", [reference]
-        )
-        self.assertNotEqual(old_ids, new_ids)
-        authority_path = await agent_server.issue_cross_chat_capability(
-            "source",
-            "run_generation",
-            [reference],
-            exchange_request_grants={"target": new_ids[0]},
-        )
-        token = json.loads(authority_path.read_text())["provider_capability"]
-        handle = self.direct_grant_handle(
-            authority_path,
-            action="request_reply",
-        )
-        agent_server.CURRENT_TURNS = {"source": {"run_id": "run_generation"}}
-        request = agent_server.CrossChatHandoffRequest(
-            target_session_id=handle,
-            action="request_reply",
-            body="Please answer",
-            idempotency_key="exact-generation-key",
-        )
-        first, created = await agent_server.create_authorized_cross_chat_instruction(
-            token, request
-        )
-        replay, replay_created = await agent_server.create_authorized_cross_chat_instruction(
-            token, request
-        )
-        self.assertTrue(created)
-        self.assertFalse(replay_created)
-        self.assertEqual(first["exchange"]["id"], new_ids[0])
-        self.assertEqual(replay["leg"]["id"], first["leg"]["id"])
-        self.assertEqual(
-            (await agent_server.CROSS_CHAT.get_exchange(old_ids[0]))["status"],
-            "cancelled",
         )
 
     async def test_exchange_explicit_and_automatic_response_cas_both_orderings(self) -> None:
@@ -5685,42 +5460,10 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.detail, "response_already_committed")
 
     async def test_request_reply_normal_pipeline_auto_returns_then_completes(self) -> None:
-        reference = agent_server.ChatReference(
-            session_id="target",
-            display_title_snapshot="Target",
-            source_text_start=0,
-            source_text_end=7,
-            action="request_reply",
+        exchange, inbound = await self.create_exchange(
+            "exchange_pipeline",
+            source_run_id="run_pipeline_source",
         )
-        exchange_ids = await agent_server.register_request_reply_exchanges(
-            "source", "run_pipeline_source", [reference]
-        )
-        authority_path = await agent_server.issue_cross_chat_capability(
-            "source",
-            "run_pipeline_source",
-            [reference],
-            exchange_request_grants={"target": exchange_ids[0]},
-        )
-        token = json.loads(authority_path.read_text())["provider_capability"]
-        handle = self.direct_grant_handle(
-            authority_path,
-            action="request_reply",
-        )
-        agent_server.CURRENT_TURNS = {
-            "source": {"run_id": "run_pipeline_source"},
-        }
-        created, was_created = await agent_server.create_authorized_cross_chat_instruction(
-            token,
-            agent_server.CrossChatHandoffRequest(
-                target_session_id=handle,
-                action="request_reply",
-                body="Please investigate the failure",
-                idempotency_key="pipeline-initial-request",
-            ),
-        )
-        self.assertTrue(was_created)
-        exchange = created["exchange"]
-        inbound = created["leg"]
         await agent_server.CROSS_CHAT.update_exchange_leg(
             inbound["id"],
             expected={"registered"},
@@ -5781,16 +5524,18 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(legs[1]["response_state"], "closed")
 
     async def test_unsent_request_reply_placeholder_fails_visibly_on_source_terminal(self) -> None:
-        reference = agent_server.ChatReference(
-            session_id="target",
-            display_title_snapshot="Target",
-            source_text_start=0,
-            source_text_end=7,
-            action="request_reply",
+        # A message queued before route @s replaced one-use actions still
+        # carries the exchange its request/reply @ registered.
+        record = await agent_server.CROSS_CHAT.create_exchange_obligation(
+            exchange_id="exchange_" + "c" * 32,
+            requester_session_id="source",
+            authorization_source_run_id="run_unsent_request",
+            responder_session_id="target",
+            max_legs=agent_server.CROSS_CHAT_EXCHANGE_DEFAULT_LEGS,
+            expires_at="2099-01-01T00:00:00+00:00",
+            source_user_instruction="",
         )
-        exchange_ids = await agent_server.register_request_reply_exchanges(
-            "source", "run_unsent_request", [reference]
-        )
+        exchange_ids = [str(record["id"])]
         lifecycle = AsyncMock()
         with patch.object(
             agent_server,
@@ -6014,33 +5759,12 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         durable = await agent_server.CROSS_CHAT.get_exchange(exchange["id"])
         self.assertEqual(durable["status"], "failed")
 
-    async def test_live_ask_and_followup_reuse_provider_calls_without_return_turns(self) -> None:
-        reference = agent_server.ChatReference(
-            session_id="target",
-            display_title_snapshot="Target",
-            source_text_start=0,
-            source_text_end=7,
-            action="request_reply",
+    async def test_live_route_ask_reuses_provider_call_without_return_turn(self) -> None:
+        # A route Ask has two legs, so the target answers once, terminally; a
+        # follow-up question is refused with 409 budget_exhausted.
+        route, source_token, source_request = await self.issue_route_capability(
+            "run_live_source", ["request_reply"]
         )
-        exchange_ids = await agent_server.register_request_reply_exchanges(
-            "source",
-            "run_live_source",
-            [reference],
-        )
-        source_authority = await agent_server.issue_cross_chat_capability(
-            "source",
-            "run_live_source",
-            [reference],
-            exchange_request_grants={"target": exchange_ids[0]},
-        )
-        source_token = json.loads(source_authority.read_text())["provider_capability"]
-        source_handle = self.direct_grant_handle(
-            source_authority,
-            action="request_reply",
-        )
-        agent_server.CURRENT_TURNS = {
-            "source": {"run_id": "run_live_source"},
-        }
 
         def provider_request(token: str) -> Request:
             return Request({
@@ -6089,19 +5813,33 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
 
         submit = AsyncMock(side_effect=start_initial)
         lifecycle = AsyncMock()
-        create_authorized = agent_server.create_authorized_cross_chat_instruction
+        create_route_exchange_request = (
+            agent_server.CROSS_CHAT.create_route_exchange_request
+        )
 
-        async def delayed_create_authorized(*args, **kwargs):
+        async def delayed_create(**kwargs):
             # Reproduce a slow SQLite/worker handoff deterministically. The old
             # 100 x sleep(0) poll completed before this delay on Linux CI.
             await asyncio.sleep(0.02)
-            return await create_authorized(*args, **kwargs)
+            return await create_route_exchange_request(**kwargs)
 
+        ask = agent_server.AgentRouteHandoffRequest(
+            action="request_reply",
+            body="First question",
+            idempotency_key="live-initial-request",
+            wait_for_response=True,
+            response_timeout_seconds=10,
+        )
         with (
             patch.object(
                 agent_server,
-                "create_authorized_cross_chat_instruction",
-                side_effect=delayed_create_authorized,
+                "cross_chat_target_backend_supported",
+                return_value=True,
+            ),
+            patch.object(
+                agent_server.CROSS_CHAT,
+                "create_route_exchange_request",
+                side_effect=delayed_create,
             ),
             patch.object(agent_server, "append_cross_chat_exchange_registered", lifecycle),
             patch.object(agent_server, "append_cross_chat_exchange_leg_lifecycle", lifecycle),
@@ -6111,16 +5849,8 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         ):
             ask_task = asyncio.create_task(
                 live_provider_call(
-                    agent_server.submit_authorized_cross_chat_handoff(
-                        agent_server.CrossChatHandoffRequest(
-                            target_session_id=source_handle,
-                            action="request_reply",
-                            body="First question",
-                            idempotency_key="live-initial-request",
-                            wait_for_response=True,
-                            response_timeout_seconds=10,
-                        ),
-                        provider_request(source_token),
+                    agent_server.submit_provider_route_handoff(
+                        route["route_id"], ask, source_request,
                     ),
                     source_token,
                 )
@@ -6130,15 +5860,16 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 timeout=5,
             )
             self.assertEqual(len(agent_server.CROSS_CHAT_LIVE_RESPONSE_WAITERS), 1)
-            exchange = await agent_server.CROSS_CHAT.get_exchange(exchange_ids[0])
-            inbound = (await agent_server.CROSS_CHAT.exchange_legs(exchange_ids[0]))[0]
+            [(exchange_id, inbound_leg_id)] = list(
+                agent_server.CROSS_CHAT_LIVE_RESPONSE_WAITERS
+            )
 
             target_authority = await agent_server.issue_cross_chat_capability(
                 "target",
                 "run_live_target",
                 [],
                 actions={"cross_chat_response"},
-                exchange_response_grants={(exchange_ids[0], inbound["id"])},
+                exchange_response_grants={(exchange_id, inbound_leg_id)},
             )
             target_token = json.loads(target_authority.read_text())[
                 "provider_capability"
@@ -6146,38 +5877,30 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             agent_server.CURRENT_TURNS["target"] = {
                 "run_id": "run_live_target",
             }
-            target_response_task = asyncio.create_task(
-                live_provider_call(
-                    agent_server.submit_authorized_cross_chat_exchange_response(
-                        exchange_ids[0],
-                        agent_server.CrossChatExchangeResponseRequest(
-                            inbound_leg_id=inbound["id"],
-                            body="First answer and a question",
-                            request_response=True,
-                            idempotency_key="live-target-followup",
-                            wait_for_response=True,
-                            response_timeout_seconds=10,
-                        ),
-                        provider_request(target_token),
-                    ),
-                    target_token,
+            answer = agent_server.CrossChatExchangeResponseRequest(
+                inbound_leg_id=inbound_leg_id,
+                body="Final answer",
+                request_response=False,
+                idempotency_key="live-target-terminal",
+            )
+            terminal_receipt = (
+                await agent_server.submit_authorized_cross_chat_exchange_response(
+                    exchange_id,
+                    answer,
+                    provider_request(target_token),
                 )
             )
+            self.assertEqual(
+                terminal_receipt,
+                {"ok": True, "action": "response", "accepted": True},
+            )
             first_result = await asyncio.wait_for(ask_task, timeout=2)
-            self.assertEqual(first_result["body"], "First answer and a question")
-            self.assertTrue(first_result["request_response"])
-            self.assertFalse(target_response_task.done())
+            self.assertEqual(first_result["route_id"], route["route_id"])
+            self.assertEqual(first_result["body"], "Final answer")
+            self.assertFalse(first_result["request_response"])
             replayed_first_result = await live_provider_call(
-                agent_server.submit_authorized_cross_chat_handoff(
-                    agent_server.CrossChatHandoffRequest(
-                        target_session_id=source_handle,
-                        action="request_reply",
-                        body="First question",
-                        idempotency_key="live-initial-request",
-                        wait_for_response=True,
-                        response_timeout_seconds=10,
-                    ),
-                    provider_request(source_token),
+                agent_server.submit_provider_route_handoff(
+                    route["route_id"], ask, source_request,
                 ),
                 source_token,
             )
@@ -6185,40 +5908,12 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 replayed_first_result["inbound_leg_id"],
                 first_result["inbound_leg_id"],
             )
-            self.assertEqual(
-                replayed_first_result["body"],
-                "First answer and a question",
-            )
-
-            terminal_receipt = (
-                await agent_server.submit_authorized_cross_chat_exchange_response(
-                    exchange_ids[0],
-                    agent_server.CrossChatExchangeResponseRequest(
-                        inbound_leg_id=first_result["inbound_leg_id"],
-                        body="Final answer",
-                        request_response=False,
-                        idempotency_key="live-source-terminal",
-                    ),
-                    provider_request(source_token),
-                )
-            )
-            self.assertEqual(
-                terminal_receipt,
-                {"ok": True, "action": "response", "accepted": True},
-            )
-            second_result = await asyncio.wait_for(target_response_task, timeout=2)
-            self.assertEqual(second_result["body"], "Final answer")
-            self.assertFalse(second_result["request_response"])
+            self.assertEqual(replayed_first_result["body"], "Final answer")
             retry_receipt = (
                 await agent_server.submit_authorized_cross_chat_exchange_response(
-                    exchange_ids[0],
-                    agent_server.CrossChatExchangeResponseRequest(
-                        inbound_leg_id=first_result["inbound_leg_id"],
-                        body="Final answer",
-                        request_response=False,
-                        idempotency_key="live-source-terminal",
-                    ),
-                    provider_request(source_token),
+                    exchange_id,
+                    answer,
+                    provider_request(target_token),
                 )
             )
             self.assertEqual(retry_receipt, terminal_receipt)
@@ -6234,11 +5929,11 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         await agent_server.revoke_cross_chat_capability("run_live_source")
         await agent_server.revoke_cross_chat_capability("run_live_target")
         self.assertEqual(agent_server.CROSS_CHAT_LIVE_RESPONSE_WAITERS, {})
-        durable = await agent_server.CROSS_CHAT.get_exchange(exchange_ids[0])
+        durable = await agent_server.CROSS_CHAT.get_exchange(exchange_id)
         self.assertEqual(durable["status"], "completed")
-        legs = await agent_server.CROSS_CHAT.exchange_legs(exchange_ids[0])
-        self.assertEqual(len(legs), 3)
-        self.assertEqual([leg["status"] for leg in legs[1:]], ["delivered", "delivered"])
+        legs = await agent_server.CROSS_CHAT.exchange_legs(exchange_id)
+        self.assertEqual(len(legs), 2)
+        self.assertEqual(legs[1]["status"], "delivered")
 
     async def test_live_automatic_answer_completes_waiter_without_return_turn(self) -> None:
         source_token = await self.issue_live_waiter_owner(
@@ -6808,6 +6503,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(changed_payload.exception.status_code, 409)
 
     async def test_exact_live_handoff_post_replay_returns_deferred_receipt(self) -> None:
+        route_id = "route_" + "a" * 32
         exchange = {
             "id": "exchange_deferred_post_replay",
             "status": "active",
@@ -6821,6 +6517,14 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             "source_session_id": "source",
             "source_run_id": "run_deferred_post_replay",
         }
+        reservation = {
+            "exchange_id": exchange["id"],
+            "leg_id": leg["id"],
+            "source_session_id": "source",
+            "source_run_id": "run_deferred_post_replay",
+            "target_session_id": "target",
+            "expires_at": "2099-01-01T00:00:00Z",
+        }
         request = Request({
             "type": "http",
             "headers": [(b"x-agentsdock-provider-capability", b"capability")],
@@ -6829,16 +6533,26 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(
                 agent_server,
-                "create_authorized_cross_chat_instruction",
-                AsyncMock(return_value=({"exchange": exchange, "leg": leg}, False)),
+                "provider_route_capability_source",
+                AsyncMock(return_value="source"),
+            ),
+            patch.object(
+                agent_server,
+                "reserve_provider_route_handoff",
+                AsyncMock(return_value=(reservation, True)),
+            ),
+            patch.object(
+                agent_server.CROSS_CHAT,
+                "create_route_exchange_request",
+                AsyncMock(return_value=(exchange, leg, False)),
             ),
             patch.object(agent_server, "append_cross_chat_exchange_registered", AsyncMock()),
             patch.object(agent_server, "append_cross_chat_exchange_leg_lifecycle", AsyncMock()),
             patch.object(agent_server, "submit_cross_chat_exchange_leg", AsyncMock()) as submit,
         ):
-            receipt = await agent_server.submit_authorized_cross_chat_handoff(
-                agent_server.CrossChatHandoffRequest(
-                    target_session_id="grant_" + "a" * 64,
+            receipt = await agent_server.submit_provider_route_handoff(
+                route_id,
+                agent_server.AgentRouteHandoffRequest(
                     action="request_reply",
                     body="Replay the exact question",
                     idempotency_key="deferred-post-replay-key",
@@ -6852,136 +6566,6 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(receipt["deferred"])
         self.assertEqual(receipt["delivery"], "asynchronous")
         submit.assert_not_awaited()
-
-    async def test_direct_live_503_preserves_waiter_and_exact_replay(self) -> None:
-        token = await self.issue_live_waiter_owner(
-            "source",
-            "run_direct_live_503",
-        )
-        await agent_server.CROSS_CHAT.create_exchange_obligation(
-            exchange_id="exchange_direct_live_503",
-            requester_session_id="source",
-            authorization_source_run_id="run_direct_live_503",
-            responder_session_id="target",
-            max_legs=6,
-            expires_at="2099-01-01T00:00:00Z",
-        )
-        exchange, leg, _created = (
-            await agent_server.CROSS_CHAT.create_initial_exchange_leg(
-                exchange_id="exchange_direct_live_503",
-                source_session_id="source",
-                source_run_id="run_direct_live_503",
-                target_session_id="target",
-                body="Retry this direct live request",
-                idempotency_key="direct-live-503-key",
-                live_response_lease=True,
-            )
-        )
-        request = Request({
-            "type": "http",
-            "headers": [
-                (b"x-agentsdock-provider-capability", token.encode()),
-            ],
-            "client": ("127.0.0.1", 1234),
-        })
-        captured_waiters = []
-        original_register = (
-            agent_server.register_or_replay_cross_chat_live_waiter_locked
-        )
-
-        async def replay_create(*_args, **_kwargs):
-            return ({
-                "exchange": await agent_server.CROSS_CHAT.get_exchange(
-                    exchange["id"]
-                ),
-                "leg": await agent_server.CROSS_CHAT.get_exchange_leg(leg["id"]),
-            }, False)
-
-        async def capture_waiter(*args, **kwargs):
-            waiter = await original_register(*args, **kwargs)
-            captured_waiters.append(waiter)
-            return waiter
-
-        unavailable = HTTPException(
-            status_code=503,
-            detail="target admission is temporarily unavailable",
-        )
-        with (
-            patch.object(
-                agent_server,
-                "create_authorized_cross_chat_instruction",
-                side_effect=replay_create,
-            ),
-            patch.object(
-                agent_server,
-                "register_or_replay_cross_chat_live_waiter_locked",
-                side_effect=capture_waiter,
-            ),
-            patch.object(
-                agent_server,
-                "append_cross_chat_exchange_registered",
-                AsyncMock(),
-            ),
-            patch.object(
-                agent_server,
-                "append_cross_chat_exchange_leg_lifecycle",
-                AsyncMock(),
-            ),
-            patch.object(
-                agent_server,
-                "submit_cross_chat_exchange_leg",
-                AsyncMock(side_effect=unavailable),
-            ) as submit,
-            patch.object(
-                agent_server,
-                "schedule_cross_chat_exchange_leg_retry",
-                Mock(),
-            ) as schedule,
-        ):
-            req = agent_server.CrossChatHandoffRequest(
-                target_session_id="grant_" + "a" * 64,
-                action="request_reply",
-                body="Retry this direct live request",
-                idempotency_key="direct-live-503-key",
-                wait_for_response=True,
-                response_timeout_seconds=75,
-            )
-            first = await agent_server.submit_authorized_cross_chat_handoff(
-                req,
-                request,
-            )
-            replay = await agent_server.submit_authorized_cross_chat_handoff(
-                req,
-                request,
-            )
-
-        self.assertEqual(first, replay)
-        self.assertNotIn("deferred", first)
-        self.assertEqual(first["exchange_id"], exchange["id"])
-        self.assertEqual(first["inbound_leg_id"], leg["id"])
-        self.assertEqual(
-            first["live_response_lease_id"],
-            replay["live_response_lease_id"],
-        )
-        self.assertEqual(submit.await_count, 2)
-        self.assertEqual(schedule.call_count, 2)
-        self.assertEqual(len(captured_waiters), 2)
-        self.assertIs(captured_waiters[0], captured_waiters[1])
-        self.assertFalse(captured_waiters[0]["future"].done())
-        self.assertIs(
-            agent_server.CROSS_CHAT_LIVE_RESPONSE_WAITERS[
-                (exchange["id"], leg["id"])
-            ],
-            captured_waiters[0],
-        )
-        durable = await agent_server.CROSS_CHAT.get_exchange(exchange["id"])
-        self.assertEqual(durable["status"], "active")
-        self.assertTrue(bool(durable["live_response_lease"]))
-        self.assertTrue(bool(durable["live_response_requested"]))
-        self.assertEqual(
-            len(await agent_server.CROSS_CHAT.exchange_legs(exchange["id"])),
-            1,
-        )
 
     async def test_route_live_503_preserves_waiter_and_exact_replay(self) -> None:
         token = await self.issue_live_waiter_owner(
@@ -7077,6 +6661,8 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first, replay)
         self.assertEqual(first["route_id"], route_id)
         self.assertNotIn("deferred", first)
+        self.assertEqual(first["exchange_id"], reservation["exchange_id"])
+        self.assertEqual(first["inbound_leg_id"], reservation["leg_id"])
         self.assertEqual(
             first["live_response_lease_id"],
             replay["live_response_lease_id"],
@@ -7097,35 +6683,27 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(durable["status"], "active")
         self.assertTrue(bool(durable["live_response_lease"]))
+        self.assertTrue(bool(durable["live_response_requested"]))
         self.assertEqual(
             len(await agent_server.CROSS_CHAT.exchange_legs(durable["id"])),
             1,
         )
 
-    async def test_cancelled_direct_live_post_preserves_replayable_live_leg(self) -> None:
+    async def test_cancelled_route_live_post_preserves_replayable_live_leg(self) -> None:
         token = await self.issue_live_waiter_owner(
             "source",
-            "run_direct_live_cancel",
+            "run_route_live_cancel",
         )
-        await agent_server.CROSS_CHAT.create_exchange_obligation(
-            exchange_id="exchange_direct_live_cancel",
-            requester_session_id="source",
-            authorization_source_run_id="run_direct_live_cancel",
-            responder_session_id="target",
-            max_legs=6,
-            expires_at="2099-01-01T00:00:00Z",
-        )
-        exchange, leg, _created = (
-            await agent_server.CROSS_CHAT.create_initial_exchange_leg(
-                exchange_id="exchange_direct_live_cancel",
-                source_session_id="source",
-                source_run_id="run_direct_live_cancel",
-                target_session_id="target",
-                body="Preserve this cancelled live POST",
-                idempotency_key="direct-live-cancel-key",
-                live_response_lease=True,
-            )
-        )
+        route_id = "route_" + "c" * 32
+        reservation = {
+            "exchange_id": "exchange_route_live_cancel",
+            "leg_id": "leg_route_live_cancel",
+            "source_session_id": "source",
+            "source_run_id": "run_route_live_cancel",
+            "target_session_id": "target",
+            "source_user_instruction": "Ask target and wait",
+            "expires_at": "2099-01-01T00:00:00Z",
+        }
         request = Request({
             "type": "http",
             "headers": [
@@ -7140,14 +6718,6 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             agent_server.register_or_replay_cross_chat_live_waiter_locked
         )
 
-        async def replay_create(*_args, **_kwargs):
-            return ({
-                "exchange": await agent_server.CROSS_CHAT.get_exchange(
-                    exchange["id"]
-                ),
-                "leg": await agent_server.CROSS_CHAT.get_exchange_leg(leg["id"]),
-            }, False)
-
         async def capture_waiter(*args, **kwargs):
             waiter = await original_register(*args, **kwargs)
             captured_waiters.append(waiter)
@@ -7161,8 +6731,13 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(
                 agent_server,
-                "create_authorized_cross_chat_instruction",
-                side_effect=replay_create,
+                "provider_route_capability_source",
+                AsyncMock(return_value="source"),
+            ),
+            patch.object(
+                agent_server,
+                "reserve_provider_route_handoff",
+                AsyncMock(return_value=(reservation, False)),
             ),
             patch.object(
                 agent_server,
@@ -7191,12 +6766,12 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             ) as schedule,
         ):
             task = asyncio.create_task(
-                agent_server.submit_authorized_cross_chat_handoff(
-                    agent_server.CrossChatHandoffRequest(
-                        target_session_id="grant_" + "c" * 64,
+                agent_server.submit_provider_route_handoff(
+                    route_id,
+                    agent_server.AgentRouteHandoffRequest(
                         action="request_reply",
                         body="Preserve this cancelled live POST",
-                        idempotency_key="direct-live-cancel-key",
+                        idempotency_key="route-live-cancel-key",
                         wait_for_response=True,
                         response_timeout_seconds=75,
                     ),
@@ -7213,16 +6788,20 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(captured_waiters[0]["future"].done())
         self.assertIs(
             agent_server.CROSS_CHAT_LIVE_RESPONSE_WAITERS[
-                (exchange["id"], leg["id"])
+                (reservation["exchange_id"], reservation["leg_id"])
             ],
             captured_waiters[0],
         )
-        durable = await agent_server.CROSS_CHAT.get_exchange(exchange["id"])
+        durable = await agent_server.CROSS_CHAT.get_exchange(
+            reservation["exchange_id"]
+        )
         self.assertEqual(durable["status"], "active")
         self.assertTrue(bool(durable["live_response_lease"]))
-        durable_leg = await agent_server.CROSS_CHAT.get_exchange_leg(leg["id"])
+        durable_leg = await agent_server.CROSS_CHAT.get_exchange_leg(
+            reservation["leg_id"]
+        )
         self.assertEqual(durable_leg["status"], "registered")
-        schedule.assert_called_once_with(leg["id"])
+        schedule.assert_called_once_with(reservation["leg_id"])
 
     async def test_response_timeout_is_only_a_heartbeat_and_answer_stays_live(self) -> None:
         source_token = await self.issue_live_waiter_owner(
@@ -7766,25 +7345,14 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             "source",
             "run_acceptance_waiter_gap",
         )
-        await agent_server.CROSS_CHAT.create_exchange_obligation(
-            exchange_id="exchange_acceptance_waiter_gap",
-            requester_session_id="source",
-            authorization_source_run_id="run_acceptance_waiter_gap",
-            responder_session_id="target",
-            max_legs=6,
-            expires_at="2099-01-01T00:00:00Z",
-        )
-        exchange, leg, _created = (
-            await agent_server.CROSS_CHAT.create_initial_exchange_leg(
-                exchange_id="exchange_acceptance_waiter_gap",
-                source_session_id="source",
-                source_run_id="run_acceptance_waiter_gap",
-                target_session_id="target",
-                body="Preserve this accepted request",
-                idempotency_key="acceptance-waiter-gap",
-                live_response_lease=True,
-            )
-        )
+        reservation = {
+            "exchange_id": "exchange_acceptance_waiter_gap",
+            "leg_id": "leg_acceptance_waiter_gap",
+            "source_session_id": "source",
+            "source_run_id": "run_acceptance_waiter_gap",
+            "target_session_id": "target",
+            "expires_at": "2099-01-01T00:00:00Z",
+        }
         request = Request({
             "type": "http",
             "headers": [
@@ -7792,12 +7360,16 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             ],
             "client": ("127.0.0.1", 1234),
         })
+        create_route_exchange_request = (
+            agent_server.CROSS_CHAT.create_route_exchange_request
+        )
 
-        async def accepted_then_revoked(*_args, **_kwargs):
+        async def accepted_then_revoked(**kwargs):
+            accepted = await create_route_exchange_request(**kwargs)
             await agent_server.revoke_cross_chat_capability(
                 "run_acceptance_waiter_gap"
             )
-            return {"exchange": exchange, "leg": leg}, True
+            return accepted
 
         submit = AsyncMock(side_effect=lambda current_exchange, current_leg: (
             current_exchange,
@@ -7806,7 +7378,17 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(
                 agent_server,
-                "create_authorized_cross_chat_instruction",
+                "provider_route_capability_source",
+                AsyncMock(return_value="source"),
+            ),
+            patch.object(
+                agent_server,
+                "reserve_provider_route_handoff",
+                AsyncMock(return_value=(reservation, False)),
+            ),
+            patch.object(
+                agent_server.CROSS_CHAT,
+                "create_route_exchange_request",
                 side_effect=accepted_then_revoked,
             ),
             patch.object(
@@ -7825,9 +7407,9 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 submit,
             ),
         ):
-            receipt = await agent_server.submit_authorized_cross_chat_handoff(
-                agent_server.CrossChatHandoffRequest(
-                    target_session_id="grant_" + "a" * 64,
+            receipt = await agent_server.submit_provider_route_handoff(
+                "route_" + "a" * 32,
+                agent_server.AgentRouteHandoffRequest(
                     action="request_reply",
                     body="Preserve this accepted request",
                     idempotency_key="acceptance-waiter-gap",
@@ -7838,8 +7420,12 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(receipt["deferred"])
         submit.assert_awaited_once()
-        durable = await agent_server.CROSS_CHAT.get_exchange(exchange["id"])
-        durable_leg = await agent_server.CROSS_CHAT.get_exchange_leg(leg["id"])
+        durable = await agent_server.CROSS_CHAT.get_exchange(
+            reservation["exchange_id"]
+        )
+        durable_leg = await agent_server.CROSS_CHAT.get_exchange_leg(
+            reservation["leg_id"]
+        )
         self.assertEqual(durable["status"], "active")
         self.assertIsNone(durable["error_code"])
         self.assertFalse(bool(durable["live_response_lease"]))
@@ -8266,43 +7852,34 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 },
             )
 
+        # The Ask goes over a configured route to Target, as a job's route ask does.
+        ask_route = {
+            "route_id": "route_" + "e" * 32, "revision": "rev_" + "e" * 32, "alias": "target",
+            "target_session_id": "target", "actions": ["request_reply"],
+            "created_at": "2026-08-21T00:00:00Z", "updated_at": "2026-08-21T00:00:00Z",
+        }
+        agent_server.STORE.sessions["source"]["provider_cross_chat_routes"] = [ask_route]
+
         async def issue_ask(
             source_run_id: str,
             idempotency_key: str,
-        ) -> tuple[str, str, asyncio.Task[dict]]:
+        ) -> tuple[str, asyncio.Task[dict]]:
             agent_server.CURRENT_TURNS["source"] = {
                 "run_id": source_run_id,
             }
-            reference = agent_server.ChatReference(
-                session_id="target",
-                display_title_snapshot="Target",
-                source_text_start=0,
-                source_text_end=7,
-                action="request_reply",
-            )
-            exchange_ids = await agent_server.register_request_reply_exchanges(
-                "source",
-                source_run_id,
-                [reference],
-                source_user_instruction="Ask Target to investigate.",
-            )
             authority_path = await agent_server.issue_cross_chat_capability(
                 "source",
                 source_run_id,
-                [reference],
+                [],
                 source_user_instruction="Ask Target to investigate.",
-                actions={"cross_chat_request_reply"},
-                exchange_request_grants={"target": exchange_ids[0]},
+                actions={"agent_cross_chat_routes"},
+                provider_route_snapshot=[ask_route],
             )
             self.assertIsNotNone(authority_path)
             assert authority_path is not None
             token = json.loads(authority_path.read_text())[
                 "provider_capability"
             ]
-            route_handle = self.direct_grant_handle(
-                authority_path,
-                action="request_reply",
-            )
             http_request = Request({
                 "type": "http",
                 "headers": [
@@ -8314,9 +7891,9 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 "client": ("127.0.0.1", 1234),
             })
             task = asyncio.create_task(
-                agent_server.submit_authorized_cross_chat_handoff(
-                    agent_server.CrossChatHandoffRequest(
-                        target_session_id=route_handle,
+                agent_server.submit_provider_route_handoff(
+                    ask_route["route_id"],
+                    agent_server.AgentRouteHandoffRequest(
                         action="request_reply",
                         body="Investigate the queue handoff and report back.",
                         idempotency_key=idempotency_key,
@@ -8325,7 +7902,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     http_request,
                 )
             )
-            return exchange_ids[0], token, task
+            return token, task
 
         async def begin_live_wait(
             token: str,
@@ -8489,7 +8066,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     "run_id": target_predecessor,
                 }
                 source_run = "run_newton_ask"
-                exchange_id, source_token, ask_task = await issue_ask(
+                source_token, ask_task = await issue_ask(
                     source_run,
                     "real-queue-source-turnover",
                 )
@@ -8499,6 +8076,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     message="target delivery never reached the durable queue",
                 )
                 queued_request = agent_server.QUEUED_TURNS["target"][0]
+                exchange_id = str(queued_request["cross_chat_exchange_id"])
                 request_leg_id = str(
                     queued_request["cross_chat_exchange_leg_id"]
                 )
@@ -8667,7 +8245,6 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                 # the exact fake provider owner through production stop_turn.
                 cancel_source_run = "run_newton_cancel_case"
                 (
-                    cancel_exchange_id,
                     cancel_source_token,
                     cancel_ask,
                 ) = await issue_ask(
@@ -8684,6 +8261,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
                     timeout=5,
                 )
                 pending_tasks.discard(cancel_ask)
+                cancel_exchange_id = cancel_post_receipt["exchange_id"]
                 cancel_live_wait = await begin_live_wait(
                     cancel_source_token,
                     cancel_post_receipt,
