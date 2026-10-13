@@ -1,5 +1,37 @@
 # Public development log
 
+## 2026-10-13 — Send now (⌘Enter) reaches Claude while a command runs (server)
+
+- In Claude chats, ⌘Enter during a long command did not deliver the message
+  until the command finished: the agent kept waiting on an eight-minute poll
+  and read the message only afterwards.
+- Cause: ⌘Enter posts the message and then presses Send now on it. Since
+  2026-10-09 the server joins a plain message into the running turn at once,
+  the way Enter does in Claude Code (the CLI holds it until the running tool
+  returns). Send now arrived after that, found the message already delivered
+  and did nothing more; pressed while the message was still being handed
+  over, it reported a conflict instead.
+- Send now now waits for that hand-over and asks Claude Code to deliver the
+  held message at once, through the same request the terminal's send-now key
+  uses: the running command moves to the background, keeps running, and the
+  agent answers within a few seconds. Messages joined into a turn are marked
+  as typed by a person, which that request requires; without it Claude Code
+  ends the running command instead. Enter keeps its meaning: the message
+  waits for the running command, as in Claude Code.
+- The server log records, for every message joined into a running Claude
+  turn, whether it was sent for immediate delivery and how many tool calls
+  were running, and the outcome of every Send now.
+- Verified with Claude Code 2.1.296 against an isolated server: ⌘Enter during
+  a 60 s poll, 0.7 s and 0 s after the post, moved the poll to the background
+  within 0.5 s and the reply arrived after 2.4 s (53 s before the change);
+  Enter still waited for the poll; ⌘Enter in the desktop app reached the
+  model within 5 s. Server tests for the SDK client, the runner, steering and
+  follow-ups pass. Needs a restarted hub and redeployed remotes; the desktop
+  is unchanged.
+- Not covered: Send now during a tool Claude Code cannot move to the
+  background (for example a web fetch) stops that tool, as before; not
+  exercised in this change.
+
 ## 2026-10-13 — Desktop package 127 and Android build 71 (local package and APK)
 
 - Package the entries recorded since package 126 and Android build 70: a

@@ -910,8 +910,12 @@ next step, when the running tool returns, or at once while the model only
 waits for background tasks. Nothing is interrupted and the run keeps its
 owner, authority and run id. Send now is Claude Code's Ctrl+Enter: the same
 injection, but a running tool is moved to the background so the model reads
-the message immediately. If the turn ends before the CLI has taken the
-message, the run stays open and the CLI answers it in the same run. The
+the message immediately. Send now on a message that already joined the turn
+(the desktop's ⌘Enter posts the message, then presses Send now on it) asks
+the CLI to deliver what it holds now (`interrupt` with `send_now: true`),
+only while a tool runs; otherwise the model reads it at its next step. If the
+turn ends before the CLI has taken the message, the run stays open and the
+CLI answers it in the same run. The
 timeline records `turn_steered` with `native_steer` and
 `provider_user_authored` on that run, which every consumer
 of the event log (queue recovery, rewind, history search, summaries, forks,
