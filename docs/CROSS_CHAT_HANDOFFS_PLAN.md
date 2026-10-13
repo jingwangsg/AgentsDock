@@ -303,7 +303,8 @@ Network helper does; it refuses `--attach` on legacy exchanges and one-use
   Network attachments (403);
 - a file over 512 MiB, or more than 1 GiB in one message (413); both limits
   are lowered to the server's upload limit when that is smaller;
-- a route to a chat on another server (409);
+- more than 64 MiB in one message to a chat on another server (413); the
+  hub relays those files ([CROSS_SERVER_MAIL.md](CROSS_SERVER_MAIL.md#attachments));
 - a file that cannot be copied, for example on a full disk (409).
 
 Before it stores the message, the server copies each file into the receiving
@@ -424,7 +425,7 @@ Release gates cover:
 ## Deferred Work
 
 - event-driven watches and source resumption based on watched conditions
-- explicit artifact grants; attachments to a chat on another server
+- explicit artifact grants
 - cross-server/profile federation beyond one hub's remotes (mail between a
   hub and its remotes: [CROSS_SERVER_MAIL.md](CROSS_SERVER_MAIL.md))
 - group or third-party exchange expansion

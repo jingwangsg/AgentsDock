@@ -1,5 +1,36 @@
 # Public development log
 
+## 2026-10-13 — Chat mail attachments reach chats on other servers (server and desktop)
+
+- Mail with `--attach` to a chat on another server under the same hub was
+  refused. The sending server now keeps a copy of the files until the mail is
+  delivered, the hub moves each file from the sending server to the receiving
+  one before it delivers the message, and the receiving server checks each
+  file's size and SHA-256 before it copies them into the receiving chat. One
+  message to another server carries at most 64 MiB, because hub-to-remote
+  links run at a few hundred KiB/s. An older hub never picks up such mail,
+  and a remote that predates attachments gets none: the message fails with a
+  request to update that server.
+- In the desktop, the receiving chat's Media & files no longer lists the
+  files of a message that was cancelled while it was open: when the app drops
+  a file, Media & files reloads the list from the server.
+- Verification: relay tests (transfer before delivery, a target that predates
+  attachments, a lost copy, a failed upload), server tests on the sending
+  copy, the upload endpoint and the receiving copy, desktop store and Media &
+  files tests. A hub and a registered remote, both run from this branch on
+  one Mac with the remote's tunnel replaced by a local TCP forward: a Claude
+  chat on the hub sent a 2 MiB binary and a text file to a Codex chat on the
+  remote, which reported sizes and SHA-256 equal to the originals and replied
+  with an attached file that arrived in the hub chat; the copies were gone
+  from both servers' state afterwards. In a desktop connected to the remote,
+  the Codex chat showed both files under the message and opened the text
+  file; cancelling an unread message with a file while that chat was open
+  took Media & files from three files to two. The Android app (build 70, on
+  an emulator against the hub) showed the chat without error; Android does
+  not show incoming mail text or files for any mail yet. Not exercised: a
+  real ssh tunnel, a remote on another machine, a physical Android device.
+  Availability: source only; the hub and each remote run it once updated.
+
 ## 2026-10-13 — Desktop package 126 and Android build 70 (local package and APK)
 
 - Package the entries recorded since package 125 and Android build 69: the
