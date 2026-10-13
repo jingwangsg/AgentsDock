@@ -18,4 +18,7 @@ dependencies {
   // The versions react-native-webview and React Native already ship.
   implementation 'androidx.webkit:webkit:1.14.0'
   implementation 'com.squareup.okhttp3:okhttp:4.9.2'
+
+  testImplementation 'junit:junit:4.13.2'
+  testImplementation 'com.squareup.okhttp3:mockwebserver:4.9.2'
 }

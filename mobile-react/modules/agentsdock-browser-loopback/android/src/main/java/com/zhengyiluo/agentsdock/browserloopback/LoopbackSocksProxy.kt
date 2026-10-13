@@ -72,6 +72,7 @@ class LoopbackSocksProxy(private val http: OkHttpClient) {
   }
 
   private fun serve(client: Socket) {
+    var tunnel: WebSocket? = null
     try {
       client.soTimeout = HANDSHAKE_TIMEOUT_MS
       val input = DataInputStream(client.getInputStream())
@@ -84,7 +85,7 @@ class LoopbackSocksProxy(private val http: OkHttpClient) {
       }
       val hostQuery = if (isLoopback(request.host)) "" else "?host=${URLEncoder.encode(request.host, "UTF-8")}"
       val bridge = TunnelBridge(client)
-      val tunnel = http.newWebSocket(
+      tunnel = http.newWebSocket(
         Request.Builder()
           .url("${route.tunnelPrefix}${request.port}/tunnel/ws$hostQuery")
           .header("Sec-WebSocket-Protocol", "$TUNNEL_PROTOCOL, $TOKEN_PROTOCOL_PREFIX${route.token.encodeUtf8().base64Url().trimEnd('=')}")
@@ -104,10 +105,12 @@ class LoopbackSocksProxy(private val http: OkHttpClient) {
         if (count < 0 || !tunnel.send(buffer.toByteString(0, count))) break
         while (tunnel.queueSize() > SEND_HIGH_WATER_BYTES && !bridge.finished) Thread.sleep(10)
       }
-      tunnel.close(1000, "Local connection closed")
     } catch (_: IOException) {
     } catch (_: InterruptedException) {
     } finally {
+      // A destination such as Ray's dashboard never ends an idle tunnel itself, and the server
+      // counts each open tunnel against the tab's limit.
+      tunnel?.close(1000, "Local connection closed")
       connections.remove(client)
       closeQuietly(client)
     }
