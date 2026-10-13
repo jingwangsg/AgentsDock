@@ -72,6 +72,13 @@ describe('ingestTimeline', () => {
     expect(ingestTimeline(previous, { events: [artifact(6)] }).files.map(file => file.id)).toEqual(['a6'])
     expect(ingestTimeline(previous, { events: [artifact(2)] }).files).toEqual([])
   })
+
+  it('adds mail attachments the chat owns, not the copies a sent message gave another chat', () => {
+    const mail = (seq: number, owner: string) => eventFor('chat-a', seq, { type: 'chat_conversation_message_received',
+      attachments: [{ id: `mail${seq}`, session_id: owner, filename: 'report.pdf', size: 10, path: `/files/mail${seq}/report.pdf` }] })
+    const previous = snapshot('chat-a', [eventFor('chat-a', 5)])
+    expect(ingestTimeline(previous, { events: [mail(6, 'chat-a'), mail(7, 'chat-b')] }).files.map(file => file.id)).toEqual(['mail6'])
+  })
 })
 
 describe('cross-chat queue refresh signals', () => {

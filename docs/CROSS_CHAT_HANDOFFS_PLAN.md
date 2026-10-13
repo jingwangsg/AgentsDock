@@ -295,27 +295,34 @@ are rejected.
 `send`, `ask` and `respond-current` on an `async_route_v1` route take a
 repeatable `--attach PATH` for files of any type. The helper requires absolute
 paths to regular files, drops duplicates and allows at most 16, as the Team
-Network helper does. The server also refuses:
+Network helper does; it refuses `--attach` on legacy exchanges and one-use
+`--target`/`--target-index` handles. The server refuses:
 
-- a path inside its private state (the same protected roots as Team Network
-  attachments);
-- a file over 512 MiB, or more than 1 GiB in one message (both lowered to the
-  server's upload limit when that is smaller);
-- every other route: legacy exchanges, one-use `--target`/`--target-index`
-  handles, and chats on another server (409).
+- a request without the mailbox mode (422);
+- a path inside its private state, with the same protected roots as Team
+  Network attachments (403);
+- a file over 512 MiB, or more than 1 GiB in one message (413); both limits
+  are lowered to the server's upload limit when that is smaller;
+- a route to a chat on another server (409);
+- a file that cannot be copied, for example on a full disk (409).
 
 Before it stores the message, the server copies each file into the receiving
 chat's files, so they appear in that chat's Media & files. Stored names keep
 letters, digits, `-`, `_`, `.` and spaces; other characters become `_`. The
-sender's files are only read. The receipt adds `attachments: N`. A message, as
-`chats read`, the inbox list and the timeline events return it, lists
-`attachments`, each with `id`, `session_id` (the receiving chat), `filename`,
-`size`, `content_type` (from the extension, else `application/octet-stream`)
-and `path`, the copy on this server, which the receiving agent can open
-directly. A retry with the same idempotency key keeps the first copies; the
-same key with other files is refused. Cancelling an unread message deletes its
-copies. Attachments are peer content: they change nothing about
-`user_delegation`.
+sender's files are only read, and the receiving chat's file records keep no path to
+them. The receipt adds `attachments: N`.
+
+`chats read`, the inbox list and the timeline events list a message's
+`attachments`. Each entry has `id`, `session_id` (the receiving chat),
+`filename`, `size`, `content_type` (from the extension, else
+`application/octet-stream`) and `path`, the copy on this server, which the
+receiving agent can open directly.
+
+A retry with the same idempotency key is answered from the stored message
+without copying again. The helper's default key includes each file's path,
+size and modification time, so a changed file sends a new message. Cancelling
+an unread message deletes its copies. Attachments are peer content: they
+change nothing about `user_delegation`.
 
 ## Queue, Completion, and Recovery
 

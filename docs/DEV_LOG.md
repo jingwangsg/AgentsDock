@@ -14,8 +14,10 @@
   the agent instructions describes the option.
 - The desktop shows a message's attachments, with name and size, under the
   message in both chats, with the same open, download and reveal actions as
-  other chat files. The Android app does not show them yet; its timeline
-  code was checked against recorded events with attachments.
+  other chat files; the receiving chat's Media & files lists them as the mail
+  arrives. The Android app does not show attachments yet: its timeline code
+  projected recorded events that carry them without error and kept the
+  message text.
 - Not covered: mail with attachments to a chat on another server (hub and
   remote) is refused, because the hub relay carries text only. Legacy
   exchanges and one-use @Chat handles also refuse `--attach`.

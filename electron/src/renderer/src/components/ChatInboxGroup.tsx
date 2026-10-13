@@ -133,6 +133,7 @@ export function ChatInboxGroup({ item, sessionId, profileScope }: {
           const needsFetch = !full && !message && !event.message_body && event.handoff_body_truncated
           const hasMore = needsFetch || body.length > 800
           const reply = event.reply_to_message_id ?? message?.reply_to_message_id
+          // A cancelled message's files are deleted with it.
           const attachments = chatMailAttachments(event)
           return <section className="chat-inbox-message" key={id} data-message-id={id}>
             <header><time>{formatTime(event.received_at || message?.received_at || child.anchorTs || event.ts)}</time>

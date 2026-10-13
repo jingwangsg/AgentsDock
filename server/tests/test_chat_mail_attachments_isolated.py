@@ -10,11 +10,12 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 import uuid
 
 from tests import test_chat_mailbox_runtime_isolated as mailbox_fixture
@@ -26,7 +27,7 @@ FUNCTIONS = {
     "remove_artifact_records", "remove_artifact_records_async", "safe_name", "guess_content_type",
     "effective_content_type", "copy_fork_file_data", "list_session_file_records", "cancel_queued_cross_chat_handoff",
 }
-CONSTANTS = {"CHAT_MAIL_ATTACHMENT_MAX_FILE_BYTES", "CHAT_MAIL_ATTACHMENT_MAX_TOTAL_BYTES", "PROVIDER_TEAM_ATTACHMENT_LIMIT"}
+CONSTANTS = {"MAX_CHAT_MAIL_ATTACHMENT_FILE_BYTES", "MAX_CHAT_MAIL_ATTACHMENT_TOTAL_BYTES", "PROVIDER_TEAM_ATTACHMENT_LIMIT"}
 
 
 def selected(node: ast.stmt) -> bool:
@@ -87,6 +88,8 @@ class ChatMailAttachmentTests(unittest.IsolatedAsyncioTestCase):
         files = self.ns["list_session_file_records"]("recipient")
         self.assertEqual(sorted(record["filename"] for record in files), ["notes 中文.md", "raw_data_.bin"])
         self.assertEqual({record["session_id"] for record in files}, {"recipient"})
+        # Media & files offers the copy, never a path to the sender's file.
+        self.assertFalse(any("source_path" in record for record in files))
         self.assertEqual(self.ns["list_session_file_records"]("sender"), [])
 
         message = (await self.mail.read())["messages"][0]
@@ -95,7 +98,7 @@ class ChatMailAttachmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(by_name), {"raw_data_.bin", "notes 中文.md"})
         binary = by_name["raw_data_.bin"]
         self.assertEqual((binary["size"], binary["content_type"], binary["session_id"]),
-                         (256 * 64, "application/octet-stream", "recipient"))
+                         (self.binary.stat().st_size, "application/octet-stream", "recipient"))
         self.assertEqual(by_name["notes 中文.md"]["content_type"], "text/markdown")
         for item, original in ((binary, self.binary), (by_name["notes 中文.md"], self.text)):
             path = Path(item["path"])
@@ -103,30 +106,28 @@ class ChatMailAttachmentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(path.read_bytes(), original.read_bytes())
         # The sender's files are only read.
         self.assertEqual({path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before}, before)
-        # The inbox list the desktop renders carries the same entries.
+        # The ledger row that the inbox list and timeline events decode holds the same entries.
         record = await self.mail.ledger.get(receipt["message_id"])
         self.assertEqual(json.loads(record["attachments_json"]), message["attachments"])
         self.mail.assert_no_execution()
 
-    async def test_retry_keeps_one_copy_and_a_changed_file_conflicts(self):
+    async def test_same_key_retry_is_answered_from_the_stored_message_without_copying(self):
         first = await self.send([self.binary])
         copies = self.stored_copies()
+        self.ns["stage_chat_mail_attachments"] = Mock(side_effect=AssertionError("a retry must not copy again"))
         repeated = await self.send([self.binary])
         self.assertEqual((repeated["message_id"], repeated["duplicate"], repeated["attachments"]),
                          (first["message_id"], True, 1))
         self.assertEqual(self.stored_copies(), copies)
-        with self.assertRaises(HTTPException) as conflict:
-            await self.send([self.text])
-        self.assertEqual(conflict.exception.status_code, 409)
-        self.assertEqual(self.stored_copies(), copies)
 
     async def test_limits_and_protected_paths_refuse_before_any_message_or_copy(self):
-        self.ns["CHAT_MAIL_ATTACHMENT_MAX_FILE_BYTES"] = 1024
+        size = self.binary.stat().st_size
+        self.ns["MAX_CHAT_MAIL_ATTACHMENT_FILE_BYTES"] = size - 1
         with self.assertRaises(HTTPException) as too_large:
             await self.send([self.binary], key="too-large")
         self.assertEqual(too_large.exception.status_code, 413)
-        self.ns["CHAT_MAIL_ATTACHMENT_MAX_FILE_BYTES"] = 256 * 64
-        self.ns["CHAT_MAIL_ATTACHMENT_MAX_TOTAL_BYTES"] = 256 * 64
+        self.ns["MAX_CHAT_MAIL_ATTACHMENT_FILE_BYTES"] = size
+        self.ns["MAX_CHAT_MAIL_ATTACHMENT_TOTAL_BYTES"] = size
         with self.assertRaises(HTTPException) as too_much:
             await self.send([self.binary, self.text], key="too-much")
         self.assertEqual(too_much.exception.status_code, 413)
@@ -145,11 +146,21 @@ class ChatMailAttachmentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM cross_chat_envelopes").fetchone()[0], 0)
 
     async def test_refused_message_removes_its_staged_copies(self):
+        # Storing the message fails after its files were copied.
         with self.mail.ledger._transaction() as connection:
             connection.execute("DROP TABLE chat_mailbox_messages")
-        with self.assertRaises(Exception):
+        with self.assertRaises(sqlite3.OperationalError):
             await self.send([self.binary])
         self.assertEqual(self.stored_copies(), [])
+
+    async def test_a_failed_copy_is_a_clear_refusal_without_a_message(self):
+        self.files.parent.mkdir(parents=True)
+        self.files.write_text("not a directory")
+        with self.assertRaises(HTTPException) as refused:
+            await self.send([self.binary])
+        self.assertEqual(refused.exception.status_code, 409)
+        with self.mail.ledger._transaction() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM cross_chat_envelopes").fetchone()[0], 0)
 
     async def test_cancelling_unread_mail_removes_its_files(self):
         receipt = await self.send([self.binary, self.text])

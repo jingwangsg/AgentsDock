@@ -579,7 +579,7 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
     if reply_to and mode != "async_route_v1":
         raise CLIError("--reply-to is not supported by legacy exchanges")
     if attachments and mode != "async_route_v1":
-        raise CLIError("--attach requires an async_route_v1 route from chats list")
+        raise CLIError("--attach is not supported by legacy exchanges")
     if mode == "async_route_v1":
         # Ask is an explicitly sent question in this mode. Any response is a
         # separate message, so neither alias opens a legacy exchange or wait.
@@ -589,12 +589,17 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
         and mode != "async_route_v1"
         and not bool(getattr(args, "async_response", False))
     )
+    # A changed file makes a new message, not a retry of the one that carried it.
+    attachment_identity = ""
+    for path in attachments:
+        stat = os.stat(path)
+        attachment_identity += f"\0attach:{path}:{stat.st_size}:{stat.st_mtime_ns}"
     stable_key = "cli_" + hashlib.sha256(
         (
             f"{capability}\0{action}\0"
             f"{'route' if route else 'target'}\0{destination}\0"
             f"{int(live_wait)}\0{message}" + (f"\0reply:{reply_to}" if reply_to else "")
-            + "".join(f"\0attach:{path}" for path in attachments)
+            + attachment_identity
         ).encode("utf-8")
     ).hexdigest()
     payload: dict[str, Any] = {
@@ -627,9 +632,8 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
     else:
         path = "/api/agent/cross-chat/handoffs"
         payload["target_session_id"] = target
-    result = post_json(path, payload, capability, **(
-        {"socket_timeout": ATTACHMENT_POST_SOCKET_SECONDS} if attachments else {}
-    ))
+    result = (post_json(path, payload, capability, socket_timeout=ATTACHMENT_POST_SOCKET_SECONDS)
+              if attachments else post_json(path, payload, capability))
     if mode == "async_route_v1":
         receipt_fields = {"ok", "route_id", "action", "accepted", "mode", "message_id", "duplicate"}
         if attachments:
@@ -776,7 +780,7 @@ def respond(args: argparse.Namespace) -> dict[str, Any]:
     if not message:
         raise CLIError("--message must not be empty")
     if getattr(args, "attach", None):
-        raise CLIError("--attach requires an async_route_v1 route; this reply uses a legacy exchange")
+        raise CLIError("--attach is not supported by legacy exchanges")
     request_response = bool(args.request_response)
     async_response = bool(getattr(args, "async_response", False))
     if async_response and not request_response:

@@ -1516,6 +1516,7 @@ function CrossChatMessageView({ item, sessionId, profileScope }: { item: SystemI
   const bodyEvents = editedByUser ? events.filter(event => event.message_edited_by_user === true
     && event.message_revision === messageRevision) : events
   const counterpartId = incoming ? sourceId : targetId
+  // The files belong to the receiving chat; a cancelled message's copies are deleted.
   const attachments = chatMailAttachments(item.event)
   const savedTitle = latestExchangeString(events, event => incoming ? event.source_title : event.target_title)
   const counterpartTitle = useAppStore(state => liveChatTitle(state, counterpartId, savedTitle)) || t('timeline.ui.unknownAgent')

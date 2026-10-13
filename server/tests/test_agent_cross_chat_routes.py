@@ -444,17 +444,13 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             agent_server.provider_cross_chat_route_body_exceeds_limit("\ud800")
         )
 
-    def test_route_attachments_need_mailbox_mode_and_stay_bounded(self) -> None:
+    def test_route_attachments_need_mailbox_mode_and_at_most_16_files(self) -> None:
         fields = dict(body="Files", idempotency_key="key-00001")
         handoff = agent_server.AgentRouteHandoffRequest(**fields, mode="async_route_v1", attachments=["/tmp/a"])
         self.assertEqual(handoff.attachments, ["/tmp/a"])
         for extra in ({"attachments": ["/tmp/a"]}, {"mode": "async_route_v1", "attachments": ["/tmp/a"] * 17}):
             with self.subTest(extra=extra), self.assertRaises(ValidationError):
                 agent_server.AgentRouteHandoffRequest(**fields, **extra)
-        self.assertEqual(
-            (agent_server.CHAT_MAIL_ATTACHMENT_MAX_FILE_BYTES, agent_server.CHAT_MAIL_ATTACHMENT_MAX_TOTAL_BYTES),
-            (512 * 1024 ** 2, 1024 ** 3),
-        )
 
     def test_default_deny_snapshot_contains_only_persisted_source_grants(
         self,
