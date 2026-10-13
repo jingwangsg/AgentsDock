@@ -180,6 +180,22 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.calls)
         self.assertEqual((await self.runtime.synced.submit("owner", "main", "crashed", "not resent", restored["side_chat_id"])), restored)
 
+    async def test_a_carried_side_chat_starts_a_new_native_context_from_its_exchanges(self):
+        carried = {"session_id": "old-chat", "side_chat_id": "carried", "revision": 7, "last_request_id": "old2",
+                   "_provider_state": {"backend": "claude", "native_id": "other-install"}, "exchanges": [
+                       {"request_id": "old1", "question": "question", "status": "completed", "answer": "answer: question",
+                        "created_at": 1, "updated_at": 1},
+                       {"request_id": "old2", "question": "cut off", "status": "running", "created_at": 2, "updated_at": 2}]}
+        self.assertTrue(self.runtime.adopt_history("owner-secret", "main", carried))
+        adopted = await self.snapshot()
+        self.assertEqual([(item["request_id"], item["status"]) for item in adopted["exchanges"]],
+                         [("old1", "completed"), ("old2", "interrupted")])
+        self.assertFalse(self.runtime.adopt_history("owner-secret", "main", carried))
+        self.assertEqual((await self.send("request3", "follow up", adopted)).status_code, 202)
+        await self.settle()
+        self.assertIsNone(self.factories[-1]["persisted_state"])
+        self.assertEqual(self.calls, [("follow up", [{"question": "question", "response": "answer: question"}])])
+
     async def test_clear_fences_late_answer_and_old_receipt_even_after_restart(self):
         initial = await self.snapshot()
         await self.send(snapshot=initial)

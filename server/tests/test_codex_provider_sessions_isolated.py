@@ -86,6 +86,7 @@ def make_namespace(root: Path):
         "CLAUDE_STOP_FENCE_SESSIONS": set(), "codex_goal_time_budget_is_exhausted": lambda session: False,
         "HISTORY_SEARCH_DIRTY": set(), "logger": Mock(), "concise_error_message": lambda value: "safe fixture error",
         "session_provider_id": lambda session: session.get("session_id"), "import_session_history": AsyncMock(),
+        "carry_over_moved_chat_state": AsyncMock(),
         "ensure_session_not_initializing": lambda session: None,
         "SESSION_LIFECYCLE_UPDATE_FIELDS": {"backend", "codex_provider", "model", "effort", "archived"},
         "SESSION_DISPLAY_UPDATE_FIELDS": {"title", "folder", "pinned"},

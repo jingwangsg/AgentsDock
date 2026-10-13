@@ -89,6 +89,7 @@ import codex_model_catalog
 import codex_provider
 import server_instances
 import local_session_ownership
+import moved_chat_state
 import cursor_history
 import provider_usage
 
@@ -89795,7 +89796,30 @@ async def create_session_with_history(req: CreateSessionRequest) -> dict[str, An
     should_import = bool(provider_id) if req.import_history is None else req.import_history
     if should_import:
         await import_session_history(sess)
+    if provider_id:
+        await carry_over_moved_chat_state(sess)
     return {"session": public_session(sess)}
+
+
+async def carry_over_moved_chat_state(sess: dict[str, Any]) -> None:
+    """Give a chat created from a provider transcript the state it had on a sibling install.
+
+    Runs after the chat is committed, so a failed copy never fails the import.
+    """
+    session_id = str(sess["id"])
+    keys = local_session_ownership.provider_session_keys(sess, DEFAULT_BACKEND)
+    try:
+        summary, side_chat = await asyncio.to_thread(
+            moved_chat_state.carry_over, STATE_DIR, session_id, keys, DEFAULT_BACKEND,
+        )
+        # The side-chat store's SQLite connection belongs to the event loop thread.
+        if side_chat is not None and SIDE_QUESTIONS.adopt_history(AGENT_TOKEN, session_id, side_chat):
+            summary += "; side chat"
+    except Exception as exc:
+        logger.warning("chat state carry-over failed session=%s: %s", session_id, concise_error_message(exc))
+        return
+    if summary:
+        logger.info("chat state carry-over session=%s: %s", session_id, summary)
 
 
 @app.get("/api/local-sessions")
@@ -89892,6 +89916,7 @@ async def bulk_import_sessions_guarded(
         }
         requested_keys: set[tuple[str, str]] = set()
         results: list[dict[str, Any]] = []
+        committed: list[dict[str, Any]] = []
         for item in req.items:
             key = (item.backend, item.provider_session_id)
             if key in requested_keys:
@@ -89991,6 +90016,7 @@ async def bulk_import_sessions_guarded(
                 if int(imported.get("imported") or 0) <= 0:
                     raise RuntimeError("history import produced no durable messages")
                 await commit_staged_history_import(staged_session)
+                committed.append(staged_session)
                 known_provider_keys.add(key)
                 results.append(bulk_import_result(
                     item,
@@ -90025,6 +90051,9 @@ async def bulk_import_sessions_guarded(
                     code="import_failed",
                     error=concise_error_message(exc),
                 ))
+        # After the loop: a cancellation during a copy must not roll back a committed import.
+        for sess in committed:
+            await carry_over_moved_chat_state(sess)
         return {"results": results}
 
 
