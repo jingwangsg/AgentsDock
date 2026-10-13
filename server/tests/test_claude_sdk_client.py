@@ -132,6 +132,10 @@ class FakeClaudeClient:
     async def interrupt(self) -> None:
         self._record("interrupt")
 
+    async def send_queued_now(self) -> dict[str, Any]:
+        self._record("send_queued_now")
+        return {"still_queued": [], "send_now": "delivering"}
+
     async def get_context_usage(self) -> dict[str, Any]:
         self._record("get_context_usage")
         return dict(self.context_usage)
@@ -2669,7 +2673,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.manager.steer("chat-steer-tool", run_id="run-tool", prompt="and now?"))
         frame = client.query_envelopes[-1][0]
         self.assertNotIn("priority", frame)
-        self.assertNotIn("origin", frame)
+        self.assertEqual(frame["origin"], {"kind": "human"})
         # A subagent's own tool calls leave the parent's queue alone.
         await client.emit({"type": "assistant", "parent_tool_use_id": "toolu_agent", "message": {"content": [
             {"type": "tool_use", "id": "toolu_child", "name": "Bash", "input": {}},
@@ -2691,7 +2695,27 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.manager.steer("chat-steer-queued", run_id="run-queued", prompt="also check the logs", deliver_now=False))
         frame = client.query_envelopes[-1][0]
         self.assertNotIn("priority", frame)
-        self.assertNotIn("origin", frame)
+        # A person's message: a later Send now may move the call to the background for it.
+        self.assertEqual(frame["origin"], {"kind": "human"})
+        await client.emit({"type": "result", "is_error": False, "result": "done"})
+        self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "done")
+
+    async def test_send_now_asks_the_cli_to_deliver_queued_follow_ups_only_while_a_tool_runs(self) -> None:
+        handle = await self.manager.start_run("chat-send-now", "Render", run_id="run-send-now", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "assistant", "text": "Rendering…"})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        # The model is sampling: the CLI would abort it, and it reads the follow-up at its next step anyway.
+        self.assertIsNone(await self.manager.send_now("chat-send-now", run_id="run-send-now"))
+        await client.emit({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_wait", "name": "Bash", "input": {"command": "sleep 40"}},
+        ]}})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        self.assertNotIn(("send_queued_now",), client.calls)
+        self.assertIsNone(await self.manager.send_now("chat-send-now", run_id="run-other"))
+        self.assertEqual(await self.manager.send_now("chat-send-now", run_id="run-send-now"), "delivering")
+        self.assertEqual(client.calls.count(("send_queued_now",)), 1)
+        self.assertNotIn(("interrupt",), client.calls)
         await client.emit({"type": "result", "is_error": False, "result": "done"})
         self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "done")
 

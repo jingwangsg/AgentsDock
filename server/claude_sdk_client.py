@@ -216,6 +216,8 @@ class ClaudeSDKClientProtocol(Protocol):
 
     async def interrupt(self) -> None: ...
 
+    async def send_queued_now(self) -> dict[str, Any]: ...
+
     async def get_context_usage(self) -> dict[str, Any]: ...
 
     async def get_mcp_status(self) -> dict[str, Any]: ...
@@ -568,6 +570,7 @@ async def _query_message_stream(
     correlation_id: str,
     validated_provider_command_name: str | None = None,
     *,
+    steer: bool = False,
     deliver_now: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield the single UUID-bearing SDK stdin frame for one logical turn."""
@@ -581,18 +584,21 @@ async def _query_message_stream(
         "parent_tool_use_id": None,
         "uuid": correlation_id,
     }
+    if steer:
+        # The CLI's Send now trusts only a person's message: without a human
+        # origin "now" just queues (measured 2026-10-07), and a later Send now
+        # on the waiting frame kills the running tool and aborts the turn
+        # instead of moving it to the background (CLI 2.1.296, 2026-10-13).
+        message["origin"] = {"kind": "human"}
     if deliver_now:
         # CLI 2.1.292 print mode ("print_send_now"): a frame with priority
         # "now" reaches the model while a tool call is still running. The CLI
         # moves a running foreground Bash into a background task and tells the
         # model "Command was moved to the background … so that a message that
         # arrived while it was running can reach you; it was not interrupted".
-        # Its trust gate needs an explicit human origin: without one the frame
-        # queues like any other (measured 2026-10-07). With no tool in flight,
-        # "now" aborts the model's sampling instead, so callers set it only
-        # while a top-level tool call is in flight.
+        # With no tool in flight, "now" aborts the model's sampling instead, so
+        # callers set it only while a top-level tool call is in flight.
         message["priority"] = "now"
-        message["origin"] = {"kind": "human"}
     if _claude_prompt_needs_verbatim_delivery(
         prompt, validated_provider_command_name,
     ):
@@ -652,6 +658,13 @@ def default_claude_sdk_client_factory(options: Any) -> ClaudeSDKClientProtocol:
                 message = _parse_claude_sdk_message(data)
                 if message is not None:
                     yield message
+
+        async def send_queued_now(self) -> dict[str, Any]:
+            # Claude Code's Send now on messages already waiting at the CLI
+            # (interrupt_send_now_v1): not a Stop. SDK 0.2.130 has no method.
+            if self._query is None:
+                raise ClaudeSDKSupervisorClosed("Claude SDK client is not connected")
+            return await self._query._send_control_request({"subtype": "interrupt", "send_now": True})
 
     return GoalAwareClaudeSDKClient(options=options)
 
@@ -1468,6 +1481,14 @@ class _Steer:
 
 
 @dataclass
+class _SendNow:
+    """Claude Code's Send now on follow-ups already queued at the CLI."""
+
+    run_id: str
+    response: asyncio.Future[str | None]
+
+
+@dataclass
 class _ReleaseAwaiting:
     """End a run whose model is idle while background tasks keep it open."""
 
@@ -1805,6 +1826,21 @@ class ClaudeSDKSupervisor:
         response: asyncio.Future[bool] = loop.create_future()
         assert self._commands is not None
         await self._commands.put(_Steer(run_id=run_id, prompt=prompt, response=response, deliver_now=deliver_now))
+        return await asyncio.shield(response)
+
+    async def send_now(self, *, run_id: str) -> str | None:
+        """Deliver the follow-ups queued at the CLI now, as a steer with `deliver_now` would.
+
+        Only while a top-level tool call is in flight: the CLI moves it to the
+        background so the model reads them at once. Returns the CLI's outcome
+        ("delivering", "stopped" or "nothing_waiting"), or None when nothing
+        was sent.
+        """
+
+        loop = self._ensure_actor()
+        response: asyncio.Future[str | None] = loop.create_future()
+        assert self._commands is not None
+        await self._commands.put(_SendNow(run_id=run_id, response=response))
         return await asyncio.shield(response)
 
     async def release_awaiting_run(self, *, run_id: str | None = None) -> bool:
@@ -2309,10 +2345,10 @@ class ClaudeSDKSupervisor:
 
     async def _deliver_query_bounded(
         self,
-        query: Awaitable[None],
+        query: Awaitable[Any],
         *,
         run_id: str,
-    ) -> None:
+    ) -> Any:
         """Bound stdin delivery without awaiting cancellation-hostile SDK code."""
 
         task = asyncio.create_task(
@@ -2341,7 +2377,7 @@ class ClaudeSDKSupervisor:
                 f"Claude SDK query delivery timed out for chat {self.chat_id}; "
                 "delivery is uncertain"
             )
-        await task
+        return await task
 
     async def _handle_start(self, command: _StartRun) -> None:
         if self._pending_goal_clear is not None:
@@ -2608,10 +2644,12 @@ class ClaudeSDKSupervisor:
         # Blocked in a tool call, the model would read this frame only when
         # the call returns (an `until … sleep` wait held one for 9 minutes on
         # 2026-10-07). "now" lets the CLI background the call and deliver.
-        frames = _query_message_stream(
-            command.prompt, correlation_id,
-            deliver_now=command.deliver_now and bool(active._inflight_tool_uses),
+        deliver_now = command.deliver_now and bool(active._inflight_tool_uses)
+        logger.info(
+            "claude steer chat=%s run=%s deliver_now=%s requested=%s inflight_tools=%d",
+            self.chat_id, active.run_id, deliver_now, command.deliver_now, len(active._inflight_tool_uses),
         )
+        frames = _query_message_stream(command.prompt, correlation_id, steer=True, deliver_now=deliver_now)
         try:
             if active._query_session_id is None:
                 query = client.query(frames)
@@ -2642,6 +2680,29 @@ class ClaudeSDKSupervisor:
         self._last_used_at = time.monotonic()
         if not command.response.done():
             command.response.set_result(True)
+
+    async def _handle_send_now(self, command: _SendNow) -> None:
+        active = self._active_run
+        client = self._client
+        outcome: str | None = None
+        # With no tool in flight the CLI would abort the model's sampling for
+        # the waiting message; it reads it at its next step anyway.
+        if (active is not None and not active.done and active.acknowledged
+                and active.run_id == command.run_id and active._inflight_tool_uses
+                and client is not None and self._connected):
+            try:
+                response = await self._deliver_query_bounded(client.send_queued_now(), run_id=active.run_id)
+            except Exception as exc:
+                if not command.response.done():
+                    command.response.set_exception(exc)
+                return
+            outcome = str(response.get("send_now") or "") or None
+        logger.info(
+            "claude send now chat=%s run=%s inflight_tools=%d outcome=%s",
+            self.chat_id, command.run_id, len(active._inflight_tool_uses) if active is not None else 0, outcome,
+        )
+        if not command.response.done():
+            command.response.set_result(outcome)
 
     async def _notify_awaiting(self, run_id: str) -> None:
         assert self._awaiting_observer is not None
@@ -3456,6 +3517,8 @@ class ClaudeSDKSupervisor:
                     await self._handle_release_awaiting(command)
                 elif isinstance(command, _Steer):
                     await self._handle_steer(command)
+                elif isinstance(command, _SendNow):
+                    await self._handle_send_now(command)
                 elif isinstance(command, _GetContextUsage):
                     await self._handle_get_context_usage(command)
                 elif isinstance(command, _GetMCPStatus):
@@ -3803,6 +3866,17 @@ class ClaudeSDKSupervisorManager:
         if supervisor is None:
             return False
         return await supervisor.steer(run_id=run_id, prompt=prompt, deliver_now=deliver_now)
+
+    async def send_now(self, chat_id: str, *, run_id: str) -> str | None:
+        """Deliver a chat's follow-ups queued at the CLI now; see the supervisor."""
+
+        self._bind_loop()
+        assert self._lock is not None
+        async with self._lock:
+            supervisor = self._supervisors.get(str(chat_id))
+        if supervisor is None:
+            return None
+        return await supervisor.send_now(run_id=run_id)
 
     async def release_awaiting_run(self, chat_id: str, *, run_id: str | None = None) -> bool:
         """End a chat's run that only background tasks keep open; see the supervisor."""
