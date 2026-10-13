@@ -103,7 +103,7 @@ _VALID = """m.excluded_at IS NULL AND e.status='stored' AND e.delivery_mode='mai
     AND e.source_session_id=m.source_session_id AND e.target_session_id=m.target_session_id
     AND e.authorization_pair_id=m.pair_id"""
 _COLUMNS = """m.*, e.body AS original_body, e.target_body, e.message_revision, e.created_at,
-    e.source_run_id, e.source_user_instruction, e.source_user_delegation_action"""
+    e.source_run_id, e.source_user_instruction, e.source_user_delegation_action, e.attachments_json"""
 
 
 def _message(row: sqlite3.Row) -> dict:
@@ -119,6 +119,9 @@ def _message(row: sqlite3.Row) -> dict:
         "message_revision": row["message_revision"] if edited else 0,
         "message_edited_by_user": edited,
     }
+    if row["attachments_json"]:
+        # Copies in the receiving chat's files; `path` is readable on this server.
+        message["attachments"] = json.loads(row["attachments_json"])
     if (row["source_user_delegation_action"] in ("route", "instruction", "request_reply")
             and isinstance(row["source_user_instruction"], str) and row["source_user_instruction"].strip()
             and row["message_revision"] == 0):

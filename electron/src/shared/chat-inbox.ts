@@ -1,4 +1,4 @@
-import type { ChatInboxDeleteReceipt, ChatInboxMessage, ChatInboxPage, Event, Health } from './types'
+import type { AgentFile, ChatInboxDeleteReceipt, ChatInboxMessage, ChatInboxPage, Event, Health } from './types'
 
 export function chatMailboxAvailable(health: Health | null | undefined): boolean {
   const capability = health?.capabilities?.cross_chat_handoffs_v1
@@ -12,6 +12,11 @@ export function isChatMailboxEvent(event: Event): boolean {
 
 export function chatInboxMessageId(event: Event): string {
   return event.message_id?.trim() || event.cross_chat_envelope_id?.trim() || event.handoff_id?.trim() || ''
+}
+
+/** Files attached to agent chat mail; they belong to the receiving chat. */
+export function chatMailAttachments(event: Event): AgentFile[] {
+  return Array.isArray(event.attachments) ? event.attachments : []
 }
 
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value)

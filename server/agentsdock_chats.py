@@ -18,6 +18,7 @@ from typing import Any
 
 from agentsdock_cli_common import (
     CLIError,
+    attachment_paths,
     bounded_identity_value,
     provider_authority,
     provider_headers,
@@ -39,6 +40,8 @@ LIVE_RESPONSE_HEARTBEAT_SECONDS = 20
 LIVE_RESPONSE_MAX_HEARTBEAT_SECONDS = 20
 LIVE_RESPONSE_SOCKET_GRACE_SECONDS = 10
 LIVE_RESPONSE_POST_SOCKET_SECONDS = 10
+# The server copies attachments into the receiving chat before it answers.
+ATTACHMENT_POST_SOCKET_SECONDS = 600
 IDEMPOTENT_POST_RETRY_DELAYS_SECONDS = (0.1, 0.5)
 IDEMPOTENT_GET_RETRY_DELAYS_SECONDS = (0.1, 0.5)
 PROVIDER_RUNTIME_HANDLE_MAX_COUNT = 64
@@ -130,6 +133,8 @@ def post_json(
     path: str,
     payload: dict[str, Any],
     capability: str,
+    *,
+    socket_timeout: float = LIVE_RESPONSE_POST_SOCKET_SECONDS,
 ) -> dict[str, Any]:
     server_url = validated_server_url()
     body = json.dumps(payload).encode("utf-8")
@@ -150,7 +155,6 @@ def post_json(
         try:
             # The POST commits and returns a lease; response waiting happens
             # through bounded GET heartbeats below.
-            socket_timeout = LIVE_RESPONSE_POST_SOCKET_SECONDS
             with opener.open(request, timeout=socket_timeout) as response:
                 result = json.loads(response.read().decode("utf-8"))
             break
@@ -545,6 +549,7 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
     message = str(args.message or "").strip()
     if not message:
         raise CLIError("--message must not be empty")
+    attachments = attachment_paths(list(getattr(args, "attach", None) or []))
     route = str(getattr(args, "route", None) or "")
     target = str(getattr(args, "target", None) or "")
     target_index = getattr(args, "target_index", None)
@@ -567,12 +572,14 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
         raise CLIError("--reply-to requires an exact asynchronous route and message ID from the inbox")
     if requested_mode and not route:
         raise CLIError("conversation mode requires an exact route")
-    discover_mode = bool(requested_mode or reply_to) or (
+    discover_mode = bool(requested_mode or reply_to or attachments) or (
         _bounded_runtime_value("AGENTSDOCK_CROSS_CHAT_MODE") == "async_route_v1"
     )
     mode = negotiated_route_mode(capability, route, requested_mode) if route and discover_mode else ""
     if reply_to and mode != "async_route_v1":
         raise CLIError("--reply-to is not supported by legacy exchanges")
+    if attachments and mode != "async_route_v1":
+        raise CLIError("--attach requires an async_route_v1 route from chats list")
     if mode == "async_route_v1":
         # Ask is an explicitly sent question in this mode. Any response is a
         # separate message, so neither alias opens a legacy exchange or wait.
@@ -587,6 +594,7 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
             f"{capability}\0{action}\0"
             f"{'route' if route else 'target'}\0{destination}\0"
             f"{int(live_wait)}\0{message}" + (f"\0reply:{reply_to}" if reply_to else "")
+            + "".join(f"\0attach:{path}" for path in attachments)
         ).encode("utf-8")
     ).hexdigest()
     payload: dict[str, Any] = {
@@ -599,6 +607,8 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
         payload["mode"] = mode
     if reply_to:
         payload["reply_to_message_id"] = reply_to
+    if attachments:
+        payload["attachments"] = attachments
     if live_wait:
         heartbeat_seconds = live_response_heartbeat_seconds(
             int(getattr(
@@ -617,9 +627,13 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
     else:
         path = "/api/agent/cross-chat/handoffs"
         payload["target_session_id"] = target
-    result = post_json(path, payload, capability)
+    result = post_json(path, payload, capability, **(
+        {"socket_timeout": ATTACHMENT_POST_SOCKET_SECONDS} if attachments else {}
+    ))
     if mode == "async_route_v1":
         receipt_fields = {"ok", "route_id", "action", "accepted", "mode", "message_id", "duplicate"}
+        if attachments:
+            receipt_fields.add("attachments")
         mailbox_fields = {"delivery_mode", "state", "execution_started"}
         if (set(result) not in (receipt_fields, receipt_fields | mailbox_fields,
                                receipt_fields | mailbox_fields | {"wake_policy"})
@@ -630,6 +644,7 @@ def send_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
                     or result.get("state") not in {"unread", "read", "cancelled", "deleted"}
                     or result.get("execution_started") is not False))
                 or ("wake_policy" in result and result["wake_policy"] != "idle_only")
+                or (attachments and result.get("attachments") != len(attachments))
                 or re.fullmatch(r"handoff_[0-9a-f]{32}", str(result.get("message_id") or "")) is None):
             raise CLIError(
                 "AgentsServer returned an invalid asynchronous message receipt. "
@@ -760,6 +775,8 @@ def respond(args: argparse.Namespace) -> dict[str, Any]:
     message = str(args.message or "").strip()
     if not message:
         raise CLIError("--message must not be empty")
+    if getattr(args, "attach", None):
+        raise CLIError("--attach requires an async_route_v1 route; this reply uses a legacy exchange")
     request_response = bool(args.request_response)
     async_response = bool(getattr(args, "async_response", False))
     if async_response and not request_response:
@@ -902,6 +919,11 @@ def add_message_arguments(command: argparse.ArgumentParser) -> None:
     body.add_argument("--message-stdin", action="store_true", help="read the message body from stdin")
 
 
+def add_attach_argument(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--attach", action="append", default=[], metavar="/abs/path",
+                         help="attach a file of any type (repeatable); async_route_v1 routes only")
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         description="Contact an eligible chat on this AgentsDock server.",
@@ -956,6 +978,7 @@ def parser() -> argparse.ArgumentParser:
     send_destination.add_argument("--target")
     send_destination.add_argument("--target-index", type=positive_target_index)
     add_message_arguments(command)
+    add_attach_argument(command)
     command.add_argument("--idempotency-key")
     command.add_argument("--mode", choices=["async_route_v1"])
     command.add_argument("--reply-to", help="exact received message ID; asynchronous routes only")
@@ -971,6 +994,7 @@ def parser() -> argparse.ArgumentParser:
     ask_destination.add_argument("--target")
     ask_destination.add_argument("--target-index", type=positive_target_index)
     add_message_arguments(ask_command)
+    add_attach_argument(ask_command)
     ask_command.add_argument("--idempotency-key")
     ask_command.add_argument("--mode", choices=["async_route_v1"])
     ask_command.add_argument("--reply-to", help="exact received message ID; asynchronous routes only")
@@ -1028,6 +1052,7 @@ def parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     add_message_arguments(current_response_command)
+    add_attach_argument(current_response_command)
     current_response_command.add_argument(
         "--request-response",
         action="store_true",

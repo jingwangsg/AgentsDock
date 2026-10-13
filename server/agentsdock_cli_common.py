@@ -20,10 +20,27 @@ from typing import Any
 
 
 PROVIDER_RUNTIME_VALUE_MAX_BYTES = 4096
+ATTACHMENT_MAX_COUNT = 16
 
 
 class CLIError(RuntimeError):
     """A safe, user-facing CLI failure."""
+
+
+def attachment_paths(values: list[str]) -> list[str]:
+    paths: list[str] = []
+    for value in values:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            raise CLIError(f"attachment paths must be absolute: {value}")
+        if not path.is_file():
+            raise CLIError(f"attachment is not a regular file: {value}")
+        resolved = str(path.resolve())
+        if resolved not in paths:
+            paths.append(resolved)
+    if len(paths) > ATTACHMENT_MAX_COUNT:
+        raise CLIError(f"at most {ATTACHMENT_MAX_COUNT} attachments per message")
+    return paths
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):

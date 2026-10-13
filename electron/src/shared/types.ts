@@ -1188,7 +1188,8 @@ export interface Event extends SharedChatAttribution {
   kind?: string | null
   title?: string | null
   recipients?: Array<{ kind: 'server' | 'human' | 'all'; display_name: string }> | null
-  attachments?: number | null
+  /** A count on `team_message_sent`; on agent chat mail, the copies in the receiving chat's files. */
+  attachments?: number | AgentFile[] | null
   skill_slug?: string | null
   skill_version?: number | null
   emergency_alert?: EmergencyAlert | null

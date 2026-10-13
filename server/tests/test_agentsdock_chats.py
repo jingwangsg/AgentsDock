@@ -125,6 +125,83 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                 with patch.object(agentsdock_chats, "post_json", return_value=receipt), self.assertRaises(agentsdock_chats.CLIError):
                     args.handler(args)
 
+    def test_attachments_are_resolved_bound_to_the_message_and_confirmed(self) -> None:
+        route = "route_" + "a" * 32
+        receipt = {"ok": True, "route_id": route, "action": "instruction", "accepted": True, "mode": "async_route_v1",
+                   "message_id": "handoff_" + "b" * 32, "duplicate": False, "delivery_mode": "mailbox",
+                   "state": "unread", "execution_started": False, "attachments": 2}
+        routes = {"routes": [{"route_id": route, "available": True, "mode": "async_route_v1"}]}
+        with tempfile.TemporaryDirectory() as folder:
+            data, notes = Path(folder) / "data.bin", Path(folder) / "notes.txt"
+            data.write_bytes(bytes(range(256)))
+            notes.write_text("notes")
+            attach = ["--attach", str(data), "--attach", str(notes), "--attach", str(data)]
+            for verb in ("send", "ask"):
+                with self.subTest(verb=verb), patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                        patch.object(agentsdock_chats, "get_json", return_value=routes), \
+                        patch.object(agentsdock_chats, "post_json", return_value=receipt) as post:
+                    args = agentsdock_chats.parser().parse_args([verb, "--route", route, "--message", "Files", *attach])
+                    self.assertEqual(args.handler(args), receipt)
+                    args = agentsdock_chats.parser().parse_args([verb, "--route", route, "--message", "Files"])
+                    with self.assertRaises(agentsdock_chats.CLIError):  # this receipt reports two files
+                        args.handler(args)
+                attached, plain = (call.args[1] for call in post.call_args_list)
+                self.assertEqual(attached["attachments"], [str(data.resolve()), str(notes.resolve())])
+                self.assertNotIn("attachments", plain)
+                self.assertNotEqual(attached["idempotency_key"], plain["idempotency_key"])
+                self.assertEqual(post.call_args_list[0].kwargs,
+                                 {"socket_timeout": agentsdock_chats.ATTACHMENT_POST_SOCKET_SECONDS})
+            env = {"AGENTSDOCK_CROSS_CHAT_RESPONSE_MODE": "async_route_v1", "AGENTSDOCK_CROSS_CHAT_RESPONSE_ROUTE_ID": route}
+            args = agentsdock_chats.parser().parse_args(["respond-current", "--message", "Files", *attach])
+            with patch.dict(os.environ, env), patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                    patch.object(agentsdock_chats, "get_json", return_value=routes), \
+                    patch.object(agentsdock_chats, "post_json", return_value=receipt) as post:
+                self.assertEqual(args.handler(args), receipt)
+            self.assertEqual(post.call_args.args[1]["attachments"], [str(data.resolve()), str(notes.resolve())])
+            with patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                    patch.object(agentsdock_chats, "get_json", return_value=routes), \
+                    patch.object(agentsdock_chats, "post_json", return_value={**receipt, "attachments": 1}), \
+                    self.assertRaises(agentsdock_chats.CLIError):
+                args = agentsdock_chats.parser().parse_args(["send", "--route", route, "--message", "Files", *attach])
+                args.handler(args)
+
+    def test_attachment_paths_and_legacy_destinations_are_refused_before_post(self) -> None:
+        route = "route_" + "a" * 32
+        with tempfile.TemporaryDirectory() as folder:
+            files = [Path(folder) / f"file-{index}.txt" for index in range(17)]
+            for path in files:
+                path.write_text("x")
+            refused = [
+                (["send", "--route", route], ["relative.txt"], "absolute"),
+                (["send", "--route", route], [folder], "regular file"),
+                (["send", "--route", route], [str(Path(folder) / "missing.txt")], "regular file"),
+                (["send", "--route", route], [str(path) for path in files], "at most 16"),
+                # A route that did not negotiate async_route_v1, and one-use handles, are legacy exchanges.
+                (["send", "--route", route], [str(files[0])], "async_route_v1"),
+                (["ask", "--target-index", "1"], [str(files[0])], "async_route_v1"),
+            ]
+            for destination, paths, error in refused:
+                arguments = [*destination, "--message", "Files", *[part for path in paths for part in ("--attach", path)]]
+                with self.subTest(arguments=arguments[:3], error=error), \
+                        patch.dict(os.environ, {"AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT": "1",
+                                                "AGENTSDOCK_CROSS_CHAT_HANDLE_1": "synthetic-handle",
+                                                "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ACTION": "request_reply",
+                                                "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ASYNC": "0"}), \
+                        patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                        patch.object(agentsdock_chats, "get_json", return_value={"routes": [{"route_id": route, "available": True}]}), \
+                        patch.object(agentsdock_chats, "post_json") as post, \
+                        self.assertRaisesRegex(agentsdock_chats.CLIError, error):
+                    args = agentsdock_chats.parser().parse_args(arguments)
+                    args.handler(args)
+                post.assert_not_called()
+            args = argparse.Namespace(authority_file=None, message="Files", attach=[str(files[0])], request_response=False,
+                                      exchange="exchange_" + "a" * 32, inbound_leg="leg_" + "b" * 32, idempotency_key=None)
+            with patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                    patch.object(agentsdock_chats, "post_json") as post, \
+                    self.assertRaisesRegex(agentsdock_chats.CLIError, "legacy exchange"):
+                agentsdock_chats.respond(args)
+            post.assert_not_called()
+
     def test_helper_uses_only_the_canonical_provider_capability_header(self) -> None:
         self.assertEqual(
             agentsdock_chats.provider_headers("live-capability"),

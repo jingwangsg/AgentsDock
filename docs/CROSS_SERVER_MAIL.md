@@ -102,3 +102,5 @@ with that profile's token (the hub token); any other server is its own hub.
   keeps its half; its mail is then rescheduled until it fails after 24 hours.
 - Delegation is attached only on the user's own turn, never on a steer, a
   scheduled job or a relayed turn.
+- Attachments: the relay carries text only, so a message with `--attach` to a
+  chat on another server is refused (409) before anything is stored.

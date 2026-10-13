@@ -9,6 +9,7 @@ from copy import deepcopy
 from datetime import datetime
 import logging
 import hashlib
+import json
 from pathlib import Path
 import re
 import sqlite3
@@ -676,7 +677,7 @@ class PairLedgerMetadataTests(unittest.IsolatedAsyncioTestCase):
             and node.name in {"create_instruction", "create_route_exchange_request"}
         ])
         namespace = {
-            "HTTPException": HTTPException, "hashlib": hashlib, "time": time,
+            "HTTPException": HTTPException, "hashlib": hashlib, "json": json, "time": time,
             "now_iso": lambda: "2026-09-10T00:00:00Z",
             "validated_cross_chat_source_user_instruction": lambda value: value,
             "SERVER_INSTANCE_ID": "isolated", "PROVIDER_CROSS_CHAT_ROUTE_ID_RE": re.compile(r"^route_[0-9a-f]{32}$"),

@@ -1,8 +1,8 @@
 # AgentsDock Cross-Chat Handoffs
 
 Status: optional route hints, one-way handoffs, and bounded two-chat exchanges
-are implemented for the desktop beta. Watches, artifact transfer, and group
-exchanges remain deferred.
+are implemented for the desktop beta; mailbox messages carry file attachments.
+Watches, artifact grants, and group exchanges remain deferred.
 
 ## Product Contract
 
@@ -40,9 +40,10 @@ exchanges remain deferred.
   interrupt a running turn.
 - Cross-chat activity renders as distinct blue agent-to-agent timeline cards
   in both chats. It never masquerades as a direct user message.
-- Delivery is text-only. No transcript, reasoning trace, attachment, artifact,
-  terminal state, working directory, model setting, or permission setting is
-  inherited across chats.
+- Delivery carries the agent's text and, on a mailbox route, the files it
+  attaches ([Attachments](#attachments)). No transcript, reasoning trace,
+  artifact, terminal state, working directory, model setting, or permission
+  setting is inherited across chats.
 - The target always retains its own backend, model, working directory,
   approvals, sandbox, and provider settings.
 - Durable local grants are limited to the same authenticated AgentsServer and
@@ -269,8 +270,8 @@ capability-scoped list command:
 
 ```text
 agentsdock-chats list
-agentsdock-chats send --route ROUTE_ID --message TEXT
-agentsdock-chats ask --route ROUTE_ID --message TEXT
+agentsdock-chats send --route ROUTE_ID --message TEXT [--attach PATH ...]
+agentsdock-chats ask --route ROUTE_ID --message TEXT [--attach PATH ...]
 agentsdock-chats respond --exchange EXCHANGE_ID \
   --inbound-leg LEG_ID --message TEXT [--request-response]
 agentsdock-chats title [--route ROUTE_ID] TITLE
@@ -288,6 +289,33 @@ or secure delivery capability prints that exact command; it is not a chat ID
 and is not the command shape for a current `@Chat` hint. Route messages are
 non-empty, bounded to 16,000 characters and 64 KiB UTF-8, and artifact grants
 are rejected.
+
+### Attachments
+
+`send`, `ask` and `respond-current` on an `async_route_v1` route take a
+repeatable `--attach PATH` for files of any type. The helper requires absolute
+paths to regular files, drops duplicates and allows at most 16, as the Team
+Network helper does. The server also refuses:
+
+- a path inside its private state (the same protected roots as Team Network
+  attachments);
+- a file over 512 MiB, or more than 1 GiB in one message (both lowered to the
+  server's upload limit when that is smaller);
+- every other route: legacy exchanges, one-use `--target`/`--target-index`
+  handles, and chats on another server (409).
+
+Before it stores the message, the server copies each file into the receiving
+chat's files, so they appear in that chat's Media & files. Stored names keep
+letters, digits, `-`, `_`, `.` and spaces; other characters become `_`. The
+sender's files are only read. The receipt adds `attachments: N`. A message, as
+`chats read`, the inbox list and the timeline events return it, lists
+`attachments`, each with `id`, `session_id` (the receiving chat), `filename`,
+`size`, `content_type` (from the extension, else `application/octet-stream`)
+and `path`, the copy on this server, which the receiving agent can open
+directly. A retry with the same idempotency key keeps the first copies; the
+same key with other files is refused. Cancelling an unread message deletes its
+copies. Attachments are peer content: they change nothing about
+`user_delegation`.
 
 ## Queue, Completion, and Recovery
 
@@ -389,7 +417,7 @@ Release gates cover:
 ## Deferred Work
 
 - event-driven watches and source resumption based on watched conditions
-- explicit artifact grants and copies
+- explicit artifact grants; attachments to a chat on another server
 - cross-server/profile federation beyond one hub's remotes (mail between a
   hub and its remotes: [CROSS_SERVER_MAIL.md](CROSS_SERVER_MAIL.md))
 - group or third-party exchange expansion
