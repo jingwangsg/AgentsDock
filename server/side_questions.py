@@ -272,6 +272,11 @@ class SideQuestions:
         if self.synced is not None:
             self.synced.delete_history(session_id)
 
+    async def store_carried_history(self, token, session_id, document):
+        # load-bearing: the same owner key the side-question routes derive from the request token.
+        owner = hashlib.sha256(token.encode()).hexdigest()
+        return await self.synced.store_carried_history(owner, session_id, document)
+
     def provider_thread_ids(self):
         return self.synced.store.provider_thread_ids() if self.synced is not None else set()
 
@@ -690,6 +695,26 @@ class SyncedSideChats:
         for key in tuple(self.pending_writes):
             if key[1] == session:
                 self.pending_writes.pop(key, None)
+
+    async def store_carried_history(self, owner, session, document):
+        """Store a side chat carried over from the earlier chat on a sibling install.
+
+        Its native continuation stays with that install, so the next question
+        starts a new one from the exchanges; an answer still running there is
+        interrupted here. A side chat with exchanges is never replaced.
+        """
+        key = (owner, session)
+        async with self._lock(key):
+            if self._load(key)["exchanges"]:
+                return False
+            document = {**document, "session_id": session, "_provider_state": None}
+            for exchange in document["exchanges"]:
+                if exchange["status"] == "running":
+                    exchange.update(status="interrupted", error="side_question_interrupted", updated_at=side_chat_timestamp())
+            self.store.save(*key, document)
+        # A client that opened the empty side chat holds its old side_chat_id.
+        await self._changed(document)
+        return True
 
 
 def create_side_question_router(*, authorize, session_exists, runtime: SideQuestions):

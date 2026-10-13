@@ -37,6 +37,7 @@ FILES = (
     "agent_server.py",
     "local_session_ownership.py",
     "cursor_history.py",
+    "moved_chat_state.py",
     "workspace_git.py",
     "agentsdock_canvas.py",
     "remote_servers.py",

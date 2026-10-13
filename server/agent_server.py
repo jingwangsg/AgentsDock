@@ -89,6 +89,7 @@ import codex_model_catalog
 import codex_provider
 import server_instances
 import local_session_ownership
+import moved_chat_state
 import cursor_history
 import provider_usage
 
@@ -89795,7 +89796,34 @@ async def create_session_with_history(req: CreateSessionRequest) -> dict[str, An
     should_import = bool(provider_id) if req.import_history is None else req.import_history
     if should_import:
         await import_session_history(sess)
+    if provider_id:
+        asyncio.create_task(carry_over_moved_chat_state([sess]))
     return {"session": public_session(sess)}
+
+
+async def carry_over_moved_chat_state(sessions: list[dict[str, Any]]) -> None:
+    """Give chats created from provider transcripts the state of the earlier chats on a sibling install.
+
+    Runs after the import has answered: copying up to 1 GiB of files per chat
+    must not hold the request (the desktop's resume request times out after
+    30 s), and a failed copy leaves the imported chat as it is.
+    """
+    for sess in sessions:
+        session_id = str(sess["id"])
+        keys = local_session_ownership.provider_session_keys(sess, DEFAULT_BACKEND)
+        try:
+            summary, side_chat = await asyncio.to_thread(
+                moved_chat_state.carry_over, STATE_DIR, session_id, keys, DEFAULT_BACKEND,
+            )
+            # The side-chat store's SQLite connection belongs to the event loop thread.
+            if side_chat is not None:
+                carried = await SIDE_QUESTIONS.store_carried_history(AGENT_TOKEN, session_id, side_chat)
+                summary += " side_chat=carried" if carried else " side_chat=kept_existing"
+        except Exception as exc:
+            logger.warning("chat state carry-over failed session=%s: %s", session_id, concise_error_message(exc))
+            continue
+        if summary:
+            logger.info("chat state carry-over session=%s %s", session_id, summary)
 
 
 @app.get("/api/local-sessions")
@@ -89892,6 +89920,7 @@ async def bulk_import_sessions_guarded(
         }
         requested_keys: set[tuple[str, str]] = set()
         results: list[dict[str, Any]] = []
+        committed: list[dict[str, Any]] = []
         for item in req.items:
             key = (item.backend, item.provider_session_id)
             if key in requested_keys:
@@ -89991,6 +90020,7 @@ async def bulk_import_sessions_guarded(
                 if int(imported.get("imported") or 0) <= 0:
                     raise RuntimeError("history import produced no durable messages")
                 await commit_staged_history_import(staged_session)
+                committed.append(staged_session)
                 known_provider_keys.add(key)
                 results.append(bulk_import_result(
                     item,
@@ -90025,6 +90055,7 @@ async def bulk_import_sessions_guarded(
                     code="import_failed",
                     error=concise_error_message(exc),
                 ))
+        asyncio.create_task(carry_over_moved_chat_state(committed))
         return {"results": results}
 
 

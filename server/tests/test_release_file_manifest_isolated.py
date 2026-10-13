@@ -17,6 +17,7 @@ EXECUTION_MODULES = {
 NEW_MODULES = {
     "local_session_ownership.py",
     "cursor_history.py",
+    "moved_chat_state.py",
     "workspace_git.py",
     "codex_auth.py",
     "codex_provider.py",

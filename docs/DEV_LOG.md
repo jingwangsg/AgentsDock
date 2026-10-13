@@ -1,5 +1,43 @@
 # Public development log
 
+## 2026-10-13 — A chat imported on a new install brings the canvases, files and side chat of the earlier chat (server)
+
+- A cluster remote moved to a new install directory leaves its old install,
+  and the server-side state of every chat in it, in the same cluster home.
+  Importing a chat's provider transcript on the new install (Import local
+  chats, or resuming by session ID) created a chat without the canvases,
+  published files and side chat of the earlier chat that used the
+  conversation. One affected chat's Canvas and video were copied over by
+  hand.
+- A server that creates a chat from a provider transcript now looks for the
+  chats that own the same provider conversation in its sibling installs
+  (`.agentsdock-server*` in the same parent directory, where the hub
+  installs cluster remotes). When there is exactly one, it copies that
+  chat's canvases (source, viewer state, comments), its file records (owner
+  and stored path rewritten; none when they total more than 1 GiB) and its
+  side chat (the native side context restarts from the saved exchanges).
+  The copy runs after the import has answered, never replaces what the new
+  chat already has, and never changes the sibling install. No owner or
+  several owners copy nothing; a server with sibling installs logs one line
+  per imported chat saying what was copied or why nothing was. Message pins
+  and code-diff snapshots are not carried: they point at events of the
+  earlier chat's history, which the import does not reproduce.
+- Verification: unit tests with two synthetic installs (one owner, two
+  owners, a deleted earlier chat, no siblings, the size limit, symlinks, an
+  existing file record, staging leftovers, a failed file copy, several
+  side-chat copies), both import routes on a real session store, and the
+  side-chat hand-over through the real side-chat routes. Two real servers
+  under one temporary home: a chat with a canvas, an upload and a side chat
+  on the first, then a bulk import on the second; the same run against main
+  left the imported chat without the canvas. An isolated native desktop run
+  built from this branch against the second server: Import local chats,
+  then the imported chat showed the rendered canvas, the upload under Media
+  & files and the side-chat exchange; a second import of an unrelated
+  transcript got nothing and showed no outputs. Not exercised: a real
+  cluster remote, a Codex side chat, a live provider request. Availability:
+  source only; a server runs it once it is updated (a cluster remote after
+  its next redeploy, the hub after a restart).
+
 ## 2026-10-13 — Desktop package 124 and Android build 68 (local package and APK)
 
 - Package the entries recorded since package 123 and Android build 67:
