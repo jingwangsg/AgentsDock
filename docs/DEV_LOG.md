@@ -32,10 +32,13 @@
   The desktop showed both files under the message in the two chats and in
   the receiving chat's Media & files, and opened the text file from its row.
   A reply in the other direction with `--reply-to` and one attachment arrived
-  the same way. Not exercised: cancelling unread mail with attachments in the
-  app (unit tests only), a Codex chat, a hub with remotes, Android on a
-  device. Availability: source only; the hub runs it after a restart, a
-  remote after its next redeploy.
+  the same way. A second run after review: the receiving chat's Media & files
+  went from empty to both files without a refresh, and cancelling an unread
+  message from the sender's card deleted its copy and removed it from the
+  card. Not exercised: a Codex chat, a hub with remotes, Android on a device.
+  Known gap: an open receiving chat keeps listing a cancelled message's files
+  in Media & files until it reloads. Availability: source only; the hub runs
+  it after a restart, a remote after its next redeploy.
 
 ## 2026-10-13 — Desktop package 125 and Android build 69 (local package and APK)
 
