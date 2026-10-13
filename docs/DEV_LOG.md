@@ -1,5 +1,21 @@
 # Public development log
 
+## 2026-10-13 — Desktop package 125 and Android build 69 (local package and APK)
+
+- Package the tree at the chat state carry-over merge. No desktop or Android
+  source changed since package 124 and Android build 68: the only entries of
+  the period are server-side (a chat imported on a new install brings the
+  earlier chat's canvases, files and side chat), and the pkg bundles no
+  server code, so both clients differ from the previous ones only in their
+  version numbers. The server entry needs a restarted hub, or a redeployed
+  cluster remote, to take effect.
+- The pkg is unsigned like every local package, built with the fuses
+  re-signing flag and reports CFBundleVersion 125; the APK is signed with the
+  project debug keystore (SHA-256 fac61745…) and reports versionCode 69.
+  Checks run before packaging: both type checks, the Android contract suite
+  and the version pins. Not exercised: installing on a phone or Mac.
+  Availability: local package and APK.
+
 ## 2026-10-13 — A chat imported on a new install brings the canvases, files and side chat of the earlier chat (server)
 
 - A cluster remote moved to a new install directory leaves its old install,
