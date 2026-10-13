@@ -223,7 +223,10 @@ export class NotificationPopups implements NotificationPopupController {
     window.setMenu?.(null)
     // Float above other apps' full-screen spaces without pulling the app forward.
     window.setAlwaysOnTop(true, 'screen-saver')
-    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+    // By default Electron turns the app into a UIElement process here (no Dock icon);
+    // a full-screen main window then loses its Space and the app is deactivated.
+    // The non-activating panel shows over full-screen Spaces without that change.
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
     window.once('ready-to-show', () => { if (!window.isDestroyed()) window.showInactive() })
     void window.loadURL(BANNER_HTML)
     return window

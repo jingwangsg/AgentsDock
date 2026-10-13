@@ -9,6 +9,7 @@ const fake = vi.hoisted(() => {
     bounds: { x: number; y: number; width: number; height: number } | null
     destroyed: boolean
     shownInactive: boolean
+    allWorkspacesArgs: unknown[] | null
     bannerId: number
     content: Record<string, unknown>
     instance: unknown
@@ -41,12 +42,12 @@ vi.mock('electron', () => ({
     constructor(options: (typeof fake.windows)[number]['options']) {
       const arg = options.webPreferences.additionalArguments[0].slice('--banner='.length)
       const content = JSON.parse(decodeURIComponent(arg)) as Record<string, unknown>
-      this.record = { options, bounds: null, destroyed: false, shownInactive: false, bannerId: content.id as number, content, instance: this }
+      this.record = { options, bounds: null, destroyed: false, shownInactive: false, allWorkspacesArgs: null, bannerId: content.id as number, content, instance: this }
       fake.windows.push(this.record)
     }
     setMenu() {}
     setAlwaysOnTop() {}
-    setVisibleOnAllWorkspaces() {}
+    setVisibleOnAllWorkspaces(...args: unknown[]) { this.record.allWorkspacesArgs = args }
     once(event: string, listener: () => void) { if (event === 'ready-to-show') listener() }
     showInactive() { this.record.shownInactive = true }
     loadURL() { return Promise.resolve() }
@@ -156,6 +157,17 @@ describe('NotificationPopups window orchestration', () => {
     })
     expect(banner.content).toMatchObject({ title: 'Chat one', status: 'Response finished', emergency: false, open: 'Open', dismiss: 'Dismiss' })
     expect(banner.bounds).toEqual({ x: 1440 - 16 - 360, y: 25 + 16, width: 360, height: 96 })
+  })
+
+  it('joins every Space, full-screen ones included, without hiding the Dock icon', () => {
+    // The default process-type transform deactivated the app and moved a
+    // full-screen AgentsDock off its Space each time a banner appeared.
+    const popups = new NotificationPopups({ preloadPath: '/preload.cjs' })
+    popups.show(request('one'))
+    const [banner] = live()
+    // Skipping the transform is safe only because the banner is a panel.
+    expect(banner.options).toMatchObject({ type: 'panel' })
+    expect(banner.allWorkspacesArgs).toEqual([true, { visibleOnFullScreen: true, skipTransformProcessType: true }])
   })
 
   it('shows the app icon, loaded from the .icns through the thumbnail API', async () => {
