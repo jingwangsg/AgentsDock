@@ -330,7 +330,8 @@ const api: AgentsDockAPI = {
       ipcRenderer.invoke('queue:skip-cross-chat-delivery', sessionId, queuedId, identity)
     ),
     move: (sessionId, queuedId, direction, expectedAdjacentQueuedId) => ipcRenderer.invoke('queue:move', sessionId, queuedId, direction, expectedAdjacentQueuedId),
-    runNow: (sessionId, queuedId) => ipcRenderer.invoke('queue:run-now', sessionId, queuedId)
+    runNow: (sessionId, queuedId) => ipcRenderer.invoke('queue:run-now', sessionId, queuedId),
+    sendHeldNow: sessionId => ipcRenderer.invoke('queue:send-held-now', sessionId)
   },
   agentRoutes: {
     list: (scope, sessionId) => ipcRenderer.invoke('agent-routes:list', scope, sessionId),

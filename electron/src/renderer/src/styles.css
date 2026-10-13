@@ -796,6 +796,10 @@ body.column-resizing { cursor: col-resize; user-select: none; }
 .sent-chat-references button { max-width: min(320px, 100%); display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; overflow: hidden; color: #b9d5ee; background: #1d2c39; border: 1px solid #304b62; border-radius: var(--radius-control); font-size: var(--text-size-label); }
 .sent-chat-references button:hover { color: #e5f4ff; background: #263b4c; }
 .sent-chat-references button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-held-status { display: flex; align-items: center; gap: 6px; margin-top: 7px; color: var(--muted); font-size: var(--text-size-label); }
+.message-held-status span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-held-status button { flex: none; margin-left: auto; padding: 3px 8px; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: var(--radius-control); font-size: inherit; }
+.message-held-status button:hover:not(:disabled) { color: var(--text); }
 .timeline-inline-chat-reference { display: inline; padding: 1px 4px; margin: -1px 0; color: #d8cffc; background: #292344; border-radius: 5px; box-shadow: inset 0 0 0 1px #574b80; font: inherit; font-weight: var(--text-weight-label); line-height: inherit; text-decoration: none; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 .timeline-inline-chat-reference[role="link"] { cursor: pointer; }
 .timeline-inline-chat-reference[role="link"]:hover { color: #eee9ff; background: #352d55; box-shadow: inset 0 0 0 1px #7566a7; }

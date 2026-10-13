@@ -1835,6 +1835,13 @@ export interface SessionForkCompletedPrefixCapability {
   supported_backends: Backend[]
 }
 
+export interface ClaudeSendNowResponse {
+  ok: boolean
+  run_id: string
+  /** Claude Code's answer, or null when nothing was sent (no tool running, or a CLI without the request). */
+  send_now: 'delivering' | 'stopped' | 'nothing_waiting' | null
+}
+
 export interface SessionRewindCapability {
   available: boolean
   version: number
@@ -1959,6 +1966,8 @@ export interface HealthCapabilities {
   local_session_import_v1?: LocalSessionImportCapability
   session_fork_completed_prefix_v1?: SessionForkCompletedPrefixCapability
   session_rewind_v1?: SessionRewindCapability
+  /** Messages the CLI holds until the running tool returns can be delivered now (Claude Code's send-now key on an empty prompt). */
+  claude_send_now_v1?: { available: boolean; version: number }
   agent_emergency_alerts_v1?: AgentEmergencyAlertsCapability
   team_mail_hints_v1?: TeamMailHintsCapability
   team_mail_hints_v2?: TeamActivityHintsCapability

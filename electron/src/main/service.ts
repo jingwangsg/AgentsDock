@@ -103,6 +103,7 @@ import type {
   PublicServerProfile,
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
+  ClaudeSendNowResponse,
   RemoteServerAttachInput,
   RemoteServerDeployInput,
   RemoteServerDeployJob,
@@ -4583,6 +4584,12 @@ export class AppService {
       : refreshed.filter(turn => turn.queued_id !== queuedId || turn.promoted === true)
     this.cache.putQueuedTurns(scope.namespace, sessionId, turns)
     return result
+  }
+
+  async sendHeldNow(sessionId: string): Promise<ClaudeSendNowResponse> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    return scope.client.sendHeldNow(sessionId)
   }
 
   async listJobs(): Promise<Job[]> {

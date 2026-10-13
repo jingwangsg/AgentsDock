@@ -453,6 +453,8 @@
   "timeline.activity.supportingActivity": "辅助活动",
   "timeline.activity.workedFor": "运行了 {duration}",
   "timeline.activity.workingFor": "已运行 {duration}",
+  "timeline.activity.heldByTool": "Claude 会在“{tool}”结束后读到这条消息（已运行 {duration}）",
+  "timeline.activity.sendHeldNow": "立即发送",
   "timeline.count.statusUpdates.one": "{count} 次状态更新",
   "timeline.count.statusUpdates.other": "{count} 次状态更新",
   "timeline.count.toolCalls.one": "{count} 次工具调用",

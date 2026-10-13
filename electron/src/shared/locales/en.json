@@ -453,6 +453,8 @@
   "timeline.activity.supportingActivity": "Supporting activity",
   "timeline.activity.workedFor": "Worked for {duration}",
   "timeline.activity.workingFor": "Working for {duration}",
+  "timeline.activity.heldByTool": "Claude reads this when “{tool}” finishes (running for {duration})",
+  "timeline.activity.sendHeldNow": "Send now",
   "timeline.count.statusUpdates.one": "{count} status update",
   "timeline.count.statusUpdates.other": "{count} status updates",
   "timeline.count.toolCalls.one": "{count} tool call",

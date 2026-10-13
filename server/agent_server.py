@@ -84653,6 +84653,11 @@ async def health() -> dict[str, Any]:
                 # Backends whose rewind also accepts a steer (a message sent while the agent worked).
                 "steer_backends": [BACKEND_CLAUDE],
             },
+            "claude_send_now_v1": {
+                "available": True,
+                "version": 1,
+                "endpoint": "/api/sessions/{session_id}/send-now",
+            },
             "automatic_pairing_completion_v1": secure_peer_automatic_completion_capability(),
             "local_provider_commands_v1": {
                 "available": True,
@@ -98631,6 +98636,24 @@ async def patch_queued_turn(session_id: str, queued_id: str, req: UpdateQueuedTu
 @app.post("/api/sessions/{session_id}/queue/{queued_id}/move")
 async def post_move_queued_turn(session_id: str, queued_id: str, req: MoveQueuedTurnRequest) -> dict[str, Any]:
     return await move_queued_turn(session_id, queued_id, req)
+
+
+@app.post("/api/sessions/{session_id}/send-now")
+async def post_send_held_follow_ups_now(session_id: str) -> dict[str, Any]:
+    """Claude Code's send-now key on an empty prompt: the messages the CLI
+    holds until the running tool returns reach the model now."""
+    async with ACTIVE_LOCK:
+        live = dict(ACTIVE.get(session_id) or {})
+    run_id = str(live.get("run_id") or "")
+    if live.get("transport") != CLAUDE_TRANSPORT_AGENT_SDK or not run_id:
+        raise HTTPException(status_code=409, detail="No Claude turn is running in this chat")
+    try:
+        outcome = await (await claude_sdk_manager()).send_queued_now(session_id, run_id=run_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Send now did not reach Claude: {concise_error_message(exc)}",
+        ) from exc
+    return {"ok": True, "run_id": run_id, "send_now": outcome}
 
 
 @app.post("/api/sessions/{session_id}/queue/{queued_id}/run-now")

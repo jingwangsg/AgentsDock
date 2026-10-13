@@ -26,6 +26,8 @@ export interface MessageItem {
   runId?: string
   /** Checkpoint commit written with this turn's `code_diff`; only then can the workspace be restored. */
   checkpointCommit?: string
+  /** A Claude steer the CLI holds until this tool call returns, as Claude Code queues a message typed while a tool runs. */
+  heldBy?: Event
 }
 
 export interface TraceItem {
@@ -69,6 +71,8 @@ export interface ProgressItem {
   continues?: boolean
   /** Keep a tool's result with its original call across message boundaries. */
   toolStartSequences?: Readonly<Record<string, number>>
+  /** The Claude tool call this activity still waits on, shown with its elapsed time as Claude Code does. */
+  runningTool?: Event
 }
 
 export interface MediaItem {
@@ -1650,13 +1654,16 @@ const renderedItemCache = new WeakMap<TimelineItem, RenderTimelineItem[]>()
 export function renderTimelineItems(items: TimelineItem[]): RenderTimelineItem[] {
   const rows: RenderTimelineItem[] = []
   const activityTurns = new Map<string, TurnItem>()
+  const runningTools = runningClaudeToolCalls(items)
   for (const item of items) {
     let rendered = renderedItemCache.get(item)
     if (!rendered) {
       rendered = renderTimelineItem(item)
       renderedItemCache.set(item, rendered)
     }
-    for (const row of rendered) {
+    const running = item.kind === 'turn' && item.runId ? runningTools.get(item.runId) : undefined
+    for (const rendering of rendered) {
+      const row = running ? withRunningToolCalls(rendering, running) : rendering
       rows.push(row)
       if (row.kind === 'progress' && item.kind === 'turn') activityTurns.set(row.key, item)
     }
@@ -1675,6 +1682,44 @@ export function renderTimelineItems(items: TimelineItem[]): RenderTimelineItem[]
   return interleaveChronologicalSystemRows(
     canonical.filter(row => !embeddedKeys.has(row.key))
   )
+}
+
+/**
+ * Tool calls of each live Claude run that have not returned. A steer starts a
+ * new display slice at once, while the CLI reads it only when these calls
+ * return, so a call and its result can sit in different slices.
+ */
+function runningClaudeToolCalls(items: TimelineItem[]): Map<string, Event[]> {
+  const slicesByRun = new Map<string, TurnItem[]>()
+  for (const item of items) {
+    if (item.kind === 'turn' && item.runId) slicesByRun.set(item.runId, [...slicesByRun.get(item.runId) ?? [], item])
+  }
+  const running = new Map<string, Event[]>()
+  for (const [runId, slices] of slicesByRun) {
+    const last = slices[slices.length - 1]
+    if (last.finishedAt || last.stoppedAt || !slices.some(slice => slice.user?.backend === 'claude')) continue
+    const trace = slices.flatMap(slice => slice.trace)
+    const returned = new Set(trace.flatMap(event => event.type === 'tool_finished' && event.tool_id ? [event.tool_id] : []))
+    const calls = trace.filter(event => event.type === 'tool_started' && event.tool?.id && !returned.has(event.tool.id))
+    if (calls.length) running.set(runId, calls)
+  }
+  return running
+}
+
+/**
+ * The activity holding a running call stays live even after a steer ended its
+ * slice, and a steer sent after the call started is shown as held by it.
+ */
+function withRunningToolCalls(row: RenderTimelineItem, calls: Event[]): RenderTimelineItem {
+  if (row.kind === 'progress') {
+    const call = calls.findLast(candidate => row.events.some(event => event.id === candidate.id))
+    return call ? { ...row, active: true, runningTool: call } : row
+  }
+  if (row.kind === 'message' && row.role === 'user' && isNativeSteerEvent(row.event) && row.event.backend === 'claude') {
+    const call = calls.find(candidate => candidate.seq < row.event.seq)
+    return call ? { ...row, heldBy: call } : row
+  }
+  return row
 }
 
 /**
@@ -2146,7 +2191,7 @@ export function reconcileRenderTimelineItems(previous: RenderTimelineItem[], nex
     if (!before || before.kind !== item.kind) return item
     if (before === item) return before
     if (before.kind === 'message' && item.kind === 'message' && before.event === item.event &&
-      before.role === item.role && sameReferences(before.events, item.events) &&
+      before.role === item.role && before.heldBy === item.heldBy && sameReferences(before.events, item.events) &&
       sameReferences(before.files, item.files)) return before
     if (before.kind === 'trace' && item.kind === 'trace' && before.active === item.active &&
       sameReferences(before.events, item.events) &&
@@ -2155,6 +2200,7 @@ export function reconcileRenderTimelineItems(previous: RenderTimelineItem[], nex
       before.seq === item.seq && before.continues === item.continues &&
       sameToolStartSequences(before.toolStartSequences, item.toolStartSequences) &&
       before.active === item.active && before.startedAt === item.startedAt &&
+      before.runningTool === item.runningTool &&
       before.hasFinalResponse === item.hasFinalResponse &&
       before.afterSeq === item.afterSeq && before.throughSeq === item.throughSeq &&
       sameReferences(before.finalEvents ?? [], item.finalEvents ?? []) &&

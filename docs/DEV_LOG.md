@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-14 — A message Claude has not read yet shows what it waits for (server and desktop)
+
+- In Claude chats, a message sent with Enter while a command ran appeared at
+  once as an ordinary sent message, and the activity before it folded into
+  "Worked for …" although the command kept running. Claude Code reads such a
+  message only when the running tool returns and shows it queued, with its
+  send-now key, until then; AgentsDock showed neither that the message was
+  waiting nor what for.
+- The desktop now shows such a message with "Claude reads this when “…”
+  finishes (running for …)", naming the running command, and keeps the
+  activity before it as "Working for … · <command> (<time>)" until the
+  command returns. The caption's Send now button delivers every message
+  Claude holds at once, as Claude Code's send-now key does on an empty
+  prompt: the running command moves to the background and keeps running.
+- AgentsServer adds `POST /api/sessions/{id}/send-now` and lists
+  `claude_send_now_v1` in its health capabilities. The desktop shows the
+  button only on a server that lists it; against an older server it shows
+  the caption without the button. Codex chats are unchanged: a Codex steer
+  is read at once.
+- Verified with Claude Code 2.1.296, an isolated server and the desktop app:
+  during a 180 s poll the message showed the caption and the activity kept
+  counting; Send now moved the poll to the background, the caption went
+  away, the earlier activity settled and the reply arrived within 9 s; an
+  isolated server without the capability showed the caption only. Desktop
+  timeline, projection-cache and row tests and the server follow-up tests
+  pass.
+- Not covered: Claude Code's ctrl+b (move the running command to the
+  background without sending anything) has no equivalent, because the SDK
+  offers no request for it; a message Claude holds cannot be edited or
+  withdrawn before it is read (the CLI's `cancel_async_message` would allow
+  it, but every reader of the event log treats a joined message as
+  delivered); the Android app shows such a message as before.
+
 ## 2026-10-13 — Send now (⌘Enter) reaches Claude while a command runs (server)
 
 - In Claude chats, ⌘Enter during a long command did not deliver the message

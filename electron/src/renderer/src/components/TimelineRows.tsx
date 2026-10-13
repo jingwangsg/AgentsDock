@@ -141,9 +141,38 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
           })}
         </div>}
         {role === 'user' && files.length > 0 && <div className="message-attachments"><MediaGrid files={files} sessionId={sessionId} profileScope={profileScope} compact /></div>}
+        {item.heldBy && <HeldSteerStatus call={item.heldBy} sessionId={sessionId} />}
       </div>
     </div>
   )
+}
+
+/** Claude Code shows a message typed while a tool runs as queued, with its send-now key, until the call returns. */
+function HeldSteerStatus({ call, sessionId }: { call: Event; sessionId: string }) {
+  useLocale()
+  const sendNowAvailable = useAppStore(state => state.health?.capabilities?.claude_send_now_v1?.available === true)
+  const [now, setNow] = useState(() => Date.now())
+  const [sending, setSending] = useState(false)
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const duration = formatDuration(Math.max(0, now - Date.parse(call.ts)) / 1000)
+  const sendNow = () => {
+    setSending(true)
+    runTimelineAction(window.agentsDock.queue.sendHeldNow(sessionId).finally(() => setSending(false)))
+  }
+  return <div className="message-held-status" role="status">
+    <Clock3 size={12} aria-hidden="true" />
+    <span>{t('timeline.activity.heldByTool', { tool: toolCallLabel(call), duration })}</span>
+    {sendNowAvailable && <button type="button" disabled={sending} onClick={sendNow}>{t('timeline.activity.sendHeldNow')}</button>}
+  </div>
+}
+
+function toolCallLabel(call: Event): string {
+  const line = readableToolInput(call.tool?.name, call.tool?.input).split('\n')[0].trim()
+  const label = line || call.tool?.name || ''
+  return label.length > 80 ? `${label.slice(0, 79)}…` : label
 }
 
 function inlineTimelineChatReferences(event: Event): ChatReference[] {
@@ -707,7 +736,9 @@ function RunActivityHeader({ item, events, open, detailsId, onToggle, subagents 
   if (live) {
     const running = activeSubagents.length
       ? ` · ${timelineCount('subagentsRunning', activeSubagents.length)} (${activeSubagents.slice(0, 2).map(subagentDisplayName).join(', ')})`
-      : ''
+      : item.runningTool
+        ? ` · ${toolCallLabel(item.runningTool)} (${formatDuration(Math.max(0, now - Date.parse(item.runningTool.ts)) / 1000)})`
+        : ''
     return <>
       <div className="run-activity-summary">
         <span className="activity-ring" aria-hidden="true" />

@@ -388,6 +388,7 @@ export function registerIpc(
   ))
   handle('queue:move', (sessionId, queuedId, direction, expectedAdjacentQueuedId) => service.moveQueued(sessionId, queuedId, direction, expectedAdjacentQueuedId))
   handle('queue:run-now', (sessionId, queuedId) => service.runQueuedNow(sessionId, queuedId))
+  handle('queue:send-held-now', sessionId => service.sendHeldNow(sessionId))
 
   handle('agent-routes:list', (scope, sessionId) => service.agentHandoffRoutes(scope, sessionId))
   handle('agent-team-mail-routes:list', (scope, sessionId) => service.agentTeamMailRoutes(scope, sessionId))

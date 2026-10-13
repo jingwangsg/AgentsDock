@@ -85,6 +85,7 @@ import type {
   ReasoningSummaryStreamSnapshot,
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
+  ClaudeSendNowResponse,
   QueuedTurn,
   RemoteServer,
   RemoteServerAttachInput,
@@ -1664,6 +1665,10 @@ export class AgentServerClient {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(queuedId)}/run-now`, {
       accept_deferred_queue_response: true
     })
+  }
+
+  sendHeldNow(sessionId: string): Promise<ClaudeSendNowResponse> {
+    return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/send-now`, {})
   }
 
   async createJob(input: CreateJobInput): Promise<Job> {

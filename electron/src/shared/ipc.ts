@@ -78,6 +78,7 @@ import type {
   PublicServerProfile,
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
+  ClaudeSendNowResponse,
   QueuedTurn,
   RemoteServerAttachInput,
   RemoteServerDeployInput,
@@ -554,6 +555,7 @@ export interface AgentsDockAPI {
     skipCrossChatDelivery(sessionId: string, queuedId: string, identity: QueuedCrossChatDeliveryIdentity): Promise<boolean>
     move(sessionId: string, queuedId: string, direction: 'up' | 'down', expectedAdjacentQueuedId?: string): Promise<QueuedTurn[]>
     runNow(sessionId: string, queuedId: string): Promise<QueuedRunNowResponse>
+    sendHeldNow(sessionId: string): Promise<ClaudeSendNowResponse>
   }
   agentRoutes: {
     list(scope: WorkspaceProfileScope, sessionId: string): Promise<AgentCrossChatRoutesSnapshot>

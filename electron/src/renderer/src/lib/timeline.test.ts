@@ -2711,6 +2711,29 @@ describe('projectTimeline', () => {
     ])
   })
 
+  it('shows a Claude steer as held by the tool call it waits for and keeps that activity live', () => {
+    // Claude Code queues a message typed while a tool runs until the call returns.
+    const run = { run_id: 'run-poll', backend: 'claude' as const }
+    const source = [
+      event(1, 'turn_started', { ...run, prompt: 'Poll until the job finishes' }),
+      event(2, 'tool_started', { run_id: 'run-poll', tool: { id: 'toolu_poll', name: 'Bash', input: { command: 'until done; do sleep 15; done', description: 'Poll the job' } } }),
+      event(3, 'turn_steered', { ...run, prompt: 'Also rename the agent', native_steer: true, provider_user_authored: true })
+    ]
+    const rows = renderTimelineItems(projectTimeline(source, []))
+    const steer = rows.find(row => row.kind === 'message' && row.role === 'user' && messageItemText(row) === 'Also rename the agent')
+    expect(steer?.kind === 'message' && steer.heldBy?.tool?.id).toBe('toolu_poll')
+    expect(rows.flatMap(row => row.kind === 'progress' ? [[row.active, row.runningTool?.tool?.id]] : [])).toEqual([[true, 'toolu_poll']])
+
+    // The call returns, or is moved to the background by Send now: the CLI reads the message and the activity ends.
+    const returned = renderTimelineItems(projectTimeline([...source, event(4, 'tool_finished', { run_id: 'run-poll', tool_id: 'toolu_poll', output: 'done' })], []))
+    expect(returned.some(row => row.kind === 'message' && row.heldBy)).toBe(false)
+    expect(returned.some(row => row.kind === 'progress' && row.runningTool)).toBe(false)
+
+    // A Codex steer is read at once: nothing is held.
+    const codex = renderTimelineItems(projectTimeline(source.map(value => ({ ...value, backend: 'codex' as const })), []))
+    expect(codex.some(row => row.kind === 'message' && row.heldBy)).toBe(false)
+  })
+
   it('turns a scheduled-job run into an ordinary turn once a user message joins it', () => {
     const source = [
       event(1, 'turn_started', { run_id: 'run-job-1', backend: 'claude', purpose: 'scheduled_job', job_id: 'job-1', job_title: 'Progress check', prompt: '10-minute progress check' }),
