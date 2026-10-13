@@ -1,5 +1,47 @@
 # Public development log
 
+## 2026-10-13 — Send now (⌘Enter) reaches Claude while a command runs (server)
+
+- In Claude chats, ⌘Enter during a long command did not deliver the message
+  at once: the message waited 8 minutes for a polling command to finish
+  before the agent read it.
+- Cause: ⌘Enter posts the message and then presses Send now on it. Since
+  2026-10-09 the server joins a plain message into the running turn at once,
+  the way Enter does in Claude Code (the CLI holds it until the running tool
+  returns). Send now arrived after that, found the message already delivered
+  and did nothing more; pressed while the message was still being handed
+  over, it reported a conflict instead.
+- After this change, Send now waits for that hand-over and asks Claude Code
+  to deliver the queued message at once, through the same request as Claude
+  Code's Ctrl+Enter: the running command moves to the background, keeps
+  running, and the agent answers within a few seconds. Messages joined into
+  a turn are marked as typed by a person, which that request requires;
+  without it Claude Code stops the running command and ends the turn
+  instead. The request is sent only when the CLI advertises support for it.
+  Enter keeps its meaning: the message waits for the running command, as in
+  Claude Code.
+- The server log records, for every message joined into a running Claude
+  turn, whether it was sent for immediate delivery and how many tool calls
+  were running, and Claude Code's answer to every Send now on a message it
+  already holds.
+- Verified with Claude Code 2.1.296 against an isolated server: a message
+  posted during a 60 s poll, followed by Send now 0.7 s later (message
+  already joined) and at once (during the hand-over), moved the poll to the
+  background within 0.5 s and the reply arrived after 2.4 s (53 s before the
+  change); Enter still waited for the poll; ⌘Enter in the desktop app
+  reached the model within 5 s. Server tests for the SDK client, the runner,
+  steering and follow-ups pass. Needs a restarted hub and redeployed
+  remotes; the desktop is unchanged.
+- When Claude Code cannot deliver that way, it stops the running command and
+  the turn instead, as its own send-now key does; seen when a background
+  task had finished and its notification was also waiting. The run now
+  stays open and the agent answers the message in it (before, the run ended
+  with an error and the server restarted Claude Code if background tasks
+  were running). Verified with the same isolated setup: the poll was
+  stopped, the reply arrived after 4 s, and the turn finished normally.
+- Not exercised: Send now while a tool runs that Claude Code cannot move to
+  the background (for example a web fetch).
+
 ## 2026-10-13 — Desktop package 127 and Android build 71 (local package and APK)
 
 - Package the entries recorded since package 126 and Android build 70: a

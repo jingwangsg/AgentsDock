@@ -910,7 +910,16 @@ next step, when the running tool returns, or at once while the model only
 waits for background tasks. Nothing is interrupted and the run keeps its
 owner, authority and run id. Send now is Claude Code's Ctrl+Enter: the same
 injection, but a running tool is moved to the background so the model reads
-the message immediately. If the turn ends before the CLI has taken the
+the message immediately.
+Send now on a message that already joined the turn (the desktop's ⌘Enter
+posts the message, then presses Send now on it) sends the CLI `interrupt`
+with `send_now: true` while a tool runs and the CLI advertises
+`interrupt_send_now_v1`: the CLI moves the tool to the background and
+delivers every message queued at it. Otherwise nothing is sent and the model
+reads the message at its next step. Steer frames carry
+`origin: {kind: human}`; without it the CLI answers that request by aborting
+the turn.
+If the turn ends before the CLI has taken the
 message, the run stays open and the CLI answers it in the same run. The
 timeline records `turn_steered` with `native_steer` and
 `provider_user_authored` on that run, which every consumer
