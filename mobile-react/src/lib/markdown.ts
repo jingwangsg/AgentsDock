@@ -71,7 +71,8 @@ interface MarkdownItCoreLike {
  * Keep each table's own Markdown on its token so the expanded table view can
  * re-parse just that table: react-native-markdown-display copies `meta`, not
  * `map`, into the AST. Dedented so a table nested in a list still parses as a
- * table on its own instead of an indented code block.
+ * table on its own instead of an indented code block, and a quoted table loses
+ * its `> ` so Copy as Markdown gives a bare table.
  */
 export function installMarkdownTableSource<T extends MarkdownItCoreLike>(markdown: T): T {
   markdown.core.ruler.push('agentsdock_table_source', state => {
@@ -81,7 +82,7 @@ export function installMarkdownTableSource<T extends MarkdownItCoreLike>(markdow
       // Core rules run after normalize, so every line break in `src` is `\n`.
       if (!lines) lines = state.src.split('\n')
       const rows = lines.slice(token.map[0], token.map[1])
-      const indent = Math.min(...rows.map(row => row.length - row.trimStart().length))
+      const indent = Math.min(...rows.map(row => /^[ \t>]*/.exec(row)![0].length))
       token.meta = { ...(token.meta as object | null), source: rows.map(row => row.slice(indent)).join('\n') }
     }
   })

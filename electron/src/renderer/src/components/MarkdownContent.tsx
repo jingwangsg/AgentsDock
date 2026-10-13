@@ -281,14 +281,17 @@ export const MarkdownContent = memo(function MarkdownContent({
     },
     table: ({ children, node }) => <MarkdownTable markdown={() => {
       // `shown` is a prefix of `normalized`, so its offsets index both. A table that
-      // reaches the end of `shown` may be cut by the fold: copy it to its first blank line.
+      // reaches the end of `shown` may be cut by the fold: copy its rows on from there,
+      // up to the first line without a `|` (blank, heading, fence, list item).
       const { start, end } = node!.position!
-      const lines = normalized.slice(normalized.lastIndexOf('\n', start.offset! - 1) + 1).split('\n')
-      const count = end.offset! < shown.length ? end.line - start.line + 1 : lines.findIndex(line => /^[ \t>]*$/.test(line))
-      const rows = count < 0 ? lines : lines.slice(0, count)
-      // Dedented like the Android sheet's source, so a table nested in a list still pastes as a table.
-      const indent = Math.min(...rows.map(row => row.length - row.trimStart().length))
-      return restoreInlineChatReferenceText(rows.map(row => row.slice(indent)).join('\n'), preparedChatReferences.markers)
+      const lines = normalized.slice(start.offset!).split(/\r?\n/)
+      const pipeless = lines.findIndex(line => !line.includes('|'))
+      const count = end.offset! < shown.length ? end.line - start.line + 1 : pipeless < 0 ? lines.length : pipeless
+      // Later rows repeat the container prefix before the first one (list indent, `> `),
+      // so the copy pastes as a bare table.
+      const prefix = start.offset! - (normalized.lastIndexOf('\n', start.offset! - 1) + 1)
+      const rows = lines.slice(0, count).map(row => row.slice(Math.min(prefix, /^[ \t>]*/.exec(row)![0].length)))
+      return restoreInlineChatReferenceText(rows.join('\n'), preparedChatReferences.markers)
     }}>{children}</MarkdownTable>,
     input: props => <input {...props} readOnly />
   }), [chatTitles, link, normalized, onChatReferenceClick, preparedChatReferences.markers, resolveImageSource, restoredNormalized, sessionId, shown])

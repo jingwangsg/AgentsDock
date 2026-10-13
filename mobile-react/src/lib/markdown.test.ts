@@ -120,6 +120,7 @@ const [firstTable, secondTable] = tablesIn('| a |\n|---|\n| 1 |\n\ntext\n\n| b |
 assert(markdownTableSource(firstTable!) === '| a |\n|---|\n| 1 |' && markdownTableSource(secondTable!) === '| b | c |\n|---|---|\n| 2 | 3 |', 'each table keeps its own source')
 const nestedSource = markdownTableSource(tablesIn('1. Results:\n\n    | a | b |\n    |---|---|\n    | 1 | 2 |\n')[0]!)
 assert(nestedSource === '| a | b |\n|---|---|\n| 1 | 2 |', 'a table nested in a list is dedented')
+assert(markdownTableSource(tablesIn('> | a | b |\n> |---|---|\n> | 1 | 2 |\n>\n> After')[0]!) === nestedSource, 'a quoted table drops its quote markers')
 assert(tablesIn(nestedSource).length === 1 && tablesIn('    | a | b |\n    |---|---|\n    | 1 | 2 |').length === 0, 'dedenting is what lets the nested source re-parse as a table rather than a code block')
 
 console.log('Markdown theme and typography regressions passed')

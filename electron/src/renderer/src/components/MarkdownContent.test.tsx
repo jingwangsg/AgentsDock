@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
@@ -717,7 +718,7 @@ v_{\text{OBJ}}$$`
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  const copyZoomedTable = async (text: string, props: Partial<Parameters<typeof MarkdownContent>[0]> = {}) => {
+  const copyExpandedTable = async (text: string, props: Partial<ComponentProps<typeof MarkdownContent>> = {}) => {
     render(<MarkdownContent text={text} {...props} />)
     fireEvent.click(screen.getByRole('button', { name: 'Expand table' }))
     const copy = within(screen.getByRole('dialog')).getByRole('button', { name: 'Copy as Markdown' })
@@ -725,29 +726,34 @@ v_{\text{OBJ}}$$`
     return copy
   }
 
-  it('copies the zoomed table as its own Markdown source', async () => {
+  it('copies the expanded table as its own Markdown source', async () => {
     const table = '| Name | Note |\n|:-----|-----:|\n| **Alpha** | `a \\| b` and [docs](https://example.com) |\n| Beta | 2 |'
-    const copy = await copyZoomedTable(`Intro\n\n${table}\n\nAfter`)
+    const copy = await copyExpandedTable(`Intro\n\n${table}\n\nAfter`)
     expect(writeClipboard).toHaveBeenCalledWith(table)
     expect(copy.querySelector('.lucide-check')).not.toBeNull()
   })
 
-  it('copies a table nested in a list as a top-level table', async () => {
-    await copyZoomedTable('1. Results:\n\n    | a | b |\n    |---|---|\n    | 1 | 2 |\n\n2. Next')
+  it.each([
+    ['indented in a list', '1. Results:\n\n    | a | b |\n    |---|---|\n    | 1 | 2 |\n\n2. Next'],
+    ['on a list marker line', '- | a | b |\n  |---|---|\n  | 1 | 2 |'],
+    ['in a quote', '> | a | b |\n> |---|---|\n> | 1 | 2 |\n>\n> After']
+  ])('copies a table %s as a bare table', async (_container, text) => {
+    await copyExpandedTable(text)
     expect(writeClipboard).toHaveBeenCalledWith('| a | b |\n|---|---|\n| 1 | 2 |')
   })
 
-  it('copies the whole table when the folded message cuts it short', async () => {
-    const table = ['| n | label |', '| --- | --- |', ...Array.from({ length: 90 }, (_, index) => `| ${index} | row ${index} |`)].join('\n')
-    await copyZoomedTable(`${table}\n\nDone.`)
+  it.each(['\n', '\r\n'])('copies the whole table when the folded message cuts it short (line break %j)', async lineBreak => {
+    const table = ['| n | label |', '| --- | --- |', ...Array.from({ length: 90 }, (_, index) => `| ${index} | row ${index} |`)]
+    // A heading right below a table ends it without a blank line.
+    await copyExpandedTable([...table, '## Next', 'Para', '', 'Done.'].join(lineBreak))
     expect(within(screen.getByRole('dialog')).queryByText('row 89')).toBeNull()
-    expect(writeClipboard).toHaveBeenCalledWith(table)
+    expect(writeClipboard).toHaveBeenCalledWith(table.join('\n'))
   })
 
   it('copies an inline chat reference in a cell as its @mention', async () => {
     const text = '| Owner |\n|---|\n| @Training |'
     const start = text.indexOf('@Training')
-    await copyZoomedTable(text, {
+    await copyExpandedTable(text, {
       sessionId: 'chat-7',
       inlineChatReferences: [{
         session_id: 'chat-8', display_title_snapshot: 'Training',
