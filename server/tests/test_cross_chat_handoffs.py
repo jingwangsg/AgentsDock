@@ -5344,6 +5344,7 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
             capability["features"]["cross_server_delivery"],
             "team_network_inbox_only",
         )
+        self.assertTrue(capability["features"]["cross_server_chat_references"])
         self.assertFalse(
             capability["features"]["agent_ambient_local_handoffs"]
         )

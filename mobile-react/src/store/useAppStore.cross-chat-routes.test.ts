@@ -213,7 +213,7 @@ try {
     assert.equal(useAppStore.getState().agentRoutesBySession.source.routes[0].route_id, route.route_id)
   })
 
-  await test('cross-server chips stay out of the turn request; the draft is consumed, or restored with them on failure', async () => {
+  await test('cross-server chips reach only a server that takes them; the draft is consumed, or restored with them on failure', async () => {
     const local = { session_id: 'target', display_title_snapshot: 'Target', source_text_start: 0, source_text_end: 7, action: 'route' as const, grant_intent: true as const }
     const remote = { session_id: 'remote-chat', display_title_snapshot: 'Launch · l40', source_text_start: 8, source_text_end: 21, action: 'route' as const, target_kind: 'cross_server' as const, target_server_identity: 'srv-l40' }
     const text = '@Target @Launch · l40 hello'
@@ -231,6 +231,15 @@ try {
     assert.equal(await send(), false)
     assert.equal(useAppStore.getState().drafts.source, text)
     assert.deepEqual(useAppStore.getState().chatReferencesBySession.source, [local, remote])
+    // A server that takes the chip gets it, so the sent message keeps it.
+    reset()
+    client.sendTurn = async (...args: Parameters<typeof client.sendTurn>) => { sends += 1; sentReferences = args[6]; return { session } }
+    useAppStore.setState({
+      health: { ...health, capabilities: { cross_chat_handoffs_v1: { ...capability, features: { ...capability.features, cross_server_chat_references: true } } } },
+      drafts: { source: text }, chatReferencesBySession: { source: [local, remote] },
+    })
+    assert.equal(await send(), true)
+    assert.deepEqual(sentReferences, [local, remote])
   })
 
   await test('API route reads and revision deletes encode opaque identifiers; async skip sends its envelope', async () => {

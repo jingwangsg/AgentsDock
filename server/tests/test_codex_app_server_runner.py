@@ -5801,7 +5801,9 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
                     "revision": "pcmdrev_" + "b" * 32,
                 }
             },
-            {"provider_cross_chat_route_snapshot": [route]},
+            # A user's message joining a user's turn reads routes live; internal
+            # work holding other routes still needs a turn of its own.
+            {"purpose": "handoff_digest", "provider_cross_chat_route_snapshot": [route]},
         )
 
         for index, marker in enumerate(markers):

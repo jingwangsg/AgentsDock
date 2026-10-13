@@ -165,6 +165,52 @@ class ProviderAuthorityLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
         await agent_server.revoke_cross_chat_capability("run_origin")
 
+    async def test_a_steer_keeps_the_turns_mentions_and_delegates_its_own_text(self) -> None:
+        # 2026-10-13: a message sent while the turn worked named a new chat;
+        # the replaced authority must keep earlier mentions and carry this text.
+        earlier = agent_server.ChatReference(
+            session_id="neighbor", display_title_snapshot="Neighbor", source_text_start=0,
+            source_text_end=9, action="route", grant_intent=True,
+        )
+        await agent_server.issue_cross_chat_capability(
+            "source", "run_old", [earlier], source_user_instruction="@Neighbor start",
+            source_is_user_turn=True, chat_routes_live=True,
+        )
+        agent_server.CURRENT_TURNS = {"source": {"run_id": "run_old", "purpose": None}}
+        agent_server.ACTIVE = {"source": {"run_id": "run_old"}}
+        chip = {"session_id": "sess_remote", "display_title_snapshot": "Monitor · gb300", "source_text_start": 4,
+                "source_text_end": 20, "action": "route", "target_kind": "cross_server",
+                "target_server_identity": "server-b-identity"}
+        _prompt, _path, _env = await agent_server.issue_native_steer_provider_authority(
+            "source", "run_new",
+            {"prompt": "ask @Monitor · gb300 to pull", "display_prompt": "ask @Monitor · gb300 to pull",
+             "file_ids": [], "chat_references": [chip]},
+            "ask @Monitor · gb300 to pull\n\n[Attached files]", "2" * 32,
+        )
+        record = next(row for row in agent_server.CROSS_CHAT_CAPABILITIES.values()
+                      if row["source_run_id"] == "run_new")
+        self.assertEqual(record["provider_route_mentions"], {"neighbor", "server-b-identity/sess_remote"})
+        self.assertEqual(record["source_user_instruction"], "ask @Monitor · gb300 to pull")
+        self.assertIs(record["source_is_user_turn"], True)
+        # A message without text (attachments only) keeps the turn's instruction.
+        agent_server.CURRENT_TURNS = {"source": {"run_id": "run_new", "purpose": None}}
+        await agent_server.issue_native_steer_provider_authority(
+            "source", "run_newer", {"prompt": "", "display_prompt": "", "file_ids": ["file_1"]}, "", "3" * 32,
+        )
+        record = next(row for row in agent_server.CROSS_CHAT_CAPABILITIES.values()
+                      if row["source_run_id"] == "run_newer")
+        self.assertEqual(record["source_user_instruction"], "ask @Monitor · gb300 to pull")
+        self.assertEqual(record["provider_route_mentions"], {"neighbor", "server-b-identity/sess_remote"})
+        # A steer into a run that is not the user's (a job, a mailbox wake) never makes it delegate.
+        await agent_server.issue_cross_chat_capability("source", "run_wake", [], chat_routes_live=True)
+        agent_server.CURRENT_TURNS = {"source": {"run_id": "run_wake", "purpose": None}}
+        await agent_server.issue_native_steer_provider_authority(
+            "source", "run_after_wake", {"prompt": "look", "display_prompt": "look", "file_ids": []}, "look", "4" * 32,
+        )
+        record = next(row for row in agent_server.CROSS_CHAT_CAPABILITIES.values()
+                      if row["source_run_id"] == "run_after_wake")
+        self.assertIs(record["source_is_user_turn"], False)
+
     async def test_exact_native_transition_allows_candidate_jobs_and_quarantines_ambient_access(
         self,
     ) -> None:

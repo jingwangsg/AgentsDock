@@ -1,5 +1,5 @@
 import type { ChatReference, ChatReferenceAction, Event } from '../types'
-import { MAX_CHAT_REFERENCES } from './chat-references'
+import { MAX_CHAT_REFERENCES, validCrossServerReferenceTarget } from './chat-references'
 import { liveChatTitle, type LiveChatTitleSource } from './live-chat-title'
 import { messageText } from './format'
 
@@ -227,7 +227,7 @@ function safeStoredTimelineReferences(value: unknown): ChatReference[] {
       || typeof item.source_text_start !== 'number'
       || typeof item.source_text_end !== 'number'
       || !CHAT_REFERENCE_ACTIONS.has(item.action as ChatReferenceAction)
-      || (item.target_kind !== undefined && item.target_kind !== 'secure_peer')
+      || (item.target_kind !== undefined && item.target_kind !== 'secure_peer' && item.target_kind !== 'cross_server')
     ) return []
     const reference: ChatReference = {
       session_id: item.session_id,
@@ -239,7 +239,7 @@ function safeStoredTimelineReferences(value: unknown): ChatReference[] {
       ...(item.route_action === 'instruction' || item.route_action === 'request_reply'
         ? { route_action: item.route_action }
         : {}),
-      ...(item.target_kind === 'secure_peer' ? { target_kind: 'secure_peer' as const } : {}),
+      ...(item.target_kind === 'secure_peer' || item.target_kind === 'cross_server' ? { target_kind: item.target_kind } : {}),
       ...(typeof item.target_server_identity === 'string' ? { target_server_identity: item.target_server_identity } : {}),
       ...(typeof item.target_connection_id === 'string' ? { target_connection_id: item.target_connection_id } : {}),
       ...(typeof item.target_route_id === 'string' ? { target_route_id: item.target_route_id } : {}),
@@ -271,6 +271,8 @@ function inlineRouteCandidate(reference: ChatReference): boolean {
 }
 
 function validTimelineReferenceTarget(reference: ChatReference, sourceSessionId?: string | null): boolean {
+  // A chat on another server: drawn as a chip, never a local navigation target.
+  if (reference.target_kind === 'cross_server') return validCrossServerReferenceTarget(reference)
   if (reference.target_kind === 'secure_peer') {
     return reference.session_id === reference.target_route_id
       && uuidV4(reference.target_connection_id)

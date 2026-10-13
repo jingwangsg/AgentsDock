@@ -39,42 +39,6 @@ export interface InsertChatReferenceResult {
   caret: number
 }
 
-/**
- * Reconstructs the native caret after one text edit. React Native may deliver
- * onChangeText before its matching selection event on iOS, so the previous
- * selection is used only when it can actually produce the new string. The
- * contiguous-diff fallback keeps mention discovery working when that
- * selection is stale.
- */
-export function caretAfterTextChange(
-  previousText: string,
-  nextText: string,
-  previousSelection: { start: number; end: number },
-): number {
-  const start = Math.max(0, Math.min(previousSelection.start, previousText.length))
-  const end = Math.max(start, Math.min(previousSelection.end, previousText.length))
-  const insertedLength = nextText.length - (previousText.length - (end - start))
-  if (insertedLength >= 0) {
-    const candidate = start + insertedLength
-    if (
-      previousText.slice(0, start) + nextText.slice(start, candidate) + previousText.slice(end) === nextText
-    ) return candidate
-  }
-
-  let prefix = 0
-  const prefixLimit = Math.min(previousText.length, nextText.length)
-  while (prefix < prefixLimit && previousText[prefix] === nextText[prefix]) prefix += 1
-
-  let suffix = 0
-  const suffixLimit = Math.min(previousText.length - prefix, nextText.length - prefix)
-  while (
-    suffix < suffixLimit
-    && previousText[previousText.length - 1 - suffix] === nextText[nextText.length - 1 - suffix]
-  ) suffix += 1
-
-  return Math.max(prefix, nextText.length - suffix)
-}
-
 const CHAT_REFERENCE_ACTIONS = new Set<ChatReferenceAction>([
   'direct_message',
   'route',
@@ -101,6 +65,11 @@ export function routeHintMentionsAvailable(health: Health | null | undefined): b
 
 export function agentCrossChatRoutesAvailable(health: Health | null | undefined): boolean {
   return crossChatHandoffsAvailable(health) && agentCrossChatRoutesSupported(health)
+}
+
+/** Whether the server accepts a turn's @ chip for a chat on another server (the hub paired the chats first). */
+export function crossServerChatReferencesAccepted(health: Health | null | undefined): boolean {
+  return health?.capabilities?.cross_chat_handoffs_v1?.features?.cross_server_chat_references === true
 }
 
 /** Async messages require both the durable permission contract and its exact opt-in. */
@@ -500,7 +469,7 @@ export function parseStoredChatReferences(
   return validChatReferences(text, references, sourceSessionId)
 }
 
-function validCrossServerReferenceTarget(reference: ChatReference): boolean {
+export function validCrossServerReferenceTarget(reference: ChatReference): boolean {
   return reference.action === 'route'
     && typeof reference.target_server_identity === 'string'
     && reference.target_server_identity.length > 0

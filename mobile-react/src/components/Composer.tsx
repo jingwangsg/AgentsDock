@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -54,9 +54,8 @@ import {
   type BoundProviderCommand,
   type ComposerCommand,
 } from '../lib/composer-commands'
-import { insertTeamReference, MAX_TEAM_REFERENCES, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceContractSupported, validTeamReferences, type TeamMentionCandidate, type TeamMentionTrigger } from '../lib/team-references'
+import { atomicComposerReferenceEdit, caretOutsideComposerReferences, insertTeamReference, MAX_TEAM_REFERENCES, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceContractSupported, validTeamReferences, type TeamMentionCandidate, type TeamMentionTrigger } from '../lib/team-references'
 import {
-  caretAfterTextChange,
   chatMentionAction,
   chatMentionTrigger,
   chatReferenceLabel,
@@ -240,6 +239,13 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const crossServerNamesRef = useRef(new Map<string, string>())
   const selectionRef = useRef<ComposerSelection>({ start: draft.length, end: draft.length })
   const pendingCaretRef = useRef<number | null>(null)
+  // After an edit removes a chip whole, React Native applies the new text keeping
+  // the native caret's distance from the end, and a selection command can reach
+  // the field before that text does. Android reports the IME's caret in the cut
+  // text (the echo), then the applied caret once the new text lands; the caret is
+  // moved to the chip's place only then. iOS reports no selection for text set
+  // from JS, so the next text change replaces this and the next tap clears it.
+  const removedChipCaretRef = useRef<{ echo: number; applied: number; caret: number } | null>(null)
   const restoreInputAfterPickerRef = useRef(false)
   const dismissedMentionStartRef = useRef<number | null>(null)
   const attachmentSendGuardedRef = useRef(false)
@@ -404,6 +410,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     setGoalEditorOpen(false)
     selectionRef.current = { start: draft.length, end: draft.length }
     pendingCaretRef.current = null
+    removedChipCaretRef.current = null
     pendingTeamPicker.current = null
     pendingNewAgent.current = null
     setNewAgentSheet(null)
@@ -469,13 +476,12 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     else show()
   }, [activeProfileId, profileGeneration, sessionId, crossChatSupported])
 
-  const updateComposerDraft = useCallback((text: string) => {
+  const updateComposerDraft = useCallback((nativeText: string) => {
     if (!composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
     const previousDraft = draftRef.current
-    const nextReferences = reconcileChatReferences(previousDraft, text, referencesRef.current)
-    const nextTeamReferences = reconcileTeamReferences(previousDraft, text, teamReferencesRef.current)
-    const previousSelection = selectionRef.current
-    const caret = caretAfterTextChange(previousDraft, text, previousSelection)
+    const { text, caret, nativeCaret, chatReferences: nextReferences, teamReferences: nextTeamReferences } = atomicComposerReferenceEdit(previousDraft, nativeText, selectionRef.current, referencesRef.current, teamReferencesRef.current)
+    const appliedCaret = Math.max(0, text.length - (nativeText.length - nativeCaret))
+    removedChipCaretRef.current = appliedCaret === caret ? null : { echo: nativeCaret, applied: appliedCaret, caret }
     draftRef.current = text
     referencesRef.current = nextReferences
     teamReferencesRef.current = nextTeamReferences
@@ -717,7 +723,20 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   }, [storeReferences])
 
   const handleSelectionChange = useCallback((event: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
-    const selection = event.nativeEvent.selection
+    let selection: ComposerSelection = event.nativeEvent.selection
+    const removedChip = removedChipCaretRef.current
+    if (removedChip && selection.start === removedChip.echo && selection.end === removedChip.echo) return
+    removedChipCaretRef.current = null
+    if (removedChip && selection.start === removedChip.applied && selection.end === removedChip.applied) {
+      selection = { start: removedChip.caret, end: removedChip.caret }
+      inputRef.current?.setSelection(removedChip.caret, removedChip.caret)
+    } else if (selection.start === selection.end) {
+      const caret = caretOutsideComposerReferences(selection.start, [...referencesRef.current, ...teamReferencesRef.current], selectionRef.current.start)
+      if (caret !== selection.start) {
+        selection = { start: caret, end: caret }
+        inputRef.current?.setSelection(caret, caret)
+      }
+    }
     selectionRef.current = selection
     if (selection.start !== selection.end) { discoverMention(null); return }
     const trigger = teamMentionTrigger(draftRef.current, selection.start, referencesRef.current, teamReferencesRef.current) ?? chatMentionTrigger(draftRef.current, selection.start, referencesRef.current)
@@ -918,7 +937,6 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       const crossServerReferences = outgoingReferences.filter(reference => reference.target_kind === 'cross_server')
       if (crossServerReferences.length) {
         // The hub pairs the chats first, so this turn's agent already sees the route.
-        // sendPrompt leaves these references out of the turn; the chip stays plain text.
         try {
           const sourceServerIdentity = useAppStore.getState().health?.server_identity
           if (!sourceServerIdentity) throw new Error('This server cannot pair chats across servers right now.')
@@ -1255,6 +1273,22 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       <ChevronDown size={13} color={colors.muted} />
     </View>
   </Pressable> : null
+  // Picked chats and Team recipients draw as one tinted block inside the text,
+  // as on the desktop composer. These pieces are the native field's text: a
+  // stale overlapping span is skipped so the draft is never duplicated.
+  const draftPieces: ReactNode[] = []
+  let draftOffset = 0
+  for (const chip of [
+    ...references.map(reference => ({ start: reference.source_text_start, end: reference.source_text_end, supported: referenceSupported(reference) })),
+    ...teamReferences.map(reference => ({ start: reference.source_text_start, end: reference.source_text_end, supported: teamReferenceContractSupported(health, reference) })),
+  ].sort((left, right) => left.start - right.start)) {
+    if (chip.start < draftOffset) continue
+    const tint = chip.supported ? colors.blue : colors.red
+    if (chip.start > draftOffset) draftPieces.push(draft.slice(draftOffset, chip.start))
+    draftPieces.push(<Text key={chip.start} style={{ color: tint, backgroundColor: `${tint}33` }}>{draft.slice(chip.start, chip.end)}</Text>)
+    draftOffset = chip.end
+  }
+  if (draftOffset < draft.length) draftPieces.push(draft.slice(draftOffset))
 
   return (
     <View testID="chat-composer" style={[styles.shell, { backgroundColor: colors.background }]}>
@@ -1328,7 +1362,6 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
           ref={inputRef}
           testID="chat-composer-input"
           accessibilityLabel="Message"
-          value={draft}
           onChangeText={updateComposerDraft}
           onSelectionChange={handleSelectionChange}
           onContentSizeChange={event => setInputHeight(measuredComposerInputHeight(event.nativeEvent.contentSize.height))}
@@ -1340,7 +1373,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
           scrollEnabled
           autoCorrect
           style={[styles.input, { color: colors.text, height: displayedInputHeight, maxHeight: viewportLimits.inputMaxHeight }]}
-        />
+        >{draft ? <Text style={{ fontSize: styles.input.fontSize, lineHeight: styles.input.lineHeight }}>{draftPieces}</Text> : null}</TextInput>
         <View style={[styles.toolbar, compactToolbar && styles.toolbarCompact, denseToolbar && styles.toolbarDense]}>
           {!welcome ? <IconButton icon={Paperclip} disabled={attachmentDisabled} onPress={chooseAttachment} label="Add files, photos, or another chat" testID="chat-attach" /> : null}
           {runtimeControl}

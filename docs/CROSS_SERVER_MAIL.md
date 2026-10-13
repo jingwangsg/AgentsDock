@@ -20,7 +20,12 @@ remote servers a hub manages.
   unchanged, the highlighted chat stays highlighted when they do.
 - Choosing a chat on another server inserts `@<title> · <server>` (no server
   for a hub chat). On send, the client asks the hub to pair the two chats, then
-  sends the turn without that reference; the chip stays in the prompt text.
+  sends the turn with the chip (`target_kind: "cross_server"`, the chat's id
+  and its server's identity). The sending chat's server accepts it only while
+  that pair exists, and `chats list` marks that chat `mentioned: true`. A server
+  that does not advertise `cross_chat_handoffs_v1.features.
+  cross_server_chat_references` gets the turn without the chip, whose text
+  stays in the prompt.
 - The paired chats exchange mail with the existing helper commands (`chats
   list`, `send --route`, `inbox`, `read`, `send --reply-to`). A message from
   another server is an ordinary mailbox message on the receiving server: idle
@@ -39,12 +44,14 @@ remote servers a hub manages.
 - The receiving server checks its own half of the pair before storing.
 - User delegation: a pair exists only because a user picked one of its two
   chats in the composer, so when the sender's turn is the user's own, the
-  sender's server attaches the user's instruction (that turn's text) to every
-  message sent to a paired chat, from either side of the pair and whether or
-  not the turn names the chat again. A turn without text attaches none. The
-  receiving server stores the instruction as that peer's attestation, so a
-  hub trusts its registered remotes to attest their users' turns; the
-  receiving agent judges the instruction's scope.
+  sender's server attaches the user's instruction to every message sent to a
+  paired chat, from either side of the pair and whether or not the turn names
+  the chat again. The instruction is the user's latest message in the turn:
+  the last message steered into it that has text, or its prompt if none was.
+  A turn without text attaches none. The receiving server stores the
+  instruction as that peer's attestation, so a hub trusts its registered
+  remotes to attest their users' turns; the receiving agent judges the
+  instruction's scope.
 
 ## Wire
 

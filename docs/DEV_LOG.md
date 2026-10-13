@@ -1,5 +1,50 @@
 # Public development log
 
+## 2026-10-13 — @ chips for chats on other servers stay in the message (server, desktop and Android)
+
+- A chip for a chat on another server, picked from the @ menu, paired the
+  chats through the hub and was then removed from the message, so the sent
+  message showed plain text,
+  the agent could not tell which chat was meant, and a message sent while the
+  agent worked did not name the new pair. A server that advertises
+  `cross_server_chat_references` now accepts the chip while the hub pair
+  exists, keeps it in the message, and `chats list` marks that chat
+  `mentioned: true`. Desktop and Android send it to such a server and draw it
+  as a chip in the timeline; an older server still gets the text only.
+- A message sent while a user's turn runs now joins that turn when its @ chips
+  only name chats the turn reaches (a route `@` or a chat on another server);
+  before, any chip kept it queued until the turn ended. The joining message's
+  chips count as mentioned in the turn, and its text becomes the user
+  instruction attached to the turn's mail (`user_delegation`). Mail from a
+  user's turn now carries the user's latest message to any chat the turn
+  reaches, including chats paired after it started; mail to other servers
+  already went to any paired chat, with the turn's prompt. A message without
+  text keeps the instruction. One-use actions, secure-peer handles and, for a
+  message with chips, turns that are not the user's still keep the message
+  queued; a steer into such a turn never makes it delegate.
+- A queued message whose chip names a chat on another server starts with the
+  chip as text if the hub pair was removed in the meantime, instead of
+  holding the queue.
+- The Android composer draws a picked chat as one tinted block inside the
+  text, as the desktop composer does: Backspace at its edge removes the whole
+  chat and its reference, a tap or caret step inside it moves to an edge,
+  and text an autocorrect writes into it stays as typed while that chat is
+  dropped. The queued-message editor keeps its previous behavior.
+- Verification: server tests for chip admission with and without the hub
+  pair, the `mentioned` mark, chips joining a Claude or Codex user turn and
+  not other turns, and the delegation rule; desktop and Android store and
+  timeline tests. On a Mac, an isolated hub and a registered remote with real
+  Claude CLIs: a remote turn took a follow-up whose chip named a hub chat, the
+  agent listed it as mentioned and asked it, the hub stored the follow-up as
+  the delegated instruction, and the hub chat answered. In the desktop app on
+  the isolated hub, a follow-up typed while the turn slept, with a remote chat
+  picked from the @ menu, showed the chip in the composer and in the sent
+  message, joined the running turn, and the remote chat's answer arrived. On
+  an Android emulator with this build, connected to the same isolated hub:
+  the chip for the remote chat showed as one block in the composer and in
+  the sent message, the message joined the running turn and the remote chat
+  answered; Backspace at a chip's end removed it whole.
+
 ## 2026-10-13 — A running turn reaches chats paired after it started (server)
 
 - An agent could not message a chat that was paired while its turn ran. A

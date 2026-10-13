@@ -26,7 +26,7 @@ FUNCTIONS = {
     "is_async_route_message", "async_route_conversation_fields",
     "cross_chat_message_event_type", "cross_chat_lifecycle_fields",
     "async_message_target_fields",
-    "public_cross_chat_envelope", "reserve_async_provider_route_message", "provider_run_route_ceiling",
+    "public_cross_chat_envelope", "reserve_async_provider_route_message", "provider_run_route_ceiling", "provider_run_delegates",
     "submit_provider_route_handoff", "finish_cross_chat_acceptance", "append_cross_chat_event_once",
     "append_cross_chat_lifecycle", "finish_cross_chat_delivery", "cross_chat_delivery_state",
     "issued_provider_capability_snapshot", "provider_authority_runtime_env",
@@ -329,7 +329,7 @@ class AsyncRouteAcceptanceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_same_key_changed_source_instruction_cannot_rebind_message(self):
         original = "Render five videos. Preserve these constraints exactly.\n"
-        self.capability["user_delegation_grants"] = {("b", "route")}
+        self.capability["source_is_user_turn"] = True
         self.capability["source_user_instruction"] = original
         receipt = await self.send()
         self.capability["source_user_instruction"] = "Render six videos instead."
@@ -349,7 +349,7 @@ class AsyncRouteAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record["source_user_instruction"], "")
 
     async def test_oversized_source_and_body_reject_before_acceptance_commits(self):
-        self.capability["user_delegation_grants"] = {("b", "route")}
+        self.capability["source_is_user_turn"] = True
         for index, source in enumerate(("X" * 100_000, "😀" * 30_000)):
             with self.subTest(source_kind="ascii" if index == 0 else "unicode"):
                 self.capability["source_user_instruction"] = source

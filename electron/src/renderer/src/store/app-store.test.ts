@@ -1855,7 +1855,7 @@ describe('send rollback', () => {
     }
   })
 
-  it('keeps a chip for a chat on another server out of the turn but in the pending submission', async () => {
+  it('sends a chip for a chat on another server only to a server that takes it, and keeps it pending either way', async () => {
     const send = vi.fn(async () => ({ session: sessionFor('chat-a'), queued: false }))
     Object.defineProperty(window, 'agentsDock', { configurable: true, value: { turns: { send } } as unknown as AgentsDockAPI })
     const remote: ChatReference = {
@@ -1878,6 +1878,18 @@ describe('send rollback', () => {
     await expect(request).resolves.toBe(true)
     expect(useAppStore.getState().error).toBeNull()
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ prompt: '@Launch check · osmo_dev_l40 ping', chatReferences: [] }))
+
+    // A server that takes the chip gets it, so the sent message keeps it.
+    useAppStore.setState({
+      health: { ok: true, capabilities: { cross_chat_handoffs_v1: {
+        available: true, required: false, message: '', action: null, version: 1,
+        features: { cross_server_chat_references: true }
+      } } },
+      drafts: { 'chat-a': '@Launch check · osmo_dev_l40 ping' }, chatReferencesBySession: { 'chat-a': [remote] },
+      turnAdmissionTokens: {}, pendingTurnSubmissions: {}
+    })
+    await expect(useAppStore.getState().sendPrompt()).resolves.toBe(true)
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ chatReferences: [remote] }))
   })
 
   it('removes the matching pending submission in the authoritative response commit', async () => {

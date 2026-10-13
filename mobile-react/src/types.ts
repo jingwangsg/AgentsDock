@@ -1299,6 +1299,7 @@ export interface CrossChatHandoffsCapability extends ServerCapability {
     exact_queued_peer_delivery_skip?: boolean
     secure_peer_fifo_barriers?: boolean
     async_route_v1?: boolean
+    cross_server_chat_references?: boolean
     [key: string]: JsonValue | undefined
   }
   agent_routes?: {

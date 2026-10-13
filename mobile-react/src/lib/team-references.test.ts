@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { Health, TeamReference } from '../types'
+import type { ChatReference, Health, TeamReference } from '../types'
 import { chatMentionTrigger, chatReferencesEqual, localChatReferenceContractSupported } from './chat-references'
-import { insertTeamReference, loadTeamMentionCandidates, parseStoredTeamReferences, reconcileTeamReferences, requireTeamReferenceSupport, restoreFailedTeamReferences, teamAllServersAliasAvailable, teamBulletinAliasAvailable, teamMentionTrigger, teamMessagesAvailable, teamReferenceContractSupported, teamReferencesEqual, teamReferenceTokenPresent, validTeamReferences } from './team-references'
+import { atomicComposerReferenceEdit, caretOutsideComposerReferences, insertTeamReference, loadTeamMentionCandidates, parseStoredTeamReferences, reconcileTeamReferences, requireTeamReferenceSupport, restoreFailedTeamReferences, teamAllServersAliasAvailable, teamBulletinAliasAvailable, teamMentionTrigger, teamMessagesAvailable, teamReferenceContractSupported, teamReferencesEqual, teamReferenceTokenPresent, validTeamReferences } from './team-references'
 
 const basePath = '/api/team-hub-secure/12345678-1234-4123-8123-123456789abc'
 const health: Health = { ok: true, server_identity: 'local-server', capabilities: {
@@ -211,4 +211,76 @@ test('discovery rejects duplicate teams and stale alias results', async () => {
   let current = true
   const stale = connection(path => { if (path.includes('/network?')) current = false; return path === '/v1/health' ? aliasHub : respond(path) })
   await assert.rejects(loadTeamMentionCandidates(stale, aliasHealth, () => current), /active server changed/)
+})
+
+const chip = (text: string, title: string, id = title, from = 0): ChatReference => {
+  const start = text.indexOf(`@${title}`, from)
+  return { session_id: id, display_title_snapshot: title, source_text_start: start, source_text_end: start + title.length + 1, action: 'route', grant_intent: true }
+}
+const caretAt = (caret: number) => ({ start: caret, end: caret })
+
+test('a deletion cutting into a chip removes the whole chip, its reference and one adjacent space', () => {
+  const draft = 'Ask @training monitor · nv_gb300 now'
+  const monitor = chip(draft, 'training monitor · nv_gb300')
+  const end = monitor.source_text_end
+  // Android Backspace at the chip's end arrives as a text change, not a key.
+  assert.deepEqual(atomicComposerReferenceEdit(draft, `${draft.slice(0, end - 1)}${draft.slice(end)}`, caretAt(end), [monitor], []), { text: 'Ask now', caret: 4, nativeCaret: end - 1, chatReferences: [], teamReferences: [] })
+  assert.deepEqual(atomicComposerReferenceEdit('Ask @Mac', 'Ask @Ma', caretAt(8), [chip('Ask @Mac', 'Mac')], []), { text: 'Ask', caret: 3, nativeCaret: 7, chatReferences: [], teamReferences: [] })
+  // A selected range keeps its neighbouring spaces, as on the desktop.
+  assert.deepEqual(atomicComposerReferenceEdit('Ask @Mac now', 'Ask @Mow', { start: 6, end: 10 }, [chip('Ask @Mac now', 'Mac')], []), { text: 'Ask ow', caret: 4, nativeCaret: 6, chatReferences: [], teamReferences: [] })
+})
+
+test('text inserted into a chip (autocorrect) stays as typed and revokes only that chip', () => {
+  const mac = { ...reference, display_name_snapshot: 'Mac Studio', source_text_end: 12 }
+  const atlas = chip('@@Mac Studio altered @Atlas', 'Atlas')
+  assert.deepEqual(atomicComposerReferenceEdit('@@Mac Studio altered @Atlas', '@@Mac StXdio altered @Atlas', { start: 8, end: 9 }, [atlas], [mac]), { text: '@@Mac StXdio altered @Atlas', caret: 9, nativeCaret: 9, chatReferences: [atlas], teamReferences: [] })
+})
+
+test('text typed right before or after a chip keeps it, even when the characters repeat', () => {
+  const mac = chip('@Mac now', 'Mac')
+  assert.deepEqual(atomicComposerReferenceEdit('@Mac now', '@@Mac now', caretAt(0), [mac], []), { text: '@@Mac now', caret: 1, nativeCaret: 1, chatReferences: [{ ...mac, source_text_start: 1, source_text_end: 5 }], teamReferences: [] })
+  assert.deepEqual(atomicComposerReferenceEdit('@Mac', '@Macc', caretAt(4), [mac], []).chatReferences, [mac])
+  // Backspace after the trailing "c" removes only that "c"; at the chip's end it removes the chip.
+  assert.deepEqual(atomicComposerReferenceEdit('@Macc', '@Mac', caretAt(5), [mac], []), { text: '@Mac', caret: 4, nativeCaret: 4, chatReferences: [mac], teamReferences: [] })
+  assert.deepEqual(atomicComposerReferenceEdit('@Macc', '@Mac', caretAt(4), [mac], []), { text: 'c', caret: 0, nativeCaret: 3, chatReferences: [], teamReferences: [] })
+})
+
+test('without chips the caret follows the change, and a stale selection falls back to the plain diff', () => {
+  assert.equal(atomicComposerReferenceEdit('Ask ', 'Ask @', caretAt(4), [], []).caret, 5)
+  assert.equal(atomicComposerReferenceEdit('Ask ', 'Ask @', caretAt(0), [], []).caret, 5)
+  assert.equal(atomicComposerReferenceEdit('Ask abc', 'Ask @', { start: 4, end: 7 }, [], []).caret, 5)
+})
+
+test('removing one of two same-titled chips keeps the other chat, not a text match', () => {
+  const draft = '@Build @Build go'
+  const first = chip(draft, 'Build', 'first')
+  const second = chip(draft, 'Build', 'second', 1)
+  const team = { ...reference, display_name_snapshot: 'Atlas', source_text_start: 0, source_text_end: 7 }
+  const result = atomicComposerReferenceEdit(draft, `@Buil${draft.slice(6)}`, caretAt(6), [first, second], [])
+  assert.deepEqual(result, { text: '@Build go', caret: 0, nativeCaret: 5, chatReferences: [{ ...second, source_text_start: 0, source_text_end: 6 }], teamReferences: [] })
+  const mixed = `@@Atlas ${draft}`
+  const shifted = atomicComposerReferenceEdit(mixed, `@@Atla ${draft}`, caretAt(7), [chip(mixed, 'Build', 'first', 8)], [team])
+  assert.deepEqual(shifted, { text: draft, caret: 0, nativeCaret: 6, chatReferences: [first], teamReferences: [] })
+})
+
+test('one step in from a chip edge crosses it; a tap or drag lands on the nearer edge', () => {
+  const spans = [{ source_text_start: 4, source_text_end: 12 }]
+  assert.equal(caretOutsideComposerReferences(5, spans, 0), 4)
+  assert.equal(caretOutsideComposerReferences(8, spans, 0), 12)
+  assert.equal(caretOutsideComposerReferences(10, spans, 20), 12)
+  assert.equal(caretOutsideComposerReferences(5, spans, 4), 12)
+  assert.equal(caretOutsideComposerReferences(6, spans, 4), 12, 'two UTF-16 units: one surrogate-pair character')
+  assert.equal(caretOutsideComposerReferences(7, spans, 4), 4)
+  assert.equal(caretOutsideComposerReferences(11, spans, 12), 4)
+  assert.equal(caretOutsideComposerReferences(9, spans, 12), 12, 'a tap in the right half with the caret at the end stays at the end')
+  for (const caret of [3, 4, 12, 13]) assert.equal(caretOutsideComposerReferences(caret, spans, 0), caret)
+})
+
+test('a drag across a chip settles on the nearer edge instead of flipping every event', () => {
+  const spans = [{ source_text_start: 4, source_text_end: 16 }]
+  let caret = 4
+  const landed = [4, 5, 6, 7, 8, 9, 10].map(position => (caret = caretOutsideComposerReferences(position, spans, caret)))
+  // 4 -> 5 is a one-character step, the same as an arrow key, so it crosses once.
+  // Crossing on every edge-adjacent landing would give 4, 16, 4, 16, 4, 16, 4.
+  assert.deepEqual(landed, [4, 16, 4, 4, 4, 4, 16])
 })

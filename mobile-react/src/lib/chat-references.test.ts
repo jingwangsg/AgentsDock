@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import type { Backend, ChatReference, Health, NewAgentSettings } from '../types'
 import {
-  caretAfterTextChange,
   chatMentionAction,
   chatMentionTrigger,
   chatReferenceWithAction,
@@ -131,14 +130,6 @@ assert.deepEqual(trigger, { kind: '@', start: 4, end: 8, query: 'tar' })
 assert.deepEqual(chatMentionTrigger('Ask @', 'Ask @'.length), { kind: '@', start: 4, end: 5, query: '' })
 const slash = chatMentionTrigger('Please /chat Target', 'Please /chat Target'.length)
 assert.deepEqual(slash, { kind: '/chat', start: 7, end: 19, query: 'Target' })
-
-assert.equal(caretAfterTextChange('Ask ', 'Ask @', { start: 4, end: 4 }), 5)
-assert.equal(
-  caretAfterTextChange('Ask ', 'Ask @', { start: 0, end: 0 }),
-  5,
-  'a stale iOS selection must fall back to the actual contiguous text edit',
-)
-assert.equal(caretAfterTextChange('Ask abc', 'Ask @', { start: 4, end: 7 }), 5)
 
 assert(trigger)
 const inserted = insertChatReference('Ask @tar', trigger, { id: 'target', title: 'Target' }, 'request_reply')

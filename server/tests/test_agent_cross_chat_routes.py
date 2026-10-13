@@ -19,47 +19,38 @@ import agent_server
 
 
 class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_issued_delegation_is_target_scoped_private_and_user_origin_only(self) -> None:
+    async def test_issued_instruction_is_private_and_user_origin_only(self) -> None:
         prompt = "Ask @Target to research the issue. Do not modify or deploy anything."
-        reference = self.grant_reference(start=4)
-        # A pair, made by the user's own earlier @, delegates on every later user turn; a plain route does not.
-        pair = {**self.route("2"), "pair_id": "pair_" + "2" * 32, "paired_route_id": "route_" + "3" * 32}
-        for number, (user_turn, references, routes, expected) in enumerate((
-            (True, [reference], [self.route("1")], {("target", "route")}),
-            (False, [reference], [self.route("1")], set()),
-            (True, [], [self.route("1")], set()),
-            (True, [], [pair], {("target", "route")}),
-            (False, [], [pair], set()),
-        )):
-            with self.subTest(user_turn=user_turn, has_reference=bool(references), paired=routes == [pair]):
-                run_id = f"run_delegation_{number}"
+        for user_turn in (True, False):
+            with self.subTest(user_turn=user_turn):
+                run_id = f"run_delegation_{user_turn}"
                 authority = await agent_server.issue_cross_chat_capability(
-                    "source", run_id, references, source_user_instruction=prompt,
+                    "source", run_id, [self.grant_reference(start=4)], source_user_instruction=prompt,
                     source_is_user_turn=user_turn, actions={"agent_cross_chat_routes"},
-                    provider_route_snapshot=routes, async_route_v1=True,
+                    provider_route_snapshot=[], async_route_v1=True,
                 )
                 self.assertIsNotNone(authority)
-                serialized = authority.read_text()
                 record = next(row for row in agent_server.CROSS_CHAT_CAPABILITIES.values()
                               if row["source_run_id"] == run_id)
-                self.assertEqual(record["user_delegation_grants"], expected)
+                self.assertIs(record["source_is_user_turn"], user_turn)
                 self.assertEqual(record["source_user_instruction"], prompt)
-                self.assertNotIn(prompt, serialized)
-                self.assertNotIn("user_delegation_grants", serialized)
+                self.assertNotIn(prompt, authority.read_text())
 
-    def test_mail_to_a_paired_chat_on_another_server_delegates_on_the_users_own_turn_only(self) -> None:
-        # send_cross_server_mail needs a live run, the lifecycle lock and the ledger; the rule is
-        # evaluated with only `capability` in scope, so it can depend on nothing else.
+    def test_mail_on_a_users_turn_delegates_its_latest_message_to_any_chat(self) -> None:
+        delegates = agent_server.provider_run_delegates
+        self.assertTrue(delegates({"source_is_user_turn": True, "source_user_instruction": "Reply pong."}))
+        # A message without text (attachments only) has nothing to delegate.
+        self.assertFalse(delegates({"source_is_user_turn": True, "source_user_instruction": " "}))
+        # A wake, a job, a delivery or a guest's message is not the user's instruction.
+        self.assertFalse(delegates({"source_is_user_turn": False, "source_user_instruction": "Reply pong."}))
+        self.assertFalse(delegates({"source_user_instruction": "Reply pong."}))
+        # Mail to a chat here and to one on another server use this one rule.
         tree = ast.parse(Path(agent_server.__file__).read_text(encoding="utf-8"))
-        send = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
-                    and node.name == "send_cross_server_mail")
-        assignment = next(node for node in ast.walk(send) if isinstance(node, ast.Assign)
-                          and any(isinstance(target, ast.Name) and target.id == "delegated" for target in node.targets))
-        rule = compile(ast.Expression(assignment.value), "<delegated>", "eval")
-        self.assertTrue(eval(rule, {"capability": {"source_is_user_turn": True}, "instruction": "Reply pong."}))
-        self.assertFalse(eval(rule, {"capability": {"source_is_user_turn": True}, "instruction": " "}))
-        self.assertFalse(eval(rule, {"capability": {"source_is_user_turn": False}, "instruction": "Reply pong."}))
-        self.assertFalse(eval(rule, {"capability": {}, "instruction": "Reply pong."}))
+        for name in ("reserve_async_provider_route_message", "send_cross_server_mail"):
+            send = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name)
+            assignment = next(node for node in ast.walk(send) if isinstance(node, ast.Assign)
+                              and any(isinstance(target, ast.Name) and target.id == "delegated" for target in node.targets))
+            self.assertEqual(ast.unparse(assignment.value), "provider_run_delegates(capability)", name)
 
     def test_route_request_cannot_supply_delegation_provenance(self) -> None:
         request = agent_server.AgentRouteHandoffRequest.model_validate({
@@ -323,6 +314,7 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         self,
         session_id: str,
         request: agent_server.TurnRequest,
+        **start: object,
     ) -> tuple[dict[str, object], list[tuple[str, dict]]]:
         """Run admission through its durable event, stopping before launch."""
 
@@ -400,6 +392,7 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
                     queue_if_busy=False,
                     provider_context_mode="chat",
                     admission_backend="codex",
+                    **start,
                 )
         return issued, events
 
@@ -1453,6 +1446,45 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             {"target", "other"},
         )
 
+    async def test_a_chat_on_another_server_is_a_chip_once_the_hub_paired_it(self) -> None:
+        remote = {"route_id": "route_" + "e" * 32, "pair_id": "pair_" + "e" * 32, "session_id": "source",
+                  "peer_server_identity": "server-b-identity", "peer_server_name": "gb300",
+                  "peer_session_id": "sess_remote", "peer_title": "Monitor", "alias": "remote1"}
+        prompt = "ask @Monitor · gb300 to pull"
+        chip = agent_server.ChatReference(
+            session_id="sess_remote", display_title_snapshot="Monitor · gb300", source_text_start=4,
+            source_text_end=4 + len("@Monitor · gb300"), action="route",
+            target_kind="cross_server", target_server_identity="server-b-identity",
+        )
+        capabilities = [agent_server.AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY]
+        with self.native_transports():
+            with self.assertRaises(HTTPException) as unpaired:
+                agent_server.validate_chat_references("source", prompt, [chip], capabilities)
+            self.assertEqual(unpaired.exception.status_code, 409)
+            with patch.dict(agent_server.CROSS_SERVER_ROUTES, {remote["route_id"]: remote}):
+                self.assertEqual(agent_server.validate_chat_references("source", prompt, [chip], capabilities), [chip])
+                agent_server.CURRENT_TURNS["source"] = {"run_id": "run_remote_chip"}
+                authority = await agent_server.issue_cross_chat_capability(
+                    "source", "run_remote_chip", [chip], actions={"agent_cross_chat_routes"},
+                    async_route_v1=True, chat_routes_live=True,
+                )
+                request = self.provider_request(json.loads(authority.read_text())["provider_capability"])
+                listed = (await agent_server.list_provider_cross_chat_routes(request))["routes"]
+                self.assertEqual([(row["route_id"], row.get("mentioned")) for row in listed],
+                                 [(remote["route_id"], True)])
+        # A queued message whose pair was removed starts with the chip as text.
+        _issued, events = await self.capture_start_admission(
+            "source", agent_server.TurnRequest(prompt=prompt, chat_references=[chip],
+                                               client_capabilities=capabilities),
+            accepted_provider_route_snapshot=[],
+        )
+        started = next(payload for event_type, payload in events if event_type == "turn_started")
+        self.assertEqual(started["chat_references"], [])
+        # Its shape is fixed: a route reference that names the other server only.
+        for change in ({"action": "instruction"}, {"grant_intent": True}, {"target_route_id": "route_" + "f" * 32}):
+            with self.subTest(change=change), self.assertRaises(ValidationError):
+                agent_server.ChatReference(**{**chip.model_dump(exclude_none=True), **change})
+
     def test_agents_are_told_one_path_to_other_chats(self) -> None:
         for text in (agent_server.PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS, agent_server.PROVIDER_TOOL_DESCRIPTION):
             self.assertNotIn("--target-index", text)
@@ -1581,59 +1613,55 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(narrowed["routes"][0]["available"])
             self.assertTrue(token)
 
-    async def test_native_steer_cannot_reuse_durable_route_authority(self) -> None:
-        snapshot = [self.route("a")]
-        selected = {
-            "prompt": "replacement",
-            "provider_cross_chat_route_snapshot": snapshot,
-        }
-        with self.assertRaises(agent_server.NativeSteerHandoffError):
-            agent_server.native_steer_provider_actions("source", selected)
-        self.assertFalse(
-            agent_server.provider_route_snapshot_allows_native_steer(snapshot)
-        )
-        # A user's plain message still reaches the chat's pairs, read live.
-        actions, _jobs_access = agent_server.native_steer_provider_actions(
-            "source",
-            {"prompt": "route-free replacement"},
-        )
-        self.assertIn("agent_cross_chat_routes", actions)
-        actions, _jobs_access = agent_server.native_steer_provider_actions(
-            "source",
-            {"prompt": "route-free replacement", "purpose": "scheduled_job"},
-        )
-        self.assertNotIn("agent_cross_chat_routes", actions)
-
-    async def test_native_steer_keeps_the_running_turns_exact_durable_routes(self) -> None:
+    async def test_native_steer_takes_a_users_message_whatever_the_recorded_routes(self) -> None:
         # 2026-10-08: a chat with a permanent route pair could never steer, so
         # Send now interrupted the turn and the CLI killed its agents.
+        # 2026-10-13: a turn that started before a new agent was paired
+        # refused the follow-up. A user's message reads the chat's routes live.
         snapshot = [self.route("a")]
-        selected = {
-            "prompt": "follow-up",
-            "provider_cross_chat_route_snapshot": snapshot,
-        }
-        self.assertTrue(
-            agent_server.provider_route_snapshots_match_for_native_steer(snapshot, snapshot)
-        )
-        actions, _jobs_access = agent_server.native_steer_provider_actions(
-            "source", selected, active_route_snapshot=snapshot,
-        )
-        self.assertIn("agent_cross_chat_routes", actions)
-        changed_revision = [dict(self.route("a"), revision="rev_" + "b" * 32)]
         second = self.route("b", alias="other", target="target2")
-        for active in ([], [second], changed_revision, [self.route("a"), second]):
+        for active in ([], snapshot, [second], [dict(self.route("a"), revision="rev_" + "b" * 32)]):
             with self.subTest(active=active):
-                self.assertFalse(
-                    agent_server.provider_route_snapshots_match_for_native_steer(active, snapshot)
+                actions, _jobs_access = agent_server.native_steer_provider_actions(
+                    "source", {"prompt": "follow-up", "provider_cross_chat_route_snapshot": snapshot},
+                    active_route_snapshot=active,
                 )
-                with self.assertRaises(agent_server.NativeSteerHandoffError):
-                    agent_server.native_steer_provider_actions(
-                        "source", selected, active_route_snapshot=active,
-                    )
+                self.assertIn("agent_cross_chat_routes", actions)
+        # Its @ chips join when they name chats the run reaches live.
+        route_chip = {"session_id": "target", "display_title_snapshot": "Target", "source_text_start": 0,
+                      "source_text_end": 7, "action": "route", "grant_intent": True}
+        remote_chip = {**route_chip, "target_kind": "cross_server", "target_server_identity": "server-b-identity"}
+        del remote_chip["grant_intent"]
+        for chip, joins in ((route_chip, True), (remote_chip, True), ({**route_chip, "action": "instruction"}, False)):
+            with self.subTest(chip=chip["action"], kind=chip.get("target_kind")):
+                selected = {"prompt": "@Target check", "chat_references": [chip]}
+                if joins:
+                    agent_server.native_steer_provider_actions("source", selected)
+                else:
+                    with self.assertRaises(agent_server.NativeSteerHandoffError):
+                        agent_server.native_steer_provider_actions("source", selected)
+        # A user's message joining another kind of turn keeps its exact routes.
+        with self.assertRaises(agent_server.NativeSteerHandoffError):
+            agent_server.native_steer_provider_actions(
+                "source", {"prompt": "follow-up", "provider_cross_chat_route_snapshot": snapshot},
+                active_route_snapshot=[], active_purpose="scheduled_job",
+            )
+        # Other work keeps exactly the running turn's routes, and gets none of the chat's.
+        job = {"prompt": "job", "purpose": "scheduled_job"}
+        actions, _jobs_access = agent_server.native_steer_provider_actions("source", job)
+        self.assertNotIn("agent_cross_chat_routes", actions)
+        with self.assertRaises(agent_server.NativeSteerHandoffError):
+            agent_server.native_steer_provider_actions("source", job, active_route_snapshot=snapshot)
+
+    def test_route_match_rule_compares_exact_routes(self) -> None:
+        snapshot = [self.route("a")]
+        second = self.route("b", alias="other", target="target2")
+        self.assertTrue(agent_server.provider_route_snapshots_match_for_native_steer(snapshot, snapshot))
+        for active in ([second], [dict(self.route("a"), revision="rev_" + "b" * 32)], [self.route("a"), second]):
+            with self.subTest(active=active):
+                self.assertFalse(agent_server.provider_route_snapshots_match_for_native_steer(active, snapshot))
         # The running turn holds a route the message no longer carries.
-        self.assertFalse(
-            agent_server.provider_route_snapshots_match_for_native_steer(snapshot, [])
-        )
+        self.assertFalse(agent_server.provider_route_snapshots_match_for_native_steer(snapshot, []))
 
     async def test_admin_crud_uses_revision_cas_for_revoke(self) -> None:
         audit = AsyncMock()
@@ -4904,7 +4932,7 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("provider_cross_chat_route_snapshot", safe)
         self.assertIsInstance(safe["output"], str)
 
-    async def test_force_send_never_native_steers_route_grants_in_either_direction(self) -> None:
+    async def test_force_send_of_internal_work_never_native_steers_other_routes(self) -> None:
         route = self.route("a")
         for active_snapshot, queued_snapshot in (([route], []), ([], [route])):
             agent_server.ACTIVE["source"] = {
@@ -4919,6 +4947,7 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             agent_server.QUEUED_TURNS["source"] = deque([{
                 "queued_id": "queued_force",
                 "prompt": "next",
+                "purpose": "handoff_digest",
                 "backend": "codex",
                 "chat_references": [],
                 "cross_chat_obligation_ids": [],

@@ -64,6 +64,7 @@ import { checkpointRestoreAvailable, sessionRewindAvailable } from '../lib/sessi
 import {
   agentCrossChatRoutesAvailable,
   chatReferencesEqual,
+  crossServerChatReferencesAccepted,
   interactiveClientCapabilities,
   localChatReferenceContractSupported,
   reconcileChatReferences,
@@ -2613,10 +2614,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const rawReferences = consumeComposer
       ? options?.chatReferences ?? get().chatReferencesBySession[sessionId] ?? []
       : []
-    // The composer paired cross-server chips through the hub before this call; the
-    // server rejects their kind, so the turn carries their chip text only. They stay
-    // in rawReferences, which must equal the composer's to consume or restore it.
-    const requestedReferences = rawReferences.filter(reference => reference.target_kind !== 'cross_server').map(reference => ({
+    // The composer paired cross-server chips through the hub before this call. A server
+    // that takes them gets the chip; an older one rejects their kind, so the turn carries
+    // their text only. They stay in rawReferences, which must equal the composer's to
+    // consume or restore it.
+    const crossServerAccepted = crossServerChatReferencesAccepted(get().health)
+    const requestedReferences = rawReferences.filter(reference => crossServerAccepted || reference.target_kind !== 'cross_server').map(reference => ({
       ...reference,
       source_text_start: reference.source_text_start - leadingWhitespace,
       source_text_end: reference.source_text_end - leadingWhitespace,
@@ -2655,6 +2658,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const state = get()
       const targetBackends = supportedCrossChatTargetBackends(state.health)
       const unsupported = chatReferences.some(reference => {
+        // The composer paired it through the hub; its chat is on another server.
+        if (reference.target_kind === 'cross_server') return false
         const target = state.sessions.find(candidate => candidate.id === reference.session_id)
         return !localChatReferenceContractSupported(state.health, reference)
           || !target
