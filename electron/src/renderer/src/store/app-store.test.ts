@@ -79,6 +79,18 @@ describe('ingestTimeline', () => {
     const previous = snapshot('chat-a', [eventFor('chat-a', 5)])
     expect(ingestTimeline(previous, { events: [mail(6, 'chat-a'), mail(7, 'chat-b')] }).files.map(file => file.id)).toEqual(['mail6'])
   })
+
+  it('drops the files of a cancelled message, which the server deletes', () => {
+    const files = [{ id: 'mail6', session_id: 'chat-a', filename: 'report.pdf', size: 10 }]
+    const received = ingestTimeline(snapshot('chat-a', [eventFor('chat-a', 5)]), {
+      events: [eventFor('chat-a', 6, { type: 'chat_conversation_message_received', attachments: files })]
+    })
+    const cancelled = ingestTimeline(received, {
+      events: [eventFor('chat-a', 7, { type: 'chat_conversation_message_cancelled', attachments: files })]
+    })
+    expect([received.files.length, received.filesTotal]).toEqual([1, 1])
+    expect([cancelled.files, cancelled.filesTotal]).toEqual([[], 0])
+  })
 })
 
 describe('cross-chat queue refresh signals', () => {

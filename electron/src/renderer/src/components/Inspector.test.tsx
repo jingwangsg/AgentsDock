@@ -192,6 +192,29 @@ describe('Inspector', () => {
     expect(screen.queryByText('first-chat-only.txt')).not.toBeInTheDocument()
   })
 
+  it('lists what the server still has after the store drops a file, such as a cancelled message attachment', async () => {
+    const mailFile = { id: 'art_mail', session_id: 'chat-1', filename: 'cancelled.bin', size: 4 }
+    const kept = { id: 'art_kept', session_id: 'chat-1', filename: 'kept.png', size: 4 }
+    const list = vi.fn().mockResolvedValue({ files: [kept], total: 1, offset: 0, limit: 60, has_more: false })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { pins: { list: vi.fn().mockResolvedValue([]) }, files: { list, mediaURL: vi.fn() } } as unknown as AgentsDockAPI
+    })
+    const chat = { id: 'chat-1', title: 'Receiver', backend: 'codex' as const }
+    const snapshot = (files: typeof mailFile[]) => ({
+      session: chat, events: [], queuedTurns: [], files, hasMoreEvents: false, filesTotal: files.length, cachedAt: 1
+    })
+    useAppStore.setState({ selectedSessionId: chat.id, sessions: [chat], jobs: [], snapshots: { [chat.id]: snapshot([mailFile, kept]) } })
+    render(<Inspector />)
+    expect(screen.getByText('Media & files').parentElement).toHaveTextContent('2/2')
+    expect(list).not.toHaveBeenCalled()
+    act(() => useAppStore.setState({ snapshots: { [chat.id]: snapshot([kept]) } }))
+    await waitFor(() => expect(list).toHaveBeenCalledExactlyOnceWith(chat.id, 0, 60))
+    fireEvent.click(screen.getByText('Media & files'))
+    expect(await screen.findByText('kept.png')).toBeInTheDocument()
+    expect(screen.queryByText('cancelled.bin')).not.toBeInTheDocument()
+  })
+
   it('uses the active profile for inspector media with a reused file ID', async () => {
     const mediaURL = vi.fn((profileId: string, generation: number, sessionId: string, fileId: string) => `agentsdock-media://file/${profileId}/${generation}/${sessionId}/${fileId}`)
     Object.defineProperty(window, 'agentsDock', {

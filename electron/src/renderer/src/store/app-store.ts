@@ -3948,16 +3948,21 @@ export function ingestTimeline(previous: SessionSnapshot, input: TimelineIngest)
   const retainedBefore = ranges.length ? withoutRewoundEvents(previous.events, ranges) : previous.events
 
   const carried: AgentFile[] = []
+  const cancelledFileIds = new Set<string>()
   for (const event of incoming) {
     if (event.seq <= knownTail) continue
     if (event.file && agentFileBelongsToSession(event.file, sessionId)) carried.push(event.file)
     if (event.artifact && agentFileBelongsToSession(event.artifact, sessionId)) carried.push(event.artifact)
     // Mail attachments are copies the receiving chat owns; the sender's events carry them too.
-    carried.push(...chatMailAttachments(event).filter(file => agentFileBelongsToSession(file, sessionId)))
+    const mailFiles = chatMailAttachments(event).filter(file => agentFileBelongsToSession(file, sessionId))
+    // The server deletes a cancelled message's copies.
+    if (event.type === 'chat_conversation_message_cancelled') mailFiles.forEach(file => cancelledFileIds.add(file.id))
+    else carried.push(...mailFiles)
   }
   const mergedFiles = carried.length ? mergeFiles(previous.files, carried) : previous.files
-  const keptFiles = ranges.length
-    ? mergedFiles.filter(file => file.seq == null || !ranges.some(([from, through]) => file.seq! >= from && file.seq! <= through))
+  const keptFiles = ranges.length || cancelledFileIds.size
+    ? mergedFiles.filter(file => !cancelledFileIds.has(file.id)
+      && (file.seq == null || !ranges.some(([from, through]) => file.seq! >= from && file.seq! <= through)))
     : mergedFiles
   const files = keptFiles.length === mergedFiles.length ? mergedFiles : keptFiles
 

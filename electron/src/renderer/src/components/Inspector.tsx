@@ -41,6 +41,7 @@ export function Inspector({ embedded = false, afterMedia }: { embedded?: boolean
   const [preview, setPreview] = useState<AgentFile | null>(null)
   const sessionRequest = useRef(0)
   const fileRequest = useRef(0)
+  const shownSnapshotFileIds = useRef<ReadonlySet<string>>(new Set())
 
   useEffect(() => {
     const request = ++sessionRequest.current
@@ -52,6 +53,7 @@ export function Inspector({ embedded = false, afterMedia }: { embedded?: boolean
     setPins([])
     if (!session || !pinProfileScope) { setPins([]); setFiles([]); setFilesTotal(0); return }
     const ownedSnapshotFiles = snapshotFiles.filter(file => agentFileBelongsToSession(file, session.id))
+    shownSnapshotFileIds.current = new Set(ownedSnapshotFiles.map(file => file.id))
     setFiles(ownedSnapshotFiles)
     setFilesTotal(Math.max(ownedSnapshotFiles.length, snapshotFilesTotal - (snapshotFiles.length - ownedSnapshotFiles.length)))
     void window.agentsDock.pins.list(pinProfileScope, session.id).then(items => {
@@ -90,8 +92,13 @@ export function Inspector({ embedded = false, afterMedia }: { embedded?: boolean
   useEffect(() => {
     if (!session) return
     const ownedSnapshotFiles = snapshotFiles.filter(file => agentFileBelongsToSession(file, session.id))
+    const ownedIds = new Set(ownedSnapshotFiles.map(file => file.id))
+    const dropped = [...shownSnapshotFileIds.current].some(id => !ownedIds.has(id))
+    shownSnapshotFileIds.current = ownedIds
     setFiles(current => mergeFiles(current, ownedSnapshotFiles))
     setFilesTotal(Math.max(ownedSnapshotFiles.length, snapshotFilesTotal - (snapshotFiles.length - ownedSnapshotFiles.length)))
+    // The store dropped a file (a cancelled message's attachment, a rewound turn's file): list what the server still has.
+    if (dropped) void loadFiles(true)
   }, [session?.id, snapshotFiles, snapshotFilesTotal])
 
   const loadFiles = async (reset = false) => {

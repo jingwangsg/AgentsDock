@@ -52,7 +52,9 @@ Server-to-server, with the remote's own token through the hub's tunnel:
 
 ```text
 GET    /api/admin/cross-server/outbox?wait=S      due items; long poll up to 55 s
+GET    /api/admin/cross-server/outbox/{id}/attachments/{n}  a sent message's file
 POST   /api/admin/cross-server/outbox/{id}/result delivered | failed | pending (retry_after)
+PUT    /api/admin/cross-server/inbox/{message_id}/attachments/{n}  a file of the mail delivered next
 POST   /api/admin/cross-server/inbox              store mail from a paired chat
 POST   /api/admin/cross-server/receipts           a sent message was read
 GET    /api/admin/cross-server/sessions/{id}      title/backend, for pairing
@@ -95,6 +97,30 @@ with that profile's token (the hub token); any other server is its own hub.
   mailbox wake can start right after (not after Stop, for a removed pair, or
   behind an update).
 
+## Attachments
+
+- `--attach` works as for a chat on the same server
+  ([CROSS_CHAT_HANDOFFS_PLAN.md](CROSS_CHAT_HANDOFFS_PLAN.md#attachments)), with
+  at most 64 MiB in one message: hub-to-remote links measured 100-400 KiB/s.
+- The sending server keeps a snapshot of each file in its state until the
+  message is delivered or failed; its outbox item lists each file's name,
+  size, SHA-256 and type.
+- For each file the hub downloads the snapshot from the sending server and
+  uploads it to the receiving server, then delivers the message. A transfer
+  fails when it stalls for 15 s or runs longer than 15 s plus one second per
+  32 KiB. The sending server's pump waits for it, so its other mail queues
+  behind a large file.
+- The receiving server checks each file's size and SHA-256, copies the files
+  into the receiving chat as for local mail, then stores the message. When a
+  file arrived incomplete or could not be copied it answers 503, and the hub
+  uploads every file again on its next attempt.
+- The hub asks for mail with files with `attachments=1` on the outbox poll. A
+  hub that predates attachments does not, so such mail waits until a newer hub
+  picks it up. When the receiving remote's `cross_server_mail_v1` capability
+  lacks `attachments: true`, the hub probes it again; if it still lacks it,
+  the message fails at once with a request to update that server.
+- The sender's card shows no files, because they are on the other server.
+
 ## Not covered
 
 - No UI lists or removes cross-server pairs yet; `DELETE
@@ -102,5 +128,5 @@ with that profile's token (the hub token); any other server is its own hub.
   keeps its half; its mail is then rescheduled until it fails after 24 hours.
 - Delegation is attached only on the user's own turn, never on a steer, a
   scheduled job or a relayed turn.
-- Attachments: the relay carries text only, so a message with `--attach` to a
-  chat on another server is refused (409) before anything is stored.
+- Files the hub uploaded for a message that then fails before delivery (its
+  pair removed, or 24 hours passed) stay in the receiving server's state.

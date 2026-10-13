@@ -412,6 +412,8 @@ HANDOFF_DIGEST_JOBS_FILE = STATE_DIR / "handoff_digest_jobs.json"
 CROSS_CHAT_DB_FILE = STATE_DIR / "cross_chat.sqlite3"
 CROSS_CHAT_AUTHORITY_ROOT = STATE_DIR / "cross_chat_authority"
 FILES_ROOT = STATE_DIR / "files"
+# Files of mail to and from chats on other servers until the hub has moved them.
+CROSS_SERVER_ATTACHMENTS_ROOT = STATE_DIR / "cross-server-attachments"
 CODE_DIFFS_ROOT = STATE_DIR / "code_diffs"
 HOST_HEALTH_FILE = STATE_DIR / "host_health.jsonl"
 SERVER_ADMIN_ROOT = STATE_DIR / "admin"
@@ -1404,6 +1406,9 @@ MAX_OPENCODE_ATTACHMENT_TOTAL_BYTES = min(
 # per file (the Team Network default) and 1 GiB per message.
 MAX_CHAT_MAIL_ATTACHMENT_FILE_BYTES = min(MAX_UPLOAD_BYTES, 512 * 1024 * 1024)
 MAX_CHAT_MAIL_ATTACHMENT_TOTAL_BYTES = min(MAX_UPLOAD_BYTES, 1024 * 1024 * 1024)
+# Mail to a chat on another server crosses the hub's tunnels, measured at
+# 100-400 KiB/s: 64 MiB takes 3-11 minutes.
+MAX_CROSS_SERVER_MAIL_ATTACHMENT_BYTES = 64 * 1024 * 1024
 MAX_ARTIFACT_PUBLISH_FILES = int(agentsdock_setting("ARTIFACT_PUBLISH_MAX_FILES", "64"))
 MAX_ARTIFACT_TITLE_CHARS = int(agentsdock_setting("ARTIFACT_TITLE_MAX_CHARS", "1000"))
 MAX_ARTIFACT_TEXT_CHARS = int(agentsdock_setting("ARTIFACT_TEXT_MAX_CHARS", "12000"))
@@ -85051,7 +85056,7 @@ async def health() -> dict[str, Any]:
                 **remote_servers.capability(REMOTE_SERVERS),
                 "available": bool(AGENT_TOKEN),
             },
-            cross_server_mail.CAPABILITY: {"available": bool(AGENT_TOKEN)},
+            cross_server_mail.CAPABILITY: {"available": bool(AGENT_TOKEN), "attachments": True},
             "workspace_files": {
                 "available": WORKSPACE_SECURE_OPEN_AVAILABLE,
                 "required": False,
@@ -97875,8 +97880,6 @@ async def submit_provider_route_handoff(
     source_session_id = await provider_route_capability_source(request)
     attachment_paths = list(getattr(req, "attachments", None) or [])
     if route_id in CROSS_SERVER_ROUTES:
-        if attachment_paths:
-            raise HTTPException(status_code=409, detail="attachments to a chat on another server are not supported yet")
         return await send_cross_server_mail(request, source_session_id, route_id, body, req)
     staged: list[dict[str, Any]] = []
     copies_kept = False
@@ -101637,6 +101640,48 @@ async def load_cross_server_routes() -> None:
     CROSS_SERVER_ROUTES.update({route["route_id"]: route for route in await CROSS_CHAT.cross_server_call("routes")})
 
 
+def cross_server_attachment_dir(box: Literal["outbox", "inbox"], message_id: str) -> Path:
+    # load-bearing: the id becomes a directory name; the pattern keeps `..` and `/` out.
+    if not cross_server_mail.MESSAGE_ID_RE.fullmatch(message_id):
+        raise cross_server_mail.Refused("The message has an invalid id.")
+    return CROSS_SERVER_ATTACHMENTS_ROOT / box / message_id
+
+
+def cross_server_snapshot(item: dict[str, Any], index: int) -> Path:
+    return cross_server_attachment_dir("outbox", item["message_id"]) / str(index) / item["attachments"][index]["filename"]
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def snapshot_cross_server_attachments(message_id: str, values: list[str]) -> list[dict[str, Any]]:
+    """Snapshot the files of mail to another server until the hub has delivered it; the sender's files are only read."""
+    paths = [Path(path) for path in provider_team_attachment_paths(values)]
+    if sum(path.stat().st_size for path in paths) > MAX_CROSS_SERVER_MAIL_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=413, detail=(
+            f"attachments to a chat on another server exceed {MAX_CROSS_SERVER_MAIL_ATTACHMENT_BYTES} bytes in total"))
+    folder = cross_server_attachment_dir("outbox", message_id)
+    # A snapshot left by an attempt that never stored its message.
+    shutil.rmtree(folder, ignore_errors=True)
+    attachments: list[dict[str, Any]] = []
+    try:
+        for index, path in enumerate(paths):
+            snapshot = folder / str(index) / safe_name(path.name)
+            snapshot.parent.mkdir(parents=True)
+            copy_fork_file_data(path, snapshot)
+            attachments.append({"filename": snapshot.name, "size": snapshot.stat().st_size,
+                                "sha256": file_sha256(snapshot), "content_type": guess_content_type(snapshot.name)})
+    except OSError as exc:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise HTTPException(status_code=409, detail=f"an attachment could not be copied: {exc}") from exc
+    return attachments
+
+
 async def send_cross_server_mail(request: Request, source_session_id: str, route_id: str, body: str,
                                  req: AgentRouteHandoffRequest) -> dict[str, Any]:
     """Queue a message for a paired chat on another server; the hub delivers it."""
@@ -101672,6 +101717,11 @@ async def send_cross_server_mail(request: Request, source_session_id: str, route
         message_id = "handoff_" + hashlib.sha256(
             f"cross_server\0{source_run_id}\0{req.idempotency_key}".encode("utf-8")
         ).hexdigest()[:32]
+        attachments: list[dict[str, Any]] = []
+        # A retry of a queued message keeps the first snapshot; the files total at most 64 MiB,
+        # so copying them under the lock stays short.
+        if req.attachments and await CROSS_CHAT.cross_server_call("outbox_item", message_id) is None:
+            attachments = await asyncio.to_thread(snapshot_cross_server_attachments, message_id, req.attachments)
         try:
             item, created = await CROSS_CHAT.cross_server_call("enqueue", {
                 "id": message_id, "message_id": message_id, "kind": "mail",
@@ -101683,8 +101733,11 @@ async def send_cross_server_mail(request: Request, source_session_id: str, route
                 "body": body, "reply_to_message_id": req.reply_to_message_id,
                 "source_user_instruction": instruction if delegated else "",
                 "source_user_delegation_action": "route" if delegated else "",
+                "attachments": attachments,
             })
         except cross_server_mail.Refused as exc:
+            if attachments:
+                shutil.rmtree(cross_server_attachment_dir("outbox", message_id), ignore_errors=True)
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     if created:
         CROSS_SERVER_OUTBOX_CHANGED.set()
@@ -101697,19 +101750,23 @@ async def send_cross_server_mail(request: Request, source_session_id: str, route
         "ok": True, "route_id": route_id, "action": "instruction", "accepted": True, "mode": "async_route_v1",
         "delivery_mode": "mailbox", "message_id": item["message_id"], "duplicate": not created,
         "state": "unread", "execution_started": False,
+        **({"attachments": len(req.attachments)} if req.attachments else {}),
     }
 
 
-async def cross_server_outbox_items(wait: float, *, paired_here: bool = False) -> list[dict[str, Any]]:
+async def cross_server_outbox_items(wait: float, *, paired_here: bool = False,
+                                    with_attachments: bool = True) -> list[dict[str, Any]]:
     """Due outbox items; with none due, wait up to `wait` seconds for one (the hub's long poll)."""
     deadline = time.monotonic() + max(0.0, min(wait, 55.0))
     while True:
         CROSS_SERVER_OUTBOX_CHANGED.clear()
-        items = await CROSS_CHAT.cross_server_call("due_outbox", cross_server_mail.now_iso(), paired_here=paired_here)
+        items = await CROSS_CHAT.cross_server_call("due_outbox", cross_server_mail.now_iso(), paired_here=paired_here,
+                                                   with_attachments=with_attachments)
         remaining = deadline - time.monotonic()
         if items or remaining <= 0:
             return items
-        due = await CROSS_CHAT.cross_server_call("next_due_at", paired_here=paired_here)
+        due = await CROSS_CHAT.cross_server_call("next_due_at", paired_here=paired_here,
+                                                 with_attachments=with_attachments)
         if due:
             until_due = (datetime.fromisoformat(due.replace("Z", "+00:00")) - datetime.now(timezone.utc)).total_seconds()
             remaining = min(remaining, max(0.5, until_due))
@@ -101719,8 +101776,11 @@ async def cross_server_outbox_items(wait: float, *, paired_here: bool = False) -
 
 async def record_cross_server_result(item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None:
     row = await CROSS_CHAT.cross_server_call("record_result", item_id, state, error=error, retry_after=retry_after)
-    if row is not None and row["state"] == "failed" and row["kind"] == "mail":
-        await notify_cross_server_mail_failed(row)
+    # record_result returns a row only once an item is delivered or failed: its snapshot is no longer needed.
+    if row is not None and row["kind"] == "mail":
+        shutil.rmtree(cross_server_attachment_dir("outbox", row["message_id"]), ignore_errors=True)
+        if row["state"] == "failed":
+            await notify_cross_server_mail_failed(row)
 
 
 async def notify_cross_server_mail_failed(row: dict[str, Any]) -> None:
@@ -101734,39 +101794,82 @@ async def notify_cross_server_mail_failed(row: dict[str, Any]) -> None:
 
 async def deliver_cross_server_mail(item: dict[str, Any], source_identity: str, source_name: str) -> None:
     """Store mail from a paired chat on another server as an ordinary mailbox message."""
-    target_session_id = str(item.get("target_session_id") or "")
-    peer = cross_server_mail.sender_key(source_identity, str(item.get("source_session_id") or ""))
-    route = cross_server_peer_route(target_session_id, peer)
-    session = STORE.sessions.get(target_session_id)
     message_id = str(item.get("message_id") or "")
-    body = str(item.get("body") or "").strip()
-    if (route is None or route["pair_id"] != item.get("pair_id") or not session or session.get("archived")
-            or target_session_id in DELETING_SESSIONS):
-        raise cross_server_mail.Refused("The receiving chat is not paired with the sender or no longer exists.")
-    if (not cross_server_mail.MESSAGE_ID_RE.fullmatch(message_id) or not body
-            or provider_cross_chat_route_body_exceeds_limit(body)):
-        raise cross_server_mail.Refused("The message is empty, too large or has an invalid id.")
-    title = str(item.get("source_title") or route["peer_title"])
-    if (title, source_name) != (route["peer_title"], route["peer_server_name"]):
-        await CROSS_CHAT.cross_server_call("rename_peer", route["route_id"], title, source_name)
-        route.update(peer_title=title, peer_server_name=source_name)
     try:
-        record, created = await CROSS_CHAT.create_instruction(
-            envelope_id=message_id, source_session_id=peer, source_run_id=str(item.get("source_run_id") or ""),
-            target_session_id=target_session_id, body=body, idempotency_key=str(item.get("idempotency_key") or ""),
-            authorization_kind="configured_route", authorization_route_id=route["route_id"],
-            authorization_pair_id=route["pair_id"], initial_status="stored",
-            reply_to_message_id=item.get("reply_to_message_id") or None,
-            # The sender's server attests its user's turn, as for a local pair.
-            source_user_instruction=str(item.get("source_user_instruction") or ""),
-            source_user_delegation_action=str(item.get("source_user_delegation_action") or ""),
-        )
-    except (ValueError, HTTPException, sqlite3.Error) as exc:
-        raise cross_server_mail.Refused(str(getattr(exc, "detail", exc))) from exc
-    if created:
-        prime_cross_chat_event_cache(record)
-    if await publish_chat_mailbox_message(record) == "unread":
-        schedule_chat_mailbox_wake(target_session_id)
+        target_session_id = str(item.get("target_session_id") or "")
+        peer = cross_server_mail.sender_key(source_identity, str(item.get("source_session_id") or ""))
+        route = cross_server_peer_route(target_session_id, peer)
+        session = STORE.sessions.get(target_session_id)
+        body = str(item.get("body") or "").strip()
+        if (route is None or route["pair_id"] != item.get("pair_id") or not session or session.get("archived")
+                or target_session_id in DELETING_SESSIONS):
+            raise cross_server_mail.Refused("The receiving chat is not paired with the sender or no longer exists.")
+        if (not cross_server_mail.MESSAGE_ID_RE.fullmatch(message_id) or not body
+                or provider_cross_chat_route_body_exceeds_limit(body)):
+            raise cross_server_mail.Refused("The message is empty, too large or has an invalid id.")
+        title = str(item.get("source_title") or route["peer_title"])
+        if (title, source_name) != (route["peer_title"], route["peer_server_name"]):
+            await CROSS_CHAT.cross_server_call("rename_peer", route["route_id"], title, source_name)
+            route.update(peer_title=title, peer_server_name=source_name)
+        staged = await receive_cross_server_attachments(item, target_session_id)
+        try:
+            record, created = await CROSS_CHAT.create_instruction(
+                envelope_id=message_id, source_session_id=peer, source_run_id=str(item.get("source_run_id") or ""),
+                target_session_id=target_session_id, body=body, idempotency_key=str(item.get("idempotency_key") or ""),
+                authorization_kind="configured_route", authorization_route_id=route["route_id"],
+                authorization_pair_id=route["pair_id"], initial_status="stored",
+                reply_to_message_id=item.get("reply_to_message_id") or None,
+                # The sender's server attests its user's turn, as for a local pair.
+                source_user_instruction=str(item.get("source_user_instruction") or ""),
+                source_user_delegation_action=str(item.get("source_user_delegation_action") or ""),
+                attachments=staged,
+            )
+        except (ValueError, HTTPException, sqlite3.Error) as exc:
+            await remove_artifact_records_async(staged)
+            raise cross_server_mail.Refused(str(getattr(exc, "detail", exc))) from exc
+        if created:
+            prime_cross_chat_event_cache(record)
+        else:
+            # A redelivery that raced the first one: the stored message keeps its first copies.
+            await remove_artifact_records_async(staged)
+        if await publish_chat_mailbox_message(record) == "unread":
+            schedule_chat_mailbox_wake(target_session_id)
+    finally:
+        # The files the hub uploaded for this message, stored or refused.
+        if cross_server_mail.MESSAGE_ID_RE.fullmatch(message_id):
+            shutil.rmtree(cross_server_attachment_dir("inbox", message_id), ignore_errors=True)
+
+
+async def receive_cross_server_attachments(item: dict[str, Any], target_session_id: str) -> list[dict[str, Any]]:
+    """Copy the files the hub uploaded for one message into the receiving chat, as same-server mail does."""
+    attachments = list(item.get("attachments") or [])
+    # A redelivered message already has its copies.
+    if not attachments or await CROSS_CHAT.get(str(item["message_id"])) is not None:
+        return []
+    inbox = cross_server_attachment_dir("inbox", str(item["message_id"]))
+
+    def verified_paths() -> list[str]:
+        paths: list[str] = []
+        for index, attachment in enumerate(attachments):
+            upload = inbox / f"{index}.upload"
+            if (not upload.is_file() or upload.stat().st_size != attachment["size"]
+                    or file_sha256(upload) != attachment["sha256"]):
+                # The hub uploads every file again on its next attempt.
+                raise HTTPException(status_code=503, detail="an attachment arrived incomplete")
+            named = inbox / str(index) / safe_name(attachment["filename"])
+            named.parent.mkdir()
+            upload.rename(named)
+            paths.append(str(named))
+        return paths
+
+    paths = await asyncio.to_thread(verified_paths)
+    try:
+        return await asyncio.to_thread(stage_chat_mail_attachments, target_session_id, paths)
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        # A copy that failed here (a full disk) may work on the hub's next attempt; a 409 would end the mail.
+        raise HTTPException(status_code=503, detail=exc.detail) from exc
 
 
 async def accept_cross_server_receipt(message_id: str, read_at: str) -> None:
@@ -101806,6 +101909,7 @@ async def uninstall_cross_server_pair(pair_id: str) -> None:
         if route["session_id"] in STORE.sessions:
             await refresh_chat_mailbox_pending(route["session_id"])
     for row in failed:
+        shutil.rmtree(cross_server_attachment_dir("outbox", row["message_id"]), ignore_errors=True)
         await notify_cross_server_mail_failed(row)
 
 
@@ -101832,6 +101936,17 @@ class LocalCrossServerEnd(cross_server_mail.End):
         except ValidationError as exc:
             raise cross_server_mail.Refused("The message is malformed.") from exc
         await deliver_cross_server_mail(checked.model_dump(), source_identity, source_name)
+
+    async def attachment(self, item: dict, index: int, folder: Path) -> Path:
+        snapshot = cross_server_snapshot(item, index)
+        if not snapshot.is_file():
+            raise cross_server_mail.Refused("The sending server no longer has this attachment.")
+        return snapshot
+
+    async def put_attachment(self, item: dict, index: int, path: Path) -> None:
+        upload = cross_server_attachment_dir("inbox", item["message_id"]) / f"{index}.upload"
+        upload.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(shutil.copyfile, path, upload)
 
     async def receipt(self, item: dict) -> None:
         await accept_cross_server_receipt(item["message_id"], item["created_at"])
@@ -101865,6 +101980,13 @@ class CrossServerResult(BaseModel):
     retry_after: float = Field(default=0.0, ge=0, le=3600)
 
 
+class CrossServerAttachment(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    size: int = Field(ge=0, le=MAX_CROSS_SERVER_MAIL_ATTACHMENT_BYTES)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_type: str = Field(default="application/octet-stream", max_length=200)
+
+
 class CrossServerDelivery(BaseModel):
     message_id: str = Field(max_length=64)
     pair_id: str = Field(max_length=64)
@@ -101879,6 +102001,7 @@ class CrossServerDelivery(BaseModel):
     reply_to_message_id: str | None = Field(default=None, max_length=64)
     source_user_instruction: str = Field(default="", max_length=CROSS_CHAT_SOURCE_USER_INSTRUCTION_MAX_CHARS)
     source_user_delegation_action: Literal["", "route"] = ""
+    attachments: list[CrossServerAttachment] = Field(default_factory=list, max_length=PROVIDER_TEAM_ATTACHMENT_LIMIT)
 
 
 class CrossServerReceipt(BaseModel):
@@ -101909,9 +102032,48 @@ class CrossServerPairRequest(BaseModel):
 
 # Server-to-server: only the hub that registered this server holds its token.
 @app.get("/api/admin/cross-server/outbox")
-async def get_cross_server_outbox(request: Request, wait: float = Query(default=0.0, ge=0, le=55)) -> dict[str, Any]:
+async def get_cross_server_outbox(
+    request: Request, wait: float = Query(default=0.0, ge=0, le=55), attachments: bool = False,
+) -> dict[str, Any]:
     require_native_admin_control(request)
-    return {"items": await cross_server_outbox_items(wait)}
+    # A hub that does not ask for mail with attachments predates them; that mail waits for a newer hub.
+    return {"items": await cross_server_outbox_items(wait, with_attachments=attachments)}
+
+
+@app.get("/api/admin/cross-server/outbox/{item_id}/attachments/{index}")
+async def get_cross_server_outbox_attachment(item_id: str, index: int, request: Request) -> FileResponse:
+    require_native_admin_control(request)
+    item = await CROSS_CHAT.cross_server_call("outbox_item", item_id)
+    if item is None or not 0 <= index < len(item["attachments"]) or not cross_server_snapshot(item, index).is_file():
+        raise HTTPException(status_code=404, detail="attachment was not found")
+    return FileResponse(cross_server_snapshot(item, index), media_type="application/octet-stream")
+
+
+@app.put("/api/admin/cross-server/inbox/{message_id}/attachments/{index}")
+async def put_cross_server_inbox_attachment(
+    message_id: str, index: int, request: Request,
+) -> dict[str, Any]:
+    require_native_admin_control(request)
+    if not 0 <= index < PROVIDER_TEAM_ATTACHMENT_LIMIT:
+        raise HTTPException(status_code=404, detail="attachment was not found")
+    try:
+        upload = cross_server_attachment_dir("inbox", message_id) / f"{index}.upload"
+    except cross_server_mail.Refused as exc:
+        raise refused_as_http(exc) from exc
+    upload.parent.mkdir(parents=True, exist_ok=True)
+    partial = upload.with_name(f".{upload.name}.{uuid.uuid4().hex}")
+    size = 0
+    try:
+        with partial.open("wb") as handle:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_CROSS_SERVER_MAIL_ATTACHMENT_BYTES:
+                    raise HTTPException(status_code=413, detail="the attachment is too large")
+                await asyncio.to_thread(handle.write, chunk)
+        partial.replace(upload)
+    finally:
+        partial.unlink(missing_ok=True)
+    return {"ok": True}
 
 
 @app.post("/api/admin/cross-server/outbox/{item_id}/result")

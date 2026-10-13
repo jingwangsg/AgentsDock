@@ -1,7 +1,10 @@
 """Cross-server chat mail: the hub relays only what its pair registry links."""
+import json
 import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
 
 import chat_mailbox
 import cross_server_mail as xs
@@ -87,6 +90,20 @@ class StorageTests(unittest.TestCase):
                               "b_session_id": "sess_remote", "b_route_id": REMOTE_ROUTE})
         self.assertEqual([row["id"] for row in xs.due_outbox(self.db, now, paired_here=True)], [MESSAGE])
 
+    def test_attachment_metadata_is_kept_and_hidden_from_a_hub_that_predates_it(self) -> None:
+        attachment = {"filename": "data.bin", "size": 3, "sha256": "0" * 64, "content_type": "application/octet-stream"}
+        xs.enqueue(self.db, mail(attachments=[attachment]))
+        now = xs.now_iso()
+        self.assertEqual([row["attachments"] for row in xs.due_outbox(self.db, now)], [[attachment]])
+        self.assertEqual(xs.outbox_item(self.db, MESSAGE)["attachments"], [attachment])
+        self.assertEqual(xs.due_outbox(self.db, now, with_attachments=False), [])
+        self.assertIsNone(xs.next_due_at(self.db, with_attachments=False))
+        text_only_id = "handoff_" + "d" * 32
+        xs.enqueue(self.db, mail(id=text_only_id, message_id=text_only_id, idempotency_key="key-00002"))
+        self.assertEqual([row["id"] for row in xs.due_outbox(self.db, xs.now_iso(), with_attachments=False)],
+                         [text_only_id])
+        self.assertIsNone(xs.outbox_item(self.db, "handoff_" + "e" * 32))
+
     def test_removing_a_pair_fails_its_undelivered_mail(self) -> None:
         xs.install_route(self.db, {"route_id": HUB_ROUTE, "pair_id": PAIR, "session_id": "sess_hub",
                                    "peer_server_identity": "srv-remote", "peer_server_name": "",
@@ -136,6 +153,9 @@ class FakeEnd(xs.End):
         self.results: list[tuple] = []
         self.delivered: list[tuple] = []
         self.receipts: list[dict] = []
+        self.calls: list[str] = []  # transfers and deliveries in order
+        self.snapshot_missing = False
+        self.server = identity  # what the relay probes again
 
     async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None:
         self.results.append((item_id, state, error, retry_after))
@@ -146,20 +166,36 @@ class FakeEnd(xs.End):
         if self.refuse:
             raise xs.Refused(self.refuse)
         self.delivered.append((item["message_id"], source_identity, source_name))
+        self.calls.append("deliver")
+
+    async def attachment(self, item: dict, index: int, folder: Path) -> Path:
+        if self.snapshot_missing:
+            raise xs.Refused("The sending server no longer has this attachment.")
+        path = folder / str(index)
+        path.write_text(item["attachments"][index]["filename"])
+        return path
+
+    async def put_attachment(self, item: dict, index: int, path: Path) -> None:
+        if self.down:
+            raise ConnectionError("tunnel down")
+        self.calls.append(f"put {index} {path.read_text()}")
 
     async def receipt(self, item: dict) -> None:
         self.receipts.append(item)
 
 
 class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
-    def relay(self, pair: dict | None, remote: FakeEnd) -> tuple[xs.Relay, FakeEnd]:
+    def relay(self, pair: dict | None, remote: FakeEnd, *, remote_health: dict | None = None) -> tuple[xs.Relay, FakeEnd]:
         hub = FakeEnd("srv-hub")
 
         async def ledger(name: str, *args):
             self.assertEqual(name, "get_pair")
             return pair
 
-        relay = xs.Relay(local=hub, remotes=None, ledger=ledger)
+        async def probe_health(server):
+            return remote_health
+
+        relay = xs.Relay(local=hub, remotes=SimpleNamespace(probe_health=probe_health), ledger=ledger)
         relay.remote_ends = {"r1": remote}
         return relay, hub
 
@@ -230,6 +266,62 @@ class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
         await relay.refresh()
         self.assertEqual(set(relay.remote_ends), {"r-ok"})
         self.assertIs(relay.ends()["srv-hub"], relay.local)
+        # A remote that does not advertise attachments predates them.
+        self.assertFalse(relay.remote_ends["r-ok"].accepts_attachments)
+
+    ATTACHMENTS = [{"filename": name, "size": 1, "sha256": "0" * 64, "content_type": "text/plain"}
+                   for name in ("first.txt", "second.txt")]
+
+    async def test_attachments_reach_the_target_before_their_message(self) -> None:
+        remote = FakeEnd("srv-remote")
+        relay, hub = self.relay(self.PAIR_ROW, remote)
+        await relay._route(hub, self.item(attachments=self.ATTACHMENTS), set())
+        self.assertEqual(remote.calls, ["put 0 first.txt", "put 1 second.txt", "deliver"])
+        self.assertEqual(hub.results, [(MESSAGE, "delivered", "", 0.0)])
+
+    async def test_a_target_that_predates_attachments_fails_the_message_at_once(self) -> None:
+        remote = FakeEnd("srv-remote")
+        remote.accepts_attachments = False
+        relay, hub = self.relay(self.PAIR_ROW, remote, remote_health={"capabilities": {xs.CAPABILITY: {"available": True}}})
+        await relay._route(hub, self.item(attachments=self.ATTACHMENTS), set())
+        await relay._route(hub, self.item(id="handoff_" + "f" * 32, message_id="handoff_" + "f" * 32), set())
+        self.assertEqual(remote.calls, ["deliver"])  # mail without attachments still goes through
+        self.assertEqual([result[1] for result in hub.results], ["failed", "delivered"])
+        self.assertIn("update it", hub.results[0][2])
+
+    async def test_a_target_updated_since_its_first_probe_gets_the_files(self) -> None:
+        remote = FakeEnd("srv-remote")
+        remote.accepts_attachments = False
+        health = {"capabilities": {xs.CAPABILITY: {"available": True, "attachments": True}}}
+        relay, hub = self.relay(self.PAIR_ROW, remote, remote_health=health)
+        await relay._route(hub, self.item(attachments=self.ATTACHMENTS), set())
+        self.assertEqual(remote.calls, ["put 0 first.txt", "put 1 second.txt", "deliver"])
+        self.assertTrue(remote.accepts_attachments)
+
+    async def test_text_mail_from_a_source_that_predates_attachments_lists_none(self) -> None:
+        sent: list[dict] = []
+
+        class Http:
+            async def request(self, method, url, **kwargs):
+                sent.append(kwargs["json"])
+                return SimpleNamespace(status_code=200, json=lambda: {"ok": True}, raise_for_status=lambda: None)
+
+        end = xs.RemoteEnd(Http(), SimpleNamespace(name="remote", local_port=1, token="t" * 32), "srv-remote")
+        item = {key: value for key, value in self.item().items() if key != "attachments"}
+        await end.deliver(item, "srv-hub", "")
+        self.assertEqual(sent[0]["attachments"], [])
+        self.assertEqual(json.loads(json.dumps(sent[0]))["body"], item["body"])
+
+    async def test_a_lost_snapshot_fails_and_a_failed_upload_is_retried(self) -> None:
+        remote = FakeEnd("srv-remote")
+        relay, hub = self.relay(self.PAIR_ROW, remote)
+        hub.snapshot_missing = True
+        await relay._route(hub, self.item(attachments=self.ATTACHMENTS), set())
+        self.assertEqual(hub.results[-1][:2], (MESSAGE, "failed"))
+        hub.snapshot_missing, remote.down = False, True
+        await relay._route(hub, self.item(attachments=self.ATTACHMENTS), set())
+        self.assertEqual(hub.results[-1], (MESSAGE, "pending", "tunnel down", 15.0))
+        self.assertEqual(remote.delivered, [])
 
     async def test_a_read_receipt_goes_back_to_the_sender(self) -> None:
         remote = FakeEnd("srv-remote")

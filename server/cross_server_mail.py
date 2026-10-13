@@ -13,13 +13,16 @@ cross-chat ledger, like chat_mailbox.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import secrets
 import sqlite3
+import tempfile
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -33,6 +36,9 @@ MESSAGE_ID_RE = re.compile(r"handoff_[0-9a-f]{32}\Z")
 OUTBOX_WAIT_SECONDS = 25.0
 DELIVERY_TTL = timedelta(hours=24)
 REMOTE_REQUEST_TIMEOUT = 15.0
+# An attachment transfer fails when it stalls for REMOTE_REQUEST_TIMEOUT or runs
+# slower than this overall; hub-to-remote links measured 100-400 KiB/s.
+TRANSFER_MIN_BYTES_PER_SECOND = 32 * 1024
 SEARCH_TIMEOUT = 4.0
 SEARCH_LIMIT = 500
 
@@ -89,7 +95,7 @@ def initialize(connection: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL, next_attempt_at TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0,
             state TEXT NOT NULL CHECK(state IN ('pending','delivered','failed')),
-            error TEXT, finished_at TEXT, read_at TEXT,
+            error TEXT, finished_at TEXT, read_at TEXT, attachments_json TEXT,
             UNIQUE(source_run_id, idempotency_key))""",
         """CREATE INDEX IF NOT EXISTS cross_server_outbox_due
             ON cross_server_outbox(state, next_attempt_at)""",
@@ -103,6 +109,8 @@ def initialize(connection: sqlite3.Connection) -> None:
     )
     for statement in statements:
         connection.execute(statement)
+    if "attachments_json" not in {row[1] for row in connection.execute("PRAGMA table_info(cross_server_outbox)")}:
+        connection.execute("ALTER TABLE cross_server_outbox ADD COLUMN attachments_json TEXT")
 
 
 def routes(connection: sqlite3.Connection) -> list[dict]:
@@ -162,31 +170,42 @@ def enqueue(connection: sqlite3.Connection, item: dict) -> tuple[dict, bool]:
     connection.execute("""INSERT INTO cross_server_outbox (id, kind, pair_id, route_id, source_session_id,
         source_title, source_run_id, idempotency_key, target_server_identity, target_session_id, body,
         reply_to_message_id, message_id, source_user_instruction, source_user_delegation_action,
-        created_at, next_attempt_at, state)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending')""",
+        created_at, next_attempt_at, state, attachments_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)""",
         (item["id"], item["kind"], item["pair_id"], item["route_id"], item["source_session_id"],
          item["source_title"], item["source_run_id"], item["idempotency_key"], item["target_server_identity"],
          item["target_session_id"], item["body"], item.get("reply_to_message_id"), item["message_id"],
          item.get("source_user_instruction", ""), item.get("source_user_delegation_action", ""),
-         timestamp, timestamp))
+         timestamp, timestamp, json.dumps(item["attachments"]) if item.get("attachments") else None))
     return dict(connection.execute("SELECT * FROM cross_server_outbox WHERE id=?", (item["id"],)).fetchone()), True
 
 
 # A server's own relay takes only mail of pairs it created as a hub. The rest
 # waits for the hub that created its pair, which reads this outbox remotely.
 _PAIRED_HERE = " AND pair_id IN (SELECT pair_id FROM cross_server_pairs)"
+# A hub that predates attachments would deliver such mail without its files.
+_TEXT_ONLY = " AND attachments_json IS NULL"
 
 
-def due_outbox(connection: sqlite3.Connection, now: str, limit: int = 20, *, paired_here: bool = False) -> list[dict]:
-    return [dict(row) for row in connection.execute(
+def due_outbox(connection: sqlite3.Connection, now: str, limit: int = 20, *, paired_here: bool = False,
+               with_attachments: bool = True) -> list[dict]:
+    return [{**dict(row), "attachments": json.loads(row["attachments_json"] or "[]")} for row in connection.execute(
         "SELECT * FROM cross_server_outbox WHERE state='pending' AND next_attempt_at<=?"
-        + (_PAIRED_HERE if paired_here else "") + " ORDER BY next_attempt_at, created_at LIMIT ?", (now, limit))]
+        + (_PAIRED_HERE if paired_here else "") + ("" if with_attachments else _TEXT_ONLY)
+        + " ORDER BY next_attempt_at, created_at LIMIT ?", (now, limit))]
 
 
-def next_due_at(connection: sqlite3.Connection, *, paired_here: bool = False) -> str | None:
+def next_due_at(connection: sqlite3.Connection, *, paired_here: bool = False,
+                with_attachments: bool = True) -> str | None:
     row = connection.execute("SELECT MIN(next_attempt_at) AS due FROM cross_server_outbox WHERE state='pending'"
-                             + (_PAIRED_HERE if paired_here else "")).fetchone()
+                             + (_PAIRED_HERE if paired_here else "")
+                             + ("" if with_attachments else _TEXT_ONLY)).fetchone()
     return row["due"] if row is not None else None
+
+
+def outbox_item(connection: sqlite3.Connection, item_id: str) -> dict | None:
+    row = connection.execute("SELECT * FROM cross_server_outbox WHERE id=?", (item_id,)).fetchone()
+    return {**dict(row), "attachments": json.loads(row["attachments_json"] or "[]")} if row is not None else None
 
 
 def record_result(connection: sqlite3.Connection, item_id: str, state: str, *, error: str = "",
@@ -258,10 +277,14 @@ class End:
 
     identity: str
     name: str  # "" for the hub: the composer shows no server tag for its chats
+    accepts_attachments = True  # False for a remote that predates mail attachments
 
     async def outbox(self, wait: float) -> list[dict]: raise NotImplementedError
     async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None: raise NotImplementedError
     async def deliver(self, item: dict, source_identity: str, source_name: str) -> None: raise NotImplementedError
+    # A file of mail this server sent: its path here, or a download into `folder`.
+    async def attachment(self, item: dict, index: int, folder: Path) -> Path: raise NotImplementedError
+    async def put_attachment(self, item: dict, index: int, path: Path) -> None: raise NotImplementedError
     async def receipt(self, item: dict) -> None: raise NotImplementedError
     async def describe(self, session_id: str) -> dict: raise NotImplementedError
     async def install(self, route: dict) -> None: raise NotImplementedError
@@ -270,12 +293,21 @@ class End:
     async def create(self, chat: dict) -> dict: raise NotImplementedError
 
 
+def transfer_timeout(size: int) -> float:
+    return REMOTE_REQUEST_TIMEOUT + size / TRANSFER_MIN_BYTES_PER_SECOND
+
+
+def advertises_attachments(health: dict | None) -> bool:
+    return ((((health or {}).get("capabilities") or {}).get(CAPABILITY) or {}).get("attachments")) is True
+
+
 class RemoteEnd(End):
-    def __init__(self, http: httpx.AsyncClient, server: Any, identity: str) -> None:
+    def __init__(self, http: httpx.AsyncClient, server: Any, identity: str, *, accepts_attachments: bool = False) -> None:
         self.http = http
         self.server = server
         self.identity = identity
         self.name = server.name
+        self.accepts_attachments = accepts_attachments
 
     async def _request(self, method: str, path: str, *, timeout: float = REMOTE_REQUEST_TIMEOUT, **kwargs: Any) -> Any:
         response = await self.http.request(
@@ -291,7 +323,8 @@ class RemoteEnd(End):
         return response.json()
 
     async def outbox(self, wait: float) -> list[dict]:
-        data = await self._request("GET", "/api/admin/cross-server/outbox", params={"wait": wait}, timeout=wait + 10)
+        data = await self._request("GET", "/api/admin/cross-server/outbox", params={"wait": wait, "attachments": True},
+                                   timeout=wait + 10)
         return list(data.get("items") or [])
 
     async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None:
@@ -303,9 +336,42 @@ class RemoteEnd(End):
         fields = ("message_id", "pair_id", "source_session_id", "source_title", "source_run_id",
                   "idempotency_key", "target_session_id", "body", "reply_to_message_id",
                   "source_user_instruction", "source_user_delegation_action")
+        # A source that predates attachments lists none.
+        attachments = item.get("attachments") or []
         await self._request("POST", "/api/admin/cross-server/inbox",
-                            json={**{key: item.get(key) for key in fields},
-                                  "source_server_identity": source_identity, "source_server_name": source_name})
+                            json={**{key: item.get(key) for key in fields}, "attachments": attachments,
+                                  "source_server_identity": source_identity, "source_server_name": source_name},
+                            # The receiving server checks and copies the files before it answers.
+                            timeout=transfer_timeout(sum(attachment["size"] for attachment in attachments)))
+
+    async def attachment(self, item: dict, index: int, folder: Path) -> Path:
+        path = folder / str(index)
+
+        async def download() -> None:
+            async with self.http.stream(
+                "GET", f"http://127.0.0.1:{self.server.local_port}/api/admin/cross-server/outbox/{item['id']}/attachments/{index}",
+                headers={"X-AgentsDock-Token": self.server.token}, timeout=REMOTE_REQUEST_TIMEOUT,
+            ) as response:
+                if response.status_code == 404:
+                    raise Refused("The sending server no longer has this attachment.")
+                response.raise_for_status()
+                with path.open("wb") as handle:
+                    async for chunk in response.aiter_bytes():
+                        await asyncio.to_thread(handle.write, chunk)
+
+        await asyncio.wait_for(download(), transfer_timeout(item["attachments"][index]["size"]))
+        return path
+
+    async def put_attachment(self, item: dict, index: int, path: Path) -> None:
+        async def chunks():
+            with path.open("rb") as handle:
+                while chunk := await asyncio.to_thread(handle.read, 1024 * 1024):
+                    yield chunk
+
+        await asyncio.wait_for(
+            self._request("PUT", f"/api/admin/cross-server/inbox/{item['message_id']}/attachments/{index}", content=chunks()),
+            transfer_timeout(path.stat().st_size),
+        )
 
     async def receipt(self, item: dict) -> None:
         await self._request("POST", "/api/admin/cross-server/receipts",
@@ -384,7 +450,8 @@ class Relay:
             if identity in self.ends():
                 logger.warning("remote server %s reports another server's identity; cross-server mail skips it", server.name)
                 continue
-            self.remote_ends[server.id] = RemoteEnd(self.remotes.http, server, identity)
+            self.remote_ends[server.id] = RemoteEnd(self.remotes.http, server, identity,
+                                                    accepts_attachments=advertises_attachments(health))
 
     async def _supervise(self) -> None:
         self.pumps["local"] = asyncio.create_task(self._pump(self.local), name="cross-server-mail:local")
@@ -452,6 +519,15 @@ class Relay:
             if target is None:
                 raise ConnectionError("target server is not reachable from the hub")
             if item["kind"] == "mail":
+                if item.get("attachments") and not target.accepts_attachments:
+                    # The relay probes a remote once; it may have been updated since.
+                    target.accepts_attachments = advertises_attachments(await self.remotes.probe_health(target.server))
+                    if not target.accepts_attachments:
+                        raise Refused("The other chat's server does not accept attachments yet; update it.")
+                # The target stores the message only once every file has arrived.
+                with tempfile.TemporaryDirectory(prefix="agentsdock-mail-") as folder:
+                    for index in range(len(item.get("attachments") or [])):
+                        await target.put_attachment(item, index, await source.attachment(item, index, Path(folder)))
                 await target.deliver(item, source.identity, source.name)
             else:
                 await target.receipt(item)

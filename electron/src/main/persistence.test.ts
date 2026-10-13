@@ -309,6 +309,23 @@ describe('cached timeline event compaction', () => {
     expect(value.files('server', 'child').map(file => file.id).sort()).toEqual(['current', 'legacy'])
   })
 
+  it('drops the cached files of a cancelled mail message, which the server deletes', () => {
+    const value = cache()
+    const attachment = { id: 'art_mail', session_id: 'chat', filename: 'report.pdf' }
+    value.putFiles('server', 'chat', [attachment, { id: 'kept', session_id: 'chat', filename: 'kept.txt' }])
+    const cancelled = (seq: number): Event => ({
+      id: `cancel-${seq}`, session_id: 'chat', seq, ts: '2026-10-13T12:00:00Z',
+      type: 'chat_conversation_message_cancelled', attachments: [attachment]
+    })
+    value.putEvents('server', 'chat', [{ ...cancelled(1), type: 'chat_conversation_message_received' }])
+    expect(value.files('server', 'chat').map(file => file.id).sort()).toEqual(['art_mail', 'kept'])
+    value.putEvents('server', 'chat', [cancelled(2)])
+    expect(value.files('server', 'chat').map(file => file.id)).toEqual(['kept'])
+    value.putFiles('server', 'chat', [attachment])
+    value.replaceEvents('server', 'chat', [cancelled(2)])
+    expect(value.files('server', 'chat').map(file => file.id)).toEqual(['kept'])
+  })
+
   it('compacts oversized tool results before writing them without touching assistant text', () => {
     const value = cache()
     const toolOutput = 't'.repeat(TOOL_OUTPUT_PREVIEW_CHARS + 23)

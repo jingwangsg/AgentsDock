@@ -1,5 +1,41 @@
 # Public development log
 
+## 2026-10-13 — Chat mail attachments reach chats on other servers (server and desktop)
+
+- Mail with `--attach` to a chat on another server under the same hub was
+  refused. The sending server now keeps a snapshot of the files until the
+  mail is delivered, the hub moves each file from the sending server to the
+  receiving one before it delivers the message, and the receiving server
+  checks each file's size and SHA-256 before it copies them into the
+  receiving chat. One message to another server carries at most 64 MiB,
+  because hub-to-remote links run at a few hundred KiB/s; a transfer that
+  stalls for 15 s is retried later. A hub that predates attachments never
+  picks up such mail, and a remote that predates them gets none: the message
+  fails with a request to update that server.
+- The desktop no longer lists a cancelled message's files in the receiving
+  chat's Media & files: its local cache drops them when the cancellation
+  arrives, and an open Media & files list reloads from the server whenever
+  the app drops a file.
+- Verification: relay tests (transfer before delivery, a remote that
+  predates attachments or was updated since the hub first saw it, text mail
+  from an older server, a lost snapshot, a failed upload), server tests on
+  the snapshot, the upload endpoint and the receiving copy, desktop cache,
+  store and Media & files tests. A hub and a registered remote, both run
+  from this branch on one Mac with the remote's tunnel replaced by a local
+  TCP forward, before and after review: a Claude chat on the hub sent a
+  binary and a text file to a Codex chat on the remote, which reported sizes
+  and SHA-256 equal to the originals; the Codex chat replied with an attached
+  file that arrived in the hub chat; the snapshot and upload folders were
+  empty afterwards on both servers. In a desktop connected to the remote, the
+  Codex chat showed both files under the message and opened the text file.
+  Cancelling an unread message with a file took an open Media & files list
+  from three files to two, and the file stayed out of the list after an app
+  restart. The Android app (build 70, on an emulator against the hub) showed
+  the chat without error; Android does not show the text or files of
+  incoming mail for any mail yet. Not exercised: a real ssh tunnel, a remote
+  on another machine, a physical Android device. Availability: source only;
+  the hub and each remote run it once updated.
+
 ## 2026-10-13 — Desktop package 126 and Android build 70 (local package and APK)
 
 - Package the entries recorded since package 125 and Android build 69: the
