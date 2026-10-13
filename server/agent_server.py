@@ -89797,29 +89797,33 @@ async def create_session_with_history(req: CreateSessionRequest) -> dict[str, An
     if should_import:
         await import_session_history(sess)
     if provider_id:
-        await carry_over_moved_chat_state(sess)
+        asyncio.create_task(carry_over_moved_chat_state([sess]))
     return {"session": public_session(sess)}
 
 
-async def carry_over_moved_chat_state(sess: dict[str, Any]) -> None:
-    """Give a chat created from a provider transcript the state it had on a sibling install.
+async def carry_over_moved_chat_state(sessions: list[dict[str, Any]]) -> None:
+    """Give chats created from provider transcripts the state of the earlier chats on a sibling install.
 
-    Runs after the chat is committed, so a failed copy never fails the import.
+    Runs after the import has answered: copying up to 1 GiB of files per chat
+    must not hold the request (the desktop's resume request times out after
+    30 s), and a failed copy leaves the imported chat as it is.
     """
-    session_id = str(sess["id"])
-    keys = local_session_ownership.provider_session_keys(sess, DEFAULT_BACKEND)
-    try:
-        summary, side_chat = await asyncio.to_thread(
-            moved_chat_state.carry_over, STATE_DIR, session_id, keys, DEFAULT_BACKEND,
-        )
-        # The side-chat store's SQLite connection belongs to the event loop thread.
-        if side_chat is not None and SIDE_QUESTIONS.adopt_history(AGENT_TOKEN, session_id, side_chat):
-            summary += "; side chat"
-    except Exception as exc:
-        logger.warning("chat state carry-over failed session=%s: %s", session_id, concise_error_message(exc))
-        return
-    if summary:
-        logger.info("chat state carry-over session=%s: %s", session_id, summary)
+    for sess in sessions:
+        session_id = str(sess["id"])
+        keys = local_session_ownership.provider_session_keys(sess, DEFAULT_BACKEND)
+        try:
+            summary, side_chat = await asyncio.to_thread(
+                moved_chat_state.carry_over, STATE_DIR, session_id, keys, DEFAULT_BACKEND,
+            )
+            # The side-chat store's SQLite connection belongs to the event loop thread.
+            if side_chat is not None:
+                carried = await SIDE_QUESTIONS.store_carried_history(AGENT_TOKEN, session_id, side_chat)
+                summary += " side_chat=carried" if carried else " side_chat=kept_existing"
+        except Exception as exc:
+            logger.warning("chat state carry-over failed session=%s: %s", session_id, concise_error_message(exc))
+            continue
+        if summary:
+            logger.info("chat state carry-over session=%s %s", session_id, summary)
 
 
 @app.get("/api/local-sessions")
@@ -90051,9 +90055,7 @@ async def bulk_import_sessions_guarded(
                     code="import_failed",
                     error=concise_error_message(exc),
                 ))
-        # After the loop: a cancellation during a copy must not roll back a committed import.
-        for sess in committed:
-            await carry_over_moved_chat_state(sess)
+        asyncio.create_task(carry_over_moved_chat_state(committed))
         return {"results": results}
 
 

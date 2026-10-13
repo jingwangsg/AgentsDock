@@ -1,5 +1,7 @@
 """Carrying a chat's state from a sibling install; synthetic installs under one temp home."""
+import asyncio
 from contextlib import nullcontext
+import hashlib
 import json
 import os
 import sqlite3
@@ -48,10 +50,10 @@ class Installs:
         (directory / "meta.json").write_text(json.dumps(meta, indent=2))
         return meta
 
-    def side_chat(self, state, session_id, *owners):
+    def side_chat(self, state, session_id, *copies):
         with sqlite3.connect(state / "side_chats.sqlite3") as database:
             database.execute("CREATE TABLE IF NOT EXISTS chats (owner TEXT, session TEXT, document TEXT NOT NULL, PRIMARY KEY(owner, session))")
-            for owner, exchanges in owners:
+            for owner, exchanges in copies:
                 document = {"session_id": session_id, "side_chat_id": "side", "revision": 1, "exchanges": exchanges,
                             "last_request_id": None, "_provider_state": {"backend": "claude"}}
                 database.execute("INSERT INTO chats VALUES(?,?,?)", (owner, session_id, json.dumps(document)))
@@ -80,35 +82,35 @@ class CarryOverTests(Installs, unittest.TestCase):
         self.assertEqual(Path(copied["path"]).read_bytes(), b"video")
         self.assertFalse((self.new / "files" / "art_0000000000000002").exists())
         self.assertEqual(side_chat["exchanges"], [{"request_id": "r1", "status": "completed"}])
-        self.assertEqual(summary, f"from {self.old.parent}/{OLD_ID}: canvases 1, files 1")
+        self.assertEqual(summary, f"from=.agentsdock-server-old/{OLD_ID} canvases=1 files=1")
         # The old install is only read.
         self.assertEqual(sorted((path.name, path.read_bytes()) for path in source.iterdir()), before)
         self.assertEqual(json.loads((self.old / "files" / "art_0000000000000001" / "meta.json").read_text()), meta)
 
-    def test_two_owners_or_none_carry_nothing(self):
+    def test_two_owners_carry_nothing(self):
         self.canvas(self.old, OLD_ID)
         second = self.install(".agentsdock-server-third", {"sess_00000000000000cc": {"backend": "claude", "claude_session_id": "claude-conversation"}})
         self.canvas(second, "sess_00000000000000cc")
 
         summary, side_chat = self.carry()
 
-        self.assertEqual(summary, "nothing carried: 2 chats in 2 sibling installs own this conversation "
-                                  f".agentsdock-server-old/{OLD_ID}, .agentsdock-server-third/sess_00000000000000cc")
+        self.assertEqual(summary, "nothing carried owners=2 sibling_installs=2 "
+                                  f"(.agentsdock-server-old/{OLD_ID}, .agentsdock-server-third/sess_00000000000000cc)")
         self.assertIsNone(side_chat)
         self.assertFalse((self.new / "canvases").exists())
 
-    def test_a_deleted_source_chat_leaves_its_canvas_behind(self):
+    def test_a_deleted_earlier_chat_leaves_its_canvas_behind(self):
         # Deleting a chat removes its sessions.json row but not its canvas directory.
         self.canvas(self.old, OLD_ID)
         (self.old / "sessions.json").write_text("{}")
 
         summary, side_chat = self.carry()
 
-        self.assertEqual(summary, "nothing carried: 0 chats in 1 sibling installs own this conversation")
+        self.assertEqual(summary, "nothing carried owners=0 sibling_installs=1")
         self.assertIsNone(side_chat)
         self.assertFalse((self.new / "canvases").exists())
 
-    def test_an_install_without_siblings_logs_nothing(self):
+    def test_an_install_without_siblings_returns_no_summary(self):
         lone = Path(tempfile.mkdtemp(dir=self.home)) / ".agentsdock-server" / "state"
         lone.mkdir(parents=True)
 
@@ -121,7 +123,7 @@ class CarryOverTests(Installs, unittest.TestCase):
         with patch.object(moved_chat_state, "MAX_CARRIED_FILE_BYTES", 50):
             summary, _ = self.carry()
 
-        self.assertIn("canvases 1, files 0; 1 files left behind", summary)
+        self.assertIn("canvases=1 files=0 files_left_behind=1", summary)
         self.assertTrue((self.new / "canvases" / NEW_ID / "report.canvas.tsx").is_file())
         self.assertFalse((self.new / "files").exists())
 
@@ -134,7 +136,7 @@ class CarryOverTests(Installs, unittest.TestCase):
         summary, _ = self.carry()
 
         self.assertFalse((self.new / "canvases" / NEW_ID / "leak.canvas.tsx").exists())
-        self.assertIn("canvases 1", summary)
+        self.assertIn("canvases=1", summary)
 
     def test_an_existing_record_of_the_same_file_is_kept(self):
         self.published_file(self.old, "art_0000000000000001", OLD_ID, payload=b"old")
@@ -142,8 +144,25 @@ class CarryOverTests(Installs, unittest.TestCase):
 
         summary, _ = self.carry()
 
-        self.assertIn("files 0", summary)
+        self.assertIn("files=0", summary)
         self.assertEqual(json.loads((self.new / "files" / "art_0000000000000001" / "meta.json").read_text()), mine)
+
+    def test_staging_leftovers_are_skipped_and_one_failed_copy_does_not_stop_the_others(self):
+        self.published_file(self.old, ".art_0000000000000001-interrupted", OLD_ID)
+        self.published_file(self.old, "art_0000000000000002", OLD_ID)
+        self.published_file(self.old, "art_0000000000000003", OLD_ID)
+        copy = moved_chat_state.shutil.copy2
+
+        def copy2(source, target):
+            if "art_0000000000000002" in str(source):
+                raise PermissionError("denied")
+            return copy(source, target)
+
+        with patch.object(moved_chat_state.shutil, "copy2", copy2):
+            summary, _ = self.carry()
+
+        self.assertEqual(sorted(path.name for path in (self.new / "files").iterdir()), ["art_0000000000000003"])
+        self.assertIn("files=1 file_not_copied=art_0000000000000002 (denied)", summary)
 
     def test_empty_side_chats_are_ignored_and_two_non_empty_ones_are_left_behind(self):
         self.side_chat(self.old, OLD_ID, ("a", []), ("b", [{"request_id": "r1", "status": "completed"}]))
@@ -153,7 +172,7 @@ class CarryOverTests(Installs, unittest.TestCase):
         self.side_chat(self.old, OLD_ID, ("a", [{"request_id": "r1"}]), ("b", [{"request_id": "r2"}]))
         summary, side_chat = self.carry()
         self.assertIsNone(side_chat)
-        self.assertIn("side chat left behind: 2 copies", summary)
+        self.assertIn("side_chat=left_behind copies=2", summary)
 
 
 class ImportCarriesStateTests(Installs, unittest.IsolatedAsyncioTestCase):
@@ -187,36 +206,43 @@ class ImportCarriesStateTests(Installs, unittest.IsolatedAsyncioTestCase):
         self.side_chat(self.old, OLD_ID, ("old-owner", [{"request_id": "r1", "question": "q", "status": "completed",
                                                          "answer": "a", "created_at": 1, "updated_at": 1}]))
 
+    async def carried_in_background(self):
+        # The copy runs as a task after the import has answered.
+        tasks = [task for task in asyncio.all_tasks() if task.get_coro().__name__ == "carry_over_moved_chat_state"]
+        self.assertEqual(len(tasks), 1)
+        await tasks[0]
+
     def assert_carried(self, session_id):
         self.assertTrue((self.new / "canvases" / session_id / "report.canvas.tsx").is_file())
         self.assertEqual(json.loads((self.new / "files" / "art_0000000000000001" / "meta.json").read_text())["session_id"], session_id)
-        owner = side_questions.hashlib.sha256(b"new-token").hexdigest()
+        owner = hashlib.sha256(b"new-token").hexdigest()
         self.assertEqual(self.side_chats.synced.store.load(owner, session_id)["exchanges"][0]["request_id"], "r1")
 
-    async def test_bulk_import_carries_the_previous_chat_state(self):
-        request = agent_server.BulkImportSessionsRequest(items=[{
+    def import_request(self):
+        return agent_server.BulkImportSessionsRequest(items=[{
             "provider_session_id": "claude-conversation", "backend": "claude", "cwd": str(self.cwd)}])
 
+    async def test_bulk_import_carries_the_earlier_chat_state(self):
         with self.assertLogs(agent_server.logger, "INFO") as logs:
-            result = (await agent_server.bulk_import_sessions_guarded(request, set()))["results"][0]
+            result = (await agent_server.bulk_import_sessions_guarded(self.import_request(), set()))["results"][0]
+            await self.carried_in_background()
 
         self.assertTrue(result["ok"], result)
         self.assert_carried(result["session_id"])
-        self.assertIn(f"from {self.old.parent}/{OLD_ID}: canvases 1, files 1; side chat", "\n".join(logs.output))
+        self.assertIn(f"from=.agentsdock-server-old/{OLD_ID} canvases=1 files=1 side_chat=carried", "\n".join(logs.output))
 
-    async def test_resuming_a_provider_conversation_carries_the_previous_chat_state(self):
+    async def test_resuming_a_provider_conversation_carries_the_earlier_chat_state(self):
         created = await agent_server.create_session(agent_server.CreateSessionRequest(
             backend="claude", claude_session_id="claude-conversation", cwd=str(self.cwd)))
+        await self.carried_in_background()
 
         self.assert_carried(created["session"]["id"])
 
     async def test_a_failed_copy_keeps_the_imported_chat(self):
-        request = agent_server.BulkImportSessionsRequest(items=[{
-            "provider_session_id": "claude-conversation", "backend": "claude", "cwd": str(self.cwd)}])
-
         with patch.object(moved_chat_state, "carry_over", side_effect=OSError("disk full")), \
                 self.assertLogs(agent_server.logger, "WARNING") as logs:
-            result = (await agent_server.bulk_import_sessions_guarded(request, set()))["results"][0]
+            result = (await agent_server.bulk_import_sessions_guarded(self.import_request(), set()))["results"][0]
+            await self.carried_in_background()
 
         self.assertTrue(result["ok"], result)
         self.assertIn(result["session_id"], self.store.sessions)
