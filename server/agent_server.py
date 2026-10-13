@@ -66485,6 +66485,10 @@ async def project_claude_sdk_message(
             # other assistant text.
             logger.info("Claude run %s reported an API error (%s); the Result decides whether the turn failed", run_id, assistant_error)
         content = claude_sdk_field(message, "content", [])
+        # A subagent's output: the parent model is not taking a step, and a
+        # message sent meanwhile is not held for the subagent's calls.
+        parent_tool_use_id = claude_sdk_field(message, "parent_tool_use_id")
+        subagent_marker = {"parent_tool_use_id": str(parent_tool_use_id)} if parent_tool_use_id else {}
         for block in content if isinstance(content, list) else []:
             block_type = claude_sdk_type(block)
             if block_type in {"TextBlock", "text"}:
@@ -66501,6 +66505,7 @@ async def project_claude_sdk_message(
                         **({"provider_message_id": message_uuid}
                            if (message_uuid := claude_sdk_field(message, "uuid")) else {}),
                         **run_event_metadata(run_id),
+                        **subagent_marker,
                     })
             elif block_type in {"ThinkingBlock", "thinking"}:
                 thinking = str(claude_sdk_field(block, "thinking") or "")
@@ -66508,6 +66513,7 @@ async def project_claude_sdk_message(
                     await append_event(session_id, "reasoning_summary", {
                         "run_id": run_id,
                         "text": thinking,
+                        **subagent_marker,
                     })
             elif block_type in {
                 "ToolUseBlock",
@@ -66532,6 +66538,7 @@ async def project_claude_sdk_message(
                 await append_event(session_id, "tool_started", {
                     "run_id": run_id,
                     "tool": tool,
+                    **subagent_marker,
                 })
             elif block_type in {
                 "ToolResultBlock",
@@ -84653,6 +84660,7 @@ async def health() -> dict[str, Any]:
                 # Backends whose rewind also accepts a steer (a message sent while the agent worked).
                 "steer_backends": [BACKEND_CLAUDE],
             },
+            "claude_send_now_v1": {"available": True, "version": 1},
             "automatic_pairing_completion_v1": secure_peer_automatic_completion_capability(),
             "local_provider_commands_v1": {
                 "available": True,
@@ -98631,6 +98639,24 @@ async def patch_queued_turn(session_id: str, queued_id: str, req: UpdateQueuedTu
 @app.post("/api/sessions/{session_id}/queue/{queued_id}/move")
 async def post_move_queued_turn(session_id: str, queued_id: str, req: MoveQueuedTurnRequest) -> dict[str, Any]:
     return await move_queued_turn(session_id, queued_id, req)
+
+
+@app.post("/api/sessions/{session_id}/send-now")
+async def post_claude_send_now(session_id: str) -> dict[str, Any]:
+    """Claude Code's send-now key on an empty prompt: the messages the CLI
+    holds until the running tool returns reach the model now."""
+    async with ACTIVE_LOCK:
+        live = dict(ACTIVE.get(session_id) or {})
+    run_id = str(live.get("run_id") or "")
+    if live.get("transport") != CLAUDE_TRANSPORT_AGENT_SDK or not run_id:
+        raise HTTPException(status_code=409, detail="No Claude turn is running in this chat")
+    try:
+        outcome = await (await claude_sdk_manager()).send_queued_now(session_id, run_id=run_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Send now did not reach Claude: {concise_error_message(exc)}",
+        ) from exc
+    return {"ok": True, "run_id": run_id, "send_now": outcome}
 
 
 @app.post("/api/sessions/{session_id}/queue/{queued_id}/run-now")

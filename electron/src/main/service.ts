@@ -103,6 +103,7 @@ import type {
   PublicServerProfile,
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
+  ClaudeSendNowResponse,
   RemoteServerAttachInput,
   RemoteServerDeployInput,
   RemoteServerDeployJob,
@@ -4239,6 +4240,10 @@ export class AppService {
 
   async compactClaudeContext(sessionId: string): Promise<CodexOperationAccepted> {
     return this.providerRequest(scope => scope.client.compactClaudeContext(sessionId))
+  }
+
+  async sendClaudeHeldNow(sessionId: string): Promise<ClaudeSendNowResponse> {
+    return this.providerRequest(scope => scope.client.sendClaudeHeldNow(sessionId))
   }
 
   async claudeMcp(sessionId: string): Promise<ClaudeMcpSnapshot> {

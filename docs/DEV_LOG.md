@@ -1,5 +1,44 @@
 # Public development log
 
+## 2026-10-14 — A message Claude has not read yet shows what it waits for (server and desktop)
+
+- In Claude chats, a message sent with Enter while a tool call ran appeared
+  at once as an ordinary sent message, and the activity before it folded
+  into "Worked for …" although the call kept running. Claude Code reads such
+  a message only when the running call returns and shows it queued, with its
+  send-now key, until then; AgentsDock showed neither that the message was
+  waiting nor what for.
+- The desktop now shows such a message with "Claude reads this when “…”
+  finishes (running for …)", naming the running call, and keeps the activity
+  before it live until the call returns. The Send now button in the caption
+  makes Claude read every held message immediately, as Claude Code's
+  send-now key does on an empty prompt: a running command moves to the
+  background and keeps running. The header of a live Claude activity names
+  its running call and that call's elapsed time, as Claude Code shows a
+  running tool, whether or not a message waits.
+- AgentsServer adds `POST /api/sessions/{id}/send-now`, lists
+  `claude_send_now_v1` in its health capabilities, and marks the reasoning,
+  text and tool calls of a Claude subagent with the call they run under, so
+  that a subagent's work is not taken for the parent model's. The desktop
+  shows the caption, the button and the running call only on a server that
+  lists the capability; with an older server it shows neither, and only keeps
+  the activity before such a message as "Working" until the call returns.
+  Codex chats are unchanged: a Codex steer is read at once.
+- Verified with Claude Code 2.1.296, an isolated server and the desktop app:
+  during a 180 s poll the message showed the caption and the activity kept
+  counting; Send now moved the poll to the background, the caption went
+  away, the earlier activity settled and the reply arrived within 9 s.
+  Desktop timeline, projection-cache and row tests and the server follow-up
+  and runner tests pass.
+- Not covered: Claude Code's ctrl+b (move the running command to the
+  background without sending anything) has no equivalent, because the SDK
+  offers no request for it; a message Claude holds cannot be edited or
+  withdrawn before it is read (the CLI's `cancel_async_message` would allow
+  it, but every reader of the event log treats a joined message as
+  delivered); a message sent while the model writes, before its next call,
+  is held by that call but shown without the caption; the Android app shows
+  such a message as before.
+
 ## 2026-10-13 — Send now (⌘Enter) reaches Claude while a command runs (server)
 
 - In Claude chats, ⌘Enter during a long command did not deliver the message

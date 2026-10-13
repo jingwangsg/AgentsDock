@@ -78,6 +78,7 @@ import type {
   PublicServerProfile,
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
+  ClaudeSendNowResponse,
   QueuedTurn,
   RemoteServerAttachInput,
   RemoteServerDeployInput,
@@ -531,6 +532,8 @@ export interface AgentsDockAPI {
     refreshContextUsage(sessionId: string): Promise<ClaudeRuntimeSnapshot>
     /** Runs Claude's native /compact as one validated command turn. */
     compact(sessionId: string): Promise<CodexOperationAccepted>
+    /** Claude Code's send-now key on an empty prompt: the messages the CLI holds reach Claude now. */
+    sendHeldNow(sessionId: string): Promise<ClaudeSendNowResponse>
     mcp(sessionId: string): Promise<ClaudeMcpSnapshot>
     controlMcp(sessionId: string, input: ClaudeMcpControlInput): Promise<ClaudeMcpSnapshot>
     resolveInteraction(

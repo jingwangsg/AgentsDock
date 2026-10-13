@@ -85,6 +85,7 @@ import type {
   ReasoningSummaryStreamSnapshot,
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
+  ClaudeSendNowResponse,
   QueuedTurn,
   RemoteServer,
   RemoteServerAttachInput,
@@ -1410,6 +1411,10 @@ export class AgentServerClient {
 
   compactClaudeContext(sessionId: string): Promise<CodexOperationAccepted> {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/claude/compact`, {})
+  }
+
+  sendClaudeHeldNow(sessionId: string): Promise<ClaudeSendNowResponse> {
+    return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/send-now`, {})
   }
 
   claudeMcp(sessionId: string): Promise<ClaudeMcpSnapshot> {

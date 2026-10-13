@@ -611,6 +611,27 @@ describe('timeline pin state', () => {
     expect(useAppStore.getState().editingTurn['chat-1']).toMatchObject({ runId: 'run-a', seq: 3, originalPrompt: 'Also check the logs' })
   })
 
+  it('shows a Claude steer the CLI holds for a running command, with Send now, where the server offers it', () => {
+    const sendHeldNow = vi.fn().mockResolvedValue({ ok: true, run_id: 'run-a', send_now: 'delivering' })
+    Object.assign(window.agentsDock, { claude: { sendHeldNow } })
+    const events: Event[] = [
+      { id: 'start-a', session_id: 'chat-1', seq: 1, type: 'turn_started', ts: '2026-09-28T10:00:00Z', prompt: 'Poll the job', run_id: 'run-a', backend: 'claude' },
+      { id: 'tool-a', session_id: 'chat-1', seq: 2, type: 'tool_started', ts: '2026-09-28T10:00:04Z', run_id: 'run-a',
+        tool: { id: 'tool-1', name: 'Bash', input: { command: 'until done; do sleep 15; done', description: 'Poll until the job ends' } } },
+      { id: 'steer-b', session_id: 'chat-1', seq: 3, type: 'turn_steered', ts: '2026-09-28T10:00:14Z', prompt: 'Also check the logs', run_id: 'run-a',
+        queued_id: 'queued-b', backend: 'claude', native_steer: true, provider_user_authored: true }
+    ]
+    const steer = renderTimelineItems(projectTimeline(events, []))
+      .find((row): row is MessageItem => row.kind === 'message' && row.event.type === 'turn_steered')!
+    const { container } = render(<TimelineRowView item={steer} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
+    // An older server has no endpoint for it and does not mark a subagent's output: nothing is shown.
+    expect(container.querySelector('.message-held-status')).toBeNull()
+    act(() => useAppStore.setState({ health: { ok: true, server_instance_id: 'instance-a', capabilities: { claude_send_now_v1: { available: true, version: 1 } } } }))
+    expect(container.querySelector('.message-held-status')).toHaveTextContent('Claude reads this when “Poll until the job ends” finishes')
+    fireEvent.click(screen.getByRole('button', { name: 'Send now' }))
+    expect(sendHeldNow).toHaveBeenCalledWith('chat-1')
+  })
+
   it('ends a run cut at a steer by a rewind with its last kept row, not at the next turn', () => {
     // The rewind removed the steer and the rest of run-a, so run-a has no terminal row.
     const events: Event[] = [

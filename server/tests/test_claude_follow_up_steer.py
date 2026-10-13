@@ -198,6 +198,22 @@ class ClaudeFollowUpSteerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(agent_server.run_queued_turn_now("chat", "q1"), 5)
             self.assertEqual(manager.send_queued_now.await_count, 2)
 
+    async def test_send_now_on_a_chat_delivers_what_the_cli_holds_for_its_running_claude_turn(self) -> None:
+        # Claude Code's send-now key on an empty prompt.
+        manager = SimpleNamespace(send_queued_now=AsyncMock(return_value="delivering"))
+        with patch.object(agent_server, "claude_sdk_manager", AsyncMock(return_value=manager)):
+            with patch.dict(agent_server.ACTIVE, {"chat": self._active(agent_server.CLAUDE_TRANSPORT_AGENT_SDK)}):
+                self.assertEqual(await agent_server.post_claude_send_now("chat"),
+                                 {"ok": True, "run_id": "run-1", "send_now": "delivering"})
+            manager.send_queued_now.assert_awaited_once_with("chat", run_id="run-1")
+            for case, active in (("no running turn", {}),
+                                 ("Codex turn", {"chat": self._active(agent_server.CODEX_TRANSPORT_APP_SERVER)})):
+                with self.subTest(case=case), patch.dict(agent_server.ACTIVE, active, clear=True):
+                    with self.assertRaises(agent_server.HTTPException) as refused:
+                        await agent_server.post_claude_send_now("chat")
+                    self.assertEqual(refused.exception.status_code, 409)
+            self.assertEqual(manager.send_queued_now.await_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

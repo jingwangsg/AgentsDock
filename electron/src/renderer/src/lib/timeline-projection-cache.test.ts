@@ -61,6 +61,29 @@ describe('timeline projection cache', () => {
     expect(next.rendered).toEqual(cachedTimelineProjection('unresolved-delivery-cold', updated, files).rendered)
   })
 
+  it('updates the activity and the held steer of a Claude run whose call returns in the steer\'s slice', () => {
+    clearTimelineProjectionCache()
+    const run = { run_id: 'run-poll', backend: 'claude' as const }
+    const events = [
+      event(1, 'turn_started', { ...run, prompt: 'Poll until the job finishes' }),
+      event(2, 'tool_started', { run_id: 'run-poll', tool: { id: 'toolu_poll', name: 'Bash', input: { command: 'until done; do sleep 15; done' } } }),
+      event(3, 'turn_steered', { ...run, prompt: 'Also rename the agent', native_steer: true, provider_user_authored: true })
+    ]
+    const heldState = (rows: ReturnType<typeof cachedTimelineProjection>['rendered']) => ({
+      runningTool: rows.some(row => row.kind === 'progress' && row.runningTool !== undefined),
+      heldSteer: rows.some(row => row.kind === 'message' && row.heldBy !== undefined)
+    })
+    expect(heldState(cachedTimelineProjection('held-steer-live', events, []).rendered)).toEqual({ runningTool: true, heldSteer: true })
+    // Only the steer's slice changes; the call started in the earlier one still runs.
+    const progress = [...events, event(4, 'raw_event', { run_id: 'run-poll', raw: '{"type":"system","subtype":"task_started"}' })]
+    expect(heldState(cachedTimelineProjection('held-steer-live', progress, []).rendered)).toEqual({ runningTool: true, heldSteer: true })
+    const returned = [...progress, event(5, 'tool_finished', { run_id: 'run-poll', tool_id: 'toolu_poll', output: 'Command was moved to the background' })]
+    const next = cachedTimelineProjection('held-steer-live', returned, [])
+    expect(next.strategy).toBe('append')
+    expect(heldState(next.rendered)).toEqual({ runningTool: false, heldSteer: false })
+    expect(next.rendered).toEqual(cachedTimelineProjection('held-steer-cold', returned, []).rendered)
+  })
+
   it('carries an unchanged exchange reply across an updated turn without rerendering intervening history', () => {
     clearTimelineProjectionCache()
     const events = [exchangeLeg(1, 'request')]
