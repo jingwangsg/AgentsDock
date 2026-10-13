@@ -2,8 +2,9 @@
 
 ## 2026-10-13 — @ chips for chats on other servers stay in the message (server, desktop and Android)
 
-- A chat picked from the @ menu on another server was paired through the hub
-  and then removed from the message, so the sent message showed plain text,
+- A chip for a chat on another server, picked from the @ menu, paired the
+  chats through the hub and was then removed from the message, so the sent
+  message showed plain text,
   the agent could not tell which chat was meant, and a message sent while the
   agent worked did not name the new pair. A server that advertises
   `cross_server_chat_references` now accepts the chip while the hub pair
@@ -14,10 +15,16 @@
   only name chats the turn reaches (a route `@` or a chat on another server);
   before, any chip kept it queued until the turn ended. The joining message's
   chips count as mentioned in the turn, and its text becomes the user
-  instruction attached to the turn's mail (`user_delegation`): mail from a
-  user's turn to any chat it reaches carries the user's latest message, the
-  same rule mail to other servers already used. One-use actions, secure-peer
-  handles and turns that are not the user's still keep the message queued.
+  instruction attached to the turn's mail (`user_delegation`). Mail from a
+  user's turn now carries the user's latest message to any chat the turn
+  reaches, including chats paired after it started; mail to other servers
+  already went to any paired chat, with the turn's prompt. A message without
+  text keeps the instruction. One-use actions, secure-peer handles and, for a
+  message with chips, turns that are not the user's still keep the message
+  queued; a steer into such a turn never makes it delegate.
+- A queued message whose chip names a chat on another server starts with the
+  chip as text if the hub pair was removed in the meantime, instead of
+  holding the queue.
 - Verification: server tests for chip admission with and without the hub
   pair, the `mentioned` mark, chips joining a Claude or Codex user turn and
   not other turns, and the delegation rule; desktop and Android store and

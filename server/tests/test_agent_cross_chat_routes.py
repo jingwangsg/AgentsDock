@@ -27,7 +27,7 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
                 authority = await agent_server.issue_cross_chat_capability(
                     "source", run_id, [self.grant_reference(start=4)], source_user_instruction=prompt,
                     source_is_user_turn=user_turn, actions={"agent_cross_chat_routes"},
-                    provider_route_snapshot=[], async_route_v1=True, chat_routes_live=True,
+                    provider_route_snapshot=[], async_route_v1=True,
                 )
                 self.assertIsNotNone(authority)
                 record = next(row for row in agent_server.CROSS_CHAT_CAPABILITIES.values()
@@ -36,19 +36,21 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(record["source_user_instruction"], prompt)
                 self.assertNotIn(prompt, authority.read_text())
 
-    def test_mail_to_a_paired_chat_on_another_server_delegates_on_the_users_own_turn_only(self) -> None:
-        # send_cross_server_mail needs a live run, the lifecycle lock and the ledger; the rule is
-        # evaluated with only `capability` in scope, so it can depend on nothing else.
+    def test_mail_on_a_users_turn_delegates_its_latest_message_to_any_chat(self) -> None:
+        delegates = agent_server.provider_run_delegates
+        self.assertTrue(delegates({"source_is_user_turn": True, "source_user_instruction": "Reply pong."}))
+        # A message without text (attachments only) has nothing to delegate.
+        self.assertFalse(delegates({"source_is_user_turn": True, "source_user_instruction": " "}))
+        # A wake, a job, a delivery or a guest's message is not the user's instruction.
+        self.assertFalse(delegates({"source_is_user_turn": False, "source_user_instruction": "Reply pong."}))
+        self.assertFalse(delegates({"source_user_instruction": "Reply pong."}))
+        # Mail to a chat here and to one on another server use this one rule.
         tree = ast.parse(Path(agent_server.__file__).read_text(encoding="utf-8"))
-        send = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
-                    and node.name == "send_cross_server_mail")
-        assignment = next(node for node in ast.walk(send) if isinstance(node, ast.Assign)
-                          and any(isinstance(target, ast.Name) and target.id == "delegated" for target in node.targets))
-        rule = compile(ast.Expression(assignment.value), "<delegated>", "eval")
-        self.assertTrue(eval(rule, {"capability": {"source_is_user_turn": True}, "instruction": "Reply pong."}))
-        self.assertFalse(eval(rule, {"capability": {"source_is_user_turn": True}, "instruction": " "}))
-        self.assertFalse(eval(rule, {"capability": {"source_is_user_turn": False}, "instruction": "Reply pong."}))
-        self.assertFalse(eval(rule, {"capability": {}, "instruction": "Reply pong."}))
+        for name in ("reserve_async_provider_route_message", "send_cross_server_mail"):
+            send = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name)
+            assignment = next(node for node in ast.walk(send) if isinstance(node, ast.Assign)
+                              and any(isinstance(target, ast.Name) and target.id == "delegated" for target in node.targets))
+            self.assertEqual(ast.unparse(assignment.value), "provider_run_delegates(capability)", name)
 
     def test_route_request_cannot_supply_delegation_provenance(self) -> None:
         request = agent_server.AgentRouteHandoffRequest.model_validate({
@@ -312,6 +314,7 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         self,
         session_id: str,
         request: agent_server.TurnRequest,
+        **start: object,
     ) -> tuple[dict[str, object], list[tuple[str, dict]]]:
         """Run admission through its durable event, stopping before launch."""
 
@@ -389,6 +392,7 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
                     queue_if_busy=False,
                     provider_context_mode="chat",
                     admission_backend="codex",
+                    **start,
                 )
         return issued, events
 
@@ -1468,6 +1472,14 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
                 listed = (await agent_server.list_provider_cross_chat_routes(request))["routes"]
                 self.assertEqual([(row["route_id"], row.get("mentioned")) for row in listed],
                                  [(remote["route_id"], True)])
+        # A queued message whose pair was removed starts with the chip as text.
+        _issued, events = await self.capture_start_admission(
+            "source", agent_server.TurnRequest(prompt=prompt, chat_references=[chip],
+                                               client_capabilities=capabilities),
+            accepted_provider_route_snapshot=[],
+        )
+        started = next(payload for event_type, payload in events if event_type == "turn_started")
+        self.assertEqual(started["chat_references"], [])
         # Its shape is fixed: a route reference that names the other server only.
         for change in ({"action": "instruction"}, {"grant_intent": True}, {"target_route_id": "route_" + "f" * 32}):
             with self.subTest(change=change), self.assertRaises(ValidationError):
@@ -1628,6 +1640,12 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     with self.assertRaises(agent_server.NativeSteerHandoffError):
                         agent_server.native_steer_provider_actions("source", selected)
+        # A user's message joining another kind of turn keeps its exact routes.
+        with self.assertRaises(agent_server.NativeSteerHandoffError):
+            agent_server.native_steer_provider_actions(
+                "source", {"prompt": "follow-up", "provider_cross_chat_route_snapshot": snapshot},
+                active_route_snapshot=[], active_purpose="scheduled_job",
+            )
         # Other work keeps exactly the running turn's routes, and gets none of the chat's.
         job = {"prompt": "job", "purpose": "scheduled_job"}
         actions, _jobs_access = agent_server.native_steer_provider_actions("source", job)

@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, Mock
 SOURCE = (Path(__file__).resolve().parents[1] / "agent_server.py")
 FUNCTIONS = {
     "codex_goal_followup_requires_native",
-    "codex_goal_steer_selection_is_plain",
+    "codex_goal_steer_selection_is_plain", "user_chat_references_are_live_routes",
     "_run_queued_turn_now_once",
     "queue_insert_index",
     "async_route_queue_fields",
@@ -502,9 +502,12 @@ class GoalFollowupAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("chat", self.ns["RUN_NOW_TURNS"])
 
     async def test_saved_routes_still_require_ordinary_non_goal_authority_replacement(self):
+        # A user's message reads the chat's routes live; internal work keeps
+        # the exact routes rule.
         self.session.pop("codex_goal")
         self.active.pop("codex_native_operation_kind")
         self.current.pop("purpose")
+        self.selected["purpose"] = "handoff_digest"
         self.selected["provider_cross_chat_route_snapshot"] = saved_route_snapshots()
         before = self.snapshot()
         with self.assertRaises(self.ns["NonNativeForceSendRequiresLifecycleLock"]):

@@ -21,8 +21,8 @@ remote servers a hub manages.
 - Choosing a chat on another server inserts `@<title> · <server>` (no server
   for a hub chat). On send, the client asks the hub to pair the two chats, then
   sends the turn with the chip (`target_kind: "cross_server"`, the chat's id
-  and its server's identity). The chat's server accepts it only while that
-  pair exists, and `chats list` marks the pair `mentioned: true`. A server
+  and its server's identity). The sending chat's server accepts it only while
+  that pair exists, and `chats list` marks that chat `mentioned: true`. A server
   that does not advertise `cross_chat_handoffs_v1.features.
   cross_server_chat_references` gets the turn without the chip, whose text
   stays in the prompt.
@@ -47,11 +47,11 @@ remote servers a hub manages.
   sender's server attaches the user's instruction to every message sent to a
   paired chat, from either side of the pair and whether or not the turn names
   the chat again. The instruction is the user's latest message in the turn:
-  its prompt, or a message the user sent into it while it ran. A turn without
-  text attaches none. The
-  receiving server stores the instruction as that peer's attestation, so a
-  hub trusts its registered remotes to attest their users' turns; the
-  receiving agent judges the instruction's scope.
+  the last message steered into it that has text, or its prompt if none was.
+  A turn without text attaches none. The receiving server stores the
+  instruction as that peer's attestation, so a hub trusts its registered
+  remotes to attest their users' turns; the receiving agent judges the
+  instruction's scope.
 
 ## Wire
 

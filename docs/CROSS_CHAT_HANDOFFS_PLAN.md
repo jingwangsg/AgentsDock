@@ -27,8 +27,9 @@ Watches, artifact grants, and group exchanges remain deferred.
   source-to-target route; every later ordinary turn receives the source
   chat's current grants, so the agent can message such a chat again without
   a new chip, and each message to a chat the turn reaches attaches the user's
-  latest message in the turn (`user_delegation`): its prompt, or a message the
-  user sent into it while it ran. Only the user's own turns delegate. A
+  latest message in the turn (`user_delegation`): the last message steered
+  into it that has text, or its prompt if none was. Only the user's own turns
+  delegate. A
   queued message edited before it runs keeps the grants it was
   admitted with, re-checked against the chat's current grants; an edit never
   creates one. There is no ambient all-chat ceiling or required Inspector
@@ -39,16 +40,16 @@ Watches, artifact grants, and group exchanges remain deferred.
   message, is reachable at once, and a revoked pair stops being reachable at
   once. Routes without a pair stay reachable only in a turn whose message
   @-mentions them.
-- A message the user sends while a turn runs joins it when its @ chips only
-  name chats the turn reaches live: a route `@` (granted when the message was
-  admitted) or a chat on another server (paired by the hub). The turn then
-  marks those chats mentioned and delegates that message's text. A one-use
-  action, a secure-peer handle, or a running turn that is not the user's
-  (a job, a delivery, a mailbox wake) keeps the message queued for its own
-  turn.
   `chats list` marks the chats @-mentioned in the turn with `mentioned: true`.
   Agents have one path to another chat: `chats list`, then `send` or `ask`
   with the returned `--route`.
+- A message the user steers into a running user turn may carry @ chips that
+  name chats the turn reaches through live routes: a route `@` (granted when
+  the message was admitted) or a chat on another server (paired by the hub).
+  The turn then marks those chats mentioned and delegates that message's
+  text. A one-use action or a secure-peer handle keeps the message queued for
+  its own turn, and so does a running turn that is not the user's (a job, a
+  delivery, a mailbox wake) when the message carries chips.
 - When a routes-v2 client sends a one-use `@Chat` action (`instruction`,
   `request_reply`), the server admits it as the same pair grant as a route
   `@`; a chat that also has a route `@` in the message keeps that one. Only a

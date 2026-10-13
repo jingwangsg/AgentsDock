@@ -66,7 +66,7 @@ export function crossChatHandoffsAvailable(health: Health | null | undefined): b
   return capability?.available === true && Number(capability.version ?? 1) >= 1
 }
 
-/** A server that takes a turn's @ chip for a chat on another server (the hub paired the chats first). */
+/** Whether the server accepts a turn's @ chip for a chat on another server (the hub paired the chats first). */
 export function crossServerChatReferencesAccepted(health: Health | null | undefined): boolean {
   return health?.capabilities?.cross_chat_handoffs_v1?.features?.cross_server_chat_references === true
 }

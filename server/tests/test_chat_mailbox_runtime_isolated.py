@@ -31,7 +31,7 @@ PAIR = "pair_" + "c" * 32
 NOW = "2026-01-01T00:00:00Z"
 FUNCTIONS = {
     "reserve_async_provider_route_message", "submit_provider_route_handoff", "finish_cross_chat_acceptance",
-    "chat_mailbox_pairs", "provider_run_route_ceiling", "public_chat_mailbox_message", "publish_chat_mailbox_message",
+    "chat_mailbox_pairs", "provider_run_route_ceiling", "provider_run_delegates", "public_chat_mailbox_message", "publish_chat_mailbox_message",
     "publish_chat_mailbox_read", "refresh_chat_mailbox_pending", "take_chat_mailbox_hint",
     "maybe_notify_chat_mailbox_codex", "get_provider_chat_mailbox", "read_provider_chat_mailbox",
     "delete_chat_mailbox_message",
@@ -45,25 +45,7 @@ METHODS = {"__init__", "_locked_call", "_call", "_connect", "_transaction", "ini
            "create_instruction", "get", "update", "mailbox_call", "mailbox_envelopes"}
 
 
-def actual_delegation(capability):
-    """The send-time rule: on a user's turn, mail to any reachable chat carries its latest message."""
-    send = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef)
-                and node.name == "reserve_async_provider_route_message")
-    expression = next(node.value for node in ast.walk(send) if isinstance(node, ast.Assign)
-                      and any(isinstance(target, ast.Name) and target.id == "delegated" for target in node.targets))
-    return eval(compile(ast.Expression(expression), "<actual-delegation-rule>", "eval"), {"capability": capability})
-
-
 class DelegationAdmissionTests(unittest.TestCase):
-    def test_a_users_turn_delegates_its_latest_message_to_any_chat(self):
-        instruction = "Ask @Recipient to research the bug."
-        self.assertTrue(actual_delegation({"source_is_user_turn": True, "source_user_instruction": instruction}))
-        # A wake, a job, a delivery or a guest's message is not the user's instruction.
-        self.assertFalse(actual_delegation({"source_is_user_turn": False, "source_user_instruction": instruction}))
-        self.assertFalse(actual_delegation({"source_user_instruction": instruction}))
-        # A message without text (attachments only) has nothing to delegate.
-        self.assertFalse(actual_delegation({"source_is_user_turn": True, "source_user_instruction": "  "}))
-
     def test_internal_and_standalone_turns_cannot_mint_user_origin(self):
         start = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "_start_turn_locked")
         issuance = next(node for node in ast.walk(start) if isinstance(node, ast.Call)
@@ -82,7 +64,7 @@ class DelegationAdmissionTests(unittest.TestCase):
         issue = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef)
                      and node.name == "issue_cross_chat_capability")
         default = dict(zip((arg.arg for arg in issue.args.kwonlyargs), issue.args.kw_defaults))["source_is_user_turn"]
-        self.assertIs(ast.literal_eval(default), False)  # Native steering/legacy callers fail closed.
+        self.assertIs(ast.literal_eval(default), False)  # A caller that does not say so is not the user's turn.
 
     def test_provider_policy_recognizes_only_attested_fields_and_keeps_scope_limits(self):
         assignment = next(node for node in TREE.body if isinstance(node, ast.Assign)
@@ -202,7 +184,7 @@ class ChatMailboxRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(namespace["provider_route_snapshot"], [self.reverse])
         strict_live.assert_not_called()
 
-    def delegate(self, prompt="Ask @Recipient to research the bug. Do not edit or deploy anything.", action="route"):
+    def delegate(self, prompt="Ask @Recipient to research the bug. Do not edit or deploy anything."):
         self.capabilities["sender"].update(source_user_instruction=prompt, source_is_user_turn=True)
         return prompt
 

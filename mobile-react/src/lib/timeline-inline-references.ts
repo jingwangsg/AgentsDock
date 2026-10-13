@@ -1,5 +1,5 @@
 import type { ChatReference, ChatReferenceAction, Event } from '../types'
-import { MAX_CHAT_REFERENCES } from './chat-references'
+import { MAX_CHAT_REFERENCES, validCrossServerReferenceTarget } from './chat-references'
 import { liveChatTitle, type LiveChatTitleSource } from './live-chat-title'
 import { messageText } from './format'
 
@@ -271,16 +271,8 @@ function inlineRouteCandidate(reference: ChatReference): boolean {
 }
 
 function validTimelineReferenceTarget(reference: ChatReference, sourceSessionId?: string | null): boolean {
-  if (reference.target_kind === 'cross_server') {
-    // A chat on another server: drawn as a chip, never a local navigation target.
-    return typeof reference.target_server_identity === 'string'
-      && reference.target_server_identity.length > 0
-      && reference.target_server_identity.length <= 240
-      && cleanText(reference.target_server_identity)
-      && reference.target_connection_id === undefined
-      && reference.target_route_id === undefined
-      && reference.target_route_revision === undefined
-  }
+  // A chat on another server: drawn as a chip, never a local navigation target.
+  if (reference.target_kind === 'cross_server') return validCrossServerReferenceTarget(reference)
   if (reference.target_kind === 'secure_peer') {
     return reference.session_id === reference.target_route_id
       && uuidV4(reference.target_connection_id)

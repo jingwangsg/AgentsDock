@@ -103,7 +103,7 @@ export function agentCrossChatRoutesAvailable(health: Health | null | undefined)
   return crossChatHandoffsAvailable(health) && agentCrossChatRoutesSupported(health)
 }
 
-/** A server that takes a turn's @ chip for a chat on another server (the hub paired the chats first). */
+/** Whether the server accepts a turn's @ chip for a chat on another server (the hub paired the chats first). */
 export function crossServerChatReferencesAccepted(health: Health | null | undefined): boolean {
   return health?.capabilities?.cross_chat_handoffs_v1?.features?.cross_server_chat_references === true
 }
@@ -505,7 +505,7 @@ export function parseStoredChatReferences(
   return validChatReferences(text, references, sourceSessionId)
 }
 
-function validCrossServerReferenceTarget(reference: ChatReference): boolean {
+export function validCrossServerReferenceTarget(reference: ChatReference): boolean {
   return reference.action === 'route'
     && typeof reference.target_server_identity === 'string'
     && reference.target_server_identity.length > 0
