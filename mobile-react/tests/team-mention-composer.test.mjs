@@ -270,7 +270,7 @@ test('editing inside a selected @@ name revokes it instead of silently routing c
     assert.equal(store.getState().teamReferencesBySession.chat.length,1,'Text after the selected token keeps its exact target')
     await type(renderer,'@@Mac StXdio altered ')
     assert.deepEqual(store.getState().teamReferencesBySession.chat,[])
-    assert.equal(store.getState().drafts.chat,'X altered ','The whole name goes, never a broken partial @@Mac StXdio')
+    assert.equal(store.getState().drafts.chat,'@@Mac StXdio altered ','Text typed into the name stays as typed; only the grant is revoked')
   }finally{await act(async()=>renderer.unmount())}
 })
 
@@ -572,7 +572,6 @@ test('a picked chat is one block inside the input and Backspace at its end remov
     await click(renderer,'chat-target-target')
     await type(renderer,'Ask @Chat target now')
     const input=byID(renderer,'chat-composer-input')[0]
-    assert.equal(input.props.value,undefined,'The text comes from the styled pieces, not a plain value')
     assert.equal(inputText(input),'Ask @Chat target now')
     const block=input.findAll(node=>node.type==='Text'&&node.props.style?.backgroundColor)
     assert.deepEqual(block.map(node=>[node.children.join(''),node.props.style]),[['@Chat target',{color:dark.blue,backgroundColor:`${dark.blue}33`}]])

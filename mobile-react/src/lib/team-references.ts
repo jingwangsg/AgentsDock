@@ -91,10 +91,12 @@ export function reconcileTeamReferences(previousText: string, nextText: string, 
 type ComposerReferenceSpan = Pick<ChatReference, 'source_text_start' | 'source_text_end'>
 
 /**
- * Applies one native text change to the composer, as the desktop's Backspace
- * does: an IME deletes with a text change, not a key event, so a change that
- * cuts into a chat or Team chip removes the whole chip (and, for a lone
- * deletion, one adjacent space). Text typed right before or after a chip keeps it.
+ * Applies one native text change to the composer. An IME deletes with a text
+ * change, not a key event, so a deletion that cuts into a chat or Team chip
+ * removes the whole chip (and, for a lone deletion, one adjacent space), as the
+ * desktop's Backspace does. Text inserted into a chip (autocorrect) stays and
+ * revokes only that chip, as typing inside one does on the desktop. Text typed
+ * right before or after a chip keeps it.
  * `nativeCaret` is where the native field's caret sits after its own change.
  */
 export function atomicComposerReferenceEdit(
@@ -104,14 +106,16 @@ export function atomicComposerReferenceEdit(
   chatReferences: readonly ChatReference[],
   teamReferences: readonly TeamReference[],
 ): { text: string; caret: number; nativeCaret: number; chatReferences: ChatReference[]; teamReferences: TeamReference[] } {
+  // The shortest change: shared prefix, then a shared suffix that may not overlap it.
   const limit = Math.min(previousText.length, nextText.length)
   let prefix = 0
   while (prefix < limit && previousText[prefix] === nextText[prefix]) prefix += 1
   let suffix = 0
   while (suffix < limit - prefix && previousText[previousText.length - 1 - suffix] === nextText[nextText.length - 1 - suffix]) suffix += 1
   // Repeated characters let the same change sit further left: "@" typed just
-  // before "@Chat" diffs as an insertion inside it. Place the change where the
-  // previous selection ends (typing, Backspace) or starts (forward delete).
+  // before "@Chat" diffs as an insertion inside it. The unbounded suffix says
+  // how far it can slide; place it where the previous selection ends (typing,
+  // Backspace) or starts (forward delete).
   let sharedSuffix = suffix
   while (sharedSuffix < limit && previousText[previousText.length - 1 - sharedSuffix] === nextText[nextText.length - 1 - sharedSuffix]) sharedSuffix += 1
   const maxSlide = Math.min(prefix, sharedSuffix - suffix)
@@ -126,10 +130,10 @@ export function atomicComposerReferenceEdit(
   const inserted = nextText.slice(start, nativeCaret)
 
   const touched = [...chatReferences, ...teamReferences].filter(reference => reference.source_text_start < end && start < reference.source_text_end)
-  if (touched.length) {
-    const loneDeletion = !inserted && selectionStart === selectionEnd
+  if (touched.length && !inserted) {
     start = Math.min(start, ...touched.map(reference => reference.source_text_start))
     end = Math.max(end, ...touched.map(reference => reference.source_text_end))
+    const loneDeletion = selectionStart === selectionEnd
     if (loneDeletion && previousText[end] === ' ') end += 1
     else if (loneDeletion && previousText[start - 1] === ' ') start -= 1
   }
@@ -144,16 +148,20 @@ export function atomicComposerReferenceEdit(
 }
 
 /**
- * Keeps a collapsed caret out of chips so typing never splits one. Stepping in
- * from an edge (arrow key, space-bar swipe) crosses the chip, as the desktop's
- * arrow keys do; a tap lands on the nearer edge, as a desktop click does.
+ * Keeps a collapsed caret out of chips so typing never splits one. The desktop
+ * has two rules for this, a click (atomicComposerReferenceCaret: nearer edge)
+ * and an arrow key (atomicComposerReferenceNavigation: cross the chip). Android
+ * reports both as a selection change, so the step is told apart by distance: one
+ * character (two UTF-16 units for a surrogate pair) in from the edge where the
+ * caret was crosses the chip; any other landing (tap, drag) takes the nearer edge.
  */
-export function atomicComposerReferenceCaret(caret: number, references: readonly ComposerReferenceSpan[], previousCaret: number): number {
+export function caretOutsideComposerReferences(caret: number, references: readonly ComposerReferenceSpan[], previousCaret: number): number {
   const reference = references.find(candidate => candidate.source_text_start < caret && caret < candidate.source_text_end)
   if (!reference) return caret
-  if (previousCaret === reference.source_text_start) return reference.source_text_end
-  if (previousCaret === reference.source_text_end) return reference.source_text_start
-  return caret - reference.source_text_start < reference.source_text_end - caret ? reference.source_text_start : reference.source_text_end
+  const { source_text_start: start, source_text_end: end } = reference
+  if (previousCaret === start && caret - start <= 2) return end
+  if (previousCaret === end && end - caret <= 2) return start
+  return caret - start < end - caret ? start : end
 }
 
 export function validTeamReferences(text: string, references: readonly TeamReference[], occupied: readonly Pick<ChatReference, 'source_text_start' | 'source_text_end'>[] = []): TeamReference[] {
