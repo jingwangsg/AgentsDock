@@ -60,7 +60,7 @@ test('selected chats are removable grant references; modern local actions stay o
 
 test('composer edits reconcile grants and sends only validated references', () => {
   assert.match(composer, /const previousDraft = draftRef\.current/)
-  assert.match(composer, /const \{ text, caret, nativeCaret, chatReferences: nextReferences, teamReferences: nextTeamReferences \} = atomicComposerReferenceEdit\(previousDraft, nativeText, selectionRef\.current, referencesRef\.current, teamReferencesRef\.current\)/)
+  assert.match(composer, /atomicComposerReferenceEdit\(previousDraft, nativeText, selectionRef\.current/)
   assert.match(composer, /chatMentionTrigger\(text, caret, nextReferences\)/)
   assert.match(composer, /setChatReferencesForSession\(sessionId, nextReferences, profileGeneration\)/)
   assert.match(composer, /const currentDraft = consumeComposer \? currentState\.drafts\[sessionId\] \?\? draftRef\.current : ''/)

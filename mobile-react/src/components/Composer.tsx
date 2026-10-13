@@ -54,7 +54,7 @@ import {
   type BoundProviderCommand,
   type ComposerCommand,
 } from '../lib/composer-commands'
-import { atomicComposerReferenceCaret, atomicComposerReferenceEdit, insertTeamReference, MAX_TEAM_REFERENCES, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceContractSupported, validTeamReferences, type TeamMentionCandidate, type TeamMentionTrigger } from '../lib/team-references'
+import { atomicComposerReferenceEdit, caretOutsideComposerReferences, insertTeamReference, MAX_TEAM_REFERENCES, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceContractSupported, validTeamReferences, type TeamMentionCandidate, type TeamMentionTrigger } from '../lib/team-references'
 import {
   chatMentionAction,
   chatMentionTrigger,
@@ -241,8 +241,10 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const pendingCaretRef = useRef<number | null>(null)
   // After an edit removes a chip whole, React Native applies the new text keeping
   // the native caret's distance from the end, and a selection command can reach
-  // the field before that text does. So the caret moves only once the field reports
-  // that applied position; the IME's echo of its own edit arrives first.
+  // the field before that text does. Android reports the IME's caret in the cut
+  // text (the echo), then the applied caret once the new text lands; the caret is
+  // moved to the chip's place only then. iOS reports no selection for text set
+  // from JS, so the next text change replaces this and the next tap clears it.
   const removedChipCaretRef = useRef<{ echo: number; applied: number; caret: number } | null>(null)
   const restoreInputAfterPickerRef = useRef(false)
   const dismissedMentionStartRef = useRef<number | null>(null)
@@ -479,7 +481,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     const previousDraft = draftRef.current
     const { text, caret, nativeCaret, chatReferences: nextReferences, teamReferences: nextTeamReferences } = atomicComposerReferenceEdit(previousDraft, nativeText, selectionRef.current, referencesRef.current, teamReferencesRef.current)
     const appliedCaret = Math.max(0, text.length - (nativeText.length - nativeCaret))
-    removedChipCaretRef.current = appliedCaret !== caret ? { echo: nativeCaret, applied: appliedCaret, caret } : null
+    removedChipCaretRef.current = appliedCaret === caret ? null : { echo: nativeCaret, applied: appliedCaret, caret }
     draftRef.current = text
     referencesRef.current = nextReferences
     teamReferencesRef.current = nextTeamReferences
@@ -729,7 +731,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       selection = { start: removedChip.caret, end: removedChip.caret }
       inputRef.current?.setSelection(removedChip.caret, removedChip.caret)
     } else if (selection.start === selection.end) {
-      const caret = atomicComposerReferenceCaret(selection.start, [...referencesRef.current, ...teamReferencesRef.current], selectionRef.current.start)
+      const caret = caretOutsideComposerReferences(selection.start, [...referencesRef.current, ...teamReferencesRef.current], selectionRef.current.start)
       if (caret !== selection.start) {
         selection = { start: caret, end: caret }
         inputRef.current?.setSelection(caret, caret)
@@ -1279,7 +1281,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   let draftOffset = 0
   for (const chip of [
     ...references.map(reference => ({ start: reference.source_text_start, end: reference.source_text_end, supported: referenceSupported(reference) })),
-    ...teamReferences.map(reference => ({ start: reference.source_text_start, end: reference.source_text_end, supported: teamReferencesSupported })),
+    ...teamReferences.map(reference => ({ start: reference.source_text_start, end: reference.source_text_end, supported: teamReferenceContractSupported(health, reference) })),
   ].sort((left, right) => left.start - right.start)) {
     if (chip.start < draftOffset) continue
     const tint = chip.supported ? colors.blue : colors.red
