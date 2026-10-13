@@ -18,7 +18,7 @@ ROUTE_FUNCTIONS = {
     "provider_cross_chat_route_snapshot_for_hints", "initial_provider_cross_chat_route_snapshot",
     "provider_cross_chat_route_snapshot_for_authority", "provider_cross_chat_route_id_is_revoked",
     "provider_cross_chat_pair_is_live", "provider_cross_chat_route_availability",
-    "live_provider_cross_chat_route", "live_provider_chat_mailbox_route",
+    "live_provider_cross_chat_route", "live_provider_chat_mailbox_route", "provider_run_route_ceiling",
     "cross_chat_target_backend_supported", "provider_cross_chat_delivery_pair_is_live",
     "is_async_route_message", "async_route_delivery_snapshot",
 }

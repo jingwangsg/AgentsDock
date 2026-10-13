@@ -31,7 +31,7 @@ PAIR = "pair_" + "c" * 32
 NOW = "2026-01-01T00:00:00Z"
 FUNCTIONS = {
     "reserve_async_provider_route_message", "submit_provider_route_handoff", "finish_cross_chat_acceptance",
-    "chat_mailbox_pairs", "public_chat_mailbox_message", "publish_chat_mailbox_message",
+    "chat_mailbox_pairs", "provider_run_route_ceiling", "public_chat_mailbox_message", "publish_chat_mailbox_message",
     "publish_chat_mailbox_read", "refresh_chat_mailbox_pending", "take_chat_mailbox_hint",
     "maybe_notify_chat_mailbox_codex", "get_provider_chat_mailbox", "read_provider_chat_mailbox",
     "delete_chat_mailbox_message",
