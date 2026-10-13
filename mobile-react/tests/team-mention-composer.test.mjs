@@ -705,13 +705,11 @@ test('same-tick queued Save submits once and reconnect preserves unsaved editor 
   }finally{await act(async()=>renderer.unmount())}
 })
 
-function chipQueue(){
-  const prompt='Ask @Chat target now'
-  const reference={session_id:'target',display_title_snapshot:'Chat target',source_text_start:4,source_text_end:16,action:'route',grant_intent:true}
+function chipQueue(turn={prompt:'Ask @Chat target now',chat_references:[{session_id:'target',display_title_snapshot:'Chat target',source_text_start:4,source_text_end:16,action:'route',grant_intent:true}]},patch={}){
   const updates=[]
-  resetRoutes({snapshots:{chat:{queuedTurns:[{queued_id:'user',session_id:'chat',prompt,chat_references:[reference],file_ids:[]}]}}})
+  resetRoutes({snapshots:{chat:{queuedTurns:[{queued_id:'user',session_id:'chat',file_ids:[],...turn}]}},...patch})
   store.setState({updateQueued:async(...args)=>{updates.push(args);return true}})
-  return {prompt,reference,updates}
+  return {prompt:turn.prompt,updates}
 }
 const editQueued=async renderer=>act(async()=>renderer.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel==='Edit queued message').props.onPress())
 const queuedSelect=async(renderer,caret)=>act(async()=>renderer.root.findByType('TextInput').props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}}))
@@ -727,16 +725,49 @@ test('the queued-message editor draws a chip as one block, keeps the caret out o
     assert.equal(byID(renderer,'queued-chat-references-user').length,1)
     await queuedSelect(renderer,8)
     assert.deepEqual(fixture.selections,[[4,4]],'A tap inside the chip goes to its nearer edge')
+    fixture.selections.length=0
     // Android Backspace at the chip's end: the text change, the IME's echo, then the applied caret.
     await queuedSelect(renderer,16)
     await act(async()=>input().props.onChangeText('Ask @Chat targe now'))
     assert.equal(inputText(input()),'Ask now')
     assert.equal(byID(renderer,'queued-chat-references-user').length,0)
     await queuedSelect(renderer,15)
+    assert.deepEqual(fixture.selections,[],'The echo of the cut text moves nothing')
     await queuedSelect(renderer,3)
-    assert.deepEqual(fixture.selections,[[4,4],[4,4]],'The caret lands where the chip began')
+    assert.deepEqual(fixture.selections,[[4,4]],'The caret lands where the chip began')
     await act(async()=>byID(renderer,'queued-save-user')[0].props.onPress())
     assert.deepEqual(updates.map(args=>[args[2],args[3]]),[['Ask now',[]]])
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('Backspace at a queued @@ name removes it and saves no Team reference',async()=>{
+  const team={kind:'recipient',recipient_kind:'server',team_id:'team',target_id:'remote-node',display_name_snapshot:'Mac Studio',source_text_start:0,source_text_end:12,grant_intent:true}
+  const {updates}=chipQueue({prompt:'@@Mac Studio please check',team_references:[team]})
+  const {renderer}=await renderQueue()
+  try{
+    await editQueued(renderer)
+    await queuedSelect(renderer,12)
+    await act(async()=>renderer.root.findByType('TextInput').props.onChangeText('@@Mac Studi please check'))
+    assert.equal(inputText(renderer.root.findByType('TextInput')),'please check')
+    await act(async()=>byID(renderer,'queued-save-user')[0].props.onPress())
+    assert.deepEqual(updates.map(args=>[args[2],args[5]]),[['please check',[]]])
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('a queued chip for a chat on another server draws as supported and saves after an edit',async()=>{
+  const prompt='Ask @Launch agent · osmo_dev_l40 now'
+  const remote={session_id:'l40-chat',display_title_snapshot:'Launch agent · osmo_dev_l40',source_text_start:4,source_text_end:4+'@Launch agent · osmo_dev_l40'.length,action:'route',target_kind:'cross_server',target_server_identity:'l40-server'}
+  const {updates}=chipQueue({prompt,chat_references:[remote]},{health:crossServerHealth()})
+  const {renderer}=await renderQueue()
+  const input=()=>renderer.root.findByType('TextInput')
+  try{
+    await editQueued(renderer)
+    assert.deepEqual(input().findAll(node=>node.type==='Text'&&node.props.style?.backgroundColor).map(node=>[node.children.join(''),node.props.style.color]),[['@Launch agent · osmo_dev_l40',dark.blue]])
+    await queuedSelect(renderer,prompt.length)
+    await act(async()=>input().props.onChangeText(`${prompt} please`))
+    assert.equal(byID(renderer,'queued-save-user')[0].props.disabled,false)
+    await act(async()=>byID(renderer,'queued-save-user')[0].props.onPress())
+    assert.deepEqual(updates.map(args=>[args[2],args[3]]),[[`${prompt} please`,[remote]]])
   }finally{await act(async()=>renderer.unmount())}
 })
 
