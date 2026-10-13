@@ -24038,7 +24038,8 @@ async def reconcile_idle_queued_turns(*, reason: str) -> int:
 
 
 async def run_queued_turn_now(session_id: str, queued_id: str) -> dict[str, Any]:
-    """Coalesce duplicate Force Send requests without replaying a steer."""
+    """Coalesce duplicate Force Send requests without replaying a steer; on a
+    Claude follow-up already queued at the CLI, ask the CLI to deliver it now."""
     await wait_for_queue_recovery_admission()
     ensure_session_not_deleting(session_id)
     await reconcile_idle_queue_session(
@@ -24117,13 +24118,17 @@ async def run_queued_turn_now(session_id: str, queued_id: str) -> dict[str, Any]
         # reached the provider. Later duplicate requests join this task.
         assert task is not None
         result = await asyncio.shield(task)
+        # The task's settlement recorded its deliver_now here before returning.
         cached = RUN_NOW_COMPLETED_RESULTS.get(cache_key) or {}
+    # load-bearing: only steer_or_release_for_queued_turn (Claude only) passes
+    # deliver_now=False; a result that was not cached reads None, not False.
     if cached.get("deliver_now") is False and result.get("native_steer"):
-        # The message already joined the turn as a follow-up the CLI holds
-        # until the running tool returns (Enter). Send now asks the CLI to
-        # move that tool to the background and deliver it at once.
+        # The message already joined the turn as a frame queued at the CLI
+        # until the running tool returns (Enter). Send now asks the CLI to move
+        # that tool to the background and deliver it at once. The message is
+        # delivered either way: a failed request only logs.
         try:
-            await (await claude_sdk_manager()).send_now(session_id, run_id=str(result.get("run_id") or ""))
+            await (await claude_sdk_manager()).send_queued_now(session_id, run_id=str(result.get("run_id") or ""))
         except Exception as exc:
             logger.warning(
                 "Claude Send now did not reach the CLI session=%s queued_id=%s: %s",
@@ -57835,9 +57840,15 @@ async def steer_or_release_for_queued_turn(session_id: str, queued_id: str) -> N
                         task = asyncio.create_task(_run_queued_turn_now_and_release(
                             session_id, queued_id, deliver_now=False, steer_only=True,
                         ))
-                        # The composer's Send now (⌘Enter) posts this message
-                        # and then presses Send now on it: that request joins
-                        # this delivery instead of racing it.
+                        setattr(task, "_agentsdock_force_send_operation_id", f"follow_up_{uuid.uuid4().hex[:16]}")
+                        setattr(task, "_agentsdock_force_send_queued_id", queued_id)
+                        setattr(task, "_agentsdock_force_send_started_at", time.monotonic())
+                        setattr(task, "_agentsdock_force_send_phase", "admission")
+                        # ⌘Enter posts this message and then presses Send now on
+                        # it; registering this delivery lets that request join it
+                        # instead of racing it. load-bearing: setdefault — a Send
+                        # now already applying another message keeps its slot,
+                        # and this follow-up then runs unregistered, as before.
                         RUN_NOW_REQUESTS.setdefault(session_id, (queued_id, task))
                     result = await task
                     if result.get("native_steer"):

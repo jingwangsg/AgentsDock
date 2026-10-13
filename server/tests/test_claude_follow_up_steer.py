@@ -163,7 +163,7 @@ class ClaudeFollowUpSteerTests(unittest.IsolatedAsyncioTestCase):
         # ⌘Enter posts the message, which joins the turn as a follow-up the CLI
         # holds until the running tool returns, and then presses Send now on it
         # (2026-10-13: the answer waited 8 minutes for an `until … sleep` poll).
-        manager = SimpleNamespace(send_now=AsyncMock(return_value="delivering"))
+        manager = SimpleNamespace(send_queued_now=AsyncMock(return_value="delivering"))
         steered = {"ok": True, "native_steer": True, "queued_id": "q1", "run_id": "run-1",
                    "interrupted": False, "replays_interrupted_message": False, "superseded_queued_ids": []}
         with patch.dict(agent_server.ACTIVE, {"chat": self._active(agent_server.CLAUDE_TRANSPORT_AGENT_SDK)}), \
@@ -180,21 +180,23 @@ class ClaudeFollowUpSteerTests(unittest.IsolatedAsyncioTestCase):
             send_now = asyncio.create_task(agent_server.run_queued_turn_now("chat", "q1"))
             for _ in range(20):
                 await asyncio.sleep(0)
-            manager.send_now.assert_not_awaited()
+            manager.send_queued_now.assert_not_awaited()
             request["accepted_event"].set()
             request["future"].set_result(dict(steered))
             self.assertEqual(await asyncio.wait_for(send_now, 5), dict(steered, remaining=0))
             await asyncio.wait_for(follow_up, 5)
+            # Send now did not steer the message a second time.
             self.assertTrue(self.steer_queue.empty())
-            manager.send_now.assert_awaited_once_with("chat", run_id="run-1")
-            # A later press reads the settled follow-up and asks again; the CLI
-            # answers "nothing_waiting" once the message has been taken in.
+            manager.send_queued_now.assert_awaited_once_with("chat", run_id="run-1")
+            # A later press reads the cached follow-up and asks the CLI again
+            # (the real CLI then answers "nothing_waiting"; the mock does not).
             self.assertEqual(await asyncio.wait_for(agent_server.run_queued_turn_now("chat", "q1"), 5), dict(steered, remaining=0))
-            self.assertEqual(manager.send_now.await_count, 2)
+            self.assertEqual(manager.send_queued_now.await_count, 2)
             # A message Send now itself delivered ("now") is never pressed again.
+            # Simulate one by marking the cached result as such.
             agent_server.RUN_NOW_COMPLETED_RESULTS[("chat", "q1")]["deliver_now"] = True
             await asyncio.wait_for(agent_server.run_queued_turn_now("chat", "q1"), 5)
-            self.assertEqual(manager.send_now.await_count, 2)
+            self.assertEqual(manager.send_queued_now.await_count, 2)
 
 
 if __name__ == "__main__":

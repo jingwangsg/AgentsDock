@@ -2700,20 +2700,30 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit({"type": "result", "is_error": False, "result": "done"})
         self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "done")
 
-    async def test_send_now_asks_the_cli_to_deliver_queued_follow_ups_only_while_a_tool_runs(self) -> None:
+    async def test_send_queued_now_asks_the_cli_to_deliver_follow_ups_only_while_a_tool_runs(self) -> None:
         handle = await self.manager.start_run("chat-send-now", "Render", run_id="run-send-now", options={}, configuration_key="same")
         client = self.factory.clients[-1]
-        await client.emit({"type": "assistant", "text": "Rendering…"})
-        await asyncio.wait_for(handle.__anext__(), 5)
-        # The model is sampling: the CLI would abort it, and it reads the follow-up at its next step anyway.
-        self.assertIsNone(await self.manager.send_now("chat-send-now", run_id="run-send-now"))
         await client.emit({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "toolu_wait", "name": "Bash", "input": {"command": "sleep 40"}},
         ]}})
         await asyncio.wait_for(handle.__anext__(), 5)
+        # A CLI that does not advertise interrupt_send_now_v1 would read the request as a Stop.
+        self.assertIsNone(await self.manager.send_queued_now("chat-send-now", run_id="run-send-now"))
+        await client.emit({"type": "system", "subtype": "init", "capabilities": ["interrupt_send_now_v1"]})
+        await client.emit({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_wait", "content": "done"},
+        ]}})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        # The model is sampling: the CLI would abort it, and it reads the follow-up at its next step anyway.
+        self.assertIsNone(await self.manager.send_queued_now("chat-send-now", run_id="run-send-now"))
         self.assertNotIn(("send_queued_now",), client.calls)
-        self.assertIsNone(await self.manager.send_now("chat-send-now", run_id="run-other"))
-        self.assertEqual(await self.manager.send_now("chat-send-now", run_id="run-send-now"), "delivering")
+        await client.emit({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_poll", "name": "Bash", "input": {"command": "sleep 40"}},
+        ]}})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        # Never for a different run.
+        self.assertIsNone(await self.manager.send_queued_now("chat-send-now", run_id="run-other"))
+        self.assertEqual(await self.manager.send_queued_now("chat-send-now", run_id="run-send-now"), "delivering")
         self.assertEqual(client.calls.count(("send_queued_now",)), 1)
         self.assertNotIn(("interrupt",), client.calls)
         await client.emit({"type": "result", "is_error": False, "result": "done"})
