@@ -20,7 +20,7 @@ class HTTPException(Exception):
 
 class ProviderRouteDiscoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        names = {"list_provider_cross_chat_routes", "provider_cross_chat_route_projection",
+        names = {"list_provider_cross_chat_routes", "provider_run_route_ceiling", "provider_cross_chat_route_projection",
                  "sanitized_provider_route_label", "cross_server_routes_for", "cross_server_route_projection"}
         nodes = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
         tree = ast.parse((Path(__file__).resolve().parents[1] / "agent_server.py").read_text())

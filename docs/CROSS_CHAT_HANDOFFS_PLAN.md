@@ -32,6 +32,22 @@ Watches, artifact grants, and group exchanges remain deferred.
   admitted with, re-checked against the chat's current grants; an edit never
   creates one. There is no ambient all-chat ceiling or required Inspector
   setup.
+- A user's turn, a message steered into it and a mailbox wake read the chat's
+  pairs when the agent lists or messages, not when the turn starts. A chat
+  paired while the turn runs, for example a new agent created by a steered
+  message, is reachable at once, and a revoked pair stops being reachable at
+  once. Routes without a pair stay reachable only in a turn whose message
+  @-mentions them.
+  `chats list` marks the chats @-mentioned in the turn with `mentioned: true`.
+  Agents have one path to another chat: `chats list`, then `send` or `ask`
+  with the returned `--route`.
+- When a routes-v2 client sends a one-use `@Chat` action (`instruction`,
+  `request_reply`), the server admits it as the same pair grant as a route
+  `@`; a chat that also has a route `@` in the message keeps that one. Only a
+  new message is converted, not one queued before the update. The agents'
+  rules no longer describe index handles (`--target-index`); a current
+  client's turn has none, so such a call is refused with a pointer to
+  `chats list`. An older client's turn can still carry them.
 - Scheduled jobs never inherit source-chat grants. A job stores only its own
   exact route selections through the job editor/helper, and every firing
   revalidates those exact targets, revisions, and actions. The prompt keeps the

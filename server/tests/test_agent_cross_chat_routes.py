@@ -1369,6 +1369,97 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             [],
         )
 
+    async def test_a_chat_run_reaches_a_pair_made_after_it_started(self) -> None:
+        # 2026-10-13: a message steered into a running turn created a new agent
+        # (its pair), and that turn's `chats list` answered 403 because its
+        # routes were frozen when it started.
+        pair_id = "pair_" + "a" * 32
+        forward = {**self.route("a", actions=["instruction", "request_reply"]),
+                   "pair_id": pair_id, "paired_route_id": "route_" + "b" * 32}
+        reverse = {**self.route("b", alias="source", target="source"),
+                   "pair_id": pair_id, "paired_route_id": forward["route_id"]}
+
+        async def issue(run_id: str, *, chat_routes_live: bool) -> Request:
+            agent_server.CURRENT_TURNS["source"] = {"run_id": run_id}
+            authority = await agent_server.issue_cross_chat_capability(
+                "source", run_id, [self.grant_reference()], source_user_instruction="@Target hello",
+                source_is_user_turn=True, actions={"agent_cross_chat_routes"},
+                provider_route_snapshot=[], async_route_v1=True, chat_routes_live=chat_routes_live,
+            )
+            return self.provider_request(json.loads(authority.read_text())["provider_capability"])
+
+        with self.native_transports():
+            request = await issue("run_chat_routes", chat_routes_live=True)
+            self.assertEqual((await agent_server.list_provider_cross_chat_routes(request))["routes"], [])
+            # An unpaired route the turn did not @-mention stays out of reach.
+            unpaired = self.route("c", alias="other", target="other")
+            agent_server.STORE.sessions["source"]["provider_cross_chat_routes"] = [forward, unpaired]
+            agent_server.STORE.sessions["target"]["provider_cross_chat_routes"] = [reverse]
+            listed = (await agent_server.list_provider_cross_chat_routes(request))["routes"]
+            self.assertEqual([(row["route_id"], row["mode"], row["mentioned"]) for row in listed],
+                             [(forward["route_id"], "async_route_v1", True)])
+            reservation = await agent_server.reserve_async_provider_route_message(
+                request, source_session_id="source", route_id=forward["route_id"],
+                body="hello", idempotency_key="chat-routes",
+            )
+            self.assertEqual(reservation["target_session_id"], "target")
+            # Revocation takes effect at once.
+            agent_server.STORE.sessions["target"]["provider_cross_chat_routes"] = []
+            self.assertEqual((await agent_server.list_provider_cross_chat_routes(request))["routes"], [])
+            # A run issued without chat_routes_live (a job or internal delivery)
+            # and with no issued routes cannot list.
+            agent_server.STORE.sessions["target"]["provider_cross_chat_routes"] = [reverse]
+            exact = await issue("run_exact_routes", chat_routes_live=False)
+            with self.assertRaises(HTTPException) as denied:
+                await agent_server.list_provider_cross_chat_routes(exact)
+            self.assertEqual(denied.exception.status_code, 403)
+
+    async def test_a_current_clients_one_use_mention_becomes_a_pair_grant(self) -> None:
+        agent_server.STORE.sessions["other"] = {
+            "id": "other", "title": "Other", "folder": "/other", "backend": "codex",
+            "provider_cross_chat_routes": [],
+        }
+        prompt = "@Target check the build; @Other review it, then @Other report"
+
+        def mention(target: str, title: str, occurrence: int, action: str, **extra) -> agent_server.ChatReference:
+            start = -1
+            for _ in range(occurrence):
+                start = prompt.index(f"@{title}", start + 1)
+            return agent_server.ChatReference(
+                session_id=target, display_title_snapshot=title, source_text_start=start,
+                source_text_end=start + len(title) + 1, action=action, **extra,
+            )
+
+        issued, events = await self.capture_start_admission("source", agent_server.TurnRequest(
+            prompt=prompt,
+            chat_references=[
+                mention("target", "Target", 1, "instruction"),
+                mention("other", "Other", 1, "route", grant_intent=True),
+                # The chat already has a route @, so this one is dropped, not a duplicate.
+                mention("other", "Other", 2, "request_reply"),
+            ],
+            client_capabilities=[agent_server.AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY,
+                                 agent_server.CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY],
+        ))
+        started = next(payload for event_type, payload in events if event_type == "turn_started")
+        self.assertEqual(
+            [(ref["session_id"], ref["action"], ref.get("grant_intent")) for ref in started["chat_references"]],
+            [("target", "route", True), ("other", "route", True)],
+        )
+        self.assertTrue({"cross_chat_instruction", "cross_chat_request_reply"}.isdisjoint(issued["actions"]))
+        self.assertEqual(
+            {route["target_session_id"] for route in agent_server.provider_cross_chat_routes(
+                agent_server.STORE.sessions["source"]) if route.get("pair_id")},
+            {"target", "other"},
+        )
+
+    def test_agents_are_told_one_path_to_other_chats(self) -> None:
+        for text in (agent_server.PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS, agent_server.PROVIDER_TOOL_DESCRIPTION):
+            self.assertNotIn("--target-index", text)
+        with self.assertRaises(agent_server.ProviderToolError) as stale:
+            agent_server.resolve_provider_tool_arguments("chats", ["send", "--target-index", "1"], {})
+        self.assertIn("chats list", str(stale.exception))
+
     async def test_queue_edit_without_chip_keeps_permanent_pairs(self) -> None:
         # A queued follow-up edited without an @ chip keeps the pairs in its
         # admission ceiling like any ordinary turn. Before 2026-10-11 the edit
@@ -1501,9 +1592,15 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             agent_server.provider_route_snapshot_allows_native_steer(snapshot)
         )
+        # A user's plain message still reaches the chat's pairs, read live.
         actions, _jobs_access = agent_server.native_steer_provider_actions(
             "source",
             {"prompt": "route-free replacement"},
+        )
+        self.assertIn("agent_cross_chat_routes", actions)
+        actions, _jobs_access = agent_server.native_steer_provider_actions(
+            "source",
+            {"prompt": "route-free replacement", "purpose": "scheduled_job"},
         )
         self.assertNotIn("agent_cross_chat_routes", actions)
 
@@ -3740,7 +3837,7 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([result["accepted"] for result in results], [True, True])
         self.assertTrue(token_a)
 
-    async def test_ordinary_turn_without_explicit_route_has_no_route_harness(
+    async def test_ordinary_turn_without_a_mention_lists_its_routes_live(
         self,
     ) -> None:
         route = self.route("a")
@@ -3755,8 +3852,9 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(issued["provider_route_snapshot"], [])
+        self.assertTrue(issued["chat_routes_live"])
+        self.assertIn("agent_cross_chat_routes", issued["actions"])
         self.assertTrue({
-            "agent_cross_chat_routes",
             "cross_chat_instruction",
             "cross_chat_request_reply",
         }.isdisjoint(set(issued["actions"])))

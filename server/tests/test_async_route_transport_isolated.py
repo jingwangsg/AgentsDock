@@ -26,7 +26,7 @@ FUNCTIONS = {
     "is_async_route_message", "async_route_conversation_fields",
     "cross_chat_message_event_type", "cross_chat_lifecycle_fields",
     "async_message_target_fields",
-    "public_cross_chat_envelope", "reserve_async_provider_route_message",
+    "public_cross_chat_envelope", "reserve_async_provider_route_message", "provider_run_route_ceiling",
     "submit_provider_route_handoff", "finish_cross_chat_acceptance", "append_cross_chat_event_once",
     "append_cross_chat_lifecycle", "finish_cross_chat_delivery", "cross_chat_delivery_state",
     "issued_provider_capability_snapshot", "provider_authority_runtime_env",
