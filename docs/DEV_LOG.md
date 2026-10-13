@@ -1,5 +1,37 @@
 # Public development log
 
+## 2026-10-14 — AgentsServer allows 64 port tunnels per chat or browser tab (server and Android source)
+
+- AgentsServer allowed each chat or browser tab at most 16 open port
+  tunnels, shared by every device showing it. The Android app opens one
+  tunnel for each connection a page makes, so a page that kept more than 16
+  connections open had its further requests refused. The default is now 64,
+  the server-wide limit, so one chat or tab can now use every tunnel the
+  server allows. `AGENTSDOCK_PORT_TUNNEL_MAX_ACTIVE_PER_SESSION` still sets
+  a lower value; it cannot exceed the server-wide limit.
+- Android: a connection the app's local proxy accepted just as a tab switch
+  stopped the proxy could still be served afterwards, through the next
+  tab's route, until that tab was released. The proxy now closes such a
+  connection. In a run with a delay added after the proxy accepts a
+  connection, the connection was served before the change and closed after
+  it. Route and release calls already run one at a time, in call order, on
+  Expo's AsyncFunctionQueue thread (logged over six direct switches between
+  two browser tabs); only a code comment that said otherwise changed.
+- Verified on the Android emulator with a sideload build and a page that
+  polls 24 URLs at once across four localhost ports and keeps those
+  connections open. Against a server with the old limit, 16 of 16 tunnels
+  were open and 104 requests failed over 13 polling rounds; with the new
+  limit, 24 of 64 were open and none failed. Across switches between two
+  browser tabs and a chat, 24 tunnels were open while either tab was shown
+  and none while the chat was shown. Server port tunnel tests and the
+  proxy's JVM test pass.
+- Not changed: the desktop app still opens at most 16 tunnels per chat or
+  tab, whatever the server allows; it sends only localhost connections
+  through tunnels, so a desktop tab that needs more than 16 localhost
+  connections still has the rest refused.
+  Availability: the server limit takes effect when a server is updated or
+  redeployed; the Android change takes effect in the next Android build.
+
 ## 2026-10-14 — Android browser tabs no longer use up their connections after tab switches (Android source)
 
 - An Android browser tab showing a page from the server's localhost (here a

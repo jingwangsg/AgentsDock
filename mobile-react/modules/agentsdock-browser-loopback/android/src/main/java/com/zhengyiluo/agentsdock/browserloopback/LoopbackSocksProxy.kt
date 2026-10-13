@@ -56,8 +56,9 @@ class LoopbackSocksProxy(private val http: OkHttpClient) {
     workers.execute {
       while (!socket.isClosed) {
         val client = try { socket.accept() } catch (_: IOException) { break }
-        connections.add(client)
-        workers.execute { serve(client) }
+        // stop() may have run after accept() returned; a connection it missed would be served under the next tab's route.
+        val tracked = synchronized(this) { listener === socket && connections.add(client) }
+        if (tracked) workers.execute { serve(client) } else closeQuietly(client)
       }
     }
     return socket.localPort

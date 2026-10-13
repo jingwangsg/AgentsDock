@@ -37,7 +37,8 @@ class AgentsDockBrowserLoopbackModule : Module() {
         promise.resolve(false)
         return@AsyncFunction
       }
-      // Route and release may run on different threads; the lock keeps their overrides in call order.
+      // Expo runs route and release one at a time, in call order, on its AsyncFunctionQueue thread, and
+      // BrowserView releases a tab before it routes the next.
       synchronized(proxy) {
         proxy.route = TunnelRoute(tabId, tunnelPrefix, token, allHosts)
         // Chromium hands a SOCKS5 proxy the host name unresolved (its bare socks:// is SOCKS5 too), so
