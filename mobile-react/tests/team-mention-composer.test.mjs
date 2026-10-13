@@ -12,7 +12,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 globalThis.requestAnimationFrame ??= callback => setTimeout(() => callback(Date.now()), 0)
 globalThis.cancelAnimationFrame ??= clearTimeout
 const store = create(() => ({}))
-const fixture = { store, alerts: [], reads: [], sends: [], routeReads: [], revokes: [], skips: [], width: 390, scheme: 'dark', client: { isValidated: true, validationRevision: 1 } }
+const fixture = { store, alerts: [], reads: [], sends: [], selections: [], routeReads: [], revokes: [], skips: [], width: 390, scheme: 'dark', client: { isValidated: true, validationRevision: 1 } }
 globalThis.__teamComposerFixture = fixture
 const mocks = {
   'react-native': `import { createElement } from 'react'; const fixture=globalThis.__teamComposerFixture;
@@ -63,7 +63,7 @@ function health() { return { ok: true, server_identity: 'local-server', server_i
   team_hub_v1: { available: true, version: 1, server_session_base_path: '/api/team-hub-server', hub_id: 'hub' },
 } } }
 function reset(patch = {}) {
-  fixture.alerts.length=0; fixture.reads.length=0; fixture.sends.length=0; fixture.client.isValidated=true; fixture.client.validationRevision=1
+  fixture.alerts.length=0; fixture.reads.length=0; fixture.sends.length=0; fixture.selections.length=0; fixture.client.isValidated=true; fixture.client.validationRevision=1
   fixture.routeReads.length=0;fixture.revokes.length=0;fixture.skips.length=0;fixture.width=390;fixture.scheme='dark'
   fixture.client.teamNetworkGet = async (base, endpoint) => {
     fixture.reads.push([base,endpoint])
@@ -95,7 +95,7 @@ function reset(patch = {}) {
 }
 async function render() {
   let renderer
-  await act(async()=>{renderer=TestRenderer.create(React.createElement(Composer,{sessionId:'chat',keyboardVisible:true,onSent(){},onOpenMcp(){}}),{createNodeMock:()=>({focus(){},clear(){},setNativeProps(){}})})})
+  await act(async()=>{renderer=TestRenderer.create(React.createElement(Composer,{sessionId:'chat',keyboardVisible:true,onSent(){},onOpenMcp(){}}),{createNodeMock:()=>({focus(){},clear(){},setNativeProps(){},setSelection(start,end){fixture.selections.push([start,end])}})})})
   return renderer
 }
 const byID=(renderer,id)=>renderer.root.findAll(node=>typeof node.type==='string'&&node.props.testID===id)
@@ -270,6 +270,7 @@ test('editing inside a selected @@ name revokes it instead of silently routing c
     assert.equal(store.getState().teamReferencesBySession.chat.length,1,'Text after the selected token keeps its exact target')
     await type(renderer,'@@Mac StXdio altered ')
     assert.deepEqual(store.getState().teamReferencesBySession.chat,[])
+    assert.equal(store.getState().drafts.chat,'X altered ','The whole name goes, never a broken partial @@Mac StXdio')
   }finally{await act(async()=>renderer.unmount())}
 })
 
@@ -557,6 +558,53 @@ test('a chat on another server becomes a tagged chip that is paired through the 
     await act(async()=>pairing.resolve())
     assert.equal(fixture.sends.length,1)
     assert.deepEqual(fixture.sends[0][3].chatReferences,[reference],'The chip still reaches the store, which needs it to consume or restore the draft')
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+const select=async(renderer,caret)=>act(async()=>byID(renderer,'chat-composer-input')[0].props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}}))
+const inputText=node=>node.children.map(child=>typeof child==='string'?child:inputText(child)).join('')
+test('a picked chat is one block inside the input and Backspace at its end removes it with its pill',async()=>{
+  resetRoutes()
+  const renderer=await render()
+  try{
+    await type(renderer,'Ask @')
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,280)))
+    await click(renderer,'chat-target-target')
+    await type(renderer,'Ask @Chat target now')
+    const input=byID(renderer,'chat-composer-input')[0]
+    assert.equal(input.props.value,undefined,'The text comes from the styled pieces, not a plain value')
+    assert.equal(inputText(input),'Ask @Chat target now')
+    const block=input.findAll(node=>node.type==='Text'&&node.props.style?.backgroundColor)
+    assert.deepEqual(block.map(node=>[node.children.join(''),node.props.style]),[['@Chat target',{color:dark.blue,backgroundColor:`${dark.blue}33`}]])
+    assert.equal(byID(renderer,'composer-chat-references').length,1)
+    // Android Backspace arrives as the text without the chip's last character.
+    await select(renderer,16)
+    await type(renderer,'Ask @Chat targe now')
+    assert.equal(store.getState().drafts.chat,'Ask now')
+    assert.deepEqual(store.getState().chatReferencesBySession.chat,[])
+    assert.equal(byID(renderer,'composer-chat-references').length,0)
+    assert.equal(inputText(byID(renderer,'chat-composer-input')[0]),'Ask now')
+    // The field first echoes the IME's caret in the cut text, then applies the
+    // new text keeping the caret's distance from the end (7 - 4 = 3).
+    await select(renderer,15)
+    assert.deepEqual(fixture.selections,[])
+    await select(renderer,3)
+    assert.deepEqual(fixture.selections,[[4,4]],'The caret lands where the chip began')
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('the caret never rests inside a chip, so typing beside it keeps the chip',async()=>{
+  const reference={session_id:'target',display_title_snapshot:'Chat target',source_text_start:4,source_text_end:16,action:'route',grant_intent:true}
+  resetRoutes({drafts:{chat:'Ask @Chat target now'},chatReferencesBySession:{chat:[reference]}})
+  const renderer=await render()
+  try{
+    await select(renderer,8)
+    assert.deepEqual(fixture.selections,[[4,4]],'A tap inside goes to the nearer edge')
+    await select(renderer,5)
+    assert.deepEqual(fixture.selections,[[4,4],[16,16]],'One step in from the start crosses the chip')
+    await select(renderer,4)
+    await type(renderer,'Ask @@Chat target now')
+    assert.deepEqual(store.getState().chatReferencesBySession.chat,[{...reference,source_text_start:5,source_text_end:17}])
   }finally{await act(async()=>renderer.unmount())}
 })
 
