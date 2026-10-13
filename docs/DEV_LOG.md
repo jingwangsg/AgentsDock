@@ -1,5 +1,31 @@
 # Public development log
 
+## 2026-10-13 — A Mac banner no longer deactivates AgentsDock or hides its Dock icon (desktop)
+
+- On macOS a completion or emergency banner hid the app's Dock icon, which
+  stayed hidden afterwards. With the main window in full screen, the screen
+  also switched from the AgentsDock full-screen Space to another Space as soon
+  as the banner appeared. This happened without any click, and the selected
+  chat did not change.
+- Cause: the banner window called `setVisibleOnAllWorkspaces` with
+  `visibleOnFullScreen`. With default options Electron also turns the app into
+  a process without a Dock icon (UIElement); with the main window in full
+  screen, macOS then deactivates the app. The banner is a non-activating panel
+  that already shows over full-screen Spaces, so it now passes
+  `skipTransformProcessType` and leaves the process type unchanged. Open on a
+  banner still raises the window and selects the chat.
+- Verification: an isolated native desktop run built from this branch,
+  timeline from the app log and a frontmost-app probe. Before the change, a
+  banner over a full-screen main window logged the Dock icon hidden, a hide
+  and a show event of the window and the app resigning active, all within
+  0.4 s, and the screen showed another app. After it, in full screen and in a
+  normal window, the app stayed frontmost and focused with its Dock icon, and
+  the open chat stayed selected; a banner still appeared over a second app in
+  full screen (a minimal Electron window) without leaving that Space; a real
+  turn ending in a background chat showed the banner, and a real click on Open
+  selected that chat. A unit test pins the setting. Not exercised: a second
+  display, the packaged app. Availability: source only.
+
 ## 2026-10-13 — Copy an expanded table as Markdown (desktop and Android)
 
 - The expanded table view (desktop dialog, Android sheet) has a Copy as
