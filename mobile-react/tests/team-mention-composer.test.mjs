@@ -629,7 +629,7 @@ function queueHealth(){const value=withLocalChats();value.capabilities.cross_cha
 async function renderQueue(overrides={}){
   let renderer
   const props={sessionId:'chat',profileId:'profile',profileGeneration:1,networkDisabled:false,onSent(){},...overrides}
-  await act(async()=>{renderer=TestRenderer.create(React.createElement(QueueShelf,props))})
+  await act(async()=>{renderer=TestRenderer.create(React.createElement(QueueShelf,props),{createNodeMock:()=>({focus(){},setSelection(start,end){fixture.selections.push([start,end])}})})})
   return {renderer,props}
 }
 for(const [scheme,background,border] of [['dark',dark.surface,dark.blue],['light',light.surface,light.blue]])test(`incoming async queue uses Zed ${scheme} surface and accent and only exact removal, never Edit or Run now`,async()=>{
@@ -698,10 +698,56 @@ test('same-tick queued Save submits once and reconnect preserves unsaved editor 
     await act(async()=>edit.props.onPress())
     await act(async()=>renderer.root.findByType('TextInput').props.onChangeText('Keep this unsaved text'))
     await act(async()=>{fixture.client.validationRevision++;store.setState({health:queueHealth()})})
-    assert.equal(renderer.root.findByType('TextInput').props.value,'Keep this unsaved text')
+    assert.equal(inputText(renderer.root.findByType('TextInput')),'Keep this unsaved text')
     await act(async()=>{const save=byID(renderer,'queued-save-user')[0].props.onPress;save();save()})
     assert.equal(updates.length,1)
     await act(async()=>pending.resolve(true))
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+function chipQueue(){
+  const prompt='Ask @Chat target now'
+  const reference={session_id:'target',display_title_snapshot:'Chat target',source_text_start:4,source_text_end:16,action:'route',grant_intent:true}
+  const updates=[]
+  resetRoutes({snapshots:{chat:{queuedTurns:[{queued_id:'user',session_id:'chat',prompt,chat_references:[reference],file_ids:[]}]}}})
+  store.setState({updateQueued:async(...args)=>{updates.push(args);return true}})
+  return {prompt,reference,updates}
+}
+const editQueued=async renderer=>act(async()=>renderer.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel==='Edit queued message').props.onPress())
+const queuedSelect=async(renderer,caret)=>act(async()=>renderer.root.findByType('TextInput').props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}}))
+
+test('the queued-message editor draws a chip as one block, keeps the caret out of it and deletes it whole',async()=>{
+  const {prompt,updates}=chipQueue()
+  const {renderer}=await renderQueue()
+  const input=()=>renderer.root.findByType('TextInput')
+  try{
+    await editQueued(renderer)
+    assert.equal(inputText(input()),prompt)
+    assert.deepEqual(input().findAll(node=>node.type==='Text'&&node.props.style?.backgroundColor).map(node=>node.children.join('')),['@Chat target'])
+    assert.equal(byID(renderer,'queued-chat-references-user').length,1)
+    await queuedSelect(renderer,8)
+    assert.deepEqual(fixture.selections,[[4,4]],'A tap inside the chip goes to its nearer edge')
+    // Android Backspace at the chip's end: the text change, the IME's echo, then the applied caret.
+    await queuedSelect(renderer,16)
+    await act(async()=>input().props.onChangeText('Ask @Chat targe now'))
+    assert.equal(inputText(input()),'Ask now')
+    assert.equal(byID(renderer,'queued-chat-references-user').length,0)
+    await queuedSelect(renderer,15)
+    await queuedSelect(renderer,3)
+    assert.deepEqual(fixture.selections,[[4,4],[4,4]],'The caret lands where the chip began')
+    await act(async()=>byID(renderer,'queued-save-user')[0].props.onPress())
+    assert.deepEqual(updates.map(args=>[args[2],args[3]]),[['Ask now',[]]])
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('text typed into a queued chip stays as typed and drops only that reference',async()=>{
+  chipQueue()
+  const {renderer}=await renderQueue()
+  try{
+    await editQueued(renderer)
+    await act(async()=>renderer.root.findByType('TextInput').props.onChangeText('Ask @Chat tXarget now'))
+    assert.equal(inputText(renderer.root.findByType('TextInput')),'Ask @Chat tXarget now')
+    assert.equal(byID(renderer,'queued-chat-references-user').length,0)
   }finally{await act(async()=>renderer.unmount())}
 })
 
