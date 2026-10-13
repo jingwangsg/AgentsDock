@@ -4,9 +4,10 @@ import { Modal, Platform, ScrollView, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { usePalette } from '../theme'
 import { Text } from './AppText'
+import { CopyTextButton } from './CopyTextButton'
 import { SheetCloseButton } from './ui'
 
-export function MarkdownTableSheet({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+export function MarkdownTableSheet({ children, markdown, onClose }: { children: ReactNode; markdown: string; onClose: () => void }) {
   const colors = usePalette()
   return (
     <Modal visible animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={onClose}>
@@ -14,6 +15,7 @@ export function MarkdownTableSheet({ children, onClose }: { children: ReactNode;
         <View style={styles.grabber} />
         <View style={styles.top}>
           <Text style={[styles.title, { color: colors.text }]}>Table</Text>
+          <CopyTextButton text={markdown} label="Copy as Markdown" testID="markdown-table-copy" touchSize={48} />
           <SheetCloseButton onPress={onClose} label="Close table" testID="markdown-table-close" />
         </View>
         {/* maximumZoomScale is UIScrollView pinch-to-zoom; Android has no zoom here and relies on the table's own horizontal scroll. */}

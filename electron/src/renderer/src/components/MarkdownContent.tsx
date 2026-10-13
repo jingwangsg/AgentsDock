@@ -279,9 +279,22 @@ export const MarkdownContent = memo(function MarkdownContent({
         ? <code className="math-fallback" title={t("ui.MarkdownContent.this_equation_could_not_be_rendered_0390d07", undefined, uiLocale)}>{children}</code>
         : <span className={className} {...props}>{children}</span>
     },
-    table: ({ children }) => <MarkdownTable>{children}</MarkdownTable>,
+    table: ({ children, node }) => <MarkdownTable markdown={() => {
+      // `shown` is a prefix of `normalized`, so its offsets index both. A table that
+      // reaches the end of `shown` may be cut by the fold: copy its rows on from there,
+      // up to the first line without a `|` (blank, heading, fence, list item).
+      const { start, end } = node!.position!
+      const lines = normalized.slice(start.offset!).split(/\r?\n/)
+      const pipeless = lines.findIndex(line => !line.includes('|'))
+      const count = end.offset! < shown.length ? end.line - start.line + 1 : pipeless < 0 ? lines.length : pipeless
+      // Later rows repeat the container prefix before the first one (list indent, `> `),
+      // so the copy pastes as a bare table.
+      const prefix = start.offset! - (normalized.lastIndexOf('\n', start.offset! - 1) + 1)
+      const rows = lines.slice(0, count).map(row => row.slice(Math.min(prefix, /^[ \t>]*/.exec(row)![0].length)))
+      return restoreInlineChatReferenceText(rows.join('\n'), preparedChatReferences.markers)
+    }}>{children}</MarkdownTable>,
     input: props => <input {...props} readOnly />
-  }), [chatTitles, link, onChatReferenceClick, preparedChatReferences.markers, resolveImageSource, restoredNormalized, sessionId, shown])
+  }), [chatTitles, link, normalized, onChatReferenceClick, preparedChatReferences.markers, resolveImageSource, restoredNormalized, sessionId, shown])
   return (
     <div className={`markdown ${compact ? 'compact' : ''}`}>
       <MarkdownLocaleContext.Provider value={uiLocale}>
@@ -631,11 +644,22 @@ function MermaidBlock({ children, source, closed }: { children: ReactNode; sourc
   )
 }
 
-function MarkdownTable({ children }: { children: ReactNode }) {
+function MarkdownTable({ children, markdown }: { children: ReactNode; markdown: () => string }) {
   const uiLocale = useContext(MarkdownLocaleContext)
   const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
   useTransientClose(expanded, () => setExpanded(false))
   const expandLabel = t('ui.MarkdownContent.expandTable', undefined, uiLocale)
+  const copyLabel = t('ui.MarkdownContent.copyTableMarkdown', undefined, uiLocale)
+  const copy = async () => {
+    try {
+      await window.agentsDock.native.writeClipboard(markdown())
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    } catch (error) {
+      useAppStore.getState().setError(error instanceof Error ? error.message : String(error))
+    }
+  }
   return (
     <div className="table-frame">
       <div className="table-scroll"><table>{children}</table></div>
@@ -647,6 +671,7 @@ function MarkdownTable({ children }: { children: ReactNode }) {
             <Dialog.Content className="table-dialog" aria-describedby={undefined}>
               <div className="table-dialog-head">
                 <Dialog.Title>{t('ui.MarkdownContent.table', undefined, uiLocale)}</Dialog.Title>
+                <button type="button" className="icon-button" aria-label={copyLabel} title={copyLabel} onClick={() => void copy()}>{copied ? <Check size={15} /> : <Copy size={15} />}</button>
                 <Dialog.Close asChild><button type="button" className="icon-button" aria-label={t('ui.MarkdownContent.closeTable', undefined, uiLocale)}><X size={16} /></button></Dialog.Close>
               </div>
               {/* `children` are the rows react-markdown already rendered; mounting them again avoids a second parse of the message. */}

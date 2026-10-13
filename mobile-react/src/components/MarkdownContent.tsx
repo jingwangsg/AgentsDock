@@ -323,7 +323,7 @@ export function MarkdownContent({
       <Markdown markdownit={chatMarkdown} rules={markdownRules} style={markdownStyle} onLinkPress={openLink}>{markdownText}</Markdown>
       {/* Mounted only while open, so a collapsed table is laid out once, in the timeline. */}
       {expandedTable !== null ? (
-        <MarkdownTableSheet onClose={() => setExpandedTable(null)}>
+        <MarkdownTableSheet markdown={expandedTable} onClose={() => setExpandedTable(null)}>
           {/* Same renderer, one table: at least the 15.5 pt body, never smaller than the timeline for large-font users. */}
           <MarkdownContent value={expandedTable} fontScale={Math.max(1, fontScale)} color={color} expandableTables={false} />
         </MarkdownTableSheet>

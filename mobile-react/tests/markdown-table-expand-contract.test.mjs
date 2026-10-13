@@ -22,7 +22,7 @@ test('the expanded table is a page sheet that re-renders the same table through 
   assert.match(markdown, /const \[expandedTable, setExpandedTable\] = useState<string \| null>\(null\)/)
   assert.match(markdown, /expandableTables = true,/)
   // Mounted only while open: a collapsed table is never laid out a second time.
-  assert.match(markdown, /\{expandedTable !== null \? \(\s*<MarkdownTableSheet onClose=\{\(\) => setExpandedTable\(null\)\}>\s*(?:\{\/\*[^]*?\*\/\}\s*)?<MarkdownContent value=\{expandedTable\} fontScale=\{Math\.max\(1, fontScale\)\} color=\{color\} expandableTables=\{false\} \/>/)
+  assert.match(markdown, /\{expandedTable !== null \? \(\s*<MarkdownTableSheet markdown=\{expandedTable\} onClose=\{\(\) => setExpandedTable\(null\)\}>\s*(?:\{\/\*[^]*?\*\/\}\s*)?<MarkdownContent value=\{expandedTable\} fontScale=\{Math\.max\(1, fontScale\)\} color=\{color\} expandableTables=\{false\} \/>/)
   assert.doesNotMatch(markdown, /<Modal\b/, 'the renderer holds no sheet chrome, so it stays outside the app-typography text rule')
   assert.equal((markdown.match(/new MarkdownIt\(/g) ?? []).length, 1, 'the sheet reuses the chat parser')
   assert.equal((markdown.match(/<Markdown /g) ?? []).length, 1, 'one renderer: the sheet mounts MarkdownContent itself')

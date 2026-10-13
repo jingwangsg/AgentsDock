@@ -2008,6 +2008,7 @@
   "ui.MarkdownContent.MermaidBlock.show_diagram": "显示图表",
   "ui.MarkdownContent.MermaidBlock.show_source": "显示源码",
   "ui.MarkdownContent.closeTable": "关闭表格",
+  "ui.MarkdownContent.copyTableMarkdown": "复制为 Markdown",
   "ui.MarkdownContent.expandTable": "放大表格",
   "ui.MarkdownContent.table": "表格",
   "ui.MarkdownContent.route_hint_for_0284c82": "会话“{chat}”的路由提示",
