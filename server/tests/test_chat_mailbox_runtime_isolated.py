@@ -45,39 +45,24 @@ METHODS = {"__init__", "_locked_call", "_call", "_connect", "_transaction", "ini
            "create_instruction", "get", "update", "mailbox_call", "mailbox_envelopes"}
 
 
-def actual_delegation_grants(references, *, user_turn=True, authenticated=True, route_grants=None,
-                             instruction="Ask @Recipient to research the bug."):
-    issuance = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef)
-                    and node.name == "issue_cross_chat_capability")
-    record = next(node.value for node in ast.walk(issuance) if isinstance(node, ast.Assign)
-                  and any(isinstance(target, ast.Name) and target.id == "capability_record" for target in node.targets)
-                  and isinstance(node.value, ast.Dict))
-    expression = next(value for key, value in zip(record.keys, record.values)
-                      if isinstance(key, ast.Constant) and key.value == "user_delegation_grants")
-    return eval(compile(ast.Expression(expression), "<actual-delegation-issuance>", "eval"),
-                {"references": references, "source_is_user_turn": user_turn, "AGENT_TOKEN": authenticated,
-                 "route_grants": dict(route_grants or {}), "source_user_instruction": instruction})
+def actual_delegation(capability):
+    """The send-time rule: on a user's turn, mail to any reachable chat carries its latest message."""
+    send = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef)
+                and node.name == "reserve_async_provider_route_message")
+    expression = next(node.value for node in ast.walk(send) if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "delegated" for target in node.targets))
+    return eval(compile(ast.Expression(expression), "<actual-delegation-rule>", "eval"), {"capability": capability})
 
 
 class DelegationAdmissionTests(unittest.TestCase):
-    def test_user_turn_references_and_pairs_get_attestation(self):
-        def reference(target, action="route", intent=True, kind=None):
-            return SimpleNamespace(session_id=target, action=action, grant_intent=intent, target_kind=kind)
-        references = [reference("recipient"), reference("direct", "instruction"),
-                      reference("question", "request_reply"), reference("legacy", intent=None),
-                      reference("final", "final_result"), reference("remote", kind="secure_peer")]
-        self.assertEqual(actual_delegation_grants(references),
-                         {("recipient", "route"), ("direct", "instruction"), ("question", "request_reply")})
-        self.assertEqual(actual_delegation_grants(references, user_turn=False), set())
-        self.assertEqual(actual_delegation_grants(references, authenticated=False), set())
-        # A pair the user made earlier delegates in a chip-less turn; a plain route does not.
-        routes = {"route_a": {"target_session_id": "paired", "pair_id": "pair_a"},
-                  "route_b": {"target_session_id": "plain"}}
-        self.assertEqual(actual_delegation_grants([], route_grants=routes), {("paired", "route")})
-        self.assertEqual(actual_delegation_grants([], user_turn=False, route_grants=routes), set())
-        self.assertEqual(actual_delegation_grants([], authenticated=False, route_grants=routes), set())
-        self.assertEqual(actual_delegation_grants([], route_grants=routes, instruction="  "), set())
-        self.assertEqual(actual_delegation_grants([]), set())  # No reference and no pair: nothing is delegated.
+    def test_a_users_turn_delegates_its_latest_message_to_any_chat(self):
+        instruction = "Ask @Recipient to research the bug."
+        self.assertTrue(actual_delegation({"source_is_user_turn": True, "source_user_instruction": instruction}))
+        # A wake, a job, a delivery or a guest's message is not the user's instruction.
+        self.assertFalse(actual_delegation({"source_is_user_turn": False, "source_user_instruction": instruction}))
+        self.assertFalse(actual_delegation({"source_user_instruction": instruction}))
+        # A message without text (attachments only) has nothing to delegate.
+        self.assertFalse(actual_delegation({"source_is_user_turn": True, "source_user_instruction": "  "}))
 
     def test_internal_and_standalone_turns_cannot_mint_user_origin(self):
         start = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "_start_turn_locked")
@@ -218,9 +203,7 @@ class ChatMailboxRuntimeTests(unittest.IsolatedAsyncioTestCase):
         strict_live.assert_not_called()
 
     def delegate(self, prompt="Ask @Recipient to research the bug. Do not edit or deploy anything.", action="route"):
-        reference = SimpleNamespace(session_id="recipient", action=action, grant_intent=True, target_kind=None)
-        self.capabilities["sender"].update(source_user_instruction=prompt,
-                                           user_delegation_grants=actual_delegation_grants([reference]))
+        self.capabilities["sender"].update(source_user_instruction=prompt, source_is_user_turn=True)
         return prompt
 
     async def test_user_instruction_survives_storage_read_replay_and_reconnect(self):
@@ -248,9 +231,8 @@ class ChatMailboxRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.work_snapshot(), before)
         self.assert_no_execution()
 
-    async def test_peer_message_does_not_inherit_a_prompt_or_another_targets_delegation(self):
-        self.capabilities["sender"].update(source_user_instruction="Ask Other to deploy.",
-                                           user_delegation_grants={("other", "route")})
+    async def test_a_wake_or_internal_run_does_not_delegate_its_prompt(self):
+        self.capabilities["sender"].update(source_user_instruction="Ask Other to deploy.", source_is_user_turn=False)
         receipt = await self.send()
         record = await self.ledger.get(receipt["message_id"])
         self.assertEqual(record["source_user_instruction"], "")

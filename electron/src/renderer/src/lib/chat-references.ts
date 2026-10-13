@@ -66,6 +66,11 @@ export function crossChatHandoffsAvailable(health: Health | null | undefined): b
   return capability?.available === true && Number(capability.version ?? 1) >= 1
 }
 
+/** A server that takes a turn's @ chip for a chat on another server (the hub paired the chats first). */
+export function crossServerChatReferencesAccepted(health: Health | null | undefined): boolean {
+  return health?.capabilities?.cross_chat_handoffs_v1?.features?.cross_server_chat_references === true
+}
+
 export function asyncChatRouteAvailable(health: Health | null | undefined): boolean {
   const capability = health?.capabilities?.cross_chat_handoffs_v1
   const mode = capability?.agent_routes?.async_route_v1

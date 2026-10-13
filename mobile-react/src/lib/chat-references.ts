@@ -103,6 +103,11 @@ export function agentCrossChatRoutesAvailable(health: Health | null | undefined)
   return crossChatHandoffsAvailable(health) && agentCrossChatRoutesSupported(health)
 }
 
+/** A server that takes a turn's @ chip for a chat on another server (the hub paired the chats first). */
+export function crossServerChatReferencesAccepted(health: Health | null | undefined): boolean {
+  return health?.capabilities?.cross_chat_handoffs_v1?.features?.cross_server_chat_references === true
+}
+
 /** Async messages require both the durable permission contract and its exact opt-in. */
 export function asyncChatRouteAvailable(health: Health | null | undefined): boolean {
   const capability = health?.capabilities?.cross_chat_handoffs_v1

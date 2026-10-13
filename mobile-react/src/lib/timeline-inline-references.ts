@@ -227,7 +227,7 @@ function safeStoredTimelineReferences(value: unknown): ChatReference[] {
       || typeof item.source_text_start !== 'number'
       || typeof item.source_text_end !== 'number'
       || !CHAT_REFERENCE_ACTIONS.has(item.action as ChatReferenceAction)
-      || (item.target_kind !== undefined && item.target_kind !== 'secure_peer')
+      || (item.target_kind !== undefined && item.target_kind !== 'secure_peer' && item.target_kind !== 'cross_server')
     ) return []
     const reference: ChatReference = {
       session_id: item.session_id,
@@ -239,7 +239,7 @@ function safeStoredTimelineReferences(value: unknown): ChatReference[] {
       ...(item.route_action === 'instruction' || item.route_action === 'request_reply'
         ? { route_action: item.route_action }
         : {}),
-      ...(item.target_kind === 'secure_peer' ? { target_kind: 'secure_peer' as const } : {}),
+      ...(item.target_kind === 'secure_peer' || item.target_kind === 'cross_server' ? { target_kind: item.target_kind } : {}),
       ...(typeof item.target_server_identity === 'string' ? { target_server_identity: item.target_server_identity } : {}),
       ...(typeof item.target_connection_id === 'string' ? { target_connection_id: item.target_connection_id } : {}),
       ...(typeof item.target_route_id === 'string' ? { target_route_id: item.target_route_id } : {}),
@@ -271,6 +271,16 @@ function inlineRouteCandidate(reference: ChatReference): boolean {
 }
 
 function validTimelineReferenceTarget(reference: ChatReference, sourceSessionId?: string | null): boolean {
+  if (reference.target_kind === 'cross_server') {
+    // A chat on another server: drawn as a chip, never a local navigation target.
+    return typeof reference.target_server_identity === 'string'
+      && reference.target_server_identity.length > 0
+      && reference.target_server_identity.length <= 240
+      && cleanText(reference.target_server_identity)
+      && reference.target_connection_id === undefined
+      && reference.target_route_id === undefined
+      && reference.target_route_revision === undefined
+  }
   if (reference.target_kind === 'secure_peer') {
     return reference.session_id === reference.target_route_id
       && uuidV4(reference.target_connection_id)

@@ -88,14 +88,51 @@ class ClaudeFollowUpSteerTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("chat", agent_server.RUN_NOW_TURNS)
             self.assertTrue(self.steer_queue.empty())
 
-    async def test_a_codex_turn_keeps_the_route_match_rule(self) -> None:
-        item = queued_item("codex")
+    async def test_a_codex_turn_takes_a_users_message_but_keeps_the_route_match_rule_for_internal_work(self) -> None:
+        # A user's message reads the chat's routes live; internal work needs the running turn's exact routes.
+        job = dict(queued_item("codex"), purpose="handoff_digest")
         with patch.dict(agent_server.STORE.sessions, {"chat": {"id": "chat", "backend": "codex"}}), \
              patch.dict(agent_server.ACTIVE, {"chat": self._active(agent_server.CODEX_TRANSPORT_APP_SERVER)}), \
-             patch.dict(agent_server.QUEUED_TURNS, {"chat": deque([item])}):
+             patch.dict(agent_server.QUEUED_TURNS, {"chat": deque([job])}):
             result = await asyncio.wait_for(agent_server._run_queued_turn_now_once("chat", "q1", deliver_now=False, steer_only=True), 5)
             self.assertEqual((result["deferred"], result["native_steer"]), (True, False))
-            self.assertEqual(list(agent_server.QUEUED_TURNS["chat"]), [item])
+            self.assertEqual(list(agent_server.QUEUED_TURNS["chat"]), [job])
+        with patch.dict(agent_server.STORE.sessions, {"chat": {"id": "chat", "backend": "codex"}}), \
+             patch.dict(agent_server.ACTIVE, {"chat": self._active(agent_server.CODEX_TRANSPORT_APP_SERVER)}), \
+             patch.dict(agent_server.QUEUED_TURNS, {"chat": deque([queued_item("codex")])}):
+            steer = asyncio.create_task(agent_server._run_queued_turn_now_once("chat", "q1", deliver_now=False, steer_only=True))
+            request = await asyncio.wait_for(self.steer_queue.get(), 5)
+            self.assertEqual(request["selected"]["queued_id"], "q1")
+            request["accepted_event"].set()
+            request["future"].set_result({"ok": True, "native_steer": True, "queued_id": "q1", "run_id": "run-1",
+                                          "interrupted": False, "replays_interrupted_message": False, "superseded_queued_ids": []})
+            self.assertTrue((await asyncio.wait_for(steer, 5))["native_steer"])
+
+    async def test_a_message_with_chips_joins_a_users_claude_turn_only(self) -> None:
+        # 2026-10-13: a picked chat made the message wait for the turn to end;
+        # its route was granted when the message was admitted, so it can join.
+        chip = {"session_id": "sess_other", "display_title_snapshot": "Other", "source_text_start": 0,
+                "source_text_end": 6, "action": "route", "grant_intent": True}
+        joining = dict(queued_item("claude"), prompt="@Other go on", chat_references=[chip])
+        one_use = dict(joining, chat_references=[{**chip, "action": "instruction"}])
+        for item, running_purpose in ((one_use, None), (joining, "scheduled_job")):
+            with self.subTest(action=item["chat_references"][0]["action"], running=running_purpose), \
+                 patch.dict(agent_server.CURRENT_TURNS, {"chat": {"run_id": "run-1", "purpose": running_purpose,
+                                                                  "provider_cross_chat_route_snapshot": []}}), \
+                 patch.dict(agent_server.ACTIVE, {"chat": self._active(agent_server.CLAUDE_TRANSPORT_AGENT_SDK)}), \
+                 patch.dict(agent_server.QUEUED_TURNS, {"chat": deque([item])}):
+                result = await asyncio.wait_for(
+                    agent_server._run_queued_turn_now_once("chat", "q1", deliver_now=False, steer_only=True), 5)
+                self.assertEqual((result["deferred"], result["native_steer"]), (True, False))
+        with patch.dict(agent_server.ACTIVE, {"chat": self._active(agent_server.CLAUDE_TRANSPORT_AGENT_SDK)}), \
+             patch.dict(agent_server.QUEUED_TURNS, {"chat": deque([joining])}):
+            steer = asyncio.create_task(agent_server._run_queued_turn_now_once("chat", "q1", deliver_now=False, steer_only=True))
+            request = await asyncio.wait_for(self.steer_queue.get(), 5)
+            self.assertEqual(request["selected"]["chat_references"], [chip])
+            request["accepted_event"].set()
+            request["future"].set_result({"ok": True, "native_steer": True, "queued_id": "q1", "run_id": "run-1",
+                                          "interrupted": False, "replays_interrupted_message": False, "superseded_queued_ids": []})
+            self.assertTrue((await asyncio.wait_for(steer, 5))["native_steer"])
 
     async def test_only_the_head_of_the_queue_joins_the_turn(self) -> None:
         join = AsyncMock(return_value={"ok": True, "native_steer": True})

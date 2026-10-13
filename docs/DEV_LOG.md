@@ -1,5 +1,34 @@
 # Public development log
 
+## 2026-10-13 — @ chips for chats on other servers stay in the message (server, desktop and Android)
+
+- A chat picked from the @ menu on another server was paired through the hub
+  and then removed from the message, so the sent message showed plain text,
+  the agent could not tell which chat was meant, and a message sent while the
+  agent worked did not name the new pair. A server that advertises
+  `cross_server_chat_references` now accepts the chip while the hub pair
+  exists, keeps it in the message, and `chats list` marks that chat
+  `mentioned: true`. Desktop and Android send it to such a server and draw it
+  as a chip in the timeline; an older server still gets the text only.
+- A message sent while a user's turn runs now joins that turn when its @ chips
+  only name chats the turn reaches (a route `@` or a chat on another server);
+  before, any chip kept it queued until the turn ended. The joining message's
+  chips count as mentioned in the turn, and its text becomes the user
+  instruction attached to the turn's mail (`user_delegation`): mail from a
+  user's turn to any chat it reaches carries the user's latest message, the
+  same rule mail to other servers already used. One-use actions, secure-peer
+  handles and turns that are not the user's still keep the message queued.
+- Verification: server tests for chip admission with and without the hub
+  pair, the `mentioned` mark, chips joining a Claude or Codex user turn and
+  not other turns, and the delegation rule; desktop and Android store and
+  timeline tests. On a Mac, an isolated hub and a registered remote with real
+  Claude CLIs: a remote turn took a follow-up whose chip named a hub chat, the
+  agent listed it as mentioned and asked it, the hub stored the follow-up as
+  the delegated instruction, and the hub chat answered. In the desktop app on
+  the isolated hub, a follow-up typed while the turn slept, with a remote chat
+  picked from the @ menu, showed the chip in the composer and in the sent
+  message, joined the running turn, and the remote chat's answer arrived.
+
 ## 2026-10-13 — A running turn reaches chats paired after it started (server)
 
 - An agent could not message a chat that was paired while its turn ran. A

@@ -136,3 +136,17 @@ assert.equal(liveChatReferenceTitle({ ...alphaReference, target_kind: 'secure_pe
 // A current title that would not pass as a chip (leading @, control characters) is not shown.
 assert.equal(liveChatReferenceTitle(alphaReference, liveSource([{ id: 'source', title: 'Source' }, { id: 'alpha', title: '@ops' }]), 'source'), 'Alpha')
 assert.equal(liveChatReferenceTitle(alphaReference, liveSource([{ id: 'source', title: 'Source' }, { id: 'alpha', title: 'a\u0000b' }]), 'source'), 'Alpha')
+
+// A chip for a chat on another server is drawn in the sent message, without local navigation.
+const remoteEvent: Event = {
+  id: 'remote', seq: 9, session_id: 'source', type: 'turn_steered', ts: '2026-10-13T12:00:00Z',
+  text: '让 @training monitor · nv_gb300 去pull',
+  chat_references: [{
+    session_id: 'sess_monitor', display_title_snapshot: 'training monitor · nv_gb300', source_text_start: 2,
+    source_text_end: 30, action: 'route', target_kind: 'cross_server', target_server_identity: 'srv-gb300',
+  }],
+}
+const remotePresentation = inlineRoutePresentation([remoteEvent])
+assert.deepEqual(remotePresentation.references.map(reference => reference.session_id), ['sess_monitor'])
+assert.equal(remotePresentation.fallbackReferences.length, 0)
+assert.equal(inlineRouteReferenceIsInteractive(remotePresentation.references[0]), false)

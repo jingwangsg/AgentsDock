@@ -5340,10 +5340,8 @@ class CrossChatStoreTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(capability["features"]["secure_peer_fifo_barriers"])
         self.assertFalse(capability["features"]["secure_peer_agent_relay"])
-        self.assertEqual(
-            capability["features"]["cross_server_delivery"],
-            "team_network_inbox_only",
-        )
+        self.assertEqual(capability["features"]["cross_server_delivery"], "hub_mailbox")
+        self.assertTrue(capability["features"]["cross_server_chat_references"])
         self.assertFalse(
             capability["features"]["agent_ambient_local_handoffs"]
         )

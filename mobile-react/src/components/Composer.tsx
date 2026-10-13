@@ -918,7 +918,6 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       const crossServerReferences = outgoingReferences.filter(reference => reference.target_kind === 'cross_server')
       if (crossServerReferences.length) {
         // The hub pairs the chats first, so this turn's agent already sees the route.
-        // sendPrompt leaves these references out of the turn; the chip stays plain text.
         try {
           const sourceServerIdentity = useAppStore.getState().health?.server_identity
           if (!sourceServerIdentity) throw new Error('This server cannot pair chats across servers right now.')
