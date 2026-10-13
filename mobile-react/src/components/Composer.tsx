@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -237,15 +237,9 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const pendingNewAgent = useRef<NewAgentSheetState | null>(null)
   // The picker owns the hub's server list; the composer keeps the names it needs for a pair's label (the chip's title part) here.
   const crossServerNamesRef = useRef(new Map<string, string>())
-  const selectionRef = useRef<ComposerSelection>({ start: draft.length, end: draft.length })
+  const field = useChipTextField(inputRef, draft.length)
+  const selectionRef = field.selectionRef
   const pendingCaretRef = useRef<number | null>(null)
-  // After an edit removes a chip whole, React Native applies the new text keeping
-  // the native caret's distance from the end, and a selection command can reach
-  // the field before that text does. Android reports the IME's caret in the cut
-  // text (the echo), then the applied caret once the new text lands; the caret is
-  // moved to the chip's place only then. iOS reports no selection for text set
-  // from JS, so the next text change replaces this and the next tap clears it.
-  const removedChipCaretRef = useRef<{ echo: number; applied: number; caret: number } | null>(null)
   const restoreInputAfterPickerRef = useRef(false)
   const dismissedMentionStartRef = useRef<number | null>(null)
   const attachmentSendGuardedRef = useRef(false)
@@ -408,9 +402,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     setPickerQuery('')
     setRuntimeSheetSection(null)
     setGoalEditorOpen(false)
-    selectionRef.current = { start: draft.length, end: draft.length }
+    field.reset(draft.length)
     pendingCaretRef.current = null
-    removedChipCaretRef.current = null
     pendingTeamPicker.current = null
     pendingNewAgent.current = null
     setNewAgentSheet(null)
@@ -479,13 +472,10 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const updateComposerDraft = useCallback((nativeText: string) => {
     if (!composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
     const previousDraft = draftRef.current
-    const { text, caret, nativeCaret, chatReferences: nextReferences, teamReferences: nextTeamReferences } = atomicComposerReferenceEdit(previousDraft, nativeText, selectionRef.current, referencesRef.current, teamReferencesRef.current)
-    const appliedCaret = Math.max(0, text.length - (nativeText.length - nativeCaret))
-    removedChipCaretRef.current = appliedCaret === caret ? null : { echo: nativeCaret, applied: appliedCaret, caret }
+    const { text, caret, chatReferences: nextReferences, teamReferences: nextTeamReferences } = field.edit(previousDraft, nativeText, referencesRef.current, teamReferencesRef.current)
     draftRef.current = text
     referencesRef.current = nextReferences
     teamReferencesRef.current = nextTeamReferences
-    selectionRef.current = { start: caret, end: caret }
     const binding = providerCommandBindingRef.current
     if (binding && !draftUsesProviderCommand(text, binding)) providerCommandBindingRef.current = null
     if (!text.length) setInputHeight(COMPOSER_INPUT_MIN_HEIGHT)
@@ -494,7 +484,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     setTeamReferencesForSession(sessionId, nextTeamReferences, profileGeneration)
     const trigger = teamMentionTrigger(text, caret, nextReferences, nextTeamReferences) ?? chatMentionTrigger(text, caret, nextReferences)
     discoverMention(trigger)
-  }, [activeProfileId, discoverMention, profileGeneration, sessionId, setChatReferencesForSession, setTeamReferencesForSession, setSessionDraft])
+  }, [activeProfileId, discoverMention, field, profileGeneration, sessionId, setChatReferencesForSession, setTeamReferencesForSession, setSessionDraft])
 
   const finishTargetPickerDismissal = useCallback(() => {
     if (!restoreInputAfterPickerRef.current) return
@@ -723,25 +713,12 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   }, [storeReferences])
 
   const handleSelectionChange = useCallback((event: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
-    let selection: ComposerSelection = event.nativeEvent.selection
-    const removedChip = removedChipCaretRef.current
-    if (removedChip && selection.start === removedChip.echo && selection.end === removedChip.echo) return
-    removedChipCaretRef.current = null
-    if (removedChip && selection.start === removedChip.applied && selection.end === removedChip.applied) {
-      selection = { start: removedChip.caret, end: removedChip.caret }
-      inputRef.current?.setSelection(removedChip.caret, removedChip.caret)
-    } else if (selection.start === selection.end) {
-      const caret = caretOutsideComposerReferences(selection.start, [...referencesRef.current, ...teamReferencesRef.current], selectionRef.current.start)
-      if (caret !== selection.start) {
-        selection = { start: caret, end: caret }
-        inputRef.current?.setSelection(caret, caret)
-      }
-    }
-    selectionRef.current = selection
+    const selection = field.select(event.nativeEvent.selection, referencesRef.current, teamReferencesRef.current)
+    if (!selection) return
     if (selection.start !== selection.end) { discoverMention(null); return }
     const trigger = teamMentionTrigger(draftRef.current, selection.start, referencesRef.current, teamReferencesRef.current) ?? chatMentionTrigger(draftRef.current, selection.start, referencesRef.current)
     discoverMention(trigger)
-  }, [discoverMention])
+  }, [discoverMention, field])
 
   const setGoalFromCommand = async (argument: string, { stopFirst = false } = {}) => {
     if (!remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
@@ -1273,22 +1250,6 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       <ChevronDown size={13} color={colors.muted} />
     </View>
   </Pressable> : null
-  // Picked chats and Team recipients draw as one tinted block inside the text,
-  // as on the desktop composer. These pieces are the native field's text: a
-  // stale overlapping span is skipped so the draft is never duplicated.
-  const draftPieces: ReactNode[] = []
-  let draftOffset = 0
-  for (const chip of [
-    ...references.map(reference => ({ start: reference.source_text_start, end: reference.source_text_end, supported: referenceSupported(reference) })),
-    ...teamReferences.map(reference => ({ start: reference.source_text_start, end: reference.source_text_end, supported: teamReferenceContractSupported(health, reference) })),
-  ].sort((left, right) => left.start - right.start)) {
-    if (chip.start < draftOffset) continue
-    const tint = chip.supported ? colors.blue : colors.red
-    if (chip.start > draftOffset) draftPieces.push(draft.slice(draftOffset, chip.start))
-    draftPieces.push(<Text key={chip.start} style={{ color: tint, backgroundColor: `${tint}33` }}>{draft.slice(chip.start, chip.end)}</Text>)
-    draftOffset = chip.end
-  }
-  if (draftOffset < draft.length) draftPieces.push(draft.slice(draftOffset))
 
   return (
     <View testID="chat-composer" style={[styles.shell, { backgroundColor: colors.background }]}>
@@ -1373,7 +1334,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
           scrollEnabled
           autoCorrect
           style={[styles.input, { color: colors.text, height: displayedInputHeight, maxHeight: viewportLimits.inputMaxHeight }]}
-        >{draft ? <Text style={{ fontSize: styles.input.fontSize, lineHeight: styles.input.lineHeight }}>{draftPieces}</Text> : null}</TextInput>
+        >{draft ? <ChipText text={draft} chatReferences={references} teamReferences={teamReferences} referenceSupported={referenceSupported} metrics={{ fontSize: styles.input.fontSize, lineHeight: styles.input.lineHeight }} /> : null}</TextInput>
         <View style={[styles.toolbar, compactToolbar && styles.toolbarCompact, denseToolbar && styles.toolbarDense]}>
           {!welcome ? <IconButton icon={Paperclip} disabled={attachmentDisabled} onPress={chooseAttachment} label="Add files, photos, or another chat" testID="chat-attach" /> : null}
           {runtimeControl}
@@ -1494,6 +1455,86 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       {textPromptDialog}
     </View>
   )
+}
+
+/**
+ * Selection and edits of a native text field that holds chips, shared by the
+ * composer and the queued-message editor. Text changes go through
+ * atomicComposerReferenceEdit, and a collapsed caret is kept out of chips.
+ */
+function useChipTextField(inputRef: RefObject<TextInput | null>, initialCaret: number) {
+  const selectionRef = useRef<ComposerSelection>({ start: initialCaret, end: initialCaret })
+  // After an edit removes a chip whole, React Native applies the new text keeping
+  // the native caret's distance from the end, and a selection command can reach
+  // the field before that text does. Android reports the IME's caret in the cut
+  // text (the echo), then the applied caret once the new text lands; the caret is
+  // moved to the chip's place only then. iOS reports no selection for text set
+  // from JS, so the next text change replaces this and the next tap clears it.
+  const removedChipCaretRef = useRef<{ echo: number; applied: number; caret: number } | null>(null)
+  const edit = useCallback((previousText: string, nativeText: string, chatReferences: readonly ChatReference[], teamReferences: readonly TeamReference[]) => {
+    const result = atomicComposerReferenceEdit(previousText, nativeText, selectionRef.current, chatReferences, teamReferences)
+    const appliedCaret = Math.max(0, result.text.length - (nativeText.length - result.nativeCaret))
+    removedChipCaretRef.current = appliedCaret === result.caret ? null : { echo: result.nativeCaret, applied: appliedCaret, caret: result.caret }
+    selectionRef.current = { start: result.caret, end: result.caret }
+    return result
+  }, [])
+  /** The selection to act on, or null for the IME's echo of a chip removal. */
+  const select = useCallback((native: ComposerSelection, chatReferences: readonly ChatReference[], teamReferences: readonly TeamReference[]): ComposerSelection | null => {
+    const removedChip = removedChipCaretRef.current
+    if (removedChip && native.start === removedChip.echo && native.end === removedChip.echo) return null
+    removedChipCaretRef.current = null
+    let selection = native
+    if (removedChip && native.start === removedChip.applied && native.end === removedChip.applied) {
+      selection = { start: removedChip.caret, end: removedChip.caret }
+      inputRef.current?.setSelection(removedChip.caret, removedChip.caret)
+    } else if (native.start === native.end) {
+      const caret = caretOutsideComposerReferences(native.start, [...chatReferences, ...teamReferences], selectionRef.current.start)
+      if (caret !== native.start) {
+        selection = { start: caret, end: caret }
+        inputRef.current?.setSelection(caret, caret)
+      }
+    }
+    selectionRef.current = selection
+    return selection
+  }, [inputRef])
+  const reset = useCallback((caret: number) => {
+    selectionRef.current = { start: caret, end: caret }
+    removedChipCaretRef.current = null
+  }, [])
+  return useMemo(() => ({ selectionRef, edit, select, reset }), [edit, select, reset])
+}
+
+/**
+ * The text of a field that holds chips: each picked chat or Team recipient draws
+ * as one tinted block, as on the desktop composer. These pieces are the native
+ * field's text, so a stale overlapping span is skipped and the text is never
+ * duplicated. `metrics` repeats the field's font size and line height, which the
+ * outermost app Text would otherwise replace under a non-default app font scale.
+ */
+function ChipText({ text, chatReferences, teamReferences, referenceSupported, metrics }: {
+  text: string
+  chatReferences: readonly ChatReference[]
+  teamReferences: readonly TeamReference[]
+  referenceSupported: (reference: ChatReference) => boolean
+  metrics: { fontSize?: number; lineHeight?: number }
+}) {
+  const colors = usePalette()
+  // Chat support comes from the caller because the composer and the queue check chats differently; the Team check is the same for both.
+  const health = useAppStore(state => state.health)
+  const pieces: ReactNode[] = []
+  let offset = 0
+  for (const chip of [
+    ...chatReferences.map(reference => ({ start: reference.source_text_start, end: reference.source_text_end, supported: referenceSupported(reference) })),
+    ...teamReferences.map(reference => ({ start: reference.source_text_start, end: reference.source_text_end, supported: teamReferenceContractSupported(health, reference) })),
+  ].sort((left, right) => left.start - right.start)) {
+    if (chip.start < offset) continue
+    const tint = chip.supported ? colors.blue : colors.red
+    if (chip.start > offset) pieces.push(text.slice(offset, chip.start))
+    pieces.push(<Text key={chip.start} style={{ color: tint, backgroundColor: `${tint}33` }}>{text.slice(chip.start, chip.end)}</Text>)
+    offset = chip.end
+  }
+  if (offset < text.length) pieces.push(text.slice(offset))
+  return <Text style={metrics}>{pieces}</Text>
 }
 
 function ChatReferenceShelf({ sessionId, references, referenceSupported, onChangeAction, onRemove, warning, testID }: {
@@ -1987,6 +2028,8 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
   const editReferencesRef = useRef<ChatReference[]>([])
   const editTeamReferencesRef = useRef<TeamReference[]>([])
   const editingQueuedIdRef = useRef<string | null>(null)
+  const editInputRef = useRef<TextInput>(null)
+  const field = useChipTextField(editInputRef, 0)
   const [busyTurn, setBusyTurn] = useState<string | null>(null)
   const actionInFlight = useRef<symbol | null>(null)
   const actionScopeKey = useAppStore(state => composerActionScopeKey(state, sessionId))
@@ -2008,6 +2051,8 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
   const actionScopeCurrent = () => remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)
     && composerActionScopeKey(useAppStore.getState(), sessionId) === actionScopeKey
   const referenceSupported = useCallback((reference: ChatReference): boolean => {
+    // Paired through the hub; its target lives on another server, not in this server's chat list.
+    if (reference.target_kind === 'cross_server') return health?.capabilities?.cross_server_mail_v1?.available === true
     const target = useAppStore.getState().sessions.find(candidate => candidate.id === reference.session_id)
     return Boolean(
       localChatReferenceContractSupported(health, reference)
@@ -2027,6 +2072,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
       return
     }
     editTextRef.current = text
+    field.reset(text.length)
     editingQueuedIdRef.current = turn.queued_id
     editReferencesRef.current = nextReferences
     editTeamReferencesRef.current = nextTeamReferences
@@ -2157,12 +2203,11 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
             && editTeamReferences.every(reference => teamReferenceContractSupported(health, reference)))
         return <View key={turn.queued_id} testID={`queued-row-${turn.queued_id}`} style={[styles.queueRow, { backgroundColor: agentMessage ? colors.surface : colors.queued, borderColor: agentMessage ? colors.blue : colors.yellow, borderLeftWidth: agentMessage ? 2 : StyleSheet.hairlineWidth }]}>
           {editing === turn.queued_id && !crossChatDelivery ? <TextInput
+            ref={editInputRef}
             autoFocus
             editable={!networkDisabled && !busy}
-            value={editText}
-            onChangeText={next => {
-              const nextReferences = reconcileChatReferences(editTextRef.current, next, editReferencesRef.current)
-              const nextTeamReferences = reconcileTeamReferences(editTextRef.current, next, editTeamReferencesRef.current)
+            onChangeText={nativeText => {
+              const { text: next, chatReferences: nextReferences, teamReferences: nextTeamReferences } = field.edit(editTextRef.current, nativeText, editReferencesRef.current, editTeamReferencesRef.current)
               editTeamReferencesRef.current = nextTeamReferences
               setEditTeamReferences(nextTeamReferences)
               editTextRef.current = next
@@ -2170,9 +2215,10 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
               setEditReferences(nextReferences)
               setEditText(next)
             }}
+            onSelectionChange={event => field.select(event.nativeEvent.selection, editReferencesRef.current, editTeamReferencesRef.current)}
             multiline
             style={[styles.queueInput, { color: colors.text }]}
-          /> : <Pressable accessibilityRole={crossChatDelivery ? undefined : 'button'} accessibilityLabel={agentMessage ? `${sender}: ${turnText}` : crossChatDelivery ? 'Incoming cross-chat delivery' : 'Edit queued message'} accessibilityState={{ disabled: crossChatDelivery || networkDisabled || queueBusy }} disabled={crossChatDelivery || networkDisabled || queueBusy} style={styles.queuePrompt} onPress={() => { if (remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) beginEdit(turn) }}>{agentMessage ? <Text style={{ color: colors.muted, fontSize: 11, fontWeight: '700' }}>{sender}</Text> : null}<Text style={[styles.queueText, { color: colors.text }]} numberOfLines={3}>{turnText}</Text>{turn.file_ids.length ? <View style={styles.queueAttachments}>{turn.file_ids.map(fileId => <QueuedAttachment key={fileId} sessionId={sessionId} fileId={fileId} onPreview={onPreview} />)}</View> : null}{crossChatDelivery && !agentMessage ? <Text style={{ color: colors.muted, fontSize: 10 }}>Cross-chat delivery · starts automatically</Text> : !agentMessage && pausedLabel ? <Text style={{ color: colors.orange, fontSize: 10 }}>{pausedLabel}</Text> : null}</Pressable>}
+          >{editText ? <ChipText text={editText} chatReferences={editReferences} teamReferences={editTeamReferences} referenceSupported={referenceSupported} metrics={{ fontSize: styles.queueInput.fontSize, lineHeight: styles.queueInput.lineHeight }} /> : null}</TextInput> : <Pressable accessibilityRole={crossChatDelivery ? undefined : 'button'} accessibilityLabel={agentMessage ? `${sender}: ${turnText}` : crossChatDelivery ? 'Incoming cross-chat delivery' : 'Edit queued message'} accessibilityState={{ disabled: crossChatDelivery || networkDisabled || queueBusy }} disabled={crossChatDelivery || networkDisabled || queueBusy} style={styles.queuePrompt} onPress={() => { if (remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) beginEdit(turn) }}>{agentMessage ? <Text style={{ color: colors.muted, fontSize: 11, fontWeight: '700' }}>{sender}</Text> : null}<Text style={[styles.queueText, { color: colors.text }]} numberOfLines={3}>{turnText}</Text>{turn.file_ids.length ? <View style={styles.queueAttachments}>{turn.file_ids.map(fileId => <QueuedAttachment key={fileId} sessionId={sessionId} fileId={fileId} onPreview={onPreview} />)}</View> : null}{crossChatDelivery && !agentMessage ? <Text style={{ color: colors.muted, fontSize: 10 }}>Cross-chat delivery · starts automatically</Text> : !agentMessage && pausedLabel ? <Text style={{ color: colors.orange, fontSize: 10 }}>{pausedLabel}</Text> : null}</Pressable>}
           {!crossChatDelivery && rowReferences.length ? <ChatReferenceShelf
             sessionId={sessionId}
             references={rowReferences}
