@@ -618,6 +618,14 @@ export class TimelineProjector {
     ) {
       this.retireActiveTurnAtIdle(event.ts)
     }
+    // A rewind needs an idle chat, so a turn still open at its tombstone lost
+    // its terminal row to the rewind (a run cut at a steer keeps its earlier
+    // rows). It ended with its last kept row, not when the next turn starts.
+    if (event.type === 'history_rewound' && this.activeTurn) {
+      const active = this.activeTurn
+      const kept = [active.user, ...active.trace, ...active.assistant].filter((row): row is Event => Boolean(row))
+      this.retireActiveTurnAtIdle(kept.sort((left, right) => left.seq - right.seq).at(-1)?.ts ?? event.ts)
+    }
     // Hidden, but it carries the restore target for its turn; a shell-written
     // change has no agent-attributed code_diff to carry the commit instead.
     if (event.type === 'turn_checkpoint') {
@@ -1971,7 +1979,7 @@ function renderTimelineItem(item: TimelineItem): RenderTimelineItem[] {
     }
     else {
       const startsRun = item.user.type === 'turn_started'
-      const runId = startsRun || isNativeSteerEvent(item.user) ? item.user.run_id?.trim() || undefined : undefined
+      const runId = (startsRun || isNativeSteerEvent(item.user)) ? item.user.run_id?.trim() || undefined : undefined
       // The workspace checkpoint is the run's; a steer joined the run midway and restores no files.
       const checkpointCommit = startsRun && runId ? item.checkpointCommit : undefined
       rows.push({

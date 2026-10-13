@@ -89,7 +89,7 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
     window.dispatchEvent(new CustomEvent('agentsdock:pins-changed', { detail: sessionId }))
   }
   const copy = async () => { await window.agentsDock.native.writeClipboard(text); setCopied(true); window.setTimeout(() => setCopied(false), 1200) }
-  // A message sent while the agent worked can be edited only where the server rewinds to steers.
+  // A steer (a message sent while the agent worked) can be edited only where the server rewinds to steers.
   const canEditTurn = role === 'user' && !item.pending && rewindIdle && Boolean(item.runId) && (!isNativeSteerEvent(primary) || steerRewindSupported)
   const canRestoreCheckpoint = canEditTurn && checkpointRestoreSupported && Boolean(item.checkpointCommit)
   return (
