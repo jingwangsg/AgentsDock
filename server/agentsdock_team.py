@@ -22,11 +22,11 @@ import sys
 import time
 import unicodedata
 import urllib.parse
-from pathlib import Path
 from typing import Any
 
 from agentsdock_cli_common import (
     CLIError,
+    attachment_paths,
     provider_authority,
     request_json,
     selected_authority_path,
@@ -35,7 +35,6 @@ from agentsdock_cli_common import (
 
 
 BODY_MAX_BYTES = 49_152
-ATTACHMENT_MAX_COUNT = 16
 SENDER_SCAN_PAGE_SIZE = 50
 SENDER_SCAN_MAX_RESULTS = 50
 SENDER_SCAN_MAX_PAGES = 20
@@ -315,22 +314,6 @@ def _read_body() -> str:
     return body
 
 
-def _attachment_paths(values: list[str]) -> list[str]:
-    paths: list[str] = []
-    for value in values:
-        path = Path(value).expanduser()
-        if not path.is_absolute():
-            raise CLIError(f"attachment paths must be absolute: {value}")
-        if not path.is_file():
-            raise CLIError(f"attachment is not a regular file: {value}")
-        resolved = str(path.resolve())
-        if resolved not in paths:
-            paths.append(resolved)
-    if len(paths) > ATTACHMENT_MAX_COUNT:
-        raise CLIError(f"at most {ATTACHMENT_MAX_COUNT} attachments per message")
-    return paths
-
-
 def _mail_subject(value: str) -> str:
     if any(unicodedata.category(char) in {"Cc", "Cs", "Zl", "Zp"} for char in value):
         raise CLIError("--title must be a single line without control characters")
@@ -359,7 +342,7 @@ def send(args: argparse.Namespace) -> dict[str, Any]:
         else str(args.title).strip() if args.title else None
     )
     body = _read_body()
-    attachments = _attachment_paths(list(args.attach or []))
+    attachments = attachment_paths(list(args.attach or []))
     payload: dict[str, Any] = {
         "kind": kind,
         "body": body,

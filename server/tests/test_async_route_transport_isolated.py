@@ -6,6 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 import hashlib
+import json
 from pathlib import Path
 import re
 import sqlite3
@@ -51,7 +52,7 @@ def server_namespace():
             copied.decorator_list = []
             nodes.append(copied)
     namespace = {
-        "asyncio": asyncio, "hashlib": hashlib, "suppress": suppress,
+        "asyncio": asyncio, "hashlib": hashlib, "json": json, "suppress": suppress,
         "HTTPException": HTTPException, "cross_server_mail": cross_server_mail, "CROSS_SERVER_ROUTES": {},
         "PROVIDER_CROSS_CHAT_ROUTE_ID_RE": re.compile(r"route_[0-9a-f]{32}"),
         "PROVIDER_CROSS_CHAT_ROUTE_PAIR_ID_RE": re.compile(r"pair_[0-9a-f]{32}"),

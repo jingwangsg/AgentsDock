@@ -1,5 +1,45 @@
 # Public development log
 
+## 2026-10-13 — Agents can attach files to chat mail (server and desktop)
+
+- Chat mail between agents (`chats send`, `ask`, `respond-current`) carried
+  text only. On a mailbox route the helper now takes a repeatable
+  `--attach <absolute path>` for files of any type: at most 16 files, 512 MiB
+  per file and 1 GiB per message (lower when the server's upload limit is
+  lower). The server copies each file into the receiving chat before it
+  stores the message, so the files appear in that chat's Media & files; the
+  sender's files are only read. `chats read` lists each attachment with its
+  name, size, type and a path on the server that the receiving agent opens
+  directly. Cancelling an unread message deletes its copies. One sentence in
+  the agent instructions describes the option.
+- The desktop shows a message's attachments, with name and size, under the
+  message in both chats, with the same open, download and reveal actions as
+  other chat files; the receiving chat's Media & files lists them as the mail
+  arrives. The Android app does not show attachments yet: its timeline code
+  projected recorded events that carry them without error and kept the
+  message text.
+- Not covered: mail with attachments to a chat on another server (hub and
+  remote) is refused, because the hub relay carries text only. Legacy
+  exchanges and one-use @Chat handles also refuse `--attach`.
+- Verification: helper argument tests; server tests on the real send, read
+  and cancel handlers and ledger (copies owned by the receiving chat, read
+  paths, cleaned names, size limits, protected paths, retries, cancel,
+  refusal for another server); desktop component tests and type check. An
+  isolated server and an isolated native desktop run built from this branch:
+  a Claude chat sent a binary and a text file to a second Claude chat with
+  `--attach`; the second chat's agent read the mail, opened both files from
+  the returned paths and reported sizes and SHA-256 equal to the originals.
+  The desktop showed both files under the message in the two chats and in
+  the receiving chat's Media & files, and opened the text file from its row.
+  A reply in the other direction with `--reply-to` and one attachment arrived
+  the same way. A second run after review: the receiving chat's Media & files
+  went from empty to both files without a refresh, and cancelling an unread
+  message from the sender's card deleted its copy and removed it from the
+  card. Not exercised: a Codex chat, a hub with remotes, Android on a device.
+  Known gap: an open receiving chat keeps listing a cancelled message's files
+  in Media & files until it reloads. Availability: source only; the hub runs
+  it after a restart, a remote after its next redeploy.
+
 ## 2026-10-13 — A Mac banner no longer deactivates AgentsDock or hides its Dock icon (desktop)
 
 - On macOS a completion or emergency banner hid the app's Dock icon, which

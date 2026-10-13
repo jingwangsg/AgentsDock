@@ -26,7 +26,7 @@ import { MarkdownContent } from './MarkdownContent'
 import { MediaGrid } from './MediaGrid'
 import { ChatInboxGroup } from './ChatInboxGroup'
 import { CrossChatPeerLink } from './CrossChatPeerLink'
-import { chatMailboxAvailable } from '@shared/chat-inbox'
+import { chatMailAttachments, chatMailboxAvailable } from '@shared/chat-inbox'
 import { isSharedChatCollaborator } from '@shared/chat-shares'
 
 export const TimelineRowView = memo(function TimelineRowView({ item, sessionId, profileScope, onFindFile, pinnedItemIds, codexLifecycleActive = false, rewindIdle = false, checkpointRestoreSupported = false }: { item: RenderTimelineItem; sessionId: string; profileScope: WorkspaceProfileScope | null; onFindFile: (fileId: string) => void; pinnedItemIds: ReadonlySet<string>; codexLifecycleActive?: boolean; rewindIdle?: boolean; checkpointRestoreSupported?: boolean }) {
@@ -1516,6 +1516,8 @@ function CrossChatMessageView({ item, sessionId, profileScope }: { item: SystemI
   const bodyEvents = editedByUser ? events.filter(event => event.message_edited_by_user === true
     && event.message_revision === messageRevision) : events
   const counterpartId = incoming ? sourceId : targetId
+  // The files belong to the receiving chat; a cancelled message's copies are deleted.
+  const attachments = chatMailAttachments(item.event)
   const savedTitle = latestExchangeString(events, event => incoming ? event.source_title : event.target_title)
   const counterpartTitle = useAppStore(state => liveChatTitle(state, counterpartId, savedTitle)) || t('timeline.ui.unknownAgent')
   const [loadedBody, setLoadedBody] = useState<{ revisionKey: string; text: string } | null>(null)
@@ -1620,6 +1622,7 @@ function CrossChatMessageView({ item, sessionId, profileScope }: { item: SystemI
         disabled={loading}
         onClick={() => expanded ? setExpanded(false) : void showFullMessage()}
       >{loading ? t('timeline.ui.loadingFullMessage') : expanded ? t('timeline.ui.showLess') : t('timeline.ui.viewMessage')}</button>}
+      {attachments.length > 0 && !cancelled && <MediaGrid files={attachments} sessionId={targetId} profileScope={profileScope} compact />}
       {failed && <small className="cross-chat-message-error">{latestExchangeString(events, event => event.message) || t('timeline.ui.couldnTComplete')}</small>}
       {incoming && cancelled && <small>{t('timeline.status.cancelled')}</small>}
       {!incoming && <small className="cross-chat-exchange-state" role="status">{t(cancelledLocally ? 'timeline.inbox.cancelled' : outgoingDeliveryStatus(item.event, events))}</small>}

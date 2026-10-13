@@ -23,7 +23,7 @@ def ledger() -> sqlite3.Connection:
         authorization_pair_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, target_run_id TEXT,
         delivery_mode TEXT NOT NULL DEFAULT '', reply_to_message_id TEXT, target_body TEXT,
         message_revision INTEGER NOT NULL DEFAULT 0, source_user_delegation_action TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL DEFAULT '')""")
+        created_at TEXT NOT NULL DEFAULT '', attachments_json TEXT)""")
     chat_mailbox.initialize(connection)
     xs.initialize(connection)
     return connection

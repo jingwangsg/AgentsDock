@@ -67,7 +67,7 @@ class TeamReplyCLITests(unittest.TestCase):
         self.assertEqual(self.payload(), {**expected, "idempotency_key": stable_key})
 
     def test_reply_preserves_shared_subject_attachment_and_explicit_idempotency_options(self):
-        with mock.patch.object(cli, "_attachment_paths", return_value=["/isolated/resolved-file"]) as paths:
+        with mock.patch.object(cli, "attachment_paths", return_value=["/isolated/resolved-file"]) as paths:
             self.execute(
                 "reply", PARENT, "--route", ROUTE, "--title", " " + "é" * 160 + " ",
                 "--attach", "/isolated/mock-file", "--idempotency-key", "explicit-reply-key",

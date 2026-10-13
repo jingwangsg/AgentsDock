@@ -94,4 +94,17 @@ describe('sender-grouped chat inbox', () => {
     expect(screen.queryByText('Immutable original source body.')).not.toBeInTheDocument()
     expect(get).toHaveBeenCalledExactlyOnceWith('message-1')
   })
+
+  it('lists mail attachments with name and size and opens them as chat files', async () => {
+    const file = { id: 'art_0123456789abcdef', session_id: 'recipient', filename: 'raw_data_.bin', size: 16384,
+      content_type: 'application/octet-stream', path: '/state/files/art_0123456789abcdef/raw_data_.bin' }
+    const open = vi.fn().mockResolvedValue(undefined)
+    Object.assign(window.agentsDock, { files: { open, mediaURL: () => '' } })
+    const item = renderTimelineItems(projectTimeline([{ ...events[0], attachments: [file] }], []))[0] as SystemItem
+    render(<ChatInboxGroup item={item} sessionId="recipient" profileScope={scope} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Renamed Sender · 1 unread' }))
+    expect(screen.getByText('16.0 KB')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('raw_data_.bin'))
+    expect(open).toHaveBeenCalledExactlyOnceWith('recipient', file)
+  })
 })

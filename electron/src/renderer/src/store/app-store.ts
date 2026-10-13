@@ -16,6 +16,7 @@ import { turnSendErrorMessage } from '@shared/server-errors'
 import { completedPrefixForkAvailable, RUNNING_FORK_UNAVAILABLE } from '@shared/session-fork'
 import { sessionRewindAvailable } from '@shared/session-rewind'
 import { agentFileBelongsToSession, isolateSessionEvent, isolateSessionSnapshot } from '@shared/session-files'
+import { chatMailAttachments } from '@shared/chat-inbox'
 import { isImportedClaudeControlCompanion, isImportedCodexRuntimeContext, isImportedHistoryRecord, isImportedProviderControlMetadata, isImportedProviderInterruption, mergeProviderInterruptionEvent } from '@shared/provider-origin'
 import { isReasoningSummaryStream } from '@shared/reasoning-stream'
 import { trackEvent } from '../lib/analytics'
@@ -3951,6 +3952,8 @@ export function ingestTimeline(previous: SessionSnapshot, input: TimelineIngest)
     if (event.seq <= knownTail) continue
     if (event.file && agentFileBelongsToSession(event.file, sessionId)) carried.push(event.file)
     if (event.artifact && agentFileBelongsToSession(event.artifact, sessionId)) carried.push(event.artifact)
+    // Mail attachments are copies the receiving chat owns; the sender's events carry them too.
+    carried.push(...chatMailAttachments(event).filter(file => agentFileBelongsToSession(file, sessionId)))
   }
   const mergedFiles = carried.length ? mergeFiles(previous.files, carried) : previous.files
   const keptFiles = ranges.length

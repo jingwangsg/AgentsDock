@@ -3,7 +3,7 @@ import { ChevronRight, Inbox, LoaderCircle, Trash2 } from 'lucide-react'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 import { t } from '@shared/i18n'
-import { chatInboxMessageId, chatMailboxAvailable, inboxMessageMatchesEvent } from '@shared/chat-inbox'
+import { chatInboxMessageId, chatMailAttachments, chatMailboxAvailable, inboxMessageMatchesEvent } from '@shared/chat-inbox'
 import type { ChatInboxMessage, CrossChatHandoff, WorkspaceProfileScope } from '@shared/types'
 import type { SystemItem } from '../lib/timeline'
 import { useLocale } from '../lib/i18n'
@@ -11,6 +11,7 @@ import { formatTime } from '../lib/format'
 import { liveChatTitle } from '../lib/live-chat-title'
 import { useAppStore } from '../store/app-store'
 import { MarkdownContent } from './MarkdownContent'
+import { MediaGrid } from './MediaGrid'
 import { CrossChatPeerLink } from './CrossChatPeerLink'
 
 /** Human expansion is read-only. Only the provider's batch-read receipt changes unread state. */
@@ -132,6 +133,8 @@ export function ChatInboxGroup({ item, sessionId, profileScope }: {
           const needsFetch = !full && !message && !event.message_body && event.handoff_body_truncated
           const hasMore = needsFetch || body.length > 800
           const reply = event.reply_to_message_id ?? message?.reply_to_message_id
+          // A cancelled message's files are deleted with it.
+          const attachments = chatMailAttachments(event)
           return <section className="chat-inbox-message" key={id} data-message-id={id}>
             <header><time>{formatTime(event.received_at || message?.received_at || child.anchorTs || event.ts)}</time>
               <small>{t(`timeline.inbox.${state}`)}</small>
@@ -152,6 +155,7 @@ export function ChatInboxGroup({ item, sessionId, profileScope }: {
                 })
               }}>
                 {loadingMessage === id ? t('timeline.ui.loadingFullMessage') : expanded ? t('timeline.ui.showLess') : t('timeline.ui.viewMessage')}</button>}
+            {attachments.length > 0 && state !== 'cancelled' && <MediaGrid files={attachments} sessionId={sessionId} profileScope={profileScope} compact />}
           </section>
         })}
         {loading && <small className="chat-inbox-loading"><LoaderCircle size={12} className="spin" />{t('timeline.inbox.loading')}</small>}

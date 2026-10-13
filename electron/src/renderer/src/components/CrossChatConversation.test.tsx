@@ -67,6 +67,25 @@ describe('cross-chat message lifecycle', () => {
     expect(loadExchange).not.toHaveBeenCalled()
   })
 
+  it('shows sent mail attachments and opens them from the receiving chat', () => {
+    const file = { id: 'art_0123456789abcdef', session_id: 'chat-2', filename: 'raw_data_.bin', size: 2048,
+      content_type: 'application/octet-stream', path: '/state/files/art_0123456789abcdef/raw_data_.bin' }
+    const open = vi.fn().mockResolvedValue(undefined)
+    Object.assign(window.agentsDock, { files: { open, mediaURL: () => '' } })
+    const event: Event = {
+      id: 'attached-message', session_id: 'chat-1', seq: 10, ts: '2026-09-04T01:00:00Z',
+      type: 'chat_conversation_message_registered', conversation_mode: 'async_route_v1', delivery_mode: 'mailbox',
+      conversation_id: 'attached-conversation', message_id: 'attached-handoff', inbox_state: 'unread',
+      source_session_id: 'chat-1', target_session_id: 'chat-2', target_title: 'Reviewer',
+      handoff_preview: 'Files for review.', attachments: [file]
+    }
+    const item: SystemItem = { kind: 'system', id: event.id, key: event.id, seq: event.seq, event, crossChatMessage: true }
+    render(<TimelineRowView item={item} sessionId="chat-1" profileScope={profileScope} onFindFile={() => {}} pinnedItemIds={new Set()} />)
+    expect(screen.getByText('2.0 KB')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('raw_data_.bin'))
+    expect(open).toHaveBeenCalledExactlyOnceWith('chat-2', file)
+  })
+
   it('preserves explicit Markdown line breaks between cross-chat text and code spans', () => {
     const event: Event = {
       id: 'line-break-message', session_id: 'chat-1', seq: 10, ts: '2026-09-04T01:00:00Z',

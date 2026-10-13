@@ -125,6 +125,108 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                 with patch.object(agentsdock_chats, "post_json", return_value=receipt), self.assertRaises(agentsdock_chats.CLIError):
                     args.handler(args)
 
+    ATTACH_ROUTE = "route_" + "a" * 32
+    ATTACH_RECEIPT = {"ok": True, "route_id": ATTACH_ROUTE, "action": "instruction", "accepted": True,
+                      "mode": "async_route_v1", "message_id": "handoff_" + "b" * 32, "duplicate": False,
+                      "delivery_mode": "mailbox", "state": "unread", "execution_started": False, "attachments": 2}
+
+    def send_with_attachments(self, arguments: list[str], receipt: dict) -> Mock:
+        routes = {"routes": [{"route_id": self.ATTACH_ROUTE, "available": True, "mode": "async_route_v1"}]}
+        with patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                patch.object(agentsdock_chats, "get_json", return_value=routes), \
+                patch.object(agentsdock_chats, "post_json", return_value=receipt) as post:
+            args = agentsdock_chats.parser().parse_args(arguments)
+            self.assertEqual(args.handler(args), receipt)
+        return post
+
+    def test_send_and_ask_post_resolved_attachments_with_the_copy_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            data, notes = Path(folder) / "data.bin", Path(folder) / "notes.txt"
+            data.write_bytes(bytes(range(256)))
+            notes.write_text("notes")
+            for verb in ("send", "ask"):
+                with self.subTest(verb=verb):
+                    post = self.send_with_attachments([verb, "--route", self.ATTACH_ROUTE, "--message", "Files",
+                                                       "--attach", str(data), "--attach", str(notes),
+                                                       "--attach", str(data)], self.ATTACH_RECEIPT)
+                    self.assertEqual(post.call_args.args[1]["attachments"], [str(data.resolve()), str(notes.resolve())])
+                    self.assertEqual(post.call_args.kwargs,
+                                     {"socket_timeout": agentsdock_chats.ATTACHMENT_POST_SOCKET_SECONDS})
+
+    def test_default_idempotency_key_changes_with_the_attached_files(self) -> None:
+        receipt = {**self.ATTACH_RECEIPT, "attachments": 1}
+        plain = {key: value for key, value in receipt.items() if key != "attachments"}
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder) / "data.bin"
+            data.write_bytes(b"first")
+            send = ["send", "--route", self.ATTACH_ROUTE, "--mode", "async_route_v1", "--message", "Files"]
+            keys = [self.send_with_attachments(send, plain).call_args.args[1]["idempotency_key"]]
+            keys.append(self.send_with_attachments([*send, "--attach", str(data)], receipt).call_args.args[1]["idempotency_key"])
+            keys.append(self.send_with_attachments([*send, "--attach", str(data)], receipt).call_args.args[1]["idempotency_key"])
+            data.write_bytes(b"second")
+            os.utime(data, ns=(1, 1))
+            keys.append(self.send_with_attachments([*send, "--attach", str(data)], receipt).call_args.args[1]["idempotency_key"])
+        self.assertEqual(keys[1], keys[2])  # A retry of the same files reuses its key.
+        self.assertEqual(len({keys[0], keys[1], keys[3]}), 3)
+
+    def test_receipt_must_confirm_every_attachment(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder) / "data.bin"
+            data.write_bytes(b"data")
+            send = ["send", "--route", self.ATTACH_ROUTE, "--mode", "async_route_v1", "--message", "Files"]
+            for arguments, receipt in (([*send, "--attach", str(data)], self.ATTACH_RECEIPT), (send, self.ATTACH_RECEIPT)):
+                with self.subTest(arguments=arguments), self.assertRaises(agentsdock_chats.CLIError):
+                    self.send_with_attachments(arguments, receipt)
+
+    def test_respond_current_on_a_mailbox_route_forwards_attachments(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            data, notes = Path(folder) / "data.bin", Path(folder) / "notes.txt"
+            data.write_bytes(b"data")
+            notes.write_text("notes")
+            env = {"AGENTSDOCK_CROSS_CHAT_RESPONSE_MODE": "async_route_v1",
+                   "AGENTSDOCK_CROSS_CHAT_RESPONSE_ROUTE_ID": self.ATTACH_ROUTE}
+            with patch.dict(os.environ, env):
+                post = self.send_with_attachments(["respond-current", "--message", "Files", "--attach", str(data),
+                                                   "--attach", str(notes)], self.ATTACH_RECEIPT)
+        self.assertEqual(post.call_args.args[1]["attachments"], [str(data.resolve()), str(notes.resolve())])
+
+    def test_attachment_paths_and_legacy_destinations_are_refused_before_post(self) -> None:
+        route = "route_" + "a" * 32
+        with tempfile.TemporaryDirectory() as folder:
+            files = [Path(folder) / f"file-{index}.txt" for index in range(17)]
+            for path in files:
+                path.write_text("x")
+            refused = [
+                (["send", "--route", route], ["relative.txt"], "absolute"),
+                (["send", "--route", route], [folder], "regular file"),
+                (["send", "--route", route], [str(Path(folder) / "missing.txt")], "regular file"),
+                (["send", "--route", route], [str(path) for path in files], "at most 16"),
+                # A route that did not negotiate async_route_v1, and one-use handles, are legacy exchanges.
+                (["send", "--route", route], [str(files[0])], "legacy exchanges"),
+                (["ask", "--target-index", "1"], [str(files[0])], "legacy exchanges"),
+            ]
+            for destination, paths, error in refused:
+                arguments = [*destination, "--message", "Files", *[part for path in paths for part in ("--attach", path)]]
+                with self.subTest(arguments=arguments[:3], error=error), \
+                        patch.dict(os.environ, {"AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT": "1",
+                                                "AGENTSDOCK_CROSS_CHAT_HANDLE_1": "synthetic-handle",
+                                                "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ACTION": "request_reply",
+                                                "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ASYNC": "0"}), \
+                        patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                        patch.object(agentsdock_chats, "get_json", return_value={"routes": [{"route_id": route, "available": True}]}), \
+                        patch.object(agentsdock_chats, "post_json") as post, \
+                        self.assertRaisesRegex(agentsdock_chats.CLIError, error):
+                    args = agentsdock_chats.parser().parse_args(arguments)
+                    args.handler(args)
+                post.assert_not_called()
+            args = argparse.Namespace(authority_file=None, message="Files", attach=[str(files[0])], request_response=False,
+                                      exchange="exchange_" + "a" * 32, inbound_leg="leg_" + "b" * 32, idempotency_key=None)
+            with patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                    patch.object(agentsdock_chats, "post_json") as post, \
+                    self.assertRaisesRegex(agentsdock_chats.CLIError, "legacy exchanges"):
+                agentsdock_chats.respond(args)
+            post.assert_not_called()
+
     def test_helper_uses_only_the_canonical_provider_capability_header(self) -> None:
         self.assertEqual(
             agentsdock_chats.provider_headers("live-capability"),
