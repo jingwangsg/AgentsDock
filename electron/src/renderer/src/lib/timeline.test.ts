@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createHash } from 'node:crypto'
 import type { AgentFile, Event } from '@shared/types'
-import { extractStructuredToolDiff, extractUnifiedDiff, importedCrossChatDelivery, isAgentVisibleEvent, isTimelineError, jobDisplayEvents, jobDisplaySelection, jobResultPresentation, messageItemText, messageText, projectTimeline, reconcileRenderTimelineItems, reconcileTimelineItems, renderTimelineItems, settleInactiveTimelineItems, summarizeStructuredToolDiff, TimelineProjector, type RenderTimelineItem, type TimelineItem } from './timeline'
+import { extractStructuredToolDiff, extractUnifiedDiff, importedCrossChatDelivery, isAgentVisibleEvent, isTimelineError, jobDisplayEvents, jobDisplaySelection, jobResultPresentation, messageItemText, messageText, projectTimeline, reconcileRenderTimelineItems, reconcileTimelineItems, renderTimelineItems, settleInactiveTimelineItems, summarizeStructuredToolDiff, TimelineProjector, type MessageItem, type RenderTimelineItem, type TimelineItem } from './timeline'
 import { parseReviewableDiff, parseUnifiedDiff } from './unified-diff'
 import { cachedTimelineProjection, clearTimelineProjectionCache } from './timeline-projection-cache'
 
@@ -2720,9 +2720,28 @@ describe('projectTimeline', () => {
       event(3, 'turn_steered', { ...run, prompt: 'Also rename the agent', native_steer: true, provider_user_authored: true })
     ]
     const rows = renderTimelineItems(projectTimeline(source, []))
-    const steer = rows.find(row => row.kind === 'message' && row.role === 'user' && messageItemText(row) === 'Also rename the agent')
-    expect(steer?.kind === 'message' && steer.heldBy?.tool?.id).toBe('toolu_poll')
+    const steer = rows.find((row): row is MessageItem => row.kind === 'message' && row.event.type === 'turn_steered')
+    expect(steer?.heldBy?.tool?.id).toBe('toolu_poll')
     expect(rows.flatMap(row => row.kind === 'progress' ? [[row.active, row.runningTool?.tool?.id]] : [])).toEqual([[true, 'toolu_poll']])
+    // Settled (a historical window, or the run is known to be over): nothing is held.
+    expect(settleInactiveTimelineItems(rows).some(row => row.kind === 'message' && row.heldBy || row.kind === 'progress' && row.runningTool)).toBe(false)
+
+    // A later step of the model proves the call returned, even when a paged timeline omits its tool_finished.
+    const stepped = renderTimelineItems(projectTimeline([...source, event(4, 'reasoning_summary', { run_id: 'run-poll', text: 'Renaming now' })], []))
+    expect(stepped.some(row => row.kind === 'message' && row.heldBy)).toBe(false)
+    // A subagent's call or step does not hold the message, nor prove the parent's call returned.
+    const subagent = { run_id: 'run-poll', parent_tool_use_id: 'toolu_poll' }
+    const nested = renderTimelineItems(projectTimeline([
+      ...source.slice(0, 2),
+      event(3, 'tool_started', { ...subagent, tool: { id: 'toolu_child', name: 'Bash', input: { command: 'ls' } } }),
+      event(4, 'reasoning_summary', { ...subagent, text: 'Listing files' }),
+      event(5, 'turn_steered', { ...run, prompt: 'Also rename the agent', native_steer: true, provider_user_authored: true })
+    ], []))
+    expect(nested.flatMap(row => row.kind === 'message' && row.heldBy ? [row.heldBy.tool?.id] : [])).toEqual(['toolu_poll'])
+
+    // Claude Code also names a running call with no message waiting.
+    const unsteered = renderTimelineItems(projectTimeline(source.slice(0, 2), []))
+    expect(unsteered.flatMap(row => row.kind === 'progress' ? [row.runningTool?.tool?.id] : [])).toEqual(['toolu_poll'])
 
     // The call returns, or is moved to the background by Send now: the CLI reads the message and the activity ends.
     const returned = renderTimelineItems(projectTimeline([...source, event(4, 'tool_finished', { run_id: 'run-poll', tool_id: 'toolu_poll', output: 'done' })], []))

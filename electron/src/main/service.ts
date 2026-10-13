@@ -4242,6 +4242,10 @@ export class AppService {
     return this.providerRequest(scope => scope.client.compactClaudeContext(sessionId))
   }
 
+  async sendClaudeHeldNow(sessionId: string): Promise<ClaudeSendNowResponse> {
+    return this.providerRequest(scope => scope.client.sendClaudeHeldNow(sessionId))
+  }
+
   async claudeMcp(sessionId: string): Promise<ClaudeMcpSnapshot> {
     return this.providerRequest(scope => scope.client.claudeMcp(sessionId))
   }
@@ -4584,12 +4588,6 @@ export class AppService {
       : refreshed.filter(turn => turn.queued_id !== queuedId || turn.promoted === true)
     this.cache.putQueuedTurns(scope.namespace, sessionId, turns)
     return result
-  }
-
-  async sendHeldNow(sessionId: string): Promise<ClaudeSendNowResponse> {
-    const scope = this.captureScope()
-    await this.ensureValidatedScope(scope)
-    return scope.client.sendHeldNow(sessionId)
   }
 
   async listJobs(): Promise<Job[]> {

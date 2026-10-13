@@ -9,7 +9,7 @@ import { readableToolInput, readableValue } from '../lib/tool-input'
 import { agentFileBelongsToSession } from '@shared/session-files'
 import { isImportedProviderInterruption } from '@shared/provider-origin'
 import { codexLifecycleSemanticKey, isCompactionCompletedEvent, isCompactionStartedEvent, isNativeSteerEvent } from '@shared/semantic-timeline'
-import type { ChatReference, CodeDiffFileSummary, CrossChatExchange, Event, PinnedItem, QueuedTurn, WorkspaceProfileScope } from '@shared/types'
+import type { ChatReference, CodeDiffFileSummary, CrossChatExchange, Event, Health, PinnedItem, QueuedTurn, WorkspaceProfileScope } from '@shared/types'
 import type { JobItem, MediaItem, MessageItem, ProgressItem, RenderTimelineItem, SystemItem } from '../lib/timeline'
 import { progressEventSequence, progressToolStartSequences, extractUnifiedDiff, isHandoffDigestEvent, isPublicCommentary, isTimelineError, jobDisplaySelection, jobResultPresentation, messageItemText, messageText, omitTerminalClaudeFinalCommentary, summarizeStructuredToolDiff } from '../lib/timeline'
 import { parseReviewableDiff, type CodeReviewTarget } from '../lib/unified-diff'
@@ -150,29 +150,41 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
 /** Claude Code shows a message typed while a tool runs as queued, with its send-now key, until the call returns. */
 function HeldSteerStatus({ call, sessionId }: { call: Event; sessionId: string }) {
   useLocale()
-  const sendNowAvailable = useAppStore(state => state.health?.capabilities?.claude_send_now_v1?.available === true)
+  const shown = useAppStore(state => claudeHeldStateShown(state.health))
   const [now, setNow] = useState(() => Date.now())
   const [sending, setSending] = useState(false)
   useEffect(() => {
+    if (!shown) return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
-  }, [])
+  }, [shown])
+  if (!shown) return null
   const duration = formatDuration(Math.max(0, now - Date.parse(call.ts)) / 1000)
   const sendNow = () => {
     setSending(true)
-    runTimelineAction(window.agentsDock.queue.sendHeldNow(sessionId).finally(() => setSending(false)))
+    runTimelineAction(window.agentsDock.claude.sendHeldNow(sessionId).finally(() => setSending(false)))
   }
-  return <div className="message-held-status" role="status">
+  // No live region: the elapsed time changes every second.
+  return <div className="message-held-status">
     <Clock3 size={12} aria-hidden="true" />
-    <span>{t('timeline.activity.heldByTool', { tool: toolCallLabel(call), duration })}</span>
-    {sendNowAvailable && <button type="button" disabled={sending} onClick={sendNow}>{t('timeline.activity.sendHeldNow')}</button>}
+    <span>{t('timeline.ui.heldByTool', { tool: toolCallLabel(call), duration })}</span>
+    <button type="button" disabled={sending} onClick={sendNow}>{t('timeline.ui.sendHeldNow')}</button>
   </div>
+}
+
+/**
+ * A server that lists claude_send_now_v1 offers Send now for held messages and
+ * marks a subagent's output, which telling a running call from a returned one
+ * needs; with an older server the timeline shows neither.
+ */
+function claudeHeldStateShown(health: Health | null): boolean {
+  return health?.capabilities?.claude_send_now_v1?.available === true
 }
 
 function toolCallLabel(call: Event): string {
   const line = readableToolInput(call.tool?.name, call.tool?.input).split('\n')[0].trim()
-  const label = line || call.tool?.name || ''
-  return label.length > 80 ? `${label.slice(0, 79)}…` : label
+  // load-bearing: the activity header does not ellipsize.
+  return boundedTracePreview(line || call.tool?.name || '', RUNNING_TOOL_LABEL_CHARS)
 }
 
 function inlineTimelineChatReferences(event: Event): ChatReference[] {
@@ -295,6 +307,7 @@ type RunActivitySegment = RunCommentarySegment | RunReasoningSegment | RunSuppor
 const TRACE_REASONING_PREVIEW_CHARS = 600
 const TRACE_REASONING_ACCESSIBLE_CHARS = 220
 const TRACE_HEADER_PREVIEW_CHARS = 320
+const RUNNING_TOOL_LABEL_CHARS = 80
 
 function traceReasoningText(event: Event): string {
   return messageText(event).trim()
@@ -732,13 +745,14 @@ function RunActivityHeader({ item, events, open, detailsId, onToggle, subagents 
     : live
       ? compacting ? t('timeline.ui.compactingContext') : t('timeline.activity.workingFor', { duration })
       : t('timeline.activity.workedFor', { duration })
+  const runningToolShown = useAppStore(state => claudeHeldStateShown(state.health))
   const rows = subagents.length ? <SubagentRows agents={subagents} now={now} runLive={live} /> : null
   if (live) {
+    const runningTool = runningToolShown ? item.runningTool : undefined
+    const toolElapsed = runningTool ? formatDuration(Math.max(0, now - Date.parse(runningTool.ts)) / 1000) : ''
     const running = activeSubagents.length
       ? ` · ${timelineCount('subagentsRunning', activeSubagents.length)} (${activeSubagents.slice(0, 2).map(subagentDisplayName).join(', ')})`
-      : item.runningTool
-        ? ` · ${toolCallLabel(item.runningTool)} (${formatDuration(Math.max(0, now - Date.parse(item.runningTool.ts)) / 1000)})`
-        : ''
+      : runningTool ? ` · ${toolCallLabel(runningTool)} (${toolElapsed})` : ''
     return <>
       <div className="run-activity-summary">
         <span className="activity-ring" aria-hidden="true" />

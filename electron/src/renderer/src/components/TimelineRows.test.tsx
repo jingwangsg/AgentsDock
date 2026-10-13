@@ -611,9 +611,9 @@ describe('timeline pin state', () => {
     expect(useAppStore.getState().editingTurn['chat-1']).toMatchObject({ runId: 'run-a', seq: 3, originalPrompt: 'Also check the logs' })
   })
 
-  it('shows a Claude steer the CLI holds for a running command, with Send now where the server offers it', () => {
+  it('shows a Claude steer the CLI holds for a running command, with Send now, where the server offers it', () => {
     const sendHeldNow = vi.fn().mockResolvedValue({ ok: true, run_id: 'run-a', send_now: 'delivering' })
-    Object.assign(window.agentsDock.queue, { sendHeldNow })
+    Object.assign(window.agentsDock, { claude: { sendHeldNow } })
     const events: Event[] = [
       { id: 'start-a', session_id: 'chat-1', seq: 1, type: 'turn_started', ts: '2026-09-28T10:00:00Z', prompt: 'Poll the job', run_id: 'run-a', backend: 'claude' },
       { id: 'tool-a', session_id: 'chat-1', seq: 2, type: 'tool_started', ts: '2026-09-28T10:00:04Z', run_id: 'run-a',
@@ -623,11 +623,11 @@ describe('timeline pin state', () => {
     ]
     const steer = renderTimelineItems(projectTimeline(events, []))
       .find((row): row is MessageItem => row.kind === 'message' && row.event.type === 'turn_steered')!
-    render(<TimelineRowView item={steer} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
-    expect(screen.getByRole('status')).toHaveTextContent('Claude reads this when “Poll until the job ends” finishes')
-    // An older server has no endpoint for it.
-    expect(screen.queryByRole('button', { name: 'Send now' })).toBeNull()
+    const { container } = render(<TimelineRowView item={steer} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
+    // An older server has no endpoint for it and does not mark a subagent's output: nothing is shown.
+    expect(container.querySelector('.message-held-status')).toBeNull()
     act(() => useAppStore.setState({ health: { ok: true, server_instance_id: 'instance-a', capabilities: { claude_send_now_v1: { available: true, version: 1 } } } }))
+    expect(container.querySelector('.message-held-status')).toHaveTextContent('Claude reads this when “Poll until the job ends” finishes')
     fireEvent.click(screen.getByRole('button', { name: 'Send now' }))
     expect(sendHeldNow).toHaveBeenCalledWith('chat-1')
   })

@@ -313,6 +313,7 @@ const api: AgentsDockAPI = {
     clearGoal: sessionId => ipcRenderer.invoke('claude:goal:clear', sessionId),
     refreshContextUsage: sessionId => ipcRenderer.invoke('claude:context-usage:refresh', sessionId),
     compact: sessionId => ipcRenderer.invoke('claude:compact', sessionId),
+    sendHeldNow: sessionId => ipcRenderer.invoke('claude:send-held-now', sessionId),
     mcp: sessionId => ipcRenderer.invoke('claude:mcp', sessionId),
     controlMcp: (sessionId, input) => ipcRenderer.invoke('claude:mcp:control', sessionId, input),
     resolveInteraction: (sessionId, interactionId, response) => (
@@ -330,8 +331,7 @@ const api: AgentsDockAPI = {
       ipcRenderer.invoke('queue:skip-cross-chat-delivery', sessionId, queuedId, identity)
     ),
     move: (sessionId, queuedId, direction, expectedAdjacentQueuedId) => ipcRenderer.invoke('queue:move', sessionId, queuedId, direction, expectedAdjacentQueuedId),
-    runNow: (sessionId, queuedId) => ipcRenderer.invoke('queue:run-now', sessionId, queuedId),
-    sendHeldNow: sessionId => ipcRenderer.invoke('queue:send-held-now', sessionId)
+    runNow: (sessionId, queuedId) => ipcRenderer.invoke('queue:run-now', sessionId, queuedId)
   },
   agentRoutes: {
     list: (scope, sessionId) => ipcRenderer.invoke('agent-routes:list', scope, sessionId),

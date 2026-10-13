@@ -4700,6 +4700,30 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             [False, False, True, False],
         )
 
+    async def test_a_subagents_output_names_its_parent_call(self) -> None:
+        # The desktop must not take a subagent's step for the parent model's,
+        # nor show a message as held by a subagent's call.
+        from claude_agent_sdk.types import AssistantMessage, TextBlock, ThinkingBlock, ToolUseBlock
+
+        append_event = AsyncMock(return_value={})
+        child = [ThinkingBlock(thinking="Listing", signature=""), TextBlock(text="Listing files"),
+                 ToolUseBlock(id="toolu_child", name="Bash", input={"command": "ls"})]
+        with patch.object(agent_server, "append_event", append_event), \
+             patch.object(agent_server, "mark_provider_turn_ready", AsyncMock()):
+            for message in (
+                AssistantMessage(content=[ToolUseBlock(id="toolu_agent", name="Agent", input={})], model="claude-test"),
+                AssistantMessage(content=child, model="claude-test", parent_tool_use_id="toolu_agent"),
+            ):
+                await agent_server.project_claude_sdk_message(
+                    "chat-claude", "run-claude", message, text_parts=[], current_tools={}, changed_paths=set(),
+                )
+        self.assertEqual(
+            [(call.args[1], call.args[2].get("parent_tool_use_id")) for call in append_event.await_args_list
+             if call.args[1] in {"tool_started", "reasoning_summary"}],
+            [("tool_started", None), ("reasoning_summary", "toolu_agent"), ("reasoning_summary", "toolu_agent"),
+             ("tool_started", "toolu_agent")],
+        )
+
     async def test_claude_thinking_summary_is_projected_to_reasoning(self) -> None:
         from claude_agent_sdk.types import AssistantMessage, ThinkingBlock
 

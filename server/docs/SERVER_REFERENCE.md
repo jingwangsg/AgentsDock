@@ -915,13 +915,14 @@ Send now on a message that already joined the turn (the desktop's ⌘Enter
 posts the message, then presses Send now on it) sends the CLI `interrupt`
 with `send_now: true` while a tool runs and the CLI advertises
 `interrupt_send_now_v1`: the CLI moves the tool to the background and
-delivers every message queued at it. `POST /api/sessions/{id}/send-now`
-(capability `claude_send_now_v1`) sends the same request for the chat's
-running Claude turn, as Claude Code's send-now key does on an empty prompt;
-its `send_now` field is the CLI's answer, or null when nothing was sent.
-Otherwise nothing is sent and the model reads the message at its next step. Steer frames carry
+delivers every message queued at it. Otherwise nothing is sent and the model
+reads the message at its next step. Steer frames carry
 `origin: {kind: human}`; without it the CLI answers that request by aborting
 the turn.
+`POST /api/sessions/{id}/send-now` (capability `claude_send_now_v1`) sends
+the same request for the chat's running Claude turn, as Claude Code's
+send-now key does on an empty prompt; its `send_now` field is the CLI's
+answer, or null when nothing was sent.
 If the turn ends before the CLI has taken the
 message, the run stays open and the CLI answers it in the same run. The
 timeline records `turn_steered` with `native_steer` and

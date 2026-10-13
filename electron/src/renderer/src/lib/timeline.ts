@@ -26,7 +26,11 @@ export interface MessageItem {
   runId?: string
   /** Checkpoint commit written with this turn's `code_diff`; only then can the workspace be restored. */
   checkpointCommit?: string
-  /** A Claude steer the CLI holds until this tool call returns, as Claude Code queues a message typed while a tool runs. */
+  /**
+   * On a Claude steer: the `tool_started` of the call that was running when it
+   * was sent and has not returned. The CLI reads the steer only after the call
+   * returns ("held"; not AgentsDock's own queue).
+   */
   heldBy?: Event
 }
 
@@ -71,7 +75,11 @@ export interface ProgressItem {
   continues?: boolean
   /** Keep a tool's result with its original call across message boundaries. */
   toolStartSequences?: Readonly<Record<string, number>>
-  /** The Claude tool call this activity still waits on, shown with its elapsed time as Claude Code does. */
+  /**
+   * Latest call in this activity that has not returned (live Claude runs). The
+   * header names it with its elapsed time, as Claude Code does; while set, the
+   * activity stays `active`.
+   */
   runningTool?: Event
 }
 
@@ -1654,16 +1662,28 @@ const renderedItemCache = new WeakMap<TimelineItem, RenderTimelineItem[]>()
 export function renderTimelineItems(items: TimelineItem[]): RenderTimelineItem[] {
   const rows: RenderTimelineItem[] = []
   const activityTurns = new Map<string, TurnItem>()
-  const runningTools = runningClaudeToolCalls(items)
+  const runningCallsByRun = runningClaudeToolCalls(items)
   for (const item of items) {
     let rendered = renderedItemCache.get(item)
     if (!rendered) {
       rendered = renderTimelineItem(item)
       renderedItemCache.set(item, rendered)
     }
-    const running = item.kind === 'turn' && item.runId ? runningTools.get(item.runId) : undefined
-    for (const rendering of rendered) {
-      const row = running ? withRunningToolCalls(rendering, running) : rendering
+    const runningCalls = item.kind === 'turn' && item.runId ? runningCallsByRun.get(item.runId) : undefined
+    for (const cached of rendered) {
+      let row = cached
+      // The activity holding a running call stays live even after a steer
+      // ended its slice, and a steer sent after the call started is held by
+      // it. With parallel calls the CLI waits for all; name the latest.
+      if (runningCalls && row.kind === 'progress') {
+        const activityEventIds = new Set(row.events.map(event => event.id))
+        const call = runningCalls.findLast(candidate => activityEventIds.has(candidate.id))
+        if (call) row = { ...row, active: true, runningTool: call }
+      } else if (runningCalls && row.kind === 'message' && row.role === 'user' && isNativeSteerEvent(row.event)) {
+        const steerSeq = row.event.seq
+        const call = runningCalls.findLast(candidate => candidate.seq < steerSeq)
+        if (call) row = { ...row, heldBy: call }
+      }
       rows.push(row)
       if (row.kind === 'progress' && item.kind === 'turn') activityTurns.set(row.key, item)
     }
@@ -1685,9 +1705,9 @@ export function renderTimelineItems(items: TimelineItem[]): RenderTimelineItem[]
 }
 
 /**
- * Tool calls of each live Claude run that have not returned. A steer starts a
- * new display slice at once, while the CLI reads it only when these calls
- * return, so a call and its result can sit in different slices.
+ * Top-level tool calls of each live Claude run that have not returned. A steer
+ * starts a new display slice at once, while the CLI reads it only when these
+ * calls return, so a call and its result can sit in different slices.
  */
 function runningClaudeToolCalls(items: TimelineItem[]): Map<string, Event[]> {
   const slicesByRun = new Map<string, TurnItem[]>()
@@ -1700,27 +1720,23 @@ function runningClaudeToolCalls(items: TimelineItem[]): Map<string, Event[]> {
     if (last.finishedAt || last.stoppedAt || !slices.some(slice => slice.user?.backend === 'claude')) continue
     const trace = slices.flatMap(slice => slice.trace)
     const returned = new Set(trace.flatMap(event => event.type === 'tool_finished' && event.tool_id ? [event.tool_id] : []))
-    const calls = trace.filter(event => event.type === 'tool_started' && event.tool?.id && !returned.has(event.tool.id))
+    // The model is blocked until its calls return, so a later step of its own
+    // proves they did. load-bearing: a paged timeline can omit a call's
+    // tool_finished but keeps the run's latest events.
+    let lastStep = -1
+    for (const event of trace) {
+      if (MODEL_STEP_EVENT_TYPES.has(event.type) && !event.parent_tool_use_id) lastStep = Math.max(lastStep, event.seq)
+    }
+    const calls = trace.filter(event => event.type === 'tool_started' && event.tool?.id && !event.parent_tool_use_id
+      && !returned.has(event.tool.id) && lastStep <= event.seq)
     if (calls.length) running.set(runId, calls)
   }
   return running
 }
 
-/**
- * The activity holding a running call stays live even after a steer ended its
- * slice, and a steer sent after the call started is shown as held by it.
- */
-function withRunningToolCalls(row: RenderTimelineItem, calls: Event[]): RenderTimelineItem {
-  if (row.kind === 'progress') {
-    const call = calls.findLast(candidate => row.events.some(event => event.id === candidate.id))
-    return call ? { ...row, active: true, runningTool: call } : row
-  }
-  if (row.kind === 'message' && row.role === 'user' && isNativeSteerEvent(row.event) && row.event.backend === 'claude') {
-    const call = calls.find(candidate => candidate.seq < row.event.seq)
-    return call ? { ...row, heldBy: call } : row
-  }
-  return row
-}
+// Events a model writes only between its tool calls. Parallel calls of one
+// step are written together, so a later call of the same step is no proof.
+const MODEL_STEP_EVENT_TYPES = new Set(['reasoning_summary', 'assistant_text'])
 
 /**
  * Keep run activity and its context-compaction markers in one chronological surface.
@@ -1962,10 +1978,12 @@ export function settleInactiveTimelineItems(items: RenderTimelineItem[]): Render
       return {
         ...item,
         active: false,
+        runningTool: undefined,
         finishedAt: item.finishedAt ?? item.events.at(-1)?.ts
       }
     }
     if (item.kind === 'trace' && item.active) return { ...item, active: false }
+    if (item.kind === 'message' && item.heldBy) return { ...item, heldBy: undefined }
     return item
   })
 }

@@ -1028,6 +1028,13 @@ export interface CrossChatExchange {
   legs: CrossChatExchangeLeg[]
 }
 
+export interface ClaudeSendNowResponse {
+  ok: boolean
+  run_id: string
+  /** Claude Code's answer, or null when nothing was sent (no tool running, or a CLI without the request). */
+  send_now: 'delivering' | 'stopped' | 'nothing_waiting' | null
+}
+
 export interface QueuedRunNowResponse {
   ok: boolean
   queued_id?: string | null
@@ -1210,6 +1217,8 @@ export interface Event extends SharedChatAttribution {
   provider_thread_id?: string | null
   tool_id?: string | null
   tool?: ToolCall | null
+  /** On a Claude tool_started: the subagent call it runs under. */
+  parent_tool_use_id?: string | null
   subagent_id?: string | null
   subagent_tool_id?: string | null
   subagent_name?: string | null
@@ -1833,13 +1842,6 @@ export interface SessionForkCompletedPrefixCapability {
   available: boolean
   version: number
   supported_backends: Backend[]
-}
-
-export interface ClaudeSendNowResponse {
-  ok: boolean
-  run_id: string
-  /** Claude Code's answer, or null when nothing was sent (no tool running, or a CLI without the request). */
-  send_now: 'delivering' | 'stopped' | 'nothing_waiting' | null
 }
 
 export interface SessionRewindCapability {

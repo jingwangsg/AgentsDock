@@ -532,6 +532,8 @@ export interface AgentsDockAPI {
     refreshContextUsage(sessionId: string): Promise<ClaudeRuntimeSnapshot>
     /** Runs Claude's native /compact as one validated command turn. */
     compact(sessionId: string): Promise<CodexOperationAccepted>
+    /** Claude Code's send-now key on an empty prompt: the messages the CLI holds reach Claude now. */
+    sendHeldNow(sessionId: string): Promise<ClaudeSendNowResponse>
     mcp(sessionId: string): Promise<ClaudeMcpSnapshot>
     controlMcp(sessionId: string, input: ClaudeMcpControlInput): Promise<ClaudeMcpSnapshot>
     resolveInteraction(
@@ -555,7 +557,6 @@ export interface AgentsDockAPI {
     skipCrossChatDelivery(sessionId: string, queuedId: string, identity: QueuedCrossChatDeliveryIdentity): Promise<boolean>
     move(sessionId: string, queuedId: string, direction: 'up' | 'down', expectedAdjacentQueuedId?: string): Promise<QueuedTurn[]>
     runNow(sessionId: string, queuedId: string): Promise<QueuedRunNowResponse>
-    sendHeldNow(sessionId: string): Promise<ClaudeSendNowResponse>
   }
   agentRoutes: {
     list(scope: WorkspaceProfileScope, sessionId: string): Promise<AgentCrossChatRoutesSnapshot>

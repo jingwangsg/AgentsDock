@@ -118,13 +118,15 @@ function renderAppendedTimeline(
       if (index >= 0) renderStart = Math.min(renderStart, index)
     }
   }
-  // A steer starts a new slice of its run while a tool call started in an
-  // earlier slice may still run, and that call's result lands in the later
-  // slice. The earlier activity and the held steer both depend on it: render
-  // the run from its first slice.
-  const changed = semantic[renderStart]
-  if (changed?.kind === 'turn' && changed.runId && changed.user && isNativeSteerEvent(changed.user)) {
-    const first = semantic.findIndex(item => item.kind === 'turn' && item.runId === changed.runId)
+  // A steer starts a new slice of its run while a call started in an earlier
+  // slice may still run; that call's result lands in the steer's slice and
+  // changes both the earlier activity and the held steer. Re-render a steered
+  // run from its first slice (cheap for Codex, where nothing is held).
+  const steeredRuns = new Set(semantic.slice(renderStart).flatMap(item => (
+    item.kind === 'turn' && item.runId && item.user && isNativeSteerEvent(item.user) ? [item.runId] : []
+  )))
+  if (steeredRuns.size) {
+    const first = semantic.findIndex(item => item.kind === 'turn' && item.runId && steeredRuns.has(item.runId))
     if (first >= 0) renderStart = Math.min(renderStart, first)
   }
   // A newly sent message changes a system owner, not the sender's TurnItem.

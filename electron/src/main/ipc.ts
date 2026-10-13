@@ -371,6 +371,7 @@ export function registerIpc(
   handle('claude:goal:clear', sessionId => service.clearClaudeGoal(sessionId))
   handle('claude:context-usage:refresh', sessionId => service.refreshClaudeContextUsage(sessionId))
   handle('claude:compact', sessionId => service.compactClaudeContext(sessionId))
+  handle('claude:send-held-now', sessionId => service.sendClaudeHeldNow(sessionId))
   handle('claude:mcp', sessionId => service.claudeMcp(sessionId))
   handle('claude:mcp:control', (sessionId, input) => service.controlClaudeMcp(sessionId, input))
   handle('claude:interaction:resolve', (sessionId, interactionId, response) => (
@@ -388,7 +389,6 @@ export function registerIpc(
   ))
   handle('queue:move', (sessionId, queuedId, direction, expectedAdjacentQueuedId) => service.moveQueued(sessionId, queuedId, direction, expectedAdjacentQueuedId))
   handle('queue:run-now', (sessionId, queuedId) => service.runQueuedNow(sessionId, queuedId))
-  handle('queue:send-held-now', sessionId => service.sendHeldNow(sessionId))
 
   handle('agent-routes:list', (scope, sessionId) => service.agentHandoffRoutes(scope, sessionId))
   handle('agent-team-mail-routes:list', (scope, sessionId) => service.agentTeamMailRoutes(scope, sessionId))
