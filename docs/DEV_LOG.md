@@ -81,8 +81,25 @@
   the open chat stayed selected; a banner still appeared over a second app in
   full screen (a minimal Electron window) without leaving that Space; a real
   turn ending in a background chat showed the banner, and a real click on Open
-  selected that chat. A unit test pins the setting. Not exercised: a second
-  display, the packaged app. Availability: source only.
+  selected that chat. A unit test pins the setting.
+- Two-display run, the built-in display and an external monitor, each with its
+  own Spaces. Before the change, every banner hid the Dock icon. Over the main
+  window in full screen on either display it also logged a hide and a show
+  event of the window, and the frontmost app changed; with the main window in
+  full screen on the built-in display, that display switched from the
+  AgentsDock full-screen Space to another Space. After the change, the Dock
+  icon stayed, no hide or show event was logged and the frontmost app did not
+  change in five setups: the main window in full screen or in a normal window
+  on the external display with AgentsDock frontmost; the main window in full
+  screen on the built-in display with another app frontmost in a normal window
+  on the external display; the main window in a normal window on the built-in
+  display with another app frontmost in full screen on the external display;
+  and the main window in full screen on the external display with another app
+  frontmost on the built-in display. Each banner was placed at the top right
+  of the main window's display. With the main window in full screen on the
+  external display, a real turn ending in a background chat showed the banner,
+  and a real click on Open selected that chat. Not exercised: the packaged
+  app. Availability: source only.
 
 ## 2026-10-13 — Copy an expanded table as Markdown (desktop and Android)
 
