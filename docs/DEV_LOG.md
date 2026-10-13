@@ -1,5 +1,26 @@
 # Public development log
 
+## 2026-10-13 — Desktop package 127 and Android build 71 (local package and APK)
+
+- Package the entries recorded since package 126 and Android build 70: a
+  message sent while Claude works can be edited, as in Claude Code (the
+  desktop shows the edit button when the server lists steer backends); @
+  chips for chats on other servers stay in the message and a running turn
+  reaches chats paired after it started; one-use @Chat actions and index
+  handles removed; chat mail attachments reach chats on other servers; the
+  Android composer and queued-message editor draw picked chats as one
+  block. Every server entry of the period needs a restarted hub and
+  redeployed cluster remotes; the pkg bundles no server code, and a desktop
+  connected to an older server keeps the previous edit behaviour.
+- The pkg is unsigned like every local package, built with the fuses
+  re-signing flag and reports CFBundleVersion 127; the APK is signed with the
+  project debug keystore (SHA-256 fac61745…) and reports versionCode 71.
+  Checks run before packaging: both type checks; the desktop unit suite
+  (remaining failures are the known stale scheduled-job card tests and the
+  two sqlite bundling failures); the Android contract suite; the version
+  pins. Not exercised: installing on a phone or Mac. Availability: local
+  package and APK.
+
 ## 2026-10-13 — A message sent while Claude works can be edited, as in Claude Code (server and desktop)
 
 - In Claude chats, a message sent while a turn ran (a steer) joins that turn,
