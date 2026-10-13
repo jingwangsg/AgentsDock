@@ -22,7 +22,7 @@ export interface MessageItem {
   /** Renderer-only outbound message that has not been accepted by AgentsServer yet. */
   pending?: boolean
   pendingPhase?: 'preflight' | 'submitting' | 'submitted'
-  /** `turn_started` run a rewind targets; absent for pending rows, imported deliveries, and steer slices. */
+  /** Run a rewind targets: the turn's own, or the run a native steer joined; absent for pending rows and imported deliveries. */
   runId?: string
   /** Checkpoint commit written with this turn's `code_diff`; only then can the workspace be restored. */
   checkpointCommit?: string
@@ -1970,8 +1970,10 @@ function renderTimelineItem(item: TimelineItem): RenderTimelineItem[] {
       })
     }
     else {
-      const runId = item.user.type === 'turn_started' ? item.user.run_id?.trim() || undefined : undefined
-      const checkpointCommit = runId ? item.checkpointCommit : undefined
+      const startsRun = item.user.type === 'turn_started'
+      const runId = startsRun || isNativeSteerEvent(item.user) ? item.user.run_id?.trim() || undefined : undefined
+      // The workspace checkpoint is the run's; a steer joined the run midway and restores no files.
+      const checkpointCommit = startsRun && runId ? item.checkpointCommit : undefined
       rows.push({
         kind: 'message', id: `${item.id}:user`, key: `${item.key}:user:${item.user.id}`,
         seq: item.user.seq, event: item.user, events: [item.user], role: 'user',

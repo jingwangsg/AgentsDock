@@ -881,6 +881,95 @@ class RewindEditTests(RewindFixture):
         self.assertEqual(sess["fork_resume_session_at"], "before-third-uuid")
 
 
+class SteerRewindTests(RewindFixture):
+    """Rewinding to a message sent while Claude worked, as native /rewind does."""
+
+    def steered_chat(self, backend: str = "claude", steers: tuple[str, ...] = ("Also check the logs",)) -> dict:
+        # The third turn takes each steer after a tool call, then finishes.
+        events = self.events()[:7] + [
+            {"seq": 8, "id": "e8", "type": "turn_started", "run_id": "third", "ts": "2026-09-08T10:04:00Z", "prompt": "Third question"},
+            {"seq": 9, "id": "e9", "type": "tool_started", "run_id": "third", "ts": "2026-09-08T10:04:05Z"},
+        ]
+        for index, prompt in enumerate(steers):
+            seq = 10 + 2 * index
+            events += [
+                {"seq": seq, "id": f"e{seq}", "type": "turn_queued", "queued_id": f"queued-{index}", "ts": "2026-09-08T10:04:10Z",
+                 "prompt": prompt, "request_prompt": prompt, "file_ids": [], "backend": backend},
+                {"seq": seq + 1, "id": f"e{seq + 1}", "type": "turn_steered", "run_id": "third", "ts": "2026-09-08T10:04:10Z",
+                 "queued_id": f"queued-{index}", "prompt": prompt, "backend": backend, "native_steer": True, "provider_user_authored": True},
+            ]
+        seq = 10 + 2 * len(steers)
+        events += [
+            {"seq": seq, "id": f"e{seq}", "type": "tool_finished", "run_id": "third", "ts": "2026-09-08T10:04:20Z"},
+            {"seq": seq + 1, "id": f"e{seq + 1}", "type": "turn_finished", "run_id": "third", "ts": "2026-09-08T10:05:00Z",
+             "exit_code": 0, "result_text": "Third answer"},
+        ]
+        sess = self.chat(backend, latest_event_seq=seq + 1, latest_agent_event_seq=seq + 1, last_read_agent_event_seq=seq + 1)
+        server.events_path("chat").write_text("".join(json.dumps({"session_id": "chat", **event}) + "\n" for event in events), encoding="utf-8")
+        return sess
+
+    @staticmethod
+    def queued_command_row(uuid: str, parent: str, prompt: str, timestamp: str = "2026-09-08T10:04:19.600Z") -> dict:
+        # How Claude Code records a message that waited for the tool call to return.
+        return {"type": "attachment", "uuid": uuid, "parentUuid": parent, "timestamp": timestamp,
+                "attachment": {"type": "queued_command", "prompt": prompt, "commandMode": "prompt"}}
+
+    TOOL_RESULT = {"type": "user", "uuid": "tool-result-uuid", "parentUuid": "tool-use-uuid", "timestamp": "2026-09-08T10:04:19.500Z",
+                   "message": {"role": "user", "content": [{"type": "tool_result", "content": "done"}]}}
+
+    async def test_a_steer_rewind_forks_before_the_message_and_keeps_the_runs_earlier_work(self) -> None:
+        sess = self.steered_chat()
+        with self.claude_transcript(self.TOOL_RESULT, self.queued_command_row("steer-uuid", "tool-result-uuid", "Also check the logs")):
+            result = await server.rewind_session("chat", rewind_request(to_seq=11, expected_latest_seq=13))
+        self.assertEqual(result["provider_rewind"], "claude_fork")
+        self.assertEqual((sess["fork_from"], sess["fork_resume_session_at"]), ("claude-parent", "tool-result-uuid"))
+        stored = self.stored_events()
+        # The run's start and tool call stay; the steer and everything after it go.
+        self.assertEqual([event["seq"] for event in stored if event["type"] != "_event_sequence_checkpoint"][:10], list(range(1, 11)))
+        self.assertNotIn("turn_steered", [event["type"] for event in stored])
+        self.assertEqual([event["type"] for event in stored[-2:]], ["history_rewound", "turn_unqueued"])
+        self.assertEqual((stored[-2]["from_seq"], stored[-2]["to_run_id"]), (11, "third"))
+        # The kept turn_queued row must not come back as a pending message after a restart.
+        self.assertEqual(server.scan_queued_turns_from_events([("chat", sess)]), {})
+
+    async def test_rewinding_to_the_second_of_two_steers_keeps_the_first(self) -> None:
+        # Both waited for the same tool call; "Also" is a prefix of the second and must not match it.
+        sess = self.steered_chat(steers=("Also", "Also check the logs"))
+        rows = (self.TOOL_RESULT,
+                self.queued_command_row("first-steer-uuid", "tool-result-uuid", "Also"),
+                self.queued_command_row("second-steer-uuid", "first-steer-uuid", "Also check the logs"))
+        with self.claude_transcript(*rows):
+            await server.rewind_session("chat", rewind_request(to_seq=13, expected_latest_seq=15))
+        self.assertEqual(sess["fork_resume_session_at"], "first-steer-uuid")
+        self.assertEqual([event["seq"] for event in self.stored_events()][:12], list(range(1, 13)))
+
+        sess = self.steered_chat(steers=("Also", "Also check the logs"))
+        with self.claude_transcript(*rows):
+            await server.rewind_session("chat", rewind_request(to_seq=11, expected_latest_seq=15))
+        self.assertEqual(sess["fork_resume_session_at"], "tool-result-uuid")
+
+    async def test_a_steer_whose_row_is_missing_or_ambiguous_leaves_the_chat_unchanged(self) -> None:
+        for rows in [
+            (self.TOOL_RESULT,),
+            # The same text sent twice: either row could be this message.
+            (self.TOOL_RESULT,
+             self.queued_command_row("twin-1", "tool-result-uuid", "Also check the logs"),
+             self.queued_command_row("twin-2", "twin-1", "Also check the logs")),
+        ]:
+            sess = self.steered_chat()
+            with self.claude_transcript(*rows):
+                await self.assertRewindRejected(rewind_request(to_seq=11, expected_latest_seq=13), 409, "rewind_boundary_ambiguous")
+            # No reset and no fallback to the previous completed reply.
+            self.assertEqual(sess["claude_session_id"], "claude-parent")
+            self.assertNotIn("fork_resume_session_at", sess)
+            self.assertEqual([event["seq"] for event in self.stored_events()], list(range(1, 14)))
+
+    async def test_a_codex_steer_is_refused(self) -> None:
+        self.steered_chat(backend="codex")
+        await self.assertRewindRejected(rewind_request(to_seq=11, expected_latest_seq=13), 409, "rewind_steer_unsupported")
+        self.assertEqual([event["seq"] for event in self.stored_events()], list(range(1, 14)))
+
+
 if __name__ == "__main__":
     unittest.main()
 

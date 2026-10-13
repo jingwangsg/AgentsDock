@@ -1840,6 +1840,8 @@ export interface SessionRewindCapability {
   version: number
   supported_backends: Backend[]
   checkpoint_restore?: boolean
+  /** Backends whose rewind also accepts a message sent while the agent worked (a native steer). */
+  steer_backends?: Backend[]
 }
 
 export interface SessionRewindResult {

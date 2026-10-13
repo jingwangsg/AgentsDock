@@ -8,7 +8,7 @@ import { compactToolOutputPreview } from '@shared/event-compaction'
 import { readableToolInput, readableValue } from '../lib/tool-input'
 import { agentFileBelongsToSession } from '@shared/session-files'
 import { isImportedProviderInterruption } from '@shared/provider-origin'
-import { codexLifecycleSemanticKey, isCompactionCompletedEvent, isCompactionStartedEvent } from '@shared/semantic-timeline'
+import { codexLifecycleSemanticKey, isCompactionCompletedEvent, isCompactionStartedEvent, isNativeSteerEvent } from '@shared/semantic-timeline'
 import type { ChatReference, CodeDiffFileSummary, CrossChatExchange, Event, PinnedItem, QueuedTurn, WorkspaceProfileScope } from '@shared/types'
 import type { JobItem, MediaItem, MessageItem, ProgressItem, RenderTimelineItem, SystemItem } from '../lib/timeline'
 import { progressEventSequence, progressToolStartSequences, extractUnifiedDiff, isHandoffDigestEvent, isPublicCommentary, isTimelineError, jobDisplaySelection, jobResultPresentation, messageItemText, messageText, omitTerminalClaudeFinalCommentary, summarizeStructuredToolDiff } from '../lib/timeline'
@@ -29,11 +29,11 @@ import { CrossChatPeerLink } from './CrossChatPeerLink'
 import { chatMailAttachments, chatMailboxAvailable } from '@shared/chat-inbox'
 import { isSharedChatCollaborator } from '@shared/chat-shares'
 
-export const TimelineRowView = memo(function TimelineRowView({ item, sessionId, profileScope, onFindFile, pinnedItemIds, codexLifecycleActive = false, rewindIdle = false, checkpointRestoreSupported = false }: { item: RenderTimelineItem; sessionId: string; profileScope: WorkspaceProfileScope | null; onFindFile: (fileId: string) => void; pinnedItemIds: ReadonlySet<string>; codexLifecycleActive?: boolean; rewindIdle?: boolean; checkpointRestoreSupported?: boolean }) {
+export const TimelineRowView = memo(function TimelineRowView({ item, sessionId, profileScope, onFindFile, pinnedItemIds, codexLifecycleActive = false, rewindIdle = false, checkpointRestoreSupported = false, steerRewindSupported = false }: { item: RenderTimelineItem; sessionId: string; profileScope: WorkspaceProfileScope | null; onFindFile: (fileId: string) => void; pinnedItemIds: ReadonlySet<string>; codexLifecycleActive?: boolean; rewindIdle?: boolean; checkpointRestoreSupported?: boolean; steerRewindSupported?: boolean }) {
   useLocale()
   if (item.kind === 'message') {
     const pinned = pinnedItemIds.has(`message:${item.events[0]?.id ?? item.event.id}`)
-    return <div className={`turn-segment ${item.role}`}><Message item={item} sessionId={sessionId} profileScope={profileScope} pinned={pinned} rewindIdle={rewindIdle} checkpointRestoreSupported={checkpointRestoreSupported} /></div>
+    return <div className={`turn-segment ${item.role}`}><Message item={item} sessionId={sessionId} profileScope={profileScope} pinned={pinned} rewindIdle={rewindIdle} checkpointRestoreSupported={checkpointRestoreSupported} steerRewindSupported={steerRewindSupported} /></div>
   }
   if (item.kind === 'progress') return <div className="turn-segment activity-segment"><RunActivity item={item} sessionId={sessionId} profileScope={profileScope} /></div>
   if (item.kind === 'trace') return <div className="turn-segment trace-segment"><TraceDisclosure events={item.events} sessionId={sessionId} promotedCommentaryIds={item.promotedCommentaryIds} includeCommentary={!item.active} /></div>
@@ -47,7 +47,7 @@ function MediaRow({ item, sessionId, profileScope, onFindFile, pinnedItemIds }: 
   return <div className="turn-segment media-segment"><MediaGrid files={item.files} sessionId={sessionId} profileScope={profileScope} onFind={file => onFindFile(file.id)} pinnedItemIds={pinnedItemIds} /></div>
 }
 
-function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpointRestoreSupported }: { item: MessageItem; sessionId: string; profileScope: WorkspaceProfileScope | null; pinned: boolean; rewindIdle: boolean; checkpointRestoreSupported: boolean }) {
+function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpointRestoreSupported, steerRewindSupported }: { item: MessageItem; sessionId: string; profileScope: WorkspaceProfileScope | null; pinned: boolean; rewindIdle: boolean; checkpointRestoreSupported: boolean; steerRewindSupported: boolean }) {
   useLocale()
   const role = item.role
   const events = item.events
@@ -89,7 +89,8 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
     window.dispatchEvent(new CustomEvent('agentsdock:pins-changed', { detail: sessionId }))
   }
   const copy = async () => { await window.agentsDock.native.writeClipboard(text); setCopied(true); window.setTimeout(() => setCopied(false), 1200) }
-  const canEditTurn = role === 'user' && !item.pending && rewindIdle && Boolean(item.runId)
+  // A message sent while the agent worked can be edited only where the server rewinds to steers.
+  const canEditTurn = role === 'user' && !item.pending && rewindIdle && Boolean(item.runId) && (!isNativeSteerEvent(primary) || steerRewindSupported)
   const canRestoreCheckpoint = canEditTurn && checkpointRestoreSupported && Boolean(item.checkpointCommit)
   return (
     <div

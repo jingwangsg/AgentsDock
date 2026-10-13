@@ -1,7 +1,7 @@
 import { getLocale, t } from '@shared/i18n'
 import { isImportedHistoryRecord, isImportedProviderControlMetadata } from '@shared/provider-origin'
 import { isCompactionStartedEvent } from '@shared/semantic-timeline'
-import { checkpointRestoreAvailable, sessionRewindAvailable } from '@shared/session-rewind'
+import { checkpointRestoreAvailable, sessionRewindAvailable, steerRewindAvailable } from '@shared/session-rewind'
 import { useLocale } from '../lib/i18n'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
@@ -111,6 +111,7 @@ export const Timeline = memo(function Timeline({ sessionId, focused = true }: { 
   const admitting = useAppStore(state => resolvedSessionId ? Boolean(state.turnAdmissionTokens[resolvedSessionId]) : false)
   const rewindSupported = useAppStore(state => resolvedSessionId ? sessionRewindAvailable(state.health, state.snapshots[resolvedSessionId]?.session.backend) : false)
   const checkpointRestoreSupported = useAppStore(state => resolvedSessionId ? checkpointRestoreAvailable(state.health, state.snapshots[resolvedSessionId]?.session.backend) : false)
+  const steerRewindSupported = useAppStore(state => resolvedSessionId ? steerRewindAvailable(state.health, state.snapshots[resolvedSessionId]?.session.backend) : false)
   const pendingSubmission = useAppStore(state => resolvedSessionId ? state.pendingTurnSubmissions[resolvedSessionId] : undefined)
   const activeCodexRunId = useAppStore(state => {
     if (!resolvedSessionId) return null
@@ -145,10 +146,10 @@ export const Timeline = memo(function Timeline({ sessionId, focused = true }: { 
     healthKnown,
     healthActive
   )
-  return <TimelineSession key={workspaceKey} profileId={activeProfileId} profileGeneration={profileGeneration} serverIdentity={serverIdentity} sessionId={resolvedSessionId} snapshot={snapshot} pendingSubmission={pendingSubmission} liveTurnState={liveTurnState} activeCodexRunId={activeCodexRunId} rewindIdle={rewindSupported && !healthActive && !admitting} checkpointRestoreSupported={checkpointRestoreSupported} focused={focused} />
+  return <TimelineSession key={workspaceKey} profileId={activeProfileId} profileGeneration={profileGeneration} serverIdentity={serverIdentity} sessionId={resolvedSessionId} snapshot={snapshot} pendingSubmission={pendingSubmission} liveTurnState={liveTurnState} activeCodexRunId={activeCodexRunId} rewindIdle={rewindSupported && !healthActive && !admitting} checkpointRestoreSupported={checkpointRestoreSupported} steerRewindSupported={steerRewindSupported} focused={focused} />
 })
 
-function TimelineSession({ profileId, profileGeneration, serverIdentity, sessionId, snapshot, pendingSubmission, liveTurnState, activeCodexRunId, rewindIdle, checkpointRestoreSupported, focused }: { profileId: string | null; profileGeneration: number; serverIdentity: string | null; sessionId: string; snapshot: SessionSnapshot; pendingSubmission?: PendingTurnSubmission; liveTurnState: boolean | null; activeCodexRunId: string | null; rewindIdle: boolean; checkpointRestoreSupported: boolean; focused: boolean }) {
+function TimelineSession({ profileId, profileGeneration, serverIdentity, sessionId, snapshot, pendingSubmission, liveTurnState, activeCodexRunId, rewindIdle, checkpointRestoreSupported, steerRewindSupported, focused }: { profileId: string | null; profileGeneration: number; serverIdentity: string | null; sessionId: string; snapshot: SessionSnapshot; pendingSubmission?: PendingTurnSubmission; liveTurnState: boolean | null; activeCodexRunId: string | null; rewindIdle: boolean; checkpointRestoreSupported: boolean; steerRewindSupported: boolean; focused: boolean }) {
   useLocale()
   const ref = useRef<VirtuosoHandle>(null)
   const minimapRef = useRef<TimelineMinimapHandle>(null)
@@ -1174,9 +1175,10 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
         )}
         rewindIdle={rewindIdle}
         checkpointRestoreSupported={checkpointRestoreSupported}
+        steerRewindSupported={steerRewindSupported}
       />
     </div>
-  ), [getLocale(), checkpointRestoreSupported, findFile, historicalWindow, liveTurnState, pinProfileScope, pinnedItemIds, presentedActiveRunId, rewindIdle, sessionId, unreadItemKey])
+  ), [getLocale(), checkpointRestoreSupported, findFile, historicalWindow, liveTurnState, pinProfileScope, pinnedItemIds, presentedActiveRunId, rewindIdle, sessionId, steerRewindSupported, unreadItemKey])
 
   return (
     <div className="timeline" onWheelCapture={requestOlderFromUserScroll}>

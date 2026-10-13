@@ -1,5 +1,43 @@
 # Public development log
 
+## 2026-10-13 — A message sent while Claude works can be edited, as in Claude Code (server and desktop)
+
+- A message typed while a Claude turn ran joins that turn, and it had no edit
+  button: a rewind only accepted the message that started a turn. Claude
+  Code's own `/rewind` lists such a message and restores the conversation to
+  just before it, keeping the turn's earlier work and leaving files as they
+  are. AgentsServer now does the same for Claude chats: the rewind forks the
+  Claude session at the transcript row before the message, keeps the turn's
+  earlier events and earlier messages, and removes the message and
+  everything after it. A server that supports this lists `steer_backends`
+  in `session_rewind_v1`; only then does the desktop show the edit button on
+  such a message, without the restore-checkpoint button.
+- The rewind is refused, and the chat left unchanged, when the message cannot
+  be matched to exactly one transcript row (for example, the same text sent
+  twice in one turn); it never falls back to an earlier reply. In Codex chats
+  such a message is part of one native turn, and the server refuses to
+  rewind to it, as before.
+- Claude reads such a message only after the tool calls running at that
+  moment return, so the forked conversation keeps their results, while the
+  timeline, which shows the message where it was sent, drops their
+  completion rows.
+- Verification: server tests for the fork point (one message, the second of
+  two, a message whose text starts another's), missing and ambiguous rows,
+  and Codex; desktop tests for the edit button and its capability check.
+  Claude Code 2.1.296 in a terminal: `/rewind` listed messages sent with
+  Enter and with send-now during a turn and forked before them. In the
+  desktop app against an isolated server with a real Claude CLI: a message
+  typed while the turn ran showed the edit button; editing the second of two
+  such messages kept the first one and the turn's tool results in the
+  agent's context (its answer quoted both), and editing the first one
+  afterwards, on the forked session, worked too. When the transcript row
+  could not be found, the app showed the server's refusal and kept the edit
+  open. Not covered: a chat whose working directory path goes through a
+  symlink cannot find its Claude transcript, which already affects every
+  rewind there; the Android app is unchanged.
+- Availability: source only; the edit button appears after the server is
+  updated.
+
 ## 2026-10-13 — @ chips for chats on other servers stay in the message (server, desktop and Android)
 
 - A chip for a chat on another server, picked from the @ menu, paired the

@@ -585,6 +585,32 @@ describe('timeline pin state', () => {
     expect(screen.queryByTitle('Edit this turn')).toBeNull()
   })
 
+  it('offers editing a message sent while the agent worked only where the server rewinds to steers', () => {
+    useAppStore.setState({ drafts: {}, editingTurn: {} })
+    const events: Event[] = [
+      { id: 'start-a', session_id: 'chat-1', seq: 1, type: 'turn_started', ts: '2026-09-28T10:00:00Z', prompt: 'First', run_id: 'run-a', backend: 'claude' },
+      { id: 'queued-b', session_id: 'chat-1', seq: 2, type: 'turn_queued', ts: '2026-09-28T10:00:05Z', prompt: 'Also check the logs', queued_id: 'queued-b' },
+      { id: 'steer-b', session_id: 'chat-1', seq: 3, type: 'turn_steered', ts: '2026-09-28T10:00:05Z', prompt: 'Also check the logs', run_id: 'run-a',
+        queued_id: 'queued-b', backend: 'claude', native_steer: true, provider_user_authored: true },
+      { id: 'diff-a', session_id: 'chat-1', seq: 4, type: 'code_diff', ts: '2026-09-28T10:00:09Z', run_id: 'run-a', checkpoint_commit: 'a'.repeat(40) },
+      { id: 'finish-a', session_id: 'chat-1', seq: 5, type: 'turn_finished', ts: '2026-09-28T10:00:10Z', run_id: 'run-a', result_text: 'Done' }
+    ]
+    const steer = renderTimelineItems(projectTimeline(events, []))
+      .filter((row): row is MessageItem => row.kind === 'message' && row.role === 'user')[1]
+    // The steer targets the run it joined, at its own row, and restores no files.
+    expect([steer.event.type, steer.runId, steer.checkpointCommit]).toEqual(['turn_steered', 'run-a', undefined])
+
+    const row = (steerRewindSupported: boolean) => (
+      <TimelineRowView item={steer} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} rewindIdle checkpointRestoreSupported steerRewindSupported={steerRewindSupported} />
+    )
+    const view = render(row(false))
+    expect(screen.queryByTitle('Edit this turn')).toBeNull()
+    view.rerender(row(true))
+    expect(screen.queryByTitle('Restore checkpoint')).toBeNull()
+    fireEvent.click(screen.getByTitle('Edit this turn'))
+    expect(useAppStore.getState().editingTurn['chat-1']).toMatchObject({ runId: 'run-a', seq: 3, originalPrompt: 'Also check the logs' })
+  })
+
   it('enters edit mode with the original prompt and asks for confirmation before a checkpoint restore', () => {
     useAppStore.setState({ drafts: { 'chat-1': 'Half-typed follow-up' }, editingTurn: {} })
     const event: Event = {
