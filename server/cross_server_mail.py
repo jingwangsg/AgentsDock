@@ -36,8 +36,8 @@ MESSAGE_ID_RE = re.compile(r"handoff_[0-9a-f]{32}\Z")
 OUTBOX_WAIT_SECONDS = 25.0
 DELIVERY_TTL = timedelta(hours=24)
 REMOTE_REQUEST_TIMEOUT = 15.0
-# Hub-to-remote links measured 100-400 KiB/s; an attachment transfer may take
-# as long as this rate needs before it counts as failed.
+# An attachment transfer fails when it stalls for REMOTE_REQUEST_TIMEOUT or runs
+# slower than this overall; hub-to-remote links measured 100-400 KiB/s.
 TRANSFER_MIN_BYTES_PER_SECOND = 32 * 1024
 SEARCH_TIMEOUT = 4.0
 SEARCH_LIMIT = 500
@@ -282,6 +282,7 @@ class End:
     async def outbox(self, wait: float) -> list[dict]: raise NotImplementedError
     async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None: raise NotImplementedError
     async def deliver(self, item: dict, source_identity: str, source_name: str) -> None: raise NotImplementedError
+    # A file of mail this server sent: its path here, or a download into `folder`.
     async def attachment(self, item: dict, index: int, folder: Path) -> Path: raise NotImplementedError
     async def put_attachment(self, item: dict, index: int, path: Path) -> None: raise NotImplementedError
     async def receipt(self, item: dict) -> None: raise NotImplementedError
@@ -296,8 +297,12 @@ def transfer_timeout(size: int) -> float:
     return REMOTE_REQUEST_TIMEOUT + size / TRANSFER_MIN_BYTES_PER_SECOND
 
 
+def advertises_attachments(health: dict | None) -> bool:
+    return ((((health or {}).get("capabilities") or {}).get(CAPABILITY) or {}).get("attachments")) is True
+
+
 class RemoteEnd(End):
-    def __init__(self, http: httpx.AsyncClient, server: Any, identity: str, *, accepts_attachments: bool) -> None:
+    def __init__(self, http: httpx.AsyncClient, server: Any, identity: str, *, accepts_attachments: bool = False) -> None:
         self.http = http
         self.server = server
         self.identity = identity
@@ -330,28 +335,43 @@ class RemoteEnd(End):
         # Never the source's retry bookkeeping or anything beyond the message itself.
         fields = ("message_id", "pair_id", "source_session_id", "source_title", "source_run_id",
                   "idempotency_key", "target_session_id", "body", "reply_to_message_id",
-                  "source_user_instruction", "source_user_delegation_action", "attachments")
+                  "source_user_instruction", "source_user_delegation_action")
+        # A source that predates attachments lists none.
+        attachments = item.get("attachments") or []
         await self._request("POST", "/api/admin/cross-server/inbox",
-                            json={**{key: item.get(key) for key in fields},
-                                  "source_server_identity": source_identity, "source_server_name": source_name})
+                            json={**{key: item.get(key) for key in fields}, "attachments": attachments,
+                                  "source_server_identity": source_identity, "source_server_name": source_name},
+                            # The receiving server checks and copies the files before it answers.
+                            timeout=transfer_timeout(sum(attachment["size"] for attachment in attachments)))
 
     async def attachment(self, item: dict, index: int, folder: Path) -> Path:
         path = folder / str(index)
-        async with self.http.stream(
-            "GET", f"http://127.0.0.1:{self.server.local_port}/api/admin/cross-server/outbox/{item['id']}/attachments/{index}",
-            headers={"X-AgentsDock-Token": self.server.token}, timeout=transfer_timeout(item["attachments"][index]["size"]),
-        ) as response:
-            if response.status_code == 404:
-                raise Refused("The sending server no longer has this attachment.")
-            response.raise_for_status()
-            with path.open("wb") as handle:
-                async for chunk in response.aiter_bytes():
-                    handle.write(chunk)
+
+        async def download() -> None:
+            async with self.http.stream(
+                "GET", f"http://127.0.0.1:{self.server.local_port}/api/admin/cross-server/outbox/{item['id']}/attachments/{index}",
+                headers={"X-AgentsDock-Token": self.server.token}, timeout=REMOTE_REQUEST_TIMEOUT,
+            ) as response:
+                if response.status_code == 404:
+                    raise Refused("The sending server no longer has this attachment.")
+                response.raise_for_status()
+                with path.open("wb") as handle:
+                    async for chunk in response.aiter_bytes():
+                        await asyncio.to_thread(handle.write, chunk)
+
+        await asyncio.wait_for(download(), transfer_timeout(item["attachments"][index]["size"]))
         return path
 
     async def put_attachment(self, item: dict, index: int, path: Path) -> None:
-        await self._request("PUT", f"/api/admin/cross-server/inbox/{item['message_id']}/attachments/{index}",
-                            content=path.read_bytes(), timeout=transfer_timeout(path.stat().st_size))
+        async def chunks():
+            with path.open("rb") as handle:
+                while chunk := await asyncio.to_thread(handle.read, 1024 * 1024):
+                    yield chunk
+
+        await asyncio.wait_for(
+            self._request("PUT", f"/api/admin/cross-server/inbox/{item['message_id']}/attachments/{index}", content=chunks()),
+            transfer_timeout(path.stat().st_size),
+        )
 
     async def receipt(self, item: dict) -> None:
         await self._request("POST", "/api/admin/cross-server/receipts",
@@ -430,9 +450,8 @@ class Relay:
             if identity in self.ends():
                 logger.warning("remote server %s reports another server's identity; cross-server mail skips it", server.name)
                 continue
-            capability = health["capabilities"][CAPABILITY]
             self.remote_ends[server.id] = RemoteEnd(self.remotes.http, server, identity,
-                                                    accepts_attachments=capability.get("attachments") is True)
+                                                    accepts_attachments=advertises_attachments(health))
 
     async def _supervise(self) -> None:
         self.pumps["local"] = asyncio.create_task(self._pump(self.local), name="cross-server-mail:local")
@@ -501,7 +520,10 @@ class Relay:
                 raise ConnectionError("target server is not reachable from the hub")
             if item["kind"] == "mail":
                 if item.get("attachments") and not target.accepts_attachments:
-                    raise Refused("The other chat's server does not accept attachments yet; update it.")
+                    # The relay probes a remote once; it may have been updated since.
+                    target.accepts_attachments = advertises_attachments(await self.remotes.probe_health(target.server))
+                    if not target.accepts_attachments:
+                        raise Refused("The other chat's server does not accept attachments yet; update it.")
                 # The target stores the message only once every file has arrived.
                 with tempfile.TemporaryDirectory(prefix="agentsdock-mail-") as folder:
                     for index in range(len(item.get("attachments") or [])):

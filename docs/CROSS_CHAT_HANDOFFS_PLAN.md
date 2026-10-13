@@ -303,8 +303,9 @@ Network helper does; it refuses `--attach` on legacy exchanges and one-use
   Network attachments (403);
 - a file over 512 MiB, or more than 1 GiB in one message (413); both limits
   are lowered to the server's upload limit when that is smaller;
-- more than 64 MiB in one message to a chat on another server (413); the
-  hub relays those files ([CROSS_SERVER_MAIL.md](CROSS_SERVER_MAIL.md#attachments));
+- more than 64 MiB in one message to a chat on another server (413), because
+  the hub relays its files over slow links
+  ([CROSS_SERVER_MAIL.md](CROSS_SERVER_MAIL.md#attachments));
 - a file that cannot be copied, for example on a full disk (409).
 
 Before it stores the message, the server copies each file into the receiving

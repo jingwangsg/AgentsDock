@@ -193,7 +193,7 @@ describe('Inspector', () => {
   })
 
   it('lists what the server still has after the store drops a file, such as a cancelled message attachment', async () => {
-    const mailFile = { id: 'art_mail', session_id: 'chat-1', filename: 'withdrawn.bin', size: 4 }
+    const mailFile = { id: 'art_mail', session_id: 'chat-1', filename: 'cancelled.bin', size: 4 }
     const kept = { id: 'art_kept', session_id: 'chat-1', filename: 'kept.png', size: 4 }
     const list = vi.fn().mockResolvedValue({ files: [kept], total: 1, offset: 0, limit: 60, has_more: false })
     Object.defineProperty(window, 'agentsDock', {
@@ -212,7 +212,7 @@ describe('Inspector', () => {
     await waitFor(() => expect(list).toHaveBeenCalledExactlyOnceWith(chat.id, 0, 60))
     fireEvent.click(screen.getByText('Media & files'))
     expect(await screen.findByText('kept.png')).toBeInTheDocument()
-    expect(screen.queryByText('withdrawn.bin')).not.toBeInTheDocument()
+    expect(screen.queryByText('cancelled.bin')).not.toBeInTheDocument()
   })
 
   it('uses the active profile for inspector media with a reused file ID', async () => {

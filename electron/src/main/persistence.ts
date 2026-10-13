@@ -5,6 +5,7 @@ import type { AgentFile, Event, Job, PinnedItem, QueuedTurn, Session, SessionSna
 import { compactTimelineEvent, compactTimelineEvents } from '../shared/event-compaction'
 import { incompleteLeadingRunId } from '../shared/semantic-timeline'
 import { agentFileBelongsToSession, isolateSessionEvent } from '../shared/session-files'
+import { chatMailAttachments } from '../shared/chat-inbox'
 import { isImportedCodexRuntimeNotification, isImportedSourceProvenAssistantReplay, isImportedSourceProvenNativeReplay, isImportedSourceProvenRepair, mergeProviderInterruptionEvent } from '../shared/provider-origin'
 import { isSearchableEvent, searchEventRole, searchableEventText, searchFtsQuery, searchSnippet, searchTokens } from './search'
 import { reportStartupStorageError, reportStorageError } from './storage-health'
@@ -938,6 +939,7 @@ export class LocalCache {
         const result = put.run(serverId, sessionId, compacted.seq, compacted.id, JSON.stringify(compacted))
         if (result.changes > 0) changed.push(compacted)
       }
+      this.removeCancelledMailFiles(serverId, sessionId, events)
       if (this.sessionIsSearchable(serverId, sessionId)) this.indexSearchEvents(serverId, sessionId, changed)
       this.db.exec('COMMIT')
       this.eventWriteGaps.delete(key)
@@ -967,6 +969,7 @@ export class LocalCache {
       this.statement('DELETE FROM events WHERE server_id = ? AND session_id = ?').run(serverId, sessionId)
       this.removeSearchEntries(serverId, sessionId)
       for (const event of compactedEvents) put.run(serverId, sessionId, event.seq, event.id, JSON.stringify(event))
+      this.removeCancelledMailFiles(serverId, sessionId, compactedEvents)
       if (this.sessionIsSearchable(serverId, sessionId)) this.indexSearchEvents(serverId, sessionId, compactedEvents)
       this.db.exec('COMMIT')
       this.eventWriteGaps.delete(JSON.stringify([serverId, sessionId]))
@@ -974,6 +977,17 @@ export class LocalCache {
     } catch (error) {
       this.rollbackTransaction()
       throw error
+    }
+  }
+
+  /** The server deletes a cancelled mail message's attachments; its cancel event removes them from the file cache. */
+  private removeCancelledMailFiles(serverId: string, sessionId: string, events: Event[]): void {
+    const remove = this.statement('DELETE FROM files WHERE server_id = ? AND session_id = ? AND file_id = ?')
+    for (const event of events) {
+      if (event.type !== 'chat_conversation_message_cancelled') continue
+      for (const file of chatMailAttachments(event)) {
+        if (agentFileBelongsToSession(file, sessionId)) remove.run(serverId, sessionId, file.id)
+      }
     }
   }
 

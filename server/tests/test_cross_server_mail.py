@@ -1,8 +1,10 @@
 """Cross-server chat mail: the hub relays only what its pair registry links."""
+import json
 import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import chat_mailbox
 import cross_server_mail as xs
@@ -96,9 +98,10 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(xs.outbox_item(self.db, MESSAGE)["attachments"], [attachment])
         self.assertEqual(xs.due_outbox(self.db, now, with_attachments=False), [])
         self.assertIsNone(xs.next_due_at(self.db, with_attachments=False))
-        text = "handoff_" + "d" * 32
-        xs.enqueue(self.db, mail(id=text, message_id=text, idempotency_key="key-00002"))
-        self.assertEqual([row["id"] for row in xs.due_outbox(self.db, xs.now_iso(), with_attachments=False)], [text])
+        text_only_id = "handoff_" + "d" * 32
+        xs.enqueue(self.db, mail(id=text_only_id, message_id=text_only_id, idempotency_key="key-00002"))
+        self.assertEqual([row["id"] for row in xs.due_outbox(self.db, xs.now_iso(), with_attachments=False)],
+                         [text_only_id])
         self.assertIsNone(xs.outbox_item(self.db, "handoff_" + "e" * 32))
 
     def test_removing_a_pair_fails_its_undelivered_mail(self) -> None:
@@ -152,6 +155,7 @@ class FakeEnd(xs.End):
         self.receipts: list[dict] = []
         self.calls: list[str] = []  # transfers and deliveries in order
         self.snapshot_missing = False
+        self.server = identity  # what the relay probes again
 
     async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None:
         self.results.append((item_id, state, error, retry_after))
@@ -181,14 +185,17 @@ class FakeEnd(xs.End):
 
 
 class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
-    def relay(self, pair: dict | None, remote: FakeEnd) -> tuple[xs.Relay, FakeEnd]:
+    def relay(self, pair: dict | None, remote: FakeEnd, *, remote_health: dict | None = None) -> tuple[xs.Relay, FakeEnd]:
         hub = FakeEnd("srv-hub")
 
         async def ledger(name: str, *args):
             self.assertEqual(name, "get_pair")
             return pair
 
-        relay = xs.Relay(local=hub, remotes=None, ledger=ledger)
+        async def probe_health(server):
+            return remote_health
+
+        relay = xs.Relay(local=hub, remotes=SimpleNamespace(probe_health=probe_health), ledger=ledger)
         relay.remote_ends = {"r1": remote}
         return relay, hub
 
@@ -275,12 +282,35 @@ class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_target_that_predates_attachments_fails_the_message_at_once(self) -> None:
         remote = FakeEnd("srv-remote")
         remote.accepts_attachments = False
-        relay, hub = self.relay(self.PAIR_ROW, remote)
+        relay, hub = self.relay(self.PAIR_ROW, remote, remote_health={"capabilities": {xs.CAPABILITY: {"available": True}}})
         await relay._route(hub, self.item(attachments=self.ATTACHMENTS), set())
         await relay._route(hub, self.item(id="handoff_" + "f" * 32, message_id="handoff_" + "f" * 32), set())
         self.assertEqual(remote.calls, ["deliver"])  # mail without attachments still goes through
         self.assertEqual([result[1] for result in hub.results], ["failed", "delivered"])
         self.assertIn("update it", hub.results[0][2])
+
+    async def test_a_target_updated_since_its_first_probe_gets_the_files(self) -> None:
+        remote = FakeEnd("srv-remote")
+        remote.accepts_attachments = False
+        health = {"capabilities": {xs.CAPABILITY: {"available": True, "attachments": True}}}
+        relay, hub = self.relay(self.PAIR_ROW, remote, remote_health=health)
+        await relay._route(hub, self.item(attachments=self.ATTACHMENTS), set())
+        self.assertEqual(remote.calls, ["put 0 first.txt", "put 1 second.txt", "deliver"])
+        self.assertTrue(remote.accepts_attachments)
+
+    async def test_text_mail_from_a_source_that_predates_attachments_lists_none(self) -> None:
+        sent: list[dict] = []
+
+        class Http:
+            async def request(self, method, url, **kwargs):
+                sent.append(kwargs["json"])
+                return SimpleNamespace(status_code=200, json=lambda: {"ok": True}, raise_for_status=lambda: None)
+
+        end = xs.RemoteEnd(Http(), SimpleNamespace(name="remote", local_port=1, token="t" * 32), "srv-remote")
+        item = {key: value for key, value in self.item().items() if key != "attachments"}
+        await end.deliver(item, "srv-hub", "")
+        self.assertEqual(sent[0]["attachments"], [])
+        self.assertEqual(json.loads(json.dumps(sent[0]))["body"], item["body"])
 
     async def test_a_lost_snapshot_fails_and_a_failed_upload_is_retried(self) -> None:
         remote = FakeEnd("srv-remote")
