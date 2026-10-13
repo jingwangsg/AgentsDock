@@ -25,6 +25,11 @@
 - A queued message whose chip names a chat on another server starts with the
   chip as text if the hub pair was removed in the meantime, instead of
   holding the queue.
+- The Android composer draws a picked chat as one tinted block inside the
+  text, as the desktop composer does: Backspace at its edge removes the whole
+  chat and its reference, a tap or caret step inside it moves to an edge,
+  and text an autocorrect writes into it stays as typed while that chat is
+  dropped. The queued-message editor keeps its previous behavior.
 - Verification: server tests for chip admission with and without the hub
   pair, the `mentioned` mark, chips joining a Claude or Codex user turn and
   not other turns, and the delegation rule; desktop and Android store and
@@ -34,7 +39,11 @@
   the delegated instruction, and the hub chat answered. In the desktop app on
   the isolated hub, a follow-up typed while the turn slept, with a remote chat
   picked from the @ menu, showed the chip in the composer and in the sent
-  message, joined the running turn, and the remote chat's answer arrived.
+  message, joined the running turn, and the remote chat's answer arrived. On
+  an Android emulator with this build, connected to the same isolated hub:
+  the chip for the remote chat showed as one block in the composer and in
+  the sent message, the message joined the running turn and the remote chat
+  answered; Backspace at a chip's end removed it whole.
 
 ## 2026-10-13 — A running turn reaches chats paired after it started (server)
 
