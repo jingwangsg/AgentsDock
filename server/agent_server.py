@@ -1319,7 +1319,7 @@ PORT_TUNNEL_MAX_ACTIVE_PER_SESSION = max(
     1,
     min(
         PORT_TUNNEL_MAX_ACTIVE_GLOBAL,
-        int(agentsdock_setting("PORT_TUNNEL_MAX_ACTIVE_PER_SESSION", "16")),
+        int(agentsdock_setting("PORT_TUNNEL_MAX_ACTIVE_PER_SESSION", "64")),
     ),
 )
 PORT_TUNNEL_CONNECT_TIMEOUT_SECONDS = max(
