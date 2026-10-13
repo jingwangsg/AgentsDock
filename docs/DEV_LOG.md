@@ -44,6 +44,33 @@
 - Availability: source only; the edit button appears after the server is
   updated.
 
+## 2026-10-13 — One-use @Chat actions and index handles removed (server, desktop and Android)
+
+- One-use `@Chat` actions (`instruction`, `request_reply`) and the index
+  handles (`--target-index`) they gave agents are removed; agents reach other
+  chats only with `chats list` and `send` or `ask --route`. A new message
+  with a one-use `@` from any client is admitted as a route `@` for that
+  chat; a client too old for route `@`s is asked to update. A scheduled
+  job's one-use `@` becomes the job's own route for that action, and two for
+  one chat become one route with both actions. A message queued before the
+  update starts with that `@` as text and its request/reply exchange closed
+  as not sent; a queued-message edit that adds one is refused. A
+  `--target-index` call is refused with a pointer to `chats list`.
+  `final_result`, which forwards the final answer, is unchanged.
+- An agent's retry of a mailbox `send` with the same idempotency key after
+  the user sent a message into the turn returned 409, because the turn's user
+  instruction had changed; it now returns the stored message.
+- `chats list` paging kept its place by the last route on the page; if that
+  route was revoked before the next page, the request returned 400 and the
+  agent had to list again from the start. Pages now follow route ids, so the
+  next page starts after the cursor either way.
+- The Android queued-message editor draws a picked chat as one block, as the
+  composer does, and keeps a chip for a chat on another server.
+- Verification: server tests for each conversion, the refused handles, the
+  same-key retry, paging across a revoked route and the queued-exchange
+  close; Android store and composer tests; on an Android emulator, the
+  queued-message editor showed and deleted a chip as one block.
+
 ## 2026-10-13 — @ chips for chats on other servers stay in the message (server, desktop and Android)
 
 - A chip for a chat on another server, picked from the @ menu, paired the
@@ -73,7 +100,7 @@
   text, as the desktop composer does: Backspace at its edge removes the whole
   chat and its reference, a tap or caret step inside it moves to an edge,
   and text an autocorrect writes into it stays as typed while that chat is
-  dropped. The queued-message editor keeps its previous behavior.
+  dropped.
 - Verification: server tests for chip admission with and without the hub
   pair, the `mentioned` mark, chips joining a Claude or Codex user turn and
   not other turns, and the delegation rule; desktop and Android store and

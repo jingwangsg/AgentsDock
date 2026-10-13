@@ -201,17 +201,12 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                 (["send", "--route", route], [folder], "regular file"),
                 (["send", "--route", route], [str(Path(folder) / "missing.txt")], "regular file"),
                 (["send", "--route", route], [str(path) for path in files], "at most 16"),
-                # A route that did not negotiate async_route_v1, and one-use handles, are legacy exchanges.
+                # A route that did not negotiate async_route_v1 is a legacy exchange.
                 (["send", "--route", route], [str(files[0])], "legacy exchanges"),
-                (["ask", "--target-index", "1"], [str(files[0])], "legacy exchanges"),
             ]
             for destination, paths, error in refused:
                 arguments = [*destination, "--message", "Files", *[part for path in paths for part in ("--attach", path)]]
                 with self.subTest(arguments=arguments[:3], error=error), \
-                        patch.dict(os.environ, {"AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT": "1",
-                                                "AGENTSDOCK_CROSS_CHAT_HANDLE_1": "synthetic-handle",
-                                                "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ACTION": "request_reply",
-                                                "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ASYNC": "0"}), \
                         patch.object(agentsdock_chats, "authority", return_value="capability"), \
                         patch.object(agentsdock_chats, "get_json", return_value={"routes": [{"route_id": route, "available": True}]}), \
                         patch.object(agentsdock_chats, "post_json") as post, \
@@ -1768,93 +1763,6 @@ class AgentsDockChatsCLITests(unittest.TestCase):
                     "conflicts with the live provider origin",
                 ):
                     agentsdock_chats.validated_server_url()
-
-    def test_target_index_resolves_only_matching_live_handle(self) -> None:
-        target = "grant_" + "a" * 32
-        post = Mock(return_value={
-            "ok": True,
-            "action": "instruction",
-            "accepted": True,
-        })
-        with (
-            patch.dict(os.environ, {
-                "AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT": "1",
-                "AGENTSDOCK_CROSS_CHAT_HANDLE_1": target,
-                "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ACTION": "instruction",
-                "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ASYNC": "0",
-            }, clear=True),
-            patch.object(
-                agentsdock_chats,
-                "selected_authority_path",
-                return_value=Path("authority.json"),
-            ),
-            patch.object(agentsdock_chats, "authority", return_value="capability"),
-            patch.object(agentsdock_chats, "post_json", post),
-            patch.object(agentsdock_chats.sys, "stdout", io.StringIO()),
-        ):
-            self.assertEqual(agentsdock_chats.main([
-                "send", "--target-index", "1", "--message", "hello",
-            ]), 0)
-
-        path, payload, _capability = post.call_args.args
-        self.assertEqual(path, "/api/agent/cross-chat/handoffs")
-        self.assertEqual(payload["target_session_id"], target)
-        self.assertNotIn("target_index", payload)
-
-    def test_target_index_derives_secure_peer_async_mode_and_rejects_override(self) -> None:
-        target = "secure_" + "b" * 32
-        post = Mock(return_value={
-            "ok": True,
-            "action": "request_reply",
-            "accepted": True,
-        })
-        environment = {
-            "AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT": "1",
-            "AGENTSDOCK_CROSS_CHAT_HANDLE_1": target,
-            "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ACTION": "request_reply",
-            "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ASYNC": "1",
-        }
-        with (
-            patch.dict(os.environ, environment, clear=True),
-            patch.object(
-                agentsdock_chats,
-                "selected_authority_path",
-                return_value=Path("authority.json"),
-            ),
-            patch.object(agentsdock_chats, "authority", return_value="capability"),
-            patch.object(agentsdock_chats, "post_json", post),
-            patch.object(agentsdock_chats.sys, "stdout", io.StringIO()),
-        ):
-            self.assertEqual(agentsdock_chats.main([
-                "ask", "--target-index", "1", "--message", "hello",
-            ]), 0)
-            self.assertEqual(agentsdock_chats.main([
-                "ask", "--target-index", "1", "--message", "hello",
-                "--async-response",
-            ]), 2)
-
-        payload = post.call_args.args[1]
-        self.assertNotIn("wait_for_response", payload)
-        self.assertEqual(post.call_count, 1)
-
-    def test_target_index_fails_closed_for_missing_or_wrong_action_grant(self) -> None:
-        for environment in (
-            {},
-            {
-                "AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT": "1",
-                "AGENTSDOCK_CROSS_CHAT_HANDLE_1": "grant_" + "c" * 32,
-                "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ACTION": "request_reply",
-                "AGENTSDOCK_CROSS_CHAT_HANDLE_1_ASYNC": "0",
-            },
-            {
-                "AGENTSDOCK_CROSS_CHAT_HANDLE_COUNT": "999",
-            },
-        ):
-            with self.subTest(environment=environment), patch.dict(
-                os.environ, environment, clear=True
-            ):
-                with self.assertRaises(agentsdock_chats.CLIError):
-                    agentsdock_chats.provider_handle(1, "instruction")
 
     def test_respond_current_resolves_reply_and_followup_mode_from_environment(self) -> None:
         exchange_id = "exchange_" + "d" * 32

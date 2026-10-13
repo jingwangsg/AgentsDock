@@ -49,7 +49,7 @@ class ProviderChatStdinTests(unittest.IsolatedAsyncioTestCase):
             path.chmod(0o600)
             self.authorities[owner] = path
         names = {'validate_provider_tool_input', 'execute_provider_tool',
-                 'resolve_provider_tool_arguments', 'provider_tool_argument_value'}
+                 'resolve_provider_tool_arguments'}
         constants = {'PROVIDER_TOOL_HELPERS', 'PROVIDER_TOOL_MAX_ARGUMENTS',
                      'PROVIDER_TOOL_MAX_ARGUMENT_CHARS', 'PROVIDER_TOOL_MAX_ARGUMENT_BYTES',
                      'PROVIDER_TOOL_MAX_STDIN_BYTES', 'PROVIDER_TOOL_MAX_OUTPUT_BYTES',
