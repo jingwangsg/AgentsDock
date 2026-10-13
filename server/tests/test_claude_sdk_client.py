@@ -50,6 +50,7 @@ class FakeClaudeClient:
         self.connect_error = connect_error
         self.query_error = query_error
         self.auto_ack = auto_ack
+        self.send_now_answer = "delivering"
         self.query_prefix_messages = list(query_prefix_messages or [])
         self.messages: asyncio.Queue[Any] = asyncio.Queue()
         self.calls: list[tuple[Any, ...]] = []
@@ -134,7 +135,7 @@ class FakeClaudeClient:
 
     async def send_queued_now(self) -> dict[str, Any]:
         self._record("send_queued_now")
-        return {"still_queued": [], "send_now": "delivering"}
+        return {"still_queued": [], "send_now": self.send_now_answer}
 
     async def get_context_usage(self) -> dict[str, Any]:
         self._record("get_context_usage")
@@ -2728,6 +2729,33 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(("interrupt",), client.calls)
         await client.emit({"type": "result", "is_error": False, "result": "done"})
         self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "done")
+
+    async def test_a_send_now_the_cli_answers_by_stopping_the_turn_keeps_the_run_for_the_follow_up(self) -> None:
+        # The CLI stops the turn instead of backgrounding the call when another
+        # item waits in its queue (a finished task's notification): Claude
+        # answers the follow-up next, as after the terminal's send-now key.
+        handle = await self.manager.start_run("chat-send-stopped", "Poll", run_id="run-stopped", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "system", "subtype": "init", "capabilities": ["interrupt_send_now_v1"]})
+        await client.emit({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_poll", "name": "Bash", "input": {"command": "until false; do sleep 5; done"}},
+        ]}})
+        for _ in range(2):
+            await asyncio.wait_for(handle.__anext__(), 5)
+        client.auto_ack = False
+        self.assertTrue(await self.manager.steer("chat-send-stopped", run_id="run-stopped", prompt="status?", deliver_now=False))
+        client.send_now_answer = "stopped"
+        self.assertEqual(await self.manager.send_queued_now("chat-send-stopped", run_id="run-stopped"), "stopped")
+        await client.emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "result": ""})
+        for _ in range(20):
+            await asyncio.sleep(0)
+        self.assertFalse(handle.done)
+        self.assertFalse(client.disconnected)
+        await client.emit(replay_ack(client.query_envelopes[-1][0]["uuid"]))
+        await client.emit({"type": "assistant", "text": "still polling"})
+        self.assertEqual((await asyncio.wait_for(handle.__anext__(), 5))["text"], "still polling")
+        await client.emit({"type": "result", "is_error": False, "result": "still polling"})
+        self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "still polling")
 
     async def test_a_follow_up_the_cli_never_takes_ends_a_waiting_run_with_the_stored_result(self) -> None:
         handle = await self.manager.start_run("chat-steer-waiting", "Start the job", run_id="run-waiting", options={}, configuration_key="same")

@@ -2713,6 +2713,12 @@ class ClaudeSDKSupervisor:
                     command.response.set_exception(exc)
                 return
             outcome = str(response.get("send_now") or "") or None
+            if outcome == "stopped":
+                # The CLI stopped the turn instead of moving the call to the
+                # background (another queued item, e.g. a finished task's
+                # notification, cannot be delivered that way): it answers the
+                # follow-ups next, as after a Stop that keeps them.
+                active._follow_up_kept = True
         logger.info(
             "claude send queued now chat=%s run=%s inflight_tools=%d cli_reads_send_now=%s outcome=%s",
             self.chat_id, command.run_id, len(active._inflight_tool_uses) if active is not None else 0,

@@ -32,9 +32,15 @@
   reached the model within 5 s. Server tests for the SDK client, the runner,
   steering and follow-ups pass. Needs a restarted hub and redeployed
   remotes; the desktop is unchanged.
+- When Claude Code cannot deliver that way, it stops the running command and
+  the turn instead, as its own send-now key does; seen when a background
+  task had finished and its notification was also waiting. The run now
+  stays open and the agent answers the message in it (before, the run ended
+  with an error and the server restarted Claude Code if background tasks
+  were running). Verified with the same isolated setup: the poll was
+  stopped, the reply arrived after 4 s, and the turn finished normally.
 - Not exercised: Send now while a tool runs that Claude Code cannot move to
-  the background (for example a web fetch); Claude Code documents that it
-  then stops the turn.
+  the background (for example a web fetch).
 
 ## 2026-10-13 — Desktop package 127 and Android build 71 (local package and APK)
 
