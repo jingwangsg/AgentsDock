@@ -384,6 +384,22 @@ assert(
 assert(structuredJob.detail.includes('\n  "queue_status": "completed"'), 'expanded structured output should be readable')
 assert(jobResultPresentation(event(7, 'job_finished', { message: 'x'.repeat(500) })).preview.length <= 240, 'plain job previews should be character bounded')
 
+const quietRun = { run_id: 'run-quiet', purpose: 'scheduled_job', job_id: 'job-quiet', job_title: 'Quiet check' }
+const quietStart = event(1, 'turn_started', { ...quietRun, prompt: 'Report only if something changed' })
+const quietMarker = event(2, 'job_ran', { ...quietRun, message: 'Scheduled job ran: Quiet check' })
+const quietEnd = event(3, 'turn_finished', quietRun)
+for (const { label, events } of [
+  { label: 'with its job marker', events: [quietStart, quietMarker, quietEnd] },
+  { label: 'without a job marker', events: [quietStart, quietEnd] },
+]) {
+  const quietRows = projectTimeline(events, [])
+  const quietLatest = quietRows.length === 1 && quietRows[0].kind === 'job' ? jobDisplaySelection(quietRows[0].events).latest : null
+  assert(
+    quietLatest && jobResultPresentation(quietLatest).detail === 'Scheduled job finished without output.',
+    `a scheduled run that ended without output (${label}) should show as finished on its card`,
+  )
+}
+
 const duplicateResults = [
   event(10, 'turn_finished', { id: 'run-one-result', run_id: 'run-one', job_id: 'job-duplicates', result_text: 'Same useful result' }),
   event(20, 'turn_finished', { id: 'run-two-result', run_id: 'run-two', job_id: 'job-duplicates', result_text: 'Same useful result' }),

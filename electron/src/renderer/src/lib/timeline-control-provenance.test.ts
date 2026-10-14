@@ -50,7 +50,7 @@ describe('timeline control provenance', () => {
     const prompt = 'SYNTHETIC_SCHEDULED_INPUT: inspect the example service privately.'
     const run = { run_id: 'example-job-run', purpose: 'scheduled_job', job_id: 'example-job' }
     // While it runs, a scheduled run is an ordinary turn with no card yet. A run that ends without output
-    // folds into a card that still shows its start event.
+    // folds into a card that says so.
     const rows = renderTimelineItems(projectTimeline([
       event(1, 'turn_started', { ...run, job_title: 'Example monitor', prompt }),
       event(2, 'turn_finished', run)
@@ -60,7 +60,7 @@ describe('timeline control provenance', () => {
     expect(rows[0].kind).toBe('job')
     if (rows[0].kind !== 'job') throw new Error('Expected a scheduled job card')
     const presentation = jobResultPresentation(jobDisplaySelection(rows[0]).latest)
-    expect(presentation.detail).toBe('Scheduled job started. Waiting for agent output.')
+    expect(presentation.detail).toBe('Scheduled job finished without output.')
     expect(presentation.preview).not.toContain(prompt)
   })
 

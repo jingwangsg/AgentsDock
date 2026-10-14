@@ -36015,6 +36015,10 @@ def semantic_job_event_priority(event: dict[str, Any]) -> int:
         return 3
     if event_type in {"job_ran", "job_started"}:
         return 2
+    # A completed run that ended without output is shown by its end: it ties with the job marker
+    # (the later event wins) and stays below 3, so a run's output still outranks it.
+    if event_type == "turn_finished" and event.get("stopped") is not True and not event.get("exit_code"):
+        return 2
     if event_type == "turn_started":
         return 1
     return 0
@@ -36588,7 +36592,14 @@ def semantic_job_summary_event(
             or "Scheduled job failed."
         )
     if not any(str(summary.get(field) or "").strip() for field in ("result_text", "text", "message")):
-        summary["message"] = "Scheduled job status updated."
+        # Android reads result_text before message, so an empty one would hide the message.
+        summary.pop("result_text", None)
+        summary.pop("text", None)
+        summary["message"] = (
+            "Scheduled job finished without output."
+            if summary["job_latest_status"] == "completed"
+            else "Scheduled job status updated."
+        )
     return client_safe_event(summary)
 
 
