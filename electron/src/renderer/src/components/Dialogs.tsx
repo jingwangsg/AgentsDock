@@ -4282,6 +4282,7 @@ export function JobDialog() {
   const [maxRuns, setMaxRuns] = useState(1)
   const [enabled, setEnabled] = useState(true)
   const [contextMode, setContextMode] = useState<JobContextMode>('chat')
+  const [archiveSuccessfulRuns, setArchiveSuccessfulRuns] = useState(false)
   const [backend, setBackend] = useState<Backend>('codex')
   const [promptPaletteOpen, setPromptPaletteOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -4292,7 +4293,11 @@ export function JobDialog() {
     wasOpenRef.current = open
   }, [open])
   const supportsIndependentRuns = supportedContextModes?.includes('standalone') === true || editing?.context_mode === 'standalone'
-  const standaloneRunsOpenNewChatWhenBusy = health?.capabilities?.scheduled_jobs?.features?.standalone_runs_open_new_chat_when_busy === true
+  const scheduledJobFeatures = health?.capabilities?.scheduled_jobs?.features
+  const archiveSuccessfulRunsAvailable = scheduledJobFeatures?.archive_successful_runs === true
+  const independentHelpKey = scheduledJobFeatures?.standalone_runs_open_new_chat === true ? 'ui.job.independentEveryRunNewChatHelp'
+    : scheduledJobFeatures?.standalone_runs_open_new_chat_when_busy === true ? 'ui.job.independentNewChatHelp'
+      : 'ui.job.independentHelp'
   const preservesChatReferences = scheduledJobChatReferencesAvailable(health)
     || Boolean(editing?.chat_references?.length)
     || chatReferences.length > 0
@@ -4336,6 +4341,7 @@ export function JobDialog() {
     setMaxRuns(1)
     setEnabled(true)
     setContextMode('chat')
+    setArchiveSuccessfulRuns(false)
     setBackend(session?.backend ?? 'codex')
   }, [open, editing, session?.id])
   const fill = (job: Job) => {
@@ -4363,6 +4369,7 @@ export function JobDialog() {
     setEnabled(job.enabled !== false)
     const jobContextMode = job.context_mode ?? 'chat'
     setContextMode(jobContextMode)
+    setArchiveSuccessfulRuns(job.archive_successful_runs === true)
     setBackend(jobContextMode === 'standalone' ? (job.backend || parentBackend) : parentBackend)
   }
   const selectStartMode = (value: JobStartMode) => {
@@ -4513,6 +4520,8 @@ export function JobDialog() {
         if ((loop ? null : Math.max(1, maxRuns)) !== (editing.max_runs ?? null)) patch.max_runs = loop ? null : Math.max(1, maxRuns)
         if (enabled !== (editing.enabled !== false)) patch.enabled = enabled
         if (supportsIndependentRuns && contextMode !== (editing.context_mode ?? 'chat')) patch.context_mode = contextMode
+        const nextArchiveSuccessfulRuns = contextMode === 'standalone' && archiveSuccessfulRuns
+        if (archiveSuccessfulRunsAvailable && nextArchiveSuccessfulRuns !== (editing.archive_successful_runs === true)) patch.archive_successful_runs = nextArchiveSuccessfulRuns
         if (selectedBackend !== (editing.backend || session.backend)) patch.backend = selectedBackend
         if (startMode === 'immediate' || startMode === 'time') patch.next_run_at = scheduledTime
         else if (startMode === 'interval' && scheduleKind === 'interval') patch.next_run_at = new Date(Date.now() + cleanInterval * 1000).toISOString()
@@ -4533,6 +4542,7 @@ export function JobDialog() {
           interval_seconds: nextInterval, cron_expression: nextCron, rrule: nextRRule, timezone: nextTimezone,
           first_run_at: scheduledTime, loop, max_runs: loop ? null : Math.max(1, maxRuns), enabled,
           ...(supportsIndependentRuns ? { context_mode: contextMode } : {}),
+          ...(archiveSuccessfulRunsAvailable ? { archive_successful_runs: contextMode === 'standalone' && archiveSuccessfulRuns } : {}),
           backend: selectedBackend
         }
         await window.agentsDock.jobs.create(input)
@@ -4556,8 +4566,9 @@ export function JobDialog() {
           && <small id="job-opencode-runtime-help" className="runtime-option-help">{opencodeBackendUnavailableReason(health, catalog)}</small>}</fieldset>
       <fieldset className="job-context-fieldset"><legend>{t("ui.Dialogs.JobDialog.run_context_20887b3")}</legend><div className={`job-context-picker${supportsIndependentRuns ? '' : ' single'}`} role="group" aria-label={t("ui.Dialogs.JobDialog.run_context_20887b3")}>
         <button type="button" className={contextMode === 'chat' ? 'active' : ''} aria-pressed={contextMode === 'chat'} onClick={() => selectContextMode('chat')}><strong>{t("ui.Dialogs.JobDialog.continue_in_this_chat_eed3ae3")}</strong><small>{t("ui.Dialogs.JobDialog.use_this_chat_s_existing_context_and_add_e_d7db2e4")}</small></button>
-        {supportsIndependentRuns && <button type="button" className={contextMode === 'standalone' ? 'active' : ''} aria-pressed={contextMode === 'standalone'} onClick={() => selectContextMode('standalone')}><strong>{t("ui.Dialogs.JobDialog.independent_runs_3d32d40")}</strong><small>{t(standaloneRunsOpenNewChatWhenBusy ? 'ui.job.independentNewChatHelp' : 'ui.job.independentHelp', { backend: backendLabel(backend, backend === session?.backend ? session.codex_provider : undefined) })}</small></button>}
+        {supportsIndependentRuns && <button type="button" className={contextMode === 'standalone' ? 'active' : ''} aria-pressed={contextMode === 'standalone'} onClick={() => selectContextMode('standalone')}><strong>{t("ui.Dialogs.JobDialog.independent_runs_3d32d40")}</strong><small>{t(independentHelpKey, { backend: backendLabel(backend, backend === session?.backend ? session.codex_provider : undefined) })}</small></button>}
       </div>{!supportsIndependentRuns && <small className="job-context-unavailable">{t("ui.Dialogs.JobDialog.update_agentsserver_to_add_independent_run_6138641")}</small>}</fieldset>
+      {contextMode === 'standalone' && archiveSuccessfulRunsAvailable && <label className="checkbox-row" title={t('ui.job.archiveSuccessfulRunsHelp')}><input type="checkbox" checked={archiveSuccessfulRuns} onChange={event => setArchiveSuccessfulRuns(event.target.checked)} />{t('ui.job.archiveSuccessfulRuns')}</label>}
       {runtimeError && <small className="schedule-validation error" role="alert">{runtimeError}{enabled ? t("ui.Dialogs.JobDialog.pause_this_job_or_choose_an_available_runt_1d574aa") : ''}</small>}
       <fieldset className="schedule-builder"><legend>{t("ui.Dialogs.JobDialog.schedule_f4830a1")}</legend><div className="segmented schedule-kind">{(['interval', 'cron', 'rrule'] as JobScheduleKind[]).map(kind => <button type="button" key={kind} className={scheduleKind === kind ? 'active' : ''} aria-pressed={scheduleKind === kind} onClick={() => setScheduleKind(kind)}>{kind === 'rrule' ? 'RRULE' : kind[0].toUpperCase() + kind.slice(1)}</button>)}</div>
         {scheduleKind === 'interval' && <div className="form-row"><label><span>{t("ui.Dialogs.JobDialog.interval_6f45b00")}</span><select value={interval} onChange={event => setIntervalValue(Number(event.target.value))}><option value={60}>{t("ui.Dialogs.JobDialog.1_minute_e67b6f6")}</option><option value={300}>{t("ui.Dialogs.JobDialog.5_minutes_3170543")}</option><option value={900}>{t("ui.Dialogs.JobDialog.15_minutes_2f18bc2")}</option><option value={1800}>{t("ui.Dialogs.JobDialog.30_minutes_f01a042")}</option><option value={3600}>{t("ui.Dialogs.JobDialog.1_hour_f8b8883")}</option><option value={7200}>{t("ui.Dialogs.JobDialog.2_hours_9808e0e")}</option><option value={14400}>{t("ui.Dialogs.JobDialog.4_hours_e5bc992")}</option><option value={28800}>{t("ui.Dialogs.JobDialog.8_hours_1ee36a4")}</option><option value={43200}>{t("ui.Dialogs.JobDialog.12_hours_ff62720")}</option><option value={86400}>{t("ui.Dialogs.JobDialog.24_hours_f0514e8")}</option><option value={604800}>{t("ui.Dialogs.JobDialog.1_week_c8cc522")}</option></select></label><label><span>{t("ui.Dialogs.JobDialog.seconds_381a8e9")}</span><input aria-label={t("ui.Dialogs.JobDialog.interval_seconds_5f0f5b8")} type="number" min={10} value={interval} onChange={event => setIntervalValue(Number(event.target.value))} /></label></div>}

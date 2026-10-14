@@ -1358,6 +1358,8 @@ export interface Job {
   manual_run_pending?: boolean | null
   /** Missing on older servers/jobs; clients must treat an absent value as `chat`. */
   context_mode?: JobContextMode | null
+  /** Archive a standalone run's chat when the run completes; absent on older servers. */
+  archive_successful_runs?: boolean | null
   backend?: Backend | null
   model?: string | null
   effort?: string | null
@@ -1542,7 +1544,10 @@ export interface ScheduledJobsCapability extends ServerCapability {
     direct_message_mentions?: boolean
     route_mentions?: boolean
     route_hint_mentions?: boolean
+    /** Older servers: a standalone run opens its own chat only while its chat is busy. */
     standalone_runs_open_new_chat_when_busy?: boolean
+    standalone_runs_open_new_chat?: boolean
+    archive_successful_runs?: boolean
     [key: string]: JsonValue | undefined
   }
 }
@@ -2782,6 +2787,7 @@ export interface CreateJobInput {
   max_runs?: number | null
   enabled: boolean
   context_mode?: JobContextMode
+  archive_successful_runs?: boolean
   backend?: Backend | null
 }
 export interface UpdateJobInput {
@@ -2801,6 +2807,7 @@ export interface UpdateJobInput {
   max_runs?: number | null
   enabled?: boolean
   context_mode?: JobContextMode
+  archive_successful_runs?: boolean
   backend?: Backend | null
 }
 export interface DigestInput {

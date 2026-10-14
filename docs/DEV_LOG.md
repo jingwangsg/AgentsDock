@@ -1,5 +1,42 @@
 # Public development log
 
+## 2026-10-14 — An independent scheduled job starts a new chat for every run, like a Codex cron automation (server and desktop)
+
+- An independent (standalone) job ran inside its chat while that chat was
+  idle and opened a new chat only while the chat was busy, then archived
+  that chat when the run ended. Codex has no such mode: its automations
+  either run in an existing thread and skip a busy one, or start a new
+  thread for every run. A chat running a long goal made one archived chat
+  per run, 114 in 12 hours from a 5-minute and a 30-minute job, renamed by
+  their agents and listed under Archived with unread marks.
+- Every run of an independent job now starts a new chat, busy chat or not,
+  titled after the job, with the chat's folder, working directory and
+  settings. The run chat keeps that title: an agent's `chats title` there
+  is refused. Run chats stay in the chat list with a clock mark; the job
+  card in the scheduling chat keeps the result and "Open run chat".
+- A job can archive successful runs, off by default as in Codex (the
+  "Archive successful runs" option in the job dialog, field
+  `archive_successful_runs`). A run chat is then archived when its run
+  completes, but not after a failure or Stop, or when the user wrote in it
+  during the run. Existing jobs read as off.
+- Verified with the desktop app and a real Codex runtime against an
+  isolated server: a job created in the dialog ran while its chat was idle
+  and opened a run chat titled "Quick check" with the clock mark; its agent's
+  rename was refused (409) and the chat stayed in the list. A second job
+  created with "Archive successful runs" checked archived its run chat
+  within seconds of completion. While the scheduling chat ran a 100-second
+  command, that job opened another run chat; a message sent to it during
+  the run was queued and answered afterwards, and that chat was not
+  archived. Server tests cover the new chat, the archive rule (completed,
+  failed, stopped, steered and queued runs) and the job field; desktop tests
+  cover the sidebar listing and the dialog option.
+- Not covered: Android lists run chats only while open or archived, as
+  before; that changes in a separate mobile task. The agent jobs helper has
+  no flag for the option yet. A remote server keeps the old behavior until
+  it is updated; the desktop app then shows the old description.
+  Availability: the server part takes effect when a server is updated or
+  redeployed; the desktop change takes effect in the next desktop package.
+
 ## 2026-10-14 — A scheduled run that ends without output says so on its card (server, desktop and Android source)
 
 - A scheduled run that completed without any output showed "Completed"

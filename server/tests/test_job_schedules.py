@@ -4117,6 +4117,32 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
         finally:
             agent_server.STORE.sessions.pop("sess_context", None)
 
+    async def test_create_and_update_archive_successful_runs(self) -> None:
+        store = agent_server.JobStore()
+        agent_server.STORE.sessions["sess_archive"] = {"id": "sess_archive"}
+        try:
+            with (
+                patch.object(store, "save", new_callable=AsyncMock),
+                patch.object(agent_server, "append_event", new_callable=AsyncMock),
+            ):
+                default_job = await store.create(agent_server.CreateJobRequest(
+                    session_id="sess_archive", title="Default", prompt="Check", context_mode="standalone",
+                ))
+                archiving_job = await store.create(agent_server.CreateJobRequest(
+                    session_id="sess_archive", title="Archiving", prompt="Check", context_mode="standalone",
+                    archive_successful_runs=True,
+                ))
+                updated = await store.update(archiving_job["id"], {"archive_successful_runs": False})
+
+            # Off by default, as Codex's "Archive successful runs".
+            self.assertFalse(agent_server.public_job(default_job)["archive_successful_runs"])
+            self.assertTrue(agent_server.public_job(archiving_job)["archive_successful_runs"])
+            self.assertFalse(agent_server.public_job(updated)["archive_successful_runs"])
+            # A job saved before the option existed reads as off.
+            self.assertFalse(agent_server.public_job({"id": "job_old"})["archive_successful_runs"])
+        finally:
+            agent_server.STORE.sessions.pop("sess_archive", None)
+
     async def test_legacy_create_infers_standalone_for_alternate_backend(self) -> None:
         store = agent_server.JobStore()
         agent_server.STORE.sessions["sess_backend_contract"] = {

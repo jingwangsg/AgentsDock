@@ -8,7 +8,7 @@ import {
   type CollisionDetection, type DragEndEvent, type DragOverEvent, type DragStartEvent
 } from '@dnd-kit/core'
 import {
-  Archive, ArchiveRestore, ArrowDown, ArrowUp, Bell, ChevronDown, ChevronRight, Download, Folder, FolderPlus, Globe, GripVertical, Inbox, LoaderCircle, MoreHorizontal,
+  Archive, ArchiveRestore, ArrowDown, ArrowUp, Bell, ChevronDown, ChevronRight, Clock3, Download, Folder, FolderPlus, Globe, GripVertical, Inbox, LoaderCircle, MoreHorizontal,
   Columns2, History, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, SquareTerminal, Trash2, Undo2, UsersRound, X
 } from 'lucide-react'
 import type { Session, Surface } from '@shared/types'
@@ -74,7 +74,7 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const folderOrder = useAppStore(state => state.folderOrder)
   const collapsed = useAppStore(state => state.collapsedFolders)
   const archivedCollapsed = useAppStore(state => state.archivedCollapsed)
-  const chatCount = sessions.filter(session => !session.archived && !isHiddenRunChat(session, selectedId)).length
+  const chatCount = sessions.filter(session => !session.archived).length
   const [dragging, setDragging] = useState<{ id: string; label: string; type: 'session' | 'folder' } | null>(null)
   const [drop, setDrop] = useState<DropIndicator | null>(null)
   const dropRef = useRef<DropIndicator | null>(null)
@@ -85,7 +85,7 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const sidebarScrollingUntil = useRef(0)
   const sidebarScrollTimer = useRef<number | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: SIDEBAR_LONG_PRESS }))
-  const sections = useMemo(() => buildSections(sessions, folderOrder, '', undefined, surfaces, selectedId), [sessions, folderOrder, surfaces, selectedId, getLocale()])
+  const sections = useMemo(() => buildSections(sessions, folderOrder, '', undefined, surfaces), [sessions, folderOrder, surfaces, getLocale()])
   const computedFolders = useMemo(() => sidebarFolders(sessions, folderOrder), [folderOrder, sessions])
   const stableFolders = useRef(computedFolders)
   if (!stringArraysEqual(stableFolders.current, computedFolders)) stableFolders.current = computedFolders
@@ -478,7 +478,7 @@ const SessionRow = memo(function SessionRow({ session, selected, visiblePane, se
           {...draggable.attributes}
         >
           <BackendMark backend={session.backend} size={18} />
-          <span className="session-copy"><strong>{session.title}</strong><small title={emergency?.message || (needsUserAction ? t("ui.Sidebar.SessionRow.this_agent_is_paused_until_you_respond_82dc6e8") : session.cwd || undefined)}>{emergency ? t("ui.Sidebar.SessionRow.emergency_89e4490", { "message": String(emergency.message) }) : needsUserAction ? t("ui.Sidebar.SessionRow.action_needed_c2d066a", { "chat": String(backendLabel(session.backend)) }) : sessionSubline(session, unread)}</small></span>
+          <span className="session-copy"><strong>{session.scheduled_job_run && <Clock3 className="session-run-mark" size={12} aria-label={t('ui.sidebar.scheduledRun')} />}{session.title}</strong><small title={emergency?.message || (needsUserAction ? t("ui.Sidebar.SessionRow.this_agent_is_paused_until_you_respond_82dc6e8") : session.cwd || undefined)}>{emergency ? t("ui.Sidebar.SessionRow.emergency_89e4490", { "message": String(emergency.message) }) : needsUserAction ? t("ui.Sidebar.SessionRow.action_needed_c2d066a", { "chat": String(backendLabel(session.backend)) }) : sessionSubline(session, unread)}</small></span>
           {running && <LoaderCircle className="spin session-spinner" size={14} aria-label={t('ui.sidebar.running')} />}
           {emergency && <span key={emergency.id} className="sr-only" role="alert">{t('ui.sidebar.emergency', { title: session.title, message: emergency.message })}</span>}
           {visiblePane && <span className="sr-only">{t(visiblePane === 'primary' ? 'ui.sidebar.firstPane' : 'ui.sidebar.secondPane')}</span>}
@@ -550,17 +550,8 @@ function MenuItem({ icon: Icon, label, onSelect, danger, disabled, title }: { ic
   return <ContextMenu.Item className={`menu-item ${danger ? 'danger' : ''}`} disabled={disabled} title={title} onSelect={onSelect}><Icon size={14} />{label}</ContextMenu.Item>
 }
 
-/**
- * A chat that a standalone scheduled job opened because its own chat was busy. It is reached from
- * the job card in the chat that scheduled it, and archived when the run ends, so the sidebar lists
- * it only while it is the open chat or once archived.
- */
-export function isHiddenRunChat(session: Pick<Session, 'id' | 'archived' | 'scheduled_job_run'>, selectedSessionId: string | null | undefined): boolean {
-  return Boolean(session.scheduled_job_run) && !session.archived && session.id !== selectedSessionId
-}
-
-export function buildSections(sessions: Session[], folderOrder: string[], query: string, historySessionIds: Set<string> = new Set(), surfaces: Surface[] = [], selectedSessionId: string | null = null): Section[] {
-  const filtered = rankSessionsForSearch(sessions.filter(session => !isHiddenRunChat(session, selectedSessionId)), query, historySessionIds)
+export function buildSections(sessions: Session[], folderOrder: string[], query: string, historySessionIds: Set<string> = new Set(), surfaces: Surface[] = []): Section[] {
+  const filtered = rankSessionsForSearch(sessions, query, historySessionIds)
   if (query.trim()) return filtered.length ? [{ id: 'search', title: t("ui.Sidebar.buildSections.matches_98abff2"), sessions: filtered, surfaces: [], kind: 'search' }] : []
   const pinned = filtered.filter(session => session.pinned && !session.archived)
   const archived = filtered.filter(session => session.archived)

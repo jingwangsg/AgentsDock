@@ -25,15 +25,13 @@ describe('buildSections folders', () => {
 })
 
 describe('buildSections run chats', () => {
-  it('lists a standalone job run chat only while it is open or once archived', () => {
+  it('lists a standalone job run chat like any chat, as Codex lists a cron run thread', () => {
     const parent = { id: 'parent', title: 'Training monitor', folder: 'Research' } as unknown as Session
     const running = { id: 'run-live', title: 'Monitor', folder: 'Research', scheduled_job_run: { job_id: 'job-1', session_id: 'parent' } } as unknown as Session
     const finished = { id: 'run-done', title: 'Monitor', folder: 'Research', archived: true, scheduled_job_run: { job_id: 'job-1', session_id: 'parent' } } as unknown as Session
-    const ids = (selected: string | null) => buildSections([parent, running, finished], ['Research'], '', undefined, [], selected).map(section => [section.title, section.sessions.map(session => session.id)])
-    expect(ids(null)).toEqual([['Research', ['parent']], ['Archived', ['run-done']]])
-    expect(ids('run-live')).toEqual([['Research', ['parent', 'run-live']], ['Archived', ['run-done']]])
-    // Search results follow the same rule.
-    expect(buildSections([parent, running], [], 'Monitor', undefined, [], null).flatMap(section => section.sessions.map(session => session.id))).toEqual(['parent'])
+    expect(buildSections([parent, running, finished], ['Research'], '').map(section => [section.title, section.sessions.map(session => session.id)]))
+      .toEqual([['Research', ['parent', 'run-live']], ['Archived', ['run-done']]])
+    expect(buildSections([parent, running], [], 'Monitor').flatMap(section => section.sessions.map(session => session.id))).toEqual(['run-live', 'parent'])
   })
 })
 
