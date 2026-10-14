@@ -37,6 +37,7 @@ import os
 import pwd
 import pty
 import re
+import resource
 import secrets
 import shlex
 import shutil
@@ -1313,7 +1314,7 @@ PORT_TUNNEL_SSH_PORT = 22
 PORT_TUNNEL_MAX_PORT = 65535
 PORT_TUNNEL_MAX_ACTIVE_GLOBAL = max(
     1,
-    int(agentsdock_setting("PORT_TUNNEL_MAX_ACTIVE_GLOBAL", "64")),
+    int(agentsdock_setting("PORT_TUNNEL_MAX_ACTIVE_GLOBAL", "256")),
 )
 PORT_TUNNEL_MAX_ACTIVE_PER_SESSION = max(
     1,
@@ -103067,6 +103068,17 @@ def main() -> int:
     # must target the socket selected by the CLI, not the import-time default.
     SERVER_BIND_ADDRESS = str(args.bind)
     SERVER_PORT = int(args.port)
+    # load-bearing: each port tunnel holds two sockets and PORT_TUNNEL_MAX_ACTIVE_GLOBAL allows 256, besides the
+    # agents' pipes and session files. launchd starts a process with a soft limit of 256 open files and many Linux
+    # hosts with 1024; the hub ran out of descriptors once (its run.sh now sets 16384, the same value).
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    wanted = 16384 if hard == resource.RLIM_INFINITY else min(hard, 16384)
+    if soft < wanted:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
+            logger.info("open-file limit raised from %d to %d", soft, wanted)
+        except (ValueError, OSError) as exc:
+            logger.warning("open-file limit stays at %d: %s", soft, exc)
     uvicorn.run(
         app,
         host=args.bind,

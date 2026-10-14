@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-14 — AgentsServer allows 256 port tunnels in total; the desktop app opens 64 per chat or browser tab (server and desktop)
+
+- Since the per chat or tab limit became 64 earlier today, one chat or
+  browser tab could hold every tunnel the server allowed in total (64),
+  leaving none for other chats, browser tabs or Open in Zed. The
+  server-wide default is now 256, so 192 remain while one chat or tab uses
+  its 64. `AGENTSDOCK_PORT_TUNNEL_MAX_ACTIVE_GLOBAL` still sets another
+  value.
+- Each tunnel holds two sockets on the server. AgentsServer now raises its
+  own open-file limit to 16384, or to the system's hard limit if that is
+  lower, when it starts: launchd starts a process with a limit of 256 open
+  files and many Linux hosts with 1024, which the new tunnel limit could
+  exhaust before a tunnel is refused. Started under a limit of 256, the
+  server logged "open-file limit raised from 256 to 16384".
+- The desktop app opened at most 16 tunnels per chat or browser tab (left
+  unchanged by the 64-per-tab entry below); it now opens up to 64. When a
+  server reports a lower limit, such as 16 on a server not yet updated, a
+  chat's port forwards still stop there, and a browser tab's further
+  connections are refused by the server instead of the app. All chats'
+  port forwards together stay limited to 64 on the desktop, so one chat
+  can now use all of them; each browser tab has its own 64.
+- Verified with the desktop app and a server allowing 64 per tab, on a
+  page that keeps 24 connections open across four localhost ports. With
+  the old desktop limit, 16 of 16 tunnels were open and 192 requests
+  failed over 24 polling rounds; with the new one, 24 of 64 were open and
+  none failed over 38 rounds, including after switching to a chat and
+  back. Server port tunnel tests and the desktop's port tunnel, browser
+  proxy and service tests pass.
+- Not covered: the 256 server-wide limit was not reached in the app; only
+  the server tests cover the limit check.
+  Availability: the server changes take effect when a server is updated or
+  redeployed; the desktop limit takes effect in the next desktop package.
+
 ## 2026-10-14 — The hub opens SkyPilot's login page when that login has expired (server)
 
 - When the SkyPilot login on the hub's machine expired, the tunnels of
