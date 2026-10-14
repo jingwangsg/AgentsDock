@@ -1220,6 +1220,106 @@ print("hostname 10.0.0.1\\nproxycommand aws ssm start-session --target i-1 --doc
         assert cancelled and relays == ["aws-cluster"]
         assert path.read_text() == "[agentsdock]\n"
 
+    def test_an_expired_sky_login_opens_one_login_page_for_all_failing_connections(self) -> None:
+        # The fake sky answers `api info` with the status in sky-state; its `api login` stands for the user
+        # clicking Authorize and sets the state to healthy.
+        bin_dir = self.tmp_path / "sky-bin"
+        bin_dir.mkdir()
+        calls = self.tmp_path / "sky-calls.jsonl"
+        state = self.tmp_path / "sky-state"
+        state.write_text("needs_auth")
+        sky = bin_dir / "sky"
+        sky.write_text(f"""#!{sys.executable}
+import json, os, sys
+with open({str(calls)!r}, "a") as out:
+    out.write(json.dumps([sys.argv[1:], os.environ.get("SSL_CERT_FILE")]) + "\\n")
+if sys.argv[1:3] == ["api", "info"]:
+    print("\\x1b[33m⚠ Upgrade your SkyPilot client\\x1b[0m")
+    print(json.dumps({{"server": {{"url": "https://sky.example", "status": open({str(state)!r}).read()}}}}))
+else:
+    open({str(state)!r}, "w").write("healthy")
+""")
+        sky.chmod(0o700)
+        ca = self.tmp_path / "sky-ca.pem"
+        ca.write_text("ca")
+        self.enterContext(mock.patch.dict(os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}))
+        self.enterContext(mock.patch.object(rs, "SKY_CA_BUNDLE", ca))
+        self.enterContext(mock.patch.object(rs, "SKY_API_INFO", (None, 0.0)))
+        self.enterContext(mock.patch.object(rs, "SKY_LOGIN", (None, 0.0)))
+
+        async def main() -> list[str | None]:
+            # A plain ssh host is not Sky's: no question to Sky.
+            reasons = [await rs.sky_login_reason("lab")]
+            # Every Sky server's tunnels fail together; they share one answer and one login page.
+            reasons += await asyncio.gather(*(rs.sky_login_reason(host) for host in ("oci@a", "aws@b", "oci@c")))
+            login = rs.SKY_LOGIN[0]
+            assert login is not None
+            await login
+            reasons.append(await rs.sky_login_reason("oci@a"))
+            # Expired again once the healthy answer has aged out, within SKY_LOGIN_INTERVAL of the first
+            # page: the cause is named, and no second page opens.
+            state.write_text("needs_auth")
+            rs.SKY_API_INFO = (None, 0.0)
+            reasons.append(await rs.sky_login_reason("oci@a"))
+            return reasons
+
+        assert asyncio.run(main()) == [None, *[rs.SKY_LOGIN_ERROR] * 3, None, rs.SKY_LOGIN_ERROR]
+        assert [json.loads(line) for line in calls.read_text().splitlines()] == [
+            [["api", "info", "-o", "json"], str(ca)],
+            [["api", "login", "-e", "https://sky.example"], str(ca)],
+            [["api", "info", "-o", "json"], str(ca)],
+            [["api", "info", "-o", "json"], str(ca)],
+        ]
+
+    def test_a_failed_sky_tunnel_or_deploy_names_the_expired_sky_login(self) -> None:
+        states: list[str] = []
+
+        async def expired(ssh_host: str) -> str:
+            states.append(tunnel.status["state"])
+            return rs.SKY_LOGIN_ERROR
+
+        sky_login_reason = self.enterContext(mock.patch.object(rs, "sky_login_reason", mock.AsyncMock(side_effect=expired)))
+        # Sky's proxy refuses an expired login only after the tunnel already counted as connected.
+        script = self.tmp_path / "ssh"
+        script.write_text(f"""#!{sys.executable}
+import sys, time
+time.sleep(0.3)
+print("Connection closed by UNKNOWN port 65535", file=sys.stderr)
+sys.exit(255)
+""")
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
+        route = self.enterContext(mock.patch.object(rs, "ssh_route", mock.AsyncMock(return_value=rs.SSHRoute([], "sky-cluster", {}))))
+        tunnel = rs.Tunnel(make_server(ssh_host="oci@sky-cluster", local_port=free_port()), None)
+
+        async def failure() -> str:
+            tunnel.start()
+            try:
+                for _ in range(500):
+                    if tunnel.status["last_error"]:
+                        return tunnel.status["last_error"]
+                    await asyncio.sleep(0.01)
+                self.fail(f"the tunnel did not fail: {tunnel.status}")
+            finally:
+                await tunnel.stop()
+
+        assert asyncio.run(failure()) == rs.SKY_LOGIN_ERROR
+        # While Sky was asked, the tunnel was already down, so no request went to its free local port.
+        assert states == ["reconnecting"]
+        route.side_effect = OSError("sky status failed")
+        tunnel = rs.Tunnel(make_server(ssh_host="oci@sky-cluster", local_port=free_port()), None)
+        assert asyncio.run(failure()) == f"could not start ssh: {rs.SKY_LOGIN_ERROR}"
+        sky_login_reason.assert_awaited_with("oci@sky-cluster")
+
+        self.fake_host(existing_port=None)
+        _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="oci@sky-cluster"))
+        assert job.error == rs.SKY_LOGIN_ERROR
+        sky_login_reason.side_effect = None
+        sky_login_reason.return_value = None
+        _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="oci@sky-cluster"))
+        assert job.error == "sky status failed"
+
     def test_a_missing_aws_ssh_entry_is_written_by_sky_status_before_giving_up(self) -> None:
         self.enterContext(mock.patch.object(rs, "AWS_SESSION_DIR", self.tmp_path))
         (self.tmp_path / "agentsdock-new-cluster.credentials").write_text("[agentsdock]\n")  # fresh: no relay

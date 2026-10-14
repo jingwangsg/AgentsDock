@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-14 — The hub opens SkyPilot's login page when that login has expired (server)
+
+- When the SkyPilot login on the hub's machine expired, the tunnels of
+  every oci@ server failed with "Connection closed by UNKNOWN port 65535".
+  A deploy or redeploy to a cluster SkyPilot had not listed before failed
+  with "Sky has no ssh entry for <cluster>; check that `sky status -u`
+  lists it as UP", although the cluster was up: `sky status` itself was
+  failing with HTTP 401.
+- When an oci@ or aws@ tunnel or deploy fails, the hub now asks SkyPilot
+  whether it needs a new login (`sky api info`, at most once a minute). If
+  it does, the hub runs `sky api login` (at most once every 10 minutes),
+  which opens SkyPilot's login page in the browser on the hub's machine,
+  and the remote server's or the deploy's error asks for Authorize to be
+  clicked there. After Authorize, the tunnels reconnect at their next
+  retry, within 10 s. While the hub waits for SkyPilot's answer, the
+  tunnel already counts as down.
+- The page accepts Authorize for about 5 minutes. If it is ignored, the
+  next page opens at a failure 10 minutes or more after the previous one;
+  `sky api login` on the hub's machine works at any time.
+- Verified with an isolated hub, connected to the oci_dev cluster, whose
+  SkyPilot login had been removed to stand in for an expired one. The
+  tunnels failed, and one login page opened in the browser 3 s later (seen
+  in the browser's history). All five tunnels showed the new error. After
+  Authorize the login completed and the tunnels reconnected within a
+  second. That run used the change before review; the review moved the
+  status update ahead of SkyPilot's answer and shortened the wait for that
+  answer, which the hub's remote server tests cover, including new ones
+  for a single answer and a single page across concurrent failures.
+- Not covered: the error appears in the desktop's server list through the
+  existing error field; that view was not opened for this run. aws@
+  servers were not exercised against a real cluster.
+  Availability: takes effect when the hub restarts.
+
 ## 2026-10-14 — AgentsServer allows 64 port tunnels per chat or browser tab (server and Android source)
 
 - AgentsServer allowed each chat or browser tab at most 16 open port

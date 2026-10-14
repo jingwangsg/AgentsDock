@@ -98,6 +98,17 @@ AWS_SESSION_MARGIN = 1800
 # A failed relay is repeated only after this long: tunnels retry a failed connection every
 # few seconds, and a relay that keeps failing must not flood the cluster's job queue.
 AWS_RELAY_INTERVAL = 120.0
+# When SkyPilot's API server login on the hub's machine expires, every oci@ ssh fails at Sky's websocket
+# proxy and every `sky` call (ssh entry listing, aws@ session relay) with HTTP 401. A failed oci@ or aws@
+# connection then asks Sky whether it needs a login; tunnels fail together and share one answer this long.
+SKY_API_INFO_INTERVAL = 60.0
+# A login page opens again only after this long, so a page the user ignores is not followed by one per retry.
+SKY_LOGIN_INTERVAL = 600.0
+# `sky api login` polls for the Authorize click for 300 s, then falls back to Sky's older localhost-callback
+# login, which opens a second page; it is killed before that.
+SKY_LOGIN_TIMEOUT = 290.0
+SKY_LOGIN_ERROR = ("SkyPilot on the hub's machine needs a new login. Click Authorize on the newest SkyPilot login "
+                   "page in that machine's browser (the hub opens one at most every 10 minutes), or run `sky api login` there.")
 # A cluster container's own ~ does not outlive it. When the hub's environment names
 # the persistent cluster home where the Claude and Codex logins are kept, a default
 # install goes there, one per cluster or workflow (see default_install_dir); mount points are
@@ -642,6 +653,59 @@ async def aws_session_file(cluster: str, env: dict[str, str]) -> Path:
     return path
 
 
+# The running or last `sky api info` and `sky api login`, and when each started.
+SKY_API_INFO: tuple[asyncio.Task[str] | None, float] = (None, 0.0)
+SKY_LOGIN: tuple[asyncio.Task[str] | None, float] = (None, 0.0)
+
+
+async def sky_login_reason(ssh_host: str) -> str | None:
+    """SKY_LOGIN_ERROR if ssh_host is an oci@ or aws@ host and Sky's API server answers needs_auth; else None.
+
+    Called after a connection to the host failed. On needs_auth it also starts `sky api login`, which opens
+    Sky's login page in this machine's browser, at most once per SKY_LOGIN_INTERVAL.
+    """
+
+    global SKY_API_INFO, SKY_LOGIN
+    if not ssh_host.startswith(("oci@", "aws@")) or (sky := cluster_cli("sky")) is None:
+        return None
+    env = ssh_env()
+    if SKY_CA_BUNDLE.exists():
+        env["SSL_CERT_FILE"] = env["REQUESTS_CA_BUNDLE"] = str(SKY_CA_BUNDLE)
+    probe, started = SKY_API_INFO
+    if probe is None or time.monotonic() - started >= SKY_API_INFO_INTERVAL:
+        probe = asyncio.create_task(cli_output([sky, "api", "info", "-o", "json"], env, timeout=20))
+        SKY_API_INFO = (probe, time.monotonic())
+    try:
+        # A cancelled waiter (a stopped tunnel or deploy) leaves the running probe to the others.
+        output = await asyncio.shield(probe)
+        # Sky logs warnings to stdout too.
+        server = json.loads(output[output.find("{"):])["server"]
+        if server["status"] != "needs_auth":
+            return None
+        url = server["url"]
+    except (OSError, ValueError, LookupError, TypeError):
+        return None
+    login, started = SKY_LOGIN
+    if login is None or (login.done() and time.monotonic() - started >= SKY_LOGIN_INTERVAL):
+        logger.warning("SkyPilot needs a new login; opening its login page for %s", url)
+        login = asyncio.create_task(cli_output([sky, "api", "login", "-e", url], env, timeout=SKY_LOGIN_TIMEOUT))
+        login.add_done_callback(sky_login_finished)
+        SKY_LOGIN = (login, time.monotonic())
+    return SKY_LOGIN_ERROR
+
+
+def sky_login_finished(login: asyncio.Task[str]) -> None:
+    global SKY_API_INFO
+    if login.cancelled():
+        return
+    if login.exception() is not None:
+        logger.warning("SkyPilot login did not complete: %s", login.exception())
+        return
+    logger.info("SkyPilot login completed")
+    # The next failed connection asks again instead of reading the cached needs_auth.
+    SKY_API_INFO = (None, 0.0)
+
+
 async def ssh_route(ssh_host: str) -> SSHRoute:
     """Resolve the cluster notations; any other host is a plain ssh destination.
 
@@ -1063,7 +1127,8 @@ class Tunnel:
                     stderr=asyncio.subprocess.PIPE, env=env, start_new_session=True,
                 )
             except (OSError, asyncio.TimeoutError) as exc:
-                reason = f"could not start ssh: {exc}"
+                # With Sky's login expired, ssh_route fails as "Sky has no ssh entry for …" or in the aws@ relay.
+                reason = f"could not start ssh: {await sky_login_reason(self.server.ssh_host) or exc}"
                 # Logged only when the reason changes: a taken port or an ended OSMO workflow fails here on every retry.
                 if reason != self.status["last_error"]:
                     logger.warning("ssh tunnel %s %s", self.label, reason)
@@ -1120,6 +1185,11 @@ class Tunnel:
             if self._stopped:
                 return
             self._mark_reconnecting(last_line(tail) or f"ssh exited ({code})")
+            # An expired Sky login ends an oci@ ssh with "Connection closed by UNKNOWN port 65535", and only after
+            # SETTLE_SECONDS, when the tunnel already counted as connected; so Sky is asked on every exit. The
+            # tunnel is marked down first: while Sky answers, no request may go to its free local port.
+            if self.server.ssh_host.startswith("oci@") and (sky_reason := await sky_login_reason(self.server.ssh_host)):
+                self.status = {**self.status, "last_error": sky_reason}
             logger.warning("ssh tunnel %s exited; restarting in %.0fs: %s", self.label, self._backoff, self.status["last_error"])
             await asyncio.sleep(self._backoff)
             self._backoff = next_backoff(self._backoff)
@@ -1922,6 +1992,7 @@ class RemoteServerManager:
 
     async def _deploy(self, job: DeployJob, request: RemoteDeployRequest | RemoteAttachRequest | None, redeploy_id: str | None,
                       keep_port: bool = True) -> None:
+        ssh_host = ""  # the except reads it; the lookups below can raise first, and "" names no Sky host
         try:
             existing = self.servers[redeploy_id] if redeploy_id else None
             attach = isinstance(request, RemoteAttachRequest)
@@ -2020,6 +2091,8 @@ class RemoteServerManager:
             job.progress(job.phase, job.error)
         except Exception as exc:  # noqa: BLE001 - the job view carries the message
             job.error = str(exc) or exc.__class__.__name__
+            # Set first: a cancellation during the Sky check still leaves the job its error.
+            job.error = await sky_login_reason(ssh_host) or job.error
             job.progress(job.phase, job.error)
             logger.warning("remote deployment %s failed: %s", job.job_id, job.error)
         finally:
