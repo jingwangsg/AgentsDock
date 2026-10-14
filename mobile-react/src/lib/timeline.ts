@@ -1056,7 +1056,10 @@ const JOB_PREVIEW_CHARACTER_LIMIT = 240
 
 /** Keep machine output useful on a phone without discarding its full detail. */
 export function jobResultPresentation(event: Event): JobResultPresentation {
-  const detail = messageText(event).trim() || 'Scheduled job started. Waiting for agent output.'
+  const finished = event.type === 'turn_finished' && event.stopped !== true && !event.exit_code
+  const detail = messageText(event).trim() || (finished
+    ? 'Scheduled job finished without output.'
+    : 'Scheduled job started. Waiting for agent output.')
   const structured = parseStructuredResult(detail)
   if (structured != null) {
     return {
@@ -1310,6 +1313,9 @@ function jobDisplayPriority(event: Event): number {
   if (event.type === 'job_finished') return 3
   if (event.type === 'job_deferred') return 2
   if (event.type === 'job_ran' || event.type === 'job_started') return 2
+  // A completed run that ended without output is shown by its end: it ties with the job marker
+  // (the later event wins) and stays below 3, so a run's output still outranks it.
+  if (event.type === 'turn_finished' && event.stopped !== true && !event.exit_code) return 2
   if (event.type === 'turn_started') return 1
   return 0
 }

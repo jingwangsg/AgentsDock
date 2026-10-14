@@ -1,5 +1,37 @@
 # Public development log
 
+## 2026-10-14 — A scheduled run that ends without output says so on its card (server, desktop and Android source)
+
+- A scheduled run that completed without any output showed "Completed"
+  while its card's body came from the run's start or its job marker:
+  live, "Scheduled job ran: <title>", or "Scheduled job started. Waiting
+  for agent output." when the run had no marker (on Android, the job's
+  prompt); after a reload, "Scheduled job ran: <title>".
+- When the card chooses which of a run's events to show, a completed run's
+  end without output now ranks with its job marker instead of below its
+  start, in AgentsServer's history pages and in both apps, and the card of
+  such a run reads "Scheduled job finished without output." A run with
+  output still shows that output; a run that was stopped or failed is shown
+  as before. The history page's job summary no longer carries an empty
+  result field, so the Android app already installed also shows the new
+  text once its server is updated.
+- Verified with the desktop app and the Android app on an emulator against
+  an isolated server, on a chat whose scheduled run started, logged its job
+  marker and completed with no output: the card read "Scheduled job ran:
+  Quiet check" before the change and "Scheduled job finished without
+  output." after. The new server's history page gives that text to both
+  the current and the previous desktop and Android code. Server
+  history-page tests, the desktop timeline tests and the Android timeline
+  tests cover it, including a stopped run that keeps its marker.
+- Not covered: if a run's job marker is written after its end, which needs
+  a run that finishes within milliseconds, the marker is still shown. A
+  desktop app that has the chat's history pages cached keeps the old text
+  until the chat's history changes. The Android card counts such a run
+  twice ("2 runs"), as it did before this change.
+  Availability: the server part takes effect when a server is updated or
+  redeployed; the app changes take effect in the next desktop package and
+  Android build.
+
 ## 2026-10-14 — AgentsServer allows 256 port tunnels in total; the desktop app opens 64 per chat or browser tab (server and desktop)
 
 - Since the per chat or tab limit became 64 earlier today, one chat or
