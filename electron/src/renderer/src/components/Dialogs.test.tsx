@@ -2305,6 +2305,53 @@ describe('JobDialog', () => {
     await waitFor(() => expect(update).toHaveBeenCalledWith('job-standalone', { context_mode: 'chat' }))
   })
 
+  it('offers archiving successful runs for independent runs, off by default as in Codex', async () => {
+    const create = vi.fn().mockResolvedValue({})
+    const update = vi.fn().mockResolvedValue({})
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { jobs: { create, update } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      selectedSessionId: 'chat-1',
+      sessions: [{ id: 'chat-1', title: 'Status', backend: 'codex' }],
+      health: { ok: true, capabilities: { scheduled_jobs: {
+        available: true, required: false, message: 'Ready', action: null, version: 6, context_modes: ['chat', 'standalone'],
+        features: { standalone_runs_open_new_chat: true, archive_successful_runs: true }
+      } } },
+      drafts: {},
+      modals: { settings: false, newChat: false, resume: false, folder: false, digest: false, job: true, search: false, review: false, importChats: false }
+    })
+    const user = userEvent.setup()
+    const { unmount } = render(<JobDialog />)
+
+    await user.type(screen.getByLabelText('Title'), 'Fresh status')
+    await user.type(screen.getByLabelText('Prompt'), 'Inspect current state.')
+    expect(screen.queryByRole('checkbox', { name: 'Archive successful runs' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Independent runs/ }))
+    expect(screen.getByText(/Every run starts a new chat titled after this job/)).toBeInTheDocument()
+    const archive = screen.getByRole('checkbox', { name: 'Archive successful runs' })
+    expect(archive).not.toBeChecked()
+    await user.click(archive)
+    await user.click(screen.getByRole('button', { name: 'Save job' }))
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      context_mode: 'standalone', archive_successful_runs: true
+    })))
+    unmount()
+
+    render(<JobDialog />)
+    act(() => window.dispatchEvent(new CustomEvent('agentsdock:edit-job', { detail: {
+      id: 'job-standalone', session_id: 'chat-1', title: 'Fresh status', prompt: 'Check status',
+      interval_seconds: 3600, schedule_kind: 'interval', loop: true, enabled: true,
+      context_mode: 'standalone', archive_successful_runs: true
+    } })))
+    const edited = await screen.findByRole('checkbox', { name: 'Archive successful runs' })
+    expect(edited).toBeChecked()
+    await user.click(edited)
+    await user.click(screen.getByRole('button', { name: 'Save job' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('job-standalone', { archive_successful_runs: false }))
+  })
+
   it('resolves an edited job backend from its current parent chat after chat switches', async () => {
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,

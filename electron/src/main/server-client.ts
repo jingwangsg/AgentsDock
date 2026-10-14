@@ -1688,6 +1688,7 @@ export class AgentServerClient {
       max_runs: input.max_runs,
       enabled: input.enabled,
       context_mode: input.context_mode,
+      archive_successful_runs: input.archive_successful_runs,
       backend: input.backend
     }
     return (await this.post<{ job: Job }>('/api/jobs', payload)).job
@@ -1709,6 +1710,7 @@ export class AgentServerClient {
       max_runs: patch.max_runs,
       enabled: patch.enabled,
       context_mode: patch.context_mode,
+      archive_successful_runs: patch.archive_successful_runs,
       backend: patch.backend
     }
     return (await this.patch<{ job: Job }>(`/api/jobs/${encodeURIComponent(jobId)}`, payload)).job
