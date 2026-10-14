@@ -6,7 +6,7 @@ export const PORT_TUNNEL_LOOPBACK_HOST = '127.0.0.1'
 export const PORT_TUNNEL_MAX_LISTENERS_GLOBAL = 64
 export const PORT_TUNNEL_MAX_LISTENERS_PER_SESSION = 16
 export const PORT_TUNNEL_MAX_BRIDGES_GLOBAL = 64
-export const PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL = 16
+export const PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL = 64
 /** sshd's port: the one port below the 1024 floor a chat may forward, so Open in Zed reaches a remote's shell through the tunnel. */
 export const PORT_TUNNEL_SSH_PORT = 22
 
