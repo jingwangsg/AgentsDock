@@ -1884,7 +1884,8 @@ PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS = (
     "when the user explicitly asks; otherwise decide whether it is warranted.\n"
     "- `chats title \"<title>\"` names this chat; `chats title --route <route_id> \"<title>\"` names a chat behind one "
     "of your instruction routes, such as one created for your handoff. Set a title as soon as the task is clear and "
-    "update it when the focus changes, so a chat you created or work in stays easy to find.\n"
+    "update it when the focus changes, so a chat you created or work in stays easy to find. A scheduled job's run "
+    "chat keeps the job's title.\n"
     "- Jobs are allowed only when the live grant and durable chat policy allow them. Never attempt run-now. Future-job "
     "chat routes use the exact route returned by Chats and the user's single-@ job prompt.\n"
     "- Publish only user-requested files and say attached only after a successful JSON receipt. Give each a title or "
@@ -12294,8 +12295,9 @@ class JobStore:
             snapshot,
         )
         # A standalone occurrence lives in the newest chat started for its
-        # job, not in the chat that owns it (older servers ran it there while
-        # that chat was idle, which the parent scan above still finds).
+        # job, not in the chat that owns it (servers before every run opened
+        # a chat ran it in the owning chat while that chat was idle; the first
+        # scan above still finds those).
         newest_run_chat: dict[str, tuple[str, str]] = {}
         for run_session_id, session in list(STORE.sessions.items()):
             marker = session.get("scheduled_job_run")
@@ -47467,8 +47469,8 @@ async def finalize_cross_chat_terminal(event: dict[str, Any]) -> None:
 
 
 async def report_standalone_job_run(session_id: str, event: dict[str, Any]) -> None:
-    """Close the owning chat's job card when a standalone run that opened its
-    own chat ends, and archive that chat if the job archives successful runs.
+    """Close the owning chat's job card when a standalone run ends, and
+    archive its run chat if the job archives successful runs.
 
     The chat that scheduled the job receives the outcome here so its card
     does not stay "running".
@@ -47512,23 +47514,30 @@ async def report_standalone_job_run(session_id: str, event: dict[str, Any]) -> N
             concise_error_message(exc),
         )
     # As Codex's "Archive successful runs": only a completed run is archived,
-    # and not once the user wrote in the run chat (a queued follow-up, or a
-    # message steered into the run), because the chat is then theirs.
+    # and not once the user wrote in the run chat, because the chat is then
+    # theirs.
     job = JOBS.jobs.get(str(marker.get("job_id") or "")) or {}
     if (
         job.get("archive_successful_runs") is not True
         or scheduled_job_run_status(event) != "completed"
         or (STORE.sessions.get(session_id) or {}).get("archived")
-        or QUEUED_TURNS.get(session_id)
-        or RUN_NOW_TURNS.get(session_id)
     ):
         return
     run_chat_events = await asyncio.to_thread(
         read_events, session_id, limit=1_000_000, cap_to_response_limit=False,
     )
-    if any(
-        item.get("type") in {"turn_queued", "turn_steered"} and item.get("purpose") is None
-        for item in run_chat_events
+    # Checked after the read: the run's slot is free by now, so a message the
+    # user sends meanwhile starts at once instead of waiting in the queue.
+    # A turn without a purpose came from the user; scheduled and delivered
+    # turns carry one.
+    if (
+        session_id in BUSY_SESSIONS
+        or QUEUED_TURNS.get(session_id)
+        or RUN_NOW_TURNS.get(session_id)
+        or any(
+            item.get("type") in {"turn_queued", "turn_steered", "turn_started"} and item.get("purpose") is None
+            for item in run_chat_events
+        )
     ):
         return
     try:

@@ -328,7 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--context-mode",
         choices=("chat", "standalone"),
         default="chat",
-        help="continue in the parent chat (default) or use a fresh provider context",
+        help="continue in the parent chat (default) or start a new chat for every run",
     )
     create_parser.add_argument(
         "--chat-route",

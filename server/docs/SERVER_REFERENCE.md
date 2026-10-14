@@ -1118,7 +1118,7 @@ skipped, and ambiguous fall-back times run once.
 A job's `context_mode` follows the two kinds of Codex automation. `chat` (a
 heartbeat) runs in the job's chat and waits while that chat runs a turn; the
 wait posts no timeline card. `standalone` (a cron automation) starts a new
-chat for every run, whether or not the job's chat is busy, titled after the
+chat for every run, whether or not the parent chat is busy, titled after the
 job and with the parent chat's folder, working directory and settings (the
 job's backend when it differs). The run chat carries
 `scheduled_job_run: {job_id, session_id}` and keeps the job's title: an
@@ -1127,7 +1127,7 @@ closing `job_finished` events carry `run_session_id`. Run chats stay in the
 chat list unless the job sets `archive_successful_runs` (default `false`, as
 Codex's "Archive successful runs"): then the server archives a run chat when
 its run completes, but not after a failure or Stop, and not when the user
-queued or steered a message there. Clients detect this through
+sent, queued or steered a message there. Clients detect this through
 `scheduled_jobs.features.standalone_runs_open_new_chat` and
 `scheduled_jobs.features.archive_successful_runs`; older servers advertised
 `standalone_runs_open_new_chat_when_busy` (a run chat only while the parent

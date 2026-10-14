@@ -17,22 +17,24 @@
 - A job can archive successful runs, off by default as in Codex (the
   "Archive successful runs" option in the job dialog, field
   `archive_successful_runs`). A run chat is then archived when its run
-  completes, but not after a failure or Stop, or when the user wrote in it
-  during the run. Existing jobs read as off.
+  completes, but not after a failure or Stop, or when the user wrote in it.
+  Existing jobs read as off.
 - Verified with the desktop app and a real Codex runtime against an
   isolated server: a job created in the dialog ran while its chat was idle
   and opened a run chat titled "Quick check" with the clock mark; its agent's
-  rename was refused (409) and the chat stayed in the list. A second job
-  created with "Archive successful runs" checked archived its run chat
+  rename was refused (409) and the chat stayed in the list. A second job,
+  created with "Archive successful runs" checked, archived its run chat
   within seconds of completion. While the scheduling chat ran a 100-second
   command, that job opened another run chat; a message sent to it during
   the run was queued and answered afterwards, and that chat was not
-  archived. Server tests cover the new chat, the archive rule (completed,
+  archived. "Send now" during another Codex run stopped that run; its job
+  card read stopped and the chat stayed in the list. Server tests cover the new chat, the archive rule (completed,
   failed, stopped, steered and queued runs) and the job field; desktop tests
   cover the sidebar listing and the dialog option.
-- Not covered: Android lists run chats only while open or archived, as
-  before; that changes in a separate mobile task. The agent jobs helper has
-  no flag for the option yet. A remote server keeps the old behavior until
+- Not covered: Android still lists a run chat only while it is open or
+  archived; with archiving off by default, Android reaches run chats only
+  from the job card until a separate mobile task changes that. The agent
+  jobs helper has no flag for the option yet. A remote server keeps the old behavior until
   it is updated; the desktop app then shows the old description.
   Availability: the server part takes effect when a server is updated or
   redeployed; the desktop change takes effect in the next desktop package.

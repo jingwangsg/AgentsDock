@@ -2231,7 +2231,7 @@
   "ui.job.independentNewChatHelp": "Runs with a fresh {backend} context. While this chat is busy, the run opens its own chat and archives it when done; this chat gets the result and a link.",
   "ui.job.independentEveryRunNewChatHelp": "Every run starts a new chat titled after this job, with a fresh {backend} context. This chat gets the result and a link.",
   "ui.job.archiveSuccessfulRuns": "Archive successful runs",
-  "ui.job.archiveSuccessfulRunsHelp": "Archive a run's chat when the run completes and nobody wrote in it.",
+  "ui.job.archiveSuccessfulRunsHelp": "Archive a run's chat when the run completes, unless you sent a message in it.",
   "ui.permission.unavailable": "Permissions unavailable",
   "ui.restart.forceWarning": " Active turns, non-durable queued turns, terminals, tunnels, and any process inside agents-server.service may be terminated. Teamspace disconnects briefly. Saved chats and durable history remain. The active profile is “{name}” and its authenticated server control endpoint is {url}. That control endpoint is required; a Teamspace direct-IP route is not an out-of-band restart channel.",
   "ui.server.unreadMany": "{count} unread chats",

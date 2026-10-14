@@ -214,7 +214,7 @@ class StandaloneRunChatTests(unittest.IsolatedAsyncioTestCase):
 
 class StandaloneRunReportTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
-    async def appended(session_id, event_type, payload=None):
+    async def echo_append_event(session_id, event_type, payload=None):
         return {"type": event_type, "session_id": session_id, **(payload or {})}
 
     def jobs(self, *, archive_successful_runs: bool) -> dict:
@@ -289,7 +289,10 @@ class StandaloneRunReportTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(agent_server.STORE, "sessions", self.sessions()),
             patch.dict(agent_server.JOBS.jobs, self.jobs(archive_successful_runs=True)),
-            patch.object(agent_server, "append_event", side_effect=self.appended),
+            patch.object(agent_server, "read_events", Mock(return_value=[
+                {"type": "turn_started", "purpose": "scheduled_job", "run_id": "run_standalone"},
+            ])),
+            patch.object(agent_server, "append_event", side_effect=self.echo_append_event),
             patch.object(agent_server, "update_session", archive),
             patch.object(agent_server, "refresh_native_session_title", AsyncMock()),
             patch.object(agent_server, "schedule_generated_session_title", Mock()),
@@ -304,18 +307,22 @@ class StandaloneRunReportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_run_or_a_user_message_keeps_the_run_chat(self) -> None:
         cases = {
-            "failed": ({"exit_code": 1}, []),
-            "steered": ({"exit_code": 0}, [{"type": "turn_steered", "prompt": "and the loss?"}]),
-            "queued then run": ({"exit_code": 0}, [{"type": "turn_queued", "queued_id": "q1"}]),
+            "failed": ({"exit_code": 1}, [], set()),
+            "steered": ({"exit_code": 0}, [{"type": "turn_steered", "prompt": "and the loss?"}], set()),
+            "queued message already ran": ({"exit_code": 0}, [{"type": "turn_queued", "queued_id": "q1"}], set()),
+            # Sent after the run's slot was freed, so it started without queueing.
+            "user turn started": ({"exit_code": 0}, [{"type": "turn_started", "run_id": "run_user"}], set()),
+            "user turn running": ({"exit_code": 0}, [], {"sess_run"}),
         }
-        for name, (outcome, run_chat_events) in cases.items():
+        for name, (outcome, run_chat_events, busy) in cases.items():
             with self.subTest(name):
                 archive = AsyncMock()
                 with (
                     patch.object(agent_server.STORE, "sessions", self.sessions()),
                     patch.dict(agent_server.JOBS.jobs, self.jobs(archive_successful_runs=True)),
+                    patch.object(agent_server, "BUSY_SESSIONS", busy),
                     patch.object(agent_server, "read_events", Mock(return_value=run_chat_events)),
-                    patch.object(agent_server, "append_event", side_effect=self.appended),
+                    patch.object(agent_server, "append_event", side_effect=self.echo_append_event),
                     patch.object(agent_server, "update_session", archive),
                     patch.object(agent_server, "refresh_native_session_title", AsyncMock()),
                     patch.object(agent_server, "schedule_generated_session_title", Mock()),
@@ -346,7 +353,7 @@ class StandaloneRunReportTests(unittest.IsolatedAsyncioTestCase):
             patch.object(agent_server.STORE, "sessions", self.sessions()),
             patch.dict(agent_server.JOBS.jobs, self.jobs(archive_successful_runs=True)),
             patch.object(agent_server, "QUEUED_TURNS", {"sess_run": deque([{"queued_id": "q1", "prompt": "and the loss?"}])}),
-            patch.object(agent_server, "append_event", side_effect=self.appended),
+            patch.object(agent_server, "append_event", side_effect=self.echo_append_event),
             patch.object(agent_server, "update_session", archive),
             patch.object(agent_server, "refresh_native_session_title", AsyncMock()),
             patch.object(agent_server, "schedule_generated_session_title", Mock()),

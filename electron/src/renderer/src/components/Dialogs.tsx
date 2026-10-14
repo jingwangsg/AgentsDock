@@ -4409,6 +4409,7 @@ export function JobDialog() {
     const nextCron = scheduleKind === 'cron' ? cronExpression.trim() : null
     const nextRRule = scheduleKind === 'rrule' ? rrule.trim() : null
     const nextTimezone = scheduleKind === 'interval' ? null : timezone.trim()
+    const nextArchiveSuccessfulRuns = contextMode === 'standalone' && archiveSuccessfulRuns
     const scheduledTime = startMode === 'immediate' ? new Date().toISOString() : startMode === 'time' ? parseScheduleWallTime(firstRun, scheduleKind) : null
     const currentState = useAppStore.getState()
     const currentSession = currentState.sessions.find(candidate => candidate.id === session.id)
@@ -4520,7 +4521,6 @@ export function JobDialog() {
         if ((loop ? null : Math.max(1, maxRuns)) !== (editing.max_runs ?? null)) patch.max_runs = loop ? null : Math.max(1, maxRuns)
         if (enabled !== (editing.enabled !== false)) patch.enabled = enabled
         if (supportsIndependentRuns && contextMode !== (editing.context_mode ?? 'chat')) patch.context_mode = contextMode
-        const nextArchiveSuccessfulRuns = contextMode === 'standalone' && archiveSuccessfulRuns
         if (archiveSuccessfulRunsAvailable && nextArchiveSuccessfulRuns !== (editing.archive_successful_runs === true)) patch.archive_successful_runs = nextArchiveSuccessfulRuns
         if (selectedBackend !== (editing.backend || session.backend)) patch.backend = selectedBackend
         if (startMode === 'immediate' || startMode === 'time') patch.next_run_at = scheduledTime
@@ -4542,7 +4542,7 @@ export function JobDialog() {
           interval_seconds: nextInterval, cron_expression: nextCron, rrule: nextRRule, timezone: nextTimezone,
           first_run_at: scheduledTime, loop, max_runs: loop ? null : Math.max(1, maxRuns), enabled,
           ...(supportsIndependentRuns ? { context_mode: contextMode } : {}),
-          ...(archiveSuccessfulRunsAvailable ? { archive_successful_runs: contextMode === 'standalone' && archiveSuccessfulRuns } : {}),
+          ...(archiveSuccessfulRunsAvailable ? { archive_successful_runs: nextArchiveSuccessfulRuns } : {}),
           backend: selectedBackend
         }
         await window.agentsDock.jobs.create(input)
