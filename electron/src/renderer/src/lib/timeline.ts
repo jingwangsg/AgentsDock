@@ -2496,13 +2496,16 @@ export function jobResultPresentation(event: Event): JobResultPresentation {
   const cancelled = event.type === 'turn_stopped'
     || event.stopped === true
     || ['stopped', 'cancelled', 'canceled'].includes(status)
+  const finished = event.type === 'turn_finished' && !event.exit_code
   // A scheduled input is not a public result, including when only the start
   // or a status-only terminal is available on a bounded timeline page.
   const detail = messageText({ ...event, prompt: null }).trim() || (deferred
     ? 'Scheduled job deferred until this chat is available.'
     : cancelled
       ? 'Scheduled job was cancelled.'
-      : 'Scheduled job started. Waiting for agent output.')
+      : finished
+        ? 'Scheduled job finished without output.'
+        : 'Scheduled job started. Waiting for agent output.')
   const structured = parseStructuredResult(detail)
   if (structured != null) {
     return {
@@ -2619,6 +2622,9 @@ function jobDisplayPriority(event: Event): number {
   if (event.type === 'assistant_text' && messageText(event).trim()) return 3
   if (event.type === 'job_finished') return 3
   if (event.type === 'job_ran' || event.type === 'job_started') return 2
+  // A completed run that ended without output is shown by its end: it ties with the job marker
+  // (the later event wins) and stays below 3, so a run's output still outranks it.
+  if (event.type === 'turn_finished' && event.stopped !== true && !event.exit_code) return 2
   if (event.type === 'turn_started') return 1
   return 0
 }

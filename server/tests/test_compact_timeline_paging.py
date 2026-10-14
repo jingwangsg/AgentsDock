@@ -1443,6 +1443,36 @@ class CompactTimelinePagingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["result_text"], "Latest completed capacity result")
         self.assertNotEqual(summary.get("message"), "Scheduled job ran: Capacity monitor")
 
+    def test_semantic_job_summary_shows_a_run_that_ended_without_output_as_finished(self) -> None:
+        run = {
+            "run_id": "job-run-quiet",
+            "job_id": "job-quiet",
+            "job_title": "Quiet check",
+        }
+        started = self.event(1, "turn_started", prompt="Report only if something changed", purpose="scheduled_job", **run)
+        marker = self.event(2, "job_ran", message="Scheduled job ran: Quiet check", **run)
+        self.write_events([
+            started, marker,
+            self.event(3, "turn_finished", result_text="", exit_code=0, stopped=False, purpose="scheduled_job", **run),
+        ])
+
+        page = agent_server.read_semantic_timeline_page(self.session_id, limit=10, tail=True)
+
+        # The run's end, not its job marker, represents it; Android reads result_text before message.
+        self.assertEqual([(event["seq"], event["type"]) for event in page["events"]], [(1, "job_summary"), (3, "turn_finished")])
+        summary = page["events"][0]
+        self.assertEqual((summary["job_latest_status"], summary["message"]), ("completed", "Scheduled job finished without output."))
+        self.assertNotIn("result_text", summary)
+
+        # A run stopped before any output keeps its job marker and its summary text.
+        self.write_events([
+            started, marker,
+            self.event(3, "turn_finished", result_text="", exit_code=None, stopped=True, purpose="scheduled_job", **run),
+        ])
+        page = agent_server.read_semantic_timeline_page(self.session_id, limit=10, tail=True)
+        self.assertEqual([(event["seq"], event["type"]) for event in page["events"]], [(1, "job_summary"), (2, "job_ran")])
+        self.assertEqual(page["events"][0]["message"], "Scheduled job ran: Quiet check")
+
     def test_semantic_page_retroactively_folds_a_legacy_late_job_link(self) -> None:
         initial_turn = [
             self.event(1, "turn_started", run_id="legacy-job-run", prompt="Legacy poll"),

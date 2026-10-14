@@ -2800,6 +2800,19 @@ describe('projectTimeline', () => {
     expect(folded[0].kind === 'job' && folded[0].latestStatus?.type).toBe('turn_finished')
   })
 
+  it('shows a scheduled run that ended without output as finished on its card', () => {
+    const run = { run_id: 'run-job-3', backend: 'claude' as const, purpose: 'scheduled_job', job_id: 'job-3', job_title: 'Quiet check' }
+    const items = projectTimeline([
+      event(1, 'turn_started', { ...run, prompt: 'Report only if something changed' }),
+      event(2, 'job_ran', { run_id: 'run-job-3', job_id: 'job-3', job_title: 'Quiet check', message: 'Scheduled job ran: Quiet check' }),
+      event(3, 'turn_finished', run)
+    ], [])
+    expect(items.map(item => item.kind)).toEqual(['job'])
+    const card = items[0]
+    if (card.kind !== 'job') throw new Error('Expected a scheduled job card')
+    expect(jobResultPresentation(jobDisplaySelection(card).latest).detail).toBe('Scheduled job finished without output.')
+  })
+
   it('does not regress a cancelled scheduled run to running on a late job marker', () => {
     const items = projectTimeline([
       event(1, 'turn_started', {
