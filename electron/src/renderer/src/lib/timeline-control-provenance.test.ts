@@ -48,11 +48,12 @@ describe('timeline control provenance', () => {
 
   it('does not use the scheduled input as the main job card output before a response exists', () => {
     const prompt = 'SYNTHETIC_SCHEDULED_INPUT: inspect the example service privately.'
+    const run = { run_id: 'example-job-run', purpose: 'scheduled_job', job_id: 'example-job' }
+    // While it runs, a scheduled run is an ordinary turn with no card yet. A run that ends without output
+    // folds into a card that still shows its start event.
     const rows = renderTimelineItems(projectTimeline([
-      event(1, 'turn_started', {
-        run_id: 'example-job-run', purpose: 'scheduled_job', job_id: 'example-job',
-        job_title: 'Example monitor', prompt
-      })
+      event(1, 'turn_started', { ...run, job_title: 'Example monitor', prompt }),
+      event(2, 'turn_finished', run)
     ], []))
 
     expect(rows).toHaveLength(1)

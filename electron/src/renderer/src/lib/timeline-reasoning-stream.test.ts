@@ -68,7 +68,9 @@ describe('transient reasoning presentation', () => {
   })
 
   it('keeps a scheduled summary inside its job card without advancing counts or durable bounds', () => {
-    const job = event(1, 'turn_started', { job_id: 'job', purpose: 'scheduled_job', prompt: 'Internal job instruction' })
+    // The page holds the run's job marker but not its start, so the run is a card; a running run whose start
+    // is loaded is an ordinary turn instead.
+    const job = event(1, 'job_ran', { job_id: 'job', purpose: 'scheduled_job', message: 'Scheduled job ran: Example' })
     const { rows, semantic } = project([job])
     const live = overlayReasoningStream(rows, semantic, [{ ...stream, job_id: 'job', purpose: 'scheduled_job' }], 'chat')
     expect(live).toHaveLength(rows.length)
