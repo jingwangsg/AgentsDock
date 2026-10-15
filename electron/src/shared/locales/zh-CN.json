@@ -61,7 +61,7 @@
   "sshTunnel.mode": "添加方式",
   "sshTunnel.modeDeploy": "部署新服务端",
   "sshTunnel.modeAttach": "接入已有服务端",
-  "sshTunnel.attachHint": "注册另一个 hub 已在该目录部署好的 AgentsServer，或另一台 Mac 自己的服务端（目录保持默认时会在 ~/.config/agents-server 中查找）。不会改动主机上的任何内容。如果该服务端本身是 hub，它管理的服务端也会一并接入。",
+  "sshTunnel.attachHint": "注册主机上已在运行的 AgentsServer：另一个 hub 在该目录部署的服务端，或另一台 Mac 自己的服务端（目录保持默认时也会检查 ~/.config/agents-server）。不会改动主机上的任何内容。如果该服务端本身是 hub，它管理的服务端也会一并接入。",
   "sshTunnel.attaching": "接入中…",
   "hub.localServerRequired": "远程服务端通过本机服务端添加，请先添加本机服务端。",
   "hub.start": "启动",

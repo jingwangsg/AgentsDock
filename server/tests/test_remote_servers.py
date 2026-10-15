@@ -946,19 +946,20 @@ time.sleep(30)
         assert job.done and job.error is None, job.log
         [server] = rs.load_registry(manager.path)
         assert (server.name, server.ssh_host, server.install_dir, server.remote_port, server.token) == ("osmo_9000", "osmo_9000", "/mnt/lustre/.agentsdock-server", 7860, REMOTE_TOKEN)
-        assert job.server == server and job.phase == "complete" and server.attached
+        # No tunnel runs here, so the attach reports that the server's own list could not be read.
+        assert job.server == server and server.attached and "complete" in {entry["phase"] for entry in job.log}
         # The probe is the only ssh session: no upload and no bootstrap, so nothing on the host changes.
         sessions = [json.loads(line)["tail"] for line in calls.read_text().splitlines()]
         assert sessions == [["/mnt/lustre/.agentsdock-server"]]
         assert not {"download", "install"} & {entry["phase"] for entry in job.log}
 
-    def test_attach_with_the_default_directory_also_finds_a_machines_own_install_sh_server(self) -> None:
+    def test_attach_with_the_default_directory_also_probes_the_install_sh_config_dir(self) -> None:
         calls = self.fake_host(existing_port=7850)
         manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host="mac-a"))
         assert job.done and job.error is None, job.log
         [probe] = [json.loads(line)["tail"] for line in calls.read_text().splitlines()]
         assert probe == [rs.DEFAULT_INSTALL_DIR, rs.INSTALL_SH_CONFIG_DIR]
-        # The directory the probe found the install in is the one registered.
+        # The fake host reports the first directory; the probe test below covers choosing the fallback.
         assert rs.load_registry(manager.path)[0].install_dir == rs.DEFAULT_INSTALL_DIR
 
     def test_the_probe_reads_either_env_format_and_takes_the_fallback_only_without_an_install(self) -> None:
@@ -981,30 +982,43 @@ time.sleep(30)
         missing = probe(self.tmp_path / "missing")
         assert (missing["existing_port"], missing["existing_token"]) == (None, None)
 
-    def test_attaching_a_hub_attaches_the_servers_it_manages_once(self) -> None:
+    def test_attaching_a_hub_attaches_its_remotes_except_ones_registered_here(self) -> None:
         calls = self.fake_host(existing_port=7860)
         own, lab = "c" * 24, "b" * 24
-        identities = {"mac-a": "a" * 24, "osmo_9000": "e" * 24, "lab": lab, "lab-alias": lab, "mac-b": own, "quiet-host": "d" * 24}
-        listed = [
-            {"id": "r1", "name": "lab", "ssh_host": "lab", "install_dir": "/srv/agents", "hidden": False},
+        # Each listed remote: (entry, identity as the other hub reaches it, identity as this hub's ssh reaches it).
+        listed = {
+            "r1": ({"name": "lab", "ssh_host": "lab", "install_dir": "/srv/agents"}, lab, lab),
             # Registered on this hub already under the same host and directory.
-            {"id": "r2", "name": "osmo", "ssh_host": "osmo_9000", "install_dir": "/mnt/lustre/.agentsdock-server", "hidden": False},
-            # This hub's own server, attached by the other hub.
-            {"id": "r3", "name": "mac-b", "ssh_host": "mac-b", "install_dir": "/Users/me/.config/agents-server", "hidden": False},
-            # The same server as r1 under another host name.
-            {"id": "r4", "name": "lab-again", "ssh_host": "lab-alias", "install_dir": "/srv/agents", "hidden": False},
-            {"id": "r5", "name": "quiet", "ssh_host": "quiet-host", "install_dir": "/srv/quiet", "hidden": True},
-            {"id": "r6", "name": "bad", "ssh_host": "bad host", "install_dir": "/srv/bad", "hidden": False},
-        ]
+            "r2": ({"name": "osmo", "ssh_host": "osmo_9000", "install_dir": "/mnt/lustre/.agentsdock-server"}, "e" * 24, "e" * 24),
+            # This hub's own server, attached by the other hub: skipped without ssh.
+            "r3": ({"name": "mac-b", "ssh_host": "mac-b", "install_dir": "/Users/me/.config/agents-server"}, own, own),
+            # The same server as r1 under another host name: skipped without ssh once r1 is attached.
+            "r4": ({"name": "lab-again", "ssh_host": "lab-alias", "install_dir": "/srv/agents"}, lab, lab),
+            "r5": ({"name": "quiet", "ssh_host": "quiet-host", "install_dir": "/srv/quiet", "hidden": True}, "d" * 24, "d" * 24),
+            "r6": ({"name": "bad", "ssh_host": "bad host", "install_dir": "/srv/bad"}, "f" * 24, None),
+            # Neither hub can read these identities yet; neither one is taken for a duplicate of the other.
+            "r7": ({"name": "slow-1", "ssh_host": "slow-1", "install_dir": "/srv/slow"}, None, None),
+            "r8": ({"name": "slow-2", "ssh_host": "slow-2", "install_dir": "/srv/slow"}, None, None),
+            # The host name resolves to another machine from this hub's ssh config.
+            "r9": ({"name": "elsewhere", "ssh_host": "shared-alias", "install_dir": "/srv/agents"}, "9" * 24, "8" * 24),
+        }
+        reached = {"mac-a": "a" * 24, "osmo_9000": "e" * 24} | {entry["ssh_host"]: here for entry, _, here in listed.values()}
 
         async def probe_health(_manager: rs.RemoteServerManager, server: rs.RemoteServer) -> dict:
-            return {"server_identity": identities[server.ssh_host]}
+            return {"server_identity": reached[server.ssh_host]} if reached[server.ssh_host] else {}
+
+        async def hub_get(url: str, **kwargs) -> httpx.Response:
+            request = httpx.Request("GET", url)
+            if url.endswith("/api/admin/remote-servers"):
+                return httpx.Response(200, json={"servers": [{"id": key, **entry} for key, (entry, _, _) in listed.items()]}, request=request)
+            identity = listed[url.split("/api/remote/")[1].split("/")[0]][1]
+            return httpx.Response(200, json={"server_identity": identity}, request=request) if identity else httpx.Response(502, request=request)
 
         self.enterContext(mock.patch.object(rs.RemoteServerManager, "probe_health", autospec=True, side_effect=probe_health))
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False, own_identity=lambda: own)
-        manager.servers["registered01"] = make_server(id="registered01")
-        hub_list = mock.AsyncMock(return_value=httpx.Response(200, json={"servers": listed}))
-        self.enterContext(mock.patch.object(manager.http, "get", hub_list))
+        manager.servers["registered01"] = make_server(id="registered01", ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server")
+        hub_requests = mock.AsyncMock(side_effect=hub_get)
+        self.enterContext(mock.patch.object(manager.http, "get", hub_requests))
 
         async def main() -> rs.DeployJob:
             job = manager.start_deploy(rs.RemoteAttachRequest(ssh_host="mac-a", name="mac-a"))
@@ -1016,18 +1030,24 @@ time.sleep(30)
         assert job.done and job.error is None, job.log
         attached = rs.load_registry(manager.path)
         assert [(server.ssh_host, server.hidden, server.attached) for server in attached] == [
-            ("osmo_9000", False, False), ("mac-a", False, True), ("lab", False, True), ("quiet-host", True, True)]
-        # The hub's list is read with the hub's own token, through its tunnel.
-        [(url,), kwargs] = hub_list.await_args
-        assert url == f"http://127.0.0.1:{attached[1].local_port}/api/admin/remote-servers" and kwargs["headers"] == {"X-AgentsDock-Token": REMOTE_TOKEN}
+            ("osmo_9000", False, False), ("mac-a", False, True), ("lab", False, True), ("quiet-host", True, True),
+            ("slow-1", False, True), ("slow-2", False, True)]
+        # The hub's list and its remotes' health are read with the hub's own token, through its tunnel.
+        hub = f"http://127.0.0.1:{attached[1].local_port}"
+        assert hub_requests.await_args_list[0] == mock.call(f"{hub}/api/admin/remote-servers", headers={"X-AgentsDock-Token": REMOTE_TOKEN}, timeout=rs.HEALTH_REQUEST_TIMEOUT)
+        assert mock.call(f"{hub}/api/remote/r9/api/health", headers={"X-AgentsDock-Token": REMOTE_TOKEN}, timeout=rs.HEALTH_REQUEST_TIMEOUT) in hub_requests.await_args_list
         messages = [entry["message"] for entry in job.log]
-        assert "osmo: already registered on this hub." in messages
-        assert sum("the same server is already registered on this hub" in message for message in messages) == 2
-        assert messages[-1].startswith("Not attached: bad: ")
-        # Every ssh session was a probe: attaching changed nothing on any host.
-        assert all(len(json.loads(line)["tail"]) <= 2 for line in calls.read_text().splitlines())
+        assert [message for message in messages if message.endswith("already registered on this hub.")] == [
+            "osmo: already registered on this hub.", "mac-b: already registered on this hub.", "lab-again: already registered on this hub."]
+        # Failures come after the "complete" line, which stays the attached hub's own.
+        assert messages[-2].startswith("AgentsServer") and job.log[-2]["phase"] == "complete"
+        assert messages[-1].startswith("Not attached: bad: ") and messages[-1].endswith("elsewhere: shared-alias reaches another server from this hub")
+        # Every ssh session was a probe, and none went to a remote skipped by its identity.
+        sessions = [json.loads(line)["argv"] for line in calls.read_text().splitlines()]
+        assert all(len(argv[argv.index("--") + 1:]) <= 2 for argv in sessions)
+        assert not {"mac-b", "lab-alias"} & {arg for argv in sessions for arg in argv}
 
-    def test_attaching_a_registered_install_again_refreshes_its_entry(self) -> None:
+    def test_attaching_a_registered_install_again_keeps_one_entry(self) -> None:
         self.fake_host(existing_port=7860)
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
 
@@ -1730,6 +1750,7 @@ time.sleep(30)
             manager, _remote, _dead, hub_port, close = await hub_with_fake(self.tmp_path)
             try:
                 async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{hub_port}") as client:
+                    # hub_with_fake registers osmo_9000's default directory; another one makes this a new entry, not a refresh.
                     response = await client.post("/api/admin/remote-servers/attach", json={"ssh_host": "osmo_9000", "install_dir": "/mnt/lustre/other-install", "name": "lustre"})
                     assert response.status_code == 202, response.text
                     job = manager.jobs[response.json()["job_id"]]
@@ -1855,7 +1876,7 @@ time.sleep(30)
         assert job.done and job.error is None, job.log
         assert token not in calls.read_text()
 
-    def test_bootstrap_without_a_tarball_leaves_a_healthy_install_alone(self) -> None:
+    def test_bootstrap_points_the_env_at_its_install_and_takes_the_hubs_claude_token_once(self) -> None:
         # $HOME/.local/bin is the first PATH entry the script prepends, so fakes
         # placed there shadow the real uv/curl/claude/tmux and record every call.
         home = self.tmp_path / "home"
@@ -1869,27 +1890,37 @@ time.sleep(30)
         install = self.tmp_path / "install"
         (install / "server" / ".venv" / "bin").mkdir(parents=True)
         (install / "server" / ".venv" / "bin" / "python").symlink_to(sys.executable)
-        (install / "server" / "agent_server.py").write_text("")
-        (install / "server" / "VERSION").write_text("1.2.3\n")
+        source = self.tmp_path / "source"
+        source.mkdir()
+        (source / "agent_server.py").write_text("")
+        (source / "VERSION").write_text("1.2.3\n")
         # A moved install's stale config dir, and no final newline (a hand edit).
-        (install / "env").write_text(f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTS_SERVER_CONFIG_DIR=/old\nexport AGENTSDOCK_AGENT_PORT=7860")
+        # Unpacking stops whatever serves the port, so the run uses one no local server listens on.
+        (install / "env").write_text(f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTS_SERVER_CONFIG_DIR=/old\nexport AGENTSDOCK_AGENT_PORT=59872")
         install.chmod(0o775)  # a host umask of 002
 
-        proc = subprocess.run(
-            ["bash", "-s", "--", str(install), "7860", str(home)], input=rs.BOOTSTRAP_SCRIPT.read_bytes(),
-            capture_output=True, env={**os.environ, "HOME": str(home)}, timeout=60,
-        )
+        def bootstrap(prelude: bytes = b"") -> subprocess.CompletedProcess:
+            with tarfile.open(install / "upload.tgz", "w:gz") as tar:
+                tar.add(source, arcname=".")
+            return subprocess.run(
+                ["bash", "-s", "--", str(install), "59872", str(home)], input=prelude + rs.BOOTSTRAP_SCRIPT.read_bytes(),
+                capture_output=True, env={**os.environ, "HOME": str(home)}, timeout=60,
+            )
 
+        proc = bootstrap()
         output = proc.stdout.decode()
         assert proc.returncode == 0, output + proc.stderr.decode()
         result = rs.parse_setup_result(output.splitlines())
-        assert (result["access_token"], result["remote_port"], result["server_version"]) == (REMOTE_TOKEN, 7860, "1.2.3")
-        # The only external call is start.sh's health check, which found the server up.
-        assert calls.read_text().splitlines() == [f"curl -fsS -m 3 -H Authorization: Bearer {REMOTE_TOKEN} http://127.0.0.1:7860/api/health"]
+        assert (result["access_token"], result["remote_port"], result["server_version"]) == (REMOTE_TOKEN, 59872, "1.2.3")
+        # The new source replaces the running server, the runtime is synced, and start.sh's health check finds it up.
+        assert calls.read_text().splitlines() == [
+            "tmux kill-session -t agentsdock-59872", "uv sync --frozen --quiet --python >=3.11,<3.15",
+            f"curl -fsS -m 3 -H Authorization: Bearer {REMOTE_TOKEN} http://127.0.0.1:59872/api/health",
+        ]
         # The only env change points the server's own settings writes (a token saved in the app) at this env,
         # whose directory the server writes only when group/others cannot.
         assert (install / "env").read_text() == (
-            f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTSDOCK_AGENT_PORT=7860\n"
+            f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTSDOCK_AGENT_PORT=59872\n"
             f"export AGENTS_SERVER_CONFIG_DIR={install}\n"
         )
         assert stat.S_IMODE(install.stat().st_mode) & 0o022 == 0
@@ -1897,10 +1928,7 @@ time.sleep(30)
         # A token handed over by the hub lands in env once, without echoing it.
         token = "sk-ant-oat01-" + "t" * 40
         for _ in range(2):
-            proc = subprocess.run(
-                ["bash", "-s", "--", str(install), "7860", str(home)], input=f"AGENTSDOCK_CLAUDE_TOKEN={token}\n".encode() + rs.BOOTSTRAP_SCRIPT.read_bytes(),
-                capture_output=True, env={**os.environ, "HOME": str(home)}, timeout=60,
-            )
+            proc = bootstrap(f"AGENTSDOCK_CLAUDE_TOKEN={token}\n".encode())
             assert proc.returncode == 0 and token not in proc.stdout.decode() + proc.stderr.decode(), proc.stderr.decode()
         assert (install / "env").read_text().count(f"export CLAUDE_CODE_OAUTH_TOKEN={token}\n") == 1
         assert (install / "env").read_text().count("export AGENTS_SERVER_CONFIG_DIR=") == 1

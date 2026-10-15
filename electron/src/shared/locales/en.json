@@ -61,7 +61,7 @@
   "sshTunnel.mode": "How to add",
   "sshTunnel.modeDeploy": "Deploy a new server",
   "sshTunnel.modeAttach": "Attach an existing server",
-  "sshTunnel.attachHint": "Registers the AgentsServer another hub deployed in this directory, or another Mac's own server (found in ~/.config/agents-server when the directory is left as is). Nothing on the host changes. If that server is a hub, the servers it manages are attached too.",
+  "sshTunnel.attachHint": "Registers an AgentsServer already running on the host: one another hub deployed in this directory, or another Mac's own server (with the default directory, ~/.config/agents-server is checked too). Nothing on the host is changed. If that server is a hub, the servers it manages are attached as well.",
   "sshTunnel.attaching": "Attaching…",
   "hub.localServerRequired": "Remote servers are added through the local server; add it first.",
   "hub.start": "Start",

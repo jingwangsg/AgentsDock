@@ -11,8 +11,8 @@ if ! command -v curl >/dev/null 2>&1; then
   printf 'curl is required on the host.\n' >&2
   exit 78
 fi
-# An attach may name a second directory (remote_servers.INSTALL_SH_CONFIG_DIR); it
-# is used when only it holds an install's env.
+# An attach with the default directory passes install.sh's config directory as $2
+# (remote_servers.INSTALL_SH_CONFIG_DIR); it becomes the install only when $1 has no env.
 FALLBACK_DIR="${2:-}"
 case "$FALLBACK_DIR" in "~"*) FALLBACK_DIR="$HOME${FALLBACK_DIR#\~}" ;; esac
 if [ -n "$FALLBACK_DIR" ] && [ ! -r "$INSTALL_DIR/env" ] && [ -r "$FALLBACK_DIR/env" ]; then INSTALL_DIR="$FALLBACK_DIR"; fi
@@ -35,8 +35,8 @@ if env_file:
     with open(env_file) as handle:
         for line in handle:
             line = line.strip()
-            if line.startswith("export "):
-                line = line[len("export "):]
+            if line.startswith("export") and line[6:7].isspace():
+                line = line[7:].lstrip()
             name, sep, value = line.partition("=")
             if sep:
                 values[name.strip()] = value.strip().strip("'\"")

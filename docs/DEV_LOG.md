@@ -14,9 +14,11 @@
   `start.sh` or the env file, or replaces the install's Claude token and
   restarts the server. The hub that deployed the install keeps its updates.
 - When the attached server is itself a hub, the servers it manages are
-  attached too. Servers already registered here (same host and directory,
+  attached too. A server already registered here (same host and directory,
   or the same server identity under another host name) and this hub's own
-  server are skipped; a server hidden on the other hub stays hidden.
+  server are skipped without connecting to them; a server hidden on the
+  other hub stays hidden. A host name that reaches a different server from
+  this Mac than from the other hub is not attached and is reported.
   Attaching the same hub again refreshes its entry and picks up the
   servers it registered since, without listing anything twice.
 - Each server still owns its chats. Two hubs that attach the same server
@@ -33,14 +35,17 @@
   turn started through Mac A's hub appeared in the app as it ran, and a
   message sent from the app was readable through Mac A's hub. Attaching
   Mac A again kept the same entries and added a remote registered on
-  Mac A in the meantime. The host's env files were unchanged. Server tests
+  Mac A in the meantime. In a second run, Mac A's hub also listed this
+  Mac's own server, which was skipped without an ssh connection. The
+  host's env files were unchanged. Server tests
   cover the probe on both env formats, the read-only attach, the repeated
-  attach and the hub import with its skip rules.
+  attach and the hub import with its skip rules. The deploy bootstrap no
+  longer has a separate no-upload path, which only attaching used.
 - Not covered: a real sshd on a second Mac, and attaching through a hub
   whose remotes are oci@, aws@ or osmo@ hosts (the attaching Mac then needs
-  its own cluster logins). Cross-server chat mail between chats paired on
-  the other hub is still relayed only by that hub; when this hub reads the
-  item first it is delayed by up to 5 minutes. Android keeps its own attach
+  its own cluster logins). Mail between chats paired on the other hub is
+  still relayed only by that hub; a message this hub receives first
+  reaches its chat up to 5 minutes later. Android keeps its own attach
   form and text. Availability: takes effect when the hub is updated and in
   the next desktop package; attached servers need no update.
 
