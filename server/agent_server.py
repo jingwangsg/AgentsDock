@@ -101385,7 +101385,8 @@ agentsdock_canvas.register_canvas_routes(
 # Hub for SSH-only remote servers: registry, tunnels, deploy, and the /api/remote/{id} proxy.
 # Only the hub on the default state directory keeps the remotes' ssh aliases: another instance, such as an
 # isolated test hub, must not rewrite or remove them.
-REMOTE_SERVERS = remote_servers.RemoteServerManager(STATE_DIR, source_dir=SERVER_ROOT, ssh_aliases=STATE_DIR == Path.home() / ".agentsdock")
+REMOTE_SERVERS = remote_servers.RemoteServerManager(STATE_DIR, source_dir=SERVER_ROOT, ssh_aliases=STATE_DIR == Path.home() / ".agentsdock",
+                                                    own_identity=server_identity)
 remote_servers.register_remote_server_routes(
     app, manager=REMOTE_SERVERS, authorize_admin=require_native_admin_control, websocket_authorized=websocket_authorized,
     # Update & redeploy all: the hub's own running chats (as /api/health lists them), CLI updates and restart.

@@ -23,7 +23,6 @@ for check_dir in "$HOME_DIR" "$HOME_DIR/.config"; do
 done
 cd "$INSTALL_DIR"
 
-UNPACKED=0
 if [ -f upload.tgz ]; then
   log "Unpacking AgentsServer source"
   rm -rf server.new && mkdir server.new
@@ -36,31 +35,26 @@ if [ -f upload.tgz ]; then
   # from matching a shell that carries it in its own command line.
   tmux kill-session -t "agentsdock-$PORT" 2>/dev/null || true
   pkill -f "[a]gent_server.py serve.*--port $PORT$" 2>/dev/null || true
-  UNPACKED=1
 elif [ ! -f server/agent_server.py ]; then
   printf 'No server source was uploaded to %s.\n' "$INSTALL_DIR" >&2
   exit 2
 fi
 
-# A hub attaching to an install another hub deployed runs this script without a
-# tarball and must leave the install as it is: the runtime is synced only for new source.
-if [ "$UNPACKED" = 1 ]; then
-  if ! command -v uv >/dev/null 2>&1; then
-    log "Installing uv"
-    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
-    export PATH="$HOME/.local/bin:$PATH"
-  fi
-  command -v uv >/dev/null 2>&1 || { printf 'uv could not be installed.\n' >&2; exit 2; }
-  # The server needs 3.11+ (tomllib) although pyproject still says >=3.10; without
-  # the pin uv happily picks an older managed interpreter it finds on the host.
-  # Upper bound: the newest CPython the locked compiled packages (pydantic-core, cffi,
-  # rpds-py) ship wheels for. Without it, a host whose system Python is too old gets uv's
-  # newest managed CPython and builds those packages from source, which fails without a
-  # compiler. Raise it when a uv.lock update brings wheels for a newer CPython; install.sh
-  # carries the same bound.
-  log "Preparing the Python runtime (uv sync)"
-  ( cd server && uv sync --frozen --quiet --python '>=3.11,<3.15' )
+if ! command -v uv >/dev/null 2>&1; then
+  log "Installing uv"
+  curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+  export PATH="$HOME/.local/bin:$PATH"
 fi
+command -v uv >/dev/null 2>&1 || { printf 'uv could not be installed.\n' >&2; exit 2; }
+# The server needs 3.11+ (tomllib) although pyproject still says >=3.10; without
+# the pin uv happily picks an older managed interpreter it finds on the host.
+# Upper bound: the newest CPython the locked compiled packages (pydantic-core, cffi,
+# rpds-py) ship wheels for. Without it, a host whose system Python is too old gets uv's
+# newest managed CPython and builds those packages from source, which fails without a
+# compiler. Raise it when a uv.lock update brings wheels for a newer CPython; install.sh
+# carries the same bound.
+log "Preparing the Python runtime (uv sync)"
+( cd server && uv sync --frozen --quiet --python '>=3.11,<3.15' )
 
 # Agent CLIs. Claude Code has a dependency-free installer; install it under the
 # server's HOME so the binary lands on a persistent path. Codex is left to the
@@ -131,10 +125,10 @@ fi
 # Keep the requested port even for an existing install that was moved.
 sed -i.bak "s|^export AGENTSDOCK_AGENT_PORT=.*|export AGENTSDOCK_AGENT_PORT=$PORT|" env && rm -f env.bak
 # An install made while its cluster home held no login yet runs with the container's own ~,
-# which the next container drops. A deploy that chose the install's parent moves it there; the
-# move never goes back, and an attach (nothing unpacked) leaves the owning hub's choice alone.
+# which the next container drops. A deploy that chose the install's parent moves it there, and
+# the move never goes back.
 ENV_HOME="$(sed -n 's/^export HOME=//p' env | tail -n 1)"
-if [ "$UNPACKED" = 1 ] && [ -n "$ENV_HOME" ] && [ "$ENV_HOME" != "$HOME_DIR" ] && [ "$HOME_DIR" = "$(dirname "$INSTALL_DIR")" ]; then
+if [ -n "$ENV_HOME" ] && [ "$ENV_HOME" != "$HOME_DIR" ] && [ "$HOME_DIR" = "$(dirname "$INSTALL_DIR")" ]; then
   sed -i.bak -e "s|^export HOME=.*|export HOME=$HOME_DIR|" \
     -e "s|^export AGENTSDOCK_AGENT_CWD=$ENV_HOME\$|export AGENTSDOCK_AGENT_CWD=$HOME_DIR|" \
     -e "/^export PATH=/s|=$ENV_HOME/.local/bin|=$HOME_DIR/.local/bin|" \

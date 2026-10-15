@@ -87,6 +87,8 @@ UPLOAD_RETRIES = 8
 UPLOAD_RETRY_DELAY = 5.0
 
 DEFAULT_INSTALL_DIR = "~/.agentsdock-server"
+# install.sh's default AGENTS_SERVER_CONFIG_DIR: where a server installed with install.sh (a Mac's own server) keeps its env.
+INSTALL_SH_CONFIG_DIR = "~/.config/agents-server"
 SKY_CA_BUNDLE = Path.home() / ".sky" / "certs" / "requests-ca-bundle.pem"
 # An aws@ cluster's ssh entry opens an AWS SSM session, which needs AWS credentials: a temporary
 # STS session that the cluster itself mints (see aws_session_file); one credentials file per cluster.
@@ -393,7 +395,7 @@ def remote_shell_args(ssh_host: str) -> list[str]:
 
 def tunnel_args(
     ssh_host: str,
-    local_port: int | None,
+    local_port: int,
     remote_port: int,
     *,
     bind_mode: Literal["ipv4", "dual"] = "ipv4",
@@ -424,11 +426,8 @@ def tunnel_args(
         args.append("-v")
     if channel_timeout is not None:
         args.extend(["-o", f"ChannelTimeout={channel_timeout}"])
-    if local_port is not None:
-        # None: a reverse-only connection (the inference tunnel) serves no request from this machine.
-        local_binding = f"127.0.0.1:{validate_port(local_port)}" if bind_mode == "ipv4" else str(validate_port(local_port))
-        args.extend(["-L", f"{local_binding}:127.0.0.1:{validate_remote_port(remote_port)}"])
-    return [*args, validate_ssh_host(ssh_host)]
+    local_binding = f"127.0.0.1:{validate_port(local_port)}" if bind_mode == "ipv4" else str(validate_port(local_port))
+    return [*args, "-L", f"{local_binding}:127.0.0.1:{validate_remote_port(remote_port)}", validate_ssh_host(ssh_host)]
 
 
 async def resolved_proxy_command(ssh_host: str) -> str:
@@ -859,18 +858,6 @@ def needs_revive(stderr_line: str) -> bool:
     return "open failed: connect failed" in stderr_line.lower()
 
 
-def inference_proxy_port() -> int | None:
-    """AGENTSDOCK_INFERENCE_PROXY_PORT as a port number; None when unset or not a port."""
-    value = os.environ.get("AGENTSDOCK_INFERENCE_PROXY_PORT", "").strip()
-    if not value:
-        return None
-    if not (value.isdigit() and 1 <= int(value) <= 65535):
-        # A hand-edited bad value is dropped with a warning, so the remote's main and bulk tunnels still come up.
-        logger.warning("ignoring AGENTSDOCK_INFERENCE_PROXY_PORT=%r: not a port", value)
-        return None
-    return int(value)
-
-
 def next_backoff(current: float) -> float:
     return min(MAX_BACKOFF, current * 2)
 
@@ -1038,11 +1025,11 @@ async def ssh_process_group(proc: asyncio.subprocess.Process) -> AsyncIterator[N
 
 
 class Tunnel:
-    """Keeps one ``ssh -N`` forward (``-L``, or ``-R`` for the inference role) alive with backoff and optional remote revival."""
+    """Keeps one ``ssh -N -L`` forward alive with backoff and optional remote revival."""
 
     def __init__(
         self, server: RemoteServer | SSHForward, revive: Callable[[RemoteServer], Awaitable[None]] | None,
-        *, role: Literal["main", "bulk", "stream", "surface", "inference"] = "main",
+        *, role: Literal["main", "bulk", "stream", "surface"] = "main",
         on_route: Callable[[SSHRoute], Awaitable[None]] | None = None,
     ):
         self.server = server
@@ -1087,23 +1074,21 @@ class Tunnel:
                         env["SSL_CERT_FILE"] = self.server.ca_bundle_path
                         env["REQUESTS_CA_BUNDLE"] = self.server.ca_bundle_path
                 else:
-                    if self.role != "inference":
-                        # ssh binds its -L port only after the full connect, and a taken port then ends it
-                        # (ExitOnForwardFailure). Failing here costs no connection and keeps the tunnel down
-                        # (see RemoteServerManager.tunnel_down_on), so no remote's token goes to whoever holds
-                        # the port. With SO_REUSEADDR, as ssh binds and unlike local_port_free, connections
-                        # left in TIME_WAIT on the port do not make it taken.
-                        with socket.socket() as probe:
-                            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                            try:
-                                probe.bind(("127.0.0.1", self.server.local_port))
-                            except OSError as exc:
-                                raise OSError(f"local port {self.server.local_port}: {exc.strerror}") from exc
-                    # The inference tunnel carries only its reverse forward; nothing here connects through it.
+                    # ssh binds its -L port only after the full connect, and a taken port then ends it
+                    # (ExitOnForwardFailure). Failing here costs no connection and keeps the tunnel down
+                    # (see RemoteServerManager.tunnel_down_on), so no remote's token goes to whoever holds
+                    # the port. With SO_REUSEADDR, as ssh binds and unlike local_port_free, connections
+                    # left in TIME_WAIT on the port do not make it taken.
+                    with socket.socket() as probe:
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        try:
+                            probe.bind(("127.0.0.1", self.server.local_port))
+                        except OSError as exc:
+                            raise OSError(f"local port {self.server.local_port}: {exc.strerror}") from exc
                     # The main and stream tunnels carry JSON and the surface tunnel mostly web pages,
                     # which ssh compresses well; the bulk tunnel carries file bodies, mostly already compressed.
                     args = tunnel_args(
-                        route.destination, None if self.role == "inference" else self.server.local_port, self.server.remote_port,
+                        route.destination, self.server.local_port, self.server.remote_port,
                         compress=self.role in ("main", "stream", "surface"),
                     )
                     # Site forwards the cluster's chats need, e.g. a git server that only this
@@ -1112,14 +1097,7 @@ class Tunnel:
                     # a second -R for it fails and ExitOnForwardFailure ends that ssh.
                     self._site_args = (shlex.split(os.environ.get("AGENTSDOCK_OCI_TUNNEL_SSH_ARGS", ""))
                                        if self.role == "main" and self.server.ssh_host.startswith("oci@") else [])
-                    # The inference proxy on this machine holds the upstream API keys; chats on
-                    # every remote host reach it at 127.0.0.1:<port> through this reverse forward.
-                    # It gets a connection of its own so the LLM requests and token streams no
-                    # longer share the main tunnel's ssh connection (~27 KiB/s through a Sky
-                    # proxy, see the bulk tunnel note) with the chat event stream.
-                    proxy_port = inference_proxy_port() if self.role == "inference" else None
-                    proxy_args = ["-R", f"{proxy_port}:127.0.0.1:{proxy_port}"] if proxy_port else []
-                    options = [*route.options, *self._site_args, *proxy_args]
+                    options = [*route.options, *self._site_args]
                 self._route = route
                 proc = await asyncio.create_subprocess_exec(
                     ssh_binary(), *options, *args,
@@ -1381,7 +1359,7 @@ class DeployJob:
 
 @dataclass(kw_only=True)
 class ChildDeployJob(DeployJob):
-    """One remote's redeploy inside an update-all job: its progress also lands in the parent's log, labelled."""
+    """One remote's job inside a parent job (update-all, or attaching a hub's remotes): its progress also lands in the parent's log, labelled."""
 
     parent: DeployJob
     label: str
@@ -1547,12 +1525,15 @@ class RemoteServerManager:
         manage_tunnels: bool = True,
         revive: Callable[[RemoteServer], Awaitable[None]] = start_remote_server,
         ssh_aliases: bool = False,
+        own_identity: Callable[[], str] = lambda: "",
     ) -> None:
         self.path = state_dir / "remote-servers.json"
         self.forward_path = state_dir / "ssh-forwards.json"
         self.source_dir = source_dir
         self.manage_tunnels = manage_tunnels
         self._revive = revive
+        # This hub's own server identity: a hub it attaches may list this hub among its remotes.
+        self.own_identity = own_identity
         # Keep an ssh alias per remote in SSH_ALIAS_DIR (see _keep_ssh_alias).
         self.ssh_aliases = ssh_aliases
         self.servers: dict[str, RemoteServer] = {}
@@ -1560,7 +1541,6 @@ class RemoteServerManager:
         self.bulk_tunnels: dict[str, Tunnel] = {}
         self.stream_tunnels: dict[str, Tunnel] = {}
         self.surface_tunnels: dict[str, Tunnel] = {}
-        self.inference_tunnels: dict[str, Tunnel] = {}
         self.forwards: dict[str, SSHForward] = {}
         self.forward_tunnels: dict[str, Tunnel] = {}
         self.jobs: dict[str, DeployJob] = {}
@@ -1606,14 +1586,12 @@ class RemoteServerManager:
             if job.task is not None and not job.task.done():
                 job.task.cancel()
         await asyncio.gather(*(tunnel.stop() for tunnel in [*self.tunnels.values(), *self.bulk_tunnels.values(), *self.stream_tunnels.values(),
-                                                              *self.surface_tunnels.values(), *self.inference_tunnels.values(),
-                                                              *self.forward_tunnels.values()]),
+                                                              *self.surface_tunnels.values(), *self.forward_tunnels.values()]),
                              return_exceptions=True)
         self.tunnels.clear()
         self.bulk_tunnels.clear()
         self.stream_tunnels.clear()
         self.surface_tunnels.clear()
-        self.inference_tunnels.clear()
         self.forward_tunnels.clear()
         await self.http.aclose()
 
@@ -1630,7 +1608,7 @@ class RemoteServerManager:
         if current is not None and current.server == server:
             return
         for stale in (current, self.bulk_tunnels.pop(server.id, None), self.stream_tunnels.pop(server.id, None),
-                      self.surface_tunnels.pop(server.id, None), self.inference_tunnels.pop(server.id, None)):
+                      self.surface_tunnels.pop(server.id, None)):
             if stale is not None:
                 asyncio.create_task(stale.stop())
         on_route = (lambda route, remote_id=server.id: self._keep_ssh_alias(remote_id, route)) if self.ssh_aliases else None
@@ -1659,11 +1637,6 @@ class RemoteServerManager:
         self.surface_tunnels[server.id] = surface
         logger.info("ssh tunnel starting for %s (%s, local %d -> remote %d)", surface.label, server.ssh_host, surface.server.local_port, server.remote_port)
         surface.start()
-        if inference_proxy_port() is not None:
-            inference = Tunnel(server, None, role="inference")
-            self.inference_tunnels[server.id] = inference
-            logger.info("ssh tunnel starting for %s (%s, reverse forward to the inference proxy)", inference.label, server.ssh_host)
-            inference.start()
 
     async def _keep_ssh_alias(self, remote_id: str, route: SSHRoute) -> None:
         """Point `ssh <name>` at the route the remote's main tunnel resolved; a failure leaves the tunnel alone."""
@@ -1719,7 +1692,6 @@ class RemoteServerManager:
         No ssh holds the port then, so a listener there is another process: no request carrying a
         remote's token may go to it.
         """
-        # Not the inference tunnels: they carry the main tunnel's local_port but forward no local port.
         # Not the SSH forwards: no remote's token goes to them.
         tunnels = [*self.tunnels.values(), *self.bulk_tunnels.values(), *self.stream_tunnels.values(), *self.surface_tunnels.values()]
         return next((tunnel for tunnel in tunnels if tunnel.server.local_port == port and (
@@ -1782,7 +1754,7 @@ class RemoteServerManager:
         if server is None:
             raise HTTPException(status_code=404, detail="Unknown remote server.")
         for tunnel in (self.tunnels.pop(remote_id, None), self.bulk_tunnels.pop(remote_id, None), self.stream_tunnels.pop(remote_id, None),
-                       self.surface_tunnels.pop(remote_id, None), self.inference_tunnels.pop(remote_id, None)):
+                       self.surface_tunnels.pop(remote_id, None)):
             if tunnel is not None:
                 await tunnel.stop()
         self._save()
@@ -2016,43 +1988,51 @@ class RemoteServerManager:
             if request is not None and request.password:
                 job.progress("connect", f"Installing this hub's SSH key on {ssh_host} with the password…")
                 await self._install_key(job, route, request.password)
-            probe_lines = await self._run_ssh(job, route, [*remote_shell_args(route.destination), install_dir], stdin=PROBE_SCRIPT.read_bytes(), idle_timeout=60)
+            # An attach that keeps the default directory also finds a machine's own install.sh server.
+            probe_dirs = [install_dir, INSTALL_SH_CONFIG_DIR] if attach and request.install_dir == DEFAULT_INSTALL_DIR else [install_dir]
+            probe_lines = await self._run_ssh(job, route, [*remote_shell_args(route.destination), *probe_dirs], stdin=PROBE_SCRIPT.read_bytes(), idle_timeout=60)
             probe = parse_probe(probe_lines)
             # The probe takes the install's parent as HOME only once it holds a Claude or Codex
             # login. A fresh cluster home has none yet; the container's own ~ (often /root) would
-            # then receive the CLIs and logins, and the next container drops them. An attached
-            # install belongs to another hub, which keeps choosing its HOME.
+            # then receive the CLIs and logins, and the next container drops them.
             home = cluster_home(ssh_host)
-            if home and not attach and install_dir.rpartition("/")[0] == home:
+            if home and install_dir.rpartition("/")[0] == home:
                 probe["home"] = home
-            if attach and not probe.get("existing_port"):
+            if attach and not (probe.get("existing_port") and probe.get("existing_token")):
                 raise RuntimeError(f"No AgentsServer install was found at {install_dir} on {ssh_host}. Deploy a new server instead.")
+            if attach and existing is None:
+                # Attaching an install registered here already (a hub attached again to pick up the
+                # remotes it added since) refreshes that entry instead of listing the server twice.
+                existing = next((server for server in self.servers.values()
+                                 if server.ssh_host == ssh_host and server.install_dir == probe["install_dir"]), None)
             remote_port = requested_port or probe.get("existing_port") or probe["free_port"]
             job.progress("connect", f"Host: {probe.get('os')} {probe.get('arch')}, uid {probe.get('uid')}, home {probe['home']}; remote port {remote_port}.")
-            if not probe.get("tmux"):
-                job.progress("connect", "tmux is not installed on the host; setup will try to install it.")
 
             if attach:
-                job.progress("install", f"Checking the AgentsServer install on {ssh_host}…")
+                # An attach reads the install's port and token and changes nothing on the host: whoever
+                # installed it (another hub, or install.sh on that machine) keeps its updates, its Claude
+                # token and its restarts. The tunnel's revive runs <install_dir>/start.sh, which only a
+                # hub-deployed install has; launchd restarts an install.sh server.
+                result = {"remote_port": probe["existing_port"], "install_dir": probe["install_dir"], "access_token": probe["existing_token"]}
             else:
+                if not probe.get("tmux"):
+                    job.progress("connect", "tmux is not installed on the host; setup will try to install it.")
                 job.progress("download", f"Uploading AgentsServer source to {ssh_host}…")
                 tarball = await asyncio.to_thread(build_source_tarball, self.source_dir)
                 await self._upload(job, route, install_dir, tarball)
                 job.progress("install", f"Installing AgentsServer on {ssh_host}…")
-            # Without upload.tgz on the host the bootstrap only makes sure the server
-            # is running and reports its port and token (see remote_bootstrap.sh).
-            args = [*remote_shell_args(route.destination), install_dir, str(remote_port), probe["home"]]
-            if existing is not None:
-                args.append("restart")
-            # The hub's own long-lived Claude token (`claude setup-token`) rides at the head of the
-            # script on stdin: never in argv, ps output or the job log.
-            token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
-            prelude = f"AGENTSDOCK_CLAUDE_TOKEN={shlex.quote(token)}\n".encode() if token else b""
-            result_lines = await self._run_ssh(
-                job, route, args, stdin=prelude + BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,
-                on_line=lambda line: job.progress("install", setup_log_message(line) or "") if setup_log_message(line) else None,
-            )
-            result = parse_setup_result(result_lines)
+                args = [*remote_shell_args(route.destination), install_dir, str(remote_port), probe["home"]]
+                if existing is not None:
+                    args.append("restart")
+                # The hub's own long-lived Claude token (`claude setup-token`) rides at the head of the
+                # script on stdin: never in argv, ps output or the job log.
+                token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+                prelude = f"AGENTSDOCK_CLAUDE_TOKEN={shlex.quote(token)}\n".encode() if token else b""
+                result_lines = await self._run_ssh(
+                    job, route, args, stdin=prelude + BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,
+                    on_line=lambda line: job.progress("install", setup_log_message(line) or "") if setup_log_message(line) else None,
+                )
+                result = parse_setup_result(result_lines)
 
             job.progress("service", "Opening the SSH tunnel…")
             if existing is not None:
@@ -2060,9 +2040,10 @@ class RemoteServerManager:
                 server = self.servers.get(existing.id)
                 if server is None:
                     raise RuntimeError("The remote server was removed during the deployment.")
-                # A deploy over an attached entry (a move) installs this hub's own server there.
-                if server.attached or server.remote_port != result["remote_port"] or server.install_dir != result["install_dir"] or server.token != result["access_token"]:
-                    server = server.model_copy(update={"remote_port": result["remote_port"], "install_dir": result["install_dir"], "token": result["access_token"], "attached": False})
+                # A deploy over an attached entry (a move) installs this hub's own server there; an attach keeps the entry's owner.
+                if (server.attached and not attach) or server.remote_port != result["remote_port"] or server.install_dir != result["install_dir"] or server.token != result["access_token"]:
+                    server = server.model_copy(update={"remote_port": result["remote_port"], "install_dir": result["install_dir"], "token": result["access_token"],
+                                                       "attached": attach and server.attached})
                     self.servers[server.id] = server
                     self._save()
                     self._ensure_tunnel(server)
@@ -2085,7 +2066,11 @@ class RemoteServerManager:
             job.progress("health", "Waiting for the server behind the tunnel…")
             health = await self._wait_health(server)
             job.server = server
+            failures = await self._attach_hub_remotes(job, server) if attach and not isinstance(job, ChildDeployJob) else []
             job.progress("complete", f"AgentsServer {health.get('version') or ''} is reachable through the hub.".replace("  ", " "))
+            if failures:
+                # After the "complete" line, so a failure is not the step shown as done.
+                job.progress("connect", f"Not attached: {'; '.join(failures)}")
         except asyncio.CancelledError:
             job.error = "Deployment cancelled."
             job.progress(job.phase, job.error)
@@ -2101,6 +2086,80 @@ class RemoteServerManager:
                 with suppress(ProcessLookupError):
                     job.proc.kill()
             job.proc = None
+
+    async def _attach_hub_remotes(self, job: DeployJob, hub: RemoteServer) -> list[str]:
+        """Attach every remote the attached hub lists, so this hub reaches each one directly; returns the failures.
+
+        Skipped: a remote whose server identity is registered here already (this hub's own server
+        included), or whose host and directory are. Attaching the hub again picks up remotes it added since.
+        """
+        headers = {"X-AgentsDock-Token": hub.token}
+        try:
+            response = await self.http.get(f"http://127.0.0.1:{hub.local_port}{ADMIN_PATH}", headers=headers, timeout=HEALTH_REQUEST_TIMEOUT)
+            response.raise_for_status()
+            hub_remotes = response.json()["servers"]
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            return [f"the servers {hub.name} manages could not be read: {exc or exc.__class__.__name__}"]
+        if not hub_remotes:
+            return []
+
+        # Each remote's identity as the other hub reaches it: a remote known here needs no ssh, and the
+        # host name, resolved by this Mac's own ssh config, must reach the same server.
+        async def identity_through_hub(remote: dict[str, Any]) -> str | None:
+            with suppress(httpx.HTTPError, ValueError, AttributeError):
+                response = await self.http.get(f"http://127.0.0.1:{hub.local_port}{PROXY_PREFIX}/{remote['id']}/api/health",
+                                               headers=headers, timeout=HEALTH_REQUEST_TIMEOUT)
+                if response.status_code == 200:
+                    return response.json().get("server_identity")
+            return None
+
+        registered, expected = await asyncio.gather(
+            asyncio.gather(*(self.probe_health(server) for server in self.servers.values())),
+            asyncio.gather(*(identity_through_hub(remote) for remote in hub_remotes)),
+        )
+        known_identities = {self.own_identity(), *((health or {}).get("server_identity") for health in registered)} - {None, ""}
+        job.progress("connect", f"{hub.name} is a hub; attaching the servers it manages…")
+        failures: list[str] = []
+        for remote, identity in zip(hub_remotes, expected):
+            name = str(remote.get("name") or remote.get("ssh_host"))
+            try:
+                if identity in known_identities or any(server.ssh_host == remote.get("ssh_host") and server.install_dir == remote.get("install_dir")
+                                                       for server in self.servers.values()):
+                    job.progress("connect", f"{name}: already registered on this hub.")
+                    continue
+                request = RemoteAttachRequest(ssh_host=remote.get("ssh_host"), install_dir=remote.get("install_dir"), name=name)
+                child = ChildDeployJob(job_id=f"{job.job_id}:{remote.get('id')}", parent=job, label=name)
+                registered_ids = set(self.servers)
+                await self._deploy(child, request, None)
+                # _deploy swallows its own cancellation; a cancelled attach must not go on to the next server.
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise asyncio.CancelledError
+                if child.error or child.server is None:
+                    failures.append(f"{name}: {child.error}")
+                    continue
+                if child.server.id in registered_ids:
+                    # The probe found an install registered here under another spelling of its directory.
+                    job.progress("connect", f"{name}: already registered on this hub.")
+                    continue
+                # The identity is readable only through the new entry's tunnel, so these entries are attached first.
+                reached = ((await self.probe_health(child.server)) or {}).get("server_identity")
+                if reached is not None and reached in known_identities:
+                    await self.remove(child.server.id)
+                    job.progress("connect", f"{name}: already registered on this hub.")
+                    continue
+                if reached is not None and identity not in (None, reached):
+                    await self.remove(child.server.id)
+                    failures.append(f"{name}: {request.ssh_host} reaches another server from this hub")
+                    continue
+                known_identities |= {reached or identity} - {None}
+                if remote.get("hidden"):
+                    self.update(child.server.id, RemoteServerUpdate(hidden=True))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one remote's failure must not fail the attach of the hub
+                failures.append(f"{name}: {getattr(exc, 'detail', None) or exc or exc.__class__.__name__}")
+        return failures
 
     async def _install_key(self, job: DeployJob, route: SSHRoute, password: str) -> None:
         """Append this hub's public key to the host's authorized_keys, authenticating once with the password.

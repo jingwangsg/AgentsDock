@@ -30,21 +30,18 @@ class RemoteBootstrapEnvTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def bootstrap(self, home_dir: Path, install_parent: Path | None = None, upload: bool = False) -> str:
+    def bootstrap(self, home_dir: Path, install_parent: Path | None = None) -> str:
         install = (install_parent or home_dir) / ".agentsdock-server-test"
         (install / "server" / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
         (install / "server" / "agent_server.py").touch()
         python = install / "server" / ".venv" / "bin" / "python"
         if not python.exists():
             python.symlink_to(sys.executable)
-        # A deploy uploads the source; without it the run is an attach. Unpacking stops whatever
-        # serves the port, so an upload uses one no local server listens on.
-        port = "7850"
-        if upload:
-            with tarfile.open(install / "upload.tgz", "w:gz") as tar:
-                tar.add(install / "server" / "agent_server.py", arcname="agent_server.py")
-            port = "59871"
-        subprocess.run(["bash", str(SCRIPT), str(install), port, str(home_dir)], check=True, capture_output=True,
+        # Every deploy uploads the source. Unpacking stops whatever serves the port, so the run
+        # uses one no local server listens on.
+        with tarfile.open(install / "upload.tgz", "w:gz") as tar:
+            tar.add(install / "server" / "agent_server.py", arcname="agent_server.py")
+        subprocess.run(["bash", str(SCRIPT), str(install), "59871", str(home_dir)], check=True, capture_output=True,
                        env={"HOME": str(self.home), "PATH": self.path})
         return (install / "env").read_text()
 
@@ -82,20 +79,18 @@ class RemoteBootstrapEnvTests(unittest.TestCase):
         # start.sh's health check then runs with the shared home's PATH, where the stubs must be too.
         (self.shared / ".local").mkdir()
         (self.shared / ".local" / "bin").symlink_to(self.home / ".local" / "bin")
-        # An attach leaves the HOME the owning hub chose.
-        self.assertIn(f"export HOME={self.home}\n", self.bootstrap(self.shared))
-        env = self.bootstrap(self.shared, upload=True)
+        env = self.bootstrap(self.shared)
         self.assertIn(f"export HOME={self.shared}\n", env)
         self.assertIn(f"export AGENTSDOCK_AGENT_CWD={self.shared}\n", env)
         self.assertIn(f"export PATH={self.shared}/.local/bin:{self.shared}/.local/bin:", env)
         self.assertNotIn(f"{self.home}/.local/bin", env)
         self.assertIn("CODEX_SQLITE_HOME", env)
         # The move never goes back to the machine's own ~, even on a deploy that offers it.
-        self.assertIn(f"export HOME={self.shared}\n", self.bootstrap(self.home, install_parent=self.shared, upload=True))
+        self.assertIn(f"export HOME={self.shared}\n", self.bootstrap(self.home, install_parent=self.shared))
         # A working directory the user chose is not the old home and stays.
         env_path = self.shared / ".agentsdock-server-test" / "env"
         env_path.write_text(env.replace(f"HOME={self.shared}\n", f"HOME={self.home}\n", 1).replace(f"AGENTSDOCK_AGENT_CWD={self.shared}", "AGENTSDOCK_AGENT_CWD=/work"))
-        env = self.bootstrap(self.shared, upload=True)
+        env = self.bootstrap(self.shared)
         self.assertIn(f"export HOME={self.shared}\n", env)
         self.assertIn("export AGENTSDOCK_AGENT_CWD=/work\n", env)
 

@@ -5,7 +5,6 @@ import type { AppUpdateManager } from './updater'
 import { ServerSetupManager } from './server-setup'
 import { join } from 'node:path'
 import { localHubConfigDirs, localHubPairingUrl } from './local-hub'
-import { InferenceProxyManager } from './inference-proxy'
 import { acknowledgeWindowCloseFlush, closeWindowAfterRendererFlush } from './window-close'
 import type { LazyTeamHubService } from './team-hub-lazy-service'
 import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, parseBulkImportSessionItems } from '../shared/local-session-import'
@@ -275,16 +274,6 @@ export function registerIpc(
   handle('hub:start-local-server', () => service.startLocalHub())
   handle('hub:restart-local-server', force => service.restartLocalHub(force === true))
   handle('hub:copy-token', () => service.copyHubToken())
-
-  const inferenceProxy = new InferenceProxyManager()
-  handle('inference-proxy:status', () => inferenceProxy.status())
-  handle('inference-proxy:set-port', port => inferenceProxy.setPort(port))
-  handle('inference-proxy:add-key', (name, apiKey) => inferenceProxy.addKey(name, apiKey))
-  handle('inference-proxy:remove-key', name => inferenceProxy.removeKey(name))
-  handle('inference-proxy:set-key-enabled', (name, enabled) => inferenceProxy.setKeyEnabled(name, enabled))
-  handle('inference-proxy:start', () => inferenceProxy.start())
-  handle('inference-proxy:stop', () => inferenceProxy.stop())
-  handle('inference-proxy:copy-proxy-token', () => inferenceProxy.copyProxyToken())
 
   handle('sessions:list', () => service.listSessions())
   handle('sessions:create', input => service.createSession(input))

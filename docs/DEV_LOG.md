@@ -1,5 +1,54 @@
 # Public development log
 
+## 2026-10-15 — Two Macs each run their own hub and attach the same servers; the inference proxy settings are removed (server and desktop)
+
+- Using a second Mac meant making one Mac a remote of the other's hub. Now
+  each Mac keeps its own hub and app, and a hub can attach another Mac's
+  server over SSH: Add server → Attach an existing server, with the Mac's
+  SSH host. When the install directory is left at its default, the hub
+  also looks in `~/.config/agents-server`, where install.sh keeps that
+  Mac's server settings; both `NAME=value` and `export NAME=value` env
+  files are read.
+- Attaching changes nothing on the host. It reads the install's port and
+  access token and opens the tunnel; it no longer installs CLIs, rewrites
+  `start.sh` or the env file, or replaces the install's Claude token and
+  restarts the server. The hub that deployed the install keeps its updates.
+- When the attached server is itself a hub, the servers it manages are
+  attached too. A server already registered here (same host and directory,
+  or the same server identity under another host name) and this hub's own
+  server are skipped without connecting to them; a server hidden on the
+  other hub stays hidden. A host name that reaches a different server from
+  this Mac than from the other hub is not attached and is reported.
+  Attaching the same hub again refreshes its entry and picks up the
+  servers it registered since, without listing anything twice.
+- Each server still owns its chats. Two hubs that attach the same server
+  proxy the same chats, and a turn started through one hub streams live in
+  an app connected through the other.
+- The NV Inference Hub settings section is removed, along with the
+  reverse forward that `AGENTSDOCK_INFERENCE_PROXY_PORT` opened to every
+  remote server. An inference proxy already running on a Mac is not
+  stopped or uninstalled.
+- Verified with the desktop app against three isolated servers, using an
+  ssh stand-in that runs each host's commands on this Mac: the app's hub
+  attached a "Mac A" install.sh server through the default-directory
+  lookup, which also attached the remote server registered on Mac A. A
+  turn started through Mac A's hub appeared in the app as it ran, and a
+  message sent from the app was readable through Mac A's hub. Attaching
+  Mac A again kept the same entries and added a remote registered on
+  Mac A in the meantime. In a second run, Mac A's hub also listed this
+  Mac's own server, which was skipped without an ssh connection. The
+  host's env files were unchanged. Server tests
+  cover the probe on both env formats, the read-only attach, the repeated
+  attach and the hub import with its skip rules. The deploy bootstrap no
+  longer has a separate no-upload path, which only attaching used.
+- Not covered: a real sshd on a second Mac, and attaching through a hub
+  whose remotes are oci@, aws@ or osmo@ hosts (the attaching Mac then needs
+  its own cluster logins). Mail between chats paired on the other hub is
+  still relayed only by that hub; a message this hub receives first
+  reaches its chat up to 5 minutes later. Android keeps its own attach
+  form and text. Availability: takes effect when the hub is updated and in
+  the next desktop package; attached servers need no update.
+
 ## 2026-10-14 — An independent scheduled job starts a new chat for every run, like a Codex cron automation (server and desktop)
 
 - An independent (standalone) job ran inside its chat while that chat was
