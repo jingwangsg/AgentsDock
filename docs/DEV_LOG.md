@@ -1,5 +1,27 @@
 # Public development log
 
+## 2026-10-15 — Canvas reports render formulas (server)
+
+- A Canvas `Markdown` section showed `$…$` and `$$…$$` as TeX source in
+  code style, while the same formula rendered in a chat message or a
+  Markdown file preview. The Canvas runtime now carries KaTeX 0.16.47 and
+  renders each formula as MathML, which the app's web view lays out
+  natively, so no stylesheet or font files are added. TeX that KaTeX cannot
+  parse still appears as source. The served Canvas script grows from about
+  680 KB to about 950 KB; KaTeX's MIT notice is added to the runtime's
+  license file.
+- The Canvas authoring guide and SDK description now say that formulas are
+  rendered instead of asking agents to restate each formula in words.
+- Verified in the desktop app against an isolated server: a 2026-10-15
+  report Canvas rendered its 10 inline formulas as math, and a test Canvas
+  rendered two display formulas centered and kept an unparsable `\frac{a`
+  as source. Server tests cover the served bundle defining KaTeX as one
+  script, MathML output for inline and display formulas, and the source
+  fallback.
+- Not covered: the Android app's Canvas view was not opened; it loads the
+  same script. Availability: takes effect when the server that holds the
+  Canvas is updated or restarted; existing Canvas files need no change.
+
 ## 2026-10-15 — Two Macs each run their own hub and attach the same servers; the inference proxy settings are removed (server and desktop)
 
 - Using a second Mac meant making one Mac a remote of the other's hub. Now

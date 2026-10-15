@@ -46,7 +46,7 @@ COMPILE_TIMEOUT_SECONDS = 180
 # The LEGAL file carries the bundled runtime's license notices into exported standalone pages.
 RUNTIME_ASSETS = {"vendor.js": "application/javascript", "vendor.js.LEGAL.txt": "text/plain", "shell.html": "text/html"}
 # Everything the served bundle, the compiler and the agent's guide depend on; runtime_version() digests them.
-RUNTIME_FILES = ("AUTHORING.md", "compile.cjs", "markdown.js", "modules.json", "sdk.d.ts", "shell.html", "vendor.js")
+RUNTIME_FILES = ("AUTHORING.md", "compile.cjs", "katex.js", "markdown.js", "modules.json", "sdk.d.ts", "shell.html", "vendor.js")
 AGENT_FILES = ("AUTHORING.md", "sdk.d.ts")
 
 
@@ -73,9 +73,10 @@ def runtime_version() -> str | None:
 
 def runtime_asset_bytes(asset: str) -> bytes:
     # The SDK bundle has no source in this repository, so the Markdown component
-    # is plain JavaScript in markdown.js, appended to vendor.js when served:
+    # is plain JavaScript in markdown.js, appended to vendor.js when served, after
+    # katex.js (KaTeX 0.16.47's katex.min.js, which it renders formulas with):
     # clients still fetch one script and key their caches on the runtime version.
-    parts = ("vendor.js", "markdown.js") if asset == "vendor.js" else (asset,)
+    parts = ("vendor.js", "katex.js", "markdown.js") if asset == "vendor.js" else (asset,)
     return b"\n".join((RUNTIME_DIR / name).read_bytes() for name in parts)
 
 
