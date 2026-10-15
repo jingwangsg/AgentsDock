@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import gzip
 import hashlib
 import json
 import os
@@ -46,7 +47,7 @@ COMPILE_TIMEOUT_SECONDS = 180
 # The LEGAL file carries the bundled runtime's license notices into exported standalone pages.
 RUNTIME_ASSETS = {"vendor.js": "application/javascript", "vendor.js.LEGAL.txt": "text/plain", "shell.html": "text/html"}
 # Everything the served bundle, the compiler and the agent's guide depend on; runtime_version() digests them.
-RUNTIME_FILES = ("AUTHORING.md", "compile.cjs", "markdown.js", "modules.json", "sdk.d.ts", "shell.html", "vendor.js")
+RUNTIME_FILES = ("AUTHORING.md", "compile.cjs", "katex.js", "markdown.js", "modules.json", "sdk.d.ts", "shell.html", "vendor.js")
 AGENT_FILES = ("AUTHORING.md", "sdk.d.ts")
 
 
@@ -73,9 +74,10 @@ def runtime_version() -> str | None:
 
 def runtime_asset_bytes(asset: str) -> bytes:
     # The SDK bundle has no source in this repository, so the Markdown component
-    # is plain JavaScript in markdown.js, appended to vendor.js when served:
-    # clients still fetch one script and key their caches on the runtime version.
-    parts = ("vendor.js", "markdown.js") if asset == "vendor.js" else (asset,)
+    # is plain JavaScript in markdown.js, appended to vendor.js when served, with
+    # katex.js (the formula renderer markdown.js calls) in between: clients still
+    # fetch one script and key their caches on the runtime version.
+    parts = ("vendor.js", "katex.js", "markdown.js") if asset == "vendor.js" else (asset,)
     return b"\n".join((RUNTIME_DIR / name).read_bytes() for name in parts)
 
 
@@ -493,7 +495,7 @@ def register_canvas_routes(
 ) -> None:
     """``start_turn(session_id, prompt, display_prompt, client_capabilities)`` admits a
     comment's turn exactly like a composer message and returns its run_id or queued_id."""
-    from fastapi import Body, HTTPException
+    from fastapi import Body, Header, HTTPException
     from fastapi.responses import Response
 
     # Serializes each comments file's read-modify-write within this server.
@@ -653,7 +655,7 @@ def register_canvas_routes(
     # No return annotation: with `from __future__ import annotations` the string 'Response'
     # is unresolvable at OpenAPI generation time and made /openapi.json return 500.
     @app.get("/api/canvas-runtime/{asset}", response_class=Response)
-    async def get_canvas_runtime_asset(asset: str):
+    async def get_canvas_runtime_asset(asset: str, accept_encoding: str = Header(default="")):
         media_type = RUNTIME_ASSETS.get(asset)
         if media_type is None:
             raise HTTPException(status_code=404, detail="unknown runtime asset")
@@ -663,7 +665,14 @@ def register_canvas_routes(
             raise HTTPException(status_code=404, detail="runtime asset missing") from None
         # The URL carries no version and vendor.js now changes with markdown.js: an HTTP cache
         # (the iOS fetch shares NSURLCache) must not hand a new runtime version the old body.
-        return Response(content=data, media_type=media_type, headers={"Cache-Control": "no-cache"})
+        headers = {"Cache-Control": "no-cache", "Vary": "Accept-Encoding"}
+        # vendor.js is 952 KB with KaTeX, 277 KB gzipped; at 30 KiB/s through a congested remote
+        # link the uncompressed body outlasts the desktop's 30 s request limit. The hub proxy
+        # passes the encoded body and its header through unchanged.
+        if "gzip" in accept_encoding:
+            data = await asyncio.to_thread(gzip.compress, data)
+            headers["Content-Encoding"] = "gzip"
+        return Response(content=data, media_type=media_type, headers=headers)
 
 
 # ---------------------------------------------------------------- CLI

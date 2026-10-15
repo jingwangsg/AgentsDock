@@ -9,9 +9,11 @@
  * Supported: `#` headings, paragraphs, ordered and unordered lists (nested by
  * indentation), backtick-fenced code, GFM tables, block quotes, horizontal
  * rules, inline code, bold, italic, links and bare URLs. `$…$` and `$$…$$` are
- * shown as TeX source (no math renderer is bundled); a literal dollar sign is
- * written `\$`. No lookbehind assertions: a regex syntax error here would stop
- * the whole bundle on WebKit before 16.4.
+ * formulas, rendered by KaTeX (katex.js, served before this file) as MathML,
+ * which the browser lays out without a stylesheet or fonts; TeX that KaTeX
+ * cannot parse is shown as source. A literal dollar sign is written `\$`. No
+ * lookbehind assertions: a regex syntax error here would stop the whole bundle
+ * on WebKit before 16.4.
  */
 (function () {
   'use strict';
@@ -27,6 +29,8 @@
   var TABLE_DIVIDER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
   var MATH_FENCE = /^\s*\$\$\s*$/;
   var MATH_LINE = /^\s*\$\$(.+?)\$\$\s*$/;
+  // KaTeX escapes the annotation's text, so it contains no `<`.
+  var TEX_ANNOTATION = /<annotation encoding="application\/x-tex">[^<]*<\/annotation>/;
   // Alternatives in priority order; group numbers are read in parseInlines.
   var INLINE_SOURCE = [
     /(\\[\\`*_{}\[\]()#+\-.!$>|])/, // 1 escape
@@ -214,6 +218,20 @@
     var codeSpan = { fontFamily: mono, fontSize: 12, padding: '1px 4px', border: '1px solid ' + theme.stroke.secondary, borderRadius: 3 };
     var codeBlock = { margin: 0, padding: 12, fontFamily: mono, fontSize: 12, lineHeight: 1.5, border: '1px solid ' + theme.stroke.secondary, borderRadius: 6, overflowX: 'auto', color: theme.text.primary };
 
+    // MathML markup for a formula, or null to show its source: KaTeX is absent (a
+    // test that loads only this file) or cannot parse the TeX. KaTeX also writes the
+    // TeX into a hidden annotation; the hosts' outline and find read every text node,
+    // so it would repeat each formula as source there.
+    function mathMarkup(tex, displayMode) {
+      if (!globalThis.katex) return null;
+      try {
+        return globalThis.katex.renderToString(tex, { output: 'mathml', displayMode: displayMode, throwOnError: true })
+          .replace(TEX_ANNOTATION, '');
+      } catch (error) {
+        return null;
+      }
+    }
+
     function renderInlines(nodes, keyPrefix, insideLink) {
       return nodes.map(function (node, index) {
         var key = keyPrefix + index;
@@ -224,7 +242,10 @@
             return globalThis.__agentsdockOpensCodeReferences && !insideLink && CODE_REFERENCE.test(node.text)
               ? h('a', { key: key, href: node.text, style: { color: theme.text.link } }, h('code', { style: codeSpan }, node.text))
               : h('code', { key: key, style: codeSpan }, node.text);
-          case 'math': return h('code', { key: key, style: codeSpan }, node.text);
+          case 'math': {
+            var markup = mathMarkup(node.text, false);
+            return markup ? h('span', { key: key, dangerouslySetInnerHTML: { __html: markup } }) : h('code', { key: key, style: codeSpan }, node.text);
+          }
           case 'strong': return h('strong', { key: key }, renderInlines(node.inlines, key + '.', insideLink));
           case 'em': return h('em', { key: key }, renderInlines(node.inlines, key + '.', insideLink));
           case 'link': return h('a', { key: key, href: node.href, style: { color: theme.text.link } }, renderInlines(node.inlines, key + '.', true));
@@ -244,8 +265,12 @@
             return h('p', { key: key, style: Object.assign({ margin: 0 }, body) }, renderInlines(node.inlines, key + '.'));
           case 'code':
             return h('pre', { key: key, style: codeBlock }, h('code', { style: { fontFamily: 'inherit' } }, node.text));
-          case 'math':
-            return h('pre', { key: key, style: codeBlock }, node.text);
+          case 'math': {
+            var markup = mathMarkup(node.text, true);
+            return markup
+              ? h('div', { key: key, style: Object.assign({ overflowX: 'auto' }, body), dangerouslySetInnerHTML: { __html: markup } })
+              : h('pre', { key: key, style: codeBlock }, node.text);
+          }
           case 'quote':
             return h('blockquote', { key: key, style: { margin: 0, padding: '2px 12px', borderLeft: '3px solid ' + theme.stroke.primary, color: theme.text.secondary, display: 'flex', flexDirection: 'column', gap: 8 } }, renderBlocks(node.blocks, key + '.'));
           case 'rule':

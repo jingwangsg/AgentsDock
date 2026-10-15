@@ -47,8 +47,8 @@ computeDAGLayout. Exact signatures are in the declarations.
 
 Write the prose with `Markdown`: one Markdown string per section gives
 headings, paragraphs, lists, code blocks, links and tables in the host's
-typography. Formulas written as `$…$` or `$$…$$` are shown as TeX source, so
-also say in words what each formula states; a literal dollar sign is written
+typography. Formulas written as `$…$` or `$$…$$` are typeset with KaTeX; TeX
+that KaTeX cannot parse is shown as source. A literal dollar sign is written
 `\$`. A table typed into the prose stays in Markdown; use `Table` when rows
 come from a data array or respond to a filter. Gather the key numbers of the
 report in one summary table with value, unit and source. Use Callout only for

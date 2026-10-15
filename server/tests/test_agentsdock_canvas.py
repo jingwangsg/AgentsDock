@@ -203,14 +203,19 @@ class CanvasTests(unittest.TestCase):
         assert '"Markdown"' in javascript
         served = canvas.runtime_asset_bytes("vendor.js")
         assert served.startswith((canvas.RUNTIME_DIR / "vendor.js").read_bytes())
+        assert (canvas.RUNTIME_DIR / "katex.js").read_bytes() in served
         assert served.endswith((canvas.RUNTIME_DIR / "markdown.js").read_bytes())
         assert canvas.runtime_asset_bytes("shell.html") == (canvas.RUNTIME_DIR / "shell.html").read_bytes()
         # WebKit before 16.4 rejects lookbehind at parse time, which would stop the whole bundle.
         assert not re.search(rb"\(\?<[=!]", served)
-        # The served bytes run as one script, as the page loads them.
-        script = NODE_DOM_STUB + f"new Function(require('fs').readFileSync({json.dumps(str(canvas.RUNTIME_DIR / 'vendor.js'))}, 'utf8') + '\\n' + require('fs').readFileSync({json.dumps(str(canvas.RUNTIME_DIR / 'markdown.js'))}, 'utf8'))(); console.log(typeof globalThis.__zedCanvasModules['@zed/canvas'].Markdown);"
+        # The served bytes run as one script, as the page loads them. module, exports and define
+        # are shadowed as undefined (node -e defines the first two), so KaTeX's UMD wrapper sets
+        # globalThis.katex for markdown.js.
+        bundle = self.tmp_path / "served.js"
+        bundle.write_bytes(served)
+        script = NODE_DOM_STUB + f"new Function('module', 'exports', 'define', require('fs').readFileSync({json.dumps(str(bundle))}, 'utf8'))(); console.log(typeof globalThis.__zedCanvasModules['@zed/canvas'].Markdown, typeof globalThis.katex.renderToString);"
         completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
-        assert completed.returncode == 0 and completed.stdout.strip() == "function", completed.stdout + completed.stderr
+        assert completed.returncode == 0 and completed.stdout.strip() == "function function", completed.stdout + completed.stderr
 
     @needs_node
     def test_markdown_parses_and_renders_each_block_kind_with_the_bundled_react(self) -> None:
@@ -255,6 +260,30 @@ console.log(JSON.stringify({{ blocks, outline: outline(tree).children, edge }}))
         assert edge["dollars"][0]["inlines"] == [{"type": "text", "text": "costs $5 and $10 in snake_case_name"}]
         assert [node["type"] for node in edge["bold_italic"][0]["inlines"]] == ["strong", "text", "em", "text"]
         assert [block["type"] for block in edge["pipe_rule"]] == ["paragraph", "rule"]
+
+    @needs_node
+    def test_markdown_renders_formulas_as_mathml_and_keeps_tex_that_does_not_parse_as_source(self) -> None:
+        source = "Exposure $r_i = S_i/D_i$ and $\\frac{a$ here.\n\n$$\nR_c \\approx 2.7\\,(D/N)^{0.24}\n$$"
+        script = NODE_DOM_STUB + f"""
+require({json.dumps(str(canvas.RUNTIME_DIR / 'vendor.js'))});
+globalThis.katex = require({json.dumps(str(canvas.RUNTIME_DIR / 'katex.js'))});
+const markdown = require({json.dumps(str(canvas.RUNTIME_DIR / 'markdown.js'))});
+const React = globalThis.__zedCanvasModules.react;
+const theme = {{ text: {{ primary: '#111', secondary: '#666', link: '#06c' }}, stroke: {{ primary: '#ccc', secondary: '#ddd' }} }};
+const outline = node => typeof node === 'string' ? node
+  : {{ tag: node.type, html: node.props.dangerouslySetInnerHTML && node.props.dangerouslySetInnerHTML.__html, children: React.Children.toArray(node.props.children).map(outline) }};
+console.log(JSON.stringify(outline(markdown.renderMarkdown(React, theme, markdown.parseMarkdown({json.dumps(source)}))).children));
+"""
+        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        paragraph, block = json.loads(completed.stdout)
+        inline, broken = [node for node in paragraph["children"] if isinstance(node, dict)]
+        assert inline["tag"] == "span" and inline["html"].startswith('<span class="katex"><math') and "<msub>" in inline["html"]
+        # The hidden TeX copy is dropped: the hosts' outline and find would read it as text.
+        assert "annotation" not in inline["html"] + block["html"]
+        # KaTeX cannot parse it, so the reader still sees the TeX.
+        assert broken == {"tag": "code", "children": ["\\frac{a"]}
+        assert block["tag"] == "div" and '<math xmlns="http://www.w3.org/1998/Math/MathML" display="block">' in block["html"]
 
     @needs_node
     def test_markdown_renders_a_file_reference_span_as_a_link_for_a_host_that_opens_it(self) -> None:
@@ -396,6 +425,15 @@ class CanvasCommentRouteTests(unittest.TestCase):
         )
         self.client = TestClient(app)
         self.base = "/api/sessions/sess_1/canvases/report"
+
+    def test_the_runtime_script_is_gzipped_for_a_client_that_accepts_it(self) -> None:
+        plain = self.client.get("/api/canvas-runtime/vendor.js", headers={"Accept-Encoding": "identity"})
+        packed = self.client.get("/api/canvas-runtime/vendor.js", headers={"Accept-Encoding": "gzip, br"})
+        assert "content-encoding" not in plain.headers and plain.content == canvas.runtime_asset_bytes("vendor.js")
+        # The client decodes the body; the wire carried the compressed bytes.
+        assert packed.headers["content-encoding"] == "gzip" and packed.content == plain.content
+        assert int(packed.headers["content-length"]) < len(plain.content) / 2
+        assert packed.headers["vary"] == "Accept-Encoding"
 
     def test_thread_lifecycle(self) -> None:
         response = self.client.post(f"{self.base}/comments", json={"anchor": ANCHOR, "mode": "ask", "body": "why?", "revision": 5, "client_capabilities": ["claude_sdk_interactive_v1"]})
