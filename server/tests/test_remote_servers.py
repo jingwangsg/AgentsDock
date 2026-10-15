@@ -412,9 +412,6 @@ class RemoteServerTests(unittest.TestCase):
         compressed = rs.tunnel_args("osmo_9000", 7851, 7850, compress=True)
         assert compressed[-4:] == ["-C", "-L", "127.0.0.1:7851:127.0.0.1:7850", "osmo_9000"]
         assert [arg for arg in compressed if arg != "-C"] == rs.tunnel_args("osmo_9000", 7851, 7850)
-        # No local port: a reverse-only connection (the inference tunnel) has no -L.
-        reverse_only = rs.tunnel_args("osmo_9000", None, 7850)
-        assert reverse_only[-3:] == ["-o", "ControlPath=none", "osmo_9000"] and "-L" not in reverse_only
         assert rs.revive_args("osmo_9000", "~/.agentsdock-server")[-3:] == ["bash", "-lc", "exec bash ~/.agentsdock-server/start.sh"]
         assert rs.remote_shell_args("h")[-4:] == ["h", "bash", "-s", "--"]
         with self.assertRaises(ValueError):
@@ -616,8 +613,6 @@ time.sleep(30)
 ''')
         script.chmod(0o700)
         self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
-        self.enterContext(mock.patch.dict(os.environ))
-        os.environ.pop("AGENTSDOCK_INFERENCE_PROXY_PORT", None)
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
         rs.save_registry(manager.path, [make_server(ssh_host="lab", local_port=free_port())])
 
@@ -667,8 +662,7 @@ async def main():
 
 asyncio.run(main())
 ''')
-        env = {name: value for name, value in os.environ.items() if name != "AGENTSDOCK_INFERENCE_PROXY_PORT"}
-        hub_process = subprocess.Popen([sys.executable, str(hub)], env=env)
+        hub_process = subprocess.Popen([sys.executable, str(hub)])
         try:
             # The main, bulk, stream and surface tunnels.
             for _ in range(500):
@@ -1416,7 +1410,6 @@ elif "-N" in sys.argv:
         self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
         self.enterContext(mock.patch.object(rs, "SSH_ALIAS_DIR", aliases))
         self.enterContext(mock.patch.object(rs, "SSH_CONFIG", self.tmp_path / "ssh_config"))
-        os.environ.pop("AGENTSDOCK_INFERENCE_PROXY_PORT", None)
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, ssh_aliases=True)
         rs.save_registry(manager.path, [
             make_server(id="aaaaaaaaaaaa", name="lab", ssh_host="me@lab.example", local_port=free_port()),
@@ -1553,7 +1546,6 @@ if "-N" in sys.argv:
         self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
         self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
         self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_TUNNEL_SSH_ARGS": "-R 12052:git.example:12051 -o ExitOnForwardFailure=no"}))
-        os.environ.pop("AGENTSDOCK_INFERENCE_PROXY_PORT", None)
         self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
         oci_port = free_port()
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
@@ -1590,105 +1582,6 @@ if "-N" in sys.argv:
         assert rewrite[-1].startswith("set -a; . /mnt/lustre/.agentsdock-server/env; set +a; ")
         assert "url.ssh://git@127.0.0.1:12052/.insteadOf" in rewrite[-1] and "ssh://git@git.example:12051/" in rewrite[-1]
 
-    def test_every_server_gets_an_inference_tunnel_that_alone_reverse_forwards_the_proxy_port(self) -> None:
-        script = self.tmp_path / "ssh"
-        calls = self.tmp_path / "tunnel-calls.jsonl"
-        script.write_text(f"""#!{sys.executable}
-import json, sys, time
-with open({str(calls)!r}, "a") as out:
-    out.write(json.dumps(sys.argv[1:]) + "\\n")
-if "-N" in sys.argv:
-    time.sleep(30)
-""")
-        script.chmod(0o700)
-        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
-        self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
-        self.enterContext(mock.patch.dict(os.environ, {
-            "AGENTSDOCK_INFERENCE_PROXY_PORT": "20001",
-            "AGENTSDOCK_OCI_TUNNEL_SSH_ARGS": "-R 12052:git.example:12051",
-        }))
-        self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
-        oci_port, plain_port = free_port(), free_port()
-        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
-        rs.save_registry(manager.path, [
-            make_server(id="aaaaaaaaaaaa", ssh_host="oci@sky-cluster", local_port=oci_port),
-            make_server(id="bbbbbbbbbbbb", ssh_host="plain-host", local_port=plain_port),
-        ])
-
-        async def main() -> None:
-            await manager.start()
-            try:
-                # Two servers, each with its main, bulk, stream, surface and inference tunnel, plus the oci@ site forward's git rewrite.
-                for _ in range(200):
-                    if calls.exists() and len(calls.read_text().splitlines()) == 11:
-                        break
-                    await asyncio.sleep(0.05)
-                else:
-                    self.fail("tunnels did not start")
-                assert set(manager.inference_tunnels) == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
-                # No -L, so no local port to keep free for it.
-                assert manager._reserved_ports() == {oci_port, plain_port} | {
-                    tunnel.server.local_port for tunnel in [*manager.bulk_tunnels.values(), *manager.stream_tunnels.values(),
-                                                            *manager.surface_tunnels.values()]}
-                plain_inference = manager.inference_tunnels["bbbbbbbbbbbb"]
-                await manager.remove("bbbbbbbbbbbb")
-                assert "bbbbbbbbbbbb" not in manager.inference_tunnels and plain_inference.status["state"] == "stopped"
-            finally:
-                await manager.stop()
-
-        asyncio.run(main())
-        records = [json.loads(line) for line in calls.read_text().splitlines()]
-        tunnels = [argv for argv in records if "-N" in argv]
-        inference = [argv for argv in tunnels if "-L" not in argv]
-        forwards = [argv for argv in tunnels if "-L" in argv]
-        assert len(inference) == 2 and len(forwards) == 8
-        # Every host, not only oci@, gets the forward, on a connection that carries nothing else;
-        # the main, bulk, stream and surface tunnels must not claim the remote port too.
-        for argv in inference:
-            assert ("-R", "20001:127.0.0.1:20001") in zip(argv, argv[1:]) and argv.count("-R") == 1
-        assert sorted(argv[-1] for argv in inference) == ["plain-host", "sky-cluster"]
-        [oci_inference] = [argv for argv in inference if argv[-1] == "sky-cluster"]
-        assert oci_inference[:7] == ["-o", "ConnectTimeout=30", "-o", "ProxyCommand=x", "-R", "20001:127.0.0.1:20001", "-N"]
-        assert all("20001:127.0.0.1:20001" not in argv for argv in forwards)
-        # The git rewrite reads the site forwards only, since the proxy port is not a git server,
-        # and its own short connection carries no proxy forward.
-        [rewrite] = [argv for argv in records if "-N" not in argv]
-        assert "ssh://git@git.example:12051/" in rewrite[-1] and all("20001" not in arg for arg in rewrite)
-
-    def test_a_non_port_inference_proxy_value_is_ignored_instead_of_breaking_the_tunnels(self) -> None:
-        script = self.tmp_path / "ssh"
-        calls = self.tmp_path / "tunnel-calls.jsonl"
-        script.write_text(f"""#!{sys.executable}
-import json, sys, time
-with open({str(calls)!r}, "a") as out:
-    out.write(json.dumps(sys.argv[1:]) + "\\n")
-time.sleep(30)
-""")
-        script.chmod(0o700)
-        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
-        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_INFERENCE_PROXY_PORT": "twenty"}))
-        os.environ.pop("AGENTSDOCK_OCI_TUNNEL_SSH_ARGS", None)
-        self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
-        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
-        rs.save_registry(manager.path, [make_server(id="bbbbbbbbbbbb", ssh_host="plain-host", local_port=free_port())])
-
-        async def main() -> None:
-            await manager.start()
-            try:
-                for _ in range(200):
-                    if calls.exists() and len(calls.read_text().splitlines()) == 4:
-                        return
-                    await asyncio.sleep(0.05)
-                self.fail("tunnels did not start")
-            finally:
-                await manager.stop()
-
-        with self.assertLogs(rs.logger, level="WARNING") as logs:
-            asyncio.run(main())
-        assert any("AGENTSDOCK_INFERENCE_PROXY_PORT='twenty'" in line for line in logs.output)
-        assert all("-R" not in argv for argv in (json.loads(line) for line in calls.read_text().splitlines()))
-        assert manager.inference_tunnels == {}
-
     def test_osmo_tunnel_forwards_through_the_workflow_and_reports_an_ended_one(self) -> None:
         self.fake_osmo()
         script = self.tmp_path / "ssh"
@@ -1702,9 +1595,6 @@ time.sleep(30)
         script.chmod(0o700)
         self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
         self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
-        # The ssh count below assumes no inference tunnel; the developer's shell may export the port.
-        self.enterContext(mock.patch.dict(os.environ))
-        os.environ.pop("AGENTSDOCK_INFERENCE_PROXY_PORT", None)
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
         running_port = free_port()
         rs.save_registry(manager.path, [
@@ -2109,7 +1999,7 @@ time.sleep(30)
 
         asyncio.run(main())
 
-    def test_a_remote_gets_a_bulk_tunnel_on_its_own_unpersisted_port_and_no_inference_tunnel_unconfigured(self) -> None:
+    def test_a_remote_gets_a_bulk_tunnel_on_its_own_unpersisted_port(self) -> None:
         script = self.tmp_path / "ssh"
         calls = self.tmp_path / "tunnel-calls.jsonl"
         script.write_text(f"""#!{sys.executable}
@@ -2120,8 +2010,6 @@ time.sleep(30)
 """)
         script.chmod(0o700)
         self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
-        self.enterContext(mock.patch.dict(os.environ))
-        os.environ.pop("AGENTSDOCK_INFERENCE_PROXY_PORT", None)
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path)
         server = make_server(ssh_host="lab", local_port=free_port())
         rs.save_registry(manager.path, [server])
@@ -2152,8 +2040,6 @@ time.sleep(30)
                 assert "-C" in forwards[f"127.0.0.1:{stream.server.local_port}:127.0.0.1:7850"]
                 assert "-C" in forwards[f"127.0.0.1:{surface.server.local_port}:127.0.0.1:7850"]
                 assert "-C" not in forwards[f"127.0.0.1:{bulk.server.local_port}:127.0.0.1:7850"]
-                # Without AGENTSDOCK_INFERENCE_PROXY_PORT there is nothing to reverse forward.
-                assert manager.inference_tunnels == {}
                 await manager.remove(server.id)
                 assert server.id not in manager.bulk_tunnels and bulk.status["state"] == "stopped"
                 assert server.id not in manager.stream_tunnels and stream.status["state"] == "stopped"

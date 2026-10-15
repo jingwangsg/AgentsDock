@@ -393,7 +393,7 @@ def remote_shell_args(ssh_host: str) -> list[str]:
 
 def tunnel_args(
     ssh_host: str,
-    local_port: int | None,
+    local_port: int,
     remote_port: int,
     *,
     bind_mode: Literal["ipv4", "dual"] = "ipv4",
@@ -424,11 +424,8 @@ def tunnel_args(
         args.append("-v")
     if channel_timeout is not None:
         args.extend(["-o", f"ChannelTimeout={channel_timeout}"])
-    if local_port is not None:
-        # None: a reverse-only connection (the inference tunnel) serves no request from this machine.
-        local_binding = f"127.0.0.1:{validate_port(local_port)}" if bind_mode == "ipv4" else str(validate_port(local_port))
-        args.extend(["-L", f"{local_binding}:127.0.0.1:{validate_remote_port(remote_port)}"])
-    return [*args, validate_ssh_host(ssh_host)]
+    local_binding = f"127.0.0.1:{validate_port(local_port)}" if bind_mode == "ipv4" else str(validate_port(local_port))
+    return [*args, "-L", f"{local_binding}:127.0.0.1:{validate_remote_port(remote_port)}", validate_ssh_host(ssh_host)]
 
 
 async def resolved_proxy_command(ssh_host: str) -> str:
@@ -859,18 +856,6 @@ def needs_revive(stderr_line: str) -> bool:
     return "open failed: connect failed" in stderr_line.lower()
 
 
-def inference_proxy_port() -> int | None:
-    """AGENTSDOCK_INFERENCE_PROXY_PORT as a port number; None when unset or not a port."""
-    value = os.environ.get("AGENTSDOCK_INFERENCE_PROXY_PORT", "").strip()
-    if not value:
-        return None
-    if not (value.isdigit() and 1 <= int(value) <= 65535):
-        # A hand-edited bad value is dropped with a warning, so the remote's main and bulk tunnels still come up.
-        logger.warning("ignoring AGENTSDOCK_INFERENCE_PROXY_PORT=%r: not a port", value)
-        return None
-    return int(value)
-
-
 def next_backoff(current: float) -> float:
     return min(MAX_BACKOFF, current * 2)
 
@@ -1038,11 +1023,11 @@ async def ssh_process_group(proc: asyncio.subprocess.Process) -> AsyncIterator[N
 
 
 class Tunnel:
-    """Keeps one ``ssh -N`` forward (``-L``, or ``-R`` for the inference role) alive with backoff and optional remote revival."""
+    """Keeps one ``ssh -N -L`` forward alive with backoff and optional remote revival."""
 
     def __init__(
         self, server: RemoteServer | SSHForward, revive: Callable[[RemoteServer], Awaitable[None]] | None,
-        *, role: Literal["main", "bulk", "stream", "surface", "inference"] = "main",
+        *, role: Literal["main", "bulk", "stream", "surface"] = "main",
         on_route: Callable[[SSHRoute], Awaitable[None]] | None = None,
     ):
         self.server = server
@@ -1087,23 +1072,21 @@ class Tunnel:
                         env["SSL_CERT_FILE"] = self.server.ca_bundle_path
                         env["REQUESTS_CA_BUNDLE"] = self.server.ca_bundle_path
                 else:
-                    if self.role != "inference":
-                        # ssh binds its -L port only after the full connect, and a taken port then ends it
-                        # (ExitOnForwardFailure). Failing here costs no connection and keeps the tunnel down
-                        # (see RemoteServerManager.tunnel_down_on), so no remote's token goes to whoever holds
-                        # the port. With SO_REUSEADDR, as ssh binds and unlike local_port_free, connections
-                        # left in TIME_WAIT on the port do not make it taken.
-                        with socket.socket() as probe:
-                            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                            try:
-                                probe.bind(("127.0.0.1", self.server.local_port))
-                            except OSError as exc:
-                                raise OSError(f"local port {self.server.local_port}: {exc.strerror}") from exc
-                    # The inference tunnel carries only its reverse forward; nothing here connects through it.
+                    # ssh binds its -L port only after the full connect, and a taken port then ends it
+                    # (ExitOnForwardFailure). Failing here costs no connection and keeps the tunnel down
+                    # (see RemoteServerManager.tunnel_down_on), so no remote's token goes to whoever holds
+                    # the port. With SO_REUSEADDR, as ssh binds and unlike local_port_free, connections
+                    # left in TIME_WAIT on the port do not make it taken.
+                    with socket.socket() as probe:
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        try:
+                            probe.bind(("127.0.0.1", self.server.local_port))
+                        except OSError as exc:
+                            raise OSError(f"local port {self.server.local_port}: {exc.strerror}") from exc
                     # The main and stream tunnels carry JSON and the surface tunnel mostly web pages,
                     # which ssh compresses well; the bulk tunnel carries file bodies, mostly already compressed.
                     args = tunnel_args(
-                        route.destination, None if self.role == "inference" else self.server.local_port, self.server.remote_port,
+                        route.destination, self.server.local_port, self.server.remote_port,
                         compress=self.role in ("main", "stream", "surface"),
                     )
                     # Site forwards the cluster's chats need, e.g. a git server that only this
@@ -1112,14 +1095,7 @@ class Tunnel:
                     # a second -R for it fails and ExitOnForwardFailure ends that ssh.
                     self._site_args = (shlex.split(os.environ.get("AGENTSDOCK_OCI_TUNNEL_SSH_ARGS", ""))
                                        if self.role == "main" and self.server.ssh_host.startswith("oci@") else [])
-                    # The inference proxy on this machine holds the upstream API keys; chats on
-                    # every remote host reach it at 127.0.0.1:<port> through this reverse forward.
-                    # It gets a connection of its own so the LLM requests and token streams no
-                    # longer share the main tunnel's ssh connection (~27 KiB/s through a Sky
-                    # proxy, see the bulk tunnel note) with the chat event stream.
-                    proxy_port = inference_proxy_port() if self.role == "inference" else None
-                    proxy_args = ["-R", f"{proxy_port}:127.0.0.1:{proxy_port}"] if proxy_port else []
-                    options = [*route.options, *self._site_args, *proxy_args]
+                    options = [*route.options, *self._site_args]
                 self._route = route
                 proc = await asyncio.create_subprocess_exec(
                     ssh_binary(), *options, *args,
@@ -1560,7 +1536,6 @@ class RemoteServerManager:
         self.bulk_tunnels: dict[str, Tunnel] = {}
         self.stream_tunnels: dict[str, Tunnel] = {}
         self.surface_tunnels: dict[str, Tunnel] = {}
-        self.inference_tunnels: dict[str, Tunnel] = {}
         self.forwards: dict[str, SSHForward] = {}
         self.forward_tunnels: dict[str, Tunnel] = {}
         self.jobs: dict[str, DeployJob] = {}
@@ -1606,14 +1581,12 @@ class RemoteServerManager:
             if job.task is not None and not job.task.done():
                 job.task.cancel()
         await asyncio.gather(*(tunnel.stop() for tunnel in [*self.tunnels.values(), *self.bulk_tunnels.values(), *self.stream_tunnels.values(),
-                                                              *self.surface_tunnels.values(), *self.inference_tunnels.values(),
-                                                              *self.forward_tunnels.values()]),
+                                                              *self.surface_tunnels.values(), *self.forward_tunnels.values()]),
                              return_exceptions=True)
         self.tunnels.clear()
         self.bulk_tunnels.clear()
         self.stream_tunnels.clear()
         self.surface_tunnels.clear()
-        self.inference_tunnels.clear()
         self.forward_tunnels.clear()
         await self.http.aclose()
 
@@ -1630,7 +1603,7 @@ class RemoteServerManager:
         if current is not None and current.server == server:
             return
         for stale in (current, self.bulk_tunnels.pop(server.id, None), self.stream_tunnels.pop(server.id, None),
-                      self.surface_tunnels.pop(server.id, None), self.inference_tunnels.pop(server.id, None)):
+                      self.surface_tunnels.pop(server.id, None)):
             if stale is not None:
                 asyncio.create_task(stale.stop())
         on_route = (lambda route, remote_id=server.id: self._keep_ssh_alias(remote_id, route)) if self.ssh_aliases else None
@@ -1659,11 +1632,6 @@ class RemoteServerManager:
         self.surface_tunnels[server.id] = surface
         logger.info("ssh tunnel starting for %s (%s, local %d -> remote %d)", surface.label, server.ssh_host, surface.server.local_port, server.remote_port)
         surface.start()
-        if inference_proxy_port() is not None:
-            inference = Tunnel(server, None, role="inference")
-            self.inference_tunnels[server.id] = inference
-            logger.info("ssh tunnel starting for %s (%s, reverse forward to the inference proxy)", inference.label, server.ssh_host)
-            inference.start()
 
     async def _keep_ssh_alias(self, remote_id: str, route: SSHRoute) -> None:
         """Point `ssh <name>` at the route the remote's main tunnel resolved; a failure leaves the tunnel alone."""
@@ -1719,7 +1687,6 @@ class RemoteServerManager:
         No ssh holds the port then, so a listener there is another process: no request carrying a
         remote's token may go to it.
         """
-        # Not the inference tunnels: they carry the main tunnel's local_port but forward no local port.
         # Not the SSH forwards: no remote's token goes to them.
         tunnels = [*self.tunnels.values(), *self.bulk_tunnels.values(), *self.stream_tunnels.values(), *self.surface_tunnels.values()]
         return next((tunnel for tunnel in tunnels if tunnel.server.local_port == port and (
@@ -1782,7 +1749,7 @@ class RemoteServerManager:
         if server is None:
             raise HTTPException(status_code=404, detail="Unknown remote server.")
         for tunnel in (self.tunnels.pop(remote_id, None), self.bulk_tunnels.pop(remote_id, None), self.stream_tunnels.pop(remote_id, None),
-                       self.surface_tunnels.pop(remote_id, None), self.inference_tunnels.pop(remote_id, None)):
+                       self.surface_tunnels.pop(remote_id, None)):
             if tunnel is not None:
                 await tunnel.stop()
         self._save()
