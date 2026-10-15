@@ -180,7 +180,7 @@ describe('ServerManagement', () => {
     expect(screen.getByRole('button', { name: 'Deploy a new server' })).toHaveAttribute('aria-pressed', 'true')
     await user.click(screen.getByRole('button', { name: 'Attach an existing server' }))
     expect(screen.getByRole('button', { name: 'Attach an existing server' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByText(/Nothing is uploaded and the server is not restarted/)).toBeInTheDocument()
+    expect(screen.getByText(/Nothing on the host changes/)).toBeInTheDocument()
     await user.type(screen.getByLabelText('SSH host'), 'nv_gb300')
     await user.clear(screen.getByLabelText('Install directory on the host'))
     await user.type(screen.getByLabelText('Install directory on the host'), '/mnt/lustre/.agentsdock-server')
