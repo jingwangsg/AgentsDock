@@ -122,9 +122,10 @@ SKY_LOGIN_ERROR = ("SkyPilot on the hub's machine needs a new login. Click Autho
 # install goes there, one per cluster or workflow (see default_install_dir); mount points are
 # site-specific, so they stay out of the source.
 CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOME"}
-# OSMO pools mount different storage, and a workflow's name need not name its pool. AGENTSDOCK_OSMO_POOL_HOMES
-# ("<pool glob>=<home>", space-separated, first match wins) picks an osmo@ target's home by the pool
-# osmo_lead_task recorded here; other targets keep AGENTSDOCK_OSMO_HOME.
+# workflow -> OSMO pool, recorded by osmo_lead_task on every tunnel and deploy query. Pools mount different
+# storage and a workflow's name need not name its pool, so cluster_home matches AGENTSDOCK_OSMO_POOL_HOMES
+# ("<pool glob>=<home>", space-separated, first match wins) against it; a pool that matches no entry, or is
+# not recorded yet, gets AGENTSDOCK_OSMO_HOME.
 OSMO_POOLS: dict[str, str] = {}
 # No leading "-": workflow and task names are passed to the osmo CLI as arguments.
 OSMO_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
@@ -157,7 +158,9 @@ def validate_remote_dir(value: str) -> str:
 
 
 def cluster_home(ssh_host: str) -> str:
-    """The persistent home the hub's environment names for this cluster target, without a trailing /, or ""."""
+    """The persistent home the hub's environment names for this cluster target, without a trailing /, or "".
+
+    An osmo@ target gets its pool's home only once osmo_lead_task recorded the pool."""
     pool = OSMO_POOLS.get(ssh_host.removeprefix("osmo@"), "") if ssh_host.startswith("osmo@") else ""
     for entry in os.environ.get("AGENTSDOCK_OSMO_POOL_HOMES", "").split():
         pattern, _, home = entry.partition("=")
@@ -1578,8 +1581,9 @@ class RemoteServerManager:
         self.source_dir = source_dir
         self.manage_tunnels = manage_tunnels
         self._revive = revive
-        # The ssh host and install directory a deploy is bootstrapping: it stops and restarts that server itself.
-        self._bootstrapping: tuple[str, str] | None = None
+        # The ssh host a deploy is bootstrapping: it stops and restarts that server itself. The host alone, since an
+        # entry update() moved still names the default directory until the deploy finishes.
+        self._bootstrapping: str | None = None
         # This hub's own server identity: a hub it attaches may list this hub among its remotes.
         self.own_identity = own_identity
         # Keep an ssh alias per remote in SSH_ALIAS_DIR (see _keep_ssh_alias).
@@ -1778,7 +1782,7 @@ class RemoteServerManager:
     async def _revive_unless_bootstrapping(self, server: RemoteServer) -> None:
         # A request during a redeploy finds no server and asks for a revive; its start.sh beside the bootstrap's
         # could restart the server mid-install or end the bootstrap's start.sh with a tmux error.
-        if self._bootstrapping == (server.ssh_host, server.install_dir):
+        if self._bootstrapping == server.ssh_host:
             raise RuntimeError("its deployment is restarting it")
         await self._revive(server)
 
@@ -1839,13 +1843,14 @@ class RemoteServerManager:
             self._save()
             return server, None
         if "ssh_host" in changes and request.install_dir is None:
-            try:
-                changes["install_dir"] = default_install_dir(changes["ssh_host"])
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from None
             if changes["ssh_host"].startswith("osmo@"):
-                # The workflow's home may depend on its pool, which the deploy learns from its route.
+                # The workflow's home can depend on its pool, which only the deploy's osmo workflow query records.
                 changes["install_dir"] = DEFAULT_INSTALL_DIR
+            else:
+                try:
+                    changes["install_dir"] = default_install_dir(changes["ssh_host"])
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from None
         previous_name = server.name
         server = server.model_copy(update=changes)
         moved = "ssh_host" in changes or "install_dir" in changes
@@ -2043,9 +2048,16 @@ class RemoteServerManager:
             # A relaunched cluster keeps its name but not its address; its old ssh entry would fail the deploy.
             await refresh_sky_ssh_entry(ssh_host)
             route = await ssh_route(ssh_host)
-            if install_dir == DEFAULT_INSTALL_DIR:
-                # After the route: an osmo@ workflow's home depends on its pool, which the route's query recorded.
+            # After the route, whose osmo workflow query records the pool an osmo@ home can depend on. Only a new
+            # deploy and an entry update() moved arrive with the default; a Redeploy keeps the entry's directory.
+            if install_dir == DEFAULT_INSTALL_DIR and (existing is None or not keep_port):
                 install_dir = default_install_dir(ssh_host)
+                if existing is None and not attach:
+                    # start_deploy looked for this install before the pool was known: a registered one is updated.
+                    existing = next((server for server in self.servers.values()
+                                     if server.ssh_host == ssh_host and server.install_dir == install_dir), None)
+                    if existing is not None:
+                        requested_port = existing.remote_port
             if request is not None and request.password:
                 job.progress("connect", f"Installing this hub's SSH key on {ssh_host} with the password…")
                 await self._install_key(job, route, request.password)
@@ -2089,7 +2101,7 @@ class RemoteServerManager:
                 # script on stdin: never in argv, ps output or the job log.
                 token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
                 prelude = f"AGENTSDOCK_CLAUDE_TOKEN={shlex.quote(token)}\n".encode() if token else b""
-                self._bootstrapping = (ssh_host, install_dir)
+                self._bootstrapping = ssh_host
                 try:
                     result_lines = await self._run_ssh(
                         job, route, args, stdin=prelude + BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,

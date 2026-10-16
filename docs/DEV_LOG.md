@@ -6,21 +6,28 @@
   home, `AGENTSDOCK_OSMO_HOME`, and uses that home as the server's HOME.
   Pools mount different storage: on one pool that path was not shared
   storage but the container's own disk, so the install, its chats and its
-  HOME would have ended with the workflow, and the Claude, Codex and Git
-  setup kept on that pool's shared storage was not the server's.
+  HOME would have been lost when the workflow ended, and the server did
+  not see the Claude, Codex and Git configuration kept on that pool's
+  shared storage.
 - `AGENTSDOCK_OSMO_POOL_HOMES` (space-separated `<pool glob>=<home>`
   entries, first match wins) now gives the workflows of matching pools
   that home; other workflows keep `AGENTSDOCK_OSMO_HOME`. The hub reads a
   workflow's pool from the `osmo workflow query` it already runs to reach
   the workflow, so a new deploy, and a remote moved to another workflow,
-  choose the install directory after that query. An existing remote keeps
-  its install directory on Redeploy.
+  choose the install directory after that query. A deploy that finds the
+  install already registered updates that entry, and an existing remote
+  keeps its install directory on Redeploy.
 - Verified with server tests: a workflow in a matching pool and one in
   another pool get their homes as install parent and HOME, a remote moved
-  to a workflow of the matching pool deploys under its home, and oci@
-  hosts are unaffected.
-- Availability: takes effect when the hub is updated or restarted with the
-  variable set; remote servers need no update.
+  to a workflow of the matching pool deploys under its home, a second
+  deploy before the hub has queried the workflow updates the registered
+  entry, a Redeploy keeps the entry's directory, and oci@ hosts are
+  unaffected.
+- Not covered: no real osmo@ deploy was run with the setting; the tests
+  assume the top-level `pool` field that `osmo workflow query -t json`
+  returned on 2026-10-16. Availability: takes effect when the hub is
+  updated or restarted with the variable set; remote servers need no
+  update.
 
 ## 2026-10-16 — Tunnels and Redeploy of oci@/aws@ hosts get a new Sky ssh entry after a relaunch; the hub's server restart over ssh runs (server)
 
