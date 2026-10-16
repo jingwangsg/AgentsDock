@@ -109,6 +109,11 @@ SKY_LOGIN_INTERVAL = 600.0
 # `sky api login` polls for the Authorize click for 300 s, then falls back to Sky's older localhost-callback
 # login, which opens a second page; it is killed before that.
 SKY_LOGIN_TIMEOUT = 290.0
+# Sky rewrites a cluster's ssh entry only when it lists the cluster. A relaunched cluster runs in a new pod
+# with a new address, and the old entry ends every ssh with "Connection closed by UNKNOWN port 65535" until
+# the next listing. A failed connection asks Sky for a new entry; tunnels fail together and share one listing
+# (5-7 s, measured 2026-10-16) this long.
+SKY_ENTRY_REFRESH_INTERVAL = 60.0
 SKY_LOGIN_ERROR = ("SkyPilot on the hub's machine needs a new login. Click Authorize on the newest SkyPilot login "
                    "page in that machine's browser (the hub opens one at most every 10 minutes), or run `sky api login` there.")
 # A cluster container's own ~ does not outlive it. When the hub's environment names
@@ -505,6 +510,27 @@ async def write_sky_ssh_entry(cluster: str, env: dict[str, str]) -> None:
             await listing.wait()
 
 
+SKY_ENTRY_REFRESH: dict[str, tuple[asyncio.Task[None], float]] = {}
+
+
+async def refresh_sky_ssh_entry(ssh_host: str) -> None:
+    """Have Sky rewrite the ssh entry of an oci@ or aws@ host, at most once per SKY_ENTRY_REFRESH_INTERVAL per cluster."""
+
+    if not ssh_host.startswith(("oci@", "aws@")):
+        return
+    cluster = ssh_host.split("@", 1)[1]
+    listing, started = SKY_ENTRY_REFRESH.get(cluster, (None, 0.0))
+    if listing is None or time.monotonic() - started >= SKY_ENTRY_REFRESH_INTERVAL:
+        env = ssh_env()
+        if SKY_CA_BUNDLE.exists():
+            env["SSL_CERT_FILE"] = env["REQUESTS_CA_BUNDLE"] = str(SKY_CA_BUNDLE)
+        listing = asyncio.create_task(write_sky_ssh_entry(cluster, env), name=f"sky-ssh-entry:{cluster}")
+        SKY_ENTRY_REFRESH[cluster] = (listing, time.monotonic())
+    # A cancelled waiter (a stopped tunnel or deploy) leaves the running listing to the others.
+    with suppress(OSError, asyncio.TimeoutError):
+        await asyncio.shield(listing)
+
+
 async def osmo_lead_task(workflow: str) -> tuple[str, str]:
     """The osmo CLI path and the lead task of a running workflow."""
 
@@ -847,9 +873,10 @@ def remove_ssh_alias(name: str) -> None:
 
 
 def revive_args(ssh_host: str, install_dir: str) -> list[str]:
-    # install_dir is validated to [A-Za-z0-9_.~/-], so it is safe unquoted and a
-    # leading ~ still expands on the host.
-    return [*SSH_BATCH_OPTIONS, validate_ssh_host(ssh_host), "bash", "-lc", f"exec bash {validate_remote_dir(install_dir)}/start.sh"]
+    # ssh joins its arguments with spaces for the remote shell, so the -c command is quoted
+    # as one word: unquoted, `bash -lc` got only "exec" and the server never started.
+    # install_dir is validated to [A-Za-z0-9_.~/-]; a leading ~ still expands inside the -c shell.
+    return [*SSH_BATCH_OPTIONS, validate_ssh_host(ssh_host), "bash", "-lc", shlex.quote(f"exec bash {validate_remote_dir(install_dir)}/start.sh")]
 
 
 def needs_revive(stderr_line: str) -> bool:
@@ -1168,6 +1195,8 @@ class Tunnel:
             # tunnel is marked down first: while Sky answers, no request may go to its free local port.
             if self.server.ssh_host.startswith("oci@") and (sky_reason := await sky_login_reason(self.server.ssh_host)):
                 self.status = {**self.status, "last_error": sky_reason}
+            elif "port 65535" in self.status["last_error"]:
+                await refresh_sky_ssh_entry(self.server.ssh_host)
             logger.warning("ssh tunnel %s exited; restarting in %.0fs: %s", self.label, self._backoff, self.status["last_error"])
             await asyncio.sleep(self._backoff)
             self._backoff = next_backoff(self._backoff)
@@ -1983,6 +2012,8 @@ class RemoteServerManager:
             if request is not None and request.password and ssh_host.startswith(("oci@", "aws@", "osmo@")):
                 raise RuntimeError("oci@, aws@ and osmo@ targets are reached through the cluster CLI; leave the password empty.")
             self._unshadow(ssh_host)
+            # A relaunched cluster keeps its name but not its address; its old ssh entry would fail the deploy.
+            await refresh_sky_ssh_entry(ssh_host)
             job.progress("connect", f"Probing {ssh_host}…")
             route = await ssh_route(ssh_host)
             if request is not None and request.password:

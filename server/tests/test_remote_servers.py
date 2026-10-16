@@ -37,6 +37,8 @@ import remote_servers as rs  # noqa: E402
 
 HUB_TOKEN = "hub-token-" + "h" * 30
 REMOTE_TOKEN = "remote-token-" + "r" * 40
+# RemoteServerTests.setUp replaces the module's function with a stub; its own test calls this one.
+REFRESH_SKY_SSH_ENTRY = rs.refresh_sky_ssh_entry
 
 # Plays the host for deploy/attach jobs: answers the probe and the bootstrap from
 # host.json and logs each call's full argv, its SSL_CERT_FILE, and ``tail``, the part
@@ -266,6 +268,8 @@ async def hub_with_fake(tmp_path: Path, ws_authorized=lambda ws: True, hooks=Non
 class RemoteServerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_path = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # A deploy or a failed tunnel of an oci@ or aws@ host has the sky CLI rewrite the cluster's ssh entry; no test runs the real one.
+        self.refresh_sky_ssh_entry = self.enterContext(mock.patch.object(rs, "refresh_sky_ssh_entry", mock.AsyncMock()))
 
     # --- registry -------------------------------------------------------------
 
@@ -413,7 +417,7 @@ class RemoteServerTests(unittest.TestCase):
         compressed = rs.tunnel_args("osmo_9000", 7851, 7850, compress=True)
         assert compressed[-4:] == ["-C", "-L", "127.0.0.1:7851:127.0.0.1:7850", "osmo_9000"]
         assert [arg for arg in compressed if arg != "-C"] == rs.tunnel_args("osmo_9000", 7851, 7850)
-        assert rs.revive_args("osmo_9000", "~/.agentsdock-server")[-3:] == ["bash", "-lc", "exec bash ~/.agentsdock-server/start.sh"]
+        assert rs.revive_args("osmo_9000", "~/.agentsdock-server")[-3:] == ["bash", "-lc", "'exec bash ~/.agentsdock-server/start.sh'"]
         assert rs.remote_shell_args("h")[-4:] == ["h", "bash", "-s", "--"]
         with self.assertRaises(ValueError):
             rs.tunnel_args("-oProxyCommand=x", 7851, 7850)
@@ -1378,6 +1382,66 @@ else:
             [["api", "info", "-o", "json"], str(ca)],
             [["api", "info", "-o", "json"], str(ca)],
         ]
+
+    def test_the_revive_command_runs_start_sh_through_the_remote_shell(self) -> None:
+        # sshd hands the joined words after the host to the user's shell; unquoted, `bash -lc` got only "exec".
+        home = self.tmp_path / "home"
+        (home / ".agentsdock-server").mkdir(parents=True)
+        (home / ".agentsdock-server" / "start.sh").write_text(f"echo started > '{home}/marker'\n")
+        args = rs.revive_args("lab", "~/.agentsdock-server")
+        remote_command = " ".join(args[args.index("lab") + 1:])
+        subprocess.run(["/bin/sh", "-c", remote_command], env={"HOME": str(home), "PATH": "/usr/bin:/bin"}, check=True, timeout=30)
+        assert (home / "marker").read_text() == "started\n"
+
+    def test_a_sky_ssh_entry_is_rewritten_once_per_interval_for_each_cluster(self) -> None:
+        write = self.enterContext(mock.patch.object(rs, "write_sky_ssh_entry", mock.AsyncMock()))
+        self.enterContext(mock.patch.object(rs, "SKY_ENTRY_REFRESH", {}))
+
+        async def main() -> None:
+            # Tunnels of one remote fail together and share one listing; a plain host has no Sky entry.
+            await asyncio.gather(*(REFRESH_SKY_SSH_ENTRY(host) for host in ("oci@a", "oci@a", "aws@b", "lab")))
+            await REFRESH_SKY_SSH_ENTRY("oci@a")
+            assert sorted(call.args[0] for call in write.await_args_list) == ["a", "b"]
+            with mock.patch.object(rs, "SKY_ENTRY_REFRESH_INTERVAL", 0.0):
+                await REFRESH_SKY_SSH_ENTRY("oci@a")
+            assert write.await_count == 3
+
+        asyncio.run(main())
+
+    def test_a_relaunched_cluster_gets_a_new_sky_ssh_entry_from_its_tunnel_and_its_deploy(self) -> None:
+        # The old entry points at the cluster's previous pod: Sky's proxy then ends ssh after it counted as connected.
+        self.enterContext(mock.patch.object(rs, "sky_login_reason", mock.AsyncMock(return_value=None)))
+        refresh = self.refresh_sky_ssh_entry
+        script = self.tmp_path / "ssh"
+        script.write_text(f"""#!{sys.executable}
+import sys, time
+time.sleep(0.3)
+print("Connection closed by UNKNOWN port 65535", file=sys.stderr)
+sys.exit(255)
+""")
+        script.chmod(0o700)
+        self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
+        self.enterContext(mock.patch.object(rs, "SETTLE_SECONDS", 0.05))
+        self.enterContext(mock.patch.object(rs, "ssh_route", mock.AsyncMock(return_value=rs.SSHRoute([], "sky-cluster", {}))))
+        tunnel = rs.Tunnel(make_server(ssh_host="oci@sky-cluster", local_port=free_port()), None)
+
+        async def failure() -> None:
+            tunnel.start()
+            try:
+                for _ in range(500):
+                    if refresh.await_count:
+                        return
+                    await asyncio.sleep(0.01)
+                self.fail(f"the tunnel did not ask for a new entry: {tunnel.status}")
+            finally:
+                await tunnel.stop()
+
+        asyncio.run(failure())
+        refresh.assert_awaited_with("oci@sky-cluster")
+        refresh.reset_mock()
+        self.fake_host(existing_port=None)
+        self.run_job(rs.RemoteDeployRequest(ssh_host="oci@sky-cluster"))
+        refresh.assert_awaited_once_with("oci@sky-cluster")
 
     def test_a_failed_sky_tunnel_or_deploy_names_the_expired_sky_login(self) -> None:
         states: list[str] = []
