@@ -37,7 +37,7 @@ import remote_servers as rs  # noqa: E402
 
 HUB_TOKEN = "hub-token-" + "h" * 30
 REMOTE_TOKEN = "remote-token-" + "r" * 40
-# RemoteServerTests.setUp replaces the module's function with a stub; its own test calls this one.
+# The real rs.refresh_sky_ssh_entry, saved before RemoteServerTests.setUp stubs it, for the test of the function itself.
 REFRESH_SKY_SSH_ENTRY = rs.refresh_sky_ssh_entry
 
 # Plays the host for deploy/attach jobs: answers the probe and the bootstrap from
@@ -268,7 +268,7 @@ async def hub_with_fake(tmp_path: Path, ws_authorized=lambda ws: True, hooks=Non
 class RemoteServerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_path = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        # A deploy or a failed tunnel of an oci@ or aws@ host has the sky CLI rewrite the cluster's ssh entry; no test runs the real one.
+        # Deploys and failed oci@/aws@ tunnels call refresh_sky_ssh_entry, which runs the sky CLI; tests get a stub.
         self.refresh_sky_ssh_entry = self.enterContext(mock.patch.object(rs, "refresh_sky_ssh_entry", mock.AsyncMock()))
 
     # --- registry -------------------------------------------------------------
@@ -1398,7 +1398,7 @@ else:
         self.enterContext(mock.patch.object(rs, "SKY_ENTRY_REFRESH", {}))
 
         async def main() -> None:
-            # Tunnels of one remote fail together and share one listing; a plain host has no Sky entry.
+            # Tunnels of one cluster fail together and share one listing; a plain host has no Sky entry.
             await asyncio.gather(*(REFRESH_SKY_SSH_ENTRY(host) for host in ("oci@a", "oci@a", "aws@b", "lab")))
             await REFRESH_SKY_SSH_ENTRY("oci@a")
             assert sorted(call.args[0] for call in write.await_args_list) == ["a", "b"]
@@ -1409,7 +1409,7 @@ else:
         asyncio.run(main())
 
     def test_a_relaunched_cluster_gets_a_new_sky_ssh_entry_from_its_tunnel_and_its_deploy(self) -> None:
-        # The old entry points at the cluster's previous pod: Sky's proxy then ends ssh after it counted as connected.
+        # A stale entry ends ssh with "UNKNOWN port 65535" after SETTLE_SECONDS, when the tunnel already counted as connected.
         self.enterContext(mock.patch.object(rs, "sky_login_reason", mock.AsyncMock(return_value=None)))
         refresh = self.refresh_sky_ssh_entry
         script = self.tmp_path / "ssh"
@@ -1442,6 +1442,37 @@ sys.exit(255)
         self.fake_host(existing_port=None)
         self.run_job(rs.RemoteDeployRequest(ssh_host="oci@sky-cluster"))
         refresh.assert_awaited_once_with("oci@sky-cluster")
+
+    def test_a_revive_is_refused_while_a_deploy_bootstraps_the_same_install(self) -> None:
+        self.fake_host(existing_port=7860)
+        revive = mock.AsyncMock()
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False, revive=revive)
+        marked: list[tuple[str, str] | None] = []
+        run_ssh = manager._run_ssh
+
+        async def recording_run_ssh(job, route, args, **kwargs):
+            marked.append(manager._bootstrapping)
+            return await run_ssh(job, route, args, **kwargs)
+
+        manager._run_ssh = recording_run_ssh
+        server = make_server(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server")
+
+        async def main() -> None:
+            job = manager.start_deploy(rs.RemoteDeployRequest(ssh_host=server.ssh_host, install_dir=server.install_dir))
+            await job.task
+            assert job.error is None, job.log
+            # The bootstrap stops the server and starts it again; a request in between must not start another.
+            manager._bootstrapping = (server.ssh_host, server.install_dir)
+            with self.assertRaisesRegex(RuntimeError, "its deployment is restarting it"):
+                await manager._revive_unless_bootstrapping(server)
+            manager._bootstrapping = None
+            await manager._revive_unless_bootstrapping(server)
+            await manager.stop()
+
+        asyncio.run(main())
+        # The probe runs unmarked; the bootstrap marks the install while it runs.
+        assert marked == [None, (server.ssh_host, server.install_dir)]
+        revive.assert_awaited_once_with(server)
 
     def test_a_failed_sky_tunnel_or_deploy_names_the_expired_sky_login(self) -> None:
         states: list[str] = []
