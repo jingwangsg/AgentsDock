@@ -270,6 +270,10 @@ class RemoteServerTests(unittest.TestCase):
         self.tmp_path = Path(self.enterContext(tempfile.TemporaryDirectory()))
         # Deploys and failed oci@/aws@ tunnels call refresh_sky_ssh_entry, which runs the sky CLI; tests get a stub.
         self.refresh_sky_ssh_entry = self.enterContext(mock.patch.object(rs, "refresh_sky_ssh_entry", mock.AsyncMock()))
+        # Pools recorded by one test's osmo queries, or a developer shell's pool homes, must not choose another's home.
+        self.enterContext(mock.patch.object(rs, "OSMO_POOLS", {}))
+        self.enterContext(mock.patch.dict(os.environ))
+        os.environ.pop("AGENTSDOCK_OSMO_POOL_HOMES", None)
 
     # --- registry -------------------------------------------------------------
 
@@ -1142,7 +1146,8 @@ import json, sys
 workflow = sys.argv[3]
 tasks = [dict(name="worker_1", lead=False), dict(name="master", lead=True)]
 answers = {{
-    "wf-running": dict(status="RUNNING", groups=[dict(tasks=tasks)]),
+    "wf-running": dict(status="RUNNING", pool="pool-a-01", groups=[dict(tasks=tasks)]),
+    "wf-other": dict(status="RUNNING", pool="pool-b-01", groups=[dict(tasks=tasks)]),
     "wf-done": dict(status="COMPLETED", groups=[dict(tasks=tasks)]),
     "wf-garbled": dict(status="RUNNING", groups=[dict(tasks=[None])]),
 }}
@@ -1447,7 +1452,7 @@ sys.exit(255)
         self.fake_host(existing_port=7860)
         revive = mock.AsyncMock()
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False, revive=revive)
-        marked: list[tuple[str, str] | None] = []
+        marked: list[str | None] = []
         run_ssh = manager._run_ssh
 
         async def recording_run_ssh(job, route, args, **kwargs):
@@ -1462,7 +1467,7 @@ sys.exit(255)
             await job.task
             assert job.error is None, job.log
             # The bootstrap stops the server and starts it again; a request in between must not start another.
-            manager._bootstrapping = (server.ssh_host, server.install_dir)
+            manager._bootstrapping = server.ssh_host
             with self.assertRaisesRegex(RuntimeError, "its deployment is restarting it"):
                 await manager._revive_unless_bootstrapping(server)
             manager._bootstrapping = None
@@ -1470,8 +1475,8 @@ sys.exit(255)
             await manager.stop()
 
         asyncio.run(main())
-        # The probe runs unmarked; the bootstrap marks the install while it runs.
-        assert marked == [None, (server.ssh_host, server.install_dir)]
+        # The probe runs unmarked; the bootstrap marks the host while it runs.
+        assert marked == [None, server.ssh_host]
         revive.assert_awaited_once_with(server)
 
     def test_a_failed_sky_tunnel_or_deploy_names_the_expired_sky_login(self) -> None:
@@ -1738,6 +1743,74 @@ if sys.argv[-1] == "k8s-cluster":
         _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="osmo@wf-running"))
         assert job.done and job.error is None, job.log
         assert json.loads(calls.read_text().splitlines()[-1])["tail"][:3] == [rs.DEFAULT_INSTALL_DIR, "7860", "/h"]
+
+    def test_an_osmo_workflow_gets_the_home_of_its_pool(self) -> None:
+        # Pools mount different storage, and a workflow's name need not name its pool.
+        calls = self.fake_host(existing_port=None)
+        self.fake_osmo()
+        # The trailing / and the unmatched entry cover the strip and the split.
+        self.enterContext(mock.patch.dict(os.environ, {
+            "AGENTSDOCK_OSMO_HOME": "/mnt/b/u", "AGENTSDOCK_OSMO_POOL_HOMES": "pool-a-*=/mnt/a/u/ pool-c-*=/mnt/c/u",
+            "AGENTSDOCK_OCI_HOME": "/mnt/oci/u",
+        }))
+        for workflow, home in (("wf-running", "/mnt/a/u"), ("wf-other", "/mnt/b/u")):
+            manager, job = self.run_job(rs.RemoteDeployRequest(ssh_host=f"osmo@{workflow}"))
+            assert job.done and job.error is None, job.log
+            assert rs.load_registry(manager.path)[0].install_dir == f"{home}/.agentsdock-server-{workflow}"
+            # The bootstrap runs the server with that home as HOME.
+            assert json.loads(calls.read_text().splitlines()[-1])["tail"][2] == home
+        # Pools are OSMO's: an oci@ cluster of the same name keeps its own home.
+        assert rs.cluster_home("oci@wf-running") == "/mnt/oci/u"
+
+        # Before a hub's first query of the workflow, a deploy of a registered install updates that entry.
+        manager = rs.RemoteServerManager(self.tmp_path / "again", source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server(ssh_host="osmo@wf-running", install_dir="/mnt/a/u/.agentsdock-server-wf-running")
+        rs.OSMO_POOLS.clear()
+
+        async def deploy_again() -> rs.DeployJob:
+            job = manager.start_deploy(rs.RemoteDeployRequest(ssh_host="osmo@wf-running"))
+            await job.task
+            await manager.stop()
+            return job
+
+        job = asyncio.run(deploy_again())
+        assert job.error is None and job.server is not None and job.server.id == "abcdef123456", job.log
+        assert list(manager.servers) == ["abcdef123456"]
+        # The bootstrap restarts the registered server, as a Redeploy does.
+        assert json.loads(calls.read_text().splitlines()[-1])["tail"][-1] == "restart"
+
+        # A remote moved to another workflow learns that workflow's pool during the deploy.
+        rs.OSMO_POOLS.clear()
+        manager = rs.RemoteServerManager(self.tmp_path / "moved", source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server(ssh_host="osmo@wf-other", install_dir="/mnt/b/u/.agentsdock-server-wf-other")
+
+        async def move() -> rs.DeployJob:
+            _, job = manager.update("abcdef123456", rs.RemoteServerUpdate(ssh_host="osmo@wf-running"))
+            assert job is not None and job.task is not None
+            await job.task
+            await manager.stop()
+            return job
+
+        job = asyncio.run(move())
+        assert job.error is None, job.log
+        assert rs.load_registry(manager.path)[0].install_dir == "/mnt/a/u/.agentsdock-server-wf-running"
+
+    def test_a_redeploy_keeps_an_entry_that_names_the_default_directory(self) -> None:
+        # Only a new deploy or a move picks the cluster home; a Redeploy must not leave the entry's chats behind.
+        calls = self.fake_host(existing_port=7860)
+        self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
+        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/oci/u"}))
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server(ssh_host="oci@sky-cluster", install_dir=rs.DEFAULT_INSTALL_DIR)
+
+        async def main() -> rs.DeployJob:
+            job = manager.start_deploy(None, redeploy_id="abcdef123456")
+            await job.task
+            await manager.stop()
+            return job
+
+        assert asyncio.run(main()).error is None
+        assert json.loads(calls.read_text().splitlines()[-1])["tail"][0] == rs.DEFAULT_INSTALL_DIR
 
     def test_oci_server_tunnel_carries_the_configured_site_forwards(self) -> None:
         script = self.tmp_path / "ssh"
