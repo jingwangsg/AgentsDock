@@ -109,6 +109,11 @@ SKY_LOGIN_INTERVAL = 600.0
 # `sky api login` polls for the Authorize click for 300 s, then falls back to Sky's older localhost-callback
 # login, which opens a second page; it is killed before that.
 SKY_LOGIN_TIMEOUT = 290.0
+# Sky rewrites a cluster's ssh entry only when it lists the cluster. A relaunched cluster runs in a new pod
+# with a new address, and the old entry ends every ssh with "Connection closed by UNKNOWN port 65535" until
+# the next listing. Such a tunnel exit and every deploy have Sky list the cluster (5-7 s, measured 2026-10-16);
+# tunnels fail together and share one listing this long.
+SKY_ENTRY_REFRESH_INTERVAL = 60.0
 SKY_LOGIN_ERROR = ("SkyPilot on the hub's machine needs a new login. Click Authorize on the newest SkyPilot login "
                    "page in that machine's browser (the hub opens one at most every 10 minutes), or run `sky api login` there.")
 # A cluster container's own ~ does not outlive it. When the hub's environment names
@@ -505,6 +510,31 @@ async def write_sky_ssh_entry(cluster: str, env: dict[str, str]) -> None:
             await listing.wait()
 
 
+# Per cluster: the running or last ssh entry listing, and when it started.
+SKY_ENTRY_REFRESH: dict[str, tuple[asyncio.Task[None], float]] = {}
+
+
+async def refresh_sky_ssh_entry(ssh_host: str) -> None:
+    """Have Sky rewrite the ssh entry of an oci@ or aws@ host, at most once per SKY_ENTRY_REFRESH_INTERVAL per cluster."""
+
+    if not ssh_host.startswith(("oci@", "aws@")):
+        return
+    cluster = ssh_host.split("@", 1)[1]
+    listing, started = SKY_ENTRY_REFRESH.get(cluster, (None, 0.0))
+    # A listing still running (up to write_sky_ssh_entry's 90 s) is joined, not started again.
+    if listing is None or (listing.done() and time.monotonic() - started >= SKY_ENTRY_REFRESH_INTERVAL):
+        logger.info("asking Sky for a new ssh entry for %s", cluster)
+        env = ssh_env()
+        if SKY_CA_BUNDLE.exists():
+            env["SSL_CERT_FILE"] = env["REQUESTS_CA_BUNDLE"] = str(SKY_CA_BUNDLE)
+        listing = asyncio.create_task(write_sky_ssh_entry(cluster, env), name=f"sky-ssh-entry:{cluster}")
+        SKY_ENTRY_REFRESH[cluster] = (listing, time.monotonic())
+    # A cancelled waiter (a stopped tunnel or deploy) leaves the running listing to the others. A failed
+    # listing does not fail the caller; the ssh that follows reports the problem.
+    with suppress(OSError, asyncio.TimeoutError):
+        await asyncio.shield(listing)
+
+
 async def osmo_lead_task(workflow: str) -> tuple[str, str]:
     """The osmo CLI path and the lead task of a running workflow."""
 
@@ -847,9 +877,10 @@ def remove_ssh_alias(name: str) -> None:
 
 
 def revive_args(ssh_host: str, install_dir: str) -> list[str]:
-    # install_dir is validated to [A-Za-z0-9_.~/-], so it is safe unquoted and a
-    # leading ~ still expands on the host.
-    return [*SSH_BATCH_OPTIONS, validate_ssh_host(ssh_host), "bash", "-lc", f"exec bash {validate_remote_dir(install_dir)}/start.sh"]
+    # ssh joins its arguments with spaces for the remote shell, so the -c command is quoted
+    # as one word: unquoted, `bash -lc` got only "exec" and the server never started.
+    # install_dir is validated to [A-Za-z0-9_.~/-], so the inner shell can take it unquoted and expand a leading ~.
+    return [*SSH_BATCH_OPTIONS, validate_ssh_host(ssh_host), "bash", "-lc", shlex.quote(f"exec bash {validate_remote_dir(install_dir)}/start.sh")]
 
 
 def needs_revive(stderr_line: str) -> bool:
@@ -1168,6 +1199,9 @@ class Tunnel:
             # tunnel is marked down first: while Sky answers, no request may go to its free local port.
             if self.server.ssh_host.startswith("oci@") and (sky_reason := await sky_login_reason(self.server.ssh_host)):
                 self.status = {**self.status, "last_error": sky_reason}
+            # Otherwise the same message means the entry still has a previous pod's address: the cluster was relaunched.
+            elif "port 65535" in self.status["last_error"]:
+                await refresh_sky_ssh_entry(self.server.ssh_host)
             logger.warning("ssh tunnel %s exited; restarting in %.0fs: %s", self.label, self._backoff, self.status["last_error"])
             await asyncio.sleep(self._backoff)
             self._backoff = next_backoff(self._backoff)
@@ -1532,6 +1566,8 @@ class RemoteServerManager:
         self.source_dir = source_dir
         self.manage_tunnels = manage_tunnels
         self._revive = revive
+        # The ssh host and install directory a deploy is bootstrapping: it stops and restarts that server itself.
+        self._bootstrapping: tuple[str, str] | None = None
         # This hub's own server identity: a hub it attaches may list this hub among its remotes.
         self.own_identity = own_identity
         # Keep an ssh alias per remote in SSH_ALIAS_DIR (see _keep_ssh_alias).
@@ -1612,7 +1648,7 @@ class RemoteServerManager:
             if stale is not None:
                 asyncio.create_task(stale.stop())
         on_route = (lambda route, remote_id=server.id: self._keep_ssh_alias(remote_id, route)) if self.ssh_aliases else None
-        tunnel = Tunnel(server, self._revive, on_route=on_route)
+        tunnel = Tunnel(server, self._revive_unless_bootstrapping, on_route=on_route)
         self.tunnels[server.id] = tunnel
         logger.info("ssh tunnel starting for %s (%s, local %d -> remote %d)", server.id, server.ssh_host, server.local_port, server.remote_port)
         tunnel.start()
@@ -1726,6 +1762,13 @@ class RemoteServerManager:
 
     def _save(self) -> None:
         save_registry(self.path, list(self.servers.values()))
+
+    async def _revive_unless_bootstrapping(self, server: RemoteServer) -> None:
+        # A request during a redeploy finds no server and asks for a revive; its start.sh beside the bootstrap's
+        # could restart the server mid-install or end the bootstrap's start.sh with a tmux error.
+        if self._bootstrapping == (server.ssh_host, server.install_dir):
+            raise RuntimeError("its deployment is restarting it")
+        await self._revive(server)
 
     def _unshadow(self, ssh_host: str) -> None:
         """Remove the hub's alias named like a host the hub is about to dial (see _keep_ssh_alias)."""
@@ -1984,6 +2027,8 @@ class RemoteServerManager:
                 raise RuntimeError("oci@, aws@ and osmo@ targets are reached through the cluster CLI; leave the password empty.")
             self._unshadow(ssh_host)
             job.progress("connect", f"Probing {ssh_host}…")
+            # A relaunched cluster keeps its name but not its address; its old ssh entry would fail the deploy.
+            await refresh_sky_ssh_entry(ssh_host)
             route = await ssh_route(ssh_host)
             if request is not None and request.password:
                 job.progress("connect", f"Installing this hub's SSH key on {ssh_host} with the password…")
@@ -2028,10 +2073,14 @@ class RemoteServerManager:
                 # script on stdin: never in argv, ps output or the job log.
                 token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
                 prelude = f"AGENTSDOCK_CLAUDE_TOKEN={shlex.quote(token)}\n".encode() if token else b""
-                result_lines = await self._run_ssh(
-                    job, route, args, stdin=prelude + BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,
-                    on_line=lambda line: job.progress("install", setup_log_message(line) or "") if setup_log_message(line) else None,
-                )
+                self._bootstrapping = (ssh_host, install_dir)
+                try:
+                    result_lines = await self._run_ssh(
+                        job, route, args, stdin=prelude + BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,
+                        on_line=lambda line: job.progress("install", setup_log_message(line) or "") if setup_log_message(line) else None,
+                    )
+                finally:
+                    self._bootstrapping = None
                 result = parse_setup_result(result_lines)
 
             job.progress("service", "Opening the SSH tunnel…")

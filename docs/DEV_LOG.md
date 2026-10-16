@@ -1,5 +1,40 @@
 # Public development log
 
+## 2026-10-16 — Tunnels and Redeploy of oci@/aws@ hosts get a new Sky ssh entry after a relaunch; the hub's server restart over ssh runs (server)
+
+- After a Sky cluster was relaunched under the same name, every connection
+  to it failed with "Connection closed by UNKNOWN port 65535", Redeploy
+  included. Sky's ssh entry for the cluster still pointed at the previous
+  pod's address, and Sky rewrites it only when it lists the cluster. The
+  hub now has Sky rewrite the entry (`sky status -u -- <cluster>`, 5-7 s)
+  when a tunnel to an oci@ or aws@ host ends with that error and the cause
+  is not an expired Sky login, and before every deploy, redeploy or attach
+  of such a host. Tunnels of one cluster share one rewrite per minute.
+- The hub restarts a remote's server when its tunnel finds nothing
+  listening, by running the install's `start.sh` over ssh. That command
+  started nothing: ssh joins its arguments into one line for the remote
+  shell, so `bash -lc` received only `exec` and exited successfully, while
+  the hub logged "remote server start requested". The command is now
+  quoted as one word. A relaunched cluster's server, whose install lives on
+  shared storage, therefore starts again on its own once ssh works.
+- While a redeploy reinstalls a server, the hub does not run that restart
+  for it: the redeploy stops and starts the server itself, and a second
+  `start.sh` beside it could restart the server mid-install or fail the
+  redeploy.
+- Verified against a real oci@ cluster relaunched on 2026-10-16: before
+  the fix the hub's start command took 16 s, printed nothing and left no
+  server; the quoted command started it, the hub reached it, and with the
+  server running it reports "AgentsServer already listening". The entry
+  rewrite ran against the real Sky server in 6.6 s and ssh worked
+  afterwards. Server tests run the start command through a shell the way
+  sshd does, and cover the rewrite after a tunnel failure, before a
+  deploy, and its sharing per cluster, and the restart refused during a
+  redeploy's install.
+- Not covered: a cluster relaunch was not caused on purpose to watch the
+  whole recovery end to end, and aws@ hosts were not tested. Availability:
+  takes effect when the hub is updated or restarted; remote servers need
+  no update.
+
 ## 2026-10-15 — Canvas reports render formulas (server)
 
 - A Canvas `Markdown` section showed `$…$` and `$$…$$` as TeX source in
