@@ -1142,7 +1142,8 @@ import json, sys
 workflow = sys.argv[3]
 tasks = [dict(name="worker_1", lead=False), dict(name="master", lead=True)]
 answers = {{
-    "wf-running": dict(status="RUNNING", groups=[dict(tasks=tasks)]),
+    "wf-running": dict(status="RUNNING", pool="groot-l40s-01", groups=[dict(tasks=tasks)]),
+    "wf-h100": dict(status="RUNNING", pool="groot-h100-01", groups=[dict(tasks=tasks)]),
     "wf-done": dict(status="COMPLETED", groups=[dict(tasks=tasks)]),
     "wf-garbled": dict(status="RUNNING", groups=[dict(tasks=[None])]),
 }}
@@ -1738,6 +1739,40 @@ if sys.argv[-1] == "k8s-cluster":
         _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="osmo@wf-running"))
         assert job.done and job.error is None, job.log
         assert json.loads(calls.read_text().splitlines()[-1])["tail"][:3] == [rs.DEFAULT_INSTALL_DIR, "7860", "/h"]
+
+    def test_an_osmo_workflow_gets_the_home_of_its_pool(self) -> None:
+        # Pools mount different storage, and a workflow's name need not name its pool.
+        calls = self.fake_host(existing_port=None)
+        self.fake_osmo()
+        self.enterContext(mock.patch.object(rs, "OSMO_POOLS", {}))
+        self.enterContext(mock.patch.dict(os.environ, {
+            "AGENTSDOCK_OSMO_HOME": "/mnt/amlfs/u", "AGENTSDOCK_OSMO_POOL_HOMES": "groot-l40s-*=/mnt/lfs/u/ groot-a100-*=/mnt/a100/u",
+            "AGENTSDOCK_OCI_HOME": "/mnt/oci/u",
+        }))
+        for workflow, home in (("wf-running", "/mnt/lfs/u"), ("wf-h100", "/mnt/amlfs/u")):
+            manager, job = self.run_job(rs.RemoteDeployRequest(ssh_host=f"osmo@{workflow}"))
+            assert job.done and job.error is None, job.log
+            assert rs.load_registry(manager.path)[0].install_dir == f"{home}/.agentsdock-server-{workflow}"
+            # The bootstrap runs the server with that home as HOME.
+            assert json.loads(calls.read_text().splitlines()[-1])["tail"][2] == home
+        # Pools are OSMO's: an oci@ cluster of the same name keeps its own home.
+        assert rs.cluster_home("oci@wf-running") == "/mnt/oci/u"
+
+        # A remote moved to another workflow learns that workflow's pool during the deploy.
+        rs.OSMO_POOLS.clear()
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server(ssh_host="osmo@wf-h100", install_dir="/mnt/amlfs/u/.agentsdock-server-wf-h100")
+
+        async def main() -> rs.DeployJob:
+            _, job = manager.update("abcdef123456", rs.RemoteServerUpdate(ssh_host="osmo@wf-running"))
+            assert job is not None and job.task is not None
+            await job.task
+            await manager.stop()
+            return job
+
+        job = asyncio.run(main())
+        assert job.error is None, job.log
+        assert rs.load_registry(manager.path)[0].install_dir == "/mnt/lfs/u/.agentsdock-server-wf-running"
 
     def test_oci_server_tunnel_carries_the_configured_site_forwards(self) -> None:
         script = self.tmp_path / "ssh"

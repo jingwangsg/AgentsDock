@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import fnmatch
 import io
 import json
 import logging
@@ -121,6 +122,10 @@ SKY_LOGIN_ERROR = ("SkyPilot on the hub's machine needs a new login. Click Autho
 # install goes there, one per cluster or workflow (see default_install_dir); mount points are
 # site-specific, so they stay out of the source.
 CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOME"}
+# OSMO pools mount different storage, and a workflow's name need not name its pool. AGENTSDOCK_OSMO_POOL_HOMES
+# ("<pool glob>=<home>", space-separated, first match wins) picks an osmo@ target's home by the pool
+# osmo_lead_task recorded here; other targets keep AGENTSDOCK_OSMO_HOME.
+OSMO_POOLS: dict[str, str] = {}
 # No leading "-": workflow and task names are passed to the osmo CLI as arguments.
 OSMO_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 # `ssh <remote name>` from this machine: one alias file per remote (see write_ssh_alias), in the
@@ -153,6 +158,11 @@ def validate_remote_dir(value: str) -> str:
 
 def cluster_home(ssh_host: str) -> str:
     """The persistent home the hub's environment names for this cluster target, without a trailing /, or ""."""
+    pool = OSMO_POOLS.get(ssh_host.removeprefix("osmo@"), "") if ssh_host.startswith("osmo@") else ""
+    for entry in os.environ.get("AGENTSDOCK_OSMO_POOL_HOMES", "").split():
+        pattern, _, home = entry.partition("=")
+        if pool and home and fnmatch.fnmatchcase(pool, pattern):
+            return home.rstrip("/")
     return next((os.environ.get(name, "") for prefix, name in CLUSTER_HOME_ENV.items() if ssh_host.startswith(prefix)), "").rstrip("/")
 
 
@@ -560,6 +570,8 @@ async def osmo_lead_task(workflow: str) -> tuple[str, str]:
         raise OSError(last_line(error.decode("utf-8", "replace")) or f"osmo workflow query {workflow} failed.")
     try:
         data = json.loads(output)
+        if isinstance(data.get("pool"), str):
+            OSMO_POOLS[workflow] = data["pool"]
         status = data["status"]
         leads = [task["name"] for group in data["groups"] for task in group["tasks"] if task.get("lead")]
     except (ValueError, LookupError, TypeError, AttributeError):
@@ -1831,6 +1843,9 @@ class RemoteServerManager:
                 changes["install_dir"] = default_install_dir(changes["ssh_host"])
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from None
+            if changes["ssh_host"].startswith("osmo@"):
+                # The workflow's home may depend on its pool, which the deploy learns from its route.
+                changes["install_dir"] = DEFAULT_INSTALL_DIR
         previous_name = server.name
         server = server.model_copy(update=changes)
         moved = "ssh_host" in changes or "install_dir" in changes
@@ -2020,8 +2035,6 @@ class RemoteServerManager:
                 assert request is not None
                 ssh_host, install_dir = request.ssh_host, request.install_dir
                 requested_port = request.port if isinstance(request, RemoteDeployRequest) else 0
-                if install_dir == DEFAULT_INSTALL_DIR:
-                    install_dir = default_install_dir(ssh_host)
 
             if request is not None and request.password and ssh_host.startswith(("oci@", "aws@", "osmo@")):
                 raise RuntimeError("oci@, aws@ and osmo@ targets are reached through the cluster CLI; leave the password empty.")
@@ -2030,6 +2043,9 @@ class RemoteServerManager:
             # A relaunched cluster keeps its name but not its address; its old ssh entry would fail the deploy.
             await refresh_sky_ssh_entry(ssh_host)
             route = await ssh_route(ssh_host)
+            if install_dir == DEFAULT_INSTALL_DIR:
+                # After the route: an osmo@ workflow's home depends on its pool, which the route's query recorded.
+                install_dir = default_install_dir(ssh_host)
             if request is not None and request.password:
                 job.progress("connect", f"Installing this hub's SSH key on {ssh_host} with the password…")
                 await self._install_key(job, route, request.password)
