@@ -1,6 +1,6 @@
 # Public development log
 
-## 2026-10-17 — Android's attach form describes what attaching does now (Android source)
+## 2026-10-17 — Android's attach form describes the read-only attach and hub import (Android source)
 
 - The Android form for attaching an existing server still said that the
   server is not restarted. Since 2026-10-15 attaching changes nothing on
@@ -8,7 +8,8 @@
   at its default, and attaches the servers of a hub. The form now says so,
   in the same words as the desktop.
 - Verified with the TypeScript check; the attach request itself is
-  unchanged. Availability: in the next Android package.
+  unchanged. Not covered: the form was not opened on a device or emulator.
+  Availability: in the next Android package.
 
 ## 2026-10-17 — An Android browser tab no longer shows another server's page at the same address (Android source)
 
