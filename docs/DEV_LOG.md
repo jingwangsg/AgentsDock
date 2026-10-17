@@ -23,7 +23,7 @@
   message, the server's record of it was unchanged (no retry time, no
   attempt counted), the other hub read it 6 ms later and delivered it, and
   the first hub's 3 s long poll returned empty after 3.0 s. Against a
-  server built from the previous source, the same hubs got today's result
+  server built from the previous source, the same hubs kept the previous behavior
   without errors: the message was rescheduled 5 minutes out for both hubs.
   Server tests cover the two hubs through the server's endpoints, a hub
   that predates the change (it still reads every due message, and its

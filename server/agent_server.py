@@ -101403,7 +101403,7 @@ CROSS_SERVER_OUTBOX_CHANGED = asyncio.Event()
 # (hub identity, outbox item id) -> time.monotonic() until which that hub's outbox reads skip the item. A hub
 # that attached this server but has no pair for an item says so; another hub that attached it and created the
 # pair must still read the item at once. Kept in memory: after a restart a hub only skips an item once more.
-CROSS_SERVER_OUTBOX_HIDDEN: dict[tuple[str, str], float] = {}
+CROSS_SERVER_OUTBOX_SKIPPED: dict[tuple[str, str], float] = {}
 CROSS_SERVER_PAIR_LOCK = asyncio.Lock()
 
 
@@ -101573,24 +101573,23 @@ async def cross_server_outbox_items(wait: float, *, paired_here: bool = False, w
     global CROSS_SERVER_OUTBOX_CHANGED
     deadline = time.monotonic() + max(0.0, min(wait, 55.0))
     while True:
-        # Replaced, not cleared: every hub long-polls this outbox, and a poll that took the event before its
-        # queries must still be woken by a change that arrives during them. A shared clear() dropped that wake-up
-        # and left the other hub's poll waiting out its full wait.
+        # Replaced, not cleared: every hub long-polls this outbox, and a shared clear() would drop a change that
+        # arrives while another hub's poll is between its queries and its wait.
         if CROSS_SERVER_OUTBOX_CHANGED.is_set():
             CROSS_SERVER_OUTBOX_CHANGED = asyncio.Event()
         changed = CROSS_SERVER_OUTBOX_CHANGED
         now = time.monotonic()
-        for key in [key for key, until in CROSS_SERVER_OUTBOX_HIDDEN.items() if until <= now]:
-            del CROSS_SERVER_OUTBOX_HIDDEN[key]
+        for key in [key for key, until in CROSS_SERVER_OUTBOX_SKIPPED.items() if until <= now]:
+            del CROSS_SERVER_OUTBOX_SKIPPED[key]
         # Also left out of next_due_at, so a skipped item that is due does not wake this poll every 0.5 s.
-        hidden = [item_id for reader, item_id in CROSS_SERVER_OUTBOX_HIDDEN if reader == hub]
+        skipped = [item_id for reader, item_id in CROSS_SERVER_OUTBOX_SKIPPED if reader == hub]
         items = await CROSS_CHAT.cross_server_call("due_outbox", cross_server_mail.now_iso(), paired_here=paired_here,
-                                                   with_attachments=with_attachments, hidden=hidden)
+                                                   with_attachments=with_attachments, skipped=skipped)
         remaining = deadline - time.monotonic()
         if items or remaining <= 0:
             return items
         due = await CROSS_CHAT.cross_server_call("next_due_at", paired_here=paired_here,
-                                                 with_attachments=with_attachments, hidden=hidden)
+                                                 with_attachments=with_attachments, skipped=skipped)
         if due:
             until_due = (datetime.fromisoformat(due.replace("Z", "+00:00")) - datetime.now(timezone.utc)).total_seconds()
             remaining = min(remaining, max(0.5, until_due))
@@ -101601,8 +101600,8 @@ async def cross_server_outbox_items(wait: float, *, paired_here: bool = False, w
 async def record_cross_server_result(item_id: str, state: str, error: str = "", retry_after: float = 0.0,
                                      hub: str = "") -> None:
     if hub and state == "pending":
-        # The hub has no pair for this item: only its own reads skip it (see CROSS_SERVER_OUTBOX_HIDDEN).
-        CROSS_SERVER_OUTBOX_HIDDEN[(hub, item_id)] = time.monotonic() + retry_after
+        # The hub has no pair for this item: only its own reads skip it (see CROSS_SERVER_OUTBOX_SKIPPED).
+        CROSS_SERVER_OUTBOX_SKIPPED[(hub, item_id)] = time.monotonic() + retry_after
         return
     row = await CROSS_CHAT.cross_server_call("record_result", item_id, state, error=error, retry_after=retry_after)
     # record_result returns a row only once an item is delivered or failed: its snapshot is no longer needed.
@@ -101808,7 +101807,7 @@ class CrossServerResult(BaseModel):
     state: Literal["pending", "delivered", "failed"]
     error: str = Field(default="", max_length=600)
     retry_after: float = Field(default=0.0, ge=0, le=3600)
-    # A pending result naming the reading hub delays the item for that hub only.
+    # A pending result naming the reading hub makes only that hub skip the item for `retry_after` seconds.
     hub: str = Field(default="", max_length=96)
 
 

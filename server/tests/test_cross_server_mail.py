@@ -103,9 +103,9 @@ class StorageTests(unittest.TestCase):
         xs.enqueue(self.db, mail())
         xs.enqueue(self.db, mail(id=other, message_id=other, idempotency_key="key-00002"))
         now = xs.now_iso()
-        self.assertEqual([row["id"] for row in xs.due_outbox(self.db, now, hidden=[MESSAGE])], [other])
+        self.assertEqual([row["id"] for row in xs.due_outbox(self.db, now, skipped=[MESSAGE])], [other])
         # A skipped item that is due must not count as due, or the long poll would wake at once.
-        self.assertIsNone(xs.next_due_at(self.db, hidden=[MESSAGE, other]))
+        self.assertIsNone(xs.next_due_at(self.db, skipped=[MESSAGE, other]))
         self.assertEqual({row["id"] for row in xs.due_outbox(self.db, now)}, {MESSAGE, other})
 
     def test_attachment_metadata_is_kept_and_hidden_from_a_hub_that_predates_it(self) -> None:
@@ -373,9 +373,8 @@ class TwoHubOutboxTests(unittest.IsolatedAsyncioTestCase):
 
         attachments = tempfile.TemporaryDirectory()
         self.addCleanup(attachments.cleanup)
-        self.changed = asyncio.Event()
-        for name, value in (("CROSS_CHAT", CrossChat()), ("CROSS_SERVER_OUTBOX_CHANGED", self.changed),
-                            ("CROSS_SERVER_OUTBOX_HIDDEN", {}), ("AGENT_TOKEN", TOKEN),
+        for name, value in (("CROSS_CHAT", CrossChat()), ("CROSS_SERVER_OUTBOX_CHANGED", asyncio.Event()),
+                            ("CROSS_SERVER_OUTBOX_SKIPPED", {}), ("AGENT_TOKEN", TOKEN),
                             ("CROSS_SERVER_ATTACHMENTS_ROOT", Path(attachments.name))):
             patcher = patch.object(agent_server, name, value)
             patcher.start()
@@ -450,7 +449,6 @@ class TwoHubOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(time.monotonic() - started, 0.9)
         self.assertEqual(self.queries, ["due_outbox", "next_due_at", "due_outbox"])  # the last one at the deadline
         self.assertEqual([item["id"] for item in await self.remote_a.outbox(0, "srv-a")], [MESSAGE])
-
 
     async def test_mail_stored_during_one_hubs_queries_wakes_its_poll_after_another_hub_took_the_change(self) -> None:
         waiting_a = asyncio.create_task(self.remote_a.outbox(5, "srv-a"))

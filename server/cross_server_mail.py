@@ -186,23 +186,23 @@ _PAIRED_HERE = " AND pair_id IN (SELECT pair_id FROM cross_server_pairs)"
 # A hub that predates attachments would deliver such mail without its files.
 _TEXT_ONLY = " AND attachments_json IS NULL"
 # Items the reading hub reported it has no pair for; every other hub still reads them.
-_NOT_HIDDEN = " AND id NOT IN (SELECT value FROM json_each(?))"
+_NOT_SKIPPED = " AND id NOT IN (SELECT value FROM json_each(?))"
 
 
 def due_outbox(connection: sqlite3.Connection, now: str, limit: int = 20, *, paired_here: bool = False,
-               with_attachments: bool = True, hidden: list[str] | None = None) -> list[dict]:
+               with_attachments: bool = True, skipped: list[str] | None = None) -> list[dict]:
     return [{**dict(row), "attachments": json.loads(row["attachments_json"] or "[]")} for row in connection.execute(
         "SELECT * FROM cross_server_outbox WHERE state='pending' AND next_attempt_at<=?"
-        + (_PAIRED_HERE if paired_here else "") + ("" if with_attachments else _TEXT_ONLY) + _NOT_HIDDEN
-        + " ORDER BY next_attempt_at, created_at LIMIT ?", (now, json.dumps(hidden or []), limit))]
+        + (_PAIRED_HERE if paired_here else "") + ("" if with_attachments else _TEXT_ONLY) + _NOT_SKIPPED
+        + " ORDER BY next_attempt_at, created_at LIMIT ?", (now, json.dumps(skipped or []), limit))]
 
 
 def next_due_at(connection: sqlite3.Connection, *, paired_here: bool = False,
-                with_attachments: bool = True, hidden: list[str] | None = None) -> str | None:
+                with_attachments: bool = True, skipped: list[str] | None = None) -> str | None:
     row = connection.execute("SELECT MIN(next_attempt_at) AS due FROM cross_server_outbox WHERE state='pending'"
                              + (_PAIRED_HERE if paired_here else "")
-                             + ("" if with_attachments else _TEXT_ONLY) + _NOT_HIDDEN,
-                             (json.dumps(hidden or []),)).fetchone()
+                             + ("" if with_attachments else _TEXT_ONLY) + _NOT_SKIPPED,
+                             (json.dumps(skipped or []),)).fetchone()
     return row["due"] if row is not None else None
 
 
@@ -282,7 +282,7 @@ class End:
     name: str  # "" for the hub: the composer shows no server tag for its chats
     accepts_attachments = True  # False for a remote that predates mail attachments
 
-    # `hub` is the reading hub's identity: a pending result that names it delays the item for that hub only.
+    # `hub` is the reading hub's identity: a pending result that names it makes only that hub skip the item for `retry_after` seconds.
     async def outbox(self, wait: float, hub: str) -> list[dict]: raise NotImplementedError
     async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0,
                             hub: str = "") -> None: raise NotImplementedError
@@ -509,8 +509,8 @@ class Relay:
                      (item.get("target_server_identity"), item.get("target_session_id"))}:
             # A removed pair fails its mail when its halves are uninstalled. Not
             # failing here leaves the item to another hub that attached this
-            # remote and created the pair; naming this hub delays the item for
-            # this hub only, so that hub still reads it at once.
+            # remote and created the pair; naming this hub makes only this hub skip
+            # the item for `retry_after` seconds, so that hub still reads it at once.
             if expired:
                 await source.record_result(item["id"], "failed", "No hub delivered this message within 24 hours.")
             else:
