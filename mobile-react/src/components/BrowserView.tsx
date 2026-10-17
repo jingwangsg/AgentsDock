@@ -30,10 +30,9 @@ export function BrowserView({ surface }: { surface: Surface }) {
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const updateSurface = useAppStore(state => state.updateSurface)
-  // The tab's own cookies, web storage, cache and service workers, as a desktop tab has its own partition. In the
-  // app's shared storage a localhost cookie reaches every port on every server, a service worker can answer another
-  // server's tab at the same address, and the incognito web views elsewhere delete every cookie. A deleted tab's
-  // profile stays on disk, as a desktop partition does; the web view cannot delete a profile loaded in this process.
+  // The tab's own cookies, web storage and service workers, as a desktop tab has its own partition: in the shared
+  // storage a localhost cookie reaches every port on every server, and the incognito web views elsewhere delete every
+  // cookie. A deleted tab's profile stays on disk: the web view cannot delete a profile this process loaded.
   const webViewProfile = `agentsdock-browser-${encodeURIComponent(activeProfileId ?? 'none')}-${surface.id}`
   const view = useRef<WebView>(null)
   // Later navigation changes `uri`; the web view reloads only when it changes.

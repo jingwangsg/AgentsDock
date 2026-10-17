@@ -23,7 +23,13 @@ test('each browser tab keeps its own web storage, keyed by server profile and ta
   assert.match(workspace, /react-native-webview@13\.16\.1: patches\/react-native-webview@13\.16\.1\.patch/)
   assert.match(webViewPatch, /\+  webViewProfile\?: string;/)
   assert.match(webViewPatch, /@ReactProp\(name = "webViewProfile"\)/)
-  assert.match(webViewPatch, /isFeatureSupported\(WebViewFeature\.MULTI_PROFILE\)\) \{\n\+\s+WebViewCompat\.setProfile\(viewWrapper\.webView, profileName\)/)
-  // A download is fetched by DownloadManager with the cookies of the tab's own profile.
-  assert.match(webViewPatch, /\+\s+val cookieManager = if \(WebViewFeature\.isFeatureSupported\(WebViewFeature\.MULTI_PROFILE\)\) WebViewCompat\.getProfile\(webView\)\.cookieManager else CookieManager\.getInstance\(\)\n\+\s+val cookie = cookieManager\.getCookie\(baseUrl\)/)
+  // The profile is set right after the web view is built, before any initial prop: setting messagingEnabled
+  // evaluates JavaScript, after which setProfile throws.
+  assert.match(webViewPatch, /initialProps\.getString\("webViewProfile"\)/)
+  assert.match(webViewPatch, /\+\s+RNCWebViewWrapper view = mRNCWebViewManagerImpl\.createViewInstance\(context\);\n\+\s+mRNCWebViewManagerImpl\.setWebViewProfile\(view, mInitialWebViewProfile\);/)
+  assert.match(webViewPatch, /\+\s+try \{\n\+\s+WebViewCompat\.setProfile\(viewWrapper\.webView, profileName\)\n\+\s+\} catch \(e: IllegalStateException\)/)
+  // Cookies are written to disk after a page load, and a download is fetched with them, from the tab's own profile.
+  assert.match(webViewPatch, /\+\s+CookieManager cookieManager = \(\(RNCWebView\) webView\)\.getProfileCookieManager\(\);/)
+  assert.match(webViewPatch, /\+\s+cookieManager\.flush\(\);/)
+  assert.match(webViewPatch, /\+\s+val cookie = webView\.profileCookieManager\.getCookie\(baseUrl\)/)
 })

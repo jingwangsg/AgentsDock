@@ -1,5 +1,49 @@
+diff --git a/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java b/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java
+index 80c68034b193a47bedb56ca527352de9548e8ac6..9d2b26a1b2df049fe827d244107c89c3409df69e 100644
+--- a/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java
++++ b/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java
+@@ -9,6 +9,7 @@ import android.view.Menu;
+ import android.view.MenuItem;
+ import android.view.MotionEvent;
+ import android.view.View;
++import android.webkit.CookieManager;
+ import android.webkit.JavascriptInterface;
+ import android.webkit.ValueCallback;
+ import android.webkit.WebChromeClient;
+@@ -91,6 +92,13 @@ public class RNCWebView extends WebView implements LifecycleEventListener {
+         progressChangedFilter = new ProgressChangedFilter();
+     }
+ 
++    /** The cookie store of this web view's profile, which is the app's shared one unless a profile was set. */
++    public CookieManager getProfileCookieManager() {
++        return WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)
++            ? WebViewCompat.getProfile(this).getCookieManager()
++            : CookieManager.getInstance();
++    }
++
+     public void setBasicAuthCredential(RNCBasicAuthCredential credential) {
+         mRNCWebViewClient.setBasicAuthCredential(credential);
+     }
+diff --git a/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java b/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java
+index 0287e1c56b07b6c23b4049f3992d88b86fdc5c79..f5050f4dd193d17ec5c0a70c06bbf1b51588fd0a 100644
+--- a/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java
++++ b/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java
+@@ -52,10 +52,11 @@ public class RNCWebViewClient extends WebViewClient {
+     @Override
+     public void onPageFinished(WebView webView, String url) {
+         super.onPageFinished(webView, url);
+-        String cookies = CookieManager.getInstance().getCookie(url);
++        CookieManager cookieManager = ((RNCWebView) webView).getProfileCookieManager();
++        String cookies = cookieManager.getCookie(url);
+         if (cookies != null) {
+             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+-                CookieManager.getInstance().flush();
++                cookieManager.flush();
+             }else {
+                 CookieSyncManager.getInstance().sync();
+             }
 diff --git a/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt b/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
-index f83033b3597a425da159555233bacce250ccfce0..65f0c34bec4655e228b1f1fc7416e6f93a988aa4 100644
+index f83033b3597a425da159555233bacce250ccfce0..c38a8bde09659c1006f1b6a9792774eed3183110 100644
 --- a/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
 +++ b/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
 @@ -16,6 +16,7 @@ import android.webkit.DownloadListener
@@ -10,26 +54,26 @@ index f83033b3597a425da159555233bacce250ccfce0..65f0c34bec4655e228b1f1fc7416e6f9
  import androidx.webkit.WebViewFeature
  import com.facebook.react.bridge.ReadableArray
  import com.facebook.react.bridge.ReadableMap
-@@ -111,7 +112,9 @@ class RNCWebViewManagerImpl(private val newArch: Boolean = false) {
+@@ -111,7 +112,7 @@ class RNCWebViewManagerImpl(private val newArch: Boolean = false) {
              try {
                  urlObj = URL(url)
                  val baseUrl = urlObj.protocol + "://" + urlObj.host
 -                val cookie = CookieManager.getInstance().getCookie(baseUrl)
-+                // A web view given its own profile keeps its cookies there, not in the app's shared CookieManager.
-+                val cookieManager = if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) WebViewCompat.getProfile(webView).cookieManager else CookieManager.getInstance()
-+                val cookie = cookieManager.getCookie(baseUrl)
++                val cookie = webView.profileCookieManager.getCookie(baseUrl)
                  request.addRequestHeader("Cookie", cookie)
              } catch (e: MalformedURLException) {
                  Log.w(TAG, "Error getting cookie for DownloadManager", e)
-@@ -715,6 +718,14 @@ class RNCWebViewManagerImpl(private val newArch: Boolean = false) {
+@@ -715,6 +716,16 @@ class RNCWebViewManagerImpl(private val newArch: Boolean = false) {
          RNCWebView.setWebContentsDebuggingEnabled(enabled)
      }
  
 +    fun setWebViewProfile(viewWrapper: RNCWebViewWrapper, profileName: String?) {
-+        // The web view takes a profile only before its first navigation or evaluateJavascript. Neither has
-+        // happened in a prop setter: loadSource runs after every setter, in onAfterUpdateTransaction.
-+        if (profileName != null && WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
++        if (profileName == null || !WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return
++        try {
 +            WebViewCompat.setProfile(viewWrapper.webView, profileName)
++        } catch (e: IllegalStateException) {
++            // Thrown once the web view has navigated or evaluated JavaScript; it keeps the app's shared storage.
++            Log.w(TAG, "Web view profile $profileName was not applied", e)
 +        }
 +    }
 +
@@ -37,17 +81,56 @@ index f83033b3597a425da159555233bacce250ccfce0..65f0c34bec4655e228b1f1fc7416e6f9
          val view = viewWrapper.webView
          if (WebViewFeature.isFeatureSupported(WebViewFeature.PAYMENT_REQUEST)) {
 diff --git a/android/src/newarch/com/reactnativecommunity/webview/RNCWebViewManager.java b/android/src/newarch/com/reactnativecommunity/webview/RNCWebViewManager.java
-index 4709e2822499067cef3a4ce571991b96f844e085..b0489a08360b9ba1fc21727c031b680e1c46e956 100644
+index 4709e2822499067cef3a4ce571991b96f844e085..cb9eaea0fdb8b8a1da1fcfc2630c2f63c848969b 100644
 --- a/android/src/newarch/com/reactnativecommunity/webview/RNCWebViewManager.java
 +++ b/android/src/newarch/com/reactnativecommunity/webview/RNCWebViewManager.java
-@@ -338,6 +338,12 @@ public class RNCWebViewManager extends ViewGroupManager<RNCWebViewWrapper>
+@@ -7,6 +7,8 @@ import com.facebook.react.bridge.ReadableArray;
+ import com.facebook.react.bridge.ReadableMap;
+ import com.facebook.react.common.MapBuilder;
+ import com.facebook.react.module.annotations.ReactModule;
++import com.facebook.react.uimanager.ReactStylesDiffMap;
++import com.facebook.react.uimanager.StateWrapper;
+ import com.facebook.react.uimanager.ThemedReactContext;
+ import com.facebook.react.uimanager.ViewGroupManager;
+ import com.facebook.react.uimanager.ViewManagerDelegate;
+@@ -57,10 +59,28 @@ public class RNCWebViewManager extends ViewGroupManager<RNCWebViewWrapper>
+         return RNCWebViewManagerImpl.NAME;
+     }
+ 
++    // The initial props' webViewProfile while super.createViewInstance builds a view. A web view takes a profile
++    // only before it navigates or evaluates JavaScript, and setting messagingEnabled evaluates JavaScript, so the
++    // profile is set before any prop setter runs; the order of the initial props is not fixed.
++    @Nullable private String mInitialWebViewProfile;
++
++    @NonNull
++    @Override
++    protected RNCWebViewWrapper createViewInstance(int reactTag, @NonNull ThemedReactContext context, @Nullable ReactStylesDiffMap initialProps, @Nullable StateWrapper stateWrapper) {
++        mInitialWebViewProfile = initialProps != null && initialProps.hasKey("webViewProfile") ? initialProps.getString("webViewProfile") : null;
++        try {
++            return super.createViewInstance(reactTag, context, initialProps, stateWrapper);
++        } finally {
++            mInitialWebViewProfile = null;
++        }
++    }
++
+     @NonNull
+     @Override
+     protected RNCWebViewWrapper createViewInstance(@NonNull ThemedReactContext context) {
+-        return mRNCWebViewManagerImpl.createViewInstance(context);
++        RNCWebViewWrapper view = mRNCWebViewManagerImpl.createViewInstance(context);
++        mRNCWebViewManagerImpl.setWebViewProfile(view, mInitialWebViewProfile);
++        return view;
+     }
+ 
+     @Override
+@@ -338,6 +358,12 @@ public class RNCWebViewManager extends ViewGroupManager<RNCWebViewWrapper>
          mRNCWebViewManagerImpl.setPaymentRequestEnabled(view, value);
      }
  
 +    @Override
 +    @ReactProp(name = "webViewProfile")
 +    public void setWebViewProfile(RNCWebViewWrapper view, @Nullable String value) {
-+        mRNCWebViewManagerImpl.setWebViewProfile(view, value);
++        // Set once in createViewInstance; a web view keeps its profile, and a new name needs a new view.
 +    }
 +
      /* iOS PROPS - no implemented here */
