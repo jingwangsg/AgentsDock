@@ -1,11 +1,18 @@
 """Cross-server chat mail: the hub relays only what its pair registry links."""
+import asyncio
 import json
 import sqlite3
+import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+import httpx
+
+import agent_server
 import chat_mailbox
 import cross_server_mail as xs
 
@@ -13,6 +20,7 @@ PAIR = "pair_" + "1" * 32
 HUB_ROUTE = "route_" + "a" * 32
 REMOTE_ROUTE = "route_" + "b" * 32
 MESSAGE = "handoff_" + "c" * 32
+TOKEN = "t" * 32
 
 
 def ledger() -> sqlite3.Connection:
@@ -90,6 +98,16 @@ class StorageTests(unittest.TestCase):
                               "b_session_id": "sess_remote", "b_route_id": REMOTE_ROUTE})
         self.assertEqual([row["id"] for row in xs.due_outbox(self.db, now, paired_here=True)], [MESSAGE])
 
+    def test_items_a_hub_skips_are_left_out_of_its_reads_only(self) -> None:
+        other = "handoff_" + "d" * 32
+        xs.enqueue(self.db, mail())
+        xs.enqueue(self.db, mail(id=other, message_id=other, idempotency_key="key-00002"))
+        now = xs.now_iso()
+        self.assertEqual([row["id"] for row in xs.due_outbox(self.db, now, hidden=[MESSAGE])], [other])
+        # A skipped item that is due must not count as due, or the long poll would wake at once.
+        self.assertIsNone(xs.next_due_at(self.db, hidden=[MESSAGE, other]))
+        self.assertEqual({row["id"] for row in xs.due_outbox(self.db, now)}, {MESSAGE, other})
+
     def test_attachment_metadata_is_kept_and_hidden_from_a_hub_that_predates_it(self) -> None:
         attachment = {"filename": "data.bin", "size": 3, "sha256": "0" * 64, "content_type": "application/octet-stream"}
         xs.enqueue(self.db, mail(attachments=[attachment]))
@@ -157,8 +175,9 @@ class FakeEnd(xs.End):
         self.snapshot_missing = False
         self.server = identity  # what the relay probes again
 
-    async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None:
-        self.results.append((item_id, state, error, retry_after))
+    async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0,
+                            hub: str = "") -> None:
+        self.results.append((item_id, state, error, retry_after) + ((hub,) if hub else ()))
 
     async def deliver(self, item: dict, source_identity: str, source_name: str) -> None:
         if self.down:
@@ -218,7 +237,7 @@ class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
         relay, hub = self.relay(self.PAIR_ROW, remote)
         await relay._route(remote, self.item(source_session_id="sess_hub", target_server_identity="srv-hub"), set())
         self.assertEqual(hub.delivered, [])
-        self.assertEqual(remote.results, [(MESSAGE, "pending", "this hub has no such chat pair", 300.0)])
+        self.assertEqual(remote.results, [(MESSAGE, "pending", "this hub has no such chat pair", 300.0, "srv-hub")])
 
     async def test_an_unknown_pair_waits_for_another_hub_then_fails_after_a_day(self) -> None:
         remote = FakeEnd("srv-remote")
@@ -226,7 +245,9 @@ class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
         await relay._route(hub, self.item(), set())
         old = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
         await relay._route(hub, self.item(created_at=old), set())
-        self.assertEqual([result[1] for result in hub.results], ["pending", "failed"])
+        # The pending result names this hub, so only this hub's reads skip the item.
+        self.assertEqual(hub.results, [(MESSAGE, "pending", "this hub has no such chat pair", 300.0, "srv-hub"),
+                                       (MESSAGE, "failed", "No hub delivered this message within 24 hours.", 0.0)])
         self.assertEqual(remote.delivered, [])
 
     async def test_a_refusal_fails_at_once_and_an_unreachable_target_is_retried_with_backoff(self) -> None:
@@ -329,6 +350,100 @@ class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
         await relay._route(hub, self.item(id="read_" + "c" * 32, kind="read", body=""), set())
         self.assertEqual([receipt["message_id"] for receipt in remote.receipts], [MESSAGE])
         self.assertEqual(hub.results, [("read_" + "c" * 32, "delivered", "", 0.0)])
+
+
+class TwoHubOutboxTests(unittest.IsolatedAsyncioTestCase):
+    """Two hubs attached one server: each hub's relay reads its outbox through the server's endpoints."""
+
+    async def asyncSetUp(self) -> None:
+        self.db = ledger()  # the attached server's ledger
+        self.queries: list[str] = []
+        test = self
+
+        class CrossChat:
+            async def cross_server_call(self, name: str, *args, **kwargs):
+                test.queries.append(name)
+                return getattr(xs, name)(test.db, *args, **kwargs)
+
+        attachments = tempfile.TemporaryDirectory()
+        self.addCleanup(attachments.cleanup)
+        self.changed = asyncio.Event()
+        for name, value in (("CROSS_CHAT", CrossChat()), ("CROSS_SERVER_OUTBOX_CHANGED", self.changed),
+                            ("CROSS_SERVER_OUTBOX_HIDDEN", {}), ("AGENT_TOKEN", TOKEN),
+                            ("CROSS_SERVER_ATTACHMENTS_ROOT", Path(attachments.name))):
+            patcher = patch.object(agent_server, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.http = httpx.AsyncClient(transport=httpx.ASGITransport(app=agent_server.app))
+        self.addAsyncCleanup(self.http.aclose)
+        pair = {"pair_id": PAIR, "a_server_identity": "srv-a", "a_session_id": "sess_a",
+                "b_server_identity": "srv-remote", "b_session_id": "sess_remote"}
+        # Hub A created the pair; hub B attached the same server and has no pair.
+        self.hub_a, self.relay_a, self.remote_a = self.hub("srv-a", pair)
+        self.hub_b, self.relay_b, self.remote_b = self.hub("srv-b", None)
+
+    def hub(self, identity: str, pair: dict | None) -> tuple[FakeEnd, xs.Relay, xs.RemoteEnd]:
+        async def get_pair(name: str, *args):
+            return pair
+
+        local = FakeEnd(identity)
+        relay = xs.Relay(local=local, remotes=SimpleNamespace(), ledger=get_pair)
+        remote = xs.RemoteEnd(self.http, SimpleNamespace(name="remote", local_port=1, token=TOKEN), "srv-remote",
+                              accepts_attachments=True)
+        relay.remote_ends = {"r1": remote}
+        return local, relay, remote
+
+    def enqueue(self, item_id: str = MESSAGE) -> None:
+        xs.enqueue(self.db, mail(id=item_id, message_id=item_id, idempotency_key=f"key-{item_id}",
+                                 route_id=REMOTE_ROUTE, source_session_id="sess_remote",
+                                 target_server_identity="srv-a", target_session_id="sess_a"))
+
+    async def test_a_hub_without_the_pair_leaves_the_mail_to_the_hub_that_has_it(self) -> None:
+        self.enqueue()
+        # Hub B reads first and skips the item; only its own reads leave it out afterwards.
+        [item] = await self.remote_b.outbox(0, "srv-b")
+        await self.relay_b._route(self.remote_b, item, set())
+        self.assertEqual(await self.remote_b.outbox(0, "srv-b"), [])
+        [item] = await self.remote_a.outbox(0, "srv-a")
+        await self.relay_a._route(self.remote_a, item, set())
+        self.assertEqual(self.hub_a.delivered, [(MESSAGE, "srv-remote", "remote")])
+        row = xs.outbox_item(self.db, MESSAGE)
+        self.assertEqual((row["state"], row["attempts"], row["error"]), ("delivered", 0, None))
+
+    async def test_a_hub_that_predates_hub_skipping_still_delays_the_item_for_every_hub(self) -> None:
+        self.enqueue()
+        [item] = await self.remote_b.outbox(0, "srv-b")
+        await self.relay_b._route(self.remote_b, item, set())
+        # An older hub sends no `hub`: it reads every due item, and its wait applies to every hub.
+        old = {"X-AgentsDock-Token": TOKEN}
+        response = await self.http.get("http://127.0.0.1:1/api/admin/cross-server/outbox",
+                                       params={"wait": 0, "attachments": True}, headers=old)
+        self.assertEqual([item["id"] for item in response.json()["items"]], [MESSAGE])
+        response = await self.http.post(f"http://127.0.0.1:1/api/admin/cross-server/outbox/{MESSAGE}/result", headers=old,
+                                        json={"state": "pending", "error": "this hub has no such chat pair",
+                                              "retry_after": 300})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(await self.remote_a.outbox(0, "srv-a"), [])
+        self.assertEqual(xs.outbox_item(self.db, MESSAGE)["attempts"], 1)
+
+    async def test_a_long_poll_returns_new_mail_at_once_and_does_not_spin_on_mail_it_skips(self) -> None:
+        polls = [asyncio.create_task(end.outbox(5, hub)) for end, hub in ((self.remote_a, "srv-a"),
+                                                                           (self.remote_b, "srv-b"))]
+        await asyncio.sleep(0.1)
+        self.enqueue()
+        started = time.monotonic()
+        self.changed.set()  # what the send endpoint does after storing the mail
+        items_a, items_b = await asyncio.gather(*polls)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(([item["id"] for item in items_a], [item["id"] for item in items_b]), ([MESSAGE], [MESSAGE]))
+        await self.relay_b._route(self.remote_b, items_b[0], set())
+        # The skipped item stays due, but hub B's poll neither returns it nor wakes for it.
+        self.queries.clear()
+        started = time.monotonic()
+        self.assertEqual(await self.remote_b.outbox(1, "srv-b"), [])
+        self.assertGreaterEqual(time.monotonic() - started, 0.9)
+        self.assertEqual(self.queries, ["due_outbox", "next_due_at", "due_outbox"])  # the last one at the deadline
+        self.assertEqual([item["id"] for item in await self.remote_a.outbox(0, "srv-a")], [MESSAGE])
 
 
 if __name__ == "__main__":
