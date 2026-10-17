@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-10-17 — A deploy into an OSMO pool home keeps the workflow's existing install and its chats (server)
+
+- After `AGENTSDOCK_OSMO_POOL_HOMES` gave a workflow's pool a home of its
+  own, a remote moved back to that workflow got a new, empty
+  server in the pool home. Its earlier install under
+  `AGENTSDOCK_OSMO_HOME`, which held all of its chats, kept running there,
+  and the remote showed none of them.
+- When a new deploy or a host change resolves the default install
+  directory into a pool home, the hub now also looks for the install the
+  workflow has under `AGENTSDOCK_OSMO_HOME`. If the pool home holds no
+  install and that one exists, the deploy goes there: the install keeps
+  its directory, port, token, home and chats, and is upgraded in place as
+  a Redeploy would. The job log says "Found an existing install at …;
+  deploying there to keep its chats." If both homes hold an install, the
+  pool home's is used; if neither does, a new install goes to the pool
+  home as before. A deploy that finds the earlier install already
+  registered updates that entry. The earlier install is not taken when
+  `AGENTSDOCK_OSMO_HOME` is unset (the shared default directory names no
+  workflow) or when another remote already lists it, and it keeps its own
+  port even when the deploy asks for one. Redeploy, attach and oci@ hosts
+  are unchanged.
+- Verified with server tests against a scripted host: a remote moved to a
+  workflow of a matching pool deploys into its earlier install's
+  directory with that install's port and home; a new deploy updates the
+  entry registered at the earlier install instead of adding a second one;
+  with installs in both homes the pool home's wins. The first case fails
+  on the previous code. The existing pool-home, Redeploy and probe
+  fallback tests pass.
+- Not covered: no real osmo@ deploy was run; the host-side choice between
+  the two directories is the probe's existing fallback rule, covered by
+  its own test. Availability: takes effect when the hub is updated or
+  restarted; remote servers need no update.
+
 ## 2026-10-17 — An Android browser tab no longer shows another server's page at the same address (Android source)
 
 - Two servers each had a browser tab at the same address, the same

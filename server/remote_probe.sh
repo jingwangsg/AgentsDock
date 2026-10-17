@@ -11,8 +11,9 @@ if ! command -v curl >/dev/null 2>&1; then
   printf 'curl is required on the host.\n' >&2
   exit 78
 fi
-# An attach with the default directory passes install.sh's config directory as $2
-# (remote_servers.INSTALL_SH_CONFIG_DIR); it becomes the install only when $1 has no env.
+# $2 is a fallback directory: install.sh's config directory (remote_servers.INSTALL_SH_CONFIG_DIR)
+# for an attach with the default directory, or the target's earlier install for a deploy into an
+# OSMO pool home. It becomes the install only when $1 has no env.
 FALLBACK_DIR="${2:-}"
 case "$FALLBACK_DIR" in "~"*) FALLBACK_DIR="$HOME${FALLBACK_DIR#\~}" ;; esac
 if [ -n "$FALLBACK_DIR" ] && [ ! -r "$INSTALL_DIR/env" ] && [ -r "$FALLBACK_DIR/env" ]; then INSTALL_DIR="$FALLBACK_DIR"; fi

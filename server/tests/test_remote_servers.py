@@ -18,6 +18,7 @@ import tempfile
 import time
 import unittest
 import io
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -66,9 +67,14 @@ if password == "keys-only":  # the host takes no passwords at all
     print(argv[-2] + ": Permission denied (publickey).")
     sys.exit(255)
 host = json.load(open(os.path.join(state, "host.json")))
-if tail is not None and len(tail) <= 2:  # probe: bash -s -- <install_dir> [<attach fallback dir>]
-    print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=host["existing_port"],
-                                                      existing_token=host["token"] if host["existing_port"] else None, install_dir=tail[0])))
+if tail is not None and len(tail) <= 2:  # probe: bash -s -- <install_dir> [<fallback dir>]
+    # Optional "installs" (directory -> port): only these hold an install, and as in remote_probe.sh
+    # the fallback is taken only when the first directory has none. Without it every directory has existing_port.
+    installs = host.get("installs")
+    install_dir = tail[-1] if installs is not None and tail[0] not in installs and tail[-1] in installs else tail[0]
+    port = host["existing_port"] if installs is None else installs.get(install_dir)
+    print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=port,
+                                                      existing_token=host["token"] if port else None, install_dir=install_dir)))
 elif tail is not None:  # bootstrap: bash -s -- <install_dir> <port> <home> [restart]
     if host.get("bootstrap_failure"):  # the host's script prints these lines and fails
         print("\n".join(host["bootstrap_failure"]))
@@ -849,11 +855,12 @@ time.sleep(30)
 
     # --- deploy jobs against a scripted host ----------------------------------
 
-    def fake_host(self, existing_port: int | None, bootstrap_failure: list[str] | None = None) -> Path:
+    def fake_host(self, existing_port: int | None, bootstrap_failure: list[str] | None = None, installs: dict[str, int] | None = None) -> Path:
         """Point ssh at a script playing the host; returns the argv log it appends to."""
         state = self.tmp_path / "host"
         state.mkdir(exist_ok=True)  # a test may script the host again with another failure shape
-        (state / "host.json").write_text(json.dumps({"token": REMOTE_TOKEN, "existing_port": existing_port, "bootstrap_failure": bootstrap_failure}))
+        (state / "host.json").write_text(json.dumps({"token": REMOTE_TOKEN, "existing_port": existing_port, "bootstrap_failure": bootstrap_failure,
+                                                     "installs": installs}))
         script = self.tmp_path / "ssh"
         script.write_text(FAKE_SSH.format(python=sys.executable, state=str(state)))
         script.chmod(0o700)
@@ -1794,6 +1801,88 @@ if sys.argv[-1] == "k8s-cluster":
         job = asyncio.run(move())
         assert job.error is None, job.log
         assert rs.load_registry(manager.path)[0].install_dir == "/mnt/a/u/.agentsdock-server-wf-running"
+
+    def test_a_deploy_into_a_pool_home_keeps_the_install_the_target_has_in_the_osmo_home(self) -> None:
+        # 2026-10-17: a remote moved back to its workflow got a new, empty install in the pool home, while
+        # the install with its chats kept running in AGENTSDOCK_OSMO_HOME.
+        pool_dir, earlier_dir = "/mnt/a/u/.agentsdock-server-wf-running", "/mnt/b/u/.agentsdock-server-wf-running"
+        calls = self.fake_host(existing_port=None, installs={earlier_dir: 7861})
+        self.fake_osmo()
+        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OSMO_HOME": "/mnt/b/u", "AGENTSDOCK_OSMO_POOL_HOMES": "pool-a-*=/mnt/a/u"}))
+
+        def deploy(manager: rs.RemoteServerManager, start: Callable[[], rs.DeployJob]) -> rs.DeployJob:
+            async def main() -> rs.DeployJob:
+                job = start()
+                await job.task
+                await manager.stop()
+                return job
+            job = asyncio.run(main())
+            assert job.error is None, job.log
+            return job
+
+        # A move by update(): the install is upgraded in place, with its own port, token and home.
+        manager = rs.RemoteServerManager(self.tmp_path / "moved", source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server(ssh_host="osmo@wf-other", install_dir="/mnt/b/u/.agentsdock-server-wf-other",
+                                                      remote_port=7870, token=HUB_TOKEN)
+        job = deploy(manager, lambda: manager.update("abcdef123456", rs.RemoteServerUpdate(ssh_host="osmo@wf-running"))[1])
+        [server] = rs.load_registry(manager.path)
+        assert (server.install_dir, server.remote_port, server.token) == (earlier_dir, 7861, REMOTE_TOKEN)
+        assert json.loads(calls.read_text().splitlines()[-1])["tail"][:3] == [earlier_dir, "7861", "/mnt/b/u"]
+        assert f"Found an existing install at {earlier_dir}; deploying there to keep its chats." in [entry["message"] for entry in job.log]
+
+        # A new deploy, with the pool already known, updates the entry registered at that install.
+        assert rs.OSMO_POOLS == {"wf-running": "pool-a-01"}
+        manager = rs.RemoteServerManager(self.tmp_path / "again", source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server(ssh_host="osmo@wf-running", install_dir=earlier_dir, remote_port=7861)
+        job = deploy(manager, lambda: manager.start_deploy(rs.RemoteDeployRequest(ssh_host="osmo@wf-running")))
+        assert job.server is not None and job.server.id == "abcdef123456" and list(manager.servers) == ["abcdef123456"]
+        assert json.loads(calls.read_text().splitlines()[-1])["tail"] == [earlier_dir, "7861", "/mnt/b/u", "restart"]
+
+        # With an install in both homes, the pool home's wins.
+        self.fake_host(existing_port=None, installs={earlier_dir: 7861, pool_dir: 7862})
+        manager = rs.RemoteServerManager(self.tmp_path / "both", source_dir=self.tmp_path, manage_tunnels=False)
+        job = deploy(manager, lambda: manager.start_deploy(rs.RemoteDeployRequest(ssh_host="osmo@wf-running")))
+        [server] = rs.load_registry(manager.path)
+        assert (server.install_dir, server.remote_port) == (pool_dir, 7862)
+        assert json.loads(calls.read_text().splitlines()[-1])["tail"][:3] == [pool_dir, "7862", "/mnt/a/u"]
+        assert not any(entry["message"].startswith("Found an existing install") for entry in job.log)
+
+    def test_a_deploy_into_a_pool_home_reuses_an_earlier_install_only_when_it_is_the_targets_own(self) -> None:
+        pool_dir, earlier_dir = "/mnt/a/u/.agentsdock-server-wf-running", "/mnt/b/u/.agentsdock-server-wf-running"
+        calls = self.fake_host(existing_port=None, installs={earlier_dir: 7861, rs.DEFAULT_INSTALL_DIR: 7863})
+        self.fake_osmo()
+        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OSMO_HOME": "/mnt/b/u", "AGENTSDOCK_OSMO_POOL_HOMES": "pool-a-*=/mnt/a/u"}))
+
+        def deploy(manager: rs.RemoteServerManager, start: Callable[[], rs.DeployJob]) -> rs.DeployJob:
+            async def main() -> rs.DeployJob:
+                job = start()
+                await job.task
+                await manager.stop()
+                return job
+            job = asyncio.run(main())
+            assert job.error is None, job.log
+            return job
+
+        # A port asked for with the deploy does not move the reused install off its own.
+        manager = rs.RemoteServerManager(self.tmp_path / "port", source_dir=self.tmp_path, manage_tunnels=False)
+        deploy(manager, lambda: manager.start_deploy(rs.RemoteDeployRequest(ssh_host="osmo@wf-running", port=7999)))
+        assert json.loads(calls.read_text().splitlines()[-1])["tail"][:2] == [earlier_dir, "7861"]
+
+        # An entry moved onto the workflow does not take an install another entry already lists.
+        manager = rs.RemoteServerManager(self.tmp_path / "owned", source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server(ssh_host="osmo@wf-other", install_dir="/mnt/b/u/.agentsdock-server-wf-other")
+        manager.servers["fedcba654321"] = make_server(id="fedcba654321", ssh_host="osmo@wf-running", install_dir=earlier_dir, remote_port=7861)
+        deploy(manager, lambda: manager.update("abcdef123456", rs.RemoteServerUpdate(ssh_host="osmo@wf-running"))[1])
+        assert manager.servers["abcdef123456"].install_dir == pool_dir
+        assert json.loads(calls.read_text().splitlines()[-1])["tail"][0] == pool_dir
+
+        # Without AGENTSDOCK_OSMO_HOME the earlier directory would be the shared default, which names no workflow.
+        del os.environ["AGENTSDOCK_OSMO_HOME"]
+        manager = rs.RemoteServerManager(self.tmp_path / "unset", source_dir=self.tmp_path, manage_tunnels=False)
+        deploy(manager, lambda: manager.start_deploy(rs.RemoteDeployRequest(ssh_host="osmo@wf-running")))
+        [probe, *_] = [json.loads(line)["tail"] for line in calls.read_text().splitlines()[-3:]]
+        assert probe == [pool_dir]
+        assert json.loads(calls.read_text().splitlines()[-1])["tail"][0] == pool_dir
 
     def test_a_redeploy_keeps_an_entry_that_names_the_default_directory(self) -> None:
         # Only a new deploy or a move picks the cluster home; a Redeploy must not leave the entry's chats behind.
