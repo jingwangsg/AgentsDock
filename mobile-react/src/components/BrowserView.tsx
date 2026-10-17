@@ -106,6 +106,9 @@ export function BrowserView({ surface }: { surface: Surface }) {
       ? <WebView
           ref={view}
           source={{ uri }}
+          // The app's web views share one HTTP cache keyed by URL, so another server's page at the same
+          // address (http://localhost:20002/ on two servers) was shown from it, title included.
+          cacheEnabled={false}
           onNavigationStateChange={navigated}
           injectedJavaScript={REPORT_PAGE_TITLE}
           onMessage={titled}
