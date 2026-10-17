@@ -42,8 +42,6 @@
   process (27 MB PSS for the test page). Not tested with two servers at
   once. Availability: in the next Android package.
 
-## 2026-10-17 — An Android browser tab no longer shows another server's page at the same address (Android source)
-
 ## 2026-10-17 — Android's attach form describes the read-only attach and hub import (Android source)
 
 - The Android form for attaching an existing server still said that the
@@ -123,7 +121,10 @@
 - Not covered: no real osmo@ deploy was run; the host-side choice between
   the two directories is the probe's existing fallback rule, covered by
   its own test. Availability: takes effect when the hub is updated or
-  restarted; remote servers need no update.## 2026-10-17 — An Android browser tab no longer shows another server's page at the same address (Android source)
+  restarted; remote servers need no update.
+
+## 2026-10-17 — An Android browser tab no longer shows another server's page at the same address (Android source)
+
 - Two servers each had a browser tab at the same address, the same
   localhost port. On Android the second tab showed the page the first one
   had loaded, and recorded that page's title as its own, although its
