@@ -13,6 +13,11 @@
   the hub that paired the chats reads it at once. The skips are kept in
   memory; after a server restart a hub skips such a message once more. A
   message that no hub can deliver still fails after 24 hours.
+- When several hubs wait on the same outbox, a message stored while one
+  hub's poll was between its database reads and its wait no longer goes
+  unnoticed until that poll times out (up to 25 seconds): the server's
+  "outbox changed" signal is replaced for each round instead of being
+  cleared by whichever poll woke first.
 - Verified against real isolated servers over HTTP, with two relays as the
   two hubs: on the updated server the hub without the pair skipped the
   message, the server's record of it was unchanged (no retry time, no
@@ -22,8 +27,10 @@
   without errors: the message was rescheduled 5 minutes out for both hubs.
   Server tests cover the two hubs through the server's endpoints, a hub
   that predates the change (it still reads every due message, and its
-  retry still applies to every hub), and a long poll that returns new mail
-  at once and does not wake for a message it skips.
+  retry still applies to every hub), a long poll that returns new mail
+  at once and does not wake for a message it skips, and mail stored during
+  one hub's reads after the other hub took the signal (3.0 s before the
+  change, under 1 s after).
 - Not covered: the desktop app and real attached hosts were not used; the
   test hubs read the servers directly instead of through ssh tunnels.
   Availability: a server needs the update and so does the hub that has no

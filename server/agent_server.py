@@ -101570,9 +101570,15 @@ async def send_cross_server_mail(request: Request, source_session_id: str, route
 async def cross_server_outbox_items(wait: float, *, paired_here: bool = False, with_attachments: bool = True,
                                     hub: str = "") -> list[dict[str, Any]]:
     """Due outbox items; with none due, wait up to `wait` seconds for one (the hub's long poll)."""
+    global CROSS_SERVER_OUTBOX_CHANGED
     deadline = time.monotonic() + max(0.0, min(wait, 55.0))
     while True:
-        CROSS_SERVER_OUTBOX_CHANGED.clear()
+        # Replaced, not cleared: every hub long-polls this outbox, and a poll that took the event before its
+        # queries must still be woken by a change that arrives during them. A shared clear() dropped that wake-up
+        # and left the other hub's poll waiting out its full wait.
+        if CROSS_SERVER_OUTBOX_CHANGED.is_set():
+            CROSS_SERVER_OUTBOX_CHANGED = asyncio.Event()
+        changed = CROSS_SERVER_OUTBOX_CHANGED
         now = time.monotonic()
         for key in [key for key, until in CROSS_SERVER_OUTBOX_HIDDEN.items() if until <= now]:
             del CROSS_SERVER_OUTBOX_HIDDEN[key]
@@ -101589,7 +101595,7 @@ async def cross_server_outbox_items(wait: float, *, paired_here: bool = False, w
             until_due = (datetime.fromisoformat(due.replace("Z", "+00:00")) - datetime.now(timezone.utc)).total_seconds()
             remaining = min(remaining, max(0.5, until_due))
         with suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(CROSS_SERVER_OUTBOX_CHANGED.wait(), remaining)
+            await asyncio.wait_for(changed.wait(), remaining)
 
 
 async def record_cross_server_result(item_id: str, state: str, error: str = "", retry_after: float = 0.0,

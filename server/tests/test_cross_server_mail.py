@@ -358,12 +358,18 @@ class TwoHubOutboxTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.db = ledger()  # the attached server's ledger
         self.queries: list[str] = []
+        # Runs once, after the next next_due_at query and before it returns: a change during a poll's queries.
+        self.during_next_due = None
         test = self
 
         class CrossChat:
             async def cross_server_call(self, name: str, *args, **kwargs):
                 test.queries.append(name)
-                return getattr(xs, name)(test.db, *args, **kwargs)
+                result = getattr(xs, name)(test.db, *args, **kwargs)
+                if name == "next_due_at" and test.during_next_due is not None:
+                    during, test.during_next_due = test.during_next_due, None
+                    await during()
+                return result
 
         attachments = tempfile.TemporaryDirectory()
         self.addCleanup(attachments.cleanup)
@@ -432,7 +438,7 @@ class TwoHubOutboxTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.1)
         self.enqueue()
         started = time.monotonic()
-        self.changed.set()  # what the send endpoint does after storing the mail
+        agent_server.CROSS_SERVER_OUTBOX_CHANGED.set()  # what the send endpoint does after storing the mail
         items_a, items_b = await asyncio.gather(*polls)
         self.assertLess(time.monotonic() - started, 1.0)
         self.assertEqual(([item["id"] for item in items_a], [item["id"] for item in items_b]), ([MESSAGE], [MESSAGE]))
@@ -444,6 +450,26 @@ class TwoHubOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(time.monotonic() - started, 0.9)
         self.assertEqual(self.queries, ["due_outbox", "next_due_at", "due_outbox"])  # the last one at the deadline
         self.assertEqual([item["id"] for item in await self.remote_a.outbox(0, "srv-a")], [MESSAGE])
+
+
+    async def test_mail_stored_during_one_hubs_queries_wakes_its_poll_after_another_hub_took_the_change(self) -> None:
+        waiting_a = asyncio.create_task(self.remote_a.outbox(5, "srv-a"))
+        await asyncio.sleep(0.1)
+
+        async def mail_arrives() -> None:
+            self.enqueue()
+            agent_server.CROSS_SERVER_OUTBOX_CHANGED.set()
+            # Hub A's poll wakes and starts its next round before hub B's poll begins to wait.
+            for _ in range(20):
+                await asyncio.sleep(0)
+
+        # Hub B's poll is between its queries and its wait when the mail arrives.
+        self.during_next_due = mail_arrives
+        started = time.monotonic()
+        items_b = await self.remote_b.outbox(3, "srv-b")
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual([item["id"] for item in items_b], [MESSAGE])
+        self.assertEqual([item["id"] for item in await waiting_a], [MESSAGE])
 
 
 if __name__ == "__main__":
