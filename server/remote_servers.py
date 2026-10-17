@@ -2055,8 +2055,14 @@ class RemoteServerManager:
             if from_default:
                 install_dir = default_install_dir(ssh_host)
             # The directory the target's install went to before AGENTSDOCK_OSMO_POOL_HOMES named its pool
-            # (install_dir when there is no other).
-            earlier_dir = default_install_dir(ssh_host, by_pool=False) if from_default and not attach else install_dir
+            # (install_dir when there is no other). Without AGENTSDOCK_OSMO_HOME that would be the shared
+            # ~/.agentsdock-server, which names no target and may hold another workflow's install.
+            earlier_dir = (default_install_dir(ssh_host, by_pool=False)
+                           if from_default and not attach and cluster_home(ssh_host, by_pool=False) else install_dir)
+            if existing is not None and any(other.id != existing.id and other.ssh_host == ssh_host and other.install_dir == earlier_dir
+                                            for other in self.servers.values()):
+                # Another entry owns that install: a moved entry taking it too would list one server twice.
+                earlier_dir = install_dir
             if request is not None and request.password:
                 job.progress("connect", f"Installing this hub's SSH key on {ssh_host} with the password…")
                 await self._install_key(job, route, request.password)
@@ -2071,8 +2077,9 @@ class RemoteServerManager:
             home = cluster_home(ssh_host)
             if earlier_dir != install_dir and probe["install_dir"] != install_dir:
                 # Upgraded in place as a Redeploy of that directory would be: it keeps its port, its token
-                # and the home it was installed with.
+                # and the home it was installed with. A requested port would start a second server on its state.
                 install_dir, home = probe["install_dir"], cluster_home(ssh_host, by_pool=False)
+                requested_port = 0
                 job.progress("connect", f"Found an existing install at {install_dir}; deploying there to keep its chats.")
             if from_default and existing is None and not attach:
                 # start_deploy looked for this install before the pool was known: a registered one is updated.
