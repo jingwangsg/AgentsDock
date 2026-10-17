@@ -106,6 +106,9 @@ export function BrowserView({ surface }: { surface: Surface }) {
       ? <WebView
           ref={view}
           source={{ uri }}
+          // Android web views share one HTTP cache keyed by URL, so a tab would show, and take the title of,
+          // the page another server returned for the same address, such as one localhost port on two servers.
+          cacheEnabled={false}
           onNavigationStateChange={navigated}
           injectedJavaScript={REPORT_PAGE_TITLE}
           onMessage={titled}
