@@ -1,5 +1,49 @@
 # Public development log
 
+## 2026-10-17 — Each Android browser tab keeps its own cookies and site storage (Android source)
+
+- On Android all browser tabs, and the app's other web views, used one
+  web storage. A cookie a page set at a localhost port of one server was
+  sent to every tab at localhost on every server, since cookies ignore the
+  port; local storage, IndexedDB and service workers were shared by every
+  tab at the same address. Opening a terminal tab removed every cookie and
+  signed browser tabs out of their sites: terminal, Canvas and file
+  preview web views use react-native-webview's incognito mode, which
+  clears the app-wide cookie store. The desktop app gives each tab its own
+  storage partition.
+- Each Android browser tab now has its own WebView profile (androidx.webkit
+  MULTI_PROFILE), named after the server profile and the tab, with its own
+  cookies, local storage, IndexedDB and service workers, kept across app
+  restarts. The tab's cookies are written to disk when a page finishes
+  loading, as the shared store's were, and a file the tab downloads is
+  requested with them. A patch to react-native-webview 13.16.1 adds the
+  `webViewProfile` property, which sets the profile when the web view is
+  created, before any other property. Where the system WebView has no
+  profile support, tabs keep the shared storage as before.
+- Verified on an Android emulator (WebView 124) against an isolated server,
+  with a page that shows which cookie its request carried and what local
+  storage held. With the previous app (versionCode 74) a second tab
+  received the first tab's cookie and local storage value, opening a
+  terminal tab removed the first tab's cookie, and a download was requested
+  with another tab's cookie. With this change two new tabs received
+  nothing from each other or from the shared store; a tab's cookie was
+  still sent after reopening the tab, after opening a terminal tab, after
+  three force-stop and relaunch cycles, and after a force-stop 3 seconds
+  after the cookie was set; the download was requested with the tab's own
+  cookie; each tab's page title still reached the server; and the log
+  showed no crash and no profile left unset. A source test pins the
+  profile name and the patch.
+- Not covered: cookies an existing tab had in the shared store are not
+  moved into its new profile, so a site asks to sign in once. A deleted
+  tab's profile stays on the device (about 0.5 MB each in the test), as a
+  desktop partition does; the WebView cannot delete a profile the running
+  app has loaded. While a browser tab is shown and another web view stays
+  open, such as a kept terminal tab, the tab runs in a second renderer
+  process (27 MB PSS for the test page). Not tested with two servers at
+  once. Availability: in the next Android package.
+
+## 2026-10-17 — An Android browser tab no longer shows another server's page at the same address (Android source)
+
 ## 2026-10-17 — Android's attach form describes the read-only attach and hub import (Android source)
 
 - The Android form for attaching an existing server still said that the
@@ -80,7 +124,6 @@
   the two directories is the probe's existing fallback rule, covered by
   its own test. Availability: takes effect when the hub is updated or
   restarted; remote servers need no update.## 2026-10-17 — An Android browser tab no longer shows another server's page at the same address (Android source)
-
 - Two servers each had a browser tab at the same address, the same
   localhost port. On Android the second tab showed the page the first one
   had loaded, and recorded that page's title as its own, although its

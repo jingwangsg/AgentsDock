@@ -27,8 +27,13 @@ true;`
 /** A browser tab: a web view with an address bar; the tab record follows the page so other devices see where it is. */
 export function BrowserView({ surface }: { surface: Surface }) {
   const colors = usePalette()
+  const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const updateSurface = useAppStore(state => state.updateSurface)
+  // The tab's own cookies, web storage and service workers, as a desktop tab has its own partition: in the shared
+  // storage a localhost cookie reaches every port on every server, and the incognito web views elsewhere delete every
+  // cookie. A deleted tab's profile stays on disk: the web view cannot delete a profile this process loaded.
+  const webViewProfile = `agentsdock-browser-${encodeURIComponent(activeProfileId ?? 'none')}-${surface.id}`
   const view = useRef<WebView>(null)
   // Later navigation changes `uri`; the web view reloads only when it changes.
   const [uri, setUri] = useState(surface.url ?? '')
@@ -104,10 +109,14 @@ export function BrowserView({ surface }: { surface: Surface }) {
       : null}
     {uri && routing !== 'pending'
       ? <WebView
+          // A web view takes its profile once, before its first load.
+          key={webViewProfile}
+          webViewProfile={webViewProfile}
           ref={view}
           source={{ uri }}
-          // Android web views share one HTTP cache keyed by URL, so a tab would show, and take the title of,
-          // the page another server returned for the same address, such as one localhost port on two servers.
+          // Without profile support Android web views share one HTTP cache keyed by URL, so a tab would show, and
+          // take the title of, the page another server returned for the same address, such as one localhost port
+          // on two servers.
           cacheEnabled={false}
           onNavigationStateChange={navigated}
           injectedJavaScript={REPORT_PAGE_TITLE}
