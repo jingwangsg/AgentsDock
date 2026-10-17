@@ -185,21 +185,24 @@ def enqueue(connection: sqlite3.Connection, item: dict) -> tuple[dict, bool]:
 _PAIRED_HERE = " AND pair_id IN (SELECT pair_id FROM cross_server_pairs)"
 # A hub that predates attachments would deliver such mail without its files.
 _TEXT_ONLY = " AND attachments_json IS NULL"
+# Items the reading hub reported it has no pair for; every other hub still reads them.
+_NOT_SKIPPED = " AND id NOT IN (SELECT value FROM json_each(?))"
 
 
 def due_outbox(connection: sqlite3.Connection, now: str, limit: int = 20, *, paired_here: bool = False,
-               with_attachments: bool = True) -> list[dict]:
+               with_attachments: bool = True, skipped: list[str] | None = None) -> list[dict]:
     return [{**dict(row), "attachments": json.loads(row["attachments_json"] or "[]")} for row in connection.execute(
         "SELECT * FROM cross_server_outbox WHERE state='pending' AND next_attempt_at<=?"
-        + (_PAIRED_HERE if paired_here else "") + ("" if with_attachments else _TEXT_ONLY)
-        + " ORDER BY next_attempt_at, created_at LIMIT ?", (now, limit))]
+        + (_PAIRED_HERE if paired_here else "") + ("" if with_attachments else _TEXT_ONLY) + _NOT_SKIPPED
+        + " ORDER BY next_attempt_at, created_at LIMIT ?", (now, json.dumps(skipped or []), limit))]
 
 
 def next_due_at(connection: sqlite3.Connection, *, paired_here: bool = False,
-                with_attachments: bool = True) -> str | None:
+                with_attachments: bool = True, skipped: list[str] | None = None) -> str | None:
     row = connection.execute("SELECT MIN(next_attempt_at) AS due FROM cross_server_outbox WHERE state='pending'"
                              + (_PAIRED_HERE if paired_here else "")
-                             + ("" if with_attachments else _TEXT_ONLY)).fetchone()
+                             + ("" if with_attachments else _TEXT_ONLY) + _NOT_SKIPPED,
+                             (json.dumps(skipped or []),)).fetchone()
     return row["due"] if row is not None else None
 
 
@@ -279,8 +282,10 @@ class End:
     name: str  # "" for the hub: the composer shows no server tag for its chats
     accepts_attachments = True  # False for a remote that predates mail attachments
 
-    async def outbox(self, wait: float) -> list[dict]: raise NotImplementedError
-    async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None: raise NotImplementedError
+    # `hub` is the reading hub's identity: a pending result that names it makes only that hub skip the item for `retry_after` seconds.
+    async def outbox(self, wait: float, hub: str) -> list[dict]: raise NotImplementedError
+    async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0,
+                            hub: str = "") -> None: raise NotImplementedError
     async def deliver(self, item: dict, source_identity: str, source_name: str) -> None: raise NotImplementedError
     # A file of mail this server sent: its path here, or a download into `folder`.
     async def attachment(self, item: dict, index: int, folder: Path) -> Path: raise NotImplementedError
@@ -322,14 +327,17 @@ class RemoteEnd(End):
         response.raise_for_status()
         return response.json()
 
-    async def outbox(self, wait: float) -> list[dict]:
-        data = await self._request("GET", "/api/admin/cross-server/outbox", params={"wait": wait, "attachments": True},
-                                   timeout=wait + 10)
+    async def outbox(self, wait: float, hub: str) -> list[dict]:
+        # A server that predates `hub` ignores it and returns every due item.
+        data = await self._request("GET", "/api/admin/cross-server/outbox",
+                                   params={"wait": wait, "attachments": True, "hub": hub}, timeout=wait + 10)
         return list(data.get("items") or [])
 
-    async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None:
+    async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0,
+                            hub: str = "") -> None:
+        # A server that predates `hub` ignores it and delays the item for every hub.
         await self._request("POST", f"/api/admin/cross-server/outbox/{item_id}/result",
-                            json={"state": state, "error": error, "retry_after": retry_after})
+                            json={"state": state, "error": error, "retry_after": retry_after, "hub": hub})
 
     async def deliver(self, item: dict, source_identity: str, source_name: str) -> None:
         # Never the source's retry bookkeeping or anything beyond the message itself.
@@ -471,7 +479,7 @@ class Relay:
         backoff = 1.0
         while True:
             try:
-                items = await end.outbox(OUTBOX_WAIT_SECONDS)
+                items = await end.outbox(OUTBOX_WAIT_SECONDS, self.local.identity)
                 backoff = 1.0
             except asyncio.CancelledError:
                 raise
@@ -501,11 +509,13 @@ class Relay:
                      (item.get("target_server_identity"), item.get("target_session_id"))}:
             # A removed pair fails its mail when its halves are uninstalled. Not
             # failing here leaves the item to another hub that attached this
-            # remote and created the pair.
+            # remote and created the pair; naming this hub makes only this hub skip
+            # the item for `retry_after` seconds, so that hub still reads it at once.
             if expired:
                 await source.record_result(item["id"], "failed", "No hub delivered this message within 24 hours.")
             else:
-                await source.record_result(item["id"], "pending", "this hub has no such chat pair", retry_after=300.0)
+                await source.record_result(item["id"], "pending", "this hub has no such chat pair", retry_after=300.0,
+                                           hub=self.local.identity)
             return
         target_identity = item["target_server_identity"]
         target = self.ends().get(target_identity)

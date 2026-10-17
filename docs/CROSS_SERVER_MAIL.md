@@ -58,9 +58,9 @@ remote servers a hub manages.
 Server-to-server, with the remote's own token through the hub's tunnel:
 
 ```text
-GET    /api/admin/cross-server/outbox?wait=S      due items; long poll up to 55 s
+GET    /api/admin/cross-server/outbox?wait=S&hub=ID  due items; long poll up to 55 s
 GET    /api/admin/cross-server/outbox/{id}/attachments/{n}  a sent message's file
-POST   /api/admin/cross-server/outbox/{id}/result delivered | failed | pending (retry_after)
+POST   /api/admin/cross-server/outbox/{id}/result delivered | failed | pending (retry_after, hub)
 PUT    /api/admin/cross-server/inbox/{message_id}/attachments/{n}  a file of the mail delivered next
 POST   /api/admin/cross-server/inbox              store mail from a paired chat
 POST   /api/admin/cross-server/receipts           a sent message was read
@@ -97,9 +97,14 @@ with that profile's token (the hub token); any other server is its own hub.
   waits without a call. When the receiving server refuses the item (it has no
   half of that pair, or the chat is gone) the item fails at once. Removing a
   pair fails its undelivered mail. A failure shows on the sender's timeline.
-- An item whose pair is not in this hub's registry is rescheduled every 5
-  minutes, not failed, so a remote attached to two hubs is drained by the hub
-  that paired it; it fails after 24 hours.
+- An item whose pair is not in this hub's registry is not failed: the hub
+  reports it as pending with its own identity (`hub`), and the server leaves
+  the item out of that hub's outbox reads for 5 minutes. A server attached to
+  two hubs is thus drained by the hub that paired the item, which reads it at
+  once; the item fails after 24 hours. The server keeps these skips in memory,
+  so after a restart each hub skips such an item once more. When the hub
+  without the pair or the server predates `hub`, the item is rescheduled for
+  every hub instead, and the hub that paired it gets it up to 5 minutes later.
 - Peer mail ends a Claude run that only waits on background tasks only when its
   mailbox wake can start right after (not after Stop, for a removed pair, or
   behind an update).
@@ -132,7 +137,7 @@ with that profile's token (the hub token); any other server is its own hub.
 
 - No UI lists or removes cross-server pairs yet; `DELETE
   /api/cross-server/pairs/{pair_id}` does. A server unreachable at removal
-  keeps its half; its mail is then rescheduled until it fails after 24 hours.
+  keeps its half; its mail then waits until it fails after 24 hours.
 - Delegation is attached only on the user's own turn, never on a steer, a
   scheduled job or a relayed turn.
 - Files the hub uploaded for a message that then fails before delivery (its

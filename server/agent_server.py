@@ -101400,6 +101400,10 @@ remote_servers.register_remote_server_routes(
 # mailbox scopes and chat labels read it synchronously.
 CROSS_SERVER_ROUTES: dict[str, dict[str, Any]] = {}
 CROSS_SERVER_OUTBOX_CHANGED = asyncio.Event()
+# (hub identity, outbox item id) -> time.monotonic() until which that hub's outbox reads skip the item. A hub
+# that attached this server but has no pair for an item says so; another hub that attached it and created the
+# pair must still read the item at once. Kept in memory: after a restart a hub only skips an item once more.
+CROSS_SERVER_OUTBOX_SKIPPED: dict[tuple[str, str], float] = {}
 CROSS_SERVER_PAIR_LOCK = asyncio.Lock()
 
 
@@ -101563,27 +101567,42 @@ async def send_cross_server_mail(request: Request, source_session_id: str, route
     }
 
 
-async def cross_server_outbox_items(wait: float, *, paired_here: bool = False,
-                                    with_attachments: bool = True) -> list[dict[str, Any]]:
+async def cross_server_outbox_items(wait: float, *, paired_here: bool = False, with_attachments: bool = True,
+                                    hub: str = "") -> list[dict[str, Any]]:
     """Due outbox items; with none due, wait up to `wait` seconds for one (the hub's long poll)."""
+    global CROSS_SERVER_OUTBOX_CHANGED
     deadline = time.monotonic() + max(0.0, min(wait, 55.0))
     while True:
-        CROSS_SERVER_OUTBOX_CHANGED.clear()
+        # Replaced, not cleared: every hub long-polls this outbox, and a shared clear() would drop a change that
+        # arrives while another hub's poll is between its queries and its wait.
+        if CROSS_SERVER_OUTBOX_CHANGED.is_set():
+            CROSS_SERVER_OUTBOX_CHANGED = asyncio.Event()
+        changed = CROSS_SERVER_OUTBOX_CHANGED
+        now = time.monotonic()
+        for key in [key for key, until in CROSS_SERVER_OUTBOX_SKIPPED.items() if until <= now]:
+            del CROSS_SERVER_OUTBOX_SKIPPED[key]
+        # Also left out of next_due_at, so a skipped item that is due does not wake this poll every 0.5 s.
+        skipped = [item_id for reader, item_id in CROSS_SERVER_OUTBOX_SKIPPED if reader == hub]
         items = await CROSS_CHAT.cross_server_call("due_outbox", cross_server_mail.now_iso(), paired_here=paired_here,
-                                                   with_attachments=with_attachments)
+                                                   with_attachments=with_attachments, skipped=skipped)
         remaining = deadline - time.monotonic()
         if items or remaining <= 0:
             return items
         due = await CROSS_CHAT.cross_server_call("next_due_at", paired_here=paired_here,
-                                                 with_attachments=with_attachments)
+                                                 with_attachments=with_attachments, skipped=skipped)
         if due:
             until_due = (datetime.fromisoformat(due.replace("Z", "+00:00")) - datetime.now(timezone.utc)).total_seconds()
             remaining = min(remaining, max(0.5, until_due))
         with suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(CROSS_SERVER_OUTBOX_CHANGED.wait(), remaining)
+            await asyncio.wait_for(changed.wait(), remaining)
 
 
-async def record_cross_server_result(item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None:
+async def record_cross_server_result(item_id: str, state: str, error: str = "", retry_after: float = 0.0,
+                                     hub: str = "") -> None:
+    if hub and state == "pending":
+        # The hub has no pair for this item: only its own reads skip it (see CROSS_SERVER_OUTBOX_SKIPPED).
+        CROSS_SERVER_OUTBOX_SKIPPED[(hub, item_id)] = time.monotonic() + retry_after
+        return
     row = await CROSS_CHAT.cross_server_call("record_result", item_id, state, error=error, retry_after=retry_after)
     # record_result returns a row only once an item is delivered or failed: its snapshot is no longer needed.
     if row is not None and row["kind"] == "mail":
@@ -101731,11 +101750,12 @@ class LocalCrossServerEnd(cross_server_mail.End):
     def identity(self) -> str:
         return server_identity()
 
-    async def outbox(self, wait: float) -> list[dict]:
-        return await cross_server_outbox_items(wait, paired_here=True)
+    async def outbox(self, wait: float, hub: str) -> list[dict]:
+        return await cross_server_outbox_items(wait, paired_here=True, hub=hub)
 
-    async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0) -> None:
-        await record_cross_server_result(item_id, state, error, retry_after)
+    async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0,
+                            hub: str = "") -> None:
+        await record_cross_server_result(item_id, state, error, retry_after, hub)
 
     async def deliver(self, item: dict, source_identity: str, source_name: str) -> None:
         # The same bounds a remote's delivery gets at the inbox endpoint.
@@ -101787,6 +101807,8 @@ class CrossServerResult(BaseModel):
     state: Literal["pending", "delivered", "failed"]
     error: str = Field(default="", max_length=600)
     retry_after: float = Field(default=0.0, ge=0, le=3600)
+    # A pending result naming the reading hub makes only that hub skip the item for `retry_after` seconds.
+    hub: str = Field(default="", max_length=96)
 
 
 class CrossServerAttachment(BaseModel):
@@ -101843,10 +101865,12 @@ class CrossServerPairRequest(BaseModel):
 @app.get("/api/admin/cross-server/outbox")
 async def get_cross_server_outbox(
     request: Request, wait: float = Query(default=0.0, ge=0, le=55), attachments: bool = False,
+    hub: str = Query(default="", max_length=96),
 ) -> dict[str, Any]:
     require_native_admin_control(request)
     # A hub that does not ask for mail with attachments predates them; that mail waits for a newer hub.
-    return {"items": await cross_server_outbox_items(wait, with_attachments=attachments)}
+    # A hub that sends no `hub` predates per-hub skipping and reads every due item.
+    return {"items": await cross_server_outbox_items(wait, with_attachments=attachments, hub=hub)}
 
 
 @app.get("/api/admin/cross-server/outbox/{item_id}/attachments/{index}")
@@ -101889,7 +101913,7 @@ async def put_cross_server_inbox_attachment(
 async def post_cross_server_result(item_id: str, req: CrossServerResult, request: Request) -> dict[str, Any]:
     require_native_admin_control(request)
     try:
-        await record_cross_server_result(item_id, req.state, req.error, req.retry_after)
+        await record_cross_server_result(item_id, req.state, req.error, req.retry_after, req.hub)
     except cross_server_mail.Refused as exc:
         raise refused_as_http(exc) from exc
     return {"ok": True}
