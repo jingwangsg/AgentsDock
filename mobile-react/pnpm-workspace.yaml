@@ -3,3 +3,4 @@ allowBuilds:
 patchedDependencies:
   react-native-draggable-flatlist@4.0.3: patches/react-native-draggable-flatlist@4.0.3.patch
   react-native-keyboard-controller@1.21.9: patches/react-native-keyboard-controller@1.21.9.patch
+  react-native-webview@13.16.1: patches/react-native-webview@13.16.1.patch

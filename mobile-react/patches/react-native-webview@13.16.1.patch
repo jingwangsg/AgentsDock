@@ -1,0 +1,106 @@
+diff --git a/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt b/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
+index f83033b3597a425da159555233bacce250ccfce0..65f0c34bec4655e228b1f1fc7416e6f93a988aa4 100644
+--- a/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
++++ b/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
+@@ -16,6 +16,7 @@ import android.webkit.DownloadListener
+ import android.webkit.WebSettings
+ import android.webkit.WebView
+ import androidx.webkit.WebSettingsCompat
++import androidx.webkit.WebViewCompat
+ import androidx.webkit.WebViewFeature
+ import com.facebook.react.bridge.ReadableArray
+ import com.facebook.react.bridge.ReadableMap
+@@ -111,7 +112,9 @@ class RNCWebViewManagerImpl(private val newArch: Boolean = false) {
+             try {
+                 urlObj = URL(url)
+                 val baseUrl = urlObj.protocol + "://" + urlObj.host
+-                val cookie = CookieManager.getInstance().getCookie(baseUrl)
++                // A web view given its own profile keeps its cookies there, not in the app's shared CookieManager.
++                val cookieManager = if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) WebViewCompat.getProfile(webView).cookieManager else CookieManager.getInstance()
++                val cookie = cookieManager.getCookie(baseUrl)
+                 request.addRequestHeader("Cookie", cookie)
+             } catch (e: MalformedURLException) {
+                 Log.w(TAG, "Error getting cookie for DownloadManager", e)
+@@ -715,6 +718,14 @@ class RNCWebViewManagerImpl(private val newArch: Boolean = false) {
+         RNCWebView.setWebContentsDebuggingEnabled(enabled)
+     }
+ 
++    fun setWebViewProfile(viewWrapper: RNCWebViewWrapper, profileName: String?) {
++        // The web view takes a profile only before its first navigation or evaluateJavascript. Neither has
++        // happened in a prop setter: loadSource runs after every setter, in onAfterUpdateTransaction.
++        if (profileName != null && WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
++            WebViewCompat.setProfile(viewWrapper.webView, profileName)
++        }
++    }
++
+     fun setPaymentRequestEnabled(viewWrapper: RNCWebViewWrapper, enabled: Boolean) {
+         val view = viewWrapper.webView
+         if (WebViewFeature.isFeatureSupported(WebViewFeature.PAYMENT_REQUEST)) {
+diff --git a/android/src/newarch/com/reactnativecommunity/webview/RNCWebViewManager.java b/android/src/newarch/com/reactnativecommunity/webview/RNCWebViewManager.java
+index 4709e2822499067cef3a4ce571991b96f844e085..b0489a08360b9ba1fc21727c031b680e1c46e956 100644
+--- a/android/src/newarch/com/reactnativecommunity/webview/RNCWebViewManager.java
++++ b/android/src/newarch/com/reactnativecommunity/webview/RNCWebViewManager.java
+@@ -338,6 +338,12 @@ public class RNCWebViewManager extends ViewGroupManager<RNCWebViewWrapper>
+         mRNCWebViewManagerImpl.setPaymentRequestEnabled(view, value);
+     }
+ 
++    @Override
++    @ReactProp(name = "webViewProfile")
++    public void setWebViewProfile(RNCWebViewWrapper view, @Nullable String value) {
++        mRNCWebViewManagerImpl.setWebViewProfile(view, value);
++    }
++
+     /* iOS PROPS - no implemented here */
+     @Override
+     public void setAllowingReadAccessToURL(RNCWebViewWrapper view, @Nullable String value) {}
+diff --git a/lib/WebViewTypes.d.ts b/lib/WebViewTypes.d.ts
+index 998cc88f03f3fbcd0a47f227c01f738dbf4c58bf..c35cad7d46283bdf711075717b390819eef39654 100644
+--- a/lib/WebViewTypes.d.ts
++++ b/lib/WebViewTypes.d.ts
+@@ -844,6 +844,14 @@ export interface AndroidWebViewProps extends WebViewSharedProps {
+      * @platform android
+      */
+     setSupportMultipleWindows?: boolean;
++    /**
++     * Name of the androidx.webkit Profile this web view uses: its own cookies, web storage, cache and
++     * service workers, kept across restarts. Applied when the view is created, before its first load,
++     * where the web view supports MULTI_PROFILE; elsewhere the view uses the app's shared storage.
++     * Give the WebView a new `key` to change it.
++     * @platform android
++     */
++    webViewProfile?: string;
+     /**
+      * https://developer.android.com/reference/android/webkit/WebView#setLayerType(int,%20android.graphics.Paint)
+      * Sets the layerType. Possible values are:
+diff --git a/src/RNCWebViewNativeComponent.ts b/src/RNCWebViewNativeComponent.ts
+index 7f4e6c4f73506efa9517314a3ff89f91b097763e..90f02f80e6f8fef323743264f13cfa7b8d739ee7 100644
+--- a/src/RNCWebViewNativeComponent.ts
++++ b/src/RNCWebViewNativeComponent.ts
+@@ -295,6 +295,7 @@ export interface NativeProps extends ViewProps {
+   userAgent?: string;
+   injectedJavaScriptObject?: string;
+   paymentRequestEnabled?: boolean;
++  webViewProfile?: string;
+ }
+ 
+ export interface NativeCommands {
+diff --git a/src/WebViewTypes.ts b/src/WebViewTypes.ts
+index eca81415ab48676da18fc2be13b84e60fe5cb3f5..71f81694f5aacdc4c2291baad5bf0054510850a1 100644
+--- a/src/WebViewTypes.ts
++++ b/src/WebViewTypes.ts
+@@ -1037,6 +1037,15 @@ export interface AndroidWebViewProps extends WebViewSharedProps {
+    */
+   setSupportMultipleWindows?: boolean;
+ 
++  /**
++   * Name of the androidx.webkit Profile this web view uses: its own cookies, web storage, cache and
++   * service workers, kept across restarts. Applied when the view is created, before its first load,
++   * where the web view supports MULTI_PROFILE; elsewhere the view uses the app's shared storage.
++   * Give the WebView a new `key` to change it.
++   * @platform android
++   */
++  webViewProfile?: string;
++
+   /**
+    * https://developer.android.com/reference/android/webkit/WebView#setLayerType(int,%20android.graphics.Paint)
+    * Sets the layerType. Possible values are:
