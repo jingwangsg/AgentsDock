@@ -1,5 +1,27 @@
 # Public development log
 
+## 2026-10-17 — An Android browser tab no longer shows another server's page at the same address (Android source)
+
+- Two servers each had a browser tab at the same address, the same
+  localhost port. On Android the second tab showed the page the first one
+  had loaded, and recorded that page's title as its own, although its
+  server served a different page there. The app's web views share one
+  HTTP cache keyed by URL, and the page was taken from it without a
+  request to the tab's server.
+- A browser tab now loads every page from its server without the web view
+  cache. Cookies and site logins are unchanged.
+- Verified on an Android emulator against an isolated server, with two tabs
+  at one localhost address whose page changes its title on every request
+  and allows caching for an hour: with the previous app (versionCode 73)
+  the second tab showed "hit 1" and the page received no request; with
+  this change it received a new request and showed the new title. A
+  source test pins the setting.
+- Not changed: pages load more slowly over a slow remote link, since their
+  assets are no longer reused from the cache. Cookies and site storage are
+  still shared by all tabs at the same address, and a page's service
+  worker can still answer from its own storage. Availability: in the next
+  Android package.
+
 ## 2026-10-16 — OSMO workflows get the persistent home of their pool (server)
 
 - The hub installs AgentsServer on an osmo@ workflow under one persistent
