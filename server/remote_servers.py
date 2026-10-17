@@ -157,11 +157,12 @@ def validate_remote_dir(value: str) -> str:
     return directory
 
 
-def cluster_home(ssh_host: str) -> str:
+def cluster_home(ssh_host: str, *, by_pool: bool = True) -> str:
     """The persistent home the hub's environment names for this cluster target, without a trailing /, or "".
 
-    An osmo@ target gets its pool's home only once osmo_lead_task recorded the pool."""
-    pool = OSMO_POOLS.get(ssh_host.removeprefix("osmo@"), "") if ssh_host.startswith("osmo@") else ""
+    An osmo@ target gets its pool's home only once osmo_lead_task recorded the pool; by_pool=False
+    gives the home it had before AGENTSDOCK_OSMO_POOL_HOMES named its pool."""
+    pool = OSMO_POOLS.get(ssh_host.removeprefix("osmo@"), "") if by_pool and ssh_host.startswith("osmo@") else ""
     for entry in os.environ.get("AGENTSDOCK_OSMO_POOL_HOMES", "").split():
         pattern, _, home = entry.partition("=")
         if pool and home and fnmatch.fnmatchcase(pool, pattern):
@@ -169,11 +170,11 @@ def cluster_home(ssh_host: str) -> str:
     return next((os.environ.get(name, "") for prefix, name in CLUSTER_HOME_ENV.items() if ssh_host.startswith(prefix)), "").rstrip("/")
 
 
-def default_install_dir(ssh_host: str) -> str:
+def default_install_dir(ssh_host: str, *, by_pool: bool = True) -> str:
     """The home of a cluster target is shared storage: one install per target keeps each
     machine's chats apart, and no two servers ever write one state directory. The install
     stays a direct child of the home, which the deploy then uses as HOME."""
-    home = cluster_home(ssh_host)
+    home = cluster_home(ssh_host, by_pool=by_pool)
     if not home:
         return DEFAULT_INSTALL_DIR
     return validate_remote_dir(f"{home}/.agentsdock-server-{ssh_host.split('@', 1)[1]}")
@@ -2050,25 +2051,38 @@ class RemoteServerManager:
             route = await ssh_route(ssh_host)
             # After the route, whose osmo workflow query records the pool an osmo@ home can depend on. Only a new
             # deploy and an entry update() moved arrive with the default; a Redeploy keeps the entry's directory.
-            if install_dir == DEFAULT_INSTALL_DIR and (existing is None or not keep_port):
+            from_default = install_dir == DEFAULT_INSTALL_DIR and (existing is None or not keep_port)
+            if from_default:
                 install_dir = default_install_dir(ssh_host)
-                if existing is None and not attach:
-                    # start_deploy looked for this install before the pool was known: a registered one is updated.
-                    existing = next((server for server in self.servers.values()
-                                     if server.ssh_host == ssh_host and server.install_dir == install_dir), None)
-                    if existing is not None:
-                        requested_port = existing.remote_port
+            # The directory the target's install went to before AGENTSDOCK_OSMO_POOL_HOMES named its pool
+            # (install_dir when there is no other).
+            earlier_dir = default_install_dir(ssh_host, by_pool=False) if from_default and not attach else install_dir
             if request is not None and request.password:
                 job.progress("connect", f"Installing this hub's SSH key on {ssh_host} with the password…")
                 await self._install_key(job, route, request.password)
-            # An attach that keeps the default directory also finds a machine's own install.sh server.
+            # An attach that keeps the default directory also finds a machine's own install.sh server. A deploy
+            # into a pool home also finds the target's earlier install, which holds its chats; as the second
+            # directory, the probe takes it only when the pool home has no install.
             probe_dirs = [install_dir, INSTALL_SH_CONFIG_DIR] if attach and request.install_dir == DEFAULT_INSTALL_DIR else [install_dir]
+            if earlier_dir != install_dir:
+                probe_dirs.append(earlier_dir)
             probe_lines = await self._run_ssh(job, route, [*remote_shell_args(route.destination), *probe_dirs], stdin=PROBE_SCRIPT.read_bytes(), idle_timeout=60)
             probe = parse_probe(probe_lines)
+            home = cluster_home(ssh_host)
+            if earlier_dir != install_dir and probe["install_dir"] != install_dir:
+                # Upgraded in place as a Redeploy of that directory would be: it keeps its port, its token
+                # and the home it was installed with.
+                install_dir, home = probe["install_dir"], cluster_home(ssh_host, by_pool=False)
+                job.progress("connect", f"Found an existing install at {install_dir}; deploying there to keep its chats.")
+            if from_default and existing is None and not attach:
+                # start_deploy looked for this install before the pool was known: a registered one is updated.
+                existing = next((server for server in self.servers.values()
+                                 if server.ssh_host == ssh_host and server.install_dir == install_dir), None)
+                if existing is not None:
+                    requested_port = existing.remote_port
             # The probe takes the install's parent as HOME only once it holds a Claude or Codex
             # login. A fresh cluster home has none yet; the container's own ~ (often /root) would
             # then receive the CLIs and logins, and the next container drops them.
-            home = cluster_home(ssh_host)
             if home and install_dir.rpartition("/")[0] == home:
                 probe["home"] = home
             if attach and not (probe.get("existing_port") and probe.get("existing_token")):
