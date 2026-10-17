@@ -776,7 +776,7 @@ export function ServerProfilesManager({
           style={[styles.segment, deployDraft.mode === mode && { backgroundColor: colors.selected }]}
         ><Text style={[styles.segmentLabel, { color: deployDraft.mode === mode ? colors.text : colors.muted }]}>{label}</Text></Pressable>)}
       </View>
-      {deployDraft.mode === 'attach' ? <Text style={[styles.help, { color: colors.muted }]}>Registers the AgentsServer another computer already deployed in this directory. Nothing is uploaded and the server is not restarted.</Text> : null}
+      {deployDraft.mode === 'attach' ? <Text style={[styles.help, { color: colors.muted }]}>Registers an AgentsServer already running on the host: one another hub deployed in this directory, or another Mac's own server (with the default directory, ~/.config/agents-server is checked too). Nothing on the host is changed. If that server is a hub, the servers it manages are attached as well.</Text> : null}
 
       <FieldLabel text="SSH host" />
       <TextInput

@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-10-17 — Android's attach form describes the read-only attach and hub import (Android source)
+
+- The Android form for attaching an existing server still said that the
+  server is not restarted. Since 2026-10-15 attaching changes nothing on
+  the host, also finds another Mac's own server when the directory is left
+  at its default, and attaches the servers of a hub. The form now says so,
+  in the same words as the desktop.
+- Verified with the TypeScript check; the attach request itself is
+  unchanged. Not covered: the form was not opened on a device or emulator.
+  Availability: in the next Android package.
+
 ## 2026-10-17 — Mail between chats on two servers no longer waits 5 minutes when a second hub attached the server (server)
 
 - Since two hubs can attach the same server, both read its outbox of
@@ -68,8 +79,7 @@
 - Not covered: no real osmo@ deploy was run; the host-side choice between
   the two directories is the probe's existing fallback rule, covered by
   its own test. Availability: takes effect when the hub is updated or
-  restarted; remote servers need no update.
-## 2026-10-17 — An Android browser tab no longer shows another server's page at the same address (Android source)
+  restarted; remote servers need no update.## 2026-10-17 — An Android browser tab no longer shows another server's page at the same address (Android source)
 
 - Two servers each had a browser tab at the same address, the same
   localhost port. On Android the second tab showed the page the first one
