@@ -7,6 +7,7 @@ Importing a provider transcript on the new install creates a new chat that
 starts without the canvases, published files and side chat of the earlier
 chat that used the conversation. When exactly one chat in a sibling install
 owns the same provider conversation, this copies that state to the new chat.
+It also gives Resume chat the title the conversation had in a sibling install.
 Sibling installs are only read, never changed.
 """
 from __future__ import annotations
@@ -34,6 +35,31 @@ def regular_files(directory: Path) -> list[Path]:
     return [path for path in directory.iterdir() if not path.is_symlink() and path.is_file()]
 
 
+def sibling_states(state_dir: Path) -> list[Path]:
+    install = state_dir.parent.resolve()
+    return sorted(
+        path / "state" for path in install.parent.glob(SIBLING_INSTALL_PATTERN)
+        if path.resolve() != install and (path / "state" / "sessions.json").is_file()
+    )
+
+
+def earlier_chat_titles(state_dir: Path, default_backend: str) -> dict[tuple[str, str], str]:
+    """The title of the most recently updated sibling-install chat that used each provider conversation.
+
+    The resume list would otherwise name a moved remote's chats by their provider
+    titles, not by the names the user knows. A remote moved more than once leaves
+    the conversation in several installs; the latest of them has the current name.
+    """
+    owners: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for old_state in sibling_states(state_dir):
+        for row in json.loads((old_state / "sessions.json").read_text(encoding="utf-8")).values():
+            title = str(row.get("title") or "").strip()
+            if title:
+                for key in provider_session_keys(row, default_backend):
+                    owners.setdefault(key, []).append((str(row.get("updated_at") or ""), title))
+    return {key: max(found)[1] for key, found in owners.items()}
+
+
 def carry_over(
     state_dir: Path,
     session_id: str,
@@ -46,11 +72,7 @@ def carry_over(
     chats) and the earlier chat's side chat, which the caller stores through
     the live side-chat store.
     """
-    install = state_dir.parent.resolve()
-    siblings = sorted(
-        path / "state" for path in install.parent.glob(SIBLING_INSTALL_PATTERN)
-        if path.resolve() != install and (path / "state" / "sessions.json").is_file()
-    )
+    siblings = sibling_states(state_dir)
     if not siblings:
         return None, None
     owners = [

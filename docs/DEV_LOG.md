@@ -1,5 +1,34 @@
 # Public development log
 
+## 2026-10-18 — Resume chat lists a moved remote's chats under their AgentsDock titles (server)
+
+- After a cluster remote moved to a new install directory, the new install
+  starts without chats, and Resume chat is where the earlier ones are
+  found. The list named each conversation by its provider title or first
+  prompt, not by its AgentsDock chat title, so a chat could not be found
+  by the name it had before the move.
+- When a chat in a sibling install (the `.agentsdock-server*` directories
+  that the 2026-10-13 chat state carry-over reads) used a conversation,
+  Resume chat now lists the conversation under that chat's title, search
+  matches that title, and importing it gives the new chat the same title.
+  A remote moved more than once leaves the conversation in several
+  installs; the most recently updated chat's title is used. A
+  conversation whose earlier chats have no title keeps its provider
+  title. If the sibling installs cannot be read, the list keeps the
+  provider titles and the server logs a warning.
+- Verified with server tests: the list and the imported chat take the
+  earlier title, the latest of two earlier chats names the conversation,
+  and an unreadable sibling index leaves the provider titles; the list
+  and import cases fail on the previous code. Against two real installs on a
+  temporary home, the previous server listed the conversation by its
+  first prompt and this one by the earlier chat's title. In the Android
+  app (sideload build 75, emulator) against that server, searching
+  Resume chat for a word of the earlier title found the conversation,
+  and importing it showed the chat under that title.
+- Not covered: the desktop dialog, which shows the same label from the
+  same endpoint. Availability: takes effect on each remote once its
+  server is updated; clients need no update.
+
 ## 2026-10-17 — Each Android browser tab keeps its own cookies and site storage (Android source)
 
 - On Android all browser tabs, and the app's other web views, used one

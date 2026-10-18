@@ -33,6 +33,10 @@ class Installs:
         (state / "sessions.json").write_text(json.dumps(sessions))
         return state
 
+    def title_earlier_chat(self, title):
+        (self.old / "sessions.json").write_text(json.dumps({OLD_ID: {
+            "backend": "claude", "claude_session_id": "claude-conversation", "title": title, "updated_at": "2026-10-17T00:00:00Z"}}))
+
     def canvas(self, state, session_id, name="report"):
         directory = state / "canvases" / session_id
         directory.mkdir(parents=True, exist_ok=True)
@@ -175,6 +179,27 @@ class CarryOverTests(Installs, unittest.TestCase):
         self.assertIn("side_chat=left_behind copies=2", summary)
 
 
+class EarlierTitlesTests(Installs, unittest.TestCase):
+    def titles(self):
+        return moved_chat_state.earlier_chat_titles(self.new, "claude")
+
+    def test_the_earlier_chat_names_its_conversation(self):
+        self.title_earlier_chat("N2 takeover")
+
+        self.assertEqual(self.titles(), {("claude", "claude-conversation"): "N2 takeover"})
+
+    def test_an_untitled_earlier_chat_names_nothing(self):
+        self.assertEqual(self.titles(), {})
+
+    def test_the_latest_of_several_earlier_chats_names_the_conversation(self):
+        # A second move leaves the conversation in both earlier installs.
+        self.title_earlier_chat("N2 takeover")
+        self.install(".agentsdock-server-a-newer", {"sess_00000000000000cc": {
+            "backend": "claude", "claude_session_id": "claude-conversation", "title": "N2 eval", "updated_at": "2026-10-18T00:00:00Z"}})
+
+        self.assertEqual(self.titles(), {("claude", "claude-conversation"): "N2 eval"})
+
+
 class ImportCarriesStateTests(Installs, unittest.IsolatedAsyncioTestCase):
     """Both import routes, on a real session store under the new install."""
 
@@ -222,6 +247,9 @@ class ImportCarriesStateTests(Installs, unittest.IsolatedAsyncioTestCase):
         return agent_server.BulkImportSessionsRequest(items=[{
             "provider_session_id": "claude-conversation", "backend": "claude", "cwd": str(self.cwd)}])
 
+    async def resume_list(self):
+        return [(row["provider_session_id"], row["label"]) for row in (await agent_server.get_local_sessions(limit=200))["sessions"]]
+
     async def test_bulk_import_carries_the_earlier_chat_state(self):
         with self.assertLogs(agent_server.logger, "INFO") as logs:
             result = (await agent_server.bulk_import_sessions_guarded(self.import_request(), set()))["results"][0]
@@ -247,6 +275,22 @@ class ImportCarriesStateTests(Installs, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"], result)
         self.assertIn(result["session_id"], self.store.sessions)
         self.assertIn("chat state carry-over failed", "\n".join(logs.output))
+
+    async def test_the_resume_list_and_the_imported_chat_take_the_earlier_chat_title(self):
+        self.title_earlier_chat("N2 takeover")
+
+        self.assertEqual(await self.resume_list(), [("claude-conversation", "N2 takeover")])
+        result = (await agent_server.bulk_import_sessions_guarded(self.import_request(), set()))["results"][0]
+        await self.carried_in_background()
+        self.assertEqual(self.store.sessions[result["session_id"]]["title"], "N2 takeover")
+
+    async def test_an_unreadable_sibling_index_keeps_the_provider_titles(self):
+        provider_titles = await self.resume_list()
+        (self.old / "sessions.json").write_text("{")
+
+        with self.assertLogs(agent_server.logger, "WARNING") as logs:
+            self.assertEqual(await self.resume_list(), provider_titles)
+        self.assertIn("earlier chat titles unavailable", "\n".join(logs.output))
 
 
 if __name__ == "__main__":
