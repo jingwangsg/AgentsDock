@@ -50423,7 +50423,18 @@ def local_session_candidates(
             provider_id for backend, provider_id in known_provider_keys if backend == BACKEND_CURSOR
         }))
     candidates.sort(key=lambda c: c["updated_at"], reverse=True)
-    return candidates[:max(1, min(limit, MAX_LOCAL_SESSION_LIST_ITEMS))]
+    candidates = candidates[:max(1, min(limit, MAX_LOCAL_SESSION_LIST_ITEMS))]
+    try:
+        earlier_titles = moved_chat_state.earlier_chat_titles(STATE_DIR, DEFAULT_BACKEND)
+    except Exception as exc:
+        # Only the names depend on it; the provider titles keep the list and imports usable.
+        logger.warning("earlier chat titles unavailable: %s", exc)
+        earlier_titles = {}
+    for candidate in candidates:
+        candidate["label"] = local_session_label(
+            earlier_titles.get((candidate["backend"], candidate["provider_session_id"])), candidate["label"],
+        )
+    return candidates
 
 
 def other_local_instance_provider_keys() -> set[tuple[str, str]]:
