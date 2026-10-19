@@ -5471,7 +5471,7 @@ describe('Composer', () => {
     expect(within(dialog).getByRole('combobox', { name: 'Folder' })).toHaveValue('Research')
     expect(within(dialog).getByRole('combobox', { name: 'Agent' })).toHaveValue('codex')
     expect(within(dialog).getByRole('combobox', { name: 'Model' })).toHaveValue('gpt-5-codex')
-    // Empty by default: the chat starts in this server's home directory, not in this chat's directory.
+    // Empty by default: the chat starts in this server's default directory, not in this chat's directory.
     const workingDirectory = within(dialog).getByRole('textbox', { name: 'Working directory' })
     expect(workingDirectory).toHaveValue('')
     expect(workingDirectory).toHaveAttribute('placeholder', '/home/me')
@@ -5650,7 +5650,7 @@ describe('Composer', () => {
     render(<Composer />)
     expect(screen.getByPlaceholderText('Message')).toHaveValue('@New agent fix the login bug')
     await user.click(screen.getByRole('button', { name: 'Send message' }))
-    // A draft that predates the working directory field starts the chat in the server's home directory.
+    // A draft that predates the working directory field starts the chat in the server's default directory.
     await waitFor(() => expect(create).toHaveBeenCalledWith({
       title: 'fix the login bug', folder: 'Research', cwd: '',
       backend: 'codex', model: 'gpt-5-codex', effort: 'medium', system_prompt: null
@@ -5717,8 +5717,8 @@ describe('Composer', () => {
     await user.click(await screen.findByRole('option', { name: /Create new agent/ }))
     const dialog = await screen.findByRole('dialog', { name: 'New agent' })
     const workingDirectory = within(dialog).getByRole('textbox', { name: 'Working directory' })
-    // This server reported no home directory; the chosen server's is the placeholder.
-    expect(workingDirectory).toHaveAttribute('placeholder', 'Server home directory')
+    // This server's health has no default_cwd: the fallback label shows until a server with one is chosen.
+    expect(workingDirectory).toHaveAttribute('placeholder', 'Server default')
     await user.selectOptions(await within(dialog).findByRole('combobox', { name: 'Server' }), 'srv-l40')
     expect(workingDirectory).toHaveAttribute('placeholder', '/home/gpu')
     const folder = within(dialog).getByRole('combobox', { name: 'Folder' })

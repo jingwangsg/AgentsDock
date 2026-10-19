@@ -28,25 +28,25 @@ afterEach(async () => {
   tree = null
 })
 
-test('the working directory starts empty with this server\'s home directory as its placeholder', async () => {
+test('the working directory starts empty with this server\'s default directory as its placeholder', async () => {
   const confirmed = await render([])
   assert.equal(byId('new-agent-cwd').props.value, '')
   assert.equal(byId('new-agent-cwd').props.placeholder, '/home/me')
   await press('new-agent-confirm')
-  // Empty means the server's home directory: the server's default for a chat created without one.
+  // Empty: the server starts the chat in its default directory.
   assert.equal(confirmed[0].cwd, '')
 })
 
-test('another server shows its own home directory, and a typed directory is sent trimmed', async () => {
+test('another server shows its own default directory, and a typed directory is sent trimmed', async () => {
   const confirmed = await render([
     { server_identity: 'srv-gpu', name: 'gpu-box', chats: [], default_cwd: '/home/gpu' },
     { server_identity: 'srv-old', name: 'old-box', chats: [] },
   ])
   await press('new-agent-server-srv-gpu')
   assert.equal(byId('new-agent-cwd').props.placeholder, '/home/gpu')
-  // A hub older than the field names no home directory.
+  // A server listed without default_cwd (an older hub) gets the fallback label.
   await press('new-agent-server-srv-old')
-  assert.equal(byId('new-agent-cwd').props.placeholder, 'Server home directory')
+  assert.equal(byId('new-agent-cwd').props.placeholder, 'Server default')
   await press('new-agent-server-srv-gpu')
   await act(async () => { byId('new-agent-cwd').props.onChangeText('  /data/lab  ') })
   await press('new-agent-confirm')

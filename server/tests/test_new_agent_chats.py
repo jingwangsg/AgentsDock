@@ -92,8 +92,9 @@ class HubCreateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(server["server_identity"], server["hidden"]) for server in snapshot["servers"]],
                          [("srv-shown", False), ("srv-hidden", True)])
 
-    async def test_chat_list_names_each_servers_home_directory(self):
-        # "Create new agent" shows it as the working directory its empty field means.
+    async def test_chat_list_gives_each_servers_default_cwd(self):
+        # "Create new agent" shows it as the placeholder of its empty Working directory field;
+        # existing_cwd reports only a directory that exists.
         hub = agent_server.LOCAL_CROSS_SERVER_END
         remote = cross_server_mail.RemoteEnd(None, SimpleNamespace(name="gpu-box", hidden=False), "srv-remote",
                                              default_cwd="/home/gpu")

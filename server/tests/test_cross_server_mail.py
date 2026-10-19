@@ -290,7 +290,7 @@ class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(relay.ends()["srv-hub"], relay.local)
         # A remote that does not advertise attachments predates them.
         self.assertFalse(relay.remote_ends["r-ok"].accepts_attachments)
-        # The hub's chat list names it as that server's home directory.
+        # The hub's chat list gives it as that server's default directory.
         self.assertEqual(relay.remote_ends["r-ok"].default_cwd, "/home/remote")
 
     ATTACHMENTS = [{"filename": name, "size": 1, "sha256": "0" * 64, "content_type": "text/plain"}

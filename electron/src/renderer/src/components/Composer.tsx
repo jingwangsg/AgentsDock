@@ -1474,7 +1474,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         const title = [...withoutChips.trim().split('\n', 1)[0].trim()].slice(0, 72).join('').replace(/^@+\s*/u, '').trim() || NEW_AGENT_DISPLAY_TITLE
         // A draft saved before the agent could be chosen has no backend; the chat then takes this chat's.
         const backend = settings.backend ?? session.backend
-        // '' lets the chosen server start the chat in its home directory (its default for a chat without one).
+        // '' (also from a draft saved before the field) starts the chat in the chosen server's default directory.
         const chat = { title, folder: settings.folder, cwd: settings.cwd ?? '', backend, model: settings.model, effort: settings.effort }
         let created: Session
         try {
@@ -3129,7 +3129,7 @@ function composerCommandIcon(command: ComposerCommand) {
   }
 }
 
-/** Where, on which agent and with which runtime "Create new agent" makes its chat on send; the current chat's values are the defaults. */
+/** Where, on which agent and with which runtime "Create new agent" makes its chat on send; the current chat's values are the defaults, except the working directory, which starts empty. */
 function NewAgentDialog({
   trigger,
   session,
@@ -3197,8 +3197,8 @@ function NewAgentDialog({
   }
   const chosenServer = servers.find(server => server.server_identity === serverIdentity)
   const serverName = chosenServer?.name ?? ''
-  // An empty field is the chosen server's home directory.
-  const homeCwd = serverIdentity === null ? defaultCwd : chosenServer?.default_cwd ?? ''
+  // This server is not in `servers`; its own health names its default directory.
+  const chosenDefaultCwd = serverIdentity === null ? defaultCwd : chosenServer?.default_cwd ?? ''
   return <DialogShell
     open={open}
     onOpenChange={onOpenChange}
@@ -3215,7 +3215,7 @@ function NewAgentDialog({
         {servers.map(server => <option value={server.server_identity} key={server.server_identity}>{server.name || t('ui.composer.newAgent.hub')}</option>)}
       </select></label>}
       <label className={servers.length > 0 ? 'span-two' : undefined}><span>{t('ui.composer.newAgent.folder')}</span><input value={folder} onChange={event => setFolder(event.target.value)} list={folderListId} /><datalist id={folderListId}>{folders.map(item => <option key={item}>{item}</option>)}</datalist></label>
-      <label className="span-two"><span>{t('ui.composer.newAgent.workingDirectory')}</span><input value={cwd} onChange={event => setCwd(event.target.value)} placeholder={homeCwd || t('ui.composer.newAgent.serverHome')} spellCheck={false} /></label>
+      <label className="span-two"><span>{t('ui.composer.newAgent.workingDirectory')}</span><input value={cwd} onChange={event => setCwd(event.target.value)} placeholder={chosenDefaultCwd || t('ui.composer.newAgent.serverDefault')} spellCheck={false} /></label>
       <label className={hasReasoning ? undefined : 'span-two'}><span>{t('ui.composer.newAgent.model')}</span><select value={model} onChange={event => selectModel(event.target.value)}>{models.map(option => <option value={option.value} key={option.value || 'default'} disabled={option.locked}>{option.label}</option>)}</select></label>
       {hasReasoning && <label><span>{t('ui.composer.newAgent.reasoning')}</span><select value={effort} onChange={event => setEffort(event.target.value)}>{efforts.map(option => <option value={option.value} key={option.value || 'default'}>{option.label}</option>)}</select></label>}
       <footer className="span-two"><button type="button" className="quiet-button" onClick={() => onOpenChange(false)}>{t('ui.composer.newAgent.cancel')}</button><button className="primary-button">{t('ui.composer.newAgent.confirm')}</button></footer>

@@ -7,30 +7,31 @@
   on another server in that server's default directory; neither could be
   changed.
 - The dialog (desktop) and sheet (Android) now have a Working directory
-  field below Folder. It starts empty, and its placeholder shows the home
-  directory of the server the chat is created on, following the Server
-  choice. Left empty, the chat starts in that server's home directory (the
-  server's default for a chat created without one, `default_cwd` in its
-  health), on the same server and on another server; a typed directory is
-  used as given. A draft saved before this change starts its new agent in
-  the server's home directory.
+  field below Folder. It starts empty, and its placeholder shows the
+  default directory of the server the chat is created on, following the
+  Server choice. Left empty, the chat starts in that server's default
+  directory (`default_cwd`), on the same server and on another server. A
+  server's default directory is its user's home directory unless the
+  server sets `AGENTSDOCK_AGENT_CWD`. A typed directory is used as given.
+  A draft saved before this change starts its new agent in the server's
+  default directory.
 - The hub's list for the `@` picker (`GET /api/cross-server/chats`) now
-  gives each server's home directory, read from a remote's health when the
-  hub first reaches it, so the placeholder can name another server's
+  gives each server's default directory, read from a remote's health when
+  the hub first reaches it, so the placeholder can name another server's
   directory. A hub without this change leaves it out; the placeholder then
-  reads "Server home directory" and creating the chat works as before.
+  reads "Server default" and creating the chat works as before.
 - Verified with server, desktop and Android tests that fail on the previous
-  code: the hub lists each server's home directory, the placeholder follows
-  the chosen server, and an empty or typed value reaches chat creation on
-  both paths. In the desktop app (isolated profile) and the Android app (a
-  sideload build of this branch on an emulator), against an isolated hub
-  with one remote, each app created four chats: on the same server and on
-  the remote, with the field empty and with a typed directory. The servers
-  reported the hub's or the remote's home directory for the empty cases and
-  the typed directory for the others.
+  code: the hub lists each server's default directory, the placeholder
+  follows the chosen server, and an empty or typed value reaches chat
+  creation on both paths. In the desktop app (isolated profile) and the
+  Android app (a sideload build of this branch on an emulator), against an
+  isolated hub with one remote, each app created four chats: on the same
+  server and on the remote, with the field empty and with a typed
+  directory. The servers reported the hub's or the remote's default
+  directory for the empty cases and the typed directory for the others.
 - Not covered: a real ssh tunnel between hub and remote (a local forwarder
   carried the hub's requests) and a hub without this change (tests only).
-  Availability: source only. Empty-field creation in the home directory
+  Availability: source only. Empty-field creation in the default directory
   needs only the client update; another server's placeholder path needs the
   hub update.
 

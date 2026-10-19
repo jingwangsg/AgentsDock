@@ -281,7 +281,9 @@ class End:
     identity: str
     name: str  # "" for the hub: the composer shows no server tag for its chats
     accepts_attachments = True  # False for a remote that predates mail attachments
-    default_cwd = ""  # where a chat created here without a working directory starts; "" when not known
+    # Where a chat created here without a working directory starts; "" when not known. A remote's is read
+    # once, when the relay first reaches it: it only names the placeholder, the chat starts in the current one.
+    default_cwd = ""
 
     # `hub` is the reading hub's identity: a pending result that names it makes only that hub skip the item for `retry_after` seconds.
     async def outbox(self, wait: float, hub: str) -> list[dict]: raise NotImplementedError

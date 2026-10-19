@@ -19,7 +19,8 @@ export interface NewAgentHosts {
 
 /**
  * Where, on which agent and with which runtime "Create new agent" makes its chat on send;
- * the current chat's values are the defaults. Page-sheet port of the desktop dialog.
+ * the current chat's values are the defaults, except the working directory, which starts empty.
+ * Page-sheet port of the desktop dialog.
  */
 export function NewAgentSheet({ hosts, backends, backend, model, effort, folder, defaultCwd, runtime, onCancel, onConfirm, onDidDismiss }: {
   hosts: NewAgentHosts | null
@@ -29,7 +30,7 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
   model: string | null | undefined
   effort: string | null | undefined
   folder: string
-  /** This server's home directory, where the chat starts when the working directory is left empty. */
+  /** This server's default directory, where the chat starts when the working directory is left empty. */
   defaultCwd: string
   runtime: RuntimeCatalog | null
   onCancel: () => void
@@ -69,8 +70,8 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
   ]
   const chosenServer = hosts?.servers.find(server => server.server_identity === serverIdentity)
   const serverName = chosenServer?.name ?? ''
-  // An empty field is the chosen server's home directory.
-  const homeCwd = serverIdentity === null ? defaultCwd : chosenServer?.default_cwd ?? ''
+  // This server is not in `servers`; its own health names its default directory.
+  const chosenDefaultCwd = serverIdentity === null ? defaultCwd : chosenServer?.default_cwd ?? ''
   return <Modal visible={open} animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={onCancel} onDismiss={onDidDismiss}>
     {hosts ? <SafeAreaView testID="new-agent-sheet" style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -78,7 +79,7 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
         <SheetCloseButton testID="new-agent-sheet-close" label="Close new agent" onPress={onCancel} />
       </View>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={[styles.description, { color: colors.muted }]}>Sending creates a {backendLabel(backendDraft)} chat for this task and hands it the message. With no working directory it starts in the chosen server's home directory.</Text>
+        <Text style={[styles.description, { color: colors.muted }]}>Sending creates a {backendLabel(backendDraft)} chat for this task and hands it the message. With no working directory it starts in the chosen server's default directory, normally its home directory.</Text>
         <Text style={[styles.section, styles.sectionGap, { color: colors.muted }]}>Agent</Text>
         {backends.map(option => <OptionRow key={option} testID={`new-agent-backend-${option}`} option={{ value: option, label: backendLabel(option) }} selected={option === backendDraft} onPress={() => selectBackend(option)} />)}
         {hosts.servers.length ? <>
@@ -103,7 +104,7 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
           accessibilityLabel="Working directory"
           value={cwdDraft}
           onChangeText={setCwdDraft}
-          placeholder={homeCwd || 'Server home directory'}
+          placeholder={chosenDefaultCwd || 'Server default'}
           placeholderTextColor={colors.muted}
           autoCapitalize="none"
           autoCorrect={false}

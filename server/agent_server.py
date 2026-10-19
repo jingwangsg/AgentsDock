@@ -101991,7 +101991,7 @@ async def list_cross_server_chats() -> dict[str, Any]:
             {"server_identity": end.identity, "name": end.name, "chats": chats,
              # Clients offer no new pair or chat on a hidden remote, though it may be the server a client is on.
              "hidden": isinstance(end, cross_server_mail.RemoteEnd) and end.server.hidden,
-             # "Create new agent" shows it as the working directory an empty field means.
+             # The placeholder of "Create new agent"'s empty Working directory field.
              "default_cwd": end.default_cwd}
             # An unreachable server is left out: only live servers' chats can be picked.
             for end, chats in zip(ends, results) if not isinstance(chats, BaseException)
