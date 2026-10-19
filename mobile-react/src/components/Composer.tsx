@@ -876,14 +876,14 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
           .reduce((text, reference) => `${text.slice(0, reference.source_text_start)}${text.slice(reference.source_text_end)}`, currentDraft)
         const title = [...withoutChips.trim().split('\n', 1)[0].trim()].slice(0, 72).join('').replace(/^@+\s*/u, '').trim() || NEW_AGENT_DISPLAY_TITLE
         // A draft saved before the agent could be chosen has no backend; the chat then takes this chat's.
-        const chat = { title, folder: settings.folder, backend: settings.backend ?? sourceSession.backend, model: settings.model, effort: settings.effort }
+        // '' lets the chosen server start the chat in its home directory (its default for a chat without one).
+        const chat = { title, folder: settings.folder, cwd: settings.cwd ?? '', backend: settings.backend ?? sourceSession.backend, model: settings.model, effort: settings.effort }
         let created: Session
         try {
           if (otherServer) {
-            // '' lets the other server choose its default directory.
-            created = await client.createCrossServerChat({ ...chat, server_identity: settings.server_identity!, cwd: '' })
+            created = await client.createCrossServerChat({ ...chat, server_identity: settings.server_identity! })
           } else {
-            const session = await client.createSession({ ...chat, cwd: sourceSession.cwd?.trim() || '' })
+            const session = await client.createSession(chat)
             created = session
             // load-bearing: sendPrompt refuses a reference whose chat is not in the session list.
             // Appended as the store's own createSession does; a refresh already in flight may
@@ -1434,6 +1434,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         model={model}
         effort={effort}
         folder={sourceSession.folder?.trim() || 'General'}
+        defaultCwd={health?.default_cwd?.trim() || ''}
         runtime={runtime}
         onCancel={() => {
           // Like a cancelled picker: focus and caret return to the composer once the sheet is gone.

@@ -559,7 +559,7 @@ describe('chat references', () => {
   })
 
   it('keeps the "Create new agent" placeholder as one route hint until the composer creates the chat', () => {
-    const settings: NewAgentSettings = { backend: 'codex', model: 'gpt-5-codex', effort: 'high', server_identity: null, folder: 'Research' }
+    const settings: NewAgentSettings = { backend: 'codex', model: 'gpt-5-codex', effort: 'high', server_identity: null, folder: 'Research', cwd: '/srv/app' }
     const inserted = insertNewAgentChatReference('ask @cre', chatMentionTrigger('ask @cre', 8)!, settings)
     expect(inserted.text).toBe('ask @New agent ')
     expect(inserted.reference).toEqual({
@@ -593,6 +593,7 @@ describe('chat references', () => {
     const claude = { ...marker, new_agent: { ...marker.new_agent, backend: 'claude' as const } }
     expect(parseStoredChatReferences([claude], text, 'source-chat')).toEqual([claude])
     expect(validChatReferences(text, [{ ...marker, new_agent: { ...marker.new_agent, backend: 'gemini' as Backend } }], 'source-chat')).toEqual([])
+    expect(validChatReferences(text, [{ ...marker, new_agent: { ...marker.new_agent, cwd: 42 as unknown as string } }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...marker, grant_intent: undefined }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...marker, new_agent: undefined }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...marker, session_id: 'sess_real' }], 'source-chat')).toEqual([])

@@ -753,6 +753,8 @@ export interface NewAgentSettings {
   /** Another server under the same hub; null for the chat's own server. */
   server_identity: string | null
   folder: string
+  /** Where the chat starts; '' is the chosen server's home directory. Absent in a draft saved before it could be chosen. */
+  cwd?: string
 }
 
 interface TeamReferenceBase {
@@ -883,6 +885,8 @@ export interface CrossServerChats {
   chats: ChatSearchTarget[]
   /** Hidden on the hub: offered for no new pair or chat. Absent from a hub older than hiding. */
   hidden?: boolean
+  /** That server's home directory, where a chat created without a working directory starts. Absent from an older hub. */
+  default_cwd?: string
 }
 
 export interface CrossServerChatsSnapshot {

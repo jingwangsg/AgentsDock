@@ -281,7 +281,8 @@ class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
 
             async def probe_health(self, server):
                 identity = "srv-hub" if server.id == "r-spoof" else "srv-remote"
-                return {"server_identity": identity, "capabilities": {xs.CAPABILITY: {"available": True}}}
+                return {"server_identity": identity, "capabilities": {xs.CAPABILITY: {"available": True}},
+                        "default_cwd": "/home/remote"}
 
         relay = xs.Relay(local=FakeEnd("srv-hub"), remotes=Remotes(), ledger=None)
         await relay.refresh()
@@ -289,6 +290,8 @@ class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(relay.ends()["srv-hub"], relay.local)
         # A remote that does not advertise attachments predates them.
         self.assertFalse(relay.remote_ends["r-ok"].accepts_attachments)
+        # The hub's chat list names it as that server's home directory.
+        self.assertEqual(relay.remote_ends["r-ok"].default_cwd, "/home/remote")
 
     ATTACHMENTS = [{"filename": name, "size": 1, "sha256": "0" * 64, "content_type": "text/plain"}
                    for name in ("first.txt", "second.txt")]

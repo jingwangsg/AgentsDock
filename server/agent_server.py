@@ -101761,6 +101761,10 @@ class LocalCrossServerEnd(cross_server_mail.End):
     def identity(self) -> str:
         return server_identity()
 
+    @property
+    def default_cwd(self) -> str:
+        return existing_cwd(DEFAULT_CWD)
+
     async def outbox(self, wait: float, hub: str) -> list[dict]:
         return await cross_server_outbox_items(wait, paired_here=True, hub=hub)
 
@@ -101986,7 +101990,9 @@ async def list_cross_server_chats() -> dict[str, Any]:
         "servers": [
             {"server_identity": end.identity, "name": end.name, "chats": chats,
              # Clients offer no new pair or chat on a hidden remote, though it may be the server a client is on.
-             "hidden": isinstance(end, cross_server_mail.RemoteEnd) and end.server.hidden}
+             "hidden": isinstance(end, cross_server_mail.RemoteEnd) and end.server.hidden,
+             # "Create new agent" shows it as the working directory an empty field means.
+             "default_cwd": end.default_cwd}
             # An unreachable server is left out: only live servers' chats can be picked.
             for end, chats in zip(ends, results) if not isinstance(chats, BaseException)
         ],

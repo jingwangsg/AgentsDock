@@ -281,6 +281,7 @@ class End:
     identity: str
     name: str  # "" for the hub: the composer shows no server tag for its chats
     accepts_attachments = True  # False for a remote that predates mail attachments
+    default_cwd = ""  # where a chat created here without a working directory starts; "" when not known
 
     # `hub` is the reading hub's identity: a pending result that names it makes only that hub skip the item for `retry_after` seconds.
     async def outbox(self, wait: float, hub: str) -> list[dict]: raise NotImplementedError
@@ -307,12 +308,14 @@ def advertises_attachments(health: dict | None) -> bool:
 
 
 class RemoteEnd(End):
-    def __init__(self, http: httpx.AsyncClient, server: Any, identity: str, *, accepts_attachments: bool = False) -> None:
+    def __init__(self, http: httpx.AsyncClient, server: Any, identity: str, *, accepts_attachments: bool = False,
+                 default_cwd: str = "") -> None:
         self.http = http
         self.server = server
         self.identity = identity
         self.name = server.name
         self.accepts_attachments = accepts_attachments
+        self.default_cwd = default_cwd
 
     async def _request(self, method: str, path: str, *, timeout: float = REMOTE_REQUEST_TIMEOUT, **kwargs: Any) -> Any:
         response = await self.http.request(
@@ -459,7 +462,8 @@ class Relay:
                 logger.warning("remote server %s reports another server's identity; cross-server mail skips it", server.name)
                 continue
             self.remote_ends[server.id] = RemoteEnd(self.remotes.http, server, identity,
-                                                    accepts_attachments=advertises_attachments(health))
+                                                    accepts_attachments=advertises_attachments(health),
+                                                    default_cwd=str(health.get("default_cwd") or ""))
 
     async def _supervise(self) -> None:
         self.pumps["local"] = asyncio.create_task(self._pump(self.local), name="cross-server-mail:local")

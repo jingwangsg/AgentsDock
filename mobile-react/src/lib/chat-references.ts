@@ -495,6 +495,7 @@ function validNewAgentReferenceTarget(reference: ChatReference): boolean {
     && (settings.effort === null || typeof settings.effort === 'string')
     && (settings.server_identity === null || (typeof settings.server_identity === 'string' && settings.server_identity.length <= 240))
     && typeof settings.folder === 'string'
+    && (settings.cwd === undefined || typeof settings.cwd === 'string')
 }
 
 export function chatReferenceLabel(action: ChatReferenceAction): string {

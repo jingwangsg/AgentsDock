@@ -5452,7 +5452,7 @@ describe('Composer', () => {
         { id: 'chat-1', title: 'Chat', backend: 'codex', folder: 'Research', cwd: '/srv/app', model: 'gpt-5-codex', effort: 'medium' },
         { id: 'chat-2', title: 'Training', backend: 'claude' }
       ],
-      health: { ok: true, capabilities: { cross_chat_handoffs_v1: durableComposerCapability() } },
+      health: { ok: true, default_cwd: '/home/me', capabilities: { cross_chat_handoffs_v1: durableComposerCapability() } },
       refreshSessions
     })
     const user = userEvent.setup()
@@ -5471,6 +5471,10 @@ describe('Composer', () => {
     expect(within(dialog).getByRole('combobox', { name: 'Folder' })).toHaveValue('Research')
     expect(within(dialog).getByRole('combobox', { name: 'Agent' })).toHaveValue('codex')
     expect(within(dialog).getByRole('combobox', { name: 'Model' })).toHaveValue('gpt-5-codex')
+    // Empty by default: the chat starts in this server's home directory, not in this chat's directory.
+    const workingDirectory = within(dialog).getByRole('textbox', { name: 'Working directory' })
+    expect(workingDirectory).toHaveValue('')
+    expect(workingDirectory).toHaveAttribute('placeholder', '/home/me')
     await user.click(within(dialog).getByRole('button', { name: 'Add @New agent' }))
 
     expect(screen.queryByRole('dialog', { name: 'New agent' })).not.toBeInTheDocument()
@@ -5478,13 +5482,13 @@ describe('Composer', () => {
     expect(useAppStore.getState().chatReferencesBySession['chat-1']).toEqual([{
       session_id: 'new-agent', display_title_snapshot: 'New agent', source_text_start: 0, source_text_end: 10,
       action: 'route', grant_intent: true, target_kind: 'new_agent',
-      new_agent: { backend: 'codex', model: 'gpt-5-codex', effort: 'medium', server_identity: null, folder: 'Research' }
+      new_agent: { backend: 'codex', model: 'gpt-5-codex', effort: 'medium', server_identity: null, folder: 'Research', cwd: '' }
     }])
     await user.type(editor, 'fix the login bug')
     await user.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() => expect(create).toHaveBeenCalledWith({
-      title: 'fix the login bug', folder: 'Research', cwd: '/srv/app',
+      title: 'fix the login bug', folder: 'Research', cwd: '',
       backend: 'codex', model: 'gpt-5-codex', effort: 'medium', system_prompt: null
     }))
     await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
@@ -5545,17 +5549,18 @@ describe('Composer', () => {
     expect(within(dialog).getByRole('combobox', { name: 'Reasoning' })).toHaveValue('medium')
     await user.selectOptions(agent, 'claude')
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Model' }), 'claude-opus-5-5')
+    await user.type(within(dialog).getByRole('textbox', { name: 'Working directory' }), ' /srv/docs ')
     await user.click(within(dialog).getByRole('button', { name: 'Add @New agent' }))
 
     expect(editor).toHaveValue('@New agent ')
     expect(useAppStore.getState().chatReferencesBySession['chat-1']?.[0]?.new_agent).toEqual({
-      backend: 'claude', model: 'claude-opus-5-5', effort: null, server_identity: null, folder: 'Research'
+      backend: 'claude', model: 'claude-opus-5-5', effort: null, server_identity: null, folder: 'Research', cwd: '/srv/docs'
     })
     await user.type(editor, 'write the release notes')
     await user.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() => expect(create).toHaveBeenCalledWith({
-      title: 'write the release notes', folder: 'Research', cwd: '/srv/app',
+      title: 'write the release notes', folder: 'Research', cwd: '/srv/docs',
       backend: 'claude', model: 'claude-opus-5-5', effort: null, system_prompt: null
     }))
     await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
@@ -5604,8 +5609,8 @@ describe('Composer', () => {
       await user.type(editor, 'summarize the incident')
       await user.click(screen.getByRole('button', { name: 'Send message' }))
       await waitFor(() => expect(create).toHaveBeenCalledWith(chosen === 'codex'
-        ? { title: 'summarize the incident', folder: 'Research', cwd: '/srv/app', backend: 'codex', model: 'gpt-6-astra', effort: 'medium', codex_provider: 'custom', system_prompt: null }
-        : { title: 'summarize the incident', folder: 'Research', cwd: '/srv/app', backend: 'claude', model: null, effort: null, system_prompt: null }))
+        ? { title: 'summarize the incident', folder: 'Research', cwd: '', backend: 'codex', model: 'gpt-6-astra', effort: 'medium', codex_provider: 'custom', system_prompt: null }
+        : { title: 'summarize the incident', folder: 'Research', cwd: '', backend: 'claude', model: null, effort: null, system_prompt: null }))
       await waitFor(() => expect(send).toHaveBeenCalled())
       unmount()
     }
@@ -5645,8 +5650,9 @@ describe('Composer', () => {
     render(<Composer />)
     expect(screen.getByPlaceholderText('Message')).toHaveValue('@New agent fix the login bug')
     await user.click(screen.getByRole('button', { name: 'Send message' }))
+    // A draft that predates the working directory field starts the chat in the server's home directory.
     await waitFor(() => expect(create).toHaveBeenCalledWith({
-      title: 'fix the login bug', folder: 'Research', cwd: '/srv/app',
+      title: 'fix the login bug', folder: 'Research', cwd: '',
       backend: 'codex', model: 'gpt-5-codex', effort: 'medium', system_prompt: null
     }))
     await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
@@ -5678,7 +5684,7 @@ describe('Composer', () => {
     const chats = vi.fn().mockResolvedValue({
       servers: [
         { server_identity: 'server-a', name: '', chats: [] },
-        { server_identity: 'srv-l40', name: 'gpu-box', chats: [{ id: 'r1', title: 'Remote', folder: 'Lab', backend: 'claude', cross_chat_handoff_supported: true }] }
+        { server_identity: 'srv-l40', name: 'gpu-box', default_cwd: '/home/gpu', chats: [{ id: 'r1', title: 'Remote', folder: 'Lab', backend: 'claude', cross_chat_handoff_supported: true }] }
       ],
       create_chats: true
     } satisfies CrossServerChatsSnapshot)
@@ -5710,10 +5716,15 @@ describe('Composer', () => {
     await user.type(editor, '@')
     await user.click(await screen.findByRole('option', { name: /Create new agent/ }))
     const dialog = await screen.findByRole('dialog', { name: 'New agent' })
+    const workingDirectory = within(dialog).getByRole('textbox', { name: 'Working directory' })
+    // This server reported no home directory; the chosen server's is the placeholder.
+    expect(workingDirectory).toHaveAttribute('placeholder', 'Server home directory')
     await user.selectOptions(await within(dialog).findByRole('combobox', { name: 'Server' }), 'srv-l40')
+    expect(workingDirectory).toHaveAttribute('placeholder', '/home/gpu')
     const folder = within(dialog).getByRole('combobox', { name: 'Folder' })
     await user.clear(folder)
     await user.type(folder, 'Lab')
+    await user.type(workingDirectory, '/data/lab')
     await user.click(within(dialog).getByRole('button', { name: 'Add @New agent' }))
 
     expect(editor).toHaveValue('@New agent · gpu-box ')
@@ -5722,7 +5733,7 @@ describe('Composer', () => {
 
     await waitFor(() => expect(createChat).toHaveBeenCalledWith(expect.anything(), {
       title: 'triage flaky tests', folder: 'Lab', backend: 'codex', model: 'gpt-5-codex', effort: 'medium',
-      server_identity: 'srv-l40', cwd: ''
+      server_identity: 'srv-l40', cwd: '/data/lab'
     }))
     await waitFor(() => expect(pair).toHaveBeenCalledWith(expect.anything(), {
       source_server_identity: 'server-a', source_session_id: 'chat-1',

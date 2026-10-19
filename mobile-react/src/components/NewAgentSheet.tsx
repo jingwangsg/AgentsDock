@@ -21,7 +21,7 @@ export interface NewAgentHosts {
  * Where, on which agent and with which runtime "Create new agent" makes its chat on send;
  * the current chat's values are the defaults. Page-sheet port of the desktop dialog.
  */
-export function NewAgentSheet({ hosts, backends, backend, model, effort, folder, runtime, onCancel, onConfirm, onDidDismiss }: {
+export function NewAgentSheet({ hosts, backends, backend, model, effort, folder, defaultCwd, runtime, onCancel, onConfirm, onDidDismiss }: {
   hosts: NewAgentHosts | null
   /** Backends the chat may run on: this server's selectable ones that also receive handoffs. */
   backends: Backend[]
@@ -29,6 +29,8 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
   model: string | null | undefined
   effort: string | null | undefined
   folder: string
+  /** This server's home directory, where the chat starts when the working directory is left empty. */
+  defaultCwd: string
   runtime: RuntimeCatalog | null
   onCancel: () => void
   onConfirm: (settings: NewAgentSettings, serverName: string) => void
@@ -40,6 +42,7 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
   const [backendDraft, setBackendDraft] = useState(backend)
   const [serverIdentity, setServerIdentity] = useState<string | null>(null)
   const [folderDraft, setFolderDraft] = useState(folder)
+  const [cwdDraft, setCwdDraft] = useState('')
   const [modelDraft, setModelDraft] = useState(model ?? '')
   const [effortDraft, setEffortDraft] = useState(effort ?? '')
   // This chat's model and effort are defaults for its own backend only; another backend starts from its server defaults.
@@ -56,6 +59,7 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
     selectBackend(backends.includes(backend) ? backend : (backends[0] ?? backend))
     setServerIdentity(null)
     setFolderDraft(folder)
+    setCwdDraft('')
   }, [open, backends.join(','), backend, folder, model, effort])
   const models = runtimeCatalogOptions(runtime, backendDraft, 'models', modelDraft || null)
   const efforts = backendDraft === 'cursor' ? [] : runtimeEffortOptions(runtime, backendDraft, modelDraft || null, effortDraft || null)
@@ -63,7 +67,10 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
     { value: '', label: hosts?.localTag ? `This server · ${hosts.localTag}` : 'This server' },
     ...(hosts?.servers ?? []).map(server => ({ value: server.server_identity, label: server.name || 'Hub' })),
   ]
-  const serverName = hosts?.servers.find(server => server.server_identity === serverIdentity)?.name ?? ''
+  const chosenServer = hosts?.servers.find(server => server.server_identity === serverIdentity)
+  const serverName = chosenServer?.name ?? ''
+  // An empty field is the chosen server's home directory.
+  const homeCwd = serverIdentity === null ? defaultCwd : chosenServer?.default_cwd ?? ''
   return <Modal visible={open} animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={onCancel} onDismiss={onDidDismiss}>
     {hosts ? <SafeAreaView testID="new-agent-sheet" style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -71,7 +78,7 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
         <SheetCloseButton testID="new-agent-sheet-close" label="Close new agent" onPress={onCancel} />
       </View>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={[styles.description, { color: colors.muted }]}>Sending creates a {backendLabel(backendDraft)} chat for this task and hands it the message. On this server it shares this chat's working directory; on another server it starts in that server's default directory.</Text>
+        <Text style={[styles.description, { color: colors.muted }]}>Sending creates a {backendLabel(backendDraft)} chat for this task and hands it the message. With no working directory it starts in the chosen server's home directory.</Text>
         <Text style={[styles.section, styles.sectionGap, { color: colors.muted }]}>Agent</Text>
         {backends.map(option => <OptionRow key={option} testID={`new-agent-backend-${option}`} option={{ value: option, label: backendLabel(option) }} selected={option === backendDraft} onPress={() => selectBackend(option)} />)}
         {hosts.servers.length ? <>
@@ -90,6 +97,18 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
           autoCorrect={false}
           style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
         />
+        <Text style={[styles.section, styles.sectionGap, { color: colors.muted }]}>Working directory</Text>
+        <TextInput
+          testID="new-agent-cwd"
+          accessibilityLabel="Working directory"
+          value={cwdDraft}
+          onChangeText={setCwdDraft}
+          placeholder={homeCwd || 'Server home directory'}
+          placeholderTextColor={colors.muted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
+        />
         <Text style={[styles.section, styles.sectionGap, { color: colors.muted }]}>Model</Text>
         {models.map(option => <OptionRow key={option.value || 'default'} testID={`new-agent-model-${option.value || 'default'}`} option={option} selected={option.value === modelDraft} onPress={() => {
           setModelDraft(option.value)
@@ -103,7 +122,7 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
           testID="new-agent-confirm"
           accessibilityRole="button"
           accessibilityLabel="Add @New agent"
-          onPress={() => onConfirm({ backend: backendDraft, model: modelDraft || null, effort: effortDraft || null, server_identity: serverIdentity, folder: folderDraft.trim() || 'General' }, serverName)}
+          onPress={() => onConfirm({ backend: backendDraft, model: modelDraft || null, effort: effortDraft || null, server_identity: serverIdentity, folder: folderDraft.trim() || 'General', cwd: cwdDraft.trim() }, serverName)}
           style={({ pressed }) => [styles.confirm, { backgroundColor: colors.blue, opacity: pressed ? 0.7 : 1 }]}
         >
           <Text style={styles.confirmText}>Add @New agent</Text>

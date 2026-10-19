@@ -272,7 +272,7 @@ assert.deepEqual(parseStoredChatReferences([crossServerBase], crossServerText, '
 assert.equal(localChatReferenceContractSupported(hardenedV7, { ...crossServer.reference, grant_intent: true }), false)
 
 // "Create new agent" is one placeholder chip per message until the composer creates the chat on send.
-const newAgentSettings: NewAgentSettings = { backend: 'codex', model: 'gpt-5-codex', effort: 'high', server_identity: null, folder: 'Research' }
+const newAgentSettings: NewAgentSettings = { backend: 'codex', model: 'gpt-5-codex', effort: 'high', server_identity: null, folder: 'Research', cwd: '/srv/app' }
 const newAgent = insertNewAgentChatReference('ask @cre', chatMentionTrigger('ask @cre', 8)!, newAgentSettings)
 assert.equal(newAgent.text, 'ask @New agent ')
 assert.deepEqual(newAgent.reference, {
@@ -294,6 +294,7 @@ const newAgentBase: ChatReference = { session_id: NEW_AGENT_REFERENCE_ID, displa
 assert.deepEqual(validChatReferences(newAgentText, [newAgentBase], 'source-chat'), [newAgentBase])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: { ...newAgentBase.new_agent!, backend: 'claude' } }], 'source-chat').map(reference => reference.new_agent?.backend), ['claude'])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: { ...newAgentBase.new_agent!, backend: 'gemini' as Backend } }], 'source-chat'), [])
+assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: { ...newAgentBase.new_agent!, cwd: 42 as unknown as string } }], 'source-chat'), [])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, grant_intent: undefined }], 'source-chat'), [])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: undefined }], 'source-chat'), [])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, session_id: 'sess_real' }], 'source-chat'), [])
