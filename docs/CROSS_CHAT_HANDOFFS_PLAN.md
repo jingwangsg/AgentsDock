@@ -11,7 +11,9 @@ Watches, artifact grants, and group exchanges remain deferred.
   route. Plain mention-like text is never routing authority.
 - The picker's fixed `Create new agent` entry (first while the query is empty)
   hands the task to a chat that does not exist yet. Its dialog chooses the
-  server, folder, model and effort, all preset from the current chat; on send
+  server, folder, model and effort, all preset from the current chat, and a
+  working directory that starts empty (the chosen server's default directory,
+  normally its home); on send
   the composer creates that chat, named after the task's first words (same
   server: `POST /api/sessions`; another server under the hub: the hub's
   `POST /api/cross-server/chats`), and the turn then carries an ordinary chip

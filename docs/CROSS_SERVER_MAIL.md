@@ -72,7 +72,7 @@ DELETE /api/admin/cross-server/pairs/{pair_id}    remove this server's halves
 Client-facing, on the hub:
 
 ```text
-GET    /api/cross-server/chats                    live servers and their chats
+GET    /api/cross-server/chats                    live servers, their chats and default directories (`default_cwd`)
 POST   /api/cross-server/chats                    create a chat on one of them (the composer's "Create new agent")
 POST   /api/cross-server/pairs                    pair two chats (idempotent); `target_label` is the chip's title part
 GET    /api/cross-server/pairs?server_identity=&session_id=

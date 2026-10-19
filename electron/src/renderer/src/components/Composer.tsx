@@ -1474,18 +1474,17 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         const title = [...withoutChips.trim().split('\n', 1)[0].trim()].slice(0, 72).join('').replace(/^@+\s*/u, '').trim() || NEW_AGENT_DISPLAY_TITLE
         // A draft saved before the agent could be chosen has no backend; the chat then takes this chat's.
         const backend = settings.backend ?? session.backend
-        const chat = { title, folder: settings.folder, backend, model: settings.model, effort: settings.effort }
+        // '' (also from a draft saved before the field) starts the chat in the chosen server's default directory.
+        const chat = { title, folder: settings.folder, cwd: settings.cwd ?? '', backend, model: settings.model, effort: settings.effort }
         let created: Session
         try {
           if (otherServer) {
             const scope = captureWorkspaceScope(useAppStore.getState())
             if (!scope) throw new Error(t('ui.composer.crossServer.unavailable'))
-            // '' lets the other server choose its default directory.
-            created = await window.agentsDock.crossServer.createChat(scope, { ...chat, server_identity: settings.server_identity!, cwd: '' })
+            created = await window.agentsDock.crossServer.createChat(scope, { ...chat, server_identity: settings.server_identity! })
           } else {
             created = await window.agentsDock.sessions.create({
               ...chat,
-              cwd: session.cwd?.trim() || '',
               // The custom Codex endpoint is this chat's own; it carries over to a Codex chat only.
               ...(backend === 'codex' && session.backend === 'codex' && session.codex_provider === 'custom' ? { codex_provider: 'custom' as const } : {}),
               system_prompt: null
@@ -3130,7 +3129,7 @@ function composerCommandIcon(command: ComposerCommand) {
   }
 }
 
-/** Where, on which agent and with which runtime "Create new agent" makes its chat on send; the current chat's values are the defaults. */
+/** Where, on which agent and with which runtime "Create new agent" makes its chat on send; the current chat's values are the defaults, except the working directory, which starts empty. */
 function NewAgentDialog({
   trigger,
   session,
@@ -3152,6 +3151,7 @@ function NewAgentDialog({
 }) {
   useLocale()
   const catalog = useAppStore(state => state.runtimeCatalog)
+  const defaultCwd = useAppStore(state => state.health?.default_cwd?.trim() || '')
   const folderListId = `new-agent-folders-${useId().replace(/:/g, '')}`
   const open = trigger !== null
   const [backend, setBackend] = useState<Backend>(session.backend)
@@ -3159,6 +3159,7 @@ function NewAgentDialog({
   const [effort, setEffort] = useState('')
   const [serverIdentity, setServerIdentity] = useState<string | null>(null)
   const [folder, setFolder] = useState('')
+  const [cwd, setCwd] = useState('')
   // This chat's model and effort are defaults for its own backend only; another backend starts from its server defaults.
   const selectBackend = (value: Backend) => {
     setBackend(value)
@@ -3171,6 +3172,7 @@ function NewAgentDialog({
     selectBackend(backends.includes(session.backend) ? session.backend : (backends[0] ?? session.backend))
     setServerIdentity(null)
     setFolder(session.folder?.trim() || 'General')
+    setCwd('')
   }, [open, backends, session.backend, session.effort, session.folder, session.id, session.model])
   // Read once per opening: the always-mounted composer must not rerender on every chat update.
   const folders = useMemo(() => {
@@ -3193,7 +3195,10 @@ function NewAgentDialog({
     setModel(value)
     setEffort(runtimeEffortAfterModelChange(catalog, backend, value || null, effort || null, codexProvider, customCatalog) || '')
   }
-  const serverName = servers.find(server => server.server_identity === serverIdentity)?.name ?? ''
+  const chosenServer = servers.find(server => server.server_identity === serverIdentity)
+  const serverName = chosenServer?.name ?? ''
+  // This server is not in `servers`; its own health names its default directory.
+  const chosenDefaultCwd = serverIdentity === null ? defaultCwd : chosenServer?.default_cwd ?? ''
   return <DialogShell
     open={open}
     onOpenChange={onOpenChange}
@@ -3202,7 +3207,7 @@ function NewAgentDialog({
   >
     <form className="dialog-form two-column-form" onSubmit={event => {
       event.preventDefault()
-      if (trigger) onConfirm(trigger, { backend, model: model || null, effort: effort || null, server_identity: serverIdentity, folder: folder.trim() || 'General' }, serverName)
+      if (trigger) onConfirm(trigger, { backend, model: model || null, effort: effort || null, server_identity: serverIdentity, folder: folder.trim() || 'General', cwd: cwd.trim() }, serverName)
     }}>
       <label><span>{t('ui.composer.newAgent.agent')}</span><select value={backend} onChange={event => selectBackend(event.target.value as Backend)}>{backends.map(option => <option value={option} key={option}>{backendLabel(option, option === 'codex' ? sourceCodexProvider : undefined)}</option>)}</select></label>
       {servers.length > 0 && <label><span>{t('ui.composer.newAgent.server')}</span><select value={serverIdentity ?? ''} onChange={event => setServerIdentity(event.target.value || null)}>
@@ -3210,6 +3215,7 @@ function NewAgentDialog({
         {servers.map(server => <option value={server.server_identity} key={server.server_identity}>{server.name || t('ui.composer.newAgent.hub')}</option>)}
       </select></label>}
       <label className={servers.length > 0 ? 'span-two' : undefined}><span>{t('ui.composer.newAgent.folder')}</span><input value={folder} onChange={event => setFolder(event.target.value)} list={folderListId} /><datalist id={folderListId}>{folders.map(item => <option key={item}>{item}</option>)}</datalist></label>
+      <label className="span-two"><span>{t('ui.composer.newAgent.workingDirectory')}</span><input value={cwd} onChange={event => setCwd(event.target.value)} placeholder={chosenDefaultCwd || t('ui.composer.newAgent.serverDefault')} spellCheck={false} /></label>
       <label className={hasReasoning ? undefined : 'span-two'}><span>{t('ui.composer.newAgent.model')}</span><select value={model} onChange={event => selectModel(event.target.value)}>{models.map(option => <option value={option.value} key={option.value || 'default'} disabled={option.locked}>{option.label}</option>)}</select></label>
       {hasReasoning && <label><span>{t('ui.composer.newAgent.reasoning')}</span><select value={effort} onChange={event => setEffort(event.target.value)}>{efforts.map(option => <option value={option.value} key={option.value || 'default'}>{option.label}</option>)}</select></label>}
       <footer className="span-two"><button type="button" className="quiet-button" onClick={() => onOpenChange(false)}>{t('ui.composer.newAgent.cancel')}</button><button className="primary-button">{t('ui.composer.newAgent.confirm')}</button></footer>

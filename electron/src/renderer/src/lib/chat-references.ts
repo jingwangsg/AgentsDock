@@ -475,9 +475,9 @@ function canonicalChatReference(reference: ChatReference, preserveGrantIntent = 
   }
   if (reference.target_kind === 'new_agent' && reference.new_agent) {
     // Copies the validated fields only; a stored draft may carry more. A draft saved before the
-    // agent could be chosen keeps its key set (no `backend: undefined`).
-    const { backend, model, effort, server_identity, folder } = reference.new_agent
-    return { ...common, target_kind: 'new_agent', new_agent: { ...(backend !== undefined ? { backend } : {}), model, effort, server_identity, folder } }
+    // agent or its working directory could be chosen keeps its key set (no `backend: undefined`).
+    const { backend, model, effort, server_identity, folder, cwd } = reference.new_agent
+    return { ...common, target_kind: 'new_agent', new_agent: { ...(backend !== undefined ? { backend } : {}), model, effort, server_identity, folder, ...(cwd !== undefined ? { cwd } : {}) } }
   }
   return reference.target_kind === 'secure_peer' ? {
     ...common,
@@ -560,6 +560,7 @@ function validNewAgentReferenceTarget(reference: ChatReference): boolean {
     && (settings.effort === null || typeof settings.effort === 'string')
     && (settings.server_identity === null || (typeof settings.server_identity === 'string' && settings.server_identity.length <= 240))
     && typeof settings.folder === 'string'
+    && (settings.cwd === undefined || typeof settings.cwd === 'string')
 }
 
 function secureRouteConnectionId(route: SecurePeerRemoteRoute): string {

@@ -58,6 +58,13 @@ test('selected chats are removable grant references; modern local actions stay o
   assert.ok(composer.indexOf('testID="composer-chat-references"') < composer.indexOf('{queued.length || queuedRunStatus'))
 })
 
+test('"Create new agent" creates its chat in the chosen working directory on either server', () => {
+  // '' (the field left empty, or a draft saved before it) is the chosen server's default directory.
+  assert.match(composer, /const chat = \{ title, folder: settings\.folder, cwd: settings\.cwd \?\? '', /)
+  assert.match(composer, /await client\.createCrossServerChat\(\{ \.\.\.chat, server_identity: settings\.server_identity! \}\)/)
+  assert.match(composer, /await client\.createSession\(chat\)/)
+})
+
 test('composer edits reconcile grants and sends only validated references', () => {
   assert.match(composer, /const previousDraft = draftRef\.current/)
   assert.match(composer, /atomicComposerReferenceEdit\(previousText, nativeText, selectionRef\.current/)

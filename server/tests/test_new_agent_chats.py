@@ -1,6 +1,7 @@
 """Chats the composer's "Create new agent" makes on another server: the hub creates them, the composer pairs them under the chip's label."""
 from __future__ import annotations
 
+import tempfile
 import unittest
 from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
@@ -90,6 +91,23 @@ class HubCreateTests(unittest.IsolatedAsyncioTestCase):
         # Listed all the same: a client on the hidden remote finds itself there.
         self.assertEqual([(server["server_identity"], server["hidden"]) for server in snapshot["servers"]],
                          [("srv-shown", False), ("srv-hidden", True)])
+
+    async def test_chat_list_gives_each_servers_default_cwd(self):
+        # "Create new agent" shows it as the placeholder of its empty Working directory field;
+        # existing_cwd reports only a directory that exists.
+        hub = agent_server.LOCAL_CROSS_SERVER_END
+        remote = cross_server_mail.RemoteEnd(None, SimpleNamespace(name="gpu-box", hidden=False), "srv-remote",
+                                             default_cwd="/home/gpu")
+        remote.chats = AsyncMock(return_value=[])
+        with tempfile.TemporaryDirectory() as home, ExitStack() as stack:
+            stack.enter_context(patch.object(agent_server, "DEFAULT_CWD", home))
+            stack.enter_context(patch.object(agent_server, "server_identity", return_value="srv-hub"))
+            stack.enter_context(patch.object(type(hub), "chats", AsyncMock(return_value=[])))
+            stack.enter_context(patch.object(agent_server.CROSS_SERVER_RELAY, "ends",
+                                             return_value={"srv-hub": hub, remote.identity: remote}))
+            snapshot = await agent_server.list_cross_server_chats()
+        self.assertEqual([(server["server_identity"], server["default_cwd"]) for server in snapshot["servers"]],
+                         [("srv-hub", home), ("srv-remote", "/home/gpu")])
 
     async def test_local_end_creates_a_named_chat_in_process(self):
         with fresh_store() as store:
