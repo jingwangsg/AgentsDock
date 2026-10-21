@@ -29,7 +29,8 @@ test('the welcome surface has no server-backed dead controls or requests', () =>
   assert.match(composer, /if \(welcome\) \{[\s\S]*?appendWelcomeExchange\(snapshot, text\)[\s\S]*?return[\s\S]*?remoteComposerScopeIsCurrent/)
   assert.match(composer, /\{!welcome \? <IconButton icon=\{Paperclip\}/)
   assert.match(composer, /\{!welcome \? quickMessageControl : null\}/)
-  assert.match(composer, /<ChatTargetPicker\s+visible=\{!welcome && pickerTrigger != null && pickerTrigger.kind !== '@@'\}/)
+  assert.match(composer, /const chatPickerVisible = !welcome && pickerTrigger != null && pickerTrigger.kind !== '@@'/)
+  assert.match(composer, /<ChatTargetPicker\s+visible=\{chatPickerVisible\}/)
   assert.match(composer, /<TeamTargetPicker\s+visible=\{TEAM_NETWORK_UI_ENABLED && !welcome && pickerTrigger\?\.kind === '@@'\}/)
 })
 

@@ -47,7 +47,7 @@ const mocks = {
 const outfile = path.resolve('build/tmp', `team-composer-tests-${process.pid}.mjs`)
 await mkdir(path.dirname(outfile), { recursive: true })
 await build({
-  stdin: { contents: `export { Composer, ChatTargetPicker, QueueShelf } from './src/components/Composer'; export { TeamTargetPicker } from './src/components/TeamTargetPicker'; export { dark, light } from './src/theme';`, resolveDir: process.cwd(), loader: 'ts' },
+  stdin: { contents: `export { Composer, ChatTargetPicker, QueueShelf, useCrossServerTargets } from './src/components/Composer'; export { TeamTargetPicker } from './src/components/TeamTargetPicker'; export { dark, light } from './src/theme';`, resolveDir: process.cwd(), loader: 'ts' },
   outfile, bundle: true, format: 'esm', platform: 'node', packages: 'external', jsx: 'automatic', logLevel: 'silent', loader: { '.png': 'dataurl' },
   plugins: [{ name: 'team-composer-native-hosts', setup(context) {
     context.onResolve({ filter: /.*/ }, args => args.path === 'react' ? { path: args.path, external: true }
@@ -56,7 +56,9 @@ await build({
   } }],
 })
 after(async () => { await unlink(outfile); delete globalThis.__teamComposerFixture })
-const { Composer, ChatTargetPicker, QueueShelf, TeamTargetPicker, dark, light } = await import(pathToFileURL(outfile).href)
+const { Composer, ChatTargetPicker: ChatTargetPickerView, QueueShelf, TeamTargetPicker, dark, light, useCrossServerTargets } = await import(pathToFileURL(outfile).href)
+// The picker as the composer mounts it: the composer reads the hub's list for it.
+const ChatTargetPicker = props => React.createElement(ChatTargetPickerView, { ...props, crossServer: useCrossServerTargets(props.visible, props.sourceSessionId) })
 
 function health() { return { ok: true, server_identity: 'local-server', server_instance_id: 'instance', capabilities: {
   agent_team_messages_v1: { available: true, version: 1, mention_sigil: '@@', send_requires_mention: true },
@@ -621,6 +623,51 @@ test('a failed pairing shows its error and keeps the draft unsent',async()=>{
     assert.equal(store.getState().drafts.chat,draft)
     assert.deepEqual(store.getState().chatReferencesBySession.chat,[reference])
     assert.equal(byID(renderer,'chat-send')[0].props.disabled,false,'Send is available again for a retry')
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('Create new agent tapped before the hub list arrives shows the Server choice when it arrives, from the picker\'s request',async()=>{
+  resetCrossServer()
+  const hub=deferred();fixture.client.crossServerChats=()=>{fixture.crossServerReads++;return hub.promise}
+  fixture.client.createCrossServerChat=async()=>({id:'l40-new',title:'triage',backend:'codex'})
+  let pairing=0;fixture.client.createCrossServerPair=async input=>{fixture.pairs.push(input);if(++pairing===1)throw new Error('hub busy')}
+  const renderer=await render()
+  const serverOptions=()=>renderer.root.findAll(node=>typeof node.type==='string'&&/^new-agent-server-/.test(node.props.testID??'')).map(node=>node.props.accessibilityLabel)
+  try{
+    await type(renderer,'Ask @')
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,280)))
+    // The harness runs the iOS path: the sheet presents from the picker's onDismiss.
+    const dismiss=renderer.root.findByType('Modal').props.onDismiss
+    await click(renderer,'chat-target-new-agent')
+    await act(async()=>dismiss())
+    assert.equal(byID(renderer,'new-agent-sheet').length,1)
+    assert.deepEqual(serverOptions(),[],'No Server choice before the hub lists the servers')
+    await act(async()=>hub.resolve({...fixture.crossServer,create_chats:true}))
+    assert.deepEqual(serverOptions(),['This server · mac_mini','Hub','osmo_dev_l40'])
+    assert.equal(fixture.crossServerReads,1,'The sheet shows the list the picker asked the hub for')
+    await click(renderer,'new-agent-server-l40-server')
+    await click(renderer,'new-agent-confirm')
+    assert.equal(store.getState().drafts.chat,'Ask @New agent · osmo_dev_l40 ')
+    // A retry pairs the chat created by the failed send; the server name recorded at confirm keeps its label "New agent".
+    await click(renderer,'chat-send')
+    await click(renderer,'chat-send')
+    assert.deepEqual(fixture.pairs.map(pair=>[pair.target_server_identity,pair.target_label]),[['l40-server','New agent'],['l40-server','New agent']])
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('a Create new agent pick whose picker dismisses after the profile started switching leaves no hub request open',async()=>{
+  resetCrossServer()
+  const renderer=await render()
+  try{
+    await type(renderer,'Ask @')
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,280)))
+    const dismiss=renderer.root.findByType('Modal').props.onDismiss
+    await click(renderer,'chat-target-new-agent')
+    await act(async()=>store.setState({switchingProfileId:'other'}))
+    await act(async()=>dismiss())
+    await act(async()=>store.setState({switchingProfileId:null}))
+    assert.equal(byID(renderer,'new-agent-sheet').length,0)
+    assert.equal(fixture.crossServerReads,1,'With no picker or sheet open, the hub is not read again')
   }finally{await act(async()=>renderer.unmount())}
 })
 

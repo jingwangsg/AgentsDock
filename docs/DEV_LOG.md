@@ -1,5 +1,43 @@
 # Public development log
 
+## 2026-10-22 — Create new agent on Android offers the other servers once the hub lists them (Android source)
+
+- On Android, the `Create new agent` sheet showed no Server choice when
+  the row was tapped before the hub had answered the `@` picker's request
+  for its server list (`GET /api/cross-server/chats`). The sheet kept the
+  list the picker held at the tap, and closing the picker discarded the
+  answer, so the next attempt started without a list again. With a hub
+  that answers slower than the user taps, the choice never appeared. The
+  desktop dialog already updated when the answer arrived.
+- The composer now holds the hub's list for both the picker and the
+  sheet, as the desktop composer does. The request started by the picker
+  continues while the sheet is open, and the Server choice appears when
+  the answer arrives. The sheet makes no request of its own.
+- The picker row's hint now reads "same agent, server, folder, model and
+  effort by default", the desktop text since the 2026-10-11 change that
+  made the agent selectable.
+- Verified with composer tests that fail on the previous code: the hub
+  answers after Create new agent was tapped, the Server choices then
+  appear, and only one hub request is made. In the Android app (a
+  sideload build of this branch on an emulator) against an isolated hub
+  with one remote, the hub's list was delayed by 5–6 s through a local
+  proxy. Before the change the sheet never showed the Server choice.
+  After it, the choice appeared when the list arrived: on the hub's
+  profile it listed This server and the remote, and on the remote's
+  profile it listed This server · the remote's name, and Hub. Chats
+  created from the sheet appeared on the remote and on the hub, checked
+  through the servers' APIs. The desktop app (isolated profile, same
+  delay) showed its Server field after the delay and created a chat on
+  the remote the same way.
+- Not covered: iOS (same code, tested only by the component test), a real
+  ssh tunnel between hub and remote (a local forwarder carried it), and
+  the Hub choice in the desktop app, which appears only on a remote's
+  profile. Differences left as they are: Android offers no folder
+  suggestions under Folder (the desktop lists the chosen server's
+  folders), and it has no OpenCode agent or custom Codex endpoint
+  anywhere in the app. Availability: source only. Needs only the Android
+  update.
+
 ## 2026-10-19 — Create new agent sets the new chat's working directory (server, desktop and Android source)
 
 - The `Create new agent` dialog had no working directory. A new agent on
