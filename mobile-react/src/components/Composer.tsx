@@ -114,7 +114,7 @@ import { FullscreenViewerCloseButton, SwipeDismissImage } from './FullscreenImag
 import { TeamTargetPicker } from './TeamTargetPicker'
 import { ComposerCommandPalette, type ProviderCommandLoadStatus } from './ComposerCommandPalette'
 import { ComposerRuntimeSheet } from './ComposerRuntimeSheet'
-import { NewAgentSheet, type NewAgentHosts } from './NewAgentSheet'
+import { NewAgentSheet } from './NewAgentSheet'
 import { useTextPrompt } from './TextPromptDialog'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 
@@ -147,8 +147,8 @@ const QUICK_MESSAGE_ACTIONS: MenuAction[] = QUICK_MESSAGES.map((title, index) =>
 type AttachmentImageSource = { uri: string; headers?: Record<string, string> }
 type ComposerSelection = { start: number; end: number }
 type ComposerMentionTrigger = ChatMentionTrigger | TeamMentionTrigger
-/** "Create new agent" was picked from `trigger`'s @ span; the sheet's confirm inserts the chip there. */
-type NewAgentSheetState = NewAgentHosts & { trigger: ChatMentionTrigger }
+/** "Create new agent" was picked from `trigger`'s @ span; the sheet's confirm inserts the chip there. It is presented once the picker has dismissed. */
+type NewAgentSheetState = { trigger: ChatMentionTrigger; presented: boolean }
 /** App-shell surfaces a slash command can open: chat details, the digest sheet, the job editor, or a new chat. */
 export type ComposerShellAction = 'details' | 'digest' | 'job' | 'new-chat'
 
@@ -234,8 +234,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const mentionOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingTeamPicker = useRef<TeamMentionTrigger | null>(null)
   // Opened from the picker's onDidDismiss, as the team picker is: the sheet must not present while the picker modal is still dismissing.
-  const pendingNewAgent = useRef<NewAgentSheetState | null>(null)
-  // The picker owns the hub's server list; the composer keeps the names it needs for a pair's label (the chip's title part) here.
+  const pendingNewAgent = useRef(false)
+  // Server names for a pair's label (the chip's title part), kept from when a chip was made: the hub list may change before the send.
   const crossServerNamesRef = useRef(new Map<string, string>())
   const field = useChipTextField(inputRef, draft.length)
   const selectionRef = field.selectionRef
@@ -266,6 +266,9 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   // The new chat may run on any backend this server starts that also receives handoffs; the sheet defaults to this chat's.
   const newAgentBackends = useMemo(() => selectableChatBackends(health).filter(candidate => supportedTargetBackends.includes(candidate)), [health, supportedTargetBackends])
   const newAgentSupported = crossChatSupported && newAgentBackends.length > 0
+  const chatPickerVisible = !welcome && pickerTrigger != null && pickerTrigger.kind !== '@@'
+  // The new-agent sheet lists the other servers too, so the request outlives the picker.
+  const crossServer = useCrossServerTargets(chatPickerVisible || newAgentSheet !== null, sessionId)
   const referenceSupported = useCallback((reference: ChatReference): boolean => {
     // Paired through the hub at send time; its target lives on another server.
     if (reference.target_kind === 'cross_server') return crossServerAvailable
@@ -405,7 +408,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     field.reset(draft.length)
     pendingCaretRef.current = null
     pendingTeamPicker.current = null
-    pendingNewAgent.current = null
+    pendingNewAgent.current = false
     setNewAgentSheet(null)
     restoreInputAfterPickerRef.current = false
     dismissedMentionStartRef.current = null
@@ -492,7 +495,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     if (!composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) {
       pendingCaretRef.current = null
       pendingTeamPicker.current = null
-      pendingNewAgent.current = null
+      pendingNewAgent.current = false
       return
     }
     const teamTrigger = pendingTeamPicker.current
@@ -504,10 +507,9 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       setPickerQuery(teamTrigger.query)
       return
     }
-    const newAgent = pendingNewAgent.current
-    if (newAgent) {
-      pendingNewAgent.current = null
-      setNewAgentSheet(newAgent)
+    if (pendingNewAgent.current) {
+      pendingNewAgent.current = false
+      setNewAgentSheet(sheet => sheet && { ...sheet, presented: true })
       return
     }
     const pendingCaret = pendingCaretRef.current
@@ -639,7 +641,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     return applyChatReference(inserted)
   }, [activeProfileId, applyChatReference, crossServerAvailable, profileGeneration, sessionId])
 
-  const chooseNewAgent = useCallback((crossServer: CrossServerTargets | null): boolean => {
+  const chooseNewAgent = useCallback((): boolean => {
     const currentTrigger = pickerTriggerRef.current
     if (!currentTrigger || currentTrigger.kind === '@@' || !newAgentSupported || !remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return false
     if (referencesRef.current.some(reference => reference.target_kind === 'new_agent')) {
@@ -655,8 +657,9 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       Alert.alert('Route access limit reached', 'Revoke a granted route before adding another chat. Already granted chats remain available.')
       return false
     }
-    for (const server of crossServer?.servers ?? []) crossServerNamesRef.current.set(server.server_identity, server.name)
-    pendingNewAgent.current = { trigger: currentTrigger, servers: crossServer?.createChats ? crossServer.servers : [], localTag: crossServer?.localTag ?? '' }
+    pendingNewAgent.current = true
+    // Set with the picker's close, so the hub list it is still reading stays wanted for the sheet.
+    setNewAgentSheet({ trigger: currentTrigger, presented: false })
     closeTargetPicker()
     return true
   }, [activeProfileId, closeTargetPicker, newAgentSupported, profileGeneration, sessionId])
@@ -1381,7 +1384,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         </View> : null}
       </Modal>
       <ChatTargetPicker
-        visible={!welcome && pickerTrigger != null && pickerTrigger.kind !== '@@'}
+        visible={chatPickerVisible}
+        crossServer={crossServer}
         width={width}
         query={pickerQuery}
         sourceSessionId={sessionId}
@@ -1428,7 +1432,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         onClose={() => setRuntimeSheetSection(null)}
       /> : null}
       {!welcome && backend && sourceSession ? <NewAgentSheet
-        hosts={newAgentSheet}
+        hosts={newAgentSheet?.presented ? { servers: crossServer?.createChats ? crossServer.servers : [], localTag: crossServer?.localTag ?? '' } : null}
         backends={newAgentBackends}
         backend={backend}
         model={model}
@@ -1446,6 +1450,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
           const sheet = newAgentSheet
           setNewAgentSheet(null)
           if (!sheet || !remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
+          if (settings.server_identity) crossServerNamesRef.current.set(settings.server_identity, serverName)
           applyChatReference(insertNewAgentChatReference(draftRef.current, sheet.trigger, settings, serverName))
         }}
         onDidDismiss={finishTargetPickerDismissal}
@@ -1588,8 +1593,42 @@ function ChatReferenceShelf({ sessionId, references, referenceSupported, onChang
   </View>
 }
 
-export function ChatTargetPicker({ visible, width, query, sourceSessionId, supportedTargetBackends, references, requestReplySupported, referenceLimitReached, newAgentSupported, onQueryChange, onTeamNetwork, onSelect, onSelectCrossServer, onCreateNewAgent, onClose, onDidDismiss }: {
+/** The hub's chat list as the @ picker and the new-agent sheet show it, read from the hub each time `open` turns true. */
+export function useCrossServerTargets(open: boolean, sourceSessionId: string): CrossServerTargets | null {
+  const profileId = useAppStore(state => state.activeProfileId)
+  const generation = useAppStore(state => state.profileGeneration)
+  const connected = useAppStore(state => state.connected && !state.connecting && !state.switchingProfileId && !state.workspaceAdopting)
+  const validationRevision = client.validationRevision
+  const serverIdentity = useAppStore(state => state.health?.server_identity)
+  const crossServerMailAvailable = useAppStore(state => state.health?.capabilities?.cross_server_mail_v1?.available === true)
+  const crossServerKey = `${profileId}:${generation}:${serverIdentity ?? ''}`
+  const [crossServerSnapshot, setCrossServerSnapshot] = useState<{ key: string; servers: CrossServerChats[]; createChats: boolean } | null>(null)
+  useEffect(() => {
+    // One hub request each time the picker opens, never per keystroke. Until it
+    // answers, or when it fails, the picker shows the list from the last open.
+    if (!open || !connected || !client.isValidated || !crossServerMailAvailable) return
+    let current = true
+    client.crossServerChats()
+      .then(snapshot => {
+        // Outside the picker guard: these titles name chats everywhere, not just here.
+        useAppStore.getState().rememberRemoteChatTitles(snapshot.servers)
+        if (current && remoteComposerScopeIsCurrent(profileId, generation, sourceSessionId)) setCrossServerSnapshot({ key: crossServerKey, servers: snapshot.servers, createChats: snapshot.create_chats === true })
+      })
+      .catch(() => undefined)
+    return () => { current = false }
+  }, [open, sourceSessionId, profileId, generation, connected, validationRevision, crossServerKey, crossServerMailAvailable])
+  return useMemo<CrossServerTargets | null>(() => {
+    if (!crossServerMailAvailable || crossServerSnapshot?.key !== crossServerKey) return null
+    const local = crossServerSnapshot.servers.find(server => server.server_identity === serverIdentity)
+    // The hub lists only servers that can pair; without this one, nothing here can.
+    return local ? { localTag: local.name, servers: crossServerSnapshot.servers.filter(server => server !== local && !server.hidden), createChats: crossServerSnapshot.createChats } : null
+  }, [crossServerKey, crossServerMailAvailable, crossServerSnapshot, serverIdentity])
+}
+
+export function ChatTargetPicker({ visible, crossServer, width, query, sourceSessionId, supportedTargetBackends, references, requestReplySupported, referenceLimitReached, newAgentSupported, onQueryChange, onTeamNetwork, onSelect, onSelectCrossServer, onCreateNewAgent, onClose, onDidDismiss }: {
   visible: boolean
+  /** The hub's list from useCrossServerTargets: null until it answers, or when this server cannot pair. */
+  crossServer: CrossServerTargets | null
   width: number
   query: string
   sourceSessionId: string
@@ -1602,7 +1641,7 @@ export function ChatTargetPicker({ visible, width, query, sourceSessionId, suppo
   onSelect: (target: Session) => boolean
   onSelectCrossServer: (server: CrossServerChats, chat: ChatSearchTarget) => boolean
   newAgentSupported: boolean
-  onCreateNewAgent: (crossServer: CrossServerTargets | null) => boolean
+  onCreateNewAgent: () => boolean
   onClose: () => void
   onDidDismiss: () => void
 }) {
@@ -1635,30 +1674,6 @@ export function ChatTargetPicker({ visible, width, query, sourceSessionId, suppo
     try { await useAppStore.getState().revokeAgentRoute(sourceSessionId, route.route_id, route.revision, generation) }
     finally { if (revokedInFlight.current.get(route.route_id) === token) revokedInFlight.current.delete(route.route_id) }
   }
-  const serverIdentity = useAppStore(state => state.health?.server_identity)
-  const crossServerMailAvailable = useAppStore(state => state.health?.capabilities?.cross_server_mail_v1?.available === true)
-  const crossServerKey = `${profileId}:${generation}:${serverIdentity ?? ''}`
-  const [crossServerSnapshot, setCrossServerSnapshot] = useState<{ key: string; servers: CrossServerChats[]; createChats: boolean } | null>(null)
-  useEffect(() => {
-    // One hub request each time the picker opens, never per keystroke. Until it
-    // answers, or when it fails, the picker shows the list from the last open.
-    if (!visible || !connected || !client.isValidated || !crossServerMailAvailable) return
-    let current = true
-    client.crossServerChats()
-      .then(snapshot => {
-        // Outside the picker guard: these titles name chats everywhere, not just here.
-        useAppStore.getState().rememberRemoteChatTitles(snapshot.servers)
-        if (current && remoteComposerScopeIsCurrent(profileId, generation, sourceSessionId)) setCrossServerSnapshot({ key: crossServerKey, servers: snapshot.servers, createChats: snapshot.create_chats === true })
-      })
-      .catch(() => undefined)
-    return () => { current = false }
-  }, [visible, sourceSessionId, profileId, generation, connected, validationRevision, crossServerKey, crossServerMailAvailable])
-  const crossServer = useMemo<CrossServerTargets | null>(() => {
-    if (!crossServerMailAvailable || crossServerSnapshot?.key !== crossServerKey) return null
-    const local = crossServerSnapshot.servers.find(server => server.server_identity === serverIdentity)
-    // The hub lists only servers that can pair; without this one, nothing here can.
-    return local ? { localTag: local.name, servers: crossServerSnapshot.servers.filter(server => server !== local && !server.hidden), createChats: crossServerSnapshot.createChats } : null
-  }, [crossServerKey, crossServerMailAvailable, crossServerSnapshot, serverIdentity])
   const localTargets = useAppStore(useShallow(state => visible ? state.sessions.filter(candidate => (
     candidate.id !== sourceSessionId
     && !candidate.archived
@@ -1748,15 +1763,15 @@ export function ChatTargetPicker({ visible, width, query, sourceSessionId, suppo
               return <View style={[styles.routeRow, { backgroundColor: colors.surface, borderColor: colors.border }]}><Pressable
                 testID="chat-target-new-agent"
                 accessibilityRole="button"
-                accessibilityLabel="Create new agent. New chat for this task, same server, folder, model and effort by default"
+                accessibilityLabel="Create new agent. New chat for this task, same agent, server, folder, model and effort by default"
                 accessibilityHint={capacityReached ? 'Revoke an existing route to grant another chat.' : undefined}
                 accessibilityState={{ disabled }}
                 disabled={disabled}
-                onPress={() => select(disabled, () => onCreateNewAgent(crossServer))}
+                onPress={() => select(disabled, onCreateNewAgent)}
                 style={({ pressed }) => [styles.targetRow, styles.routeTarget, tablet && styles.targetRowTablet, { backgroundColor: pressed ? colors.raised : colors.surface, opacity: disabled ? 0.45 : 1 }]}
               >
                 <View style={[styles.targetBackend, { backgroundColor: colors.raised }]}><MessageSquarePlus size={22} color={colors.blue} /></View>
-                <View style={styles.targetIdentity}><Text style={[styles.targetTitle, { color: colors.text }]} numberOfLines={1}>Create new agent</Text><Text style={[styles.targetMeta, { color: colors.muted }]}>New chat for this task · same server, folder, model and effort by default</Text></View>
+                <View style={styles.targetIdentity}><Text style={[styles.targetTitle, { color: colors.text }]} numberOfLines={1}>Create new agent</Text><Text style={[styles.targetMeta, { color: colors.muted }]}>New chat for this task · same agent, server, folder, model and effort by default</Text></View>
               </Pressable></View>
             }
             const tag = candidate.kind === 'local' ? candidate.tag : candidate.server.name
