@@ -626,7 +626,7 @@ test('a failed pairing shows its error and keeps the draft unsent',async()=>{
   }finally{await act(async()=>renderer.unmount())}
 })
 
-test('Create new agent picked before the hub answered offers its servers once it does, from the same request',async()=>{
+test('Create new agent tapped before the hub list arrives shows the Server choice when it arrives, from the picker\'s request',async()=>{
   resetCrossServer()
   const hub=deferred();fixture.client.crossServerChats=()=>{fixture.crossServerReads++;return hub.promise}
   fixture.client.createCrossServerChat=async()=>({id:'l40-new',title:'triage',backend:'codex'})
@@ -636,6 +636,7 @@ test('Create new agent picked before the hub answered offers its servers once it
   try{
     await type(renderer,'Ask @')
     await act(async()=>new Promise(resolve=>setTimeout(resolve,280)))
+    // The harness runs the iOS path: the sheet presents from the picker's onDismiss.
     const dismiss=renderer.root.findByType('Modal').props.onDismiss
     await click(renderer,'chat-target-new-agent')
     await act(async()=>dismiss())
@@ -647,10 +648,26 @@ test('Create new agent picked before the hub answered offers its servers once it
     await click(renderer,'new-agent-server-l40-server')
     await click(renderer,'new-agent-confirm')
     assert.equal(store.getState().drafts.chat,'Ask @New agent · osmo_dev_l40 ')
-    // The chosen server's name labels the pair "New agent" on a retry too, when the chip is all that is left.
+    // A retry pairs the chat created by the failed send; the server name recorded at confirm keeps its label "New agent".
     await click(renderer,'chat-send')
     await click(renderer,'chat-send')
     assert.deepEqual(fixture.pairs.map(pair=>[pair.target_server_identity,pair.target_label]),[['l40-server','New agent'],['l40-server','New agent']])
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('a Create new agent pick whose picker dismisses after the profile started switching leaves no hub request open',async()=>{
+  resetCrossServer()
+  const renderer=await render()
+  try{
+    await type(renderer,'Ask @')
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,280)))
+    const dismiss=renderer.root.findByType('Modal').props.onDismiss
+    await click(renderer,'chat-target-new-agent')
+    await act(async()=>store.setState({switchingProfileId:'other'}))
+    await act(async()=>dismiss())
+    await act(async()=>store.setState({switchingProfileId:null}))
+    assert.equal(byID(renderer,'new-agent-sheet').length,0)
+    assert.equal(fixture.crossServerReads,1,'With no picker or sheet open, the hub is not read again')
   }finally{await act(async()=>renderer.unmount())}
 })
 

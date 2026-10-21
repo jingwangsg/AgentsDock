@@ -147,7 +147,11 @@ const QUICK_MESSAGE_ACTIONS: MenuAction[] = QUICK_MESSAGES.map((title, index) =>
 type AttachmentImageSource = { uri: string; headers?: Record<string, string> }
 type ComposerSelection = { start: number; end: number }
 type ComposerMentionTrigger = ChatMentionTrigger | TeamMentionTrigger
-/** "Create new agent" was picked from `trigger`'s @ span; the sheet's confirm inserts the chip there. It is presented once the picker has dismissed. */
+/**
+ * "Create new agent" was picked from `trigger`'s @ span; the sheet's confirm inserts the chip there.
+ * Set at the pick, which keeps useCrossServerTargets' request for the sheet running; `presented`
+ * turns true once the picker modal has dismissed.
+ */
 type NewAgentSheetState = { trigger: ChatMentionTrigger; presented: boolean }
 /** App-shell surfaces a slash command can open: chat details, the digest sheet, the job editor, or a new chat. */
 export type ComposerShellAction = 'details' | 'digest' | 'job' | 'new-chat'
@@ -234,6 +238,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const mentionOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingTeamPicker = useRef<TeamMentionTrigger | null>(null)
   // Opened from the picker's onDidDismiss, as the team picker is: the sheet must not present while the picker modal is still dismissing.
+  // A ref, not the sheet state: the dismissal handler reads it in the same tick as the pick.
   const pendingNewAgent = useRef(false)
   // Server names for a pair's label (the chip's title part), kept from when a chip was made: the hub list may change before the send.
   const crossServerNamesRef = useRef(new Map<string, string>())
@@ -496,6 +501,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       pendingCaretRef.current = null
       pendingTeamPicker.current = null
       pendingNewAgent.current = false
+      setNewAgentSheet(null)
       return
     }
     const teamTrigger = pendingTeamPicker.current
@@ -658,7 +664,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       return false
     }
     pendingNewAgent.current = true
-    // Set with the picker's close, so the hub list it is still reading stays wanted for the sheet.
+    // In the same update as the picker's close, so the hub request the picker started is not cancelled.
     setNewAgentSheet({ trigger: currentTrigger, presented: false })
     closeTargetPicker()
     return true
@@ -1450,7 +1456,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
           const sheet = newAgentSheet
           setNewAgentSheet(null)
           if (!sheet || !remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
-          if (settings.server_identity) crossServerNamesRef.current.set(settings.server_identity, serverName)
+          // Here, not at the pick: the hub may have listed the servers after it.
+          for (const server of crossServer?.servers ?? []) crossServerNamesRef.current.set(server.server_identity, server.name)
           applyChatReference(insertNewAgentChatReference(draftRef.current, sheet.trigger, settings, serverName))
         }}
         onDidDismiss={finishTargetPickerDismissal}
@@ -1604,8 +1611,9 @@ export function useCrossServerTargets(open: boolean, sourceSessionId: string): C
   const crossServerKey = `${profileId}:${generation}:${serverIdentity ?? ''}`
   const [crossServerSnapshot, setCrossServerSnapshot] = useState<{ key: string; servers: CrossServerChats[]; createChats: boolean } | null>(null)
   useEffect(() => {
-    // One hub request each time the picker opens, never per keystroke. Until it
-    // answers, or when it fails, the picker shows the list from the last open.
+    // One hub request each time the picker opens, never per keystroke; the new-agent
+    // sheet keeps it running. Until it answers, or when it fails, the picker and the
+    // sheet show the list from the last open.
     if (!open || !connected || !client.isValidated || !crossServerMailAvailable) return
     let current = true
     client.crossServerChats()
