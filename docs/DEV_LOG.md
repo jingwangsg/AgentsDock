@@ -1,43 +1,46 @@
 # Public development log
 
-## 2026-10-23 — A long Codex chat's pages no longer re-read its whole history, and pages are sent compressed (server)
+## 2026-10-23 — A Codex chat whose transcript has an unreadable line no longer re-reads its history at every page; chat pages are sent compressed (server)
 
 - Before a chat page, a timeline index build or an event-stream connect,
-  the server checks whether a Codex chat's imported rows replay its Codex
-  transcript, which reads the chat's event log and the transcript. A
-  completed check is kept; one that could not complete was retried at the
-  next read. In a chat with a 119 MB event log (40k events), the Codex
-  transcript contains a line of 3,713 NUL bytes, as an unclean shutdown can
-  leave. The check stopped at that line every time, so every page re-read
-  the event log and 15 MB of the transcript. On a remote whose CPU ran about
-  30 times slower than usual, that was 7-9 s per page, and other chats'
-  pages on that server waited behind it.
+  the server checks which of a Codex chat's imported rows repeat messages
+  already in the chat, so that it can hide the copies. The check reads the
+  chat's event log and its Codex transcript. A completed check was kept; one
+  that could not complete was retried at the next read. In a chat with a
+  119 MB event log (40k events), the Codex transcript contains a line of
+  3,713 NUL bytes, as an unclean shutdown can leave. The check stopped at
+  that line every time, so every page re-read the event log and 15 MB of
+  the transcript. On a remote whose CPU ran about 30 times slower than
+  usual, that was 7-9 s per page, and other chats' pages on that server
+  waited behind it.
 - The server now keeps that outcome while the event log and the transcript
-  only grow and the malformed line is still in place; one small read
-  confirms the line. An import, a rewind or another rewrite of the event
-  log, or a change of Codex thread starts a new check. Rows stay visible
-  when the check does not complete, so every page is the same as before.
+  only grow and the line is still in place; one small read confirms the
+  line. An import, a rewind or another rewrite of the event log, or a change
+  of Codex thread starts a new check. A kept outcome is the one a new check
+  would reach, and an incomplete check hides no rows, so pages show the same
+  rows as before.
 - Chat pages (`GET /api/sessions/{id}`) are gzipped for clients that accept
   it: a 0.94 MB page is 0.20 MB. The hub proxy passes the compressed body
   through; the desktop app sends `gzip, deflate` and the Android app
   `zstd, br, gzip`.
-- Measured on copies of that chat, previous server vs this one: a 240-event
-  page 0.35 → 0.05 s on a Mac and 9.2 → 0.8 s on the slowed remote; a
-  10-event page 0.31 → 0.01 s and 14.4 → 0.10 s; the newest 48 turns
-  (semantic page) after the first 0.36 → 0.06 s and 9-10 → 1.3 s. Appending
-  events or transcript records kept these times; after a history import the
-  next page re-checked once (9.0 s on the remote). Of 34 page responses
-  compared per machine, 30 were byte-identical, 2 differed only in ids and
-  times generated during the run (as between two runs of the previous
-  server), and 2 in whether a background import had landed yet.
-- Verified with server tests that fail on the previous code (the malformed
-  line is not re-read at each page; growth keeps the result; an import, a
-  rewritten event log, another thread or a repaired line re-checks; pages
-  are gzipped and decode to the same bytes) and in the desktop app (build
-  130) and the Android app (build 76, emulator) against an isolated hub and
-  remote holding the chat: both rendered it as with the previous server,
-  and the reopen page took 0.02 s instead of 1.4 s (desktop) and 0.016 s
-  instead of 0.37 s (Android).
+- Measured on copies of that chat, this server against the previous one. On
+  a Mac, a 240-event page took 0.05 s instead of 0.35 s, a 10-event page
+  0.01 s instead of 0.31 s, and a later page of the newest 48 turns
+  (semantic page) 0.06 s instead of 0.36 s. On the slowed remote: 0.8 s
+  instead of 9.2 s, 0.10 s instead of 14.4 s, and 1.3 s instead of 9-10 s.
+  Appending events or transcript records kept these times; after a history
+  import the next page checked again once (9.0 s on the remote). Of 34 page
+  responses compared on each machine, 30 were byte-identical, 2 differed
+  only in ids and times generated during the run (as between two runs of
+  the previous server), and 2 in whether a background import had finished.
+- Verified with server tests, each failing on the previous code: the line
+  is not re-read at each page; appends keep the outcome; an import, a
+  rewritten or changed event log, another thread or a repaired line starts
+  a new check; pages are gzipped and decode to the same bytes. In the
+  desktop app (build 130) and the Android app (build 76, emulator) against
+  an isolated hub and remote holding the chat, both rendered it as with the
+  previous server, and reopening it took 0.02 s instead of 1.4 s (desktop)
+  and 0.016 s instead of 0.37 s (Android).
 - Not changed: a check that fails because a file changed while it ran is
   still retried at the next read; the first page after a server start still
   runs the check once (11 s on the slowed remote); the first semantic page

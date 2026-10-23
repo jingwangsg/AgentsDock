@@ -87,7 +87,9 @@ class PinnedJsonlTests(unittest.TestCase):
                 with self.path.open("ab") as stream:
                     stream.write(encode([{"seq": 4}]))
                 self.assertTrue(line.still_present())
-        # A partial last line can still be completed by its writer: not malformed.
+
+    def test_a_partial_last_line_is_unproven_not_malformed(self):
+        # Its writer can still complete it, so a caller must not keep it as malformed.
         self.path.write_bytes(encode(self.rows)[:-1])
         self.stamp = regular_stamp(self.path)
         with self.assertRaises(Unproven) as raised:

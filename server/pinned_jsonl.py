@@ -31,10 +31,11 @@ class MalformedLine:
     digest: bytes
 
     def still_present(self) -> bool:
-        """The same file, not shorter than when it was read, holds the same bytes at the same offset.
+        """Whether the same file (dev, ino), not shorter than when read, holds these bytes at this offset.
 
-        Re-reading the file would then stop at this line again, so a caller can
-        skip that read with this one small check.
+        Appends are allowed, so mtime is not compared. Writers change these
+        files in place only by appending, so a re-read would stop at this line
+        again; a caller can skip that read with this one small check.
         """
         try:
             descriptor = os.open(self.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -56,7 +57,7 @@ class MalformedRecord(Unproven):
     """A complete line inside the pinned range is not a JSON object."""
 
     def __init__(self, line: MalformedLine):
-        super().__init__()
+        super().__init__(f"{line.path}: the line at byte {line.offset} is not a JSON object")
         self.line = line
 
 
@@ -101,13 +102,15 @@ def pinned_records(path: Path, expected: Stamp, *, max_line_bytes: int, max_reco
             if max_records is not None and count > max_records:
                 raise Unproven()
             offset += len(line)
+            # ValueError, not only JSONDecodeError: json decodes a line of 4+ NUL bytes,
+            # which a crash can leave in a file, as UTF-32 and raises UnicodeDecodeError.
             try:
                 record = json.loads(line)
-            except ValueError:  # Also a line of NUL bytes, which a crash can leave in a file.
+            except ValueError:
                 record = None
             if not isinstance(record, dict):
-                raise MalformedRecord(MalformedLine(path, expected, offset - len(line), len(line),
-                                                    hashlib.sha256(line).digest()))
+                raise MalformedRecord(MalformedLine(path=path, stamp=expected, offset=offset - len(line),
+                                                    length=len(line), digest=hashlib.sha256(line).digest()))
             yield record, offset, line
         final = os.fstat(stream.fileno())
         if (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns) != expected:

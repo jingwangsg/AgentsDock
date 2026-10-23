@@ -90217,9 +90217,10 @@ class GzipWhenAcceptedRoute(APIRoute):
         return respond
 
 
-# Registered below with GzipWhenAcceptedRoute: a long chat's page is about 1 MB of
-# JSON and a fifth of that gzipped, and remote links run at 0.1-0.4 MiB/s. The hub
-# proxy passes the encoded body through.
+# GET /api/sessions/{session_id} is registered after this function: neither @app.get
+# nor app.add_api_route takes a route class. A long chat's page is about 1 MB of JSON
+# and a fifth of that gzipped, and remote links run at 0.1-0.4 MiB/s. The hub proxy
+# passes the encoded body through.
 async def get_session(
     session_id: str,
     after: int = 0,
