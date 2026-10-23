@@ -2,6 +2,7 @@
 import ast
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import tempfile
@@ -511,6 +512,59 @@ class CodexNativeHistoryRepairTests(unittest.TestCase):
             stream.write(b'{"type":"response_item","payload":')
         self.prepare()
         self.assertEqual(len(self.cache.signature("chat")), 4)
+
+    def count_reads(self, provider=PROVIDER, source="default"):
+        """Prepare once; return how many transcripts the proof read."""
+        reads = []
+        original = repair._native_records
+
+        def counted(path, *args, **kwargs):
+            reads.append(path)
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(repair, "_native_records", side_effect=counted), \
+                self.assertRaises(CodexNativeHistoryProofUnavailable):
+            self.cache.prepare("chat", provider, self.events, self.source if source == "default" else source,
+                               self.root, self.parse)
+        return len(reads)
+
+    def test_a_malformed_source_line_is_not_reread_at_every_history_read(self):
+        # A crash can leave NUL bytes inside the checkpointed source prefix. Every
+        # retry stops at that line, so each page must not re-read both files.
+        content = self.source.read_bytes()
+        last = content.rindex(b"\n", 0, len(content) - 1) + 1
+        with self.source.open("r+b") as stream:  # Same inode: the checkpoint still names it.
+            stream.seek(last)
+            stream.write(b"\x00" * (len(content) - last - 1))
+        self.assertEqual(self.count_reads(), 2)  # The ledger, then the source up to that line.
+        self.assertEqual(self.count_reads(), 0)
+        # A running chat appends to both files.
+        with self.events.open("ab") as stream:
+            stream.write(json.dumps({"session_id": "chat", "seq": 201, "type": "tool_started", "run_id": "native-3"}).encode() + b"\n")
+        with self.source.open("ab") as stream:
+            stream.write(b'{"type":"event_msg","payload":{"type":"token_count"}}\n')
+        self.assertEqual(self.count_reads(), 0)
+        self.cache.forget("chat")  # An import or a rewind.
+        self.assertEqual(self.count_reads(), 2)
+        replacement = self.root / "replacement.jsonl"
+        replacement.write_bytes(self.events.read_bytes())
+        os.replace(replacement, self.events)  # A ledger rewrite such as pruning duplicates.
+        self.assertEqual(self.count_reads(), 2)
+        self.assertEqual(self.count_reads(provider="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), 2)
+        self.assertEqual(self.count_reads(source=None), 2)
+        self.assertEqual(self.count_reads(source=None), 0)
+        # Repairing the line in place proves the imports again.
+        with self.source.open("r+b") as stream:
+            stream.seek(last)
+            stream.write(content[last:])
+        self.prepare()
+        self.assertEqual(len(self.cache.signature("chat")), 4)
+
+    def test_a_malformed_ledger_line_is_not_reread_either(self):
+        with self.events.open("ab") as stream:
+            stream.write(b"\x00" * 64 + b"\n")
+        self.assertEqual(self.count_reads(), 1)
+        self.assertEqual(self.count_reads(), 0)
 
     def test_cancelled_or_expired_proof_is_not_cached_or_returned_as_raw_import(self):
         for arguments in ({"cancelled": lambda: True}, {"deadline": 0.0}):
