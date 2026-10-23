@@ -6,6 +6,8 @@ from two revisions of the same path. Any doubt raises ``Unproven``.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +19,46 @@ Stamp = tuple[int, int, int, int]
 
 class Unproven(ValueError):
     """The file moved, changed, is not a regular file, or holds a malformed record."""
+
+
+@dataclass(frozen=True)
+class MalformedLine:
+    """Where a pinned read met a complete line that is not a JSON object."""
+    path: Path
+    stamp: Stamp
+    offset: int
+    length: int
+    digest: bytes
+
+    def still_present(self) -> bool:
+        """Whether the same file (dev, ino), not shorter than when read, holds these bytes at this offset.
+
+        Appends are allowed, so mtime is not compared. Writers change these
+        files in place only by appending, so a re-read would stop at this line
+        again; a caller can skip that read with this one small check.
+        """
+        try:
+            descriptor = os.open(self.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                                 | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0))
+        except OSError:
+            return False
+        try:
+            info = os.fstat(descriptor)
+            return (stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == self.stamp[:2]
+                    and info.st_size >= self.stamp[2]
+                    and hashlib.sha256(os.pread(descriptor, self.length, self.offset)).digest() == self.digest)
+        except OSError:
+            return False
+        finally:
+            os.close(descriptor)
+
+
+class MalformedRecord(Unproven):
+    """A complete line inside the pinned range is not a JSON object."""
+
+    def __init__(self, line: MalformedLine):
+        super().__init__(f"{line.path}: the line at byte {line.offset} is not a JSON object")
+        self.line = line
 
 
 def regular_stamp(path: Path) -> Stamp:
@@ -60,9 +102,15 @@ def pinned_records(path: Path, expected: Stamp, *, max_line_bytes: int, max_reco
             if max_records is not None and count > max_records:
                 raise Unproven()
             offset += len(line)
-            record = json.loads(line)
+            # ValueError, not only JSONDecodeError: json decodes a line of 4+ NUL bytes,
+            # which a crash can leave in a file, as UTF-32 and raises UnicodeDecodeError.
+            try:
+                record = json.loads(line)
+            except ValueError:
+                record = None
             if not isinstance(record, dict):
-                raise Unproven()
+                raise MalformedRecord(MalformedLine(path=path, stamp=expected, offset=offset - len(line),
+                                                    length=len(line), digest=hashlib.sha256(line).digest()))
             yield record, offset, line
         final = os.fstat(stream.fileno())
         if (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns) != expected:

@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from pinned_jsonl import Unproven, pinned_records, regular_stamp
+from pinned_jsonl import MalformedRecord, Unproven, pinned_records, regular_stamp
 
 
 def encode(rows):
@@ -73,6 +73,54 @@ class PinnedJsonlTests(unittest.TestCase):
                 self.stamp = regular_stamp(self.path)
                 with self.assertRaises(Unproven):
                     self.read()
+
+    def test_a_complete_line_that_is_not_an_object_reports_where_it_is(self):
+        first = encode(self.rows[:1])
+        for bad in (b"\x00" * 300 + b"\n", b'{"seq": 2,\n', b"[1, 2]\n"):
+            with self.subTest(bad=bad[:8]):
+                self.path.write_bytes(first + bad + encode(self.rows[2:]))
+                self.stamp = regular_stamp(self.path)
+                with self.assertRaises(MalformedRecord) as raised:
+                    self.read()
+                line = raised.exception.line
+                self.assertEqual((line.offset, line.length), (len(first), len(bad)))
+                with self.path.open("ab") as stream:
+                    stream.write(encode([{"seq": 4}]))
+                self.assertTrue(line.still_present())
+
+    def test_a_partial_last_line_is_unproven_not_malformed(self):
+        # Its writer can still complete it, so a caller must not keep it as malformed.
+        self.path.write_bytes(encode(self.rows)[:-1])
+        self.stamp = regular_stamp(self.path)
+        with self.assertRaises(Unproven) as raised:
+            self.read()
+        self.assertNotIsInstance(raised.exception, MalformedRecord)
+
+    def test_a_malformed_line_is_gone_once_rewritten_replaced_or_truncated(self):
+        first = encode(self.rows[:1])
+        content = first + b"\x00" * 300 + b"\n" + encode(self.rows[2:])
+
+        def rewrite_in_place():
+            with self.path.open("r+b") as stream:
+                stream.seek(len(first))
+                stream.write(b" " * 300)
+
+        def replace_with_same_bytes():
+            copy = self.root / "copy.jsonl"
+            copy.write_bytes(content)
+            os.replace(copy, self.path)
+
+        def truncate():
+            os.truncate(self.path, len(content) - 1)
+
+        for change in (rewrite_in_place, replace_with_same_bytes, truncate):
+            with self.subTest(change=change.__name__):
+                self.path.write_bytes(content)
+                self.stamp = regular_stamp(self.path)
+                with self.assertRaises(MalformedRecord) as raised:
+                    self.read()
+                change()
+                self.assertFalse(raised.exception.line.still_present())
 
     def test_record_limit_and_prefix_boundary(self):
         with self.assertRaises(Unproven):

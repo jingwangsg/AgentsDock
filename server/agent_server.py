@@ -19,6 +19,7 @@ import ctypes
 import errno
 import fcntl
 import glob
+import gzip
 import hashlib
 import hmac
 import html
@@ -71,6 +72,7 @@ from dateutil.tz import datetime_exists
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.routing import APIRoute
 from markdown_it import MarkdownIt
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from starlette.routing import Match
@@ -90197,7 +90199,28 @@ async def export_session(session_id: str, format: Literal["markdown", "html", "j
     return Response(await asyncio.to_thread(render_page), media_type="text/html; charset=utf-8", headers=headers)
 
 
-@app.get("/api/sessions/{session_id}")
+class GzipWhenAcceptedRoute(APIRoute):
+    """Gzip the body FastAPI built for a client that accepts it; decoded, it is the same bytes."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        build_response = super().get_route_handler()
+
+        async def respond(request: Request) -> Response:
+            response = await build_response(request)
+            response.headers["Vary"] = "Accept-Encoding"
+            if "gzip" in request.headers.get("accept-encoding", ""):
+                response.body = await asyncio.to_thread(gzip.compress, response.body, compresslevel=6)
+                response.headers["Content-Encoding"] = "gzip"
+                response.headers["Content-Length"] = str(len(response.body))
+            return response
+
+        return respond
+
+
+# GET /api/sessions/{session_id} is registered after this function: neither @app.get
+# nor app.add_api_route takes a route class. A long chat's page is about 1 MB of JSON
+# and a fifth of that gzipped, and remote links run at 0.1-0.4 MiB/s. The hub proxy
+# passes the encoded body through.
 async def get_session(
     session_id: str,
     after: int = 0,
@@ -90286,6 +90309,10 @@ async def get_session(
             "next_semantic_before": semantic_page["next_semantic_before"],
         })
     return response
+
+
+app.router.add_api_route("/api/sessions/{session_id}", get_session, methods=["GET"],
+                         route_class_override=GzipWhenAcceptedRoute)
 
 
 @app.post("/api/sessions/{session_id}/import-history")

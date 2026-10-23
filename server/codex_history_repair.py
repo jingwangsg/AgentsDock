@@ -15,14 +15,14 @@ from pathlib import Path
 import re
 import threading
 import time
-from typing import Callable
+from typing import Callable, NamedTuple
 from datetime import datetime
 
 from claude_history_repair import (
     MAX_EVENTS_BYTES, MAX_KEYS, MAX_SESSIONS, MAX_TARGETS,
     _DIGEST, _Unproven, _records, _stamp, _text_key,
 )
-from pinned_jsonl import pinned_records, regular_stamp
+from pinned_jsonl import MalformedLine, MalformedRecord, Stamp, pinned_records, regular_stamp
 
 
 MAX_PRIOR_SOURCE_PATHS = 2
@@ -986,8 +986,28 @@ def _prove_native_source(thread: str, source: Path, root: Path, batches: dict, c
     return proofs
 
 
+class _MalformedStop(NamedTuple):
+    """The inputs of a proof attempt that stopped at a malformed line."""
+    provider_id: str
+    source_path: Path | None
+    ledger_stamp: Stamp
+    line: MalformedLine
+
+
+def _stamp_or_none(path: Path) -> Stamp | None:
+    try:
+        return regular_stamp(path)
+    except (OSError, ValueError):
+        return None
+
+
 class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
     """An explicit history boundary prepares proof; per-event projection does no IO."""
+    def __init__(self) -> None:
+        super().__init__()
+        # Per session, kept only while its latest proof attempt stopped at a malformed line.
+        self._malformed: OrderedDict[str, _MalformedStop] = OrderedDict()
+
     def prepare(self, session_id: str, provider_id: str, events_path: Path, source_path: Path | None,
                 root: Path, parse_item: Callable[[dict], dict | None], *,
                 cancelled: Callable[[], bool] | None = None, deadline: float | None = None) -> bool:
@@ -996,6 +1016,20 @@ class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
                 previous = self._proofs.get(session_id)
                 if previous and previous.provider_id == provider_id:
                     return False
+                stopped = self._malformed.get(session_id)
+            ledger_stamp = _stamp_or_none(events_path)
+            # A retry would re-read the whole ledger and source and stop at the same line: it
+            # reads the same prefixes while the provider id and source path are unchanged, the
+            # ledger is the same file and not shorter, and the line is still present. A running
+            # chat only appends to both files; an import or a rewind calls forget(), and other
+            # ledger rewrites replace or shorten the file.
+            if (stopped is not None and ledger_stamp is not None
+                    and (stopped.provider_id, stopped.source_path) == (provider_id, source_path)
+                    and ledger_stamp[:2] == stopped.ledger_stamp[:2]  # same (dev, ino)
+                    and ledger_stamp[2] >= stopped.ledger_stamp[2]  # not shorter
+                    and stopped.line.still_present()):
+                raise CodexNativeHistoryProofUnavailable("Codex history still holds the malformed line that stopped its proof")
+            with self._lock:
                 self._preparing, self._cancelled = session_id, False
             budget = _NativeReadBudget(lambda: self._cancelled or bool(cancelled and cancelled()), deadline)
             try:
@@ -1005,19 +1039,40 @@ class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
                 )
                 budget.check()
             except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
+                # Only a ledger unchanged during the attempt names the bytes the proof read: an
+                # import rolled back in place afterwards must not keep a stop it no longer causes.
+                stop = (_MalformedStop(provider_id, source_path, ledger_stamp, exc.line)
+                        if isinstance(exc, MalformedRecord) and ledger_stamp is not None
+                        and _stamp_or_none(events_path) == ledger_stamp else None)
                 with self._lock:
                     self._preparing = None
+                    # load-bearing: not after a forget() during this attempt (an import or a
+                    # rewind); the stop it would record predates that change.
+                    if stop is not None and not self._cancelled:
+                        self._malformed[session_id] = stop
+                        self._malformed.move_to_end(session_id)
+                        while len(self._malformed) > MAX_SESSIONS:
+                            self._malformed.popitem(last=False)
+                    else:
+                        self._malformed.pop(session_id, None)
                 # Unavailable proof is neither a negative answer nor a prepared
-                # cache entry. The explicit worker decides when to retry it.
+                # cache entry. The next prepare retries it, unless it stopped at
+                # a malformed line that is still present (checked above).
                 raise CodexNativeHistoryProofUnavailable("Codex native history proof is incomplete") from exc
             with self._lock:
                 self._preparing = None
+                self._malformed.pop(session_id, None)
                 budget.check()
                 self._proofs[session_id] = proof
                 self._proofs.move_to_end(session_id)
                 while len(self._proofs) > MAX_SESSIONS:
                     self._proofs.popitem(last=False)
             return bool(proof.targets)
+
+    def forget(self, session_id: str) -> None:
+        with self._lock:
+            self._malformed.pop(session_id, None)
+            super().forget(session_id)
 
     def signature(self, session_id: str) -> frozenset:
         with self._lock:
