@@ -34,7 +34,9 @@ BUILD_CACHE_PREFIX = "."
 BUILD_CACHE_SUFFIX = ".canvas.build.json"
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-MAX_SOURCE_BYTES = 2 * 1024 * 1024
+# A Canvas embeds its data: a 2.3 MiB research report compiled in 2 s to 6.6 MiB of JavaScript.
+MAX_SOURCE_BYTES = 8 * 1024 * 1024
+SOURCE_TOO_LARGE = f"Canvas source is larger than {MAX_SOURCE_BYTES // (1024 * 1024)} MiB"
 MAX_STATE_BYTES = 4 * 1024 * 1024
 MAX_COMMENTS_BYTES = 4 * 1024 * 1024
 MAX_COMMENT_CHARS = 8_000
@@ -259,7 +261,7 @@ class RevisionConflict(Exception):
 def save_source(path: Path, source: str, base_revision: int) -> None:
     """Replace the source the user edited, unless someone (usually the agent) saved in between."""
     if len(source.encode("utf-8")) > MAX_SOURCE_BYTES:
-        raise ValueError("Canvas source is larger than 2 MiB")
+        raise ValueError(SOURCE_TOO_LARGE)
     current = path.stat().st_mtime_ns
     # A revision is st_mtime_ns (~1.8e18), past the 2**53 a JavaScript number holds exactly,
     # so a client echoes the nearest double. Compare as that client saw it; neighbouring
@@ -422,7 +424,7 @@ def build(path: Path) -> dict[str, Any]:
     """Return the canvas with a compiled bundle, reusing the cache when the source is unchanged."""
     stat = path.stat()
     if stat.st_size > MAX_SOURCE_BYTES:
-        raise ValueError("Canvas source is larger than 2 MiB")
+        raise ValueError(SOURCE_TOO_LARGE)
     source = path.read_text(encoding="utf-8")
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
     version = runtime_version()
@@ -496,7 +498,7 @@ def register_canvas_routes(
     """``start_turn(session_id, prompt, display_prompt, client_capabilities)`` admits a
     comment's turn exactly like a composer message and returns its run_id or queued_id."""
     from fastapi import Body, Header, HTTPException
-    from fastapi.responses import Response
+    from fastapi.responses import JSONResponse, Response
 
     # Serializes each comments file's read-modify-write within this server.
     comment_locks: dict[str, asyncio.Lock] = {}
@@ -548,13 +550,25 @@ def register_canvas_routes(
         directory, _ = resolve(session_id)
         return {"canvases": await asyncio.to_thread(list_canvases, directory), "capability": capability(state_dir)}
 
-    @app.get("/api/sessions/{session_id}/canvases/{name}")
-    async def get_session_canvas(session_id: str, name: str) -> dict[str, Any]:
+    def built_canvas_response(built: dict[str, Any], accept_encoding: str) -> Response:
+        # The body carries the source and its compiled bundle, 9.2 MiB for a 2.3 MiB report and 1.6 MiB
+        # gzipped; through a remote link of 0.1-0.4 MiB/s the plain body outlasts the desktop's 30 s
+        # request limit. The hub proxy passes the encoded body through, as for the runtime assets.
+        body = JSONResponse(built).body
+        headers = {"Vary": "Accept-Encoding"}
+        if "gzip" in accept_encoding:
+            body = gzip.compress(body, compresslevel=6)
+            headers["Content-Encoding"] = "gzip"
+        return Response(content=body, media_type="application/json", headers=headers)
+
+    @app.get("/api/sessions/{session_id}/canvases/{name}", response_class=Response)
+    async def get_session_canvas(session_id: str, name: str, accept_encoding: str = Header(default="")):
         _, path = resolve(session_id, name)
         try:
-            return await asyncio.to_thread(build, path)
+            built = await asyncio.to_thread(build, path)
         except ValueError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from None
+        return await asyncio.to_thread(built_canvas_response, built, accept_encoding)
 
     @app.get("/api/sessions/{session_id}/canvases/{name}/state")
     async def get_session_canvas_state(session_id: str, name: str) -> dict[str, Any]:
@@ -573,8 +587,9 @@ def register_canvas_routes(
             raise HTTPException(status_code=413, detail=str(exc)) from None
         return {"state": state}
 
-    @app.put("/api/sessions/{session_id}/canvases/{name}/source")
-    async def put_session_canvas_source(session_id: str, name: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    @app.put("/api/sessions/{session_id}/canvases/{name}/source", response_class=Response)
+    async def put_session_canvas_source(session_id: str, name: str, body: dict[str, Any] = Body(...),
+                                        accept_encoding: str = Header(default="")):
         _, path = resolve(session_id, name)
         source = body.get("source")
         base_revision = body.get("base_revision")
@@ -582,11 +597,12 @@ def register_canvas_routes(
             raise HTTPException(status_code=400, detail="source must be text and base_revision the revision it was edited from")
         try:
             await asyncio.to_thread(save_source, path, source, base_revision)
-            return await asyncio.to_thread(build, path)
+            built = await asyncio.to_thread(build, path)
         except RevisionConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
         except ValueError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from None
+        return await asyncio.to_thread(built_canvas_response, built, accept_encoding)
 
     @app.get("/api/sessions/{session_id}/canvases/{name}/comments")
     async def list_session_canvas_comments(session_id: str, name: str) -> dict[str, Any]:
@@ -687,9 +703,14 @@ def main(argv: list[str]) -> int:
         return 2
     try:
         source = path.read_text(encoding="utf-8")
+        size = path.stat().st_size
     except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    # The viewer refuses the same file; an agent must learn it here, not from the user.
+    if size > MAX_SOURCE_BYTES:
+        print(SOURCE_TOO_LARGE)
+        return 1
     javascript, diagnostics, _ran = compile_source(source)
     if diagnostics:
         print(diagnostics)
