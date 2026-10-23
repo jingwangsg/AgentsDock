@@ -126,6 +126,39 @@ class CanvasTests(unittest.TestCase):
         self.assertEqual(javascript.lower().count("\\ufffd"), 0)
         self.assertEqual(javascript.lower().count("\\u4e2d\\u6587\\u6807\\u7b7e"), 20000)
 
+    @needs_node
+    def test_build_compiles_a_source_above_the_former_2_mib_limit(self) -> None:
+        records = json.dumps([{"label": "动作质量", "note": "x" * 200, "id": index} for index in range(9000)], ensure_ascii=False)
+        path = self.tmp_path / "report.canvas.tsx"
+        path.write_text(VALID_SOURCE + f"export const records = {records};\n")
+        # The former limit refused a source this size.
+        assert 2 * 1024 * 1024 < path.stat().st_size < canvas.MAX_SOURCE_BYTES
+
+        built = canvas.build(path)
+
+        assert built["diagnostics"] is None
+        assert "CanvasModule" in built["javascript"]
+
+    def test_check_cli_reports_a_source_the_viewer_refuses(self) -> None:
+        path = self.tmp_path / "huge.canvas.tsx"
+        path.write_text(VALID_SOURCE + "// " + "x" * canvas.MAX_SOURCE_BYTES + "\n")
+        completed = subprocess.run(
+            [sys.executable, str(Path(canvas.__file__)), "check", str(path)],
+            capture_output=True, text=True, check=False,
+        )
+        assert completed.returncode == 1
+        assert canvas.SOURCE_TOO_LARGE in completed.stdout
+        with self.assertRaises(ValueError):
+            canvas.build(path)
+
+        # Reading as text turns CRLF into LF; the file on disk is what the viewer measures.
+        path.write_bytes(b"\r\n" * (canvas.MAX_SOURCE_BYTES // 2 + 1))
+        completed = subprocess.run(
+            [sys.executable, str(Path(canvas.__file__)), "check", str(path)],
+            capture_output=True, text=True, check=False,
+        )
+        assert completed.returncode == 1 and canvas.SOURCE_TOO_LARGE in completed.stdout
+
     def test_prompt_names_why_canvas_is_unavailable(self) -> None:
         with patch.object(canvas, "node_binary", lambda: None):
             section = canvas.prompt_section(self.tmp_path, "sess_1")
@@ -434,6 +467,20 @@ class CanvasCommentRouteTests(unittest.TestCase):
         assert packed.headers["content-encoding"] == "gzip" and packed.content == plain.content
         assert int(packed.headers["content-length"]) < len(plain.content) / 2
         assert packed.headers["vary"] == "Accept-Encoding"
+
+    @needs_node
+    def test_the_built_canvas_is_gzipped_for_a_client_that_accepts_it(self) -> None:
+        plain = self.client.get(self.base, headers={"Accept-Encoding": "identity"})
+        packed = self.client.get(self.base, headers={"Accept-Encoding": "gzip, br"})
+        assert plain.status_code == 200 and "content-encoding" not in plain.headers
+        assert "CanvasModule" in plain.json()["javascript"]
+        # The client decodes the body; the wire carried the compressed bytes.
+        assert packed.headers["content-encoding"] == "gzip" and packed.json() == plain.json()
+        assert int(packed.headers["content-length"]) < len(plain.content) / 2
+        saved = self.client.put(f"{self.base}/source", headers={"Accept-Encoding": "gzip"},
+                                json={"source": VALID_SOURCE, "base_revision": plain.json()["revision"]})
+        assert saved.status_code == 200 and saved.headers["content-encoding"] == "gzip"
+        assert saved.json()["javascript"] == plain.json()["javascript"]
 
     def test_thread_lifecycle(self) -> None:
         response = self.client.post(f"{self.base}/comments", json={"anchor": ANCHOR, "mode": "ask", "body": "why?", "revision": 5, "client_capabilities": ["claude_sdk_interactive_v1"]})

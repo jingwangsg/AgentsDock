@@ -1,5 +1,39 @@
 # Public development log
 
+## 2026-10-23 — Canvases up to 8 MiB open, are sent compressed, and the check command rejects a larger one (server)
+
+- A Canvas embeds its data, and a research report with a table of a few
+  hundred records reached 2.3 MiB. The server refused to open any source
+  over 2 MiB ("Canvas source is larger than 2 MiB"), while the check
+  command that agents run after writing a Canvas only compiled it and
+  printed OK, so the agent finished without knowing the Canvas could not
+  be opened.
+- The limit is now 8 MiB, for opening, compiling and saving edits. The
+  2.3 MiB report compiles in about 2 s to 6.6 MiB of JavaScript, and the
+  compiled result is cached as before. The check command now applies the
+  same limit to the file's size on disk, as the viewer does, and reports a
+  larger source as an error, so the agent sees it while it can still
+  shrink the Canvas.
+- Opening a Canvas returns its source and compiled JavaScript in one
+  response, 9.2 MiB for the 2.3 MiB report. That response, and the one
+  returned after saving an edit, is now gzipped when the client accepts it
+  (1.6 MiB for this report), as the Canvas runtime files already were; the
+  hub proxy passes the compressed body through. Uncompressed, a response
+  this size could outlast the desktop's 30 s request limit on a remote
+  link of 0.1-0.4 MiB/s.
+- Verified with server tests: a source between 2 and 8 MiB builds; the
+  check command rejects a source over the limit, including one with CRLF
+  line endings that is smaller once read as text; the opened and saved
+  Canvas is gzipped for a client that accepts it. Each fails on the
+  previous code. In the desktop app against two isolated servers holding
+  the same 2.3 MiB report, the previous server showed the 2 MiB error and
+  this one rendered the report (11 tables); its response took 1.65 MB on
+  the wire instead of 9.6 MB.
+- Not covered: the Android app with a Canvas of this size, and a Canvas
+  opened through the hub from a remote server. Availability: takes effect
+  when the server that holds the Canvas is updated or restarted; clients
+  need no update.
+
 ## 2026-10-22 — Create new agent on Android offers the other servers once the hub lists them (Android source)
 
 - On Android, the `Create new agent` sheet showed no Server choice when
