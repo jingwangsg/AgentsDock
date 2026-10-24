@@ -643,7 +643,7 @@ describe('ServerManagement', () => {
     expect(update).not.toHaveBeenCalled()
   })
 
-  it('renames a hub remote on the hub, which every device follows, and keeps the editor open when that fails', async () => {
+  it('renames a hub remote through the hub instead of this Mac\'s profile, and keeps the editor open when the hub fails', async () => {
     useAppStore.setState({ profiles: [hub, gb300], activeProfileId: hub.id })
     list.mockResolvedValue([hub, { ...gb300, name: 'gb300_dev' }])
     const user = userEvent.setup()
@@ -674,11 +674,27 @@ describe('ServerManagement', () => {
     expect(update).not.toHaveBeenCalled()
   })
 
-  it('names a new remote on the local server, not only on this Mac', async () => {
+  it('labels the add form\'s name as saved on the local server', async () => {
     useAppStore.setState({ profiles: [hub], activeProfileId: hub.id })
     render(<ServerManagement addRequest={1} />)
     expect(screen.queryByLabelText('Name on this Mac')).toBeNull()
     expect(screen.getByLabelText('Name')).toHaveAttribute('title', 'Saved on the local server: every device that uses it shows this name.')
+  })
+
+  it('does not send back the old name of a remote renamed on another device while its editor was open', async () => {
+    useAppStore.setState({ profiles: [hub, gb300], activeProfileId: hub.id })
+    list.mockResolvedValue([hub, { ...gb300, name: 'gb300_dev', sshHost: 'oci@new-cluster' }])
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+
+    await user.click(screen.getByRole('button', { name: 'Edit GB300' }))
+    act(() => useAppStore.setState({ profiles: [hub, { ...gb300, name: 'gb300_dev' }] }))
+    await user.clear(screen.getByLabelText('SSH host'))
+    await user.type(screen.getByLabelText('SSH host'), 'oci@new-cluster')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(remoteMove).toHaveBeenCalledExactlyOnceWith('gb300', { sshHost: 'oci@new-cluster', installDir: undefined }))
+    expect(remoteRename).not.toHaveBeenCalled()
   })
 
   it('shows no SSH host or install directory when editing the local server', async () => {

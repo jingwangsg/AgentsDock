@@ -83,6 +83,7 @@ export function hubRemoteId(hubUrl: string, serverUrl: string): string | null {
  * renamed from another client, changes it.
  */
 export function hubRemotesKey(ids: readonly string[], hiddenIds: readonly string[] = [], names: readonly string[] = []): string {
+  // JSON, not a join: a name can contain spaces.
   return JSON.stringify([ids, hiddenIds, names])
 }
 

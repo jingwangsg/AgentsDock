@@ -399,6 +399,9 @@ class RemoteServerTests(unittest.TestCase):
         assert rs.capability(manager)["names"] == ["lab", "lab"] and rs.capability(manager)["ids"] == ["abcdef123456", "123456abcdef"]
         assert client.patch(f"{rs.ADMIN_PATH}/abcdef123456", json={"name": "   "}).status_code == 422
         assert rs.capability(manager)["names"] == ["lab", "lab"]
+        # A name cut at 120 characters does not end in the space before the cut.
+        long_name = client.patch(f"{rs.ADMIN_PATH}/abcdef123456", json={"name": "a" * 119 + " bcd"}).json()["server"]["name"]
+        assert long_name == "a" * 119
 
     def test_order_route_reorders_the_registry_around_what_the_client_has_synced(self) -> None:
         manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)

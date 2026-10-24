@@ -974,7 +974,7 @@ export class AgentServerClient {
       body: JSON.stringify({ hidden })
     })
   }
-  /** The same PATCH with only the name: the hub keeps the tunnel and moves its ssh alias to the new name. */
+  /** PATCH with only `name`: the hub keeps the tunnel and moves its ssh alias to the new name. */
   renameRemoteServer(remoteId: string, name: string): Promise<{ server: RemoteServer }> {
     return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, {
       method: 'PATCH',

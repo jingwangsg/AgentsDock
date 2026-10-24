@@ -379,7 +379,7 @@ export function ServerProfilesManager({
       // A blank name keeps a remote's name: buildUpdateServerProfileInput would name it after its address, the hub's host.
       const name = draft.name.trim() || editedProfile.name
       // On the hub, not in this device's profile: the profile takes the name the hub saved, as on every other device.
-      if (hubRemote && name !== editedProfile.name) await onRenameRemote(editedProfile.id, name)
+      if (hubRemote && name !== draft.openedName) await onRenameRemote(editedProfile.id, name)
       const patch = hubRemote ? {} : buildUpdateServerProfileInput(editedProfile, draft, tested?.server_identity)
       if (Object.keys(patch).length) await onUpdateProfile(editedProfile.id, patch)
       const sshHost = draft.sshHost.trim()

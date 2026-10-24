@@ -1615,13 +1615,15 @@ export class AppService {
   /**
    * The profile list mirrors the hub registry (server/remote_servers.py). `hub` is the active scope or the
    * throwaway client of an inactive-profile health probe; `stillValid` guards against a stale caller.
-   * `reportedKey` is the hubRemotesKey of the health report that asked for this pass: the next report is compared
-   * with it, so a hub whose report lacks a field (an older hub without `names`) is not listed again on every check.
+   * `healthKey` is the hubRemotesKey of the health report that started this pass, and the next report is compared
+   * with it. A key built from the listed servers always holds their names, so it never equals the report of a hub
+   * that predates `names`, which would then be listed again at every check. A pass started by an edit here has no
+   * report, and records the key built from the list.
    */
   private reconcileHubRemotes(
     hub: { profileId: string; serverUrl: string; client: AgentServerClient },
     stillValid: () => boolean,
-    reportedKey?: string
+    healthKey?: string
   ): Promise<PublicServerProfile[]> {
     if (this.hubReconcile) return this.hubReconcile
     const run = (async () => {
@@ -1646,9 +1648,8 @@ export class AppService {
       }
       const order = hubRemoteProfileOrder(hub.serverUrl, servers, this.settings.listProfiles())
       if (order) this.settings.reorderProfiles(order)
-      this.lastHubRemotesKey = removable.length === plan.remove.length
-        ? reportedKey ?? hubRemotesKey(servers.map(server => server.id), servers.filter(server => server.hidden).map(server => server.id), servers.map(server => server.name))
-        : null
+      const listedKey = hubRemotesKey(servers.map(server => server.id), servers.filter(server => server.hidden).map(server => server.id), servers.map(server => server.name))
+      this.lastHubRemotesKey = removable.length === plan.remove.length ? healthKey ?? listedKey : null
       this.emitProfiles()
       return this.publicProfiles()
     })()

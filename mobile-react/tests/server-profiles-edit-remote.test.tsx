@@ -12,23 +12,23 @@ const profile = (id: string, serverUrl: string, extra: Partial<ServerProfileList
 const hub = profile('hub', 'http://hub.test:7850')
 const remote = profile('r1', 'http://hub.test:7850/api/remote/r1', { name: 'gpu box', sshHost: 'user@old-host' })
 
+const manager = (props: Partial<ServerProfilesManagerProps>) => <ServerProfilesManager
+  profiles={[hub, remote]}
+  activeProfileId="hub"
+  onSwitchProfile={() => true}
+  onTestConnection={async () => { throw new Error('unused') }}
+  onUpdateProfile={() => undefined}
+  onReorderProfiles={() => undefined}
+  onRemoveProfile={() => undefined}
+  onRedeployRemote={async () => ({ redeployed: true, running: 0 })}
+  onMoveRemote={async () => undefined}
+  onUpdateCli={async () => ''}
+  {...props}
+/>
+
 async function render(props: Partial<ServerProfilesManagerProps>) {
   let tree!: ReturnType<typeof create>
-  await act(async () => {
-    tree = create(<ServerProfilesManager
-      profiles={[hub, remote]}
-      activeProfileId="hub"
-      onSwitchProfile={() => true}
-      onTestConnection={async () => { throw new Error('unused') }}
-      onUpdateProfile={() => undefined}
-      onReorderProfiles={() => undefined}
-      onRemoveProfile={() => undefined}
-      onRedeployRemote={async () => ({ redeployed: true, running: 0 })}
-      onMoveRemote={async () => undefined}
-      onUpdateCli={async () => ''}
-      {...props}
-    />)
-  })
+  await act(async () => { tree = create(manager(props)) })
   return tree
 }
 const texts = (root: ReactTestInstance) => root.findAll(node => (node.type as unknown) === 'Text').flatMap(node => node.children.filter(child => typeof child === 'string'))
@@ -104,7 +104,7 @@ test('an install directory alone moves the remote without resending its saved ho
   await act(async () => { tree.unmount() })
 })
 
-test('renaming a hub remote renames it on the hub only; a blank name keeps it; an unknown host does not block it', async () => {
+test('renaming a hub remote renames it on the hub only; a blank name keeps it; an unknown host does not block it; a failed rename keeps the editor open', async () => {
   const moves: unknown[] = []
   const updates: unknown[] = []
   const renames: unknown[] = []
@@ -139,6 +139,24 @@ test('renaming a hub remote renames it on the hub only; a blank name keeps it; a
   assert.equal(field(root, 'server-profile-name')[0].props.value, 'gpu box 2')
   assert.deepEqual(updates, [])
   assert.deepEqual(moves, [])
+  await act(async () => { tree.unmount() })
+})
+
+test('an editor opened before another device renamed the remote does not send the old name back', async () => {
+  const moves: unknown[] = []
+  const renames: unknown[] = []
+  const props: Partial<ServerProfilesManagerProps> = {
+    onMoveRemote: async (profileId, input) => { moves.push({ profileId, input }) },
+    onRenameRemote: async (profileId, name) => { renames.push({ profileId, name }) },
+  }
+  const tree = await render(props)
+  await press(tree.root, 'Edit gpu box')
+  // The hub's list arrives with the name another device saved; the open editor still shows the old one.
+  await act(async () => { tree.update(manager({ ...props, profiles: [hub, { ...remote, name: 'gpu box 2' }] })) })
+  await type(tree.root, 'server-profile-ssh-host', 'user@new-host')
+  await press(tree.root, 'Save')
+  assert.deepEqual(moves, [{ profileId: 'r1', input: { sshHost: 'user@new-host', installDir: undefined } }])
+  assert.deepEqual(renames, [])
   await act(async () => { tree.unmount() })
 })
 

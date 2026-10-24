@@ -108,7 +108,7 @@ describe('planHubRemoteProfiles', () => {
     })
   })
 
-  it('takes the name the hub keeps for a remote, also one another remote has', () => {
+  it('takes the hub\'s name for a saved remote, even one another remote shares', () => {
     const plan = planHubRemoteProfiles(HUB, [remote('one', { name: 'oci_dev' }), remote('two', { name: 'oci_dev' })], [
       profile('hub', HUB), profile('p1', `${HUB}/api/remote/one`, 'one_host', 'oci_dev_32g'), profile('p2', `${HUB}/api/remote/two`, 'two_host', 'oci_dev')
     ])

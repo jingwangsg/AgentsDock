@@ -9971,6 +9971,7 @@ describe('server profile lifecycle', () => {
     await probeInactiveProfiles(service)
     expect(probes[1].listRemoteServers).toHaveBeenCalledOnce()
     expect(settings.getProfile('a')?.name).toBe('oci_dev')
+    // Names unchanged: no listing.
     await probeInactiveProfiles(service)
     expect(probes[2].listRemoteServers).not.toHaveBeenCalled()
   })
@@ -9995,6 +9996,8 @@ describe('server profile lifecycle', () => {
     expect(settings.getProfile('a')?.name).toBe('oci_dev')
     await probeInactiveProfiles(service)
     await probeInactiveProfiles(service)
+    // The first sweep lists the registry. The rename here records a key built from the list, which holds names, so the
+    // next report differs once; that pass records the report's key, and the last sweep lists nothing.
     expect(probes.map(probe => probe.listRemoteServers.mock.calls.length)).toEqual([1, 1, 0])
   })
 

@@ -28,6 +28,8 @@ export interface ServerProfileListItem {
 export interface ServerProfileDraftValues {
   profileId: string
   name: string
+  /** The profile's name when the editor opened: a rename another device made meanwhile is not sent back. */
+  openedName: string
   serverUrl: string
   accessToken: string
   clearAccessToken: boolean
@@ -75,6 +77,7 @@ export function editServerProfileDraft(profile: ServerProfileListItem): ServerPr
   return {
     profileId: profile.id,
     name: configured ? profile.name : '',
+    openedName: profile.name,
     serverUrl: configured ? profile.serverUrl : '',
     // Never place a saved credential back in React state. Blank means preserve.
     accessToken: '',

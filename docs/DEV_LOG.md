@@ -1,6 +1,6 @@
 # Public development log
 
-## 2026-10-25 — A hub remote has one name, kept by the hub, on every device (server, desktop and Android source)
+## 2026-10-25 — Renaming a hub remote saves the name on the hub; every device shows it (server, desktop, Android)
 
 - Each client kept its own name for a remote server the hub manages. The
   desktop's Settings → Server → Edit field read "Name on this Mac" and
@@ -13,18 +13,17 @@
   `name`, which keeps the tunnel and moves the hub's `ssh <name>` alias).
   The profile then shows the name the hub saved. When the hub does not
   accept it, for example because it is not reachable, the editor shows
-  the error and keeps the typed name for a retry, and the old name stays.
-  A blank name still keeps the current one. Two remotes may share a name,
-  as before (the hub then writes no alias for either).
-- Both apps take the hub's name whenever they mirror its server list,
-  for existing profiles as well as new ones, as they already did for the
-  SSH host and the hidden flag. The hub's health report now lists the
-  remotes' names (`remote_servers_v1.names`), so a rename changes that
-  report and the other devices mirror the list at their next check, as
-  for a reorder or a hidden remote. With a hub that does not report
-  names, the desktop does not list the registry on every check; it then
-  follows a rename made elsewhere at its next full mirror (app start, or
-  a change of order or visibility).
+  the error and keeps the typed name for a retry, and the profile keeps
+  the old name. An editor that was open while another device renamed the
+  remote sends a name only if its field was changed. Two remotes may
+  share a name, as before (the hub then writes no alias for either).
+- Both apps take the hub's name whenever they fetch the hub's server
+  list, for existing profiles as well as new ones, as they already did
+  for the SSH host and the hidden flag. The hub's health report now lists
+  the remotes' names (`remote_servers_v1.names`), so a rename changes
+  that report, and the other devices fetch the list at their next check,
+  as for a reorder or a hidden remote. A hub cuts a name at 120
+  characters and then trims it, so the apps store exactly the hub's name.
 - The hub's own profile and directly added servers keep a name per
   device; on the desktop their field still reads "Name on this Mac".
   For a hub remote, and in the add form, the desktop field reads "Name"
@@ -32,14 +31,13 @@
   that uses it shows this name." Android's add form reads "Name" instead
   of "Name on this device", and its edit note says the hub keeps the
   remote's name.
-- Verified with tests that fail on the previous code: the hub reports
-  names in registry order and keeps a trimmed name; the desktop renames
-  through the hub, shows the saved name, keeps the old one when the hub
-  refuses, follows a rename seen in the hub's health, and lists a hub
-  without names once after a rename instead of at every check; both
-  editors send the rename to the hub and stay open on failure; Android's
-  mirror follows the hub's names, and its store renames through the hub
-  and follows a names-only change of the hub's health.
+- Verified with tests that fail on the previous code: the hub's names in
+  its health report and its trimmed name; on the desktop, the rename
+  through the hub, a refused rename, a rename seen in the hub's health,
+  an editor opened before another device's rename, and a hub without
+  names fetched once after a rename instead of at every check; on
+  Android, the list following the hub's names, the store's rename and
+  failure, and the editor cases.
 - Real-app check: an isolated hub built from this source with one
   registered remote (an AgentsServer on the same Mac, reached through a
   test stand-in for ssh), the desktop app built from this source
@@ -51,14 +49,19 @@
   server list showed it 18 s later. With the hub stopped, a rename on
   either app showed the connection error and kept the old name; after
   the hub restarted, Save in the same editor applied it, and the other
-  app followed. With no change on the hub, the desktop did not list the
-  registry again during 75 s.
+  app followed. A desktop editor opened before a rename on Android, then
+  saved unchanged after the desktop list showed the new name, sent no
+  rename, and the hub kept Android's name. With no change on the hub, the
+  desktop did not fetch the list again during 75 s.
 - Not covered: a real ssh tunnel, Sky and osmo remotes, and iOS (same
   code as Android). On the desktop, errors in this editor keep Electron's
   "Error invoking remote method …" prefix, as the editor's other actions
-  already do. Availability: source only. Renaming works with a running
-  hub; for other devices to follow a rename promptly, the hub must run
-  this source. Needs the desktop and Android updates.
+  already do. Availability: source only. Hubs from 2026-09-30 on accept
+  the rename. A hub that does not report `names` is not fetched at every
+  check; the other devices then show a rename made elsewhere at their
+  next fetch of the list (app start, or a change of order or
+  visibility), so the hub should run this source. Needs the desktop and
+  Android updates.
 
 ## 2026-10-24 — The desktop app no longer asks to update a server it cannot reach (desktop)
 

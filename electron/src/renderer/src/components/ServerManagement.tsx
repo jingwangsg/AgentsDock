@@ -17,6 +17,8 @@ import { cleanIPCError } from '../lib/file-actions'
 interface ServerDraft {
   profileId: string | null
   name: string
+  /** The profile's name when the editor opened: a rename another device made meanwhile is not sent back. */
+  openedName: string
   sshHost: string
   installDir: string
   mode: 'deploy' | 'attach'
@@ -28,6 +30,7 @@ interface ServerDraft {
 const emptyDraft = (): ServerDraft => ({
   profileId: null,
   name: '',
+  openedName: '',
   sshHost: '',
   installDir: '~/.agentsdock-server',
   mode: 'deploy',
@@ -91,8 +94,8 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     () => profiles.find(profile => profile.id === draft?.profileId) ?? null,
     [draft?.profileId, profiles, getLocale()]
   )
-  // The hub keeps its remotes' names, so every device shows the same one, and can move a remote to another host or
-  // install dir; the hub's own address is fixed.
+  // A remote the hub manages: the hub keeps its name and can move it to another host or install dir. The hub's own
+  // profile has a fixed address and a name on this Mac only.
   const hubRemote = Boolean(hub && editedProfile && isHubRemote(editedProfile.serverUrl))
 
   useEffect(() => {
@@ -116,7 +119,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   }, [draft])
 
   const beginEdit = (profile: PublicServerProfile) => {
-    openEditor({ profileId: profile.id, name: profile.name, sshHost: profile.sshHost ?? '', installDir: '', mode: 'deploy', password: '', resetServerIdentity: false })
+    openEditor({ profileId: profile.id, name: profile.name, openedName: profile.name, sshHost: profile.sshHost ?? '', installDir: '', mode: 'deploy', password: '', resetServerIdentity: false })
     setConfirmRemoveId(null)
   }
 
@@ -157,7 +160,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       // The profile now exists: if the switch below fails, a retry must edit or
       // switch to it, not redeploy and add a second profile for the same host.
       // The add form's install dir would read as a move in the edit form.
-      setDraft(current => current ? { ...current, profileId: profile.id, installDir: '' } : current)
+      setDraft(current => current ? { ...current, profileId: profile.id, openedName: profile.name, installDir: '' } : current)
       const switched = await switchServer(profile.id)
       if (!switched || useAppStore.getState().activeProfileId !== profile.id) throw new Error(`“${profile.name}” was saved, but AgentsDock could not switch to it.`)
       setDraft(null)
@@ -176,14 +179,14 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     try {
       if (!editedProfile) throw new Error('This server profile no longer exists.')
       const name = draft.name.trim() || editedProfile.name
-      const renamed = name !== editedProfile.name
+      const renamed = name !== draft.openedName
+      // A hub remote is renamed on the hub, not in this Mac's profile: the profile then takes the name the hub saved.
       const patch = {
         ...(renamed && !hubRemote ? { name } : {}),
         ...(draft.resetServerIdentity ? { resetServerIdentity: true } : {})
       }
       const current = useAppStore.getState()
       if (current.switchingProfileId) throw new Error('Wait for the current server switch to finish, then save again.')
-      // On the hub, not in this Mac's profile: the profile takes the name the hub saved, as on every other device.
       if (renamed && hubRemote) await window.agentsDock.remoteServers.rename(draft.profileId, name)
       if (draft.profileId === current.activeProfileId && patch.resetServerIdentity) {
         const generation = current.profileGeneration

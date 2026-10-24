@@ -879,7 +879,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (patch.connectionState === 'online' && remotes?.available && remotes.ids && profile.id === hubProfile(get())?.id) {
             // A remote hidden, shown or renamed on another device changes only `hidden` or `names`, and must reach the
             // server list too.
-            remotesKey = `${remotes.ids.join(' ')} hidden: ${(remotes.hidden ?? []).join(' ')} names: ${JSON.stringify(remotes.names ?? [])}`
+            remotesKey = JSON.stringify([remotes.ids, remotes.hidden ?? [], remotes.names ?? []])
           }
         } catch (error) {
           patch = { connectionState: 'offline', lastConnectionError: errorMessage(error) }
