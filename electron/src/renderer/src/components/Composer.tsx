@@ -2270,7 +2270,10 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
           referenceSupported={referenceSupported}
           teamReferencesSupported={composerTeamReferencesSupported}
         />}
-        {!referencesSupported && <span className="chat-reference-warning">{!chatReferencesSupported
+        {/* No Health means the server has not answered yet; its references are not known to be invalid. */}
+        {!referencesSupported && <span className="chat-reference-warning">{!health && !hasRemoteAgentReference
+          ? t('serverConnection.availableOnceConnected')
+          : !chatReferencesSupported
           ? hasRemoteAgentReference
             ? remoteAgentRouteUnavailable()
             : references.some(reference => reference.target_kind === 'cross_server' && !referenceSupported(reference))

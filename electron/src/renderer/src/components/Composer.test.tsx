@@ -6085,6 +6085,26 @@ describe('Composer', () => {
     expect(within(team).queryByText('Server update required')).not.toBeInTheDocument()
   })
 
+  it('keeps a drafted chat reference and does not call it invalid while the server has not answered', () => {
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-1', title: 'Chat', backend: 'codex' },
+        { id: 'chat-2', title: 'Training', backend: 'claude' }
+      ],
+      drafts: { 'chat-1': 'Ask @Training' },
+      chatReferencesBySession: { 'chat-1': [{
+        session_id: 'chat-2', display_title_snapshot: 'Training',
+        source_text_start: 4, source_text_end: 13, action: 'route'
+      }] },
+      health: null
+    })
+    render(<Composer />)
+
+    expect(screen.getByText('Available once this AgentsServer is connected.')).toHaveClass('chat-reference-warning')
+    expect(screen.queryByText(/legacy chat references cannot be used/i)).not.toBeInTheDocument()
+    expect(useAppStore.getState().chatReferencesBySession['chat-1']).toHaveLength(1)
+  })
+
   it('asks for a server update when a server that answered lacks the capability', async () => {
     useAppStore.setState({
       sessions: [
