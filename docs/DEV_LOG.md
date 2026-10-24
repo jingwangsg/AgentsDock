@@ -52,6 +52,48 @@
   current server. Availability: source only; desktop only, no server update
   needed.
 
+## 2026-10-24 — A Redeploy after a failed move to an osmo@ workflow installs into the workflow's pool home, not the container's ~ (server)
+
+- When a remote is moved to an `osmo@<workflow>` host, the hub records its
+  install directory as the default `~/.agentsdock-server` until a deploy
+  there finishes: only that deploy's `osmo workflow query` tells the hub the
+  workflow's pool, and so its home (`AGENTSDOCK_OSMO_POOL_HOMES` or
+  `AGENTSDOCK_OSMO_HOME`). On 2026-10-24 that deploy failed because the
+  workflow ran no sshd, so the entry kept `~/.agentsdock-server`. A Redeploy
+  then used that directory as given: it installed AgentsServer, Claude Code
+  and Node, and wrote the hub's Claude token, into the container's `/root`,
+  which is lost when the workflow ends. It also asked for the previous
+  workflow's port.
+- A deploy records the expanded directory it installed to, so an entry that
+  still names `~/.agentsdock-server` is a move whose deploy did not finish.
+  A Redeploy of such an entry, also within Update all, now deploys as that
+  move would: into the workflow's pool home (or `AGENTSDOCK_OSMO_HOME`),
+  taking the workflow's earlier install in `AGENTSDOCK_OSMO_HOME` when the
+  pool home has none, on the port of the install it finds or a free one. A
+  Redeploy of an entry with a recorded directory is unchanged. For hosts
+  without a cluster home the directory stays `~/.agentsdock-server`; only
+  the port no longer comes from the previous host. An entry added with
+  `POST /api/admin/remote-servers` (no client uses it) that names
+  `~/.agentsdock-server` on a target with a cluster home is now redeployed
+  into that home.
+- Verified with server tests: after a failed move, the Redeploy probes the
+  pool home and the earlier install, and bootstraps into the pool home with
+  that home as HOME and a port of its own (fails on the previous code); a
+  Redeploy keeps a recorded directory in the shell's `~` and its port
+  (passes on both). Through the admin API of an isolated hub, with a
+  stand-in `osmo` and an `ssh` stand-in playing the container (the real
+  probe script and upload, a stand-in bootstrap): move, failed deploy,
+  Redeploy. The previous hub installed into the container's
+  `~/.agentsdock-server` with the container's `~` as HOME and the previous
+  workflow's port; this hub installed into the pool home with that home as
+  HOME and a port the probe found free. A second Redeploy kept the
+  directory and port.
+- Not covered: no real osmo workflow, sshd or full bootstrap was run; Update
+  all and the desktop Redeploy button were not run (they reach the same
+  deploy path). Availability: source only; takes effect when the hub is
+  updated; remote servers need no update.
+
+
 ## 2026-10-23 — A Codex chat whose transcript has an unreadable line no longer re-reads its history at every page; chat pages are sent compressed (server)
 
 - Before a chat page, a timeline index build or an event-stream connect,

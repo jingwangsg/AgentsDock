@@ -2035,8 +2035,11 @@ class RemoteServerManager:
             if existing is not None:
                 # A moved server takes its new install's own port or a free one: the bootstrap stops
                 # whatever serves the port it is given, which may be the previous install's server.
+                # A deploy records the expanded directory it installed to: only a move whose deploy did not finish,
+                # or an entry added through POST ADMIN_PATH, still names the default. A Redeploy of such an entry
+                # deploys as the move would, without the previous host's port.
                 ssh_host, install_dir = existing.ssh_host, existing.install_dir
-                requested_port = existing.remote_port if keep_port else 0
+                requested_port = existing.remote_port if keep_port and install_dir != DEFAULT_INSTALL_DIR else 0
             else:
                 assert request is not None
                 ssh_host, install_dir = request.ssh_host, request.install_dir
@@ -2049,9 +2052,10 @@ class RemoteServerManager:
             # A relaunched cluster keeps its name but not its address; its old ssh entry would fail the deploy.
             await refresh_sky_ssh_entry(ssh_host)
             route = await ssh_route(ssh_host)
-            # After the route, whose osmo workflow query records the pool an osmo@ home can depend on. Only a new
-            # deploy and an entry update() moved arrive with the default; a Redeploy keeps the entry's directory.
-            from_default = install_dir == DEFAULT_INSTALL_DIR and (existing is None or not keep_port)
+            # After the route, whose osmo workflow query records the pool an osmo@ home can depend on. A Redeploy
+            # keeps a directory a deploy recorded; only a new deploy, a move, or a Redeploy of an unfinished move
+            # (see above) arrives with the default.
+            from_default = install_dir == DEFAULT_INSTALL_DIR
             if from_default:
                 install_dir = default_install_dir(ssh_host)
             # The directory the target's install went to before AGENTSDOCK_OSMO_POOL_HOMES named its pool

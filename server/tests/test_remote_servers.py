@@ -1884,13 +1884,44 @@ if sys.argv[-1] == "k8s-cluster":
         assert probe == [pool_dir]
         assert json.loads(calls.read_text().splitlines()[-1])["tail"][0] == pool_dir
 
-    def test_a_redeploy_keeps_an_entry_that_names_the_default_directory(self) -> None:
-        # Only a new deploy or a move picks the cluster home; a Redeploy must not leave the entry's chats behind.
+    def test_a_redeploy_finishes_a_move_whose_deploy_failed(self) -> None:
+        # 2026-10-24: a move to an osmo@ workflow failed, so the entry kept the ~/.agentsdock-server that update()
+        # writes until a deploy records its directory, and the Redeploy installed there, in the container's own ~ (/root).
+        pool_dir, earlier_dir = "/mnt/a/u/.agentsdock-server-wf-running", "/mnt/b/u/.agentsdock-server-wf-running"
+        # Where the move's deploy fails does not matter: only a finished deploy records its directory.
+        self.fake_host(existing_port=None, bootstrap_failure=["setup failed"])
+        self.fake_osmo()
+        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OSMO_HOME": "/mnt/b/u", "AGENTSDOCK_OSMO_POOL_HOMES": "pool-a-*=/mnt/a/u"}))
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server(ssh_host="osmo@wf-other", install_dir="/mnt/b/u/.agentsdock-server-wf-other", remote_port=7870)
+
+        async def main(start: Callable[[], rs.DeployJob]) -> rs.DeployJob:
+            job = start()
+            await job.task
+            await manager.stop()
+            return job
+
+        assert asyncio.run(main(lambda: manager.update("abcdef123456", rs.RemoteServerUpdate(ssh_host="osmo@wf-running"))[1])).error, "the move's deploy should fail"
+        assert manager.servers["abcdef123456"].install_dir == rs.DEFAULT_INSTALL_DIR
+
+        calls = self.fake_host(existing_port=None)
+        job = asyncio.run(main(lambda: manager.start_deploy(None, redeploy_id="abcdef123456")))
+        assert job.error is None, job.log
+        # As the move would have: the pool home, the workflow's earlier install as the fallback, a port of
+        # its own instead of the previous workflow's, and the pool home as HOME.
+        probe, _upload, bootstrap = [json.loads(line)["tail"] for line in calls.read_text().splitlines()[-3:]]
+        assert probe == [pool_dir, earlier_dir], probe
+        assert bootstrap == [pool_dir, "7850", "/mnt/a/u", "restart"], bootstrap
+        assert rs.load_registry(manager.path)[0].install_dir == pool_dir
+
+    def test_a_redeploy_keeps_the_directory_a_deploy_recorded(self) -> None:
+        # An install in the shell's ~ (/h on the scripted host), recorded before AGENTSDOCK_OCI_HOME was set: a Redeploy
+        # keeps its directory and port, so its chats are not left behind.
         calls = self.fake_host(existing_port=7860)
         self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
         self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/oci/u"}))
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
-        manager.servers["abcdef123456"] = make_server(ssh_host="oci@sky-cluster", install_dir=rs.DEFAULT_INSTALL_DIR)
+        manager.servers["abcdef123456"] = make_server(ssh_host="oci@sky-cluster", install_dir="/h/.agentsdock-server", remote_port=7870)
 
         async def main() -> rs.DeployJob:
             job = manager.start_deploy(None, redeploy_id="abcdef123456")
@@ -1899,7 +1930,7 @@ if sys.argv[-1] == "k8s-cluster":
             return job
 
         assert asyncio.run(main()).error is None
-        assert json.loads(calls.read_text().splitlines()[-1])["tail"][0] == rs.DEFAULT_INSTALL_DIR
+        assert json.loads(calls.read_text().splitlines()[-1])["tail"][:2] == ["/h/.agentsdock-server", "7870"]
 
     def test_oci_server_tunnel_carries_the_configured_site_forwards(self) -> None:
         script = self.tmp_path / "ssh"
