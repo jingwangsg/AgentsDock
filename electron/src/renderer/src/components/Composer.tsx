@@ -121,7 +121,7 @@ import { openCodeProviderCommandsAvailable } from '@shared/opencode'
 import { opencodeBackendAvailable, opencodeBackendUnavailableReason } from '@shared/runtime-catalog'
 import { RuntimeHealthNotice } from './RuntimeHealth'
 import { MediaPreviewDialog } from './MediaGrid'
-import { connectionStateLabel } from './ServerSelector'
+import { useUnansweredServerLabel } from './ServerSelector'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { WorkingDirectoryInput } from './WorkingDirectoryInput'
 import { WorkingDirectoryPopover } from './WorkingDirectoryPopover'
@@ -2405,7 +2405,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         open={mcpDialogOpen}
         session={session}
         running={running}
-        supported={claudeMcpCapabilityAdvertised(claudeControls)}
+        supported={health ? claudeMcpCapabilityAdvertised(claudeControls) : null}
         onOpenChange={setMcpDialogOpen}
       />
       </div>
@@ -3235,7 +3235,7 @@ function WorkingDirectoryCommandDialog({
 }) {
   useLocale()
   const defaultCwd = useAppStore(state => state.health?.default_cwd?.trim() || '')
-  const completionAvailable = useAppStore(state => state.health?.capabilities?.working_directory_completion?.available === true)
+  const completionAvailable = useAppStore(state => state.health ? state.health.capabilities?.working_directory_completion?.available === true : null)
   const [draft, setDraft] = useState(session.cwd?.trim() || defaultCwd)
   const [saving, setSaving] = useState(false)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -3305,9 +3305,9 @@ function WorkingDirectoryCommandDialog({
  */
 function MentionUnavailableNotice({ title, detail }: { title: string; detail: string }) {
   const healthLoaded = useAppStore(state => state.health !== null)
-  const connectionState = useAppStore(state => state.profiles.find(profile => profile.id === state.activeProfileId)?.connectionState)
+  const unansweredLabel = useUnansweredServerLabel()
   return <div className="chat-mention-empty"><AlertTriangle size={14} /><span>
-    <strong>{healthLoaded ? title : connectionStateLabel(connectionState === 'offline' || connectionState === 'retrying' ? connectionState : 'connecting')}</strong>
+    <strong>{healthLoaded ? title : unansweredLabel}</strong>
     <small>{healthLoaded ? detail : t('serverConnection.availableOnceConnected')}</small>
   </span></div>
 }
@@ -4526,6 +4526,9 @@ function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sessionI
   useEffect(() => { setBodyLoading(false); setBodyError(null); setExpandedBody(null) }, [bodyIdentity])
   const messageBody = agentMessage ? turn.message_body ?? (loadedBody?.identity === bodyIdentity ? loadedBody.body : null) : null
   const canControlAgentMessage = agentMessage && asyncControls && Number.isInteger(turn.message_revision) && turn.message_revision! >= 0
+  // No Health means the server has not answered yet, which says nothing about its version.
+  const healthLoaded = useAppStore(state => state.health !== null)
+  const updateTitle = (title: string) => healthLoaded ? title : t('serverConnection.availableOnceConnected')
   const drag = useDraggable({ id: turn.queued_id, disabled: !reorderable || moving })
   const target = useDroppable({ id: turn.queued_id, disabled: !reorderable || moving })
   const ref = (node: HTMLElement | null) => { drag.setNodeRef(node); target.setNodeRef(node) }
@@ -4753,15 +4756,15 @@ function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sessionI
       : agentMessage
       ? <div className="queue-actions"><button
           type="button" className="steer-action" disabled={!canControlAgentMessage || steeringPending || promotionPending || Boolean(runtimeError) || crossChatFence.runNow}
-          title={!canControlAgentMessage ? t('composer.agentQueue.updateRequired') : running ? t('composer.agentQueue.sendNowRunning') : actionTitle} onClick={() => void steer()}
+          title={!canControlAgentMessage ? updateTitle(t('composer.agentQueue.updateRequired')) : running ? t('composer.agentQueue.sendNowRunning') : actionTitle} onClick={() => void steer()}
         ><CornerDownRight size={13} /><b>{t('composer.agentQueue.sendNow')}</b></button>
         <button type="button" className="steer-action" disabled={!canControlAgentMessage || bodyLoading || steeringPending}
-          title={!canControlAgentMessage ? t('composer.agentQueue.updateRequired') : t('composer.agentQueue.editMessage')} onClick={() => void editAgentMessage()}
+          title={!canControlAgentMessage ? updateTitle(t('composer.agentQueue.updateRequired')) : t('composer.agentQueue.editMessage')} onClick={() => void editAgentMessage()}
         ><Pencil size={13} /><b>{t('composer.agentQueue.edit')}</b></button><button
           type="button"
           className="queue-action"
           aria-label={t('ui.Composer.QueuedRow.remove_from_queue_c0b9d9e')}
-          title={canSkipBlockingDelivery ? t('ui.Composer.QueuedRow.remove_from_queue_c0b9d9e') : t('ui.Composer.QueuedRow.update_agentsserver_to_safely_skip_this_de_7c9afa2')}
+          title={canSkipBlockingDelivery ? t('ui.Composer.QueuedRow.remove_from_queue_c0b9d9e') : updateTitle(t('ui.Composer.QueuedRow.update_agentsserver_to_safely_skip_this_de_7c9afa2'))}
           disabled={steeringPending || skippingDelivery || !canSkipBlockingDelivery}
           onClick={() => void skipBlockingDelivery()}
         >{skippingDelivery ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}</button>{reorderable && movementMenu}</div>
@@ -4770,7 +4773,7 @@ function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sessionI
           type="button"
           className="steer-action"
           aria-label={securePeerDelivery ? 'Skip encrypted peer delivery' : t("ui.Composer.QueuedRow.skip_incoming_delivery_1e74c78")}
-          title={canSkipBlockingDelivery ? skipDeliveryTitle : securePeerDelivery ? 'Update AgentsServer to safely skip this delivery.' : t("ui.Composer.QueuedRow.update_agentsserver_to_safely_skip_this_de_7c9afa2")}
+          title={canSkipBlockingDelivery ? skipDeliveryTitle : updateTitle(securePeerDelivery ? 'Update AgentsServer to safely skip this delivery.' : t("ui.Composer.QueuedRow.update_agentsserver_to_safely_skip_this_de_7c9afa2"))}
           disabled={steeringPending || skippingDelivery || !canSkipBlockingDelivery}
           onClick={() => void skipBlockingDelivery()}
         >{skippingDelivery ? <LoaderCircle className="spin" size={13} /> : <X size={13} />} <b>{securePeerDelivery ? (skippingDelivery ? 'Skipping…' : 'Skip delivery') : (skippingDelivery ? t("ui.Composer.QueuedRow.skipping_3aaedc1") : t("ui.Composer.QueuedRow.skip_delivery_7a6d970"))}</b></button>{reorderable && movementMenu}</div>

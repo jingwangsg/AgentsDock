@@ -21,7 +21,8 @@ export function WorkingDirectoryInput({
   onChange: (value: string) => void
   onCommit?: (value: string) => void
   defaultCwd: string
-  available: boolean
+  /** null: the server has not answered yet, so whether it offers suggestions is unknown. */
+  available: boolean | null
   showBrowseButton?: boolean
 }) {
   useLocale()
@@ -45,7 +46,7 @@ export function WorkingDirectoryInput({
   const [browseLoading, setBrowseLoading] = useState(false)
   const [browseError, setBrowseError] = useState<string | null>(null)
   const [browseRetry, setBrowseRetry] = useState(0)
-  const completionEnabled = available && typeof window.agentsDock.workingDirectories?.complete === 'function'
+  const completionEnabled = available === true && typeof window.agentsDock.workingDirectories?.complete === 'function'
 
   useEffect(() => {
     if (!focused || !expanded || !completionEnabled) {
@@ -304,6 +305,8 @@ export function WorkingDirectoryInput({
     </section>}
     {focused && !completionEnabled && <small className="working-directory-hint" role="status">{available
       ? t("ui.WorkingDirectoryInput.WorkingDirectoryInput.update_agentsdock_to_browse_folders_here_y_64f1f83")
-      : t("ui.WorkingDirectoryInput.WorkingDirectoryInput.folder_suggestions_need_a_newer_agentsserv_49c9e57")}</small>}
+      : available === null
+        ? t('serverConnection.availableOnceConnected')
+        : t("ui.WorkingDirectoryInput.WorkingDirectoryInput.folder_suggestions_need_a_newer_agentsserv_49c9e57")}</small>}
   </div>
 }

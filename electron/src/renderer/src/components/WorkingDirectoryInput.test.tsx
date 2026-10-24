@@ -25,7 +25,7 @@ function completion(input: string, names: string[], exists = false): WorkingDire
   }
 }
 
-function Harness({ available = true, onCommit, showBrowseButton = false }: { available?: boolean; onCommit?: (value: string) => void; showBrowseButton?: boolean }) {
+function Harness({ available = true, onCommit, showBrowseButton = false }: { available?: boolean | null; onCommit?: (value: string) => void; showBrowseButton?: boolean }) {
   const [value, setValue] = useState('/srv/work')
   return <WorkingDirectoryInput value={value} onChange={setValue} onCommit={onCommit} defaultCwd="/srv/work" available={available} showBrowseButton={showBrowseButton} />
 }
@@ -249,6 +249,20 @@ describe('WorkingDirectoryInput', () => {
     await user.click(screen.getByRole('textbox', { name: 'Working directory' }))
 
     expect(screen.getByText('Folder suggestions need a newer AgentsServer. You can still enter a path.')).toBeVisible()
+  })
+
+  it('does not blame the server version before the server has answered', async () => {
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { workingDirectories: { complete: vi.fn() } } as unknown as AgentsDockAPI
+    })
+    const user = userEvent.setup()
+    render(<Harness available={null} />)
+
+    await user.click(screen.getByRole('textbox', { name: 'Working directory' }))
+
+    expect(screen.getByText('Available once this AgentsServer is connected.')).toBeVisible()
+    expect(screen.queryByText(/newer AgentsServer/)).not.toBeInTheDocument()
   })
 
   it('points at the desktop app when the server supports completion but the preload binding is missing', async () => {

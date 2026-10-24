@@ -207,6 +207,21 @@ describe('ClaudeMcpDialog', () => {
     expect(read).toHaveBeenCalledTimes(1)
   })
 
+  it('says MCP waits for the connection, not for a server update, before the server has answered', () => {
+    const read = vi.fn()
+    installBridge(read)
+    useAppStore.setState({ profiles: [{
+      id: 'profile-a', name: 'A', serverUrl: 'http://localhost:7850', hasAccessToken: true,
+      serverSetupComplete: true, connectionState: 'offline', cachedUnreadCount: 0
+    }] })
+    render(<ClaudeMcpDialog open session={session} running={false} supported={null} onOpenChange={vi.fn()} />)
+
+    expect(screen.getByText('Offline')).toBeInTheDocument()
+    expect(screen.getByText('Available once this AgentsServer is connected.')).toBeInTheDocument()
+    expect(screen.queryByText('Update AgentsServer')).not.toBeInTheDocument()
+    expect(read).not.toHaveBeenCalled()
+  })
+
   it('refreshes after a rejected mutation without replaying it', async () => {
     const read = vi.fn()
       .mockResolvedValueOnce(snapshot())

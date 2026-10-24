@@ -2619,6 +2619,17 @@ describe('Composer', () => {
     expect(screen.getByText('User follow-up')).toBeVisible()
   })
 
+  it('does not ask to update a server that has not answered for a cached agent message', () => {
+    setAsyncAgentQueue([asyncAgentQueuedTurn()])
+    useAppStore.setState({ health: null })
+    render(<Composer />)
+
+    const row = screen.getByRole('status', { name: 'Renamed research agent: Authenticated agent message' })
+    expect(within(row).getByRole('button', { name: 'Send now' })).toHaveAttribute('title', 'Available once this AgentsServer is connected.')
+    expect(within(row).getByRole('button', { name: 'Edit' })).toHaveAttribute('title', 'Available once this AgentsServer is connected.')
+    expect(within(row).getByRole('button', { name: 'Remove from queue' })).toHaveAttribute('title', 'Available once this AgentsServer is connected.')
+  })
+
   it.each([false, true])('edits only the exact async body revision without grants or mandatory refresh (conflict=%s)', async conflict => {
     const body = 'KD Dev result: ' + 'Measured rollout detail. '.repeat(35) + 'END-EXACT-BODY'
     const agent = asyncAgentQueuedTurn({ source_title: 'KD Dev', prompt: 'Agent-authored same-server handoff',

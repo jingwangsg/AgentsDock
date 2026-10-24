@@ -192,6 +192,18 @@ describe('Side chat panel', () => {
     expect(screen.getByText('4.0T\tsleng', { normalizer: text => text })).toBeInTheDocument()
   })
 
+  it('asks to connect, not to update, while the server has not answered', () => {
+    useAppStore.setState({ connected: false, health: null })
+    const view = render(panel())
+    expect(screen.getByText('Connect to the server to ask a side question.')).toBeInTheDocument()
+    expect(screen.queryByText(/requires an updated AgentsServer/)).not.toBeInTheDocument()
+    view.unmount()
+
+    useAppStore.setState({ connected: true, health: { ok: true, capabilities: {} } })
+    render(panel())
+    expect(screen.getByText(/requires an updated AgentsServer/)).toBeInTheDocument()
+  })
+
   it('uses Chinese side-chat labels', () => {
     setLocale('zh-CN')
     render(panel())

@@ -14,6 +14,7 @@ import type {
   Session
 } from '@shared/types'
 import { useAppStore } from '../store/app-store'
+import { useUnansweredServerLabel } from './ServerSelector'
 
 export const CLAUDE_MCP_CAPABILITY_VERSION = 3
 
@@ -39,13 +40,15 @@ export function ClaudeMcpDialog({
   open: boolean
   session: Session
   running: boolean
-  supported: boolean
+  /** null: the server has not answered yet, which says nothing about its version. */
+  supported: boolean | null
   onOpenChange: (open: boolean) => void
 }) {
   useLocale()
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
+  const unansweredLabel = useUnansweredServerLabel()
   const scopeKey = JSON.stringify([activeProfileId, profileGeneration, session.id, open])
   const [scopedSnapshot, setScopedSnapshot] = useState<{ scopeKey: string; value: ClaudeMcpSnapshot } | null>(null)
   const snapshot = scopedSnapshot?.scopeKey === scopeKey ? scopedSnapshot.value : null
@@ -197,7 +200,13 @@ export function ClaudeMcpDialog({
           <Dialog.Close asChild><button type="button" className="icon-button" aria-label={t("ui.ClaudeMcpDialog.ClaudeMcpDialog.close_claude_mcp_servers_8f571ac")}><X size={16} /></button></Dialog.Close>
         </header>
         <div className="claude-mcp-body">
-          {!supported && <McpNotice
+          {supported === null && <McpNotice
+            tone="warning"
+            title={unansweredLabel}
+            message={t('serverConnection.availableOnceConnected')}
+          />}
+
+          {supported === false && <McpNotice
             tone="warning"
             title={t("ui.ClaudeMcpDialog.ClaudeMcpDialog.update_agentsserver_73ee81f")}
             message="This server does not support native Claude MCP management yet. Update AgentsServer to use /mcp here."

@@ -2935,7 +2935,7 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
   const catalog = useAppStore(state => state.runtimeCatalog)
   const health = useAppStore(state => state.health)
   const defaultCwd = useAppStore(state => state.health?.default_cwd?.trim() || '')
-  const directoryCompletionAvailable = useAppStore(state => state.health?.capabilities?.working_directory_completion?.available === true)
+  const directoryCompletionAvailable = useAppStore(state => state.health ? state.health.capabilities?.working_directory_completion?.available === true : null)
   const importSupported = useAppStore(state => localSessionImportSupported(state.health))
   const sessions = useAppStore(state => state.sessions)
   const [title, setTitle] = useState('')
