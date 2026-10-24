@@ -385,6 +385,21 @@ class RemoteServerTests(unittest.TestCase):
         manager.path.write_text(json.dumps({"version": 1, "servers": [legacy]}))
         assert rs.load_registry(manager.path)[0].hidden is False
 
+    def test_a_rename_changes_the_names_clients_reconcile_on(self) -> None:
+        manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server()
+        manager.servers["123456abcdef"] = make_server(id="123456abcdef", name="lab", local_port=7852)
+        hub = FastAPI()
+        rs.register_remote_server_routes(hub, manager=manager, authorize_admin=lambda request: None, websocket_authorized=lambda ws: True, **vars(hub_hooks()))
+        client = TestClient(hub)
+        assert rs.capability(manager)["names"] == ["osmo", "lab"]
+        # The hub saves the name trimmed; clients show what it saved. Another remote's name is allowed, as on deploy.
+        response = client.patch(f"{rs.ADMIN_PATH}/abcdef123456", json={"name": "  lab  "})
+        assert response.status_code == 200 and response.json()["server"]["name"] == "lab"
+        assert rs.capability(manager)["names"] == ["lab", "lab"] and rs.capability(manager)["ids"] == ["abcdef123456", "123456abcdef"]
+        assert client.patch(f"{rs.ADMIN_PATH}/abcdef123456", json={"name": "   "}).status_code == 422
+        assert rs.capability(manager)["names"] == ["lab", "lab"]
+
     def test_order_route_reorders_the_registry_around_what_the_client_has_synced(self) -> None:
         manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
         manager.servers["abcdef123456"] = make_server()

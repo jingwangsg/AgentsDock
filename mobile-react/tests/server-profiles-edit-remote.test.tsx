@@ -104,25 +104,40 @@ test('an install directory alone moves the remote without resending its saved ho
   await act(async () => { tree.unmount() })
 })
 
-test('renaming a hub remote saves only the name; a blank name keeps it; an unknown host does not block it', async () => {
+test('renaming a hub remote renames it on the hub only; a blank name keeps it; an unknown host does not block it', async () => {
   const moves: unknown[] = []
   const updates: unknown[] = []
+  const renames: unknown[] = []
+  let failRename: Error | null = null
   const tree = await render({
     profiles: [hub, { ...remote, sshHost: undefined }],
     activeProfileId: 'r1',
     onUpdateProfile: (profileId, patch) => { updates.push({ profileId, patch }) },
     onMoveRemote: async (profileId, input) => { moves.push({ profileId, input }) },
+    onRenameRemote: async (profileId, name) => {
+      renames.push({ profileId, name })
+      if (failRename) throw failRename
+    },
   })
   const root = tree.root
   await press(root, 'Edit gpu box')
   await type(root, 'server-profile-name', '')
   await press(root, 'Save')
-  assert.deepEqual(updates, [])
+  assert.deepEqual(renames, [])
   await press(root, 'Edit gpu box')
   await type(root, 'server-profile-name', 'gpu box (old)')
   assert.equal(button(root, 'Save').props.disabled, false)
   await press(root, 'Save')
-  assert.deepEqual(updates, [{ profileId: 'r1', patch: { name: 'gpu box (old)' } }])
+  assert.deepEqual(renames, [{ profileId: 'r1', name: 'gpu box (old)' }])
+  assert.equal(field(root, 'server-profile-name').length, 0)
+  // The hub could not save it: the editor stays open with the error and the typed name.
+  failRename = new Error('AgentsServer request failed (503)')
+  await press(root, 'Edit gpu box')
+  await type(root, 'server-profile-name', 'gpu box 2')
+  await press(root, 'Save')
+  assert.ok(texts(root).includes('AgentsServer request failed (503)'))
+  assert.equal(field(root, 'server-profile-name')[0].props.value, 'gpu box 2')
+  assert.deepEqual(updates, [])
   assert.deepEqual(moves, [])
   await act(async () => { tree.unmount() })
 })

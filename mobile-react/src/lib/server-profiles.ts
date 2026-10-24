@@ -100,17 +100,17 @@ export function hubProxyBaseURL(serverURL: string): string | null {
 
 /**
  * Diffs the saved profiles against the hub's remote-server registry. Only
- * proxied profiles of this hub can be removed; existing names are never
- * rewritten, and profiles of other hubs or direct servers are untouched.
- * A saved remote follows the hub's SSH host and hidden flag for it (a move, a hide, or another device's edit).
+ * proxied profiles of this hub can be removed, and profiles of other hubs or
+ * direct servers are untouched. A saved remote follows the hub's name, SSH host
+ * and hidden flag for it (a rename, a move, a hide, or another device's edit).
  */
 export function reconcileHubProfiles(
-  profiles: readonly Pick<StoredServerProfile, 'id' | 'serverURL' | 'sshHost' | 'hidden'>[],
+  profiles: readonly Pick<StoredServerProfile, 'id' | 'name' | 'serverURL' | 'sshHost' | 'hidden'>[],
   hubURL: string,
   remotes: readonly Pick<RemoteServer, 'name' | 'proxy_path' | 'ssh_host' | 'hidden'>[],
 ): {
   create: { name: string; serverURL: string; sshHost: string; hidden?: boolean }[]
-  update: { id: string; sshHost: string; hidden: boolean }[]
+  update: { id: string; name: string; sshHost: string; hidden: boolean }[]
   removeIds: string[]
 } {
   const hub = normalizeServerURL(hubURL)
@@ -123,8 +123,8 @@ export function reconcileHubProfiles(
       .map(([serverURL, remote]) => ({ name: remote.name, serverURL, sshHost: remote.ssh_host, ...(remote.hidden ? { hidden: true } : {}) })),
     update: profiles.flatMap(profile => {
       const remote = registered.get(normalizeServerURL(profile.serverURL))
-      return remote && (remote.ssh_host !== profile.sshHost || Boolean(remote.hidden) !== Boolean(profile.hidden))
-        ? [{ id: profile.id, sshHost: remote.ssh_host, hidden: Boolean(remote.hidden) }]
+      return remote && (remote.name !== profile.name || remote.ssh_host !== profile.sshHost || Boolean(remote.hidden) !== Boolean(profile.hidden))
+        ? [{ id: profile.id, name: remote.name, sshHost: remote.ssh_host, hidden: Boolean(remote.hidden) }]
         : []
     }),
     removeIds: profiles

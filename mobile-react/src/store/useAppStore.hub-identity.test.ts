@@ -37,6 +37,11 @@ const hiddenRemotes = new Set<string>()
 const hideRequests: unknown[] = []
 // A hub from before hiding: it ignores the flag and answers without it.
 let hubIgnoresHidden = false
+// The names the hub keeps for its remotes (the id unless renamed), the bodies of the renames it received, and
+// whether it fails the next one.
+const remoteNames: Record<string, string> = {}
+const renameRequests: unknown[] = []
+let failNextRename = false
 
 function mockServer(route: (path: string) => { key: string; path: string } | null): Server {
   return createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -51,13 +56,13 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
     if (requiredToken && target.key !== 'direct' && presented !== requiredToken) return reply(401, { detail: 'invalid token' })
     if (target.path === '/api/health') {
       if (healthDown.has(target.key)) return reply(502, { detail: 'remote_unreachable' })
-      const capabilities = target.key === 'hub' && hubRemotes ? { capabilities: { remote_servers_v1: { available: true, ids: hubRemotes, hidden: hubRemotes.filter(id => hiddenRemotes.has(id)) } } } : {}
+      const capabilities = target.key === 'hub' && hubRemotes ? { capabilities: { remote_servers_v1: { available: true, ids: hubRemotes, hidden: hubRemotes.filter(id => hiddenRemotes.has(id)), names: hubRemotes.map(id => remoteNames[id] ?? id) } } } : {}
       let instance = instances[target.key]
       if (target.key === 'hub' && staleHubInstanceAnswers > 0) { staleHubInstanceAnswers -= 1; instance = 'hub-instance-1' }
       return reply(200, { ok: true, server_identity: identities[target.key], server_instance_id: instance, server_version: 'hub-identity-test', api_contract_version: 8, active_sessions: [], active: running[target.key] ?? [], ...capabilities })
     }
     if (request.method === 'GET' && target.path === '/api/admin/remote-servers') {
-      const listed = (hubRemotes ?? []).map(id => ({ id, name: id, ssh_host: sshHosts[id] ?? id, install_dir: '', remote_port: 0, local_port: 0, created_at: '2026-09-30T10:00:00Z', proxy_path: `/api/remote/${id}`, tunnel: null, hidden: hiddenRemotes.has(id) }))
+      const listed = (hubRemotes ?? []).map(id => ({ id, name: remoteNames[id] ?? id, ssh_host: sshHosts[id] ?? id, install_dir: '', remote_port: 0, local_port: 0, created_at: '2026-09-30T10:00:00Z', proxy_path: `/api/remote/${id}`, tunnel: null, hidden: hiddenRemotes.has(id) }))
       listings += 1
       if (failNextListing) {
         failNextListing = false
@@ -77,7 +82,16 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
       let body = ''
       request.on('data', chunk => { body += chunk })
       request.on('end', () => {
-        const move = JSON.parse(body) as { ssh_host?: string; hidden?: boolean }
+        const move = JSON.parse(body) as { ssh_host?: string; hidden?: boolean; name?: string }
+        if (move.name !== undefined) {
+          renameRequests.push(move)
+          if (failNextRename) {
+            failNextRename = false
+            return reply(500, { detail: 'registry write failed' })
+          }
+          remoteNames.r1 = move.name.trim()
+          return reply(200, { server: { id: 'r1', name: remoteNames.r1 }, job_id: null })
+        }
         if (move.hidden !== undefined) {
           hideRequests.push(move)
           if (hubIgnoresHidden) return reply(200, { server: { id: 'r1' }, job_id: null })
@@ -358,6 +372,25 @@ try {
   await assert.rejects(useAppStore.getState().setHubRemoteHidden('remote', true), /This hub cannot hide servers yet/)
   assert.equal(remoteProfile()?.hidden, false)
   hubIgnoresHidden = false
+  // Renamed on another device: only the hub's names change, so the inactive hub's probe mirrors the name.
+  await useAppStore.getState().probeInactiveProfiles()
+  const listedBeforeRename = listings
+  remoteNames.r1 = 'oci_dev'
+  await useAppStore.getState().probeInactiveProfiles()
+  assert.equal(listings, listedBeforeRename + 1)
+  assert.equal(remoteProfile()?.name, 'oci_dev')
+  assert.equal((await savedProfile('remote'))?.name, 'oci_dev')
+  // Renamed from this device: the hub gets only the name, and the profile takes the name the hub saved.
+  await useAppStore.getState().renameHubRemote('remote', ' gpu_box ')
+  assert.deepEqual(renameRequests, [{ name: ' gpu_box ' }])
+  assert.equal(remoteProfile()?.name, 'gpu_box')
+  assert.equal((await savedProfile('remote'))?.name, 'gpu_box')
+  // A rename the hub fails changes nothing here.
+  failNextRename = true
+  await assert.rejects(useAppStore.getState().renameHubRemote('remote', 'other'), /registry write failed/)
+  assert.equal(remoteProfile()?.name, 'gpu_box')
+  assert.equal((await savedProfile('remote'))?.name, 'gpu_box')
+  await assert.rejects(useAppStore.getState().renameHubRemote('direct', 'other'), /Only servers the hub manages/)
   // The hub dropped the active remote: its profile stays while it is in use, and the probe keeps reading the registry.
   hubRemotes = []
   await useAppStore.getState().probeInactiveProfiles()

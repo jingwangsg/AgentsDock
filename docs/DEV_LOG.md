@@ -1,5 +1,65 @@
 # Public development log
 
+## 2026-10-25 — A hub remote has one name, kept by the hub, on every device (server, desktop and Android source)
+
+- Each client kept its own name for a remote server the hub manages. The
+  desktop's Settings → Server → Edit field read "Name on this Mac" and
+  saved the name only in the Mac's profile; Android's Edit saved it only
+  on the phone. Both apps took the hub's name only when they created a
+  remote's profile, so after renames the Mac, the phone and the hub could
+  each show a different name for the same server.
+- Saving a new name for a hub remote on the desktop or on Android now
+  sends it to the hub (`PATCH /api/admin/remote-servers/{id}` with only
+  `name`, which keeps the tunnel and moves the hub's `ssh <name>` alias).
+  The profile then shows the name the hub saved. When the hub does not
+  accept it, for example because it is not reachable, the editor shows
+  the error and keeps the typed name for a retry, and the old name stays.
+  A blank name still keeps the current one. Two remotes may share a name,
+  as before (the hub then writes no alias for either).
+- Both apps take the hub's name whenever they mirror its server list,
+  for existing profiles as well as new ones, as they already did for the
+  SSH host and the hidden flag. The hub's health report now lists the
+  remotes' names (`remote_servers_v1.names`), so a rename changes that
+  report and the other devices mirror the list at their next check, as
+  for a reorder or a hidden remote. With a hub that does not report
+  names, the desktop does not list the registry on every check; it then
+  follows a rename made elsewhere at its next full mirror (app start, or
+  a change of order or visibility).
+- The hub's own profile and directly added servers keep a name per
+  device; on the desktop their field still reads "Name on this Mac".
+  For a hub remote, and in the add form, the desktop field reads "Name"
+  (Chinese "名称") with the hint "Saved on the local server: every device
+  that uses it shows this name." Android's add form reads "Name" instead
+  of "Name on this device", and its edit note says the hub keeps the
+  remote's name.
+- Verified with tests that fail on the previous code: the hub reports
+  names in registry order and keeps a trimmed name; the desktop renames
+  through the hub, shows the saved name, keeps the old one when the hub
+  refuses, follows a rename seen in the hub's health, and lists a hub
+  without names once after a rename instead of at every check; both
+  editors send the rename to the hub and stay open on failure; Android's
+  mirror follows the hub's names, and its store renames through the hub
+  and follows a names-only change of the hub's health.
+- Real-app check: an isolated hub built from this source with one
+  registered remote (an AgentsServer on the same Mac, reached through a
+  test stand-in for ssh), the desktop app built from this source
+  (unpackaged, isolated profile) and the Android app (the build-76
+  sideload APK with this source's JavaScript) on an emulator. A rename
+  on the desktop changed the hub's registry, its health report and its
+  alias file, and the Android server menu showed the new name 4 s later.
+  A rename on Android changed the hub the same way, and the desktop's
+  server list showed it 18 s later. With the hub stopped, a rename on
+  either app showed the connection error and kept the old name; after
+  the hub restarted, Save in the same editor applied it, and the other
+  app followed. With no change on the hub, the desktop did not list the
+  registry again during 75 s.
+- Not covered: a real ssh tunnel, Sky and osmo remotes, and iOS (same
+  code as Android). On the desktop, errors in this editor keep Electron's
+  "Error invoking remote method …" prefix, as the editor's other actions
+  already do. Availability: source only. Renaming works with a running
+  hub; for other devices to follow a rename promptly, the hub must run
+  this source. Needs the desktop and Android updates.
+
 ## 2026-10-24 — The desktop app no longer asks to update a server it cannot reach (desktop)
 
 - The app reads what a server supports from its health report. When the app

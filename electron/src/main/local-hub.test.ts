@@ -14,8 +14,8 @@ function remote(id: string, overrides: Partial<RemoteServer> = {}): RemoteServer
   }
 }
 
-function profile(id: string, serverUrl: string, sshHost: string | null = null): PublicServerProfile {
-  return { id, name: id, serverUrl, hasAccessToken: true, serverSetupComplete: true, connectionState: 'cached', cachedUnreadCount: 0, sshHost }
+function profile(id: string, serverUrl: string, sshHost: string | null = null, name = id): PublicServerProfile {
+  return { id, name, serverUrl, hasAccessToken: true, serverSetupComplete: true, connectionState: 'cached', cachedUnreadCount: 0, sshHost }
 }
 
 describe('parseConfigEnv', () => {
@@ -88,37 +88,47 @@ describe('planHubRemoteProfiles', () => {
   it('removes proxied profiles the registry no longer lists and updates a drifted ssh host', () => {
     const plan = planHubRemoteProfiles(HUB, [remote('keep', { ssh_host: 'osmo_9000' })], [
       profile('hub', HUB),
-      profile('p-keep', `${HUB}/api/remote/keep`, 'old_host'),
+      profile('p-keep', `${HUB}/api/remote/keep`, 'old_host', 'keep'),
       profile('p-stale', `${HUB}/api/remote/stale/`, 'stale_host'),
       profile('legacy', 'http://127.0.0.1:7851', 'osmo_9000'),
       profile('other-hub', 'http://10.0.0.5:7850/api/remote/zzz')
     ])
-    expect(plan).toEqual({ add: [], update: [{ id: 'p-keep', sshHost: 'osmo_9000', hidden: false }], remove: ['p-stale'] })
+    expect(plan).toEqual({ add: [], update: [{ id: 'p-keep', name: 'keep', sshHost: 'osmo_9000', hidden: false }], remove: ['p-stale'] })
   })
 
   it('mirrors the hub\'s hidden flag on new and existing profiles', () => {
-    const wasHidden = { ...profile('p-hidden', `${HUB}/api/remote/shown`, 'shown_host'), hidden: true }
+    const wasHidden = { ...profile('p-hidden', `${HUB}/api/remote/shown`, 'shown_host', 'shown'), hidden: true }
     const plan = planHubRemoteProfiles(HUB, [remote('shown'), remote('hide', { hidden: true }), remote('fresh', { hidden: true })], [
-      profile('hub', HUB), wasHidden, profile('p-hide', `${HUB}/api/remote/hide`, 'hide_host')
+      profile('hub', HUB), wasHidden, profile('p-hide', `${HUB}/api/remote/hide`, 'hide_host', 'hide')
     ])
     expect(plan).toEqual({
       add: [{ name: 'fresh', serverUrl: `${HUB}/api/remote/fresh`, sshHost: 'fresh_host', hidden: true }],
-      update: [{ id: 'p-hidden', sshHost: 'shown_host', hidden: false }, { id: 'p-hide', sshHost: 'hide_host', hidden: true }],
+      update: [{ id: 'p-hidden', name: 'shown', sshHost: 'shown_host', hidden: false }, { id: 'p-hide', name: 'hide', sshHost: 'hide_host', hidden: true }],
       remove: []
     })
   })
 
+  it('takes the name the hub keeps for a remote, also one another remote has', () => {
+    const plan = planHubRemoteProfiles(HUB, [remote('one', { name: 'oci_dev' }), remote('two', { name: 'oci_dev' })], [
+      profile('hub', HUB), profile('p1', `${HUB}/api/remote/one`, 'one_host', 'oci_dev_32g'), profile('p2', `${HUB}/api/remote/two`, 'two_host', 'oci_dev')
+    ])
+    expect(plan).toEqual({ add: [], update: [{ id: 'p1', name: 'oci_dev', sshHost: 'one_host', hidden: false }], remove: [] })
+  })
+
   it('is a no-op when profiles already mirror the registry', () => {
     const remotes = [remote('one'), remote('two')]
-    const profiles = [profile('hub', HUB), profile('p1', `${HUB}/api/remote/one`, 'one_host'), profile('p2', `${HUB}/api/remote/two/`, 'two_host')]
+    const profiles = [profile('hub', HUB), profile('p1', `${HUB}/api/remote/one`, 'one_host', 'one'), profile('p2', `${HUB}/api/remote/two/`, 'two_host', 'two')]
     expect(planHubRemoteProfiles(`${HUB}/`, remotes, profiles)).toEqual({ add: [], update: [], remove: [] })
   })
 })
 
 describe('hubRemotesKey', () => {
-  it('changes with the registry order and with which remotes are hidden, and reads a hub without hiding as none hidden', () => {
-    expect(hubRemotesKey(['one', 'two'])).toBe(hubRemotesKey(['one', 'two'], []))
-    expect(new Set([hubRemotesKey(['one', 'two']), hubRemotesKey(['two', 'one']), hubRemotesKey(['one', 'two'], ['two'])]).size).toBe(3)
+  it('changes with the registry order, with which remotes are hidden and with their names, and reads a hub without them as none', () => {
+    expect(hubRemotesKey(['one', 'two'])).toBe(hubRemotesKey(['one', 'two'], [], []))
+    expect(new Set([
+      hubRemotesKey(['one', 'two']), hubRemotesKey(['two', 'one']), hubRemotesKey(['one', 'two'], ['two']),
+      hubRemotesKey(['one', 'two'], [], ['a b', 'c']), hubRemotesKey(['one', 'two'], [], ['a', 'b c'])
+    ]).size).toBe(5)
   })
 })
 

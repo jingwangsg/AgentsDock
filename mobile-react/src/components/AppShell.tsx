@@ -101,6 +101,7 @@ function AppShellContent() {
   const redeployHubRemote = useAppStore(state => state.redeployHubRemote)
   const moveHubRemote = useAppStore(state => state.moveHubRemote)
   const setHubRemoteHidden = useAppStore(state => state.setHubRemoteHidden)
+  const renameHubRemote = useAppStore(state => state.renameHubRemote)
   const updateServerCli = useAppStore(state => state.updateServerCli)
   const updateAndRedeployAll = useAppStore(state => state.updateAndRedeployAll)
   const [mobileChatOpen, setMobileChatOpen] = useState(false)
@@ -514,6 +515,7 @@ function AppShellContent() {
       onRedeployRemote={redeployHubRemote}
       onMoveRemote={moveHubRemote}
       onSetRemoteHidden={setHubRemoteHidden}
+      onRenameRemote={renameHubRemote}
       onUpdateCli={updateServerCli}
       onUpdateAll={updateAndRedeployAll}
     />

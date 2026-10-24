@@ -2444,6 +2444,8 @@ def capability(manager: RemoteServerManager) -> dict[str, Any]:
         "ids": list(manager.servers),
         # Likewise for a remote hidden or shown from another client.
         "hidden": [remote_id for remote_id, server in manager.servers.items() if server.hidden],
+        # And for a remote renamed from another client: every client shows the hub's name.
+        "names": [server.name for server in manager.servers.values()],
     }
 
 

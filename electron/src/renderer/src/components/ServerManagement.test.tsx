@@ -85,6 +85,7 @@ describe('ServerManagement', () => {
   const remoteRedeploy = vi.fn()
   const remoteUpdateAll = vi.fn()
   const remoteSetHidden = vi.fn()
+  const remoteRename = vi.fn()
   const progressListeners = new Set<(value: ServerUpdateAllProgress) => void>()
   const pairingUrl = vi.fn()
   const copyToken = vi.fn()
@@ -106,6 +107,7 @@ describe('ServerManagement', () => {
     remoteRedeploy.mockReset()
     remoteUpdateAll.mockReset()
     remoteSetHidden.mockReset().mockResolvedValue(undefined)
+    remoteRename.mockReset().mockResolvedValue(undefined)
     progressListeners.clear()
     pairingUrl.mockReset().mockResolvedValue('http://nvmac.tail46daa8.ts.net:7850')
     copyToken.mockReset().mockResolvedValue(true)
@@ -119,7 +121,7 @@ describe('ServerManagement', () => {
       configurable: true,
       value: {
         servers: { list, update, remove, reorder },
-        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove, move: remoteMove, redeploy: remoteRedeploy, updateAll: remoteUpdateAll, setHidden: remoteSetHidden },
+        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove, move: remoteMove, redeploy: remoteRedeploy, updateAll: remoteUpdateAll, setHidden: remoteSetHidden, rename: remoteRename },
         hub: { pairingUrl, copyToken, startLocalServer, restartLocalServer },
         events: { on: (name: string, listener: (value: ServerUpdateAllProgress) => void) => {
           if (name !== 'remote-servers:update-all-progress') return () => undefined
@@ -639,6 +641,44 @@ describe('ServerManagement', () => {
     await waitFor(() => expect(remoteMove).toHaveBeenCalledExactlyOnceWith('gb300', { sshHost: 'oci@new-cluster', installDir: undefined }))
     await waitFor(() => expect(screen.queryByLabelText('SSH host')).toBeNull())
     expect(update).not.toHaveBeenCalled()
+  })
+
+  it('renames a hub remote on the hub, which every device follows, and keeps the editor open when that fails', async () => {
+    useAppStore.setState({ profiles: [hub, gb300], activeProfileId: hub.id })
+    list.mockResolvedValue([hub, { ...gb300, name: 'gb300_dev' }])
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+
+    await user.click(screen.getByRole('button', { name: 'Edit GB300' }))
+    expect(screen.queryByLabelText('Name on this Mac')).toBeNull()
+    expect(screen.getByLabelText('Name')).toHaveAttribute('title', 'Saved on the local server: every device that uses it shows this name.')
+    await user.clear(screen.getByLabelText('Name'))
+    await user.type(screen.getByLabelText('Name'), 'gb300_dev')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(remoteRename).toHaveBeenCalledExactlyOnceWith('gb300', 'gb300_dev'))
+    await waitFor(() => expect(screen.queryByLabelText('Name')).toBeNull())
+    expect(useAppStore.getState().profiles.find(profile => profile.id === 'gb300')?.name).toBe('gb300_dev')
+    expect(update).not.toHaveBeenCalled()
+    expect(remoteMove).not.toHaveBeenCalled()
+
+    remoteRename.mockRejectedValueOnce(new Error('AgentsServer request failed (503)'))
+    await user.click(screen.getByRole('button', { name: 'Edit gb300_dev' }))
+    await user.clear(screen.getByLabelText('Name'))
+    await user.type(screen.getByLabelText('Name'), 'gb300')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('AgentsServer request failed (503)')
+    expect(screen.getByLabelText('Name')).toHaveValue('gb300')
+    expect(useAppStore.getState().profiles.find(profile => profile.id === 'gb300')?.name).toBe('gb300_dev')
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('names a new remote on the local server, not only on this Mac', async () => {
+    useAppStore.setState({ profiles: [hub], activeProfileId: hub.id })
+    render(<ServerManagement addRequest={1} />)
+    expect(screen.queryByLabelText('Name on this Mac')).toBeNull()
+    expect(screen.getByLabelText('Name')).toHaveAttribute('title', 'Saved on the local server: every device that uses it shows this name.')
   })
 
   it('shows no SSH host or install directory when editing the local server', async () => {

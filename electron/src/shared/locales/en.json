@@ -420,6 +420,7 @@
   "composer.providerCommands.loadFailed": "Couldn’t load provider commands.",
   "composer.providerCommands.retry": "Retry",
   "serverProfile.localNameHint": "Local app label only; this does not rename the server in Team Network.",
+  "serverProfile.hubNameHint": "Saved on the local server: every device that uses it shows this name.",
   "serverProfile.nameOnThisMac": "Name on this Mac",
   "serverProfile.installDirUnchanged": "Leave empty to keep it; a new host uses its default",
   "serverProfile.moveHint": "Saving a new SSH host or install directory deploys AgentsServer there and connects to the new install. Chats stay with the previous install, which keeps running.",

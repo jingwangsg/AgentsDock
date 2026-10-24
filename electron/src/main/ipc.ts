@@ -260,6 +260,7 @@ export function registerIpc(
   handle('remote-servers:cancel', () => service.cancelRemoteDeploy())
   handle('remote-servers:remove', profileId => service.removeHubRemote(profileId))
   handle('remote-servers:set-hidden', (profileId, hidden) => service.setHubRemoteHidden(profileId, hidden === true))
+  handle('remote-servers:rename', (profileId, name) => service.renameHubRemote(profileId, typeof name === 'string' ? name : ''))
   // Its own progress channel: an add-server deploy's log must not receive a redeploy's lines.
   handleWithEvent('remote-servers:redeploy', (event, profileId, force) => service.redeployHubRemote(profileId, force === true, progress => {
     if (!event.sender.isDestroyed()) event.sender.send('remote-servers:redeploy-progress', progress)

@@ -1615,10 +1615,13 @@ export class AppService {
   /**
    * The profile list mirrors the hub registry (server/remote_servers.py). `hub` is the active scope or the
    * throwaway client of an inactive-profile health probe; `stillValid` guards against a stale caller.
+   * `reportedKey` is the hubRemotesKey of the health report that asked for this pass: the next report is compared
+   * with it, so a hub whose report lacks a field (an older hub without `names`) is not listed again on every check.
    */
   private reconcileHubRemotes(
     hub: { profileId: string; serverUrl: string; client: AgentServerClient },
-    stillValid: () => boolean
+    stillValid: () => boolean,
+    reportedKey?: string
   ): Promise<PublicServerProfile[]> {
     if (this.hubReconcile) return this.hubReconcile
     const run = (async () => {
@@ -1628,11 +1631,11 @@ export class AppService {
       // The active profile cannot be removed (`removeServer` throws); leave the count unset so the next pass retries.
       const removable = plan.remove.filter(id => id !== this.activeProfileId)
       for (const id of removable) await this.removeServer(id)
-      for (const { id, sshHost, hidden } of plan.update) {
+      for (const { id, name, sshHost, hidden } of plan.update) {
         const before = this.settings.getProfile(id)
-        this.settings.updateProfile(id, { sshHost, hidden })
-        // The hub moved or redeployed the remote: an alias this Mac keeps for it must follow. Hiding leaves it as it is.
-        if (before?.sshHost !== sshHost) {
+        this.settings.updateProfile(id, { name, sshHost, hidden })
+        // The hub moved, redeployed or renamed the remote: an alias this Mac keeps for it must follow. Hiding leaves it as it is.
+        if (before?.sshHost !== sshHost || before?.name !== name) {
           void this.syncSshHostAlias(before, this.settings.getProfile(id)).catch(error => appLog('ssh-hosts', 'alias could not follow the remote', { id, error: errorText(error) }))
         }
       }
@@ -1644,7 +1647,7 @@ export class AppService {
       const order = hubRemoteProfileOrder(hub.serverUrl, servers, this.settings.listProfiles())
       if (order) this.settings.reorderProfiles(order)
       this.lastHubRemotesKey = removable.length === plan.remove.length
-        ? hubRemotesKey(servers.map(server => server.id), servers.filter(server => server.hidden).map(server => server.id))
+        ? reportedKey ?? hubRemotesKey(servers.map(server => server.id), servers.filter(server => server.hidden).map(server => server.id), servers.map(server => server.name))
         : null
       this.emitProfiles()
       return this.publicProfiles()
@@ -1760,6 +1763,26 @@ export class AppService {
       // A hub from before hiding ignores the field.
       if (server.hidden !== hidden) throw new Error('This hub cannot hide servers yet: restart it on a newer AgentsServer.')
       // A reconcile already in flight may have listed the hub before the PATCH; joining it would keep the old state.
+      await this.hubReconcile?.catch(() => undefined)
+      await this.reconcileHubRemotes({ profileId: hub.id, serverUrl: hub.serverUrl, client }, () => true)
+    } finally {
+      client.dispose()
+    }
+  }
+
+  /**
+   * Server list "Edit" with a new name for one of the hub's remotes: the hub keeps the name, so every client shows the
+   * same one after its next reconcile. The profile here takes the name the hub saved; a refused name changes nothing.
+   */
+  async renameHubRemote(profileId: string, name: string): Promise<void> {
+    const hub = this.hubProfile()
+    const serverUrl = this.settings.getProfileMetadata(profileId)?.serverUrl ?? ''
+    const remoteId = hub ? hubRemoteId(hub.serverUrl, serverUrl) : null
+    if (!hub || !remoteId) throw new Error('Only servers the hub manages can be renamed.')
+    const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+    try {
+      await client.renameRemoteServer(remoteId, name)
+      // A reconcile already in flight may have listed the hub before the PATCH; joining it would keep the old name.
       await this.hubReconcile?.catch(() => undefined)
       await this.reconcileHubRemotes({ profileId: hub.id, serverUrl: hub.serverUrl, client }, () => true)
     } finally {
@@ -6247,8 +6270,9 @@ export class AppService {
     } else this.mailHints.retire()
     if (!portForwardingCapabilityAvailable(health)) this.portTunnels.disposeAll()
     const remotes = health.capabilities?.remote_servers_v1
-    if (scope.serverUrl === DEFAULT_SERVER_URL && remotes?.available && hubRemotesKey(remotes.ids, remotes.hidden) !== this.lastHubRemotesKey) {
-      void this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope)).catch(error => appLog('hub', 'remote reconcile failed', { message: errorText(error) }))
+    const remotesKey = remotes && hubRemotesKey(remotes.ids, remotes.hidden, remotes.names)
+    if (scope.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotesKey !== this.lastHubRemotesKey) {
+      void this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope), remotesKey).catch(error => appLog('hub', 'remote reconcile failed', { message: errorText(error) }))
     }
     return scope
   }
@@ -7503,10 +7527,11 @@ export class AppService {
           expectedIdentity,
           token,
         )
-        // A remote deleted or reordered on the hub while another profile is active must show in the switcher.
+        // A remote deleted, reordered or renamed on the hub while another profile is active must show in the switcher.
         const remotes = health.capabilities?.remote_servers_v1
-        if (profile.serverUrl === DEFAULT_SERVER_URL && remotes?.available && hubRemotesKey(remotes.ids, remotes.hidden) !== this.lastHubRemotesKey) {
-          await this.reconcileHubRemotes({ profileId, serverUrl: profile.serverUrl, client }, () => this.profileHealthProbeIsCurrent(profileId, revision, epoch))
+        const remotesKey = remotes && hubRemotesKey(remotes.ids, remotes.hidden, remotes.names)
+        if (profile.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotesKey !== this.lastHubRemotesKey) {
+          await this.reconcileHubRemotes({ profileId, serverUrl: profile.serverUrl, client }, () => this.profileHealthProbeIsCurrent(profileId, revision, epoch), remotesKey)
             .catch(error => appLog('hub', 'remote reconcile failed', { message: errorText(error) }))
         }
       } else {

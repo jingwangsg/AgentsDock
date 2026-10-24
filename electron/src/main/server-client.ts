@@ -974,6 +974,13 @@ export class AgentServerClient {
       body: JSON.stringify({ hidden })
     })
   }
+  /** The same PATCH with only the name: the hub keeps the tunnel and moves its ssh alias to the new name. */
+  renameRemoteServer(remoteId: string, name: string): Promise<{ server: RemoteServer }> {
+    return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name })
+    })
+  }
   /** Same id, new host or install dir: the hub deploys there and reports the job, or null when nothing moved. */
   moveRemoteServer(remoteId: string, input: RemoteServerMoveInput): Promise<{ job_id: string | null }> {
     return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}`, {

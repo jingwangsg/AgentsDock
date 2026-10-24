@@ -91,8 +91,9 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     () => profiles.find(profile => profile.id === draft?.profileId) ?? null,
     [draft?.profileId, profiles, getLocale()]
   )
-  // The hub's remotes can move to another host or install dir; the hub's own address is fixed.
-  const hostEditable = Boolean(hub && editedProfile && isHubRemote(editedProfile.serverUrl))
+  // The hub keeps its remotes' names, so every device shows the same one, and can move a remote to another host or
+  // install dir; the hub's own address is fixed.
+  const hubRemote = Boolean(hub && editedProfile && isHubRemote(editedProfile.serverUrl))
 
   useEffect(() => {
     if (addRequest > 0) {
@@ -175,12 +176,15 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     try {
       if (!editedProfile) throw new Error('This server profile no longer exists.')
       const name = draft.name.trim() || editedProfile.name
+      const renamed = name !== editedProfile.name
       const patch = {
-        ...(name !== editedProfile.name ? { name } : {}),
+        ...(renamed && !hubRemote ? { name } : {}),
         ...(draft.resetServerIdentity ? { resetServerIdentity: true } : {})
       }
       const current = useAppStore.getState()
       if (current.switchingProfileId) throw new Error('Wait for the current server switch to finish, then save again.')
+      // On the hub, not in this Mac's profile: the profile takes the name the hub saved, as on every other device.
+      if (renamed && hubRemote) await window.agentsDock.remoteServers.rename(draft.profileId, name)
       if (draft.profileId === current.activeProfileId && patch.resetServerIdentity) {
         const generation = current.profileGeneration
         const switched = await switchServer(draft.profileId, true, patch)
@@ -194,7 +198,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       }
       const sshHost = draft.sshHost.trim()
       const installDir = draft.installDir.trim() || undefined
-      if (hostEditable && (sshHost !== editedProfile.sshHost || installDir)) {
+      if (hubRemote && (sshHost !== editedProfile.sshHost || installDir)) {
         // 'deploy' makes Cancel stop the hub's job, as in the add form.
         setBusy('deploy')
         setDeployProgress([])
@@ -522,8 +526,8 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.ServerManagement.close_server_editor_0b6523b")} disabled={Boolean(busy)} onClick={() => setDraft(null)}><XIcon /></button>
       </div>
       {draft.profileId ? <>
-        <label><span>{t('serverProfile.nameOnThisMac')}</span><input ref={nameInputRef} value={draft.name} onChange={event => updateDraft({ name: event.target.value })} placeholder={t("ui.ServerManagement.ServerManagement.production_home_mac_lab_b241246")} title={t('serverProfile.localNameHint')} /></label>
-        {hostEditable && <>
+        <label><span>{t(hubRemote ? 'ui.ServerManagement.ServerManagement.name_dcd1d52' : 'serverProfile.nameOnThisMac')}</span><input ref={nameInputRef} value={draft.name} onChange={event => updateDraft({ name: event.target.value })} placeholder={t("ui.ServerManagement.ServerManagement.production_home_mac_lab_b241246")} title={t(hubRemote ? 'serverProfile.hubNameHint' : 'serverProfile.localNameHint')} /></label>
+        {hubRemote && <>
           <label><span>{t('sshTunnel.host')}</span><div className="input-with-icon"><Server size={14} /><input value={draft.sshHost} disabled={Boolean(busy)} onChange={event => updateDraft({ sshHost: event.target.value })} placeholder="osmo_9000 or user@host" autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} /></div></label>
           <label><span>{t('sshTunnel.installDir')}</span><input value={draft.installDir} disabled={Boolean(busy)} onChange={event => updateDraft({ installDir: event.target.value })} placeholder={t('serverProfile.installDirUnchanged')} title={t('sshTunnel.installDirHint')} autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} /></label>
           <p className="field-hint">{t('serverProfile.moveHint')}</p>
@@ -539,7 +543,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         <label><span>{t('sshTunnel.password')}</span><input type="password" value={draft.password} disabled={busy === 'deploy'} onChange={event => updateDraft({ password: event.target.value })} autoComplete="off" /></label>
         <p className="field-hint">{t('sshTunnel.passwordHint')}</p>
         <label><span>{t('sshTunnel.installDir')}</span><input value={draft.installDir} disabled={busy === 'deploy'} onChange={event => updateDraft({ installDir: event.target.value })} title={t('sshTunnel.installDirHint')} autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} /></label>
-        <label><span>{t('serverProfile.nameOnThisMac')}</span><input value={draft.name} disabled={busy === 'deploy'} onChange={event => updateDraft({ name: event.target.value })} placeholder={draft.sshHost.trim() || t("ui.ServerManagement.ServerManagement.production_home_mac_lab_b241246")} title={t('serverProfile.localNameHint')} /></label>
+        <label><span>{t('ui.ServerManagement.ServerManagement.name_dcd1d52')}</span><input value={draft.name} disabled={busy === 'deploy'} onChange={event => updateDraft({ name: event.target.value })} placeholder={draft.sshHost.trim() || t("ui.ServerManagement.ServerManagement.production_home_mac_lab_b241246")} title={t('serverProfile.hubNameHint')} /></label>
       </>}
       {deployProgress.length > 0 && <div className="server-setup-progress" role="log">
         {deployProgress.slice(-12).map((item, index, visible) => <div key={`${item.phase}-${deployProgress.length - visible.length + index}`} className={item.phase === 'complete' ? 'complete' : ''}>{item.phase === 'complete' || index < visible.length - 1 ? <Check size={13} /> : busy === 'deploy' ? <LoaderCircle className="spin" size={13} /> : <Clock3 size={13} />}<span>{item.message}</span></div>)}
@@ -549,7 +553,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         <span className="dialog-spacer" />
         <button type="button" className="quiet-button" disabled={Boolean(busy) && busy !== 'deploy'} onClick={() => { if (busy === 'deploy') void window.agentsDock.remoteServers.cancel(); else setDraft(null) }}>{t("ui.ServerManagement.ServerManagement.cancel_19766ed")}</button>
         {draft.profileId
-          ? <button type="button" className="primary-button" disabled={Boolean(busy) || (hostEditable && !draft.sshHost.trim())} onClick={() => void save()}>{(busy === 'save' || busy === 'deploy') && <LoaderCircle className="spin" size={13} />} {t(busy === 'deploy' ? 'sshTunnel.deploying' : "ui.ServerManagement.ServerManagement.save_1509f56")}</button>
+          ? <button type="button" className="primary-button" disabled={Boolean(busy) || (hubRemote && !draft.sshHost.trim())} onClick={() => void save()}>{(busy === 'save' || busy === 'deploy') && <LoaderCircle className="spin" size={13} />} {t(busy === 'deploy' ? 'sshTunnel.deploying' : "ui.ServerManagement.ServerManagement.save_1509f56")}</button>
           : <button type="button" className="primary-button" disabled={Boolean(busy) || !draft.sshHost.trim()} onClick={() => void deploy()}>{busy === 'deploy' ? <><LoaderCircle className="spin" size={13} />{' '}{t(draft.mode === 'attach' ? 'sshTunnel.attaching' : 'sshTunnel.deploying')}</> : t("ui.ServerManagement.ServerManagement.add_switch_90143f7")}</button>}
       </footer>
     </div>}
