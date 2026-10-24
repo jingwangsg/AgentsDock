@@ -6041,6 +6041,62 @@ describe('Composer', () => {
     expect(screen.getByText(/one or more legacy chat references cannot be used/i)).toBeInTheDocument()
   })
 
+  it.each([
+    ['offline', 'Offline'],
+    ['retrying', 'Retrying'],
+    ['connecting', 'Connecting'],
+    ['online', 'Connecting']
+  ] as const)('labels a server in the %s state as %s, not as needing an update, while it has no Health', async (connectionState, label) => {
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-1', title: 'Chat', backend: 'codex' },
+        { id: 'chat-2', title: 'Training', backend: 'claude' }
+      ],
+      profiles: [{
+        id: 'profile-a', name: 'A', serverUrl: 'http://localhost:7850', hasAccessToken: true,
+        serverSetupComplete: true, connectionState, cachedUnreadCount: 0
+      }],
+      health: null
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message')
+
+    await user.type(editor, '@')
+    const chats = screen.getByRole('listbox', { name: 'Chats' })
+    expect(within(chats).getByText(label)).toBeInTheDocument()
+    expect(within(chats).getByText('Available once this AgentsServer is connected.')).toBeInTheDocument()
+    expect(within(chats).queryByText('Server update required')).not.toBeInTheDocument()
+
+    await user.type(editor, '@')
+    const team = screen.getByRole('listbox', { name: 'Team Network destinations' })
+    expect(within(team).getByText(label)).toBeInTheDocument()
+    expect(within(team).queryByText('Server update required')).not.toBeInTheDocument()
+  })
+
+  it('asks for a server update when a server that answered lacks the capability', async () => {
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-1', title: 'Chat', backend: 'codex' },
+        { id: 'chat-2', title: 'Training', backend: 'claude' }
+      ],
+      health: { ok: true, capabilities: {} }
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message')
+
+    await user.type(editor, '@')
+    const chats = screen.getByRole('listbox', { name: 'Chats' })
+    expect(within(chats).getByText('Server update required')).toBeInTheDocument()
+    expect(within(chats).getByText('Cross-chat handoffs are unavailable on this AgentsServer.')).toBeInTheDocument()
+
+    await user.type(editor, '@')
+    const team = screen.getByRole('listbox', { name: 'Team Network destinations' })
+    expect(within(team).getByText('Server update required')).toBeInTheDocument()
+    expect(within(team).getByText('Structured @@ Team Network hints are unavailable on this AgentsServer.')).toBeInTheDocument()
+  })
+
   it('canonicalizes restored local @ direct and @@ route references to inline @ route hints', async () => {
     const send = vi.fn()
     Object.defineProperty(window, 'agentsDock', {

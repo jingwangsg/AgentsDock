@@ -121,6 +121,7 @@ import { openCodeProviderCommandsAvailable } from '@shared/opencode'
 import { opencodeBackendAvailable, opencodeBackendUnavailableReason } from '@shared/runtime-catalog'
 import { RuntimeHealthNotice } from './RuntimeHealth'
 import { MediaPreviewDialog } from './MediaGrid'
+import { connectionStateLabel } from './ServerSelector'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { WorkingDirectoryInput } from './WorkingDirectoryInput'
 import { WorkingDirectoryPopover } from './WorkingDirectoryPopover'
@@ -2735,7 +2736,7 @@ export function TeamMentionPalette({
 
   return <div id={id} className="chat-mention-palette team-mention-palette" role="listbox" aria-label={t('teamNetwork.mention.destinations')}>
     {!supported
-      ? <div className="chat-mention-empty"><AlertTriangle size={14} /><span><strong>{t('teamNetwork.mention.serverUpdate')}</strong><small>{t('teamNetwork.mention.structuredUnavailable')}</small></span></div>
+      ? <MentionUnavailableNotice title={t('teamNetwork.mention.serverUpdate')} detail={t('teamNetwork.mention.structuredUnavailable')} />
       : <>
         {candidates.map((candidate, index) => <div className="chat-mention-option-row" key={candidate.id}><button
           ref={node => { optionRefs.current[index] = node }}
@@ -3297,6 +3298,20 @@ function WorkingDirectoryCommandDialog({
   </Dialog.Root>
 }
 
+/**
+ * A palette's notice when Health lacks its capability. With no Health at all the server has not
+ * answered yet (still connecting, or unreachable), which says nothing about its version, so the
+ * notice names the connection state the sidebar shows instead of asking for an update.
+ */
+function MentionUnavailableNotice({ title, detail }: { title: string; detail: string }) {
+  const healthLoaded = useAppStore(state => state.health !== null)
+  const connectionState = useAppStore(state => state.profiles.find(profile => profile.id === state.activeProfileId)?.connectionState)
+  return <div className="chat-mention-empty"><AlertTriangle size={14} /><span>
+    <strong>{healthLoaded ? title : connectionStateLabel(connectionState === 'offline' || connectionState === 'retrying' ? connectionState : 'connecting')}</strong>
+    <small>{healthLoaded ? detail : t('serverConnection.availableOnceConnected')}</small>
+  </span></div>
+}
+
 function ChatMentionPalette({
   id,
   mention,
@@ -3389,7 +3404,7 @@ function ChatMentionPalette({
 
   return <div id={id} className="chat-mention-palette" role="listbox" aria-label={t("ui.Composer.ChatMentionPalette.chats_ef5b404")}>
     {!supported
-      ? <div className="chat-mention-empty"><AlertTriangle size={14} /><span><strong>{t("ui.Composer.ChatMentionPalette.server_update_required_4a5a2af")}</strong><small>{t("ui.Composer.ChatMentionPalette.cross_chat_handoffs_are_unavailable_on_thi_85df9b0")}</small></span></div>
+      ? <MentionUnavailableNotice title={t("ui.Composer.ChatMentionPalette.server_update_required_4a5a2af")} detail={t("ui.Composer.ChatMentionPalette.cross_chat_handoffs_are_unavailable_on_thi_85df9b0")} />
       : <>
         {candidates.map((candidate, index) => {
           if (candidate.kind === 'new_agent') {

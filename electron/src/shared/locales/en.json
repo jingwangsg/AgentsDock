@@ -3202,5 +3202,6 @@
   "timeline.count.webPages.one": "Opened 1 page",
   "timeline.count.webPages.other": "Opened {count} pages",
   "composer.queue.attachment": "Attachment",
-  "importChats.resume.alreadyOpen": "This session already belongs to the chat that is open now, “{title}”."
+  "importChats.resume.alreadyOpen": "This session already belongs to the chat that is open now, “{title}”.",
+  "serverConnection.availableOnceConnected": "Available once this AgentsServer is connected."
 }
