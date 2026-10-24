@@ -25,7 +25,6 @@ export function cwdChipLabel(cwd?: string | null): string {
  */
 export function WorkingDirectoryPopover({ session }: { session: Session }) {
   useLocale()
-  // null: the server has not answered yet, which says nothing about its version.
   const completionAvailable = useAppStore(state => state.health ? state.health.capabilities?.working_directory_completion?.available === true : null)
   const defaultCwd = useAppStore(state => state.health?.default_cwd?.trim() || '')
   const [open, setOpen] = useState(false)

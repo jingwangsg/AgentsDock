@@ -192,7 +192,7 @@ describe('Side chat panel', () => {
     expect(screen.getByText('4.0T\tsleng', { normalizer: text => text })).toBeInTheDocument()
   })
 
-  it('asks to connect, not to update, while the server has not answered', () => {
+  it('asks to connect before the server answers and to update when it answers without side chat', () => {
     useAppStore.setState({ connected: false, health: null })
     const view = render(panel())
     expect(screen.getByText('Connect to the server to ask a side question.')).toBeInTheDocument()

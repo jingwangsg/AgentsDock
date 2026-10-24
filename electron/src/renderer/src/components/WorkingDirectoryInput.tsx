@@ -21,7 +21,7 @@ export function WorkingDirectoryInput({
   onChange: (value: string) => void
   onCommit?: (value: string) => void
   defaultCwd: string
-  /** null: the server has not answered yet, so whether it offers suggestions is unknown. */
+  /** null: no Health yet, so support is unknown; show the connection notice, not the update notice. */
   available: boolean | null
   showBrowseButton?: boolean
 }) {

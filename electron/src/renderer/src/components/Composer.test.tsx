@@ -2619,7 +2619,7 @@ describe('Composer', () => {
     expect(screen.getByText('User follow-up')).toBeVisible()
   })
 
-  it('does not ask to update a server that has not answered for a cached agent message', () => {
+  it('queued agent-message controls wait for the connection, not a server update, before the server has answered', () => {
     setAsyncAgentQueue([asyncAgentQueuedTurn()])
     useAppStore.setState({ health: null })
     render(<Composer />)
@@ -6053,19 +6053,17 @@ describe('Composer', () => {
   })
 
   it.each([
-    ['offline', 'Offline'],
-    ['retrying', 'Retrying'],
-    ['connecting', 'Connecting'],
-    ['online', 'Connecting']
-  ] as const)('labels a server in the %s state as %s, not as needing an update, while it has no Health', async (connectionState, label) => {
+    ['offline', null, 'Offline'],
+    ['retrying', null, 'Retrying'],
+    ['offline', 'Server returned 401 Unauthorized', 'Authentication Required'],
+    ['connecting', null, 'Connecting'],
+    // Online without Health: the first check has not finished.
+    ['online', null, 'Connecting']
+  ] as const)('labels a server in the %s state (error %s) as %s, not as needing an update, while it has no Health', async (connectionState, lastConnectionError, label) => {
     useAppStore.setState({
-      sessions: [
-        { id: 'chat-1', title: 'Chat', backend: 'codex' },
-        { id: 'chat-2', title: 'Training', backend: 'claude' }
-      ],
       profiles: [{
         id: 'profile-a', name: 'A', serverUrl: 'http://localhost:7850', hasAccessToken: true,
-        serverSetupComplete: true, connectionState, cachedUnreadCount: 0
+        serverSetupComplete: true, connectionState, lastConnectionError, cachedUnreadCount: 0
       }],
       health: null
     })
@@ -6106,13 +6104,7 @@ describe('Composer', () => {
   })
 
   it('asks for a server update when a server that answered lacks the capability', async () => {
-    useAppStore.setState({
-      sessions: [
-        { id: 'chat-1', title: 'Chat', backend: 'codex' },
-        { id: 'chat-2', title: 'Training', backend: 'claude' }
-      ],
-      health: { ok: true, capabilities: {} }
-    })
+    useAppStore.setState({ health: { ok: true, capabilities: {} } })
     const user = userEvent.setup()
     render(<Composer />)
     const editor = screen.getByPlaceholderText('Message')

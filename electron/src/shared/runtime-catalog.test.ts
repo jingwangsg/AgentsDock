@@ -315,6 +315,7 @@ describe('backend admission before the server has answered', () => {
       expect(runtimeSelectionError(health, validCatalog, 'codex', null, 'custom')).toBe('Available once this AgentsServer is connected.')
     }
     expect(runtimeSelectionError({ ok: true }, validCatalog, 'opencode', null)).toMatch(/Update the server/)
+    expect(runtimeSelectionError({ ok: true }, validCatalog, 'codex', null, 'custom')).toMatch(/Update AgentsServer/)
   })
 })
 

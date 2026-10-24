@@ -19,6 +19,13 @@ beforeEach(() => {
 afterEach(cleanup)
 const mount = (value = session) => render(<SessionSubagentSettings session={value} profileScope={scope} />)
 describe('chat sub-agent limit', () => {
+  it('waits for the connection, not a server update, while the server has not answered', () => {
+    useAppStore.setState({ connected: false, health: null })
+    mount()
+    expect(screen.getByText('Available once this AgentsServer is connected.')).toBeInTheDocument()
+    expect(screen.queryByText(/Update AgentsServer/)).not.toBeInTheDocument()
+  })
+
   it('saves an active chat only on submit with its original server identity', async () => {
     mount()
     fireEvent.change(screen.getByRole('textbox'), { target: { value: '5' } })

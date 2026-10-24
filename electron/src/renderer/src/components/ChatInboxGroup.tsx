@@ -19,7 +19,6 @@ export function ChatInboxGroup({ item, sessionId, profileScope }: {
   item: SystemItem; sessionId: string; profileScope: WorkspaceProfileScope | null
 }) {
   useLocale()
-  // null: the server has not answered yet, which says nothing about its version.
   const available = useAppStore(state => state.health ? chatMailboxAvailable(state.health) : null)
   const [open, setOpen] = useState(false)
   const [visibleLimit, setVisibleLimit] = useState(25)

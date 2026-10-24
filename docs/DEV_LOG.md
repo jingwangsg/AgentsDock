@@ -3,45 +3,51 @@
 ## 2026-10-24 — The desktop app no longer asks to update a server it cannot reach (desktop)
 
 - The app reads what a server supports from its health report. When the app
-  starts, or switches to a server, while that server does not answer (for
-  example a hub remote whose cluster job was cancelled), it has no report,
+  started, or switched to a server, while that server did not answer (for
+  example a hub remote whose cluster job was cancelled), it had no report,
   and every capability check read as "not supported". Typing `@` in a chat
   then showed "Server update required — Cross-chat handoffs are unavailable
   on this AgentsServer." for a server that reported the capability once it
   was reachable again. The same missing report produced update or
   invalid-reference messages in the `@@` list, the composer notice and Send
   tooltip of Cursor, OpenCode and custom-endpoint chats (and the same
-  reasons in the new-chat and job dialogs), the side chat, the
-  working-directory popover and `/workdir` field, the Claude MCP dialog,
-  chat inbox groups, queued agent-message controls, and the warning under a
-  drafted `@Chat` reference ("legacy chat references cannot be used. Delete
-  the highlighted reference"). After a disconnect the app keeps the last
-  report, so a server that went offline during a session was not affected.
+  reasons in the new-chat and job dialogs), the job dialog's route-hint and
+  independent-run notes, the side chat, the working-directory popover and
+  the folder fields of `/workdir` and the new-chat dialog, the Claude MCP
+  dialog, the per-chat sub-agent limit, chat inbox groups, queued
+  agent-message controls, the workspace editor's file creation, and the
+  warning under a drafted `@Chat` reference ("legacy chat references cannot
+  be used. Delete the highlighted reference"). After a disconnect the app
+  keeps the last report, so a server that went offline during a session
+  was not affected.
 - With no report these places now say "Available once this AgentsServer is
-  connected." (Chinese: "连接到此 AgentsServer 后可用。"). The `@` and `@@`
-  lists and the MCP dialog title it with the server's state from the
-  sidebar: Offline, Retrying or Connecting. The side chat shows its existing
-  "Connect to the server to ask a side question." A server that answers
-  without a capability still gets the update message.
-- Verified with desktop tests that fail on the previous code (both
-  palettes in four connection states, the shared Cursor/OpenCode/custom
-  endpoint reasons, side chat, folder popover and field, MCP dialog, inbox
-  group, queued agent message, drafted reference) and pass with it; the
-  existing update-message tests still pass. In the desktop app built from
-  this source (unpackaged, isolated profile) against an isolated server:
-  with the server stopped and the app reloaded, the previous build showed
-  "Server update required" in the `@` list; this build showed "Offline"
-  with the message in `@` and `@@`, the folder popover, `/workdir`, `/mcp`,
-  the side chat, Cursor and OpenCode chats and under a drafted reference,
-  also in Chinese. After the server started, the same window listed the
-  chats in `@`, browsed folders, accepted the drafted reference, enabled
-  Send and showed Cursor's actual setup reason, without a restart.
-- Not changed: the workspace editor's New file and New folder tooltips and
-  its file-creation errors still ask for an update without a report (the
-  editor itself already says workspace files will be available after
-  AgentsServer finishes connecting). The Android app's `@` picker does not
-  open without a report; its folder picker and Cursor notice have the same
-  issue and are left for a separate Android change. In builds where Team
+  connected." (Chinese: "连接到此 AgentsServer 后可用。"); the editor uses
+  its existing "Workspace files will be available after AgentsServer
+  finishes connecting." The `@` and `@@` lists and the MCP dialog title it
+  with the server's state from the sidebar: Offline, Retrying, Connecting,
+  or Authentication Required when the check was refused. The side chat
+  shows its existing "Connect to the server to ask a side question." A
+  server that answers without a capability still gets the update message.
+- Verified with desktop tests that fail on the previous code and pass with
+  it: both palettes in five connection states, the shared Cursor, OpenCode
+  and custom-endpoint reasons, side chat, folder popover and field, MCP
+  dialog, sub-agent limit, job dialog, inbox group, queued agent message,
+  editor file creation and drafted reference. The existing update-message
+  tests still pass. In the desktop app built from this source (unpackaged,
+  isolated profile) against an isolated server, with the server stopped and
+  the app reloaded: the previous build showed "Server update required" in
+  the `@` list; this build showed "Offline" and the message in `@`, `@@` and
+  `/mcp`, the message alone in the folder popover, `/workdir`, Cursor and
+  OpenCode chats and under a drafted reference, and the connect note in the
+  side chat, also in Chinese. After the server started, the same window
+  listed the chats in `@`, browsed folders, accepted the drafted reference,
+  enabled Send and showed Cursor's actual setup reason, without a restart.
+- Not changed: the skip tooltip of an encrypted peer delivery, which stays
+  English-only, and the editor's rename, delete and row-menu messages,
+  which need directory entries the app cannot load without a report. The
+  Android app's `@` picker does not open without a report; its folder
+  picker, Cursor notice and scheduled-job route-hint note use the same
+  pattern and are left for a separate Android change. In builds where Team
   Network is hidden, typing `@@` shows "Server update required" even on a
   current server. Availability: source only; desktop only, no server update
   needed.

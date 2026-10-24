@@ -1152,6 +1152,16 @@ describe('SessionDialog runtime selection', () => {
 describe('JobDialog', () => {
   afterEach(cleanup)
 
+  it('says route hints and independent runs wait for the connection, not a server update, while the server has not answered', () => {
+    useAppStore.setState({ selectedSessionId: 'chat-1', sessions: [{ id: 'chat-1', title: 'Chat', backend: 'codex' }],
+      health: null, runtimeCatalog: null, drafts: {}, error: null,
+      modals: { settings: false, newChat: false, resume: false, folder: false, digest: false, job: true, search: false, review: false, importChats: false }
+    })
+    render(<JobDialog />)
+    expect(screen.getAllByText('Available once this AgentsServer is connected.')).toHaveLength(2)
+    expect(screen.queryByText(/Update AgentsServer to add/)).not.toBeInTheDocument()
+  })
+
   it.each(['chat', 'standalone'] as const)('keeps custom Codex job admission and labels in %s mode independent of the normal model lock', async contextMode => {
     const create = vi.fn().mockResolvedValue({})
     Object.defineProperty(window, 'agentsDock', { configurable: true, value: { jobs: { create } } as unknown as AgentsDockAPI })

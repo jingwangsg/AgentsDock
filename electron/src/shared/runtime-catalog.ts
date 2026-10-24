@@ -119,7 +119,6 @@ export function opencodeBackendAvailable(health: Health | null | undefined, cata
 
 export function opencodeBackendUnavailableReason(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): string | null {
   if (opencodeBackendAvailable(health, catalog)) return null
-  // No Health means the server has not answered yet, which says nothing about its version.
   if (!opencodeBackendSupported(health)) return health ? t('opencode.unsupportedServer') : t('serverConnection.availableOnceConnected')
   const diagnostic = runtimeDiagnosticFor(health, catalog, 'opencode')
   if (!catalog?.backends?.opencode && diagnostic?.status === 'ready') return t('opencode.modelsLoading')

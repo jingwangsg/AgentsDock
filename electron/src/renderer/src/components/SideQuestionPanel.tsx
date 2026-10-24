@@ -113,7 +113,6 @@ export function SideQuestionPanel({ session, scope, controller, active = true, f
     <div className="side-chat-bottom">
       {showLatest && <button type="button" className="icon-button side-chat-jump" aria-label={t('timeline.ui.jumpToLatest')}
         title={t('timeline.ui.jumpToLatest')} onClick={jumpToLatest}><ArrowDown size={14} /></button>}
-      {/* No Health means the server has not answered yet, which says nothing about its version. */}
       {!supported && health && <p className="side-chat-note" role="status">{t('sideQuestion.unsupported')}</p>}
       {(supported || !health) && !online && <p className="side-chat-note" role="status">{t('sideQuestion.connect')}</p>}
       {online && snapshot.loading && <p className="side-chat-note" role="status">{t('sideChat.syncing')}</p>}

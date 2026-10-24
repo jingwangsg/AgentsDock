@@ -14,7 +14,7 @@ import type {
   Session
 } from '@shared/types'
 import { useAppStore } from '../store/app-store'
-import { useUnansweredServerLabel } from './ServerSelector'
+import { useNoHealthConnectionLabel } from './ServerSelector'
 
 export const CLAUDE_MCP_CAPABILITY_VERSION = 3
 
@@ -40,7 +40,7 @@ export function ClaudeMcpDialog({
   open: boolean
   session: Session
   running: boolean
-  /** null: the server has not answered yet, which says nothing about its version. */
+  /** null: no Health yet, so support is unknown; show the connection notice, not the update notice. */
   supported: boolean | null
   onOpenChange: (open: boolean) => void
 }) {
@@ -48,7 +48,7 @@ export function ClaudeMcpDialog({
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
-  const unansweredLabel = useUnansweredServerLabel()
+  const connectionLabel = useNoHealthConnectionLabel()
   const scopeKey = JSON.stringify([activeProfileId, profileGeneration, session.id, open])
   const [scopedSnapshot, setScopedSnapshot] = useState<{ scopeKey: string; value: ClaudeMcpSnapshot } | null>(null)
   const snapshot = scopedSnapshot?.scopeKey === scopeKey ? scopedSnapshot.value : null
@@ -202,7 +202,7 @@ export function ClaudeMcpDialog({
         <div className="claude-mcp-body">
           {supported === null && <McpNotice
             tone="warning"
-            title={unansweredLabel}
+            title={connectionLabel}
             message={t('serverConnection.availableOnceConnected')}
           />}
 

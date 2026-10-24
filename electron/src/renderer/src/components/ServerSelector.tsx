@@ -185,10 +185,15 @@ export function connectionStateLabel(state: ServerConnectionState): string {
   return t("ui.ServerSelector.connectionStateLabel.cached_a251c18")
 }
 
-/** The sidebar's label for the active server while it has sent no Health: Offline, Retrying or Connecting. */
-export function useUnansweredServerLabel(): string {
-  const state = useAppStore(state => state.profiles.find(profile => profile.id === state.activeProfileId)?.connectionState)
-  return connectionStateLabel(state === 'offline' || state === 'retrying' ? state : 'connecting')
+/**
+ * Label for the active server while the app has no Health from it. Offline and Retrying come from a
+ * failed check and use the sidebar's wording; any other state has not finished a check and reads as Connecting.
+ */
+export function useNoHealthConnectionLabel(): string {
+  const profile = useAppStore(state => state.profiles.find(candidate => candidate.id === state.activeProfileId))
+  return profile && (profile.connectionState === 'offline' || profile.connectionState === 'retrying')
+    ? profileConnectionLabel(profile)
+    : connectionStateLabel('connecting')
 }
 
 function profileConnectionLabel(profile: PublicServerProfile): string {
