@@ -2935,7 +2935,7 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
   const catalog = useAppStore(state => state.runtimeCatalog)
   const health = useAppStore(state => state.health)
   const defaultCwd = useAppStore(state => state.health?.default_cwd?.trim() || '')
-  const directoryCompletionAvailable = useAppStore(state => state.health?.capabilities?.working_directory_completion?.available === true)
+  const directoryCompletionAvailable = useAppStore(state => state.health ? state.health.capabilities?.working_directory_completion?.available === true : null)
   const importSupported = useAppStore(state => localSessionImportSupported(state.health))
   const sessions = useAppStore(state => state.sessions)
   const [title, setTitle] = useState('')
@@ -4189,11 +4189,11 @@ function JobPromptEditor({
     <small className="job-chat-target-hint">
       {routeHintsSupported
         ? t("ui.Dialogs.JobPromptEditor.chat_gives_the_scheduled_agent_that_route__1146d61")
-        : t("ui.Dialogs.JobPromptEditor.update_agentsserver_to_add_scheduled_chat__01e862a")}
+        : health ? t("ui.Dialogs.JobPromptEditor.update_agentsserver_to_add_scheduled_chat__01e862a") : t('serverConnection.availableOnceConnected')}
       {' '}
       {teamSupported
         ? t('teamNetwork.reference.scheduledHint')
-        : t('teamNetwork.reference.updateScheduled')}
+        : health && t('teamNetwork.reference.updateScheduled')}
     </small>
   </div>
 }
@@ -4564,7 +4564,7 @@ export function JobDialog() {
       <fieldset className="job-context-fieldset"><legend>{t("ui.Dialogs.JobDialog.run_context_20887b3")}</legend><div className={`job-context-picker${supportsIndependentRuns ? '' : ' single'}`} role="group" aria-label={t("ui.Dialogs.JobDialog.run_context_20887b3")}>
         <button type="button" className={contextMode === 'chat' ? 'active' : ''} aria-pressed={contextMode === 'chat'} onClick={() => selectContextMode('chat')}><strong>{t("ui.Dialogs.JobDialog.continue_in_this_chat_eed3ae3")}</strong><small>{t("ui.Dialogs.JobDialog.use_this_chat_s_existing_context_and_add_e_d7db2e4")}</small></button>
         {supportsIndependentRuns && <button type="button" className={contextMode === 'standalone' ? 'active' : ''} aria-pressed={contextMode === 'standalone'} onClick={() => selectContextMode('standalone')}><strong>{t("ui.Dialogs.JobDialog.independent_runs_3d32d40")}</strong><small>{t(independentHelpKey, { backend: backendLabel(backend, backend === session?.backend ? session.codex_provider : undefined) })}</small></button>}
-      </div>{!supportsIndependentRuns && <small className="job-context-unavailable">{t("ui.Dialogs.JobDialog.update_agentsserver_to_add_independent_run_6138641")}</small>}</fieldset>
+      </div>{!supportsIndependentRuns && <small className="job-context-unavailable">{health ? t("ui.Dialogs.JobDialog.update_agentsserver_to_add_independent_run_6138641") : t('serverConnection.availableOnceConnected')}</small>}</fieldset>
       {contextMode === 'standalone' && archiveSuccessfulRunsAvailable && <label className="checkbox-row" title={t('ui.job.archiveSuccessfulRunsHelp')}><input type="checkbox" checked={archiveSuccessfulRuns} onChange={event => setArchiveSuccessfulRuns(event.target.checked)} />{t('ui.job.archiveSuccessfulRuns')}</label>}
       {runtimeError && <small className="schedule-validation error" role="alert">{runtimeError}{enabled ? t("ui.Dialogs.JobDialog.pause_this_job_or_choose_an_available_runt_1d574aa") : ''}</small>}
       <fieldset className="schedule-builder"><legend>{t("ui.Dialogs.JobDialog.schedule_f4830a1")}</legend><div className="segmented schedule-kind">{(['interval', 'cron', 'rrule'] as JobScheduleKind[]).map(kind => <button type="button" key={kind} className={scheduleKind === kind ? 'active' : ''} aria-pressed={scheduleKind === kind} onClick={() => setScheduleKind(kind)}>{kind === 'rrule' ? 'RRULE' : kind[0].toUpperCase() + kind.slice(1)}</button>)}</div>

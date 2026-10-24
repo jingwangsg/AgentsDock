@@ -121,6 +121,7 @@ import { openCodeProviderCommandsAvailable } from '@shared/opencode'
 import { opencodeBackendAvailable, opencodeBackendUnavailableReason } from '@shared/runtime-catalog'
 import { RuntimeHealthNotice } from './RuntimeHealth'
 import { MediaPreviewDialog } from './MediaGrid'
+import { useNoHealthConnectionLabel } from './ServerSelector'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { WorkingDirectoryInput } from './WorkingDirectoryInput'
 import { WorkingDirectoryPopover } from './WorkingDirectoryPopover'
@@ -2269,7 +2270,10 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
           referenceSupported={referenceSupported}
           teamReferencesSupported={composerTeamReferencesSupported}
         />}
-        {!referencesSupported && <span className="chat-reference-warning">{!chatReferencesSupported
+        {/* Without Health no reference is known to be invalid. A secure-peer reference is refused whatever the server supports, so it keeps its own message. */}
+        {!referencesSupported && <span className="chat-reference-warning">{!health && !hasRemoteAgentReference
+          ? t('serverConnection.availableOnceConnected')
+          : !chatReferencesSupported
           ? hasRemoteAgentReference
             ? remoteAgentRouteUnavailable()
             : references.some(reference => reference.target_kind === 'cross_server' && !referenceSupported(reference))
@@ -2404,7 +2408,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         open={mcpDialogOpen}
         session={session}
         running={running}
-        supported={claudeMcpCapabilityAdvertised(claudeControls)}
+        supported={health ? claudeMcpCapabilityAdvertised(claudeControls) : null}
         onOpenChange={setMcpDialogOpen}
       />
       </div>
@@ -2735,7 +2739,7 @@ export function TeamMentionPalette({
 
   return <div id={id} className="chat-mention-palette team-mention-palette" role="listbox" aria-label={t('teamNetwork.mention.destinations')}>
     {!supported
-      ? <div className="chat-mention-empty"><AlertTriangle size={14} /><span><strong>{t('teamNetwork.mention.serverUpdate')}</strong><small>{t('teamNetwork.mention.structuredUnavailable')}</small></span></div>
+      ? <MentionUnavailableNotice updateTitle={t('teamNetwork.mention.serverUpdate')} updateDetail={t('teamNetwork.mention.structuredUnavailable')} />
       : <>
         {candidates.map((candidate, index) => <div className="chat-mention-option-row" key={candidate.id}><button
           ref={node => { optionRefs.current[index] = node }}
@@ -3234,7 +3238,7 @@ function WorkingDirectoryCommandDialog({
 }) {
   useLocale()
   const defaultCwd = useAppStore(state => state.health?.default_cwd?.trim() || '')
-  const completionAvailable = useAppStore(state => state.health?.capabilities?.working_directory_completion?.available === true)
+  const completionAvailable = useAppStore(state => state.health ? state.health.capabilities?.working_directory_completion?.available === true : null)
   const [draft, setDraft] = useState(session.cwd?.trim() || defaultCwd)
   const [saving, setSaving] = useState(false)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -3295,6 +3299,16 @@ function WorkingDirectoryCommandDialog({
       </Dialog.Content>
     </Dialog.Portal>
   </Dialog.Root>
+}
+
+/** Without Health the server has not answered yet, so show its connection state instead of the update notice. */
+function MentionUnavailableNotice({ updateTitle, updateDetail }: { updateTitle: string; updateDetail: string }) {
+  const healthLoaded = useAppStore(state => state.health !== null)
+  const connectionLabel = useNoHealthConnectionLabel()
+  return <div className="chat-mention-empty"><AlertTriangle size={14} /><span>
+    <strong>{healthLoaded ? updateTitle : connectionLabel}</strong>
+    <small>{healthLoaded ? updateDetail : t('serverConnection.availableOnceConnected')}</small>
+  </span></div>
 }
 
 function ChatMentionPalette({
@@ -3389,7 +3403,7 @@ function ChatMentionPalette({
 
   return <div id={id} className="chat-mention-palette" role="listbox" aria-label={t("ui.Composer.ChatMentionPalette.chats_ef5b404")}>
     {!supported
-      ? <div className="chat-mention-empty"><AlertTriangle size={14} /><span><strong>{t("ui.Composer.ChatMentionPalette.server_update_required_4a5a2af")}</strong><small>{t("ui.Composer.ChatMentionPalette.cross_chat_handoffs_are_unavailable_on_thi_85df9b0")}</small></span></div>
+      ? <MentionUnavailableNotice updateTitle={t("ui.Composer.ChatMentionPalette.server_update_required_4a5a2af")} updateDetail={t("ui.Composer.ChatMentionPalette.cross_chat_handoffs_are_unavailable_on_thi_85df9b0")} />
       : <>
         {candidates.map((candidate, index) => {
           if (candidate.kind === 'new_agent') {
@@ -4511,6 +4525,8 @@ function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sessionI
   useEffect(() => { setBodyLoading(false); setBodyError(null); setExpandedBody(null) }, [bodyIdentity])
   const messageBody = agentMessage ? turn.message_body ?? (loadedBody?.identity === bodyIdentity ? loadedBody.body : null) : null
   const canControlAgentMessage = agentMessage && asyncControls && Number.isInteger(turn.message_revision) && turn.message_revision! >= 0
+  const healthLoaded = useAppStore(state => state.health !== null)
+  const connectTitle = healthLoaded ? null : t('serverConnection.availableOnceConnected')
   const drag = useDraggable({ id: turn.queued_id, disabled: !reorderable || moving })
   const target = useDroppable({ id: turn.queued_id, disabled: !reorderable || moving })
   const ref = (node: HTMLElement | null) => { drag.setNodeRef(node); target.setNodeRef(node) }
@@ -4738,15 +4754,15 @@ function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sessionI
       : agentMessage
       ? <div className="queue-actions"><button
           type="button" className="steer-action" disabled={!canControlAgentMessage || steeringPending || promotionPending || Boolean(runtimeError) || crossChatFence.runNow}
-          title={!canControlAgentMessage ? t('composer.agentQueue.updateRequired') : running ? t('composer.agentQueue.sendNowRunning') : actionTitle} onClick={() => void steer()}
+          title={!canControlAgentMessage ? connectTitle ?? t('composer.agentQueue.updateRequired') : running ? t('composer.agentQueue.sendNowRunning') : actionTitle} onClick={() => void steer()}
         ><CornerDownRight size={13} /><b>{t('composer.agentQueue.sendNow')}</b></button>
         <button type="button" className="steer-action" disabled={!canControlAgentMessage || bodyLoading || steeringPending}
-          title={!canControlAgentMessage ? t('composer.agentQueue.updateRequired') : t('composer.agentQueue.editMessage')} onClick={() => void editAgentMessage()}
+          title={!canControlAgentMessage ? connectTitle ?? t('composer.agentQueue.updateRequired') : t('composer.agentQueue.editMessage')} onClick={() => void editAgentMessage()}
         ><Pencil size={13} /><b>{t('composer.agentQueue.edit')}</b></button><button
           type="button"
           className="queue-action"
           aria-label={t('ui.Composer.QueuedRow.remove_from_queue_c0b9d9e')}
-          title={canSkipBlockingDelivery ? t('ui.Composer.QueuedRow.remove_from_queue_c0b9d9e') : t('ui.Composer.QueuedRow.update_agentsserver_to_safely_skip_this_de_7c9afa2')}
+          title={canSkipBlockingDelivery ? t('ui.Composer.QueuedRow.remove_from_queue_c0b9d9e') : connectTitle ?? t('ui.Composer.QueuedRow.update_agentsserver_to_safely_skip_this_de_7c9afa2')}
           disabled={steeringPending || skippingDelivery || !canSkipBlockingDelivery}
           onClick={() => void skipBlockingDelivery()}
         >{skippingDelivery ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}</button>{reorderable && movementMenu}</div>
@@ -4755,7 +4771,8 @@ function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sessionI
           type="button"
           className="steer-action"
           aria-label={securePeerDelivery ? 'Skip encrypted peer delivery' : t("ui.Composer.QueuedRow.skip_incoming_delivery_1e74c78")}
-          title={canSkipBlockingDelivery ? skipDeliveryTitle : securePeerDelivery ? 'Update AgentsServer to safely skip this delivery.' : t("ui.Composer.QueuedRow.update_agentsserver_to_safely_skip_this_de_7c9afa2")}
+          // Secure-peer rows stay English-only (Localization.integration.test.tsx), so their title is not swapped.
+          title={canSkipBlockingDelivery ? skipDeliveryTitle : securePeerDelivery ? 'Update AgentsServer to safely skip this delivery.' : connectTitle ?? t("ui.Composer.QueuedRow.update_agentsserver_to_safely_skip_this_de_7c9afa2")}
           disabled={steeringPending || skippingDelivery || !canSkipBlockingDelivery}
           onClick={() => void skipBlockingDelivery()}
         >{skippingDelivery ? <LoaderCircle className="spin" size={13} /> : <X size={13} />} <b>{securePeerDelivery ? (skippingDelivery ? 'Skipping…' : 'Skip delivery') : (skippingDelivery ? t("ui.Composer.QueuedRow.skipping_3aaedc1") : t("ui.Composer.QueuedRow.skip_delivery_7a6d970"))}</b></button>{reorderable && movementMenu}</div>

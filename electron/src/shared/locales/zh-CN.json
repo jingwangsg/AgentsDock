@@ -3202,5 +3202,6 @@
   "timeline.count.webPages.one": "已打开 1 个网页",
   "timeline.count.webPages.other": "已打开 {count} 个网页",
   "composer.queue.attachment": "附件",
-  "importChats.resume.alreadyOpen": "这个会话已属于当前打开的对话“{title}”。"
+  "importChats.resume.alreadyOpen": "这个会话已属于当前打开的对话“{title}”。",
+  "serverConnection.availableOnceConnected": "连接到此 AgentsServer 后可用。"
 }

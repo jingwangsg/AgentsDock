@@ -27,6 +27,17 @@ describe('WorkingDirectoryPopover', () => {
     useAppStore.setState({ updateSession: realUpdateSession })
   })
 
+  it('says folder browsing waits for the connection, not for a server update, before the server has answered', async () => {
+    useAppStore.setState({ health: null })
+    const user = userEvent.setup()
+    render(<WorkingDirectoryPopover session={{ id: 'chat-1', title: 'Chat', backend: 'codex', cwd: '/srv' }} />)
+
+    await user.click(screen.getByRole('button', { name: 'Working directory: /srv' }))
+
+    expect(await screen.findByText('Available once this AgentsServer is connected.')).toBeVisible()
+    expect(screen.queryByText(/newer AgentsServer/)).not.toBeInTheDocument()
+  })
+
   it('loads typed paths automatically and treats Return as Choose', async () => {
     const complete = vi.fn(async (path: string) => path === '/srv/pasted'
       ? completion(path, ['nested'])

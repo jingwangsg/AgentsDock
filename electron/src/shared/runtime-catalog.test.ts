@@ -307,6 +307,18 @@ describe('optional Cursor backend admission', () => {
   })
 })
 
+describe('backend admission before the server has answered', () => {
+  it('says the server is not connected instead of asking for an update', () => {
+    for (const health of [null, undefined]) {
+      expect(runtimeSelectionError(health, validCatalog, 'cursor', 'auto')).toBe('Available once this AgentsServer is connected.')
+      expect(runtimeSelectionError(health, validCatalog, 'opencode', null)).toBe('Available once this AgentsServer is connected.')
+      expect(runtimeSelectionError(health, validCatalog, 'codex', null, 'custom')).toBe('Available once this AgentsServer is connected.')
+    }
+    expect(runtimeSelectionError({ ok: true }, validCatalog, 'opencode', null)).toMatch(/Update the server/)
+    expect(runtimeSelectionError({ ok: true }, validCatalog, 'codex', null, 'custom')).toMatch(/Update AgentsServer/)
+  })
+})
+
 describe('locked model admission', () => {
   const catalog: RuntimeCatalog = {
     backends: {

@@ -1680,9 +1680,7 @@ export function WorkspaceEditor({
 
   const createUntitledFile = (directory = '') => {
     if (!creationAvailable) {
-      setWorkspaceError(session.archived
-        ? t('editor.archivedChatsAreReadOnly')
-        : t('editor.updateAgentsserverToCreateWorkspaceFilesAndFolders'))
+      setWorkspaceError(currentCreationAuthorityError())
       return
     }
     const currentFiles = openFilesRef.current
@@ -1739,9 +1737,7 @@ export function WorkspaceEditor({
       return
     }
     if (!creationAvailable) {
-      setWorkspaceError(session.archived
-        ? t('editor.archivedChatsAreReadOnly')
-        : t('editor.updateAgentsserverToCreateWorkspaceFilesAndFolders'))
+      setWorkspaceError(currentCreationAuthorityError())
       return
     }
     if (workspaceMutationRef.current) {
@@ -1788,9 +1784,7 @@ export function WorkspaceEditor({
     if (!creationAvailable) {
       setPendingCreate(current => current ? {
         ...current,
-        error: session.archived
-          ? t('editor.archivedChatsAreReadOnly')
-          : t('editor.updateAgentsserverToCreateWorkspaceFilesAndFolders')
+        error: currentCreationAuthorityError()
       } : current)
       return
     }
@@ -3047,7 +3041,9 @@ export function WorkspaceEditor({
     const authority = creationAuthorityRef.current
     if (authority.archived) return t('editor.archivedChatsAreReadOnly')
     if (authority.available !== true || authority.capabilityVersion < 4) {
-      return t('editor.updateAgentsserverToCreateWorkspaceFilesAndFolders')
+      return authority.available === null
+        ? t('editor.workspaceFilesWillBeAvailableAfterAgentsserverFinishesConnecting')
+        : t('editor.updateAgentsserverToCreateWorkspaceFilesAndFolders')
     }
     return null
   }
@@ -4035,6 +4031,9 @@ export function WorkspaceEditor({
           expanded={expandedDirectories}
           mutationsAvailable={mutationsAvailable && !workspaceMutationPath}
           creationAvailable={creationAvailable && !workspaceMutationPath}
+          creationUnavailableTitle={available === null
+            ? t('editor.workspaceFilesWillBeAvailableAfterAgentsserverFinishesConnecting')
+            : t('editor.updateAgentsserverToCreateWorkspaceFilesAndFolders')}
           pendingCreate={pendingCreate}
           onOpen={path => void openFile(path)}
           onOpenToSide={openFileToSide}
@@ -4262,6 +4261,7 @@ const Explorer = memo(function Explorer({
   expanded,
   mutationsAvailable,
   creationAvailable,
+  creationUnavailableTitle,
   pendingCreate,
   onOpen,
   onOpenToSide,
@@ -4285,6 +4285,7 @@ const Explorer = memo(function Explorer({
   expanded: Set<string>
   mutationsAvailable: boolean
   creationAvailable: boolean
+  creationUnavailableTitle: string
   pendingCreate: PendingWorkspaceCreate | null
   onOpen: (path: string) => void
   onOpenToSide: (path: string) => void
@@ -4322,7 +4323,6 @@ const Explorer = memo(function Explorer({
     row.scrollIntoView?.({ block: 'nearest' })
     lastScrolledPathRef.current = activePath
   }, [activePath, directories, expanded])
-  const creationUnavailableTitle = t('editor.updateAgentsserverToCreateWorkspaceFilesAndFolders')
   return <aside className="workspace-editor-explorer" aria-label={t('editor.fileExplorer')}>
     <header className="workspace-editor-explorer-header">
       <strong>{t('editor.explorer')}</strong>
@@ -4400,6 +4400,7 @@ const Explorer = memo(function Explorer({
   && previous.expanded === next.expanded
   && previous.mutationsAvailable === next.mutationsAvailable
   && previous.creationAvailable === next.creationAvailable
+  && previous.creationUnavailableTitle === next.creationUnavailableTitle
   && previous.pendingCreate === next.pendingCreate
 ))
 

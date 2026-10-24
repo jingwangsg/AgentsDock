@@ -119,7 +119,7 @@ export function opencodeBackendAvailable(health: Health | null | undefined, cata
 
 export function opencodeBackendUnavailableReason(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): string | null {
   if (opencodeBackendAvailable(health, catalog)) return null
-  if (!opencodeBackendSupported(health)) return t('opencode.unsupportedServer')
+  if (!opencodeBackendSupported(health)) return health ? t('opencode.unsupportedServer') : t('serverConnection.availableOnceConnected')
   const diagnostic = runtimeDiagnosticFor(health, catalog, 'opencode')
   if (!catalog?.backends?.opencode && diagnostic?.status === 'ready') return t('opencode.modelsLoading')
   if (diagnostic?.message?.trim() || diagnostic?.action?.trim()) return [t('opencode.unavailable'), diagnostic.message?.trim(), diagnostic.action?.trim()].filter(Boolean).join(' ')
@@ -133,7 +133,9 @@ export function cursorBackendUnavailableReason(
 ): string | null {
   if (cursorBackendAvailable(health, catalog)) return null
   if (!cursorBackendSupported(health)) {
-    return 'Cursor is unavailable because this AgentsServer does not support it yet. Update the server, then reconnect.'
+    return health
+      ? 'Cursor is unavailable because this AgentsServer does not support it yet. Update the server, then reconnect.'
+      : t('serverConnection.availableOnceConnected')
   }
   const diagnostic = runtimeDiagnosticFor(health, catalog, 'cursor')
   if (!catalog?.backends?.cursor && diagnostic?.status === 'ready') {
@@ -217,7 +219,7 @@ export function runtimeSelectionError(
   customCatalog?: RuntimeBackendCatalog['custom_provider']
 ): string | null {
   if (backend === 'codex' && codexProvider === 'custom') {
-    if (!codexCustomProviderSupported(health)) return t('codexProvider.update')
+    if (!codexCustomProviderSupported(health)) return health ? t('codexProvider.update') : t('serverConnection.availableOnceConnected')
     if (!codexCustomProviderAvailable(health, catalog, customCatalog)) return t('codexProvider.unavailable')
     const custom = runtimeBackendCatalogFor(catalog, backend, codexProvider, customCatalog)
     const selected = model?.trim() || custom?.default_model?.trim()

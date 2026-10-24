@@ -77,6 +77,15 @@ describe('sender-grouped chat inbox', () => {
     expect(screen.getByText('Update the server to manage inbox messages.')).toBeInTheDocument()
   })
 
+  it('says inbox actions wait for the connection, not for a server update, before the server has answered', () => {
+    useAppStore.setState({ health: null })
+    render(<ChatInboxGroup item={group()} sessionId="recipient" profileScope={scope} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Renamed Sender · 2 unread' }))
+    expect(list).not.toHaveBeenCalled()
+    expect(screen.getByText('Available once this AgentsServer is connected.')).toBeInTheDocument()
+    expect(screen.queryByText('Update the server to manage inbox messages.')).not.toBeInTheDocument()
+  })
+
   it('expands the exact edited recipient body rather than the immutable original source body', async () => {
     const body = 'Recipient-only edited message and exact tail.'
     const edited = { ...events[0], type: 'chat_conversation_message_mailbox_migrated', message_revision: 2,

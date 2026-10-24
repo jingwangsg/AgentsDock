@@ -19,7 +19,7 @@ export function ChatInboxGroup({ item, sessionId, profileScope }: {
   item: SystemItem; sessionId: string; profileScope: WorkspaceProfileScope | null
 }) {
   useLocale()
-  const available = useAppStore(state => chatMailboxAvailable(state.health))
+  const available = useAppStore(state => state.health ? chatMailboxAvailable(state.health) : null)
   const [open, setOpen] = useState(false)
   const [visibleLimit, setVisibleLimit] = useState(25)
   const [loaded, setLoaded] = useState<Record<string, ChatInboxMessage>>({})
@@ -160,7 +160,7 @@ export function ChatInboxGroup({ item, sessionId, profileScope }: {
         })}
         {loading && <small className="chat-inbox-loading"><LoaderCircle size={12} className="spin" />{t('timeline.inbox.loading')}</small>}
         {visible.length > visibleLimit && <button className="quiet-button" onClick={() => setVisibleLimit(limit => limit + 25)}>{t('timeline.inbox.showMore')}</button>}
-        {!available && <small>{t('timeline.inbox.updateServer')}</small>}
+        {!available && <small>{available === null ? t('serverConnection.availableOnceConnected') : t('timeline.inbox.updateServer')}</small>}
       </div>}
       {error && <small role="alert" className="cross-chat-message-error">{error}</small>}
     </div>

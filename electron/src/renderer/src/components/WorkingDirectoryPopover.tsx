@@ -25,7 +25,7 @@ export function cwdChipLabel(cwd?: string | null): string {
  */
 export function WorkingDirectoryPopover({ session }: { session: Session }) {
   useLocale()
-  const completionAvailable = useAppStore(state => state.health?.capabilities?.working_directory_completion?.available === true)
+  const completionAvailable = useAppStore(state => state.health ? state.health.capabilities?.working_directory_completion?.available === true : null)
   const defaultCwd = useAppStore(state => state.health?.default_cwd?.trim() || '')
   const [open, setOpen] = useState(false)
   const [pathDraft, setPathDraft] = useState('')
@@ -120,7 +120,9 @@ export function WorkingDirectoryPopover({ session }: { session: Session }) {
     <Popover.Portal>
       <Popover.Content className="cwd-popover" side="top" align="start" sideOffset={8} collisionPadding={12} onOpenAutoFocus={event => event.preventDefault()}>
         {!completionAvailable
-          ? <div className="cwd-popover-empty">{t("ui.WorkingDirectoryPopover.WorkingDirectoryPopover.folder_browsing_needs_a_newer_agentsserver_5e4747d")}</div>
+          ? <div className="cwd-popover-empty">{completionAvailable === null
+            ? t('serverConnection.availableOnceConnected')
+            : t("ui.WorkingDirectoryPopover.WorkingDirectoryPopover.folder_browsing_needs_a_newer_agentsserver_5e4747d")}</div>
           : <>
             <div className="cwd-popover-path">
               <button

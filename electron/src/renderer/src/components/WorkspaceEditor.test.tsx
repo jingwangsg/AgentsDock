@@ -1503,6 +1503,32 @@ describe('WorkspaceEditor', () => {
     expect(window.agentsDock.workspace.create).not.toHaveBeenCalled()
   })
 
+  it('says file creation waits for the connection, not a server update, once the app has no Health', async () => {
+    const editor = (available: boolean | null) => <WorkspaceEditor
+      workspaceKey="server-a:chat-a"
+      session={session}
+      profileScope={{ profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }}
+      available={available}
+      capabilityVersion={available ? 5 : undefined}
+      chatContent={<p>Chat timeline</p>}
+    />
+    const view = render(editor(true))
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
+        detail: { sessionId: 'chat-a', path: 'src/App.tsx' }
+      }))
+    })
+    await screen.findByRole('textbox', { name: 'Contents of src/App.tsx' })
+    fireEvent.click(screen.getByRole('button', { name: 'Show file workspace full screen' }))
+    view.rerender(editor(null))
+
+    expect(screen.getByRole('button', { name: 'New file' })).toHaveAttribute('title', 'Workspace files will be available after AgentsServer finishes connecting.')
+    const create = new Event('agentsdock:new-active-surface', { cancelable: true })
+    act(() => { window.dispatchEvent(create) })
+    expect(screen.getByRole('alert')).toHaveTextContent('Workspace files will be available after AgentsServer finishes connecting.')
+    expect(window.agentsDock.workspace.create).not.toHaveBeenCalled()
+  })
+
   it('renames an open file from the explorer without losing its tab', async () => {
     const user = userEvent.setup()
     renderEditor()

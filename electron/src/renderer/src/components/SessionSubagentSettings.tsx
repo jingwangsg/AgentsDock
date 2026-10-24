@@ -13,6 +13,7 @@ export function SessionSubagentSettings({ session, profileScope }: {
   const id = useId()
   const connected = useAppStore(state => state.connected && !state.switchingProfileId)
   const capability = useAppStore(state => state.health?.capabilities?.subagent_limit_v1)
+  const healthLoaded = useAppStore(state => state.health !== null)
   const baseline = session.subagent_limit?.toString() ?? ''
   const previous = useRef(baseline)
   const [draft, setDraft] = useState(baseline)
@@ -75,7 +76,7 @@ export function SessionSubagentSettings({ session, profileScope }: {
       </div>
       <p id={`${id}-help`}>{t(session.backend === 'claude' ? 'ui.sessionSubagents.claude' : 'ui.sessionSubagents.codex')}</p>
       <p>{t('ui.sessionSubagents.empty')}</p>
-      {!supportedServer ? <p>{t('ui.sessionSubagents.updateServer')}</p>
+      {!supportedServer ? <p>{healthLoaded ? t('ui.sessionSubagents.updateServer') : t('serverConnection.availableOnceConnected')}</p>
         : !supportedProvider ? <p>{session.subagent_limit_control?.message || t('ui.sessionSubagents.unsupported')}</p>
         : <p>{t(session.subagent_limit_control?.applies_to === 'next_provider_process_start' ? 'ui.sessionSubagents.codexResetApplies'
           : session.subagent_limit_control?.applies_to === 'next_idle_provider_start' ? 'ui.sessionSubagents.claudeApplies' : 'ui.sessionSubagents.codexApplies')}</p>}

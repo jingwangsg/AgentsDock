@@ -2619,6 +2619,17 @@ describe('Composer', () => {
     expect(screen.getByText('User follow-up')).toBeVisible()
   })
 
+  it('queued agent-message controls wait for the connection, not a server update, before the server has answered', () => {
+    setAsyncAgentQueue([asyncAgentQueuedTurn()])
+    useAppStore.setState({ health: null })
+    render(<Composer />)
+
+    const row = screen.getByRole('status', { name: 'Renamed research agent: Authenticated agent message' })
+    expect(within(row).getByRole('button', { name: 'Send now' })).toHaveAttribute('title', 'Available once this AgentsServer is connected.')
+    expect(within(row).getByRole('button', { name: 'Edit' })).toHaveAttribute('title', 'Available once this AgentsServer is connected.')
+    expect(within(row).getByRole('button', { name: 'Remove from queue' })).toHaveAttribute('title', 'Available once this AgentsServer is connected.')
+  })
+
   it.each([false, true])('edits only the exact async body revision without grants or mandatory refresh (conflict=%s)', async conflict => {
     const body = 'KD Dev result: ' + 'Measured rollout detail. '.repeat(35) + 'END-EXACT-BODY'
     const agent = asyncAgentQueuedTurn({ source_title: 'KD Dev', prompt: 'Agent-authored same-server handoff',
@@ -6039,6 +6050,74 @@ describe('Composer', () => {
     expect(screen.getByText('Server update required')).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /Training/ })).not.toBeInTheDocument()
     expect(screen.getByText(/one or more legacy chat references cannot be used/i)).toBeInTheDocument()
+  })
+
+  it.each([
+    ['offline', null, 'Offline'],
+    ['retrying', null, 'Retrying'],
+    ['offline', 'Server returned 401 Unauthorized', 'Authentication Required'],
+    ['connecting', null, 'Connecting'],
+    // Online without Health: the first check has not finished.
+    ['online', null, 'Connecting']
+  ] as const)('labels a server in the %s state (error %s) as %s, not as needing an update, while it has no Health', async (connectionState, lastConnectionError, label) => {
+    useAppStore.setState({
+      profiles: [{
+        id: 'profile-a', name: 'A', serverUrl: 'http://localhost:7850', hasAccessToken: true,
+        serverSetupComplete: true, connectionState, lastConnectionError, cachedUnreadCount: 0
+      }],
+      health: null
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message')
+
+    await user.type(editor, '@')
+    const chats = screen.getByRole('listbox', { name: 'Chats' })
+    expect(within(chats).getByText(label)).toBeInTheDocument()
+    expect(within(chats).getByText('Available once this AgentsServer is connected.')).toBeInTheDocument()
+    expect(within(chats).queryByText('Server update required')).not.toBeInTheDocument()
+
+    await user.type(editor, '@')
+    const team = screen.getByRole('listbox', { name: 'Team Network destinations' })
+    expect(within(team).getByText(label)).toBeInTheDocument()
+    expect(within(team).queryByText('Server update required')).not.toBeInTheDocument()
+  })
+
+  it('keeps a drafted chat reference and does not call it invalid while the server has not answered', () => {
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-1', title: 'Chat', backend: 'codex' },
+        { id: 'chat-2', title: 'Training', backend: 'claude' }
+      ],
+      drafts: { 'chat-1': 'Ask @Training' },
+      chatReferencesBySession: { 'chat-1': [{
+        session_id: 'chat-2', display_title_snapshot: 'Training',
+        source_text_start: 4, source_text_end: 13, action: 'route'
+      }] },
+      health: null
+    })
+    render(<Composer />)
+
+    expect(screen.getByText('Available once this AgentsServer is connected.')).toHaveClass('chat-reference-warning')
+    expect(screen.queryByText(/legacy chat references cannot be used/i)).not.toBeInTheDocument()
+    expect(useAppStore.getState().chatReferencesBySession['chat-1']).toHaveLength(1)
+  })
+
+  it('asks for a server update when a server that answered lacks the capability', async () => {
+    useAppStore.setState({ health: { ok: true, capabilities: {} } })
+    const user = userEvent.setup()
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message')
+
+    await user.type(editor, '@')
+    const chats = screen.getByRole('listbox', { name: 'Chats' })
+    expect(within(chats).getByText('Server update required')).toBeInTheDocument()
+    expect(within(chats).getByText('Cross-chat handoffs are unavailable on this AgentsServer.')).toBeInTheDocument()
+
+    await user.type(editor, '@')
+    const team = screen.getByRole('listbox', { name: 'Team Network destinations' })
+    expect(within(team).getByText('Server update required')).toBeInTheDocument()
+    expect(within(team).getByText('Structured @@ Team Network hints are unavailable on this AgentsServer.')).toBeInTheDocument()
   })
 
   it('canonicalizes restored local @ direct and @@ route references to inline @ route hints', async () => {

@@ -113,8 +113,8 @@ export function SideQuestionPanel({ session, scope, controller, active = true, f
     <div className="side-chat-bottom">
       {showLatest && <button type="button" className="icon-button side-chat-jump" aria-label={t('timeline.ui.jumpToLatest')}
         title={t('timeline.ui.jumpToLatest')} onClick={jumpToLatest}><ArrowDown size={14} /></button>}
-      {!supported && <p className="side-chat-note" role="status">{t('sideQuestion.unsupported')}</p>}
-      {supported && !online && <p className="side-chat-note" role="status">{t('sideQuestion.connect')}</p>}
+      {!supported && health && <p className="side-chat-note" role="status">{t('sideQuestion.unsupported')}</p>}
+      {(supported || !health) && !online && <p className="side-chat-note" role="status">{t('sideQuestion.connect')}</p>}
       {online && snapshot.loading && <p className="side-chat-note" role="status">{t('sideChat.syncing')}</p>}
       {online && snapshot.error === 'side_chat_sync_failed' && <button type="button" className="quiet-button"
         onClick={() => { void controller.refresh(scope, session.id) }}>{t('timeline.ui.retry')}</button>}
