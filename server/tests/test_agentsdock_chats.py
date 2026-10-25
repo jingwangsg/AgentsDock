@@ -75,6 +75,36 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             auth.assert_not_called()
             post.assert_not_called()
 
+    def test_chat_menu_commands_post_their_action_for_this_chat_or_a_route(self) -> None:
+        from contextlib import redirect_stderr
+        route = "route_" + "a" * 32
+        for arguments, payload in (
+            (["pin"], {"action": "pin"}),
+            (["mark-unread", "--route", route], {"action": "mark-unread", "route_id": route}),
+            (["move", "--route", route, "  Release   notes "], {"action": "move", "route_id": route, "folder": "Release notes"}),
+            (["export"], {"action": "export", "format": "markdown"}),
+            (["export", "--route", route, "--format", "html"], {"action": "export", "route_id": route, "format": "html"}),
+            (["reload-history", "--route", route], {"action": "reload-history", "route_id": route}),
+            (["delete", "--route", route], {"action": "delete", "route_id": route}),
+        ):
+            args = agentsdock_chats.parser().parse_args(arguments)
+            with self.subTest(arguments=arguments), patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                    patch.object(agentsdock_chats, "post_json", return_value={"ok": True}) as post:
+                self.assertEqual(args.handler(args), {"ok": True})
+                self.assertEqual(post.call_args.args, ("/api/agent/cross-chat/chat-action", payload, "capability"))
+        # A chat cannot archive, delete or reload itself while its turn runs, so those name a route.
+        for command in ("archive", "delete", "reload-history"):
+            with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                agentsdock_chats.parser().parse_args([command])
+        # A mis-shaped route and an empty folder are refused before any request.
+        for arguments in (["pin", "--route", "not-a-route"], ["move", "   "]):
+            args = agentsdock_chats.parser().parse_args(arguments)
+            with patch.object(agentsdock_chats, "authority") as auth, patch.object(agentsdock_chats, "post_json") as post, \
+                    self.assertRaises(agentsdock_chats.CLIError):
+                args.handler(args)
+            auth.assert_not_called()
+            post.assert_not_called()
+
     def test_async_reply_parent_is_explicit_and_part_of_default_idempotency(self) -> None:
         route = "route_" + "a" * 32
         parents = ["handoff_" + "b" * 32, "handoff_" + "c" * 32]
