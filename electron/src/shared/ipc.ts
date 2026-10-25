@@ -391,6 +391,8 @@ export interface AgentsDockAPI {
     remove(profileId: string): Promise<void>
     /** The hub records it; the server switcher and pickers on every client leave a hidden remote out. */
     setHidden(profileId: string, hidden: boolean): Promise<void>
+    /** The hub keeps a remote's name, so every client shows the one saved here. */
+    rename(profileId: string, name: string): Promise<void>
     move(profileId: string, input: RemoteServerMoveInput): Promise<void>
     redeploy(profileId: string, force: boolean): Promise<{ redeployed: boolean; running: number | null }>
     /** Restarts the hub, redeploys its remotes and updates both CLIs everywhere; without `force` it stops at the servers with running chats and returns them. */

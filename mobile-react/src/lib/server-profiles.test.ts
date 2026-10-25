@@ -175,7 +175,7 @@ assertEqual(hubProxyRemoteId('http://h:7850'), null)
 
 const hubURL = 'http://nvmac.tail46daa8.ts.net:7850'
 const hubProfile = { id: 'hub', serverURL: hubURL }
-const savedRemote = { id: 'remote-aaa', serverURL: `${hubURL}/api/remote/aaa`, sshHost: 'osmo_9000' }
+const savedRemote = { id: 'remote-aaa', name: 'osmo', serverURL: `${hubURL}/api/remote/aaa`, sshHost: 'osmo_9000' }
 const staleRemote = { id: 'remote-zzz', serverURL: `${hubURL}/api/remote/zzz` }
 const otherHubRemote = { id: 'other-hub-remote', serverURL: 'http://other.example:7850/api/remote/aaa' }
 const registered = [{ name: 'osmo', proxy_path: '/api/remote/aaa', ssh_host: 'osmo_9000' }, { name: 'lab', proxy_path: '/api/remote/bbb', ssh_host: 'lab' }]
@@ -191,20 +191,26 @@ assertEqual(reconcileHubProfiles([hubProfile, savedRemote], 'NVMAC.tail46daa8.ts
 assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [registered[0]]), { create: [], update: [], removeIds: [] })
 // A remote moved on the hub (same id, new SSH host), or saved before profiles kept the host, follows the hub.
 assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [{ ...registered[0], ssh_host: 'osmo@new-host' }]),
-  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo@new-host', hidden: false }], removeIds: [] })
-assertEqual(reconcileHubProfiles([hubProfile, { id: 'remote-aaa', serverURL: savedRemote.serverURL }], hubURL, [registered[0]]),
-  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo_9000', hidden: false }], removeIds: [] })
+  { create: [], update: [{ id: 'remote-aaa', name: 'osmo', sshHost: 'osmo@new-host', hidden: false }], removeIds: [] })
+assertEqual(reconcileHubProfiles([hubProfile, { id: 'remote-aaa', name: 'osmo', serverURL: savedRemote.serverURL }], hubURL, [registered[0]]),
+  { create: [], update: [{ id: 'remote-aaa', name: 'osmo', sshHost: 'osmo_9000', hidden: false }], removeIds: [] })
+// The hub keeps a remote's name: a rename on another device (or one saved here before the hub kept names) follows
+// it, even to a name another remote has.
+assertEqual(reconcileHubProfiles([hubProfile, { ...savedRemote, name: 'osmo_dev_l40' }], hubURL, [registered[0]]),
+  { create: [], update: [{ id: 'remote-aaa', name: 'osmo', sshHost: 'osmo_9000', hidden: false }], removeIds: [] })
+assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [{ ...registered[0], name: 'lab' }, registered[1]]).update,
+  [{ id: 'remote-aaa', name: 'lab', sshHost: 'osmo_9000', hidden: false }])
 // A remote hidden or shown on the hub follows it; a new remote comes in hidden. A hub that predates the flag
 // lists every remote as visible.
 assertEqual(reconcileHubProfiles([hubProfile, savedRemote], hubURL, [{ ...registered[0], hidden: true }, { ...registered[1], hidden: true }]), {
   create: [{ name: 'lab', serverURL: `${hubURL}/api/remote/bbb`, sshHost: 'lab', hidden: true }],
-  update: [{ id: 'remote-aaa', sshHost: 'osmo_9000', hidden: true }],
+  update: [{ id: 'remote-aaa', name: 'osmo', sshHost: 'osmo_9000', hidden: true }],
   removeIds: [],
 })
 assertEqual(reconcileHubProfiles([hubProfile, { ...savedRemote, hidden: true }], hubURL, [{ ...registered[0], hidden: false }]),
-  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo_9000', hidden: false }], removeIds: [] })
+  { create: [], update: [{ id: 'remote-aaa', name: 'osmo', sshHost: 'osmo_9000', hidden: false }], removeIds: [] })
 assertEqual(reconcileHubProfiles([hubProfile, { ...savedRemote, hidden: true }], hubURL, [registered[0]]),
-  { create: [], update: [{ id: 'remote-aaa', sshHost: 'osmo_9000', hidden: false }], removeIds: [] })
+  { create: [], update: [{ id: 'remote-aaa', name: 'osmo', sshHost: 'osmo_9000', hidden: false }], removeIds: [] })
 assertEqual(reconcileHubProfiles([hubProfile, { ...savedRemote, hidden: true }], hubURL, [{ ...registered[0], hidden: true }]),
   { create: [], update: [], removeIds: [] })
 assertEqual(createStoredServerProfile({ serverURL: `${hubURL}/api/remote/bbb`, hidden: true }, 'remote-bbb', timestamp).hidden, true)

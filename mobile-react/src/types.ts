@@ -1416,6 +1416,8 @@ export interface RemoteServersCapability {
   ids?: string[]
   /** The hidden remotes' ids: a hide or show elsewhere changes this, not `ids`. */
   hidden?: string[]
+  /** The remotes' names in `ids` order: a rename elsewhere changes this, not `ids`. */
+  names?: string[]
 }
 
 export interface SessionRewindCapability {

@@ -61,7 +61,7 @@ export function readLocalHubToken(configDir: string): string {
 
 export interface HubRemotePlan {
   add: Array<{ name: string; serverUrl: string; sshHost: string; hidden?: boolean }>
-  update: Array<{ id: string; sshHost: string; hidden: boolean }>
+  update: Array<{ id: string; name: string; sshHost: string; hidden: boolean }>
   remove: string[]
 }
 
@@ -78,11 +78,13 @@ export function hubRemoteId(hubUrl: string, serverUrl: string): string | null {
 }
 
 /**
- * What a reconcile mirrored besides the remotes' entries: their registry order and which are hidden. The hub's health
- * reports both (remote_servers_v1 `ids` and `hidden`), so a reorder or a remote hidden from another client changes it.
+ * What a reconcile mirrored besides the remotes' entries: their registry order, which are hidden and their names. The
+ * hub's health reports all three (remote_servers_v1 `ids`, `hidden` and `names`), so a reorder, or a remote hidden or
+ * renamed from another client, changes it.
  */
-export function hubRemotesKey(ids: readonly string[], hiddenIds: readonly string[] = []): string {
-  return `${ids.join(' ')}|${hiddenIds.join(' ')}`
+export function hubRemotesKey(ids: readonly string[], hiddenIds: readonly string[] = [], names: readonly string[] = []): string {
+  // JSON, not a join: a name can contain spaces.
+  return JSON.stringify([ids, hiddenIds, names])
 }
 
 /** Profile ids with this hub's remotes in registry order, in the places they already hold; null when nothing moves. */
@@ -96,7 +98,7 @@ export function hubRemoteProfileOrder(hubUrl: string, remotes: readonly RemoteSe
   return profiles.map(profile => rankOf(profile) === undefined ? profile.id : queue.next().value!.id)
 }
 
-/** Stored profiles under `<hub>/api/remote/` must equal the hub registry; every other profile is left alone. */
+/** Stored profiles under `<hub>/api/remote/` must equal the hub registry, names included; every other profile is left alone. */
 export function planHubRemoteProfiles(
   hubUrl: string,
   remotes: readonly RemoteServer[],
@@ -111,8 +113,8 @@ export function planHubRemoteProfiles(
     const remote = wanted.get(serverUrl)
     if (!remote) { plan.remove.push(profile.id); continue }
     wanted.delete(serverUrl)
-    if ((profile.sshHost ?? '') !== remote.ssh_host || Boolean(profile.hidden) !== Boolean(remote.hidden)) {
-      plan.update.push({ id: profile.id, sshHost: remote.ssh_host, hidden: remote.hidden === true })
+    if (profile.name !== remote.name || (profile.sshHost ?? '') !== remote.ssh_host || Boolean(profile.hidden) !== Boolean(remote.hidden)) {
+      plan.update.push({ id: profile.id, name: remote.name, sshHost: remote.ssh_host, hidden: remote.hidden === true })
     }
   }
   for (const [serverUrl, remote] of wanted) plan.add.push({ name: remote.name, serverUrl, sshHost: remote.ssh_host, ...(remote.hidden ? { hidden: true } : {}) })

@@ -589,6 +589,11 @@ interface AppState {
    */
   setHubRemoteHidden(profileId: string, hidden: boolean): Promise<void>
   /**
+   * Server list "Edit" with a new name for a hub remote, whichever server is active: the hub keeps the name, so every
+   * device shows the same one. The profile takes the name the hub saved; a failed rename changes nothing here.
+   */
+  renameHubRemote(profileId: string, name: string): Promise<void>
+  /**
    * Server list "Update & redeploy all", whichever server is active: the hub redeploys its remotes, updates
    * Claude Code and Codex on every server, then restarts itself. The restarts stop running chats, so without
    * `force` it changes nothing and resolves to the servers that have some (`running` null: could not be
@@ -872,8 +877,9 @@ export const useAppStore = create<AppState>((set, get) => ({
             : { connectionState: 'online', lastConnectionError: null, serverVersion: healthVersion(health) }
           const remotes = health.capabilities?.remote_servers_v1
           if (patch.connectionState === 'online' && remotes?.available && remotes.ids && profile.id === hubProfile(get())?.id) {
-            // A remote hidden or shown on another device changes only `hidden`, and must reach the server list too.
-            remotesKey = `${remotes.ids.join(' ')} hidden: ${(remotes.hidden ?? []).join(' ')}`
+            // A remote hidden, shown or renamed on another device changes only `hidden` or `names`, and must reach the
+            // server list too.
+            remotesKey = JSON.stringify([remotes.ids, remotes.hidden ?? [], remotes.names ?? []])
           }
         } catch (error) {
           patch = { connectionState: 'offline', lastConnectionError: errorMessage(error) }
@@ -994,6 +1000,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       // A hub from before hiding ignores the field.
       if (server.hidden !== hidden) throw new Error('This hub cannot hide servers yet: restart it on a newer AgentsServer.')
       // A registry list fetched before the change would put the old flag back.
+      hubRegistryEdits += 1
+      await reconcileHubRegistry({ profileId: hub.id, serverURL: hubURL, client }, () => true, set, get)
+    } finally {
+      client.dispose()
+    }
+  },
+
+  async renameHubRemote(profileId, name) {
+    const profile = get().profiles.find(value => value.id === profileId)
+    const remoteId = profile ? hubProxyRemoteId(profile.serverURL) : null
+    const hubURL = profile ? hubProxyBaseURL(profile.serverURL) : null
+    const hub = hubURL ? get().profiles.find(value => normalizeServerURL(value.serverURL) === hubURL) : undefined
+    if (!remoteId || !hubURL || !hub) throw new Error('Only servers the hub manages can be renamed.')
+    // The hub profile's own token: a changed hub token is not copied into existing remote profiles.
+    const client = new AgentServerClient(hubURL, await loadProfileToken(hub.id, hub.credentialVersion))
+    try {
+      await client.renameRemoteServer(remoteId, name)
+      // A registry list fetched before the rename would put the old name back.
       hubRegistryEdits += 1
       await reconcileHubRegistry({ profileId: hub.id, serverURL: hubURL, client }, () => true, set, get)
     } finally {
@@ -4308,9 +4332,9 @@ async function probeServerHealth(serverURL: string, token: string): Promise<Heal
   }
 }
 
-// Bumped by removeServerProfile, reorderServerProfiles, moveHubRemote and setHubRemoteHidden: a registry list fetched before the edit is stale.
+// Bumped by removeServerProfile, reorderServerProfiles, moveHubRemote, setHubRemoteHidden and renameHubRemote: a registry list fetched before the edit is stale.
 let hubRegistryEdits = 0
-/** The inactive hub's remote ids and hidden ids at its last complete mirror (probeInactiveProfiles); null until one after launch. */
+/** The inactive hub's remote ids, hidden ids and names at its last complete mirror (probeInactiveProfiles); null until one after launch. */
 let lastHubRemotesKey: string | null = null
 
 /**
@@ -4334,7 +4358,7 @@ async function reconcileHubRemoteServers(
 /**
  * Mirrors the hub's remote-server registry into saved profiles: each
  * `/api/remote/{id}` the hub reports gets a profile carrying the hub's token,
- * saved remotes take the hub's SSH host and hidden flag for them, and proxied profiles the hub
+ * saved remotes take the hub's name, SSH host and hidden flag for them, and proxied profiles the hub
  * no longer lists are dropped, except the active one. Resolves to whether the
  * registry is now fully mirrored. `quiet` keeps a failure off the error banner.
  */

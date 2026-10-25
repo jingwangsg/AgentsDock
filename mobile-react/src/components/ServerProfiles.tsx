@@ -85,6 +85,8 @@ export interface ServerProfilesManagerProps extends CommonServerProfileProps {
   onMoveRemote: (profileId: string, input: { sshHost?: string; installDir?: string }, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<void>
   /** The eye toggle: the hub keeps the flag, so every device leaves a hidden remote out of its server picker. */
   onSetRemoteHidden: (profileId: string, hidden: boolean) => Promise<void>
+  /** Edit with a new name: the hub keeps it, so every device shows the same name for the remote. */
+  onRenameRemote: (profileId: string, name: string) => Promise<void>
   onUpdateCli: (profileId: string, backend: 'claude' | 'codex') => Promise<string>
   /** Settings → Servers "Update & redeploy all" on the hub, as on the desktop; resolves to the servers with running chats when `force` is false and some have any. */
   onUpdateAll?: (force: boolean, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<{ running: Array<ServerRunningChats & { name: string }>; failures: string | null }>
@@ -203,6 +205,7 @@ export function ServerProfilesManager({
   onRedeployRemote,
   onMoveRemote,
   onSetRemoteHidden,
+  onRenameRemote,
   onUpdateCli,
   onUpdateAll,
 }: ServerProfilesManagerProps) {
@@ -221,7 +224,7 @@ export function ServerProfilesManager({
   const deployLease = useRef(0)
   const editedProfile = useMemo(() => profiles.find(profile => profile.id === draft?.profileId) ?? null, [draft?.profileId, profiles])
   // A remote of a hub saved here is edited as on the desktop: name, SSH host and install dir; the hub owns its
-  // address and token. A remote whose hub is not saved here keeps the address form.
+  // name, address and token. A remote whose hub is not saved here keeps the address form.
   const hubRemote = Boolean(editedProfile && profiles.some(profile => normalizeServerURL(profile.serverUrl) === hubProxyBaseURL(editedProfile.serverUrl)))
   const duplicateProfile = useMemo(
     () => findProfileByIdentity(profiles, tested?.server_identity, draft?.profileId),
@@ -375,9 +378,9 @@ export function ServerProfilesManager({
       if (duplicateProfile) throw new Error(`This connection belongs to the existing “${duplicateProfile.name}” profile.`)
       // A blank name keeps a remote's name: buildUpdateServerProfileInput would name it after its address, the hub's host.
       const name = draft.name.trim() || editedProfile.name
-      const patch = hubRemote
-        ? (name === editedProfile.name ? {} : { name })
-        : buildUpdateServerProfileInput(editedProfile, draft, tested?.server_identity)
+      // On the hub, not in this device's profile: the profile takes the name the hub saved, as on every other device.
+      if (hubRemote && name !== draft.openedName) await onRenameRemote(editedProfile.id, name)
+      const patch = hubRemote ? {} : buildUpdateServerProfileInput(editedProfile, draft, tested?.server_identity)
       if (Object.keys(patch).length) await onUpdateProfile(editedProfile.id, patch)
       const sshHost = draft.sshHost.trim()
       const installDir = draft.installDir.trim() || undefined
@@ -604,7 +607,7 @@ export function ServerProfilesManager({
       <View style={styles.editorHeader}>
         <View style={styles.editorHeaderCopy}>
           <Text style={[styles.editorTitle, { color: colors.text }]}>{`Edit ${editedProfile?.name || 'server'}`}</Text>
-          <Text style={[styles.help, { color: colors.muted }]}>{hubRemote ? 'Your hub reaches this server over SSH and keeps its address and token.' : 'Credentials remain in the device secure store.'}</Text>
+          <Text style={[styles.help, { color: colors.muted }]}>{hubRemote ? 'Your hub reaches this server over SSH and keeps its name, address and token.' : 'Credentials remain in the device secure store.'}</Text>
         </View>
         <IconButton icon={X} disabled={Boolean(busy)} onPress={closeEditor} label="Close server editor" />
       </View>
@@ -820,10 +823,10 @@ export function ServerProfilesManager({
         style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
       />
 
-      <FieldLabel text="Name on this device" />
+      <FieldLabel text="Name" />
       <TextInput
         testID="remote-deploy-name"
-        accessibilityLabel="Name on this device"
+        accessibilityLabel="Server name"
         value={deployDraft.name}
         onChangeText={name => setDeployDraft(current => current ? { ...current, name } : current)}
         editable={!deployBusy}

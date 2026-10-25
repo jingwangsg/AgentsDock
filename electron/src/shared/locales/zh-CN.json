@@ -420,6 +420,7 @@
   "composer.providerCommands.loadFailed": "无法加载提供方命令。",
   "composer.providerCommands.retry": "重试",
   "serverProfile.localNameHint": "仅用作本机应用中的名称；不会重命名 Team Network 中的服务端。",
+  "serverProfile.hubNameHint": "保存在本机服务端上：使用它的每台设备都显示这个名称。",
   "serverProfile.nameOnThisMac": "这台 Mac 上的名称",
   "serverProfile.installDirUnchanged": "留空不变；换主机时用新主机的默认目录",
   "serverProfile.moveHint": "保存新的 SSH 主机或安装目录后，会在新位置部署 AgentsServer 并改连新安装。对话留在原安装中，原安装继续运行。",

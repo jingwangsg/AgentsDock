@@ -9931,6 +9931,76 @@ describe('server profile lifecycle', () => {
     await expect(service.setHubRemoteHidden('a', true)).rejects.toThrow('Only servers the hub manages can be hidden.')
   })
 
+  it('renames a hub remote through the hub, shows the name the hub saved, and keeps the old name when the hub refuses', async () => {
+    let name = 'r1'
+    const hub = Object.assign(fakeClient(), {
+      renameRemoteServer: vi.fn(async (_remoteId: string, value: string) => { name = value.trim(); return { server: { ...hubRemote('r1'), name } } }),
+      listRemoteServers: vi.fn(async () => ({ servers: [{ ...hubRemote('r1'), name }] }))
+    })
+    const refusing = Object.assign(fakeClient(), { renameRemoteServer: vi.fn(async () => { throw new ServerError(422, 'Name is required.') }) })
+    const { service, settings } = createProfileService({ 'http://a.test:7850': [fakeClient()], [DEFAULT_SERVER_URL]: [hub, refusing] })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const remote = settings.addProfile({ name: 'r1', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1`, sshHost: 'r1.example' })
+
+    await service.renameHubRemote(remote.id, ' oci_dev ')
+    expect(hub.renameRemoteServer).toHaveBeenCalledWith('r1', ' oci_dev ')
+    expect(settings.getProfile(remote.id)?.name).toBe('oci_dev')
+    expect(hub.dispose).toHaveBeenCalledOnce()
+    await expect(service.renameHubRemote(remote.id, ' ')).rejects.toThrow('Name is required.')
+    expect(settings.getProfile(remote.id)?.name).toBe('oci_dev')
+    expect(refusing.dispose).toHaveBeenCalledOnce()
+    await expect(service.renameHubRemote('a', 'x')).rejects.toThrow('Only servers the hub manages can be renamed.')
+  })
+
+  it('follows a hub remote renamed on another device at the next inactive health sweep', async () => {
+    const hubProbe = (name: string) => Object.assign(
+      fakeClient({ health: async () => ({ ok: true, server_identity: 'server-hub', capabilities: { remote_servers_v1: { ...hubRemotesCapability('r1'), names: [name] } } }) }),
+      { listRemoteServers: vi.fn(async () => ({ servers: [{ ...hubRemote('r1'), name }] })) }
+    )
+    const probes = [hubProbe('r1'), hubProbe('oci_dev'), hubProbe('oci_dev')]
+    const { service, settings } = createProfileService({
+      [`${DEFAULT_SERVER_URL}/api/remote/r1`]: [fakeClient(), fakeClient(), fakeClient()],
+      [DEFAULT_SERVER_URL]: [...probes]
+    }, undefined, undefined, undefined, undefined, `${DEFAULT_SERVER_URL}/api/remote/r1`)
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    settings.setProfileServerIdentity('b', 'server-hub')
+
+    await probeInactiveProfiles(service)
+    expect(settings.getProfile('a')?.name).toBe('r1')
+    // Only the name changed on the hub: its health reports it, and the active remote's profile follows.
+    await probeInactiveProfiles(service)
+    expect(probes[1].listRemoteServers).toHaveBeenCalledOnce()
+    expect(settings.getProfile('a')?.name).toBe('oci_dev')
+    // Names unchanged: no listing.
+    await probeInactiveProfiles(service)
+    expect(probes[2].listRemoteServers).not.toHaveBeenCalled()
+  })
+
+  it('lists a hub that reports no names once after a rename here, not on every sweep', async () => {
+    let name = 'r1'
+    const oldHub = () => Object.assign(
+      fakeClient({ health: async () => ({ ok: true, server_identity: 'server-hub', capabilities: { remote_servers_v1: hubRemotesCapability('r1') } }) }),
+      { listRemoteServers: vi.fn(async () => ({ servers: [{ ...hubRemote('r1'), name }] })) }
+    )
+    const renaming = Object.assign(oldHub(), { renameRemoteServer: vi.fn(async () => { name = 'oci_dev'; return { server: { ...hubRemote('r1'), name } } }) })
+    const probes = [oldHub(), oldHub(), oldHub()]
+    const { service, settings } = createProfileService({
+      [`${DEFAULT_SERVER_URL}/api/remote/r1`]: [fakeClient(), fakeClient(), fakeClient()],
+      [DEFAULT_SERVER_URL]: [probes[0], renaming, probes[1], probes[2]]
+    }, undefined, undefined, undefined, undefined, `${DEFAULT_SERVER_URL}/api/remote/r1`)
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    settings.setProfileServerIdentity('b', 'server-hub')
+
+    await probeInactiveProfiles(service)
+    await service.renameHubRemote('a', 'oci_dev')
+    expect(settings.getProfile('a')?.name).toBe('oci_dev')
+    await probeInactiveProfiles(service)
+    await probeInactiveProfiles(service)
+    // The first sweep lists the registry. The rename here records a key built from the list, which holds names, so the
+    // next report differs once; that pass records the report's key, and the last sweep lists nothing.
+    expect(probes.map(probe => probe.listRemoteServers.mock.calls.length)).toEqual([1, 1, 0])
+  })
+
   it('reorders hub remotes through the hub, and a reconcile follows the registry order', async () => {
     const hub = Object.assign(fakeClient(), {
       reorderRemoteServers: vi.fn(async () => undefined),

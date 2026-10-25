@@ -2284,6 +2284,8 @@ export interface RemoteServersCapability {
   ids: string[]
   /** The hidden remotes' ids; absent from a hub older than hiding. */
   hidden?: string[]
+  /** The remotes' names in `ids` order; absent from a hub older than hub-kept names. */
+  names?: string[]
 }
 
 export interface ServerSetupDiagnostics {

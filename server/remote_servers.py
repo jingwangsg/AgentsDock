@@ -225,7 +225,8 @@ class RemoteServer(BaseModel):
     def _name(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("Name is required.")
-        return value.strip()[:120]
+        # Trimmed again after the cut: clients trim the names they store, and must store the one saved here.
+        return value.strip()[:120].strip()
 
     _host = field_validator("ssh_host")(classmethod(lambda cls, value: validate_ssh_host(value)))
     _dir = field_validator("install_dir")(classmethod(lambda cls, value: validate_remote_dir(value)))
@@ -2444,6 +2445,8 @@ def capability(manager: RemoteServerManager) -> dict[str, Any]:
         "ids": list(manager.servers),
         # Likewise for a remote hidden or shown from another client.
         "hidden": [remote_id for remote_id, server in manager.servers.items() if server.hidden],
+        # And for a remote renamed from another client: every client shows the hub's name.
+        "names": [server.name for server in manager.servers.values()],
     }
 
 
