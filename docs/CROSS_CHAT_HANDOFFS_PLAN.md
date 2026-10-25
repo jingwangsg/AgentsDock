@@ -270,6 +270,7 @@ Current opaque-route helper endpoints:
 GET  /api/agent/cross-chat/routes
 POST /api/agent/cross-chat/routes/{route_id}/handoffs
 POST /api/agent/cross-chat/title
+POST /api/agent/cross-chat/chat-action
 ```
 
 Action-specific compatibility and exchange-response endpoints:
@@ -306,6 +307,10 @@ agentsdock-chats ask --route ROUTE_ID --message TEXT [--attach PATH ...]
 agentsdock-chats respond --exchange EXCHANGE_ID \
   --inbound-leg LEG_ID --message TEXT [--request-response]
 agentsdock-chats title [--route ROUTE_ID] TITLE
+agentsdock-chats mark-read|mark-unread|pin|unpin|unarchive|fork [--route ROUTE_ID]
+agentsdock-chats move [--route ROUTE_ID] FOLDER
+agentsdock-chats export [--route ROUTE_ID] [--format markdown|html|jsonl]
+agentsdock-chats archive|reload-history|delete --route ROUTE_ID
 ```
 
 `title` names the run's own chat or, with `--route`, the chat behind an
@@ -315,6 +320,20 @@ titles never replace it; a user's rename still does. Titles are one line of at
 most 120 characters. A route to a chat on another server is refused (409)
 until the hub relays title changes, and so is a scheduled job's run chat,
 which keeps the job's title.
+
+The other commands are the chat list's context menu, on the same scope as
+`title`, and each calls the handler the menu item calls: the chat PATCH for
+pin, folder and archive (moving a chat into a folder also unarchives it),
+read/unread, fork, history reload, and delete, which stops the chat's run
+first. `export` attaches the menu's Markdown, HTML or JSON Lines download to
+the calling chat's outputs and returns the stored file's path. A chat cannot
+archive or delete itself while its turn runs (409); deleting another chat
+also needs a turn the user started (a job, a delivery or a mail wake gets
+403). A paired chat stays reachable after it is archived, so `unarchive`
+and the other commands still reach it. Rename is `title`; Share and Open in
+split view are not agent commands: a share link exposes the chat outside
+AgentsDock, and split view is a client layout. A route to a chat on another
+server is refused (409), as for `title`.
 
 `--target OPAQUE_HANDLE` remains only for secure-peer handles, which the
 disabled secure-peer relay would print; it is not a chat ID and reaches no

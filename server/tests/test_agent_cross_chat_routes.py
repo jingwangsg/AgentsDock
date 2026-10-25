@@ -2227,6 +2227,139 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(denied.exception.status_code, 403)
             self.assertEqual(agent_server.STORE.sessions["source"]["title"], "Login bug, round two")
 
+    async def test_chat_actions_reach_the_menu_handlers_for_own_and_routed_chats_and_refuse_the_rest(self) -> None:
+        # 2026-10-25: asked to delete the chat it had created for a handoff, an agent could only list,
+        # message and rename chats. The chat list's menu now reaches the same handlers as a click.
+        pair_id = "pair_" + "a" * 32
+        paired = {**self.route("a", actions=["instruction", "request_reply"]),
+                  "pair_id": pair_id, "paired_route_id": "route_" + "b" * 32}
+        reverse = {**self.route("b", alias="source", target="source"), "pair_id": pair_id, "paired_route_id": paired["route_id"]}
+        reply_only = self.route("c", alias="reply", actions=["request_reply"])
+        agent_server.STORE.sessions["source"]["provider_cross_chat_routes"] = [paired, reply_only]
+        agent_server.STORE.sessions["target"]["provider_cross_chat_routes"] = [reverse]
+
+        async def issue(run_id: str, actions: set[str], *, user_turn: bool) -> str:
+            agent_server.CURRENT_TURNS["source"] = {"run_id": run_id}
+            authority = await agent_server.issue_cross_chat_capability(
+                "source", run_id, [], actions=actions, provider_route_snapshot=[paired, reply_only],
+                source_is_user_turn=user_turn,
+            )
+            return json.loads(authority.read_text())["provider_capability"]
+
+        async def act(token: str, **fields) -> dict:
+            return await agent_server.apply_provider_chat_action(
+                agent_server.ProviderChatActionRequest(**fields), self.provider_request(token, method="POST"),
+            )
+
+        async def refused(token: str, status: int, **fields) -> None:
+            with self.assertRaises(HTTPException) as caught:
+                await act(token, **fields)
+            self.assertEqual(caught.exception.status_code, status, fields)
+
+        chat = {"id": "target", "title": "Target", "folder": "Notes", "pinned": True, "archived": False}
+        handlers = {
+            "update_session": AsyncMock(return_value={"session": chat}),
+            "mark_session_read": AsyncMock(return_value={"session": chat}),
+            "mark_session_unread": AsyncMock(return_value={"session": chat}),
+            "fork_session": AsyncMock(return_value={"session": {"id": "forked", "title": "Target (fork)"}}),
+            "reload_session_history": AsyncMock(return_value={"removed": [], "session": chat}),
+            "delete_session": AsyncMock(return_value={"ok": True, "deleted": True}),
+        }
+        user = await issue("run_menu", {"agent_cross_chat_routes", "chat_manage", "publish"}, user_turn=True)
+        route = paired["route_id"]
+        with self.native_transports(), patch.multiple(agent_server, **handlers):
+            update = handlers["update_session"]
+            # This chat: the menu's patch goes to its own PATCH handler.
+            self.assertEqual(await act(user, action="pin"), {
+                "ok": True, "action": "pin", "route_id": None,
+                "chat": {"title": "Target", "folder": "Notes", "pinned": True, "archived": False}})
+            self.assertEqual(update.await_args.args[0], "source")
+            self.assertEqual(update.await_args.args[1].model_dump(exclude_unset=True), {"pinned": True})
+            # The chat behind an instruction route, as when the user picks each menu item.
+            for action, patch_fields in (("unpin", {"pinned": False}), ("archive", {"archived": True}),
+                                         ("unarchive", {"archived": False})):
+                await act(user, action=action, route_id=route)
+                self.assertEqual(update.await_args.args[0], "target")
+                self.assertEqual(update.await_args.args[1].model_dump(exclude_unset=True), patch_fields)
+            await act(user, action="move", route_id=route, folder="  Release\u0000 notes ")
+            self.assertEqual(update.await_args.args[1].model_dump(exclude_unset=True),
+                             {"folder": "Release notes", "archived": False})
+            await act(user, action="mark-read", route_id=route)
+            self.assertEqual(handlers["mark_session_read"].await_args.args[0], "target")
+            await act(user, action="mark-unread")
+            handlers["mark_session_unread"].assert_awaited_with("source")
+            self.assertEqual((await act(user, action="fork", route_id=route))["fork"],
+                             {"chat_id": "forked", "title": "Target (fork)"})
+            self.assertEqual(handlers["fork_session"].await_args.args[0], "target")
+            await act(user, action="reload-history", route_id=route)
+            handlers["reload_session_history"].assert_awaited_with("target")
+            # An archived chat keeps its menu: unarchive reaches it through its pair.
+            agent_server.STORE.sessions["target"]["archived"] = True
+            await act(user, action="unarchive", route_id=route)
+            self.assertEqual(update.await_args.args[0], "target")
+            agent_server.STORE.sessions["target"]["archived"] = False
+            self.assertEqual(await act(user, action="delete", route_id=route),
+                             {"ok": True, "action": "delete", "route_id": route, "deleted": True})
+            handlers["delete_session"].assert_awaited_once_with("target")
+            calls = sum(handler.await_count for handler in handlers.values())
+
+            # A chat cannot archive or delete itself; a folder needs a name.
+            await refused(user, 409, action="archive")
+            await refused(user, 409, action="delete")
+            await refused(user, 400, action="move", route_id=route, folder="‎ ")
+            # A reply-only route, an unknown route, a malformed id and a route to another server are refused.
+            foreign = "route_" + "e" * 32
+            with patch.dict(agent_server.CROSS_SERVER_ROUTES, {foreign: {"route_id": foreign, "session_id": "source"}}):
+                for route_id, status in ((reply_only["route_id"], 403), ("route_" + "f" * 32, 403), ("nope", 400), (foreign, 409)):
+                    await refused(user, status, action="pin", route_id=route_id)
+            # Only the user's own turn deletes another chat; a mail wake, a job or a delivery does not.
+            wake = await issue("run_wake", {"agent_cross_chat_routes", "chat_manage"}, user_turn=False)
+            await refused(wake, 403, action="delete", route_id=route)
+            await act(wake, action="pin", route_id=route)
+            calls += 1
+            # A run without the grant cannot use the menu on its own chat.
+            routes_only = await issue("run_routes_only", {"agent_cross_chat_routes"}, user_turn=True)
+            await refused(routes_only, 403, action="pin")
+            self.assertEqual(sum(handler.await_count for handler in handlers.values()), calls)
+        # A message steered into the run keeps the grant, as turn admission and a goal's resume issue it.
+        self.assertIn("chat_manage", agent_server.native_steer_provider_actions("source", {"prompt": "follow-up"})[0])
+
+    async def test_chat_export_attaches_the_menu_download_to_this_chat(self) -> None:
+        instruction = self.route("a", actions=["instruction"])
+        agent_server.STORE.sessions["source"]["provider_cross_chat_routes"] = [instruction]
+        agent_server.CURRENT_TURNS["source"] = {"run_id": "run_export"}
+        authority = await agent_server.issue_cross_chat_capability(
+            "source", "run_export", [], actions={"agent_cross_chat_routes", "chat_manage", "publish"},
+            provider_route_snapshot=[instruction],
+        )
+        token = json.loads(authority.read_text())["provider_capability"]
+        download = agent_server.Response(b"# Target\n", headers={
+            "Content-Disposition": "attachment; filename=\"Target.md\"; filename*=UTF-8''Target%20%E6%97%A5%E5%BF%97.md"})
+        published: list[tuple[str, bytes]] = []
+
+        async def publish(session_id, run_id, entries, *, metadata):
+            published.append((session_id, Path(entries[0]["path"]).read_bytes()))
+            self.assertEqual((Path(entries[0]["path"]).name, run_id, metadata),
+                             ("Target 日志.md", "run_export", {"run": "metadata"}))
+            return [{"id": "event", "seq": 7, "run_id": run_id, "artifact": {
+                "id": "art_1", "filename": "Target 日志.md", "content_type": "text/markdown", "size": 9,
+                "path": "/files/art_1/Target 日志.md"}}]
+
+        with self.native_transports(), \
+                patch.object(agent_server, "export_session", AsyncMock(return_value=download)) as export, \
+                patch.object(agent_server, "active_artifact_publication_run",
+                             AsyncMock(return_value=("run_export", {"run": "metadata"}))), \
+                patch.object(agent_server, "publish_artifact_entries", side_effect=publish):
+            result = await agent_server.apply_provider_chat_action(
+                agent_server.ProviderChatActionRequest(action="export", route_id=instruction["route_id"], format="html"),
+                self.provider_request(token, method="POST"),
+            )
+        export.assert_awaited_once_with("target", "html")
+        # The routed chat's download lands in this chat's outputs, and the agent learns where it is.
+        self.assertEqual(published, [("source", b"# Target\n")])
+        self.assertEqual(result["receipts"][0]["artifact_id"], "art_1")
+        self.assertEqual(result["receipts"][0]["path"], "/files/art_1/Target 日志.md")
+
     async def test_provider_route_expiry_is_absolute_even_for_same_live_run(self) -> None:
         route = self.route("a")
         agent_server.STORE.sessions["source"]["provider_cross_chat_routes"] = [route]

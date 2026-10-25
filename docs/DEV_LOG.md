@@ -1,5 +1,60 @@
 # Public development log
 
+## 2026-10-25 — Agents can use the chat list's menu on their chats: archive, delete, export and more (server source)
+
+- Asked to delete a chat it had created for a handoff, an agent answered
+  that its chats helper could only list, read, message and rename chats.
+  The helper now has the rest of the chat list's context menu: `mark-read`,
+  `mark-unread`, `pin`, `unpin`, `move FOLDER`, `archive`, `unarchive`,
+  `fork`, `reload-history`, `export [--format markdown|html|jsonl]` and
+  `delete`. Each works on the agent's own chat or, with `--route`, on a chat
+  behind one of its instruction routes (the scope of `chats title`), and
+  calls the same server handler as the menu item, so the desktop and Android
+  chat lists show the change at their next refresh with no client change.
+- `export` attaches the menu's download to the agent's own chat, in its
+  outputs list, and tells the agent where the file is stored. `delete` stops
+  the other chat's run first, as the menu's Delete does.
+- Limits: a chat cannot archive, delete or reload the history of itself
+  while its turn runs; the helper requires `--route` for those commands, and
+  the server refuses an own-chat archive or delete (409). Deleting another
+  chat also needs a turn the user started; a scheduled job, a delivery or a
+  wake for incoming mail gets 403. A chat archived through its pair stays
+  reachable, so `unarchive` works on it. Routes to chats on other servers are
+  refused (409), as for `title`: the hub relays only mail and pairings.
+  Share is not an agent command because its link exposes the chat outside
+  AgentsDock, and Open in split view is a client layout.
+- The guidance agents read names the commands. The provider-tool
+  description lists them, and the provider actions prelude says that
+  archive and delete need `--route` and the user's request; the title
+  guidance was shortened so the static Claude prompt stays within its
+  13,000-character budget (12,923).
+- Verified with tests that fail on the previous code: the helper's payloads
+  and refusals, the endpoint on the agent's own chat and a routed chat for
+  every command, the archived paired chat, the refusals (own archive and
+  delete, reply-only, unknown, malformed and cross-server routes, delete
+  from a non-user turn, a run without the grant), export into the calling
+  chat, and the new grant in steered messages and a Codex goal's resume.
+- Real-app check: an isolated AgentsServer from this source with a real
+  Claude chat (Sonnet 5.5) and the desktop app built from this source
+  (unpackaged, isolated profile). The chat created a new agent through the
+  composer's `Create new agent`, then, on request, pinned it and marked it
+  read, unpinned it and moved it into a new folder, forked it, exported it
+  as Markdown, archived and unarchived it, marked it unread, reloaded its
+  history, deleted it, and pinned, unpinned, exported (HTML) and forked
+  itself. The desktop sidebar showed each change within about 20 s, and the
+  exports opened from the chat's outputs list. An own-chat archive and a
+  made-up route were refused, and the helper had no route to an unrelated
+  chat.
+- Found, not changed: deleting a Claude chat that is running a foreground
+  command returns 409 ("has not acknowledged interruption yet") after about
+  16 s although the command is stopped; a second delete succeeds. The
+  menu's Delete does the same. Within one Claude turn the agent's identical
+  retry is answered from the provider tool's replay cache, so the agent
+  completes such a delete in a later turn. Not exercised: Codex as the
+  acting agent, Android (no client change), routes across servers (refused
+  by design). Availability: server source; a server takes it after an
+  update or redeploy.
+
 ## 2026-10-25 — Renaming a hub remote saves the name on the hub; every device shows it (server, desktop, Android)
 
 - Each client kept its own name for a remote server the hub manages. The
