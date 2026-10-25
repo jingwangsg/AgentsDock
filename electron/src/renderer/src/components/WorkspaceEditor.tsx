@@ -284,6 +284,8 @@ export interface WorkspaceEditorProps {
   profileScope: WorkspaceProfileScope | null
   available: boolean | null
   capabilityVersion?: number
+  /** The server previews images and PDFs outside the working directory (absolute-preview route). */
+  absoluteFileTransfers?: boolean
   maxTextFileBytes?: number
   unavailableMessage?: string
   onReady?: () => void
@@ -297,6 +299,7 @@ export function WorkspaceEditor({
   profileScope,
   available,
   capabilityVersion = 1,
+  absoluteFileTransfers = false,
   maxTextFileBytes,
   unavailableMessage,
   onReady,
@@ -2478,6 +2481,25 @@ export function WorkspaceEditor({
       reportOpenError(t('editor.tabLimit', { count: MAX_OPEN_TABS }))
       return false
     }
+    const viewerKind = workspaceFileViewerKind(path)
+    if ((viewerKind === 'image' || viewerKind === 'pdf') && absoluteFileTransfers) {
+      // The viewer streams the file from the absolute-preview route, which has
+      // no text-size limit; the text read below rejects every binary file.
+      if (!paletteLease) openRequestSequence.current += 1
+      const nextFiles = [...openFilesRef.current, openAbsolutePreviewFile(path, viewerKind)]
+      openFilesRef.current = nextFiles
+      setOpenFiles(nextFiles)
+      activateFilePath(path, targetGroup)
+      if (paletteLease) commitPaletteSelection(paletteLease)
+      else {
+        paletteOpenRef.current = false
+        setPaletteOpen(false)
+        setPaletteQuery('')
+      }
+      setPendingClosePath(null)
+      setWorkspaceError(null)
+      return true
+    }
     const openRequest = paletteLease?.generation ?? ++openRequestSequence.current
     const operation = beginWorkspaceFileOperation(path, 'read')
     if (!operation) return false
@@ -2855,7 +2877,7 @@ export function WorkspaceEditor({
     }
     window.addEventListener('agentsdock:open-workspace-path', open)
     return () => window.removeEventListener('agentsdock:open-workspace-path', open)
-  }, [absoluteReadsAvailable, absoluteWritesAvailable, available, capabilityMessage, cwd, session.id])
+  }, [absoluteFileTransfers, absoluteReadsAvailable, absoluteWritesAvailable, available, capabilityMessage, cwd, session.id])
 
   useEffect(() => {
     const open = (event: Event) => {
@@ -4842,6 +4864,9 @@ function restoredWorkspaceFile(cwd: string, tab: PersistedTab): OpenWorkspaceFil
 
 function restoredExternalFile(tab: PersistedTab): OpenWorkspaceFile {
   const viewerKind = workspaceFileViewerKind(tab.path)
+  // Not gated on absoluteFileTransfers: the server's health can arrive after the restore, and only a
+  // server with the absolute-preview route could have opened this tab (the text read refuses it).
+  if (viewerKind === 'image' || viewerKind === 'pdf') return openAbsolutePreviewFile(tab.path, viewerKind)
   const hasDraft = typeof tab.draft === 'string'
   const draft = tab.draft ?? ''
   return {
@@ -4916,6 +4941,15 @@ function openWorkspacePreviewFile(
     conflicted: false,
     lines: 0,
     error: null
+  }
+}
+
+function openAbsolutePreviewFile(path: string, viewerKind: 'image' | 'pdf'): OpenWorkspaceFile {
+  return {
+    ...openWorkspacePreviewFile('', path, viewerKind),
+    scope: 'absolute',
+    origin: 'external',
+    displayPath: path
   }
 }
 
@@ -5406,6 +5440,14 @@ function workspaceMediaSource(
           file.artifact.id
         )
         : null
+    }
+    if (file.origin === 'external') {
+      return window.agentsDock.workspace.absoluteMediaURL(
+        scope.profileId,
+        scope.profileGeneration,
+        sessionId,
+        file.path
+      )
     }
     return window.agentsDock.workspace.mediaURL(
       scope.profileId,

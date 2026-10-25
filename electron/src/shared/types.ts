@@ -1518,6 +1518,8 @@ export interface ServerCapability {
 export interface WorkspaceFilesCapability extends ServerCapability {
   version?: number
   max_text_file_bytes?: number
+  /** True when the server has the absolute-preview route for files outside the working directory. */
+  absolute_file_transfers?: boolean
 }
 
 export interface PortForwardingCapability extends ServerCapability {

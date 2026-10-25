@@ -1486,7 +1486,7 @@ WS_HANDSHAKE_HEADERS = {"sec-websocket-key", "sec-websocket-version", "sec-webso
 # connection per remote serves both directions. JSON routes beside them stay on the main tunnel.
 UPLOAD_PATH_RE = re.compile(r"api/sessions/[^/]+/files")
 DOWNLOAD_PATH_RE = re.compile(
-    r"api/sessions/[^/]+/(files/[^/]+|links/file|diffs/[^/]+|workspace/(preview|download)|export)"
+    r"api/sessions/[^/]+/(files/[^/]+|links/file|diffs/[^/]+|workspace/(absolute-)?(preview|download)|export)"
     r"|api/files/[^/]+"
 )
 # The live event streams (a chat's timeline, the sidebar summaries, emergency alerts) take the

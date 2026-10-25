@@ -190,6 +190,15 @@ if (!app.requestSingleInstanceLock()) {
             if (!teamHub) return mediaNotFoundResponse()
             return await teamHub.teamAttachmentMediaResponse(resource, request)
           }
+          if ('absolutePath' in resource) {
+            return await service.absoluteMediaResponse(
+              resource.profileId,
+              resource.profileGeneration,
+              resource.sessionId,
+              resource.absolutePath,
+              request
+            )
+          }
           return await service.workspaceMediaResponse(
             resource.profileId,
             resource.profileGeneration,

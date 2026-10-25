@@ -638,6 +638,7 @@ export interface AgentsDockAPI {
     overwriteAbsolute(sessionId: string, path: string, content: string): Promise<WorkspaceFile>
     previewAvailable(scope: WorkspaceProfileScope, sessionId: string, path: string): Promise<boolean>
     mediaURL(profileId: string, profileGeneration: number, sessionId: string, path: string): string
+    absoluteMediaURL(profileId: string, profileGeneration: number, sessionId: string, path: string): string
     download(sessionId: string, path: string): Promise<string | null>
     create(sessionId: string, path: string, kind: 'file' | 'directory'): Promise<WorkspaceCreateResult>
     write(sessionId: string, path: string, content: string, expectedRevision: string): Promise<WorkspaceFile>

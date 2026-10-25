@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { AgentsDockAPI } from '../shared/ipc'
 import type { AppEventMap } from '../shared/types'
-import { buildMediaURL, buildWorkspaceMediaURL } from '../shared/media-url'
+import { buildAbsoluteMediaURL, buildMediaURL, buildWorkspaceMediaURL } from '../shared/media-url'
 import {
   NativeFileSelectionGate,
   nativeFileDropTarget,
@@ -411,6 +411,7 @@ const api: AgentsDockAPI = {
     overwriteAbsolute: (sessionId, path, content) => ipcRenderer.invoke('workspace:overwrite-absolute', sessionId, path, content),
     previewAvailable: (scope, sessionId, path) => ipcRenderer.invoke('workspace:preview-available', scope, sessionId, path),
     mediaURL: (profileId, profileGeneration, sessionId, path) => buildWorkspaceMediaURL(profileId, profileGeneration, sessionId, path),
+    absoluteMediaURL: (profileId, profileGeneration, sessionId, path) => buildAbsoluteMediaURL(profileId, profileGeneration, sessionId, path),
     download: (sessionId, path) => ipcRenderer.invoke('workspace:download', sessionId, path),
     create: (sessionId, path, kind) => ipcRenderer.invoke('workspace:create', sessionId, path, kind),
     write: (sessionId, path, content, expectedRevision) => ipcRenderer.invoke('workspace:write', sessionId, path, content, expectedRevision),

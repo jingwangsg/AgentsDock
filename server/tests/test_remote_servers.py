@@ -2348,7 +2348,8 @@ time.sleep(30)
 
     def test_download_path_rule_matches_file_bodies_only(self) -> None:
         for path in ("api/sessions/s1/files/f1", "api/sessions/s1/links/file", "api/files/f1", "api/sessions/s1/diffs/run_1",
-                     "api/sessions/s1/workspace/preview", "api/sessions/s1/workspace/download", "api/sessions/s1/export"):
+                     "api/sessions/s1/workspace/preview", "api/sessions/s1/workspace/download", "api/sessions/s1/export",
+                     "api/sessions/s1/workspace/absolute-preview", "api/sessions/s1/workspace/absolute-download"):
             assert rs.DOWNLOAD_PATH_RE.fullmatch(path), path
         # JSON routes next to them: the file listing, a file's event, text read as JSON, and anything else.
         for path in ("api/sessions/s1/files", "api/sessions/s1/files/f1/event", "api/sessions/s1/workspace/file",
@@ -2366,7 +2367,8 @@ time.sleep(30)
                 manager.bulk_tunnels[remote.id] = rs.Tunnel(remote.model_copy(update={"local_port": bulk_port}), None, role="bulk")
                 async with httpx.AsyncClient() as client:
                     for path in ("files/file_1", "links/file?target=notes.md", "diffs/run_1",
-                                 "workspace/preview?path=shot.png", "workspace/download?path=build.tgz", "export"):
+                                 "workspace/preview?path=shot.png", "workspace/download?path=build.tgz", "export",
+                                 "workspace/absolute-preview?path=%2Ftmp%2Freview.pdf"):
                         assert (await client.get(f"{base}/{path}", headers=headers)).json()["identity"] == "bulk-tunnel", path
                     # The JSON routes beside them stay on the main tunnel, as does a POST to a download path.
                     for path in ("files?offset=0&limit=60", "files/file_1/event", "workspace/file?path=a.py"):
