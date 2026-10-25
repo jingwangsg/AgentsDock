@@ -3531,6 +3531,7 @@ interface FakeClientOptions {
     request?: Request,
     callerSignal?: AbortSignal
   ) => Promise<Response>
+  absolutePreviewRequest?: (sessionId: string, absolutePath: string, request: Request) => Promise<Response>
   workspaceDownloadRequest?: (sessionId: string, path: string) => Promise<Response>
   sessionExportRequest?: (sessionId: string, format: string) => Promise<Response>
   canvasRuntimeAsset?: (asset: string) => Promise<string>
@@ -3717,6 +3718,7 @@ function fakeClient(options: FakeClientOptions = {}) {
     runtimeCatalog: vi.fn(options.runtimeCatalog ?? (async () => runtimeCatalog)),
     fileRequest: vi.fn(options.fileRequest ?? (async () => new Response('file'))),
     workspacePreviewRequest: vi.fn(options.workspacePreviewRequest ?? (async () => new Response('workspace preview'))),
+    absolutePreviewRequest: vi.fn(options.absolutePreviewRequest ?? (async () => new Response('absolute preview'))),
     workspaceDownloadRequest: vi.fn(options.workspaceDownloadRequest ?? (async () => new Response('workspace download'))),
     sessionExportRequest: vi.fn(options.sessionExportRequest ?? (async () => new Response('# Chat\n'))),
     canvasRuntimeAsset: vi.fn(options.canvasRuntimeAsset ?? (async () => '')),
@@ -10563,6 +10565,39 @@ describe('server profile lifecycle', () => {
     )
     expect(await activeResponse.text()).toBe('profile B workspace file')
     expect(b.workspacePreviewRequest).toHaveBeenCalledWith('chat', 'assets/same.png', request)
+  })
+
+  it('serves an absolute-path media URL only through the profile that built it', async () => {
+    const lateAResponse = deferred<Response>()
+    const a = fakeClient({ absolutePreviewRequest: () => lateAResponse.promise })
+    const b = fakeClient({ absolutePreviewRequest: async () => new Response('profile B absolute file') })
+    const { service } = createProfileService({
+      'http://a.test:7850': [a],
+      'http://b.test:7850': [b]
+    })
+    await (service as unknown as {
+      refreshAll(announce: boolean, includeJobs: boolean): Promise<void>
+    }).refreshAll(false, false)
+    const path = '/Users/dev/Downloads/review.pdf'
+    const request = new Request('agentsdock-media://absolute/a/1/chat/%2FUsers%2Fdev%2FDownloads%2Freview.pdf', {
+      headers: { Range: 'bytes=0-99' }
+    })
+    const aGeneration = (await service.bootstrap()).profileGeneration
+    const staleResponse = service.absoluteMediaResponse('a', aGeneration, 'chat', path, request)
+    await vi.waitFor(() => expect(a.absolutePreviewRequest).toHaveBeenCalledWith('chat', path, request))
+    expect(a.workspacePreviewRequest).not.toHaveBeenCalled()
+
+    await service.switchServer('b')
+    lateAResponse.resolve(new Response('profile A absolute file'))
+
+    await expect(staleResponse).rejects.toThrow('superseded')
+    await expect(service.absoluteMediaResponse('a', aGeneration, 'chat', path, request)).rejects.toThrow('superseded')
+    expect(b.absolutePreviewRequest).not.toHaveBeenCalled()
+
+    await settleBackgroundWork()
+    const bGeneration = (await service.bootstrap()).profileGeneration
+    const activeResponse = await service.absoluteMediaResponse('b', bGeneration, 'chat', path, request)
+    expect(await activeResponse.text()).toBe('profile B absolute file')
   })
 
   it('routes notification clicks to the authenticated profile without switching in the main process', async () => {

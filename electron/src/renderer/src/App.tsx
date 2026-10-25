@@ -118,6 +118,7 @@ export function App() {
     ? null
     : state.health.capabilities?.workspace_files?.available === true)
   const workspaceFilesVersion = useAppStore(state => state.health?.capabilities?.workspace_files?.version)
+  const workspaceAbsoluteFileTransfers = useAppStore(state => state.health?.capabilities?.workspace_files?.absolute_file_transfers === true)
   const workspaceFilesMaxTextFileBytes = useAppStore(state => state.health?.capabilities?.workspace_files?.max_text_file_bytes)
   const workspaceFilesUnavailableMessage = useAppStore(state => {
     const capability = state.health?.capabilities?.workspace_files
@@ -838,6 +839,7 @@ export function App() {
         profileScope={workspaceProfileScope}
         available={workspaceFilesAvailable}
         capabilityVersion={workspaceFilesVersion}
+        absoluteFileTransfers={workspaceAbsoluteFileTransfers}
         maxTextFileBytes={workspaceFilesMaxTextFileBytes}
         unavailableMessage={workspaceFilesUnavailableMessage}
         chatContent={chatWorkspace}
@@ -922,6 +924,7 @@ export function App() {
                 profileScope={splitWorkspaceProfileScope}
                 available={workspaceFilesAvailable}
                 capabilityVersion={workspaceFilesVersion}
+                absoluteFileTransfers={workspaceAbsoluteFileTransfers}
                 maxTextFileBytes={workspaceFilesMaxTextFileBytes}
                 unavailableMessage={workspaceFilesUnavailableMessage}
                 onReady={renderedSplitWorkspaceReady}

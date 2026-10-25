@@ -5655,6 +5655,22 @@ export class AppService {
     return response
   }
 
+  async absoluteMediaResponse(
+    profileId: string,
+    profileGeneration: number,
+    sessionId: string,
+    absolutePath: string,
+    request: Request
+  ): Promise<Response> {
+    const scope = this.captureScope()
+    if (scope.profileId !== profileId || scope.generation !== profileGeneration) throw staleProfileError()
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    const response = await scope.client.absolutePreviewRequest(sessionId, absolutePath, request)
+    this.assertCurrentScope(scope)
+    return response
+  }
+
   async notify(payload: ProfileNotificationPayload): Promise<void> {
     const scope = this.captureScope()
     if (payload.profileId !== scope.profileId) {

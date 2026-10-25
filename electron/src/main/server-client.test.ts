@@ -2293,6 +2293,30 @@ describe('AgentServerClient live stream', () => {
     expect(response).toBe(serverResponse)
   })
 
+  it('streams an absolute-path preview through a hub remote with Range and no text limit', async () => {
+    const serverResponse = new Response(null, { status: 206, headers: { 'Content-Type': 'application/pdf' } })
+    const fetchMock = vi.fn().mockResolvedValue(serverResponse)
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new AgentServerClient('http://example.test:7850/api/remote/r1', 'secret')
+    const request = new Request('agentsdock-media://absolute/profile-a/1/chat/%2FUsers%2Fdev%2Freview.pdf', {
+      headers: { Range: 'bytes=0-65535', 'X-Untrusted-Renderer-Header': 'ignore-me' }
+    })
+
+    const response = await client.absolutePreviewRequest('chat one', '/Users/dev/Downloads/review #1.pdf', request)
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe(
+      'http://example.test:7850/api/remote/r1/api/sessions/chat%20one/workspace/absolute-preview'
+      + '?path=%2FUsers%2Fdev%2FDownloads%2Freview+%231.pdf'
+    )
+    expect(init.method).toBe('GET')
+    const headers = new Headers(init.headers)
+    expect(headers.get('Range')).toBe('bytes=0-65535')
+    expect(headers.get('X-AgentsDock-Token')).toBe('secret')
+    expect(headers.get('X-Untrusted-Renderer-Header')).toBeNull()
+    expect(response).toBe(serverResponse)
+  })
+
   it('passes workspace preview HTTP errors through as responses', async () => {
     const serverResponse = new Response('Not found', { status: 404 })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(serverResponse))

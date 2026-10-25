@@ -1,5 +1,47 @@
 # Public development log
 
+## 2026-10-25 — Chat links to images and PDFs outside the working directory open in the desktop viewers (desktop, server)
+
+- A chat link (or a Cmd+O path) to a file outside the chat's working
+  directory was always read as text through
+  `GET /api/sessions/{id}/workspace/absolute-file`. That route refuses
+  binary files and files above the 32 MiB text limit, so every such PDF
+  or image showed an error instead: "… is not UTF-8 text.", "… is binary
+  and cannot be opened in the text editor." or, for a 39 MB PDF, "…
+  exceeds the configured workspace text transfer limit."
+- The desktop now opens an absolute path whose name is an image or a PDF
+  in the same image and PDF viewers as workspace files. The viewer loads
+  it from `GET /api/sessions/{id}/workspace/absolute-preview` (the route
+  Android has used since 2026-10-07), through the main process with the
+  profile's credentials and Range requests, so the text limit does not
+  apply; the server's preview limit (100 MiB by default) does. Such tabs
+  are restored as viewers after a relaunch. Text files keep the text
+  editor and its limits. Servers that do not report
+  `absolute_file_transfers` keep the previous behaviour and messages.
+- A hub sends file bodies from its remotes over a separate ssh tunnel so
+  they do not delay the chat's other requests. Workspace previews and
+  downloads already used it; the absolute-path preview and download
+  routes did not, and now do as well.
+- Verified with tests that fail on the previous code: the media URL for
+  an absolute path, the main-process request through a hub remote, the
+  profile check for that request, the chat link, the Cmd+O path and the
+  restored tab, and the hub's tunnel choice for absolute previews.
+- Real-app check: the desktop app built from this source (unpackaged,
+  isolated profile) against an isolated AgentsServer, with links in a
+  real Claude reply to generated test files outside the working
+  directory. On the previous build a 35 MiB PDF, a small PDF and a PNG
+  each showed the errors above. With this source all three opened and
+  rendered (both PDF pages, the PNG at 320×200), a second click went to
+  the open tab, Cmd+O with the small PDF's path opened it, the tabs came
+  back as viewers after a relaunch, and the text file opened in the
+  editor. Through an isolated hub with the same server registered as a
+  remote (reached through a test stand-in for ssh), the PDF and the PNG
+  rendered; the hub fetched them over the bulk tunnel, where the previous
+  hub code used the main tunnel.
+- Not covered: a real ssh tunnel, a slow remote link, and a file above
+  the preview limit. Availability: source only. Needs the desktop update;
+  the hub's tunnel change needs the server update on the hub.
+
 ## 2026-10-25 — Renaming a hub remote saves the name on the hub; every device shows it (server, desktop, Android)
 
 - Each client kept its own name for a remote server the hub manages. The

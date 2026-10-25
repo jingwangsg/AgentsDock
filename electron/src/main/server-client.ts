@@ -1996,6 +1996,20 @@ export class AgentServerClient {
     request?: Request,
     callerSignal?: AbortSignal
   ): Promise<Response> {
+    return this.previewRequest('preview', sessionId, path, request, callerSignal)
+  }
+
+  absolutePreviewRequest(sessionId: string, absolutePath: string, request: Request): Promise<Response> {
+    return this.previewRequest('absolute-preview', sessionId, absolutePath, request)
+  }
+
+  private previewRequest(
+    route: 'preview' | 'absolute-preview',
+    sessionId: string,
+    path: string,
+    request?: Request,
+    callerSignal?: AbortSignal
+  ): Promise<Response> {
     const configuration = this.configuration
     const method = request?.method?.toUpperCase() ?? 'GET'
     if (method !== 'GET' && method !== 'HEAD') throw new TypeError('Workspace previews only support GET and HEAD')
@@ -2006,7 +2020,7 @@ export class AgentServerClient {
     const query = new URLSearchParams({ path })
     return fetch(configurationURL(
       configuration,
-      `/api/sessions/${encodeURIComponent(sessionId)}/workspace/preview?${query}`
+      `/api/sessions/${encodeURIComponent(sessionId)}/workspace/${route}?${query}`
     ), {
       method,
       headers,

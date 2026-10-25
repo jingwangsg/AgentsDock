@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildMediaURL, buildTeamAttachmentMediaURL, buildWorkspaceMediaURL, parseMediaURL } from './media-url'
+import { buildAbsoluteMediaURL, buildMediaURL, buildTeamAttachmentMediaURL, buildWorkspaceMediaURL, parseMediaURL } from './media-url'
 
 describe('profile-scoped media URLs', () => {
   it('uses different browser cache keys for the same file ID on different profiles', () => {
@@ -66,5 +66,33 @@ describe('profile-scoped media URLs', () => {
     expect(parseMediaURL('agentsdock-media://workspace/profile-a/1/chat-a/src%5Cfile.png')).toBeNull()
     expect(parseMediaURL('agentsdock-media://workspace/profile-a/1/chat-a/src%2Ffile.png?download=1')).toBeNull()
     expect(() => buildWorkspaceMediaURL('profile-a', 1, 'chat-a', '../secret.png')).toThrow(TypeError)
+  })
+
+  it('round-trips an absolute path outside the workspace under its own host', () => {
+    const url = buildAbsoluteMediaURL('profile alpha', 7, 'chat #1', '/Users/dev/Downloads/review #1.pdf')
+    expect(url).toBe(
+      'agentsdock-media://absolute/profile%20alpha/7/chat%20%231/%2FUsers%2Fdev%2FDownloads%2Freview%20%231.pdf'
+    )
+    expect(parseMediaURL(url)).toEqual({
+      profileId: 'profile alpha',
+      profileGeneration: 7,
+      sessionId: 'chat #1',
+      absolutePath: '/Users/dev/Downloads/review #1.pdf'
+    })
+    expect(parseMediaURL(buildAbsoluteMediaURL('profile-a', 1, 'chat-a', '~/plots/loss.png'))).toMatchObject({
+      absolutePath: '~/plots/loss.png'
+    })
+    // The workspace host still refuses absolute paths.
+    expect(parseMediaURL('agentsdock-media://workspace/profile-a/1/chat-a/%2FUsers%2Fdev%2Freview.pdf')).toBeNull()
+  })
+
+  it('rejects malformed absolute media identities', () => {
+    expect(() => buildAbsoluteMediaURL('profile-a', 1, 'chat-a', '')).toThrow('Invalid absolute media resource identity')
+    expect(() => buildAbsoluteMediaURL('profile-a', 1, 'chat-a', '/tmp/a\u0000.pdf')).toThrow('Invalid absolute media resource identity')
+    expect(() => buildAbsoluteMediaURL('profile-a', 1, 'chat-a', `/${'x'.repeat(4_096)}`)).toThrow('Invalid absolute media resource identity')
+    expect(parseMediaURL('agentsdock-media://absolute/profile-a/1/chat-a')).toBeNull()
+    expect(parseMediaURL('agentsdock-media://absolute/profile-a/1/chat-a/tmp/a.pdf')).toBeNull()
+    expect(parseMediaURL('agentsdock-media://absolute/profile-a/01/chat-a/%2Ftmp%2Fa.pdf')).toBeNull()
+    expect(parseMediaURL('agentsdock-media://absolute/profile-a/1/chat-a/%2Ftmp%2Fa.pdf?x=1')).toBeNull()
   })
 })

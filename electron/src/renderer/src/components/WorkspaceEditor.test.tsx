@@ -173,6 +173,7 @@ describe('WorkspaceEditor', () => {
           })),
           previewAvailable: vi.fn().mockResolvedValue(true),
           mediaURL: vi.fn().mockImplementation((_profileId: string, _generation: number, sessionId: string, path: string) => `agentsdock-media://workspace/profile-a/1/${sessionId}/${encodeURIComponent(path)}`),
+          absoluteMediaURL: vi.fn().mockImplementation((_profileId: string, _generation: number, sessionId: string, path: string) => `agentsdock-media://absolute/profile-a/1/${sessionId}/${encodeURIComponent(path)}`),
           download: vi.fn().mockResolvedValue('/Users/test/Downloads/file'),
           create: vi.fn().mockImplementation((_sessionId: string, path: string, kind: 'file' | 'directory') => Promise.resolve({
             root: '/work/project',
@@ -3288,6 +3289,107 @@ describe('WorkspaceEditor', () => {
     renderEditor()
     expect(await screen.findByRole('tab', { name: 'AGENTS.md' })).toBeInTheDocument()
     expect(await screen.findByRole('textbox', { name: `Contents of ${path}` })).toHaveAttribute('readonly')
+  })
+
+  it('opens chat links to absolute PDFs and images in the media viewers at any size', async () => {
+    const props = {
+      workspaceKey: 'server-a:chat-a',
+      session,
+      profileScope: { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' },
+      available: true,
+      capabilityVersion: 6,
+      absoluteFileTransfers: true,
+      chatContent: <p>Chat timeline</p>
+    }
+    const pdfPath = '/Users/dev/Downloads/ICLR_Reviews/Sub6857.pdf'
+    const imagePath = '/Users/dev/plots/loss curve.png'
+    const first = render(<WorkspaceEditor {...props} />)
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
+        detail: { sessionId: 'chat-a', path: pdfPath, mayBeDirectory: true }
+      }))
+    })
+    expect(await screen.findByTitle(`PDF preview of ${pdfPath}`)).toHaveAttribute(
+      'src',
+      'agentsdock-media://absolute/profile-a/1/chat-a/%2FUsers%2Fdev%2FDownloads%2FICLR_Reviews%2FSub6857.pdf'
+    )
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
+        detail: { sessionId: 'chat-a', path: imagePath, resolve: true }
+      }))
+    })
+    expect(await screen.findByRole('img', { name: imagePath })).toHaveAttribute(
+      'src',
+      'agentsdock-media://absolute/profile-a/1/chat-a/%2FUsers%2Fdev%2Fplots%2Floss%20curve.png'
+    )
+    expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalled()
+    expect(window.agentsDock.workspace.mediaURL).not.toHaveBeenCalled()
+    expect(screen.getByRole('tab', { name: 'Sub6857.pdf' }).getAttribute('title')).toContain(pdfPath)
+    expect(screen.queryByRole('button', { name: 'Reload' })).not.toBeInTheDocument()
+
+    // A relaunch restores both tabs from the persisted state as media viewers again.
+    const promises: Promise<unknown>[] = []
+    window.dispatchEvent(new CustomEvent('agentsdock:flush-draft', { detail: { promises } }))
+    await act(async () => { await Promise.all(promises) })
+    const persisted = vi.mocked(window.agentsDock.preferences.setScoped).mock.calls.at(-1)?.[2]
+    expect(persisted).toEqual(expect.objectContaining({
+      tabs: [
+        expect.objectContaining({ path: pdfPath, external: true }),
+        expect.objectContaining({ path: imagePath, external: true })
+      ]
+    }))
+    first.unmount()
+    resetWorkspaceEditorMemoryForTests()
+    vi.mocked(window.agentsDock.preferences.getScoped).mockResolvedValueOnce(persisted)
+    render(<WorkspaceEditor {...props} />)
+    expect(await screen.findByRole('img', { name: imagePath })).toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('tab', { name: 'Sub6857.pdf' }))
+    expect(await screen.findByTitle(`PDF preview of ${pdfPath}`)).toBeInTheDocument()
+    expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalled()
+  })
+
+  it('opens an absolute PDF from Cmd+O in the PDF viewer', async () => {
+    const path = '/Users/dev/Downloads/report.pdf'
+    render(<WorkspaceEditor
+      workspaceKey="server-a:chat-a"
+      session={session}
+      profileScope={{ profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }}
+      available
+      capabilityVersion={6}
+      absoluteFileTransfers
+      chatContent={<p>Chat timeline</p>}
+    />)
+    fireEvent.keyDown(window, { key: 'o', metaKey: true })
+    const search = screen.getByPlaceholderText('Search workspace or paste a full path…')
+    fireEvent.change(search, { target: { value: path } })
+    expect(await screen.findByRole('option', { name: `Open ${path}` })).toBeVisible()
+    fireEvent.keyDown(search, { key: 'Enter' })
+
+    expect(await screen.findByTitle(`PDF preview of ${path}`)).toHaveAttribute(
+      'src',
+      'agentsdock-media://absolute/profile-a/1/chat-a/%2FUsers%2Fdev%2FDownloads%2Freport.pdf'
+    )
+    expect(screen.queryByRole('dialog', { name: 'Open workspace file' })).not.toBeInTheDocument()
+    expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalled()
+  })
+
+  it('keeps the text read for an absolute PDF when the server has no absolute-preview route', async () => {
+    const path = '/Users/dev/Downloads/report.pdf'
+    vi.mocked(window.agentsDock.workspace.readAbsolute).mockRejectedValueOnce(new Error(
+      `${path} is not UTF-8 text.`
+    ))
+    renderEditor('server-a:chat-a', 6)
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
+        detail: { sessionId: 'chat-a', path, mayBeDirectory: true }
+      }))
+    })
+
+    expect(await screen.findByText(`${path} is not UTF-8 text.`)).toBeInTheDocument()
+    expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith('chat-a', path)
+    expect(window.agentsDock.workspace.absoluteMediaURL).not.toHaveBeenCalled()
   })
 
   it('opens a server-home path from Cmd+O and keeps the resolved path editable', async () => {
