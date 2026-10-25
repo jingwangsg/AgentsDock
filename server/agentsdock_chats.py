@@ -42,7 +42,8 @@ LIVE_RESPONSE_SOCKET_GRACE_SECONDS = 10
 LIVE_RESPONSE_POST_SOCKET_SECONDS = 10
 # The server copies attachments into the receiving chat before it answers.
 ATTACHMENT_POST_SOCKET_SECONDS = 600
-# Below the provider tool's 90 s cap on every helper call.
+# Delete stops the chat's run, fork copies a provider thread and export reads the whole history;
+# below the provider tool's 90 s cap on a helper call.
 CHAT_ACTION_POST_SOCKET_SECONDS = 60
 IDEMPOTENT_POST_RETRY_DELAYS_SECONDS = (0.1, 0.5)
 IDEMPOTENT_GET_RETRY_DELAYS_SECONDS = (0.1, 0.5)
@@ -500,7 +501,6 @@ def chat_action(args: argparse.Namespace) -> dict[str, Any]:
             raise CLIError("the folder name is empty")
     if args.command == "export":
         payload["format"] = args.format
-    # Deleting stops the chat's run, forking copies a provider thread and exporting reads the whole history.
     return post_json("/api/agent/cross-chat/chat-action", payload, authority(args.authority_file),
                      socket_timeout=CHAT_ACTION_POST_SOCKET_SECONDS)
 
@@ -951,9 +951,9 @@ def parser() -> argparse.ArgumentParser:
     title_command.add_argument("--route", help="route_id from chats list; omit to name this chat")
     title_command.add_argument("title", help=f"the new title; whitespace is collapsed, at most {TITLE_MAX_CHARS} characters")
     title_command.set_defaults(handler=set_title)
-    # The chat list's context menu, minus Rename (title), Share and Open in split view.
+    # The chat list's menu, minus Rename (title), Share and Open in split view.
     for name, help_text in (
-        ("mark-read", "mark this chat, or with --route the chat behind that instruction route, as read"),
+        ("mark-read", "mark this chat, or the chat behind --route, as read"),
         ("mark-unread", "mark this chat, or the chat behind --route, as unread"),
         ("pin", "pin this chat, or the chat behind --route, in the chat list"),
         ("unpin", "unpin this chat, or the chat behind --route"),
@@ -962,12 +962,12 @@ def parser() -> argparse.ArgumentParser:
         ("unarchive", "unarchive this chat, or the chat behind --route"),
         ("fork", "fork this chat, or the chat behind --route, into a new chat with its history"),
         ("reload-history", "reload the history of the idle chat behind --route from its provider transcript"),
-        ("export", "export this chat, or the chat behind --route, as a file attached to this chat"),
+        ("export", "export this chat, or the chat behind --route, as a file attached to this chat; only when the user asks"),
         ("delete", "delete the chat behind --route and stop its run; only when the user asks"),
     ):
         menu_command = commands.add_parser(name, help=help_text, allow_abbrev=False)
         if name in {"archive", "reload-history", "delete"}:
-            menu_command.add_argument("--route", required=True, help="route_id from chats list; not for this chat while its turn runs")
+            menu_command.add_argument("--route", required=True, help="route_id from chats list; required: a chat cannot do this to itself while its turn runs")
         else:
             menu_command.add_argument("--route", help="route_id from chats list; omit for this chat")
         if name == "move":

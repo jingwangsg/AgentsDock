@@ -862,8 +862,8 @@ class CodexGoalResumeTests(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_resume_authority_follows_the_chat_jobs_access(self) -> None:
         with patch.object(agent_server, "AGENT_TOKEN", "agent-token"):
             for access, actions, status in (
-                ("full", {"publish", "chat_title", "chat_manage", "emergency", "jobs", "team_read"}, 200),
-                ("blocked", {"publish", "chat_title", "chat_manage", "emergency", "team_read"}, 403),
+                ("full", {"publish", "chat_title", "emergency", "jobs", "team_read"}, 200),
+                ("blocked", {"publish", "chat_title", "emergency", "team_read"}, 403),
             ):
                 with self.subTest(access=access):
                     self.session["provider_jobs_access"] = access

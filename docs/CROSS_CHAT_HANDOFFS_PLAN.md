@@ -321,15 +321,16 @@ most 120 characters. A route to a chat on another server is refused (409)
 until the hub relays title changes, and so is a scheduled job's run chat,
 which keeps the job's title.
 
-The other commands are the chat list's context menu, on the same scope as
+The other commands are the chat list's menu, on the same scope as
 `title`, and each calls the handler the menu item calls: the chat PATCH for
 pin, folder and archive (moving a chat into a folder also unarchives it),
 read/unread, fork, history reload, and delete, which stops the chat's run
 first. `export` attaches the menu's Markdown, HTML or JSON Lines download to
 the calling chat's outputs and returns the stored file's path. A chat cannot
-archive or delete itself while its turn runs (409); deleting another chat
-also needs a turn the user started (a job, a delivery or a mail wake gets
-403). A paired chat stays reachable after it is archived, so `unarchive`
+archive or delete itself while its turn runs (409). Archive, delete and
+export need a turn the user started: a job, a delivery, a mail wake or a
+shared chat's guest gets 403. The own-chat commands use the run's `title`
+grant. A paired chat stays reachable after it is archived, so `unarchive`
 and the other commands still reach it. Rename is `title`; Share and Open in
 split view are not agent commands: a share link exposes the chat outside
 AgentsDock, and split view is a client layout. A route to a chat on another

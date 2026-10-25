@@ -2238,11 +2238,11 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         agent_server.STORE.sessions["source"]["provider_cross_chat_routes"] = [paired, reply_only]
         agent_server.STORE.sessions["target"]["provider_cross_chat_routes"] = [reverse]
 
-        async def issue(run_id: str, actions: set[str], *, user_turn: bool) -> str:
+        async def issue(run_id: str, actions: set[str], *, user_turn: bool, chat_routes_live: bool = False) -> str:
             agent_server.CURRENT_TURNS["source"] = {"run_id": run_id}
             authority = await agent_server.issue_cross_chat_capability(
                 "source", run_id, [], actions=actions, provider_route_snapshot=[paired, reply_only],
-                source_is_user_turn=user_turn,
+                source_is_user_turn=user_turn, chat_routes_live=chat_routes_live,
             )
             return json.loads(authority.read_text())["provider_capability"]
 
@@ -2265,7 +2265,7 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             "reload_session_history": AsyncMock(return_value={"removed": [], "session": chat}),
             "delete_session": AsyncMock(return_value={"ok": True, "deleted": True}),
         }
-        user = await issue("run_menu", {"agent_cross_chat_routes", "chat_manage", "publish"}, user_turn=True)
+        user = await issue("run_menu", {"agent_cross_chat_routes", "chat_title", "publish"}, user_turn=True)
         route = paired["route_id"]
         with self.native_transports(), patch.multiple(agent_server, **handlers):
             update = handlers["update_session"]
@@ -2301,36 +2301,40 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await act(user, action="delete", route_id=route),
                              {"ok": True, "action": "delete", "route_id": route, "deleted": True})
             handlers["delete_session"].assert_awaited_once_with("target")
-            calls = sum(handler.await_count for handler in handlers.values())
 
+            # The refusals below reach no handler.
+            for handler in handlers.values():
+                handler.reset_mock()
             # A chat cannot archive or delete itself; a folder needs a name.
             await refused(user, 409, action="archive")
             await refused(user, 409, action="delete")
-            await refused(user, 400, action="move", route_id=route, folder="‎ ")
+            await refused(user, 400, action="move", route_id=route, folder="\u200e ")
             # A reply-only route, an unknown route, a malformed id and a route to another server are refused.
             foreign = "route_" + "e" * 32
             with patch.dict(agent_server.CROSS_SERVER_ROUTES, {foreign: {"route_id": foreign, "session_id": "source"}}):
                 for route_id, status in ((reply_only["route_id"], 403), ("route_" + "f" * 32, 403), ("nope", 400), (foreign, 409)):
                     await refused(user, status, action="pin", route_id=route_id)
-            # Only the user's own turn deletes another chat; a mail wake, a job or a delivery does not.
-            wake = await issue("run_wake", {"agent_cross_chat_routes", "chat_manage"}, user_turn=False)
-            await refused(wake, 403, action="delete", route_id=route)
-            await act(wake, action="pin", route_id=route)
-            calls += 1
-            # A run without the grant cannot use the menu on its own chat.
+            # A run without the title grant cannot use the menu on its own chat.
             routes_only = await issue("run_routes_only", {"agent_cross_chat_routes"}, user_turn=True)
             await refused(routes_only, 403, action="pin")
-            self.assertEqual(sum(handler.await_count for handler in handlers.values()), calls)
-        # A message steered into the run keeps the grant, as turn admission and a goal's resume issue it.
-        self.assertIn("chat_manage", agent_server.native_steer_provider_actions("source", {"prompt": "follow-up"})[0])
+            # A mail wake, a job, a delivery or a shared chat's guest is not the user asking: no archive,
+            # delete or export (of this chat either), while the rest of the menu stays open to it.
+            wake = await issue("run_wake", {"agent_cross_chat_routes", "chat_title", "publish"},
+                               user_turn=False, chat_routes_live=True)
+            for action, route_id in (("archive", route), ("delete", route), ("export", route), ("export", None)):
+                await refused(wake, 403, action=action, route_id=route_id)
+            for handler in handlers.values():
+                handler.assert_not_awaited()
+            await act(wake, action="pin", route_id=route)
+            update.assert_awaited_once()
 
     async def test_chat_export_attaches_the_menu_download_to_this_chat(self) -> None:
         instruction = self.route("a", actions=["instruction"])
         agent_server.STORE.sessions["source"]["provider_cross_chat_routes"] = [instruction]
         agent_server.CURRENT_TURNS["source"] = {"run_id": "run_export"}
         authority = await agent_server.issue_cross_chat_capability(
-            "source", "run_export", [], actions={"agent_cross_chat_routes", "chat_manage", "publish"},
-            provider_route_snapshot=[instruction],
+            "source", "run_export", [], actions={"agent_cross_chat_routes", "chat_title", "publish"},
+            provider_route_snapshot=[instruction], source_is_user_turn=True,
         )
         token = json.loads(authority.read_text())["provider_capability"]
         download = agent_server.Response(b"# Target\n", headers={

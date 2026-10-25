@@ -4,7 +4,7 @@
 
 - Asked to delete a chat it had created for a handoff, an agent answered
   that its chats helper could only list, read, message and rename chats.
-  The helper now has the rest of the chat list's context menu: `mark-read`,
+  The helper now has the rest of the chat list's menu: `mark-read`,
   `mark-unread`, `pin`, `unpin`, `move FOLDER`, `archive`, `unarchive`,
   `fork`, `reload-history`, `export [--format markdown|html|jsonl]` and
   `delete`. Each works on the agent's own chat or, with `--route`, on a chat
@@ -16,24 +16,25 @@
   the other chat's run first, as the menu's Delete does.
 - Limits: a chat cannot archive, delete or reload the history of itself
   while its turn runs; the helper requires `--route` for those commands, and
-  the server refuses an own-chat archive or delete (409). Deleting another
-  chat also needs a turn the user started; a scheduled job, a delivery or a
-  wake for incoming mail gets 403. A chat archived through its pair stays
-  reachable, so `unarchive` works on it. Routes to chats on other servers are
+  the server refuses an own-chat archive or delete (409). Archive, delete
+  and export need a turn the user started: a scheduled job, a delivery, a
+  wake for incoming mail or a shared chat's guest gets 403, because these
+  hide, remove or copy out a chat's content and a guest can download an
+  export. A paired chat stays reachable after it is archived, so
+  `unarchive` works on it. Routes to chats on other servers are
   refused (409), as for `title`: the hub relays only mail and pairings.
   Share is not an agent command because its link exposes the chat outside
   AgentsDock, and Open in split view is a client layout.
-- The guidance agents read names the commands. The provider-tool
-  description lists them, and the provider actions prelude says that
-  archive and delete need `--route` and the user's request; the title
-  guidance was shortened so the static Claude prompt stays within its
-  13,000-character budget (12,923).
+- The provider-tool description lists the commands, and the provider
+  actions prelude says that `archive`, `delete` and `export` need the
+  user's request in their own turn. The title guidance was shortened so the
+  static Claude prompt stays within its 13,000-character budget (12,951).
 - Verified with tests that fail on the previous code: the helper's payloads
   and refusals, the endpoint on the agent's own chat and a routed chat for
   every command, the archived paired chat, the refusals (own archive and
-  delete, reply-only, unknown, malformed and cross-server routes, delete
-  from a non-user turn, a run without the grant), export into the calling
-  chat, and the new grant in steered messages and a Codex goal's resume.
+  delete, reply-only, unknown, malformed and cross-server routes, archive,
+  delete and export from a turn the user did not start, a run without the
+  title grant), and export into the calling chat.
 - Real-app check: an isolated AgentsServer from this source with a real
   Claude chat (Sonnet 5.5) and the desktop app built from this source
   (unpackaged, isolated profile). The chat created a new agent through the
@@ -44,7 +45,9 @@
   itself. The desktop sidebar showed each change within about 20 s, and the
   exports opened from the chat's outputs list. An own-chat archive and a
   made-up route were refused, and the helper had no route to an unrelated
-  chat.
+  chat. After the review changes, a second new agent on the final code was
+  exported (JSON Lines), archived and deleted, and the chat pinned itself;
+  the sidebar and the outputs list showed the result.
 - Found, not changed: deleting a Claude chat that is running a foreground
   command returns 409 ("has not acknowledged interruption yet") after about
   16 s although the command is stopped; a second delete succeeds. The
