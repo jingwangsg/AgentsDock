@@ -3291,7 +3291,7 @@ describe('WorkspaceEditor', () => {
     expect(await screen.findByRole('textbox', { name: `Contents of ${path}` })).toHaveAttribute('readonly')
   })
 
-  it('opens chat links to absolute PDFs and images in the media viewers at any size', async () => {
+  it('opens chat links to absolute PDFs and images in the media viewers and restores them as viewers', async () => {
     const props = {
       workspaceKey: 'server-a:chat-a',
       session,
@@ -3301,10 +3301,11 @@ describe('WorkspaceEditor', () => {
       absoluteFileTransfers: true,
       chatContent: <p>Chat timeline</p>
     }
-    const pdfPath = '/Users/dev/Downloads/ICLR_Reviews/Sub6857.pdf'
+    const pdfPath = '/Users/dev/Downloads/papers/review.pdf'
     const imagePath = '/Users/dev/plots/loss curve.png'
     const first = render(<WorkspaceEditor {...props} />)
 
+    // The two ways a chat link reaches the editor: a Markdown link (mayBeDirectory) and a code reference (resolve).
     act(() => {
       window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
         detail: { sessionId: 'chat-a', path: pdfPath, mayBeDirectory: true }
@@ -3312,7 +3313,7 @@ describe('WorkspaceEditor', () => {
     })
     expect(await screen.findByTitle(`PDF preview of ${pdfPath}`)).toHaveAttribute(
       'src',
-      'agentsdock-media://absolute/profile-a/1/chat-a/%2FUsers%2Fdev%2FDownloads%2FICLR_Reviews%2FSub6857.pdf'
+      'agentsdock-media://absolute/profile-a/1/chat-a/%2FUsers%2Fdev%2FDownloads%2Fpapers%2Freview.pdf'
     )
     act(() => {
       window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
@@ -3325,7 +3326,7 @@ describe('WorkspaceEditor', () => {
     )
     expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalled()
     expect(window.agentsDock.workspace.mediaURL).not.toHaveBeenCalled()
-    expect(screen.getByRole('tab', { name: 'Sub6857.pdf' }).getAttribute('title')).toContain(pdfPath)
+    expect(screen.getByRole('tab', { name: 'review.pdf' }).getAttribute('title')).toContain(pdfPath)
     expect(screen.queryByRole('button', { name: 'Reload' })).not.toBeInTheDocument()
 
     // A relaunch restores both tabs from the persisted state as media viewers again.
@@ -3344,7 +3345,7 @@ describe('WorkspaceEditor', () => {
     vi.mocked(window.agentsDock.preferences.getScoped).mockResolvedValueOnce(persisted)
     render(<WorkspaceEditor {...props} />)
     expect(await screen.findByRole('img', { name: imagePath })).toBeInTheDocument()
-    await userEvent.setup().click(screen.getByRole('tab', { name: 'Sub6857.pdf' }))
+    await userEvent.setup().click(screen.getByRole('tab', { name: 'review.pdf' }))
     expect(await screen.findByTitle(`PDF preview of ${pdfPath}`)).toBeInTheDocument()
     expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalled()
   })
@@ -3374,22 +3375,36 @@ describe('WorkspaceEditor', () => {
     expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalled()
   })
 
-  it('keeps the text read for an absolute PDF when the server has no absolute-preview route', async () => {
+  it('reads an absolute PDF as text until the server reports the absolute-preview route', async () => {
     const path = '/Users/dev/Downloads/report.pdf'
     vi.mocked(window.agentsDock.workspace.readAbsolute).mockRejectedValueOnce(new Error(
       `${path} is not UTF-8 text.`
     ))
-    renderEditor('server-a:chat-a', 6)
-
-    act(() => {
+    const props = {
+      workspaceKey: 'server-a:chat-a',
+      session,
+      profileScope: { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' },
+      available: true,
+      capabilityVersion: 6,
+      chatContent: <p>Chat timeline</p>
+    }
+    const openLink = () => act(() => {
       window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
         detail: { sessionId: 'chat-a', path, mayBeDirectory: true }
       }))
     })
+    const view = render(<WorkspaceEditor {...props} absoluteFileTransfers={false} />)
 
+    openLink()
     expect(await screen.findByText(`${path} is not UTF-8 text.`)).toBeInTheDocument()
     expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith('chat-a', path)
     expect(window.agentsDock.workspace.absoluteMediaURL).not.toHaveBeenCalled()
+
+    // A server updated in place reports the route without remounting the editor.
+    view.rerender(<WorkspaceEditor {...props} absoluteFileTransfers />)
+    openLink()
+    expect(await screen.findByTitle(`PDF preview of ${path}`)).toBeInTheDocument()
+    expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledTimes(1)
   })
 
   it('opens a server-home path from Cmd+O and keeps the resolved path editable', async () => {

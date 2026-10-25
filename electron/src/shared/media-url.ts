@@ -28,11 +28,7 @@ export interface TeamAttachmentMediaResourceIdentity {
   attachmentId: string
 }
 
-export type ParsedMediaResource =
-  | MediaResourceIdentity
-  | WorkspaceMediaResourceIdentity
-  | AbsoluteMediaResourceIdentity
-  | TeamAttachmentMediaResourceIdentity
+export type ParsedMediaResource = MediaResourceIdentity | WorkspaceMediaResourceIdentity | AbsoluteMediaResourceIdentity | TeamAttachmentMediaResourceIdentity
 
 const MEDIA_SCHEME = 'agentsdock-media:'
 const FILE_MEDIA_HOST = 'file'
@@ -103,8 +99,8 @@ export function buildWorkspaceMediaURL(
   return `${MEDIA_SCHEME}//${WORKSPACE_MEDIA_HOST}/${encodeURIComponent(profileId)}/${profileGeneration}/${encodeURIComponent(sessionId)}/${encodeURIComponent(path)}`
 }
 
-// AgentsServer's absolute-preview route checks that the path is canonical and absolute;
-// here it only has to be one well-formed URL segment.
+// AgentsServer's absolute-preview route checks that the path is absolute (or ~/) and canonical,
+// so unlike a workspace path it is only checked for length and control characters here.
 function isValidAbsoluteMediaPath(value: unknown): value is string {
   return typeof value === 'string'
     && value.length > 0
@@ -112,7 +108,6 @@ function isValidAbsoluteMediaPath(value: unknown): value is string {
     && !INVALID_MEDIA_IDENTIFIER.test(value)
 }
 
-/** A chat link to an image or PDF outside the chat's working directory. */
 export function buildAbsoluteMediaURL(
   profileId: string,
   profileGeneration: number,

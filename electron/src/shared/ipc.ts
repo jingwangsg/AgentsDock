@@ -638,7 +638,6 @@ export interface AgentsDockAPI {
     overwriteAbsolute(sessionId: string, path: string, content: string): Promise<WorkspaceFile>
     previewAvailable(scope: WorkspaceProfileScope, sessionId: string, path: string): Promise<boolean>
     mediaURL(profileId: string, profileGeneration: number, sessionId: string, path: string): string
-    /** Media URL for an image or PDF outside the chat's working directory, served by the absolute-preview route. */
     absoluteMediaURL(profileId: string, profileGeneration: number, sessionId: string, path: string): string
     download(sessionId: string, path: string): Promise<string | null>
     create(sessionId: string, path: string, kind: 'file' | 'directory'): Promise<WorkspaceCreateResult>

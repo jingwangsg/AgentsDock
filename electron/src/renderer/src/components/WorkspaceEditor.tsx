@@ -474,7 +474,6 @@ export function WorkspaceEditor({
   const creationAvailable = available === true && capabilityVersion >= 4 && !session.archived
   const absoluteReadsAvailable = available === true && capabilityVersion >= 5
   const absoluteWritesAvailable = available === true && capabilityVersion >= 6 && !session.archived
-  const absolutePreviewsAvailable = absoluteReadsAvailable && absoluteFileTransfers
   const pendingCloseCanSave = pendingCloseFile
     ? pendingCloseFile.loaded
       && pendingCloseFile.dirty
@@ -2483,7 +2482,7 @@ export function WorkspaceEditor({
       return false
     }
     const viewerKind = workspaceFileViewerKind(path)
-    if ((viewerKind === 'image' || viewerKind === 'pdf') && absolutePreviewsAvailable) {
+    if ((viewerKind === 'image' || viewerKind === 'pdf') && absoluteFileTransfers) {
       // The viewer streams the file from the absolute-preview route, which has
       // no text-size limit; the text read below rejects every binary file.
       if (!paletteLease) openRequestSequence.current += 1
@@ -2878,7 +2877,7 @@ export function WorkspaceEditor({
     }
     window.addEventListener('agentsdock:open-workspace-path', open)
     return () => window.removeEventListener('agentsdock:open-workspace-path', open)
-  }, [absoluteReadsAvailable, absoluteWritesAvailable, available, capabilityMessage, cwd, session.id])
+  }, [absoluteFileTransfers, absoluteReadsAvailable, absoluteWritesAvailable, available, capabilityMessage, cwd, session.id])
 
   useEffect(() => {
     const open = (event: Event) => {
@@ -4865,6 +4864,8 @@ function restoredWorkspaceFile(cwd: string, tab: PersistedTab): OpenWorkspaceFil
 
 function restoredExternalFile(tab: PersistedTab): OpenWorkspaceFile {
   const viewerKind = workspaceFileViewerKind(tab.path)
+  // Not gated on absoluteFileTransfers: the server's health can arrive after the restore, and only a
+  // server with the absolute-preview route could have opened this tab (the text read refuses it).
   if (viewerKind === 'image' || viewerKind === 'pdf') return openAbsolutePreviewFile(tab.path, viewerKind)
   const hasDraft = typeof tab.draft === 'string'
   const draft = tab.draft ?? ''

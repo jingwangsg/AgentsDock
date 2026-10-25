@@ -2,13 +2,15 @@
 
 ## 2026-10-25 — Chat links to images and PDFs outside the working directory open in the desktop viewers (desktop, server)
 
-- A chat link (or a Cmd+O path) to a file outside the chat's working
-  directory was always read as text through
-  `GET /api/sessions/{id}/workspace/absolute-file`. That route refuses
-  binary files and files above the 32 MiB text limit, so every such PDF
-  or image showed an error instead: "… is not UTF-8 text.", "… is binary
-  and cannot be opened in the text editor." or, for a 39 MB PDF, "…
-  exceeds the configured workspace text transfer limit."
+- The desktop read a file outside the chat's working directory as text
+  through `GET /api/sessions/{id}/workspace/absolute-file` when it was
+  opened from a chat link or with a Cmd+O path. (In chats on the Mac's
+  own server, chat links open in the Mac's default app instead; that is
+  unchanged.) That route refuses binary files and files above the 32 MiB
+  text limit, so every such PDF or image showed an error: "… is not
+  UTF-8 text.", "… is binary and cannot be opened in the text editor."
+  or, for a PDF above 32 MiB, "… exceeds the configured workspace text
+  transfer limit."
 - The desktop now opens an absolute path whose name is an image or a PDF
   in the same image and PDF viewers as workspace files. The viewer loads
   it from `GET /api/sessions/{id}/workspace/absolute-preview` (the route
@@ -24,8 +26,9 @@
   routes did not, and now do as well.
 - Verified with tests that fail on the previous code: the media URL for
   an absolute path, the main-process request through a hub remote, the
-  profile check for that request, the chat link, the Cmd+O path and the
-  restored tab, and the hub's tunnel choice for absolute previews.
+  profile check for that request, the chat link, the Cmd+O path, the
+  restored tab, a server that reports the route after the editor opened,
+  and the hub's tunnel choice for absolute previews.
 - Real-app check: the desktop app built from this source (unpackaged,
   isolated profile) against an isolated AgentsServer, with links in a
   real Claude reply to generated test files outside the working

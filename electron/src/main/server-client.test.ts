@@ -2293,7 +2293,7 @@ describe('AgentServerClient live stream', () => {
     expect(response).toBe(serverResponse)
   })
 
-  it('streams an absolute-path preview through a hub remote with Range and no text limit', async () => {
+  it('proxies absolute-path previews to absolute-preview through a hub remote, forwarding only Range', async () => {
     const serverResponse = new Response(null, { status: 206, headers: { 'Content-Type': 'application/pdf' } })
     const fetchMock = vi.fn().mockResolvedValue(serverResponse)
     vi.stubGlobal('fetch', fetchMock)
