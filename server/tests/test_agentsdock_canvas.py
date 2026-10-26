@@ -251,6 +251,45 @@ class CanvasTests(unittest.TestCase):
         assert completed.returncode == 0 and completed.stdout.strip() == "function function", completed.stdout + completed.stderr
 
     @needs_node
+    def test_usage_bar_draws_a_total_below_its_segments_sum_as_a_full_bar(self) -> None:
+        # A real report's total, estimated with float math, was 1 byte below the bytes that arrived; the SDK's bar threw
+        # and the whole Canvas showed only that error.
+        bundle = self.tmp_path / "served.js"
+        bundle.write_bytes(canvas.runtime_asset_bytes("vendor.js"))
+        script = NODE_DOM_STUB + f"""
+new Function('module', 'exports', 'define', require('fs').readFileSync({json.dumps(str(bundle))}, 'utf8'))();
+const React = globalThis.__zedCanvasModules.react;
+const sdk = globalThis.__zedCanvasModules['@zed/canvas'];
+// The only hook the bar calls (useHostTheme); components are called as React would, down to the SDK's Stack.
+React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE.H = {{ useSyncExternalStore: (subscribe, snapshot) => snapshot() }};
+document.documentElement.style.setProperty = () => {{}};
+globalThis.__zedCanvasHost.updateTheme({{ background: '#fff', foreground: '#111', muted: '#666', border: '#ddd', accent: '#06c', kind: 'light' }});
+const widths = props => {{
+  try {{
+    let node = React.createElement(sdk.UsageBar, props);
+    while (!Array.isArray(node.props.children)) node = node.type(node.props);
+    return node.props.children[0].props.children.map(segment => parseFloat(segment.props.style.width));
+  }} catch (error) {{ return error.message; }}
+}};
+const segments = [{{ label: 'sent', value: 600 }}, {{ label: 'queued', value: 401 }}];
+console.log(JSON.stringify({{
+  short: widths({{ segments, total: 1000 }}),
+  larger: widths({{ segments, total: 2002 }}),
+  omitted: widths({{ segments }}),
+  negative: widths({{ segments: [{{ label: 'x', value: -1 }}], total: 10 }}),
+  infinite: widths({{ segments, total: Infinity }}),
+}}));
+"""
+        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        result = json.loads(completed.stdout)
+        full = [600 / 1001 * 100, 401 / 1001 * 100]
+        assert result["short"] == result["omitted"] == full, result
+        assert result["larger"] == [600 / 2002 * 100, 401 / 2002 * 100], result
+        # A negative or non-finite value is still an authoring error, as in PieChart.
+        assert result["negative"] == result["infinite"] == "Usage bar values must be finite and non-negative.", result
+
+    @needs_node
     def test_markdown_parses_and_renders_each_block_kind_with_the_bundled_react(self) -> None:
         script = NODE_DOM_STUB + f"""
 require({json.dumps(str(canvas.RUNTIME_DIR / 'vendor.js'))});
