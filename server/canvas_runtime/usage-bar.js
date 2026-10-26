@@ -4,9 +4,9 @@
  * appended to the served vendor.js, as markdown.js is. The bundle's UsageBar
  * throws when its segments sum to more than `total`, and the error replaces
  * the whole Canvas. A total computed apart from its parts can fall short of
- * their sum by a rounding error (a report's float estimate of a byte count was
- * 1 byte below the bytes that arrived), so such a total now draws a full bar.
- * A negative or non-finite value still fails, as in PieChart.
+ * their sum by rounding (a report's float estimate of a byte count was 1 byte
+ * under the bytes that arrived), so any total below the sum is raised to the
+ * sum: a full bar. A negative or non-finite value still throws, as in PieChart.
  */
 (function () {
   'use strict';

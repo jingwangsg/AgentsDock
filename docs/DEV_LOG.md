@@ -6,8 +6,7 @@
   agent's `chats delete`) answered after about 16 s with "The active agent
   turn has not acknowledged interruption yet; the session was not deleted.
   Retry shortly." The command had already been stopped and a second delete
-  succeeded. An agent could not retry within the same turn: its helper
-  returns the first answer again for an identical call.
+  succeeded.
 - Cause: the delete stops the turn while holding the chat's lifecycle lock,
   then waits up to 15 s for the chat's turn tasks to end. Every turn that
   ends schedules a check of the chat's queue; that task is counted as a
@@ -15,20 +14,19 @@
   delete gave up. The delete no longer waits for that queue check. When it
   runs after the delete, it finds the chat deleted and starts nothing.
   Turns themselves are still stopped and waited for as before.
-- Verified with a server test that runs the real queue check (on the
-  previous code the delete waits 15 s and fails). On an isolated server,
-  with a Claude chat running a 300 s foreground command: the previous
-  code answered 409 after 16.0 s; this code deleted it in 1.6 s with the
-  command stopped. In the desktop app (unpackaged, isolated profile)
-  against that server, Delete Chat on a running chat removed it with one
-  confirmation, about 1 s after the click. A Claude agent asked to delete a
-  running chat behind its route ran `chats delete` once and got
-  `"deleted": true`.
+- Verified with a server test that runs the real queue check (it fails on
+  the previous code). On an isolated server, with a Claude chat running a
+  300 s foreground command, the previous code answered 409 after 16.0 s;
+  this code deleted it in 1.6 s with the command stopped. In the desktop
+  app (unpackaged, isolated profile) against that server, Delete Chat on a
+  running chat removed it with one confirmation, about 1 s after the click.
+  A Claude agent asked to delete a running chat behind its route ran
+  `chats delete` once and got `"deleted": true`.
 - Not covered: Codex and other providers' chats (the change is not
   provider-specific) and Android. Availability: source only; takes effect
   when each server is updated.
 
-## 2026-10-26 — A Canvas usage bar whose total is slightly below its parts is drawn full instead of an error (server)
+## 2026-10-26 — A Canvas usage bar whose total is below the sum of its parts is drawn full instead of an error (server)
 
 - The Canvas SDK's `UsageBar` threw "Usage bar requires non-negative
   segments and a total at least as large as their sum." when its segments
@@ -44,12 +42,12 @@
 - Verified with a server test that renders the bundle's own bar with the
   served script (on the previous code the short total throws). In the
   desktop app against an isolated server, a Canvas with a total 1 below its
-  sum showed only that error on the previous server and rendered both bars
-  on this one.
+  sum showed only that error on the previous server; on this one it drew
+  that bar full, and a second bar of 100 out of 200 half full.
 - Not covered: Android. Availability: source only; takes effect when the
   server that holds the Canvas is updated.
 
-## 2026-10-26 — Redeploy after a failed move keeps the found install's port; Update all updates CLIs with the redeployed token (server)
+## 2026-10-26 — Redeploy after a failed move uses the port of the install it finds; Update all updates CLIs with the token the redeploy issued (server)
 
 - Moving a remote to another host or directory records the new place at
   once but keeps the previous install's port until the move's deploy
@@ -65,21 +63,26 @@
   is unchanged.
 - Update all redeploys each remote and then updates its Claude and Codex
   CLIs. It sent the CLI updates with the remote's token from before the
-  redeploy, so after a redeploy that issued a new token they failed with
-  401. They now use the redeployed entry.
+  redeploy, so after a redeploy that issued a new token (one into a
+  directory with no install) they failed with 401. They now send the token
+  the redeploy saved.
 - Verified with server tests that fail on the previous code: a Redeploy
   after a failed move to another cluster and to another directory on the
-  same host, and Update all after a redeploy with a new token. Not covered:
+  same host, a new deploy that finds a registered entry once the osmo pool
+  is known, and Update all after a redeploy with a new token. Not covered:
   a real remote host. Availability: source only; takes effect when the hub
   is updated.
 
-## 2026-10-26 — Two server tests no longer fail under load or modify the checkout (server tests)
+## 2026-10-26 — A slow repository's code-diff snapshot is skipped instead of raising TypeError; a test no longer modifies the checkout (server)
 
-- `test_all_git_commands_share_one_wall_clock_budget` failed in about two
-  of three loaded runs: when one Git command of a code-diff snapshot
-  returned after the whole time budget, the next one raised `TypeError`
+- The server takes a Git snapshot of a chat's working directory at the
+  start and end of each turn, within a 15 s budget. When one Git command
+  returned after the whole budget, the next one raised `TypeError`
   (`subprocess.TimeoutExpired` takes `cmd`, not `args`) instead of timing
-  out. Fixed in the server; a new test covers that path deterministically.
+  out, and the error left the snapshot code instead of the snapshot being
+  skipped. This also made `test_all_git_commands_share_one_wall_clock_budget`
+  fail intermittently under load. A new test covers that path
+  deterministically.
 - `test_team_mail_pipeline_tls_isolated` rewrote the tracked
   `server/mail-pipeline-golden.json` with new random ids on every run. It
   now writes it only with `AGENTSDOCK_REGENERATE_MAIL_PIPELINE_GOLDEN=1`.

@@ -2034,13 +2034,12 @@ class RemoteServerManager:
             existing = self.servers[redeploy_id] if redeploy_id else None
             attach = isinstance(request, RemoteAttachRequest)
             if existing is not None:
-                # A registered server takes the port of the install the probe finds in its directory, or a free one,
-                # never the entry's: until a move's deploy finishes, that is the previous install's port. The bootstrap
-                # stops whatever serves the port it is given (the previous install's server, when only the directory
-                # moved) and writes it into the found install's env (a second server on that install's state).
+                # Not the entry's port: until a move's deploy finishes it is the previous install's (after a finished
+                # deploy the two are equal). The bootstrap stops whatever serves the port it is given and writes it into
+                # the install's env, so the entry's port would stop the previous install's server or start a second
+                # server on the found install's state. 0: the found install's port, else a free one.
                 # A deploy records the expanded directory it installed to: only a move whose deploy did not finish,
-                # or an entry added through POST ADMIN_PATH, still names the default. A Redeploy of such an entry
-                # deploys as the move would.
+                # or an entry added through POST ADMIN_PATH, still names the default.
                 ssh_host, install_dir = existing.ssh_host, existing.install_dir
                 requested_port = 0
             else:

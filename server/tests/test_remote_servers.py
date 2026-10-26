@@ -1931,39 +1931,51 @@ if sys.argv[-1] == "k8s-cluster":
         assert bootstrap == [pool_dir, "7850", "/mnt/a/u", "restart"], bootstrap
         assert rs.load_registry(manager.path)[0].install_dir == pool_dir
 
-    def test_a_redeploy_after_a_failed_move_takes_the_port_of_the_install_it_finds(self) -> None:
-        # Until a move's deploy finishes, the entry keeps the previous install's port. Given that port, the bootstrap
-        # stops whatever serves it (the previous install's server, when only the directory moved) and writes it into
-        # the env of the install it finds, which then starts a second server on that install's state.
+    def test_a_deploy_over_a_registered_entry_takes_the_found_installs_port_or_a_free_one(self) -> None:
+        # Until a move's deploy finishes, the entry keeps the previous install's port, and the bootstrap stops whatever serves the port it is given.
         self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
         self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/oci/u"}))
+
+        def deploy(manager: rs.RemoteServerManager, start: Callable[[], rs.DeployJob]) -> rs.DeployJob:
+            async def main() -> rs.DeployJob:
+                job = start()
+                await job.task
+                await manager.stop()
+                return job
+            return asyncio.run(main())
+
         new_dir = "/mnt/oci/u/.agentsdock-server-new"
         for index, (move, installs, bootstrap_head) in enumerate((
             # To another cluster, whose directory in AGENTSDOCK_OCI_HOME holds an install on 7861.
             (rs.RemoteServerUpdate(ssh_host="oci@new"), {new_dir: 7861}, [new_dir, "7861"]),
-            # To another directory on the same host, which holds none: a free port, not the previous install's 7870.
+            # To another directory on the same host, which holds none: the scripted host's free port 7850, not the previous install's 7870.
             (rs.RemoteServerUpdate(install_dir="/mnt/oci/u/other-install"), {}, ["/mnt/oci/u/other-install", "7850"]),
         )):
             with self.subTest(move=move):
                 manager = rs.RemoteServerManager(self.tmp_path / f"state-{index}", source_dir=self.tmp_path, manage_tunnels=False)
                 manager.servers["abcdef123456"] = make_server(ssh_host="oci@old", install_dir="/mnt/oci/u/.agentsdock-server-old", remote_port=7870)
-
-                async def main(start: Callable[[], rs.DeployJob]) -> rs.DeployJob:
-                    job = start()
-                    await job.task
-                    await manager.stop()
-                    return job
-
                 self.fake_host(existing_port=None, bootstrap_failure=["setup failed"], installs=installs)
-                assert asyncio.run(main(lambda: manager.update("abcdef123456", move)[1])).error, "the move's deploy should fail"
+                assert deploy(manager, lambda: manager.update("abcdef123456", move)[1]).error, "the move's deploy should fail"
                 assert manager.servers["abcdef123456"].remote_port == 7870
 
                 calls = self.fake_host(existing_port=None, installs=installs)
-                job = asyncio.run(main(lambda: manager.start_deploy(None, redeploy_id="abcdef123456")))
+                job = deploy(manager, lambda: manager.start_deploy(None, redeploy_id="abcdef123456"))
                 assert job.error is None, job.log
                 bootstrap = json.loads(calls.read_text().splitlines()[-1])["tail"]
                 assert bootstrap[:2] == bootstrap_head, bootstrap
                 assert rs.load_registry(manager.path)[0].remote_port == int(bootstrap_head[1])
+
+        # A new deploy that finds the registered entry only once the workflow's pool is known updates it on its install's port too.
+        pool_dir = "/mnt/a/u/.agentsdock-server-wf-running"
+        self.fake_osmo()
+        os.environ["AGENTSDOCK_OSMO_POOL_HOMES"] = "pool-a-*=/mnt/a/u"
+        calls = self.fake_host(existing_port=None, installs={pool_dir: 7861})
+        manager = rs.RemoteServerManager(self.tmp_path / "state-new-deploy", source_dir=self.tmp_path, manage_tunnels=False)
+        manager.servers["abcdef123456"] = make_server(ssh_host="osmo@wf-running", install_dir=pool_dir, remote_port=7870)
+        job = deploy(manager, lambda: manager.start_deploy(rs.RemoteDeployRequest(ssh_host="osmo@wf-running")))
+        assert job.error is None and job.server is not None and job.server.id == "abcdef123456", job.log
+        bootstrap = json.loads(calls.read_text().splitlines()[-1])["tail"]
+        assert bootstrap[:2] == [pool_dir, "7861"], bootstrap
 
     def test_a_redeploy_keeps_the_directory_a_deploy_recorded(self) -> None:
         # An install in the shell's ~ (/h on the scripted host), recorded before AGENTSDOCK_OCI_HOME was set: a Redeploy
@@ -2182,11 +2194,13 @@ time.sleep(30)
         asyncio.run(main())
 
     def test_update_all_updates_the_clis_with_the_token_the_redeploy_issued(self) -> None:
-        # A redeploy into a directory without an env issues a new token; the CLI update must not send the old one.
+        # A redeploy into a directory without an env issues a new token; the CLI update must not send the old one
+        # (the fake upstream answers 401 to any token but REMOTE_TOKEN).
         hooks = hub_hooks()
 
         async def main() -> str | None:
             manager, remote, _dead, _hub_port, close = await hub_with_fake(self.tmp_path, hooks=hooks)
+            # Only the reachable remote, holding the token from before its redeploy.
             manager.servers = {remote.id: remote.model_copy(update={"token": "old-token-" + "o" * 40})}
 
             async def redeploy_with_a_new_token(job, request, redeploy_id):

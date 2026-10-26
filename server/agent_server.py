@@ -93741,10 +93741,10 @@ async def delete_session(session_id: str) -> dict[str, Any]:
                 elif proc:
                     await terminate_process_tree(proc)
 
-            # Every turn that ends schedules a queue promotion, which registers
-            # here and then waits for this chat's lifecycle lock, held by this
-            # delete: waiting for it only ran out the timeout (409). It runs
-            # after the delete releases the lock and finds the chat gone.
+            # Skip the queue promotion every ended turn schedules: it registers in
+            # SESSION_TURN_TASKS, then waits for this chat's lifecycle lock, which
+            # this delete holds, so waiting for it can only time out. Once it gets
+            # the lock it finds the chat deleted and starts nothing.
             turns_finished = await wait_for_session_tasks(
                 SESSION_TURN_TASKS,
                 session_id,

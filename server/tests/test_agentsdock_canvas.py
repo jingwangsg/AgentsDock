@@ -260,12 +260,14 @@ class CanvasTests(unittest.TestCase):
 new Function('module', 'exports', 'define', require('fs').readFileSync({json.dumps(str(bundle))}, 'utf8'))();
 const React = globalThis.__zedCanvasModules.react;
 const sdk = globalThis.__zedCanvasModules['@zed/canvas'];
-// The only hook the bar calls (useHostTheme); components are called as React would, down to the SDK's Stack.
+// The only hook the bar calls is useHostTheme's useSyncExternalStore.
 React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE.H = {{ useSyncExternalStore: (subscribe, snapshot) => snapshot() }};
+// updateTheme writes CSS variables; the DOM stub has no style.setProperty.
 document.documentElement.style.setProperty = () => {{}};
 globalThis.__zedCanvasHost.updateTheme({{ background: '#fff', foreground: '#111', muted: '#666', border: '#ddd', accent: '#06c', kind: 'light' }});
 const widths = props => {{
   try {{
+    // Call the components as React would, down to the SDK's Stack: the first element with a children array.
     let node = React.createElement(sdk.UsageBar, props);
     while (!Array.isArray(node.props.children)) node = node.type(node.props);
     return node.props.children[0].props.children.map(segment => parseFloat(segment.props.style.width));

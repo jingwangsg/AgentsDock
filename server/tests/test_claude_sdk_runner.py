@@ -7294,6 +7294,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         turn_task = asyncio.create_task(turn())
         agent_server.register_session_task(agent_server.SESSION_TURN_TASKS, "chat-claude", turn_task)
         queue_start_tasks: dict[str, asyncio.Task[Any]] = {}
+        registered_promotions: list[asyncio.Task[Any]] = []
 
         class InterruptEndsTheTurn(FakeClaudeRun):
             async def interrupt(self, *, keep_follow_up: bool = False) -> bool:
@@ -7301,7 +7302,9 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 turn_ends.set()
                 # As live: the turn has ended and its promotion is registered before the delete waits for turns.
                 for _ in range(1000):
-                    if queue_start_tasks.get("chat-claude") in agent_server.SESSION_TURN_TASKS.get("chat-claude", ()):
+                    promotion = queue_start_tasks.get("chat-claude")
+                    if promotion in agent_server.SESSION_TURN_TASKS.get("chat-claude", ()):
+                        registered_promotions.append(promotion)
                         break
                     await asyncio.sleep(0)
                 return True
@@ -7336,10 +7339,9 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     # Before the fix this delete waited 15 s for the promotion, then answered 409.
                     result = await asyncio.wait_for(agent_server.delete_session("chat-claude"), 5)
-                    promotion = queue_start_tasks.get("chat-claude")
+                    self.assertEqual(len(registered_promotions), 1, "the turn's promotion never registered as a turn task")
                     # After the delete releases the lock, the promotion finds the chat gone and starts nothing.
-                    if promotion is not None:
-                        await asyncio.wait_for(promotion, 5)
+                    await asyncio.wait_for(registered_promotions[0], 5)
                 finally:
                     agent_server.DELETED_SESSION_TOMBSTONES.discard("chat-claude")
 
@@ -7347,7 +7349,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handle.interrupt_calls, 1)
         self.assertNotIn("chat-claude", agent_server.STORE.sessions)
         self.assertNotIn("chat-claude", agent_server.ACTIVE)
-        self.assertEqual(agent_server.SESSION_TURN_TASKS.get("chat-claude"), None)
+        self.assertNotIn("chat-claude", agent_server.SESSION_TURN_TASKS)
 
     async def test_delete_bounds_cancellation_hostile_run_now_then_retries(self) -> None:
         cancellation_observed = asyncio.Event()

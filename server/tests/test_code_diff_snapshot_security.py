@@ -551,6 +551,7 @@ class CodeDiffSnapshotTests(CodeDiffStateMixin, unittest.TestCase):
             repo = self.repository(root)
             original_probe = agent_server._git_stream_stdout
 
+            # The budget is spent on entry; the probe runs on its own deadline, as one that returned late would.
             def probe_outlasting_the_budget(*args: object, **kwargs: object):
                 kwargs["deadline"] = time.monotonic() + 30
                 return original_probe(*args, **kwargs)
