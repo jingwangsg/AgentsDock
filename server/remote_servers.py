@@ -1999,6 +1999,8 @@ class RemoteServerManager:
                         raise asyncio.CancelledError
                     if child.error:
                         failures.append(f"{server.name}: {child.error}")
+                    # The entry the deploy saved: it may carry a new token.
+                    server = self.servers.get(server.id, server)
                 await update_clis(server.name, lambda backend, server=server: self.update_cli(server, backend))
             await update_clis("hub", hub_update_cli)
             job.progress("restart", "Restarting the hub…")

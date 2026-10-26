@@ -2148,6 +2148,29 @@ time.sleep(30)
 
         asyncio.run(main())
 
+    def test_update_all_updates_the_clis_with_the_token_the_redeploy_issued(self) -> None:
+        # A redeploy into a directory without an env issues a new token; the CLI update must not send the old one.
+        hooks = hub_hooks()
+
+        async def main() -> str | None:
+            manager, remote, _dead, _hub_port, close = await hub_with_fake(self.tmp_path, hooks=hooks)
+            manager.servers = {remote.id: remote.model_copy(update={"token": "old-token-" + "o" * 40})}
+
+            async def redeploy_with_a_new_token(job, request, redeploy_id):
+                manager.servers[redeploy_id] = manager.servers[redeploy_id].model_copy(update={"token": REMOTE_TOKEN})
+                job.done = True
+
+            try:
+                with mock.patch.object(manager, "_deploy", redeploy_with_a_new_token):
+                    job = manager.start_update_all(hub_update_cli=hooks.hub_update_cli, hub_restart=hooks.hub_restart)
+                    await job.task
+                return job.error
+            finally:
+                await close()
+
+        error = asyncio.run(main())
+        assert error is None, error
+
     def test_update_all_reports_a_hub_that_cannot_restart_itself(self) -> None:
         hooks = hub_hooks(hub_restart=mock.AsyncMock(return_value="not run by launchd"))
 
