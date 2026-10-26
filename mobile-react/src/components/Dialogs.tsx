@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View, useWindowDimensions } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { DateTimePicker } from '@expo/ui/community/datetime-picker'
 import * as Clipboard from 'expo-clipboard'
@@ -46,7 +46,7 @@ export function ServerSetupDialog({
   onDidDismiss?: () => void
 }) {
   const colors = usePalette()
-  return <Sheet visible={visible} title="Connect AgentsDock" onClose={onClose} onDidDismiss={onDidDismiss} form>
+  return <Sheet visible={visible} title="Connect AgentsDock" onClose={onClose} onDidDismiss={onDidDismiss}>
     <View style={styles.setupIntro}>
       <View style={[styles.setupIcon, { backgroundColor: colors.raised }]}><Server size={24} color={colors.blue} /></View>
       <View style={styles.setupCopy}>
@@ -886,7 +886,7 @@ function ScopedTmuxDialog({ visible, sessionId, onClose, connection, connectionK
   </Sheet>
 }
 
-function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, form, dismissable = true, keyboardShouldPersistTaps = 'handled' }: { visible: boolean; title: string; onClose: () => void; onShow?: () => void; onDidDismiss?: () => void; children: React.ReactNode; wide?: boolean; form?: boolean; dismissable?: boolean; keyboardShouldPersistTaps?: 'always' | 'handled' | 'never' }) {
+function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, dismissable = true, keyboardShouldPersistTaps = 'handled' }: { visible: boolean; title: string; onClose: () => void; onShow?: () => void; onDidDismiss?: () => void; children: React.ReactNode; wide?: boolean; dismissable?: boolean; keyboardShouldPersistTaps?: 'always' | 'handled' | 'never' }) {
   const colors = usePalette()
   const titleKey = title.toLowerCase().replaceAll(' ', '-')
   const closing = useRef(false)
@@ -906,23 +906,19 @@ function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, 
   }
   const panel = <View
     testID={`sheet-${titleKey}`}
-    style={[styles.sheetPage, Platform.OS !== 'ios' && styles.sheet, wide && Platform.OS !== 'ios' && styles.sheetWide, { backgroundColor: colors.background, borderColor: colors.border }]}
+    style={[styles.sheetPage, styles.sheet, wide && styles.sheetWide, { backgroundColor: colors.background, borderColor: colors.border }]}
   >
     <SafeAreaView style={styles.sheetSafeArea} edges={['bottom']}>
       <View style={[styles.sheetGrabber, { backgroundColor: colors.selected }]} />
       <View style={styles.sheetHeader}><Text style={[styles.sheetTitle, { color: colors.text }]}>{title}</Text>{dismissable ? <SheetCloseButton onPress={close} label={`Close ${title}`} testID={`sheet-close-${titleKey}`} /> : null}</View>
       <ScrollView
         contentContainerStyle={styles.sheetBody}
-        automaticallyAdjustKeyboardInsets
-        keyboardDismissMode="interactive"
         keyboardShouldPersistTaps={keyboardShouldPersistTaps}
       >{children}</ScrollView>
     </SafeAreaView>
   </View>
-  if (Platform.OS === 'ios') {
-    return <Modal visible={visible} animationType="slide" presentationStyle={form ? 'formSheet' : 'pageSheet'} allowSwipeDismissal={dismissable} onShow={onShow} onRequestClose={close} onDismiss={didDismiss}>{panel}</Modal>
-  }
-  return <Modal visible={visible} transparent animationType="fade" onShow={onShow} onRequestClose={close} onDismiss={didDismiss}><View style={styles.backdrop}>{dismissable ? <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" style={StyleSheet.absoluteFill} onPress={close} /> : <View style={StyleSheet.absoluteFill} />}{panel}</View></Modal>
+  // Android's window shrinks above the keyboard; an iOS transparent Modal keeps its size, so the backdrop pads itself.
+  return <Modal visible={visible} transparent animationType="fade" onShow={onShow} onRequestClose={close} onDismiss={didDismiss}><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.backdrop}>{dismissable ? <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" style={StyleSheet.absoluteFill} onPress={close} /> : <View style={StyleSheet.absoluteFill} />}{panel}</KeyboardAvoidingView></Modal>
 }
 function Label({ text, children }: { text: string; children?: React.ReactNode }) { const colors = usePalette(); return <View style={styles.labelRow}><Text style={[styles.label, { color: colors.muted }]}>{text}</Text>{children}</View> }
 function PrimaryButton({ label, onPress, disabled, testID }: { label: string; onPress: () => void; disabled?: boolean; testID?: string }) { const colors = usePalette(); return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.primary, { backgroundColor: colors.blue, opacity: disabled ? 0.35 : pressed ? 0.65 : 1 }]}><Text style={[styles.primaryText, { color: colors.textOnAccent }]}>{label}</Text></Pressable> }

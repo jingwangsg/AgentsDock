@@ -449,7 +449,7 @@ test('paged history stays continuous with the live bottom under one native ancho
 })
 
 test('transparent modal backdrops are siblings instead of responder-wrapping controls', () => {
-  assert.match(dialogs, /<View style=\{styles\.backdrop\}>\{dismissable \? <Pressable[\s\S]*?StyleSheet\.absoluteFill[\s\S]*?: <View style=\{StyleSheet\.absoluteFill\} \/>\}\{panel\}<\/View>/)
+  assert.match(dialogs, /<KeyboardAvoidingView behavior=\{Platform\.OS === 'ios' \? 'padding' : undefined\} style=\{styles\.backdrop\}>\{dismissable \? <Pressable[\s\S]*?StyleSheet\.absoluteFill[\s\S]*?: <View style=\{StyleSheet\.absoluteFill\} \/>\}\{panel\}<\/KeyboardAvoidingView>/)
   assert.doesNotMatch(dialogs, /<Pressable style=\{styles\.backdrop\}[\s\S]{0,220}?\{panel\}/)
   assert.match(inspector, /<View style=\{styles\.modalBackdrop\}><Pressable[\s\S]*?StyleSheet\.absoluteFill/)
 })
