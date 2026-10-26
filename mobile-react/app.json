@@ -48,6 +48,8 @@
     },
     "plugins": [
       "./plugins/withIosNoAnalyticsPrivacy.cjs",
+      "./plugins/withIosPodDeploymentTarget.cjs",
+      "./plugins/withIosSceneLifecycle.cjs",
       "./plugins/withAndroidCleartextTraffic.cjs",
       "./plugins/withAndroidReleaseSigning.cjs",
       "./plugins/withAndroidSideloadUpdater.cjs",
