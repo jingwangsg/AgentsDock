@@ -1,5 +1,4 @@
 import {
-  awaitingConnectionNotice,
   buildUpdateServerProfileInput,
   editServerProfileDraft,
   findProfileByIdentity,
@@ -8,6 +7,7 @@ import {
   displayServerProfileName,
   serverProfileHost,
   requiresIdentityResetConfirmation,
+  selectConnectionNotice,
   unreadCountLabel,
   type ServerProfileListItem,
 } from './server-profile-ui'
@@ -93,11 +93,17 @@ assert(unreadCountLabel(100) === '99+', 'unread badge must stay compact')
 assert(requiresIdentityResetConfirmation({ ...alpha, lastConnectionError: 'Server identity changed from server-alpha to server-new.' }), 'identity changes must require confirmation')
 assert(requiresIdentityResetConfirmation({ ...alpha, lastConnectionError: 'Server identity mismatch: expected server-alpha, received server-new.' }), 'identity mismatches must allow an explicit reset')
 
-const noHealth = (connectionState: ServerProfileListItem['connectionState']) => awaitingConnectionNotice({ health: null, activeProfileId: 'alpha', profiles: [{ ...alpha, connectionState }, { ...beta, connectionState: 'online' }] })
+const noHealth = (connectionState: ServerProfileListItem['connectionState'], lastConnectionError: string | null = null) => selectConnectionNotice({
+  health: null,
+  activeProfileId: 'alpha',
+  profiles: [{ ...alpha, connectionState, lastConnectionError }, { ...beta, connectionState: 'online' }],
+})
 assertEqual(noHealth('offline'), 'Offline. Available once this AgentsServer is connected.', 'an offline server without health is named offline')
 assertEqual(noHealth('retrying'), 'Retrying. Available once this AgentsServer is connected.', 'a retrying server without health is named retrying')
 assertEqual(noHealth('connecting'), 'Connecting. Available once this AgentsServer is connected.', 'a connecting server without health is named connecting')
 assertEqual(noHealth('cached'), 'Connecting. Available once this AgentsServer is connected.', 'a cached server without health has not finished its first check')
-assertEqual(awaitingConnectionNotice({ health: { ok: true }, activeProfileId: 'alpha', profiles: [alpha] }), null, 'a server that answered gets the caller’s own message')
+assertEqual(noHealth('offline', 'HTTP 401 Unauthorized'), 'Authentication required. Available once this AgentsServer is connected.', 'a refused token reads as in the server list')
+assertEqual(noHealth('offline', 'Server upgrade required: app needs API v7, server reports v6.'), null, 'a server refused as too old keeps the update message')
+assertEqual(selectConnectionNotice({ health: { ok: true }, activeProfileId: 'alpha', profiles: [alpha] }), null, 'a server that answered keeps the caller\'s update message')
 
 console.log('server profile UI regressions passed')

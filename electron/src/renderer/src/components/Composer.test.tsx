@@ -16,7 +16,7 @@ import { ClaudeRuntimeProvider } from './ClaudeRuntimeContext'
 import { CodexRuntimeProvider } from './CodexRuntimeContext'
 import { CodexStatusButton } from './CodexControls'
 
-// Tests see the Team Network UI on by default; a test can turn it off as a build without the flag does.
+// The flag is a module constant; this getter lets one test turn it off, as a build without VITE_AGENTSDOCK_TEAM_NETWORK_UI=1 does.
 const teamNetworkUi = vi.hoisted(() => ({ enabled: true }))
 vi.mock('../lib/team-network-ui', () => ({ get TEAM_NETWORK_UI_ENABLED() { return teamNetworkUi.enabled } }))
 
@@ -6127,15 +6127,24 @@ describe('Composer', () => {
   it('leaves @@ as plain text in a build with Team Network hidden, even on a server that supports it', async () => {
     teamNetworkUi.enabled = false
     try {
+      const send = vi.fn().mockResolvedValue({ session: { id: 'chat-1', title: 'Chat', backend: 'codex' }, queued: false })
+      Object.defineProperty(window, 'agentsDock', {
+        configurable: true,
+        value: { preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) }, turns: { send } } as unknown as AgentsDockAPI
+      })
       useAppStore.setState({ health: teamMessagesHealth() })
       const user = userEvent.setup()
       render(<Composer />)
       const editor = screen.getByPlaceholderText('Message')
 
       await user.type(editor, '@@DPark')
+      await user.click(editor)
       expect(editor).toHaveValue('@@DPark')
       expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
       expect(screen.queryByText('Server update required')).not.toBeInTheDocument()
+
+      await user.keyboard('{Enter}')
+      await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'chat-1', prompt: '@@DPark' })))
     } finally {
       teamNetworkUi.enabled = true
     }

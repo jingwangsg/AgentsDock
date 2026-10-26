@@ -8,7 +8,7 @@ import { clearSessionHistorySearchCache } from '../lib/session-history-search'
 import { useAppStore } from '../store/app-store'
 import { AppSettingsDialog, DigestDialog, JobDialog, RenameChatDialog, RenameFolderDialog, SearchDialog, ServerOnboardingDialog, SessionDialog } from './Dialogs'
 
-// Tests see the Team Network UI on by default; a test can turn it off as a build without the flag does.
+// The flag is a module constant; this getter lets one test turn it off, as a build without VITE_AGENTSDOCK_TEAM_NETWORK_UI=1 does.
 const teamNetworkUi = vi.hoisted(() => ({ enabled: true }))
 vi.mock('../lib/team-network-ui', () => ({ get TEAM_NETWORK_UI_ENABLED() { return teamNetworkUi.enabled } }))
 
