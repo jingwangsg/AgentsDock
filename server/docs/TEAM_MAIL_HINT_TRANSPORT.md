@@ -214,7 +214,8 @@ Bulletin and another recipient do not emit hints. Idle database/Inbox/receipt
 calls are forbidden. Disconnect, an offline commit and retained-anchor reopen
 restore the durable scalar; one explicitly requested capped Inbox page proves
 only that page's coverage. A body-free golden frame artifact permits separate
-validation with the actual desktop parser. Real TLS denial cases preserve
+validation with the actual desktop parser (rewritten only with
+`AGENTSDOCK_REGENERATE_MAIL_PIPELINE_GOLDEN=1`). Real TLS denial cases preserve
 403/429 and release all passive/request capacity.
 
 The follow-up private-process acceptance ran the actual Starlette/uvicorn

@@ -4617,7 +4617,7 @@ def _git_command(
 ) -> subprocess.CompletedProcess[str]:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise subprocess.TimeoutExpired(args=["git", *args], timeout=0)
+        raise subprocess.TimeoutExpired(cmd=["git", *args], timeout=0)
     return subprocess.run(
         [
             "git",
@@ -17334,12 +17334,13 @@ async def wait_for_session_tasks(
     session_id: str,
     *,
     timeout: float = CODEX_SESSION_CLEANUP_TIMEOUT_SECONDS,
+    exclude: asyncio.Task[Any] | None = None,
 ) -> bool:
     current = asyncio.current_task()
     tasks = [
         task
         for task in tuple(registry.get(session_id) or ())
-        if task is not current and not task.done()
+        if task is not current and task is not exclude and not task.done()
     ]
     if not tasks:
         return True
@@ -93744,9 +93745,14 @@ async def delete_session(session_id: str) -> dict[str, Any]:
                 elif proc:
                     await terminate_process_tree(proc)
 
+            # Skip the queue promotion every ended turn schedules: it registers in
+            # SESSION_TURN_TASKS, then waits for this chat's lifecycle lock, which
+            # this delete holds, so waiting for it can only time out. Once it gets
+            # the lock it finds the chat deleted and starts nothing.
             turns_finished = await wait_for_session_tasks(
                 SESSION_TURN_TASKS,
                 session_id,
+                exclude=QUEUE_START_TASKS.get(session_id),
             )
             if not turns_finished:
                 async with ACTIVE_LOCK:
@@ -93790,6 +93796,7 @@ async def delete_session(session_id: str) -> dict[str, Any]:
                             SESSION_TURN_TASKS,
                             session_id,
                             timeout=0.01,
+                            exclude=QUEUE_START_TASKS.get(session_id),
                         )
             if not turns_finished:
                 raise HTTPException(

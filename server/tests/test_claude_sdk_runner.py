@@ -7278,6 +7278,79 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("chat-claude", True), manager.evict_calls)
         self.assertTrue(turn_task.cancelled() or turn_task.done())
 
+    async def test_delete_of_a_busy_chat_does_not_wait_for_the_queue_promotion_its_turn_scheduled(self) -> None:
+        # 2026-10-25: deleting a chat in the middle of a foreground command answered 409 "has not acknowledged
+        # interruption yet" after 16 s and kept the chat. The interrupted turn ended and, as every turn does,
+        # scheduled a queue promotion, which registers in SESSION_TURN_TASKS and then waits for the lifecycle lock
+        # this delete holds: the delete waited out its cleanup timeout on a task that was waiting for the delete.
+        turn_ends = asyncio.Event()
+
+        async def turn() -> None:
+            await turn_ends.wait()
+            agent_server.ACTIVE.pop("chat-claude", None)
+            agent_server.BUSY_SESSIONS.discard("chat-claude")
+            agent_server.schedule_next_queued_turn("chat-claude")
+
+        turn_task = asyncio.create_task(turn())
+        agent_server.register_session_task(agent_server.SESSION_TURN_TASKS, "chat-claude", turn_task)
+        queue_start_tasks: dict[str, asyncio.Task[Any]] = {}
+        registered_promotions: list[asyncio.Task[Any]] = []
+
+        class InterruptEndsTheTurn(FakeClaudeRun):
+            async def interrupt(self, *, keep_follow_up: bool = False) -> bool:
+                self.interrupt_calls += 1
+                turn_ends.set()
+                # As live: the turn has ended and its promotion is registered before the delete waits for turns.
+                for _ in range(1000):
+                    promotion = queue_start_tasks.get("chat-claude")
+                    if promotion in agent_server.SESSION_TURN_TASKS.get("chat-claude", ()):
+                        registered_promotions.append(promotion)
+                        break
+                    await asyncio.sleep(0)
+                return True
+
+        handle = InterruptEndsTheTurn()
+        manager = FakeClaudeManager(handle)
+        manager.active_run_id = "run-claude"
+        agent_server.CLAUDE_SDK_MANAGER = manager
+        agent_server.ACTIVE = {
+            "chat-claude": {
+                "run_id": "run-claude",
+                "backend": agent_server.BACKEND_CLAUDE,
+                "transport": agent_server.CLAUDE_TRANSPORT_AGENT_SDK,
+                "claude_sdk_run": handle,
+                "interactive_agent_sdk": True,
+                "stop_requested": False,
+                "claude_sdk_owner_token": manager.owner_token,
+            }
+        }
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            (state_dir / "sessions" / "chat-claude").mkdir(parents=True)
+            with patch.object(agent_server, "STATE_DIR", state_dir), patch.object(
+                agent_server, "SESSIONS_FILE", state_dir / "sessions.json",
+            ), patch.object(agent_server, "ensure_dirs"), patch.object(
+                agent_server, "QUEUE_START_TASKS", queue_start_tasks,
+            ), patch.object(
+                agent_server.JOBS, "delete_for_session", AsyncMock(return_value=0),
+            ), patch.object(agent_server, "kill_terminal_session"):
+                try:
+                    # Before the fix this delete waited 15 s for the promotion, then answered 409.
+                    result = await asyncio.wait_for(agent_server.delete_session("chat-claude"), 5)
+                    self.assertEqual(len(registered_promotions), 1, "the turn's promotion never registered as a turn task")
+                    # After the delete releases the lock, the promotion finds the chat gone and starts nothing.
+                    await asyncio.wait_for(registered_promotions[0], 5)
+                finally:
+                    agent_server.DELETED_SESSION_TOMBSTONES.discard("chat-claude")
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual(handle.interrupt_calls, 1)
+        self.assertNotIn("chat-claude", agent_server.STORE.sessions)
+        self.assertNotIn("chat-claude", agent_server.ACTIVE)
+        self.assertNotIn("chat-claude", agent_server.SESSION_TURN_TASKS)
+
     async def test_delete_bounds_cancellation_hostile_run_now_then_retries(self) -> None:
         cancellation_observed = asyncio.Event()
         release = asyncio.Event()

@@ -49,7 +49,7 @@ COMPILE_TIMEOUT_SECONDS = 180
 # The LEGAL file carries the bundled runtime's license notices into exported standalone pages.
 RUNTIME_ASSETS = {"vendor.js": "application/javascript", "vendor.js.LEGAL.txt": "text/plain", "shell.html": "text/html"}
 # Everything the served bundle, the compiler and the agent's guide depend on; runtime_version() digests them.
-RUNTIME_FILES = ("AUTHORING.md", "compile.cjs", "katex.js", "markdown.js", "modules.json", "sdk.d.ts", "shell.html", "vendor.js")
+RUNTIME_FILES = ("AUTHORING.md", "compile.cjs", "katex.js", "markdown.js", "modules.json", "sdk.d.ts", "shell.html", "usage-bar.js", "vendor.js")
 AGENT_FILES = ("AUTHORING.md", "sdk.d.ts")
 
 
@@ -78,8 +78,9 @@ def runtime_asset_bytes(asset: str) -> bytes:
     # The SDK bundle has no source in this repository, so the Markdown component
     # is plain JavaScript in markdown.js, appended to vendor.js when served, with
     # katex.js (the formula renderer markdown.js calls) in between: clients still
-    # fetch one script and key their caches on the runtime version.
-    parts = ("vendor.js", "katex.js", "markdown.js") if asset == "vendor.js" else (asset,)
+    # fetch one script and key their caches on the runtime version. usage-bar.js
+    # replaces the bundle's UsageBar the same way.
+    parts = ("vendor.js", "usage-bar.js", "katex.js", "markdown.js") if asset == "vendor.js" else (asset,)
     return b"\n".join((RUNTIME_DIR / name).read_bytes() for name in parts)
 
 

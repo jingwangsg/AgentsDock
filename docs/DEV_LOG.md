@@ -1,5 +1,95 @@
 # Public development log
 
+## 2026-10-26 — Deleting a chat that is running a command removes it on the first try (server)
+
+- Deleting a chat in the middle of a command (the chat list's Delete, or an
+  agent's `chats delete`) answered after about 16 s with "The active agent
+  turn has not acknowledged interruption yet; the session was not deleted.
+  Retry shortly." The command had already been stopped and a second delete
+  succeeded.
+- Cause: the delete stops the turn while holding the chat's lifecycle lock,
+  then waits up to 15 s for the chat's turn tasks to end. Every turn that
+  ends schedules a check of the chat's queue; that task is counted as a
+  turn task and waits for the same lock, so it could only end after the
+  delete gave up. The delete no longer waits for that queue check. When it
+  runs after the delete, it finds the chat deleted and starts nothing.
+  Turns themselves are still stopped and waited for as before.
+- Verified with a server test that runs the real queue check (it fails on
+  the previous code). On an isolated server, with a Claude chat running a
+  300 s foreground command, the previous code answered 409 after 16.0 s;
+  this code deleted it in 1.6 s with the command stopped. In the desktop
+  app (unpackaged, isolated profile) against that server, Delete Chat on a
+  running chat removed it with one confirmation, about 1 s after the click.
+  A Claude agent asked to delete a running chat behind its route ran
+  `chats delete` once and got `"deleted": true`.
+- Not covered: Codex and other providers' chats (the change is not
+  provider-specific) and Android. Availability: source only; takes effect
+  when each server is updated.
+
+## 2026-10-26 — A Canvas usage bar whose total is below the sum of its parts is drawn full instead of an error (server)
+
+- The Canvas SDK's `UsageBar` threw "Usage bar requires non-negative
+  segments and a total at least as large as their sum." when its segments
+  added up to more than `total`, and the error replaced the whole Canvas. A
+  real report failed because its total, estimated with floating-point math,
+  was 1 byte below the bytes that had arrived.
+- A total below the sum of the segments now draws the bar full, with each
+  segment's share of that sum. A negative or non-finite value still fails,
+  now with "Usage bar values must be finite and non-negative.", as
+  `PieChart` does. The SDK bundle is prebuilt, so the change is a small
+  script served after it, as the Markdown component is; the Canvas runtime
+  version changes, so clients load the new bundle.
+- Verified with a server test that renders the bundle's own bar with the
+  served script (on the previous code the short total throws). In the
+  desktop app against an isolated server, a Canvas with a total 1 below its
+  sum showed only that error on the previous server; on this one it drew
+  that bar full, and a second bar of 100 out of 200 half full.
+- Not covered: Android. Availability: source only; takes effect when the
+  server that holds the Canvas is updated.
+
+## 2026-10-26 — Redeploy after a failed move uses the port of the install it finds; Update all updates CLIs with the token the redeploy issued (server)
+
+- Moving a remote to another host or directory records the new place at
+  once but keeps the previous install's port until the move's deploy
+  finishes. When that deploy failed, a later Redeploy or Update all asked
+  the setup script for the previous port. The script stops whatever serves
+  the port it is given and writes it into the install's settings: with only
+  the directory moved, it stopped the previous install's server; an install
+  already in the new directory got a second server on its data. The
+  2026-10-24 fix covered only a move to an `osmo@` workflow.
+- A deploy of a registered remote now uses the port of the install it finds
+  in the directory, or a free port when there is none. After a finished
+  deploy that is the port the hub already records, so an ordinary Redeploy
+  is unchanged.
+- Update all redeploys each remote and then updates its Claude and Codex
+  CLIs. It sent the CLI updates with the remote's token from before the
+  redeploy, so after a redeploy that issued a new token (one into a
+  directory with no install) they failed with 401. They now send the token
+  the redeploy saved.
+- Verified with server tests that fail on the previous code: a Redeploy
+  after a failed move to another cluster and to another directory on the
+  same host, a new deploy that finds a registered entry once the osmo pool
+  is known, and Update all after a redeploy with a new token. Not covered:
+  a real remote host. Availability: source only; takes effect when the hub
+  is updated.
+
+## 2026-10-26 — A slow repository's code-diff snapshot is skipped instead of raising TypeError; a test no longer modifies the checkout (server)
+
+- The server takes a Git snapshot of a chat's working directory at the
+  start and end of each turn, within a 15 s budget. When one Git command
+  returned after the whole budget, the next one raised `TypeError`
+  (`subprocess.TimeoutExpired` takes `cmd`, not `args`) instead of timing
+  out, and the error left the snapshot code instead of the snapshot being
+  skipped. This also made `test_all_git_commands_share_one_wall_clock_budget`
+  fail intermittently under load. A new test covers that path
+  deterministically. The same test also failed on its own time limit on a
+  loaded host (0.86 s against 0.75 s for a 0.35 s budget). It now gives the
+  snapshot 0.75 s and allows 2.5 s; a budget per Git command would let the
+  snapshot finish after more than 4 s.
+- `test_team_mail_pipeline_tls_isolated` rewrote the tracked
+  `server/mail-pipeline-golden.json` with new random ids on every run. It
+  now writes it only with `AGENTSDOCK_REGENERATE_MAIL_PIPELINE_GOLDEN=1`.
+
 ## 2026-10-26 — `@@` stays plain text in desktop builds with Team Network hidden; the Android app says a server is offline instead of asking to update it (desktop, Android)
 
 - Desktop: release builds hide the Team Network entry points (sidebar
