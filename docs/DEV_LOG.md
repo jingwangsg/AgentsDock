@@ -1,5 +1,47 @@
 # Public development log
 
+## 2026-10-26 — A message or Send now that arrives while a chat is being deleted no longer holds up the delete (server)
+
+- Deleting a chat that is running a command stops the turn and then waits up
+  to 15 s for the chat's remaining turn work. A message sent to the chat
+  during the delete (from another device, an agent, a scheduled job or a
+  mail delivery) was counted as that work, but it was waiting for the delete
+  to finish. The delete answered after about 16 s with "The active agent
+  turn has not acknowledged interruption yet; the session was not deleted.
+  Retry shortly.", and the message then started a new turn in the chat. A
+  Send now on a queued message that cannot join the running turn waited the
+  same way: the delete succeeded after about 16 s and Send now failed with
+  HTTP 500.
+- A message or Send now that would wait for a delete is now refused at once
+  with "session is being deleted", from the moment the delete is requested,
+  even if that delete then fails. A message that reached the chat before
+  the delete is handled as before.
+- Verified with server tests for each case and for a delete that waits
+  behind another operation on the chat (each fails on the previous code).
+  On an isolated server, with a Claude chat running a 300 s foreground
+  command:
+  - A message sent 0.3 s after the delete: before, the delete answered 409
+    after 16.1 s and the message started a turn; now the chat was deleted
+    in 1.2 s and the message was refused.
+  - Send now, with its first step slowed by 3 s for this measurement only
+    so that the delete started during it: before, the delete took 16.0 s
+    and Send now failed with 500; now Send now was refused and the delete
+    took 2.5 s (the rest of the 3 s step, which the delete still waits for).
+  - Desktop app (unpackaged, isolated profile) against that server: a
+    message sent from the composer during Delete Chat was refused and the
+    chat was gone 0.9 s after the click (before: the delete failed after
+    about 16 s and the message ran). Send now followed by Delete Chat, with
+    the 3 s delay: 2.4 s (before: 16.7 s, and Send now failed with 500).
+  - An agent deleting a running chat behind its route with `chats delete`
+    while that chat received a message every 0.1 s: the agent got
+    `"deleted": true` and the later messages were refused (before: the
+    agent got the 409 after about 17 s and the messages then ran).
+- Not covered: Codex chats, Android, and messages from a scheduled job or
+  mail delivery. The Delete dialog stays open during the request, so the
+  desktop check focused the composer by script; in real use such a message
+  comes from another device or an agent. Availability: source only; takes
+  effect when each server is updated.
+
 ## 2026-10-26 — A long chat's first history load no longer delays other chats, and builds faster (server)
 
 - After a server restart, the first page or timeline index of a chat builds
