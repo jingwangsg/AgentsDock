@@ -290,11 +290,11 @@ class SubagentFoldCacheTests(unittest.TestCase):
 
 class ScanTranscriptTests(unittest.IsolatedAsyncioTestCase):
     SESSIONS = {
-        "long-chat": {"id": "long-chat", "latest_event_seq": agent_server.LONG_CHAT_SCAN_EVENTS},
+        "long-chat": {"id": "long-chat", "latest_event_seq": agent_server.LONG_CHAT_MIN_EVENT_SEQ},
         "short-chat": {"id": "short-chat", "latest_event_seq": 12},
     }
 
-    async def test_scans_stay_within_the_scan_pools(self) -> None:
+    async def test_scans_stay_within_the_scan_pool(self) -> None:
         running = {"long-chat": 0, "short-chat": 0}
         peak = dict(running)
         lock = threading.Lock()
@@ -314,10 +314,9 @@ class ScanTranscriptTests(unittest.IsolatedAsyncioTestCase):
                 for session_id in ["long-chat", "short-chat"] * 8
             ))
         self.assertEqual(results, ["long-chat", "short-chat"] * 8)
-        self.assertEqual(peak["long-chat"], 1)
-        self.assertLessEqual(peak["short-chat"], agent_server.TRANSCRIPT_SCAN_WORKERS)
+        self.assertLessEqual(max(peak.values()), agent_server.TRANSCRIPT_SCAN_WORKERS)
         if sys._is_gil_enabled():
-            self.assertEqual(peak["short-chat"], 1)
+            self.assertEqual(peak, {"long-chat": 1, "short-chat": 1})
 
     async def test_short_chat_scan_does_not_queue_behind_a_long_chat_scan(self) -> None:
         long_scan_started = threading.Event()
@@ -345,13 +344,17 @@ class ScanTranscriptTests(unittest.IsolatedAsyncioTestCase):
         held = agent_server.timeline_index_session_lock("long-chat")
         with held:
             self.assertIs(agent_server.timeline_index_session_lock("long-chat"), held)
+            # 256 chats: with the former 64 shared locks, about 98% of runs put
+            # one of them on the held lock.
             for index in range(256):
                 other = agent_server.timeline_index_session_lock(f"short-chat-{index}")
                 self.assertTrue(other.acquire(blocking=False), f"short-chat-{index}")
                 other.release()
-        del held, other
-        # Locks nobody holds are dropped, so deleted chats leave none behind.
-        self.assertEqual(len(agent_server.TIMELINE_INDEX_SESSION_LOCKS), 0)
+
+    def test_unreferenced_timeline_index_locks_are_dropped(self) -> None:
+        with agent_server.timeline_index_session_lock("deleted-chat"):
+            self.assertIn("deleted-chat", agent_server.TIMELINE_INDEX_SESSION_LOCKS)
+        self.assertNotIn("deleted-chat", agent_server.TIMELINE_INDEX_SESSION_LOCKS)
 
 
 if __name__ == "__main__":

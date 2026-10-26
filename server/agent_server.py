@@ -5730,16 +5730,19 @@ TIMELINE_PIN_LOCK_STRIPES = tuple(asyncio.Lock() for _ in range(64))
 TIMELINE_INDEX_CACHE_MAX = int(agentsdock_setting("TIMELINE_INDEX_CACHE_MAX", "24"))
 TIMELINE_INDEX_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 TIMELINE_INDEX_PROJECTION_VERSION = 9
-# Retained as a compatibility/testing surface; synchronization uses the weak
-# per-chat registry below so deleted-session churn cannot leak one lock per chat.
+# Retained as a compatibility/testing surface; synchronization uses
+# TIMELINE_INDEX_SESSION_LOCKS below, whose weak values drop a chat's lock once
+# no caller references it, so deleted chats leave no entry.
 TIMELINE_INDEX_LOCKS: dict[str, threading.Lock] = {}
 # Cache membership and the per-session lock registry are shared across every
 # request worker.  Protect them independently from the per-session scan locks:
 # an LRU eviction for chat A must never remove or recreate chat B's lock while
 # chat B is building/reading its index.
 TIMELINE_INDEX_CACHE_LOCK = threading.RLock()
-# One lock per chat, alive only while a build or read holds it. Chats never
-# share one: a short chat would otherwise wait out a long chat's full rebuild.
+# One lock per chat. A lock lives while any caller references it, so
+# overlapping callers for one chat share it, and no chat waits for another
+# chat's index build (with shared stripes a short chat waited for a long chat's
+# full rebuild).
 TIMELINE_INDEX_SESSION_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
 FORK_INTERNAL_RUN_CACHE_MAX = int(agentsdock_setting("FORK_INTERNAL_RUN_CACHE_MAX", "128"))
 FORK_INTERNAL_RUN_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
@@ -6182,22 +6185,26 @@ def event_delivery_lock(session_id: str) -> asyncio.Lock:
 
 
 # Transcript scans are CPU-bound Python. Under the GIL a second concurrent scan
-# adds no throughput and only adds event-loop lag, so they get one worker; on a
-# free-threaded build they run in parallel on a few cores. Their own pool also
-# keeps a burst of scans from crowding out the default executor's other work.
+# adds no throughput and only adds event-loop lag, so each pool below gets one
+# worker; on a free-threaded build they run in parallel on a few cores. Their
+# own pools also keep a burst of scans from crowding out the default executor's
+# other work.
 TRANSCRIPT_SCAN_WORKERS = 1 if getattr(sys, "_is_gil_enabled", lambda: True)() else min(4, os.cpu_count() or 1)
 TRANSCRIPT_SCAN_EXECUTOR = ThreadPoolExecutor(TRANSCRIPT_SCAN_WORKERS, thread_name_prefix="transcript-scan")
-# A long chat's first timeline-index build reads its whole transcript: seconds
-# on a Mac, minutes on a throttled host. Long chats' scans get one worker of
-# their own so a short chat's page never queues behind them. Under the GIL this
-# allows two concurrent scans.
-LONG_CHAT_SCAN_EVENTS = 2000
-LONG_CHAT_SCAN_EXECUTOR = ThreadPoolExecutor(1, thread_name_prefix="long-chat-scan")
+# Chats with at least LONG_CHAT_MIN_EVENT_SEQ events scan on a pool of their
+# own: a long chat's first timeline-index build reads its whole transcript
+# (1.5 s for 39k events on a Mac, about 30x that on a throttled host), and a
+# short chat's page must not queue behind it. A 2000-event chat builds in about
+# 0.04 s on a Mac. Under the GIL the two pools run at most two scans at once;
+# measured event-loop lag while both were busy was no higher than with one pool.
+LONG_CHAT_MIN_EVENT_SEQ = 2000
+LONG_CHAT_SCAN_EXECUTOR = ThreadPoolExecutor(TRANSCRIPT_SCAN_WORKERS, thread_name_prefix="long-chat-scan")
 
 
 async def scan_transcript(fn: Callable[..., Any], session_id: str, /, *args: Any, **kwargs: Any) -> Any:
     # asyncio.to_thread's contract (context propagated), on the chat's scan pool.
-    long_chat = int((STORE.sessions.get(session_id) or {}).get("latest_event_seq") or 0) >= LONG_CHAT_SCAN_EVENTS
+    session = STORE.sessions.get(session_id) or {}
+    long_chat = int(session.get("latest_event_seq") or 0) >= LONG_CHAT_MIN_EVENT_SEQ
     executor = LONG_CHAT_SCAN_EXECUTOR if long_chat else TRANSCRIPT_SCAN_EXECUTOR
     call = functools.partial(contextvars.copy_context().run, fn, session_id, *args, **kwargs)
     return await asyncio.get_running_loop().run_in_executor(executor, call)
@@ -34739,9 +34746,10 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
         else {}
     )
     # Every "turn:{run}" / "turn:{run}:start-{seq}" record key ever created,
-    # oldest first, bucketed by the run id before any ":start-". A key whose
-    # record was later folded away stays listed; lookups skip keys missing
-    # from by_key.
+    # oldest first, bucketed by the text between "turn:" and the first
+    # ":start-" (the run id itself unless the id contains ":start-"). Keys of
+    # records removed later (merged into a job record) stay listed; lookups
+    # skip keys missing from by_key.
     turn_keys_by_run: dict[str, list[str]] = (
         cached.get("turn_keys_by_run") or {}
         if can_append
@@ -35582,8 +35590,12 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                 prior_key = current_turn_by_run.pop(run_id, None) if run_id else None
                 if not prior_key and run_id:
                     base_turn_key = f"turn:{run_id}"
-                    # The run's newest turn record: by_key keeps records'
-                    # insertion order, and each bucket lists keys oldest first.
+                    # Newest turn record of this run, the same key a
+                    # newest-first scan of `records` finds: ensure_record adds
+                    # the key to its bucket when it appends the record, and a
+                    # record leaves `records` only together with `by_key`. A run
+                    # id containing ":start-" shares a bucket with a shorter id,
+                    # so the lookup splits the same way and keeps the prefix check.
                     prior_key = next(
                         (
                             turn_key

@@ -51,7 +51,7 @@ class TimelineIndexJobTests(unittest.TestCase):
         self.assertEqual(job["job_id"], "job-1")
         self.assertEqual(job["job_timeline_group_id"], "job:job-1")
 
-    def test_late_job_reveal_folds_the_runs_newest_turn_record_first(self) -> None:
+    def test_late_job_events_fold_split_turn_records_newest_first(self) -> None:
         session_id = "chat-1"
         path = agent_server.events_path(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,6 +62,8 @@ class TimelineIndexJobTests(unittest.TestCase):
             self.event(3, "assistant_text", run_id="job-run", text="Looking"),
             # The steer splits the run into turn:job-run and turn:job-run:start-4.
             self.event(4, "turn_steered", run_id="job-run", text="Also check disk", **steer),
+            # turn_finished clears the run's current turn, so job_ran (and the
+            # later job_finished) must look the run's turn record up.
             self.event(5, "turn_finished", run_id="job-run", result_text="Disk fine"),
             self.event(6, "job_ran", run_id="job-run", job_id="job-1"),
         ]
@@ -86,6 +88,10 @@ class TimelineIndexJobTests(unittest.TestCase):
         appended = agent_server.build_timeline_index(session_id)
         agent_server.TIMELINE_INDEX_CACHE.clear()
         rebuilt = agent_server.build_timeline_index(session_id)
+        self.assertEqual(
+            {**appended, "generated_at": None},
+            {**rebuilt, "generated_at": None},
+        )
 
         # The next one skips the split already folded and takes the original,
         # whether the index is extended from the cache or built from scratch.
