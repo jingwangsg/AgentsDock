@@ -448,6 +448,14 @@ test('paged history stays continuous with the live bottom under one native ancho
   assert.match(store, /!currentWindow && !projectPresentableHistory\(collected, filesFromEvents\(collected\)\)/)
 })
 
+test('the iOS dialog card sits above the keyboard and keeps the focused field visible', () => {
+  assert.match(dialogs, /<KeyboardAvoidingView behavior=\{Platform\.OS === 'ios' \? 'padding' : undefined\} style=\{styles\.backdrop\}>/)
+  assert.match(dialogs, /onLayout=\{Platform\.OS === 'ios' \? revealFocusedField : undefined\}/)
+  assert.match(dialogs, /const field = focusedTextInput\(\)[\s\S]*?field\.measureLayout\(contentRef\.current/)
+  // A card moving above the keyboard leaves a stale native keyboard inset behind.
+  assert.doesNotMatch(dialogs, /automaticallyAdjustKeyboardInsets/)
+})
+
 test('transparent modal backdrops are siblings instead of responder-wrapping controls', () => {
   assert.match(dialogs, /<KeyboardAvoidingView behavior=\{Platform\.OS === 'ios' \? 'padding' : undefined\} style=\{styles\.backdrop\}>\{dismissable \? <Pressable[\s\S]*?StyleSheet\.absoluteFill[\s\S]*?: <View style=\{StyleSheet\.absoluteFill\} \/>\}\{panel\}<\/KeyboardAvoidingView>/)
   assert.doesNotMatch(dialogs, /<Pressable style=\{styles\.backdrop\}[\s\S]{0,220}?\{panel\}/)

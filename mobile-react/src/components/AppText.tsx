@@ -60,6 +60,11 @@ export const Text = forwardRef<Text, TextProps>(function AppText({ children, sty
   </InheritedTextSizeContext.Provider>
 })
 
+/** The focused TextInput's host view, or null; NativeTextInput.State without importing it elsewhere. */
+export function focusedTextInput() {
+  return NativeTextInput.State.currentlyFocusedInput()
+}
+
 export type TextInput = ComponentRef<typeof NativeTextInput>
 export const TextInput = forwardRef<TextInput, TextInputProps>(function AppTextInput({ style, ...props }, ref) {
   const fontScale = useContext(AppFontScaleContext)

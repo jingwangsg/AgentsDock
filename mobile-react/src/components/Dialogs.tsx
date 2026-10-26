@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View, useWindowDimensions, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { DateTimePicker } from '@expo/ui/community/datetime-picker'
 import * as Clipboard from 'expo-clipboard'
@@ -23,7 +23,7 @@ import { liveChatReferenceTitle } from '../lib/timeline-inline-references'
 import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { AppearanceMode, Backend, ChatReference, CreateJobInput, JobContextMode, JobScheduleKind, RuntimeOption, Session, TimelineSearchResult, UpdateJobInput } from '../types'
-import { Text, TextInput } from './AppText'
+import { focusedTextInput, Text, TextInput } from './AppText'
 import { BackendMark } from './BackendMark'
 import { IconButton, SheetCloseButton } from './ui'
 import { RuntimeHealthPanel } from './RuntimeHealth'
@@ -904,6 +904,21 @@ function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, 
     dismissAppKeyboard()
     onDidDismiss?.()
   }
+  const scrollRef = useRef<ScrollView>(null)
+  const contentRef = useRef<View>(null)
+  const scrollOffset = useRef(0)
+  // When the card shrinks above the keyboard, Android's ScrollView scrolls the
+  // focused field back into view; an iOS ScrollView does not for a multiline one.
+  const revealFocusedField = (event: LayoutChangeEvent) => {
+    const viewport = event.nativeEvent.layout.height
+    const field = focusedTextInput()
+    if (!field || !contentRef.current) return
+    field.measureLayout(contentRef.current, (_x, top, _width, height) => {
+      const bottom = Math.min(top + height, top + viewport)
+      if (top < scrollOffset.current) scrollRef.current?.scrollTo({ y: top })
+      else if (bottom > scrollOffset.current + viewport) scrollRef.current?.scrollTo({ y: bottom - viewport })
+    })
+  }
   const panel = <View
     testID={`sheet-${titleKey}`}
     style={[styles.sheetPage, styles.sheet, wide && styles.sheetWide, { backgroundColor: colors.background, borderColor: colors.border }]}
@@ -912,8 +927,13 @@ function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, 
       <View style={[styles.sheetGrabber, { backgroundColor: colors.selected }]} />
       <View style={styles.sheetHeader}><Text style={[styles.sheetTitle, { color: colors.text }]}>{title}</Text>{dismissable ? <SheetCloseButton onPress={close} label={`Close ${title}`} testID={`sheet-close-${titleKey}`} /> : null}</View>
       <ScrollView
+        ref={scrollRef}
+        innerViewRef={contentRef as React.RefObject<View>}
         contentContainerStyle={styles.sheetBody}
         keyboardShouldPersistTaps={keyboardShouldPersistTaps}
+        onLayout={Platform.OS === 'ios' ? revealFocusedField : undefined}
+        onScroll={Platform.OS === 'ios' ? (event: NativeSyntheticEvent<NativeScrollEvent>) => { scrollOffset.current = event.nativeEvent.contentOffset.y } : undefined}
+        scrollEventThrottle={Platform.OS === 'ios' ? 16 : undefined}
       >{children}</ScrollView>
     </SafeAreaView>
   </View>
