@@ -154,7 +154,7 @@ export function ProviderInteractionShelf({
             style={{ flex: 1 }}
             contentContainerStyle={styles.interactionList}
             automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
-            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            keyboardDismissMode="on-drag"
             keyboardShouldPersistTaps="always"
           >
             {available && error ? (

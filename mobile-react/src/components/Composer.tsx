@@ -1737,7 +1737,6 @@ export function ChatTargetPicker({ visible, crossServer, width, query, sourceSes
             returnKeyType="search"
             submitBehavior="blurAndSubmit"
             onSubmitEditing={dismissAppKeyboard}
-            clearButtonMode="while-editing"
             placeholder="Search chats"
             placeholderTextColor={colors.muted}
             style={[styles.targetSearchInput, { color: colors.text }]}

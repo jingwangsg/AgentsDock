@@ -461,7 +461,6 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           returnKeyType="search"
           submitBehavior="blurAndSubmit"
           onSubmitEditing={dismissSearchKeyboard}
-          clearButtonMode={Platform.OS === 'ios' ? 'while-editing' : 'never'}
           style={[styles.searchInput, { color: colors.text }]}
         />
         {!needsServerSetup && searchBusy ? <Text style={{ color: colors.muted }}>…</Text> : null}

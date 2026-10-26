@@ -561,7 +561,6 @@ export function ServerProfilesManager({
     style={styles.manager}
     contentContainerStyle={styles.managerContent}
     automaticallyAdjustKeyboardInsets
-    keyboardDismissMode="interactive"
     keyboardShouldPersistTaps="handled"
   >
     <View style={styles.managementHeading}>

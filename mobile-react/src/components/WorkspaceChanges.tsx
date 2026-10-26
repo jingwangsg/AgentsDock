@@ -236,7 +236,7 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
                   <Text style={[styles.filterLabel, { color: colors.text }]}>{FILTER_LABELS[group]}</Text><Text style={[styles.filterCount, { color: colors.muted }]}>{counts[group]}</Text>
                 </Pressable>)}
               </ScrollView>
-              <TextInput value={query} onChangeText={setQuery} placeholder="Filter files" placeholderTextColor={colors.muted} autoCapitalize="none" autoCorrect={false} clearButtonMode="while-editing" accessibilityLabel="Filter changed files" testID="changes-search" style={[styles.search, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} />
+              <TextInput value={query} onChangeText={setQuery} placeholder="Filter files" placeholderTextColor={colors.muted} autoCapitalize="none" autoCorrect={false} accessibilityLabel="Filter changed files" testID="changes-search" style={[styles.search, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} />
               <View style={styles.bulk}>
                 <BulkButton icon={Plus} label="Stage all" disabled={blocked || !stageable.length} onPress={() => void run('stage', stageable)} testID="changes-stage-all" />
                 <BulkButton icon={Minus} label="Unstage all" disabled={blocked || !unstageable.length} onPress={() => void run('unstage', unstageable)} testID="changes-unstage-all" />
