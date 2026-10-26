@@ -513,7 +513,7 @@ class CodeDiffSnapshotTests(CodeDiffStateMixin, unittest.TestCase):
             wrapper_root.mkdir()
             wrapper = wrapper_root / "git"
             wrapper.write_text(
-                "#!/bin/sh\nsleep 0.20\nexec "
+                "#!/bin/sh\nsleep 0.5\nexec "
                 + subprocess.list2cmdline([str(GIT)])
                 + " \"$@\"\n"
             )
@@ -522,7 +522,7 @@ class CodeDiffSnapshotTests(CodeDiffStateMixin, unittest.TestCase):
             with self.isolated_state(root), patch.object(
                 agent_server,
                 "CODE_DIFF_SNAPSHOT_TIMEOUT_SECONDS",
-                0.35,
+                0.75,
             ), patch.dict(
                 os.environ,
                 {"PATH": f"{wrapper_root}{os.pathsep}{original_path}"},
@@ -535,9 +535,12 @@ class CodeDiffSnapshotTests(CodeDiffStateMixin, unittest.TestCase):
                 )
                 elapsed = time.monotonic() - started
 
+                # One budget ends the snapshot at 0.75 s plus the killed command's cleanup (0.9 s
+                # on a loaded host). A budget per command lets all 8 Git commands finish: the
+                # snapshot succeeds after over 4 s.
                 self.assertIsNone(result)
-                self.assertLess(elapsed, 0.75)
-                self.assertGreater(elapsed, 0.25)
+                self.assertLess(elapsed, 2.5)
+                self.assertGreater(elapsed, 0.5)
                 self.assertEqual(
                     list(agent_server.code_diffs_dir("chat").glob(".snapshot-*")),
                     [],

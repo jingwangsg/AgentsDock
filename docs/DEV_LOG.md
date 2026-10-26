@@ -82,7 +82,10 @@
   out, and the error left the snapshot code instead of the snapshot being
   skipped. This also made `test_all_git_commands_share_one_wall_clock_budget`
   fail intermittently under load. A new test covers that path
-  deterministically.
+  deterministically. The same test also failed on its own time limit on a
+  loaded host (0.86 s against 0.75 s for a 0.35 s budget). It now gives the
+  snapshot 0.75 s and allows 2.5 s; a budget per Git command would let the
+  snapshot finish after more than 4 s.
 - `test_team_mail_pipeline_tls_isolated` rewrote the tracked
   `server/mail-pipeline-golden.json` with new random ids on every run. It
   now writes it only with `AGENTSDOCK_REGENERATE_MAIL_PIPELINE_GOLDEN=1`.
