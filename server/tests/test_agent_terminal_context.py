@@ -506,6 +506,25 @@ class AgentTerminalContextTests(unittest.TestCase):
         self.assertIn("$AGENTSDOCK_MANIFEST_PATH", claude_compact)
         self.assertIn("/tmp/manifest.json", codex_compact)
 
+    def test_agent_prompts_ask_for_each_new_worktree_path_as_a_link(self) -> None:
+        # Desktop (Open in Zed, Copy path) and Android (Copy path) add these actions only to
+        # absolute path links, so the prompt must ask for that form.
+        formatted = {
+            "manifest_path": "/tmp/manifest.json",
+            "terminal_session": "zd_sess_123",
+            "chat_id": "sess-123",
+        }
+        for prompt in (
+            agent_server.CLAUDE_PROMPT_PRELUDE.format(),
+            agent_server.CODEX_PROMPT_PRELUDE.format(**formatted),
+            agent_server.CURSOR_PROMPT_PRELUDE.format(**formatted),
+        ):
+            self.assertIn(
+                "After creating a git worktree, tell the user its absolute path as a Markdown link: "
+                "`[/abs/path](/abs/path)`.",
+                prompt,
+            )
+
     def test_both_agent_prompts_explain_artifact_and_video_publishing(self) -> None:
         claude_prompt = agent_server.CLAUDE_PROMPT_PRELUDE.format()
         codex_prompt = agent_server.CODEX_PROMPT_PRELUDE.format(

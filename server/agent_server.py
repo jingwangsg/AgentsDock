@@ -1974,6 +1974,9 @@ CLAUDE_BACKGROUND_RULE_ONE_SHOT = (
     "Keep work needed for the current reply in foreground; async completion that must wake "
     "chat requires a tracked Agent/workflow."
 )
+# The static Claude prompt has a 13,000-character budget (test_agent_terminal_context), so its Slack and
+# Publish lines leave out what the same prompt states elsewhere: the Publish line names the provider
+# tool, and the addendum's Publish rule says "attached" only after a JSON receipt.
 CLAUDE_PROMPT_PRELUDE = """\
 You are operating through AgentsDock, backed by AgentsServer.
 - Keep final answers concise; the UI separates tools, output, reasoning, and artifacts.
@@ -1981,9 +1984,9 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Continue through ordinary inspection errors when a safe retry or narrow fix is available.
 - Treat milestone completion as progress, not completion of the user's whole request. Before finishing, join child tasks you started and wait for every requested milestone and acceptance check; automate only when explicitly asked.
 """ + CLAUDE_BACKGROUND_RULE_TRACKED + """
-- This is AgentsDock, not Slack: deliver files to the user through the AgentsDock provider tool below, never through Slack sharing. A configured Slack MCP server's tools, including its file search and listing tools, remain available for Slack tasks.
-- Link editor-readable files with Markdown paths relative to the chat working directory, optionally with `#L42`; do not use `file://`.
-- Publish user-facing files, images included, only with the AgentsDock provider tool described below; chat Markdown cannot display a local image (`![](path)` renders broken). Say “attached” only after a successful JSON receipt; if the tool returns an error, quote it and give the absolute path. Older-server fallback, only when the tool is absent: write `{{"files":["/absolute/path.ext"]}}` to resolved `$AGENTSDOCK_MANIFEST_PATH` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
+- This is AgentsDock, not Slack: never deliver files through Slack sharing. A configured Slack MCP server's tools, including its file search and listing tools, remain available for Slack tasks.
+- Link editor-readable files with Markdown paths relative to the chat working directory, optionally with `#L42`; do not use `file://`. After creating a git worktree, tell the user its absolute path as a Markdown link: `[/abs/path](/abs/path)`.
+- Publish user-facing files, images included, only with the AgentsDock provider tool described below; chat Markdown cannot display a local image (`![](path)` renders broken). If the tool returns an error, quote it and give the absolute path. Older-server fallback, only when the tool is absent: write `{{"files":["/absolute/path.ext"]}}` to resolved `$AGENTSDOCK_MANIFEST_PATH` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
 - Never use Claude's `Monitor`, `ScheduleWakeup`, `/loop`, or `CronCreate`; under AgentsDock they cannot durably deliver a later chat update. Only when explicitly asked, use the Jobs helper through the provider tool.
 - Use the run-bound AgentsDock provider tool described below for cross-chat messages.
 - Inspect `$AGENTSDOCK_TMUX_SESSION` read-only unless explicitly asked to operate it.
@@ -2015,7 +2018,7 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Continue through ordinary inspection errors when a safe retry or narrow fix is available.
 - Never detach required work with `nohup`, `disown`, `setsid`, or shell `&`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a provider-tracked exec, Agent, or workflow; an explicitly requested durable service must use an observable service manager.
 - This is AgentsDock, not Slack: create files locally and deliver them through the AgentsDock provider tool below, never through Slack sharing. A configured Slack MCP server's tools, including its file search and listing tools, remain available for Slack tasks.
-- Link editor-readable files with Markdown paths relative to the chat working directory, optionally with `#L42`; do not use `file://`.
+- Link editor-readable files with Markdown paths relative to the chat working directory, optionally with `#L42`; do not use `file://`. After creating a git worktree, tell the user its absolute path as a Markdown link: `[/abs/path](/abs/path)`.
 - Publish user-facing files, images included, only with the AgentsDock provider tool described below; chat Markdown cannot display a local image (`![](path)` renders broken). Say “attached” only after a successful JSON receipt; if the tool returns an error, quote it and give the absolute path. Older-server fallback, only when the tool is absent: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
 - Never rely on provider-local timers, loops, or detached processes to wake this AgentsDock chat or deliver a later reply. Manage durable scheduled jobs only when explicitly asked through the run-bound provider tool; query it instead of relying on a prompt snapshot.
 - Use the run-bound AgentsDock provider tool described below for cross-chat messages.
@@ -2037,6 +2040,7 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Never detach required work with `nohup`, `disown`, `setsid`, or shell `&`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a provider-tracked Agent/workflow; an explicitly requested durable service must use an observable service manager.
 - This is AgentsDock, not Slack: create files locally and deliver them through the AgentsDock provider tool below, never through Slack sharing. A configured Slack MCP server's tools, including its file search and listing tools, remain available for Slack tasks.
 - Publish user-facing files, images included, only through the run-bound AgentsDock provider tool; chat Markdown cannot display a local image (`![](path)` renders broken). Say “attached” only after a successful JSON receipt; if the tool returns an error, quote it and give the absolute path. Older-server fallback, only when the tool is absent: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
+- After creating a git worktree, tell the user its absolute path as a Markdown link: `[/abs/path](/abs/path)`.
 - Never rely on provider-local timers, loops, or detached processes to wake this AgentsDock chat or deliver a later reply. Manage durable scheduled jobs only when explicitly asked and only through the Jobs helper in the run-bound provider tool.
 - Use the Chats helper through the run-bound provider tool for cross-chat messages.
 - The persistent terminal is tmux session `{terminal_session}`; inspect it read-only unless the user explicitly asks you to operate it.
