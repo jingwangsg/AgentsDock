@@ -78,6 +78,7 @@ import {
 } from '../lib/chat-references'
 import { liveChatTitle } from '../lib/live-chat-title'
 import { liveChatReferenceTitle } from '../lib/timeline-inline-references'
+import { selectConnectionNotice } from '../lib/server-profile-ui'
 import { rankMentionRows } from '../lib/session-order'
 import {
   COMPOSER_CARD_MAX_HEIGHT,
@@ -168,6 +169,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const queuedTurns = useAppStore(state => state.snapshots[sessionId]?.queuedTurns) ?? EMPTY_QUEUE
   const queuedRunStatus = useAppStore(state => state.queuedRunStatus[sessionId])
   const health = useAppStore(state => state.health)
+  const connectionNotice = useAppStore(selectConnectionNotice)
   const references = useAppStore(state => state.chatReferencesBySession[sessionId]) ?? EMPTY_CHAT_REFERENCES
   const teamReferences = useAppStore(state => state.teamReferencesBySession[sessionId]) ?? EMPTY_TEAM_REFERENCES
   const sourceSession = useAppStore(useShallow(state => {
@@ -1285,7 +1287,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
           referenceSupported={referenceSupported}
           onChangeAction={changeReferenceAction}
           onRemove={revokeReference}
-          warning={!referencesSupported ? 'This server cannot deliver one or more selected actions or target chats.' : null}
+          warning={!referencesSupported ? connectionNotice ?? 'This server cannot deliver one or more selected actions or target chats.' : null}
           testID="composer-chat-references"
         /> : null}
         {teamReferences.length ? <View testID="composer-team-references" accessibilityLabel="Team Network recipients" style={styles.referenceShelfWrap}>
@@ -2024,6 +2026,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
   const allTurns = useAppStore(state => state.snapshots[sessionId]?.queuedTurns) ?? EMPTY_QUEUE
   const turns = useMemo(() => allTurns.filter(isVisibleQueuedTurn), [allTurns])
   const health = useAppStore(state => state.health)
+  const connectionNotice = useAppStore(selectConnectionNotice)
   const sourceBackend = useAppStore(state => state.sessions.find(session => session.id === sessionId)?.backend)
   const queuedTargetIds = useMemo(() => new Set(turns.flatMap(turn => (turn.chat_references ?? []).map(reference => reference.session_id))), [turns])
   useAppStore(state => queuedTargetIds.size ? [...queuedTargetIds].map(targetId => {
@@ -2260,10 +2263,10 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
                 setEditReferences(next)
               }
             }}
-            warning={!rowReferences.every(referenceSupported) ? 'Change this action or target before saving.' : null}
+            warning={!rowReferences.every(referenceSupported) ? connectionNotice ?? 'Change this action or target before saving.' : null}
             testID={`queued-chat-references-${turn.queued_id}`}
           /> : null}
-          {crossChatDelivery ? <View style={styles.queueActions}><View style={styles.toolbarSpacer} /><Pressable testID={`queued-skip-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel={`Remove queued message from ${sender}`} accessibilityHint={!canSkip ? 'Update AgentsServer to safely remove this delivery.' : undefined} accessibilityState={{ disabled: networkDisabled || queueBusy || !canSkip, busy }} disabled={networkDisabled || queueBusy || !canSkip} onPress={() => void act(turn.queued_id, () => skipDelivery(sessionId, turn.queued_id, profileGeneration))} style={({ pressed }) => [styles.routeRevoke, { opacity: networkDisabled || queueBusy || !canSkip || pressed ? 0.45 : 1 }]}>{busy ? <ActivityIndicator size="small" color={colors.red} /> : <Trash2 size={16} color={colors.red} />}</Pressable></View> : editing === turn.queued_id ? <View style={styles.queueEditActions}>
+          {crossChatDelivery ? <View style={styles.queueActions}><View style={styles.toolbarSpacer} /><Pressable testID={`queued-skip-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel={`Remove queued message from ${sender}`} accessibilityHint={!canSkip ? connectionNotice ?? 'Update AgentsServer to safely remove this delivery.' : undefined} accessibilityState={{ disabled: networkDisabled || queueBusy || !canSkip, busy }} disabled={networkDisabled || queueBusy || !canSkip} onPress={() => void act(turn.queued_id, () => skipDelivery(sessionId, turn.queued_id, profileGeneration))} style={({ pressed }) => [styles.routeRevoke, { opacity: networkDisabled || queueBusy || !canSkip || pressed ? 0.45 : 1 }]}>{busy ? <ActivityIndicator size="small" color={colors.red} /> : <Trash2 size={16} color={colors.red} />}</Pressable></View> : editing === turn.queued_id ? <View style={styles.queueEditActions}>
             <Pressable accessibilityRole="button" accessibilityLabel="Cancel queued message edit" disabled={Boolean(busyTurn)} onPress={cancelEdit} style={({ pressed }) => [styles.queueEditButton, { backgroundColor: colors.raised, opacity: busyTurn || pressed ? 0.5 : 1 }]}><Text style={[styles.queueEditButtonText, { color: colors.text }]}>Cancel</Text></Pressable>
             <Pressable testID={`queued-save-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel="Save queued message" accessibilityState={{ disabled: networkDisabled || busy || !editText.trim() || !validEditReferences, busy }} disabled={networkDisabled || busy || !editText.trim() || !validEditReferences} onPress={() => void commitEdit(turn)} style={({ pressed }) => [styles.queueEditButton, { backgroundColor: colors.blue, opacity: networkDisabled || busy || !editText.trim() || !validEditReferences || pressed ? 0.45 : 1 }]}>{busy ? <ActivityIndicator size="small" color={colors.textOnAccent} /> : <><Check size={14} color={colors.textOnAccent} /><Text style={[styles.queueEditButtonText, { color: colors.textOnAccent }]}>Save</Text></>}</Pressable>
           </View> : <View style={styles.queueActions}>
