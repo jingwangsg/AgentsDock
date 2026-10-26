@@ -18,7 +18,7 @@ test('web links in a chat open in the app browser tab; long press offers Copy li
   assert.match(markdown, /showActionMenu\(url, \[\n\s+\{ text: 'Copy link'[\s\S]{0,160}\{ text: 'Open in browser'/)
   assert.match(read('src/lib/action-menu.ts'), /options: \[\.\.\.actions\.map\(action => action\.text\), 'Cancel'\]/)
   assert.match(read('src/components/ChatOutputsPanel.tsx'), /import \{ showActionMenu \} from '\.\.\/lib\/action-menu'/)
-  assert.match(markdown, /onLongPress=\{isWebLink\(href\) \? \(\) => linkMenu\(href\) : undefined\}/)
+  assert.match(markdown, /onLongPress=\{isWebLink\(href\) \? \(\) => linkMenu\(href\) :/)
   const store = read('src/store/useAppStore.ts')
   // The tab already showing the URL is reused; otherwise a new tab opens in the chat's folder.
   assert.match(store, /async openLinkInBrowser\(url, sourceSessionId\) \{[\s\S]{0,200}surface\.kind === 'browser' && sameWebAddress\(surface\.url, url\)/)

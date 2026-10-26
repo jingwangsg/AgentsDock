@@ -169,6 +169,7 @@
   "serverVisibility.hidden": "已隐藏",
   "openInZed.headerTitle": "在 Zed 中打开 {path}",
   "openInZed.headerTitleRemote": "在 Zed 中打开 {host} 上的 {path}",
+  "pathLink.copyPath": "复制路径",
   "opencode.crossChatUnavailable": "此测试版不支持 OpenCode 跨会话路由。请移除会话引用后再发送。",
   "timeline.event.providerSessionReset": "提供商上下文已重置",
   "opencode.unavailable": "OpenCode 不可用。",
