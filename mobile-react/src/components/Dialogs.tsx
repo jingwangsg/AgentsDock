@@ -10,6 +10,7 @@ import { AGENTS_SERVER_REPOSITORY_URL } from '../lib/server-setup'
 import { trackEvent } from '../lib/analytics'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { backendLabel } from '../lib/format'
+import { selectConnectionNotice } from '../lib/server-profile-ui'
 import { serverSearchQuery } from '../lib/server-search'
 import { APP_FONT_SCALE_MAX, APP_FONT_SCALE_MIN, APP_FONT_SCALE_STEP, fonts } from '../lib/typography'
 import { TERMINAL_SCROLLBACK_OPTIONS, updateTerminalSettings, useTerminalSettings } from '../lib/terminalSettings'
@@ -446,6 +447,7 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
   const update = useAppStore(state => state.updateJob)
   const clearError = useAppStore(state => state.clearError)
   const health = useAppStore(state => state.health)
+  const connectionNotice = useAppStore(selectConnectionNotice)
   const runtime = useAppStore(state => state.runtime)
   const sessions = useAppStore(state => state.sessions)
   const job = jobs.find(value => value.id === jobId) ?? null
@@ -629,7 +631,7 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
       cleanPrompt !== job?.prompt
       || JSON.stringify(chatReferences) !== JSON.stringify(storedReferences)
     )) {
-      setStatus('This server does not advertise scheduled @Chat routes. Existing routes are preserved, but their prompt or targets cannot be edited on mobile until AgentsServer is updated.')
+      setStatus(connectionNotice ?? 'This server does not advertise scheduled @Chat routes. Existing routes are preserved, but their prompt or targets cannot be edited on mobile until AgentsServer is updated.')
       return
     }
     const scheduleFields = jobScheduleFields(scheduleKind, { intervalSeconds, cronExpression, rrule, timezone })
@@ -795,9 +797,9 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
     </View> : null}
     <Text style={[styles.help, { color: scheduledRouteHintsSupported || !chatReferences.length ? colors.muted : colors.orange }]}>{scheduledRouteHintsSupported
       ? 'Type @Chat to give each scheduled occurrence an exact route to another active chat.'
-      : chatReferences.length
+      : connectionNotice ?? (chatReferences.length
         ? 'Stored @Chat routes are view-only and preserved. Update AgentsServer before changing this prompt or its routes on mobile.'
-        : 'Update AgentsServer to add scheduled @Chat route hints.'}</Text>
+        : 'Update AgentsServer to add scheduled @Chat route hints.')}</Text>
     {status ? <Text accessibilityRole={saving ? undefined : 'alert'} style={{ color: saving ? colors.muted : colors.red, fontSize: 11 }}>{status}</Text> : null}
     <PrimaryButton testID="job-save" label={saving ? 'Saving…' : job ? 'Save job' : 'Schedule job'} disabled={saving || !title.trim() || !prompt.trim() || Boolean(scheduleError) || Boolean(startError)} onPress={() => void submit()} />
   </Sheet>

@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
@@ -20,17 +21,19 @@ describe('MarkdownContent', () => {
   const openLocalPath = vi.fn().mockResolvedValue(undefined)
   const openExternal = vi.fn().mockResolvedValue(undefined)
   const writeClipboard = vi.fn().mockResolvedValue(undefined)
+  const openInZed = vi.fn().mockResolvedValue(undefined)
 
   beforeEach(() => {
     openLinked.mockReset().mockResolvedValue(undefined)
     openLocalPath.mockReset().mockResolvedValue(undefined)
     openExternal.mockClear()
     writeClipboard.mockClear()
+    openInZed.mockReset().mockResolvedValue(undefined)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
       value: {
         files: { open: vi.fn(), openLinked, openLocalPath },
-        native: { openExternal, writeClipboard }
+        native: { openExternal, writeClipboard, openInZed }
       } as unknown as AgentsDockAPI
     })
   })
@@ -137,6 +140,68 @@ describe('MarkdownContent', () => {
 
     await waitFor(() => expect(useAppStore.getState().error).toBe('Linked file failed: 409'))
     expect(openLocalPath).not.toHaveBeenCalled()
+  })
+
+  describe('the right-click menu of an absolute path link', () => {
+    const remote = { sshHost: 'oci_dev', hostAlias: 'oci_dev', sessionId: 'chat-7', profileId: 'profile-a', profileGeneration: 3 }
+    const pick = async (link: string, item: string) => {
+      fireEvent.contextMenu(screen.getByRole('link', { name: link }))
+      await userEvent.click(await screen.findByRole('menuitem', { name: item }))
+    }
+
+    beforeEach(() => {
+      useAppStore.setState({
+        profiles: [{ id: 'profile-a', name: 'oci_dev', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/oci`, sshHost: 'oci_dev' } as PublicServerProfile],
+        activeProfileId: 'profile-a',
+        profileGeneration: 3
+      })
+    })
+
+    it('opens the path in Zed on the chat server or copies it', async () => {
+      render(<MarkdownContent text="Worktree: [/home/dev/repo-wt](/home/dev/repo-wt)" sessionId="chat-7" />)
+
+      fireEvent.contextMenu(screen.getByRole('link', { name: '/home/dev/repo-wt' }))
+      expect((await screen.findAllByRole('menuitem')).map(item => item.textContent)).toEqual(['Open in Zed', 'Copy path'])
+      await userEvent.keyboard('{Escape}')
+      await pick('/home/dev/repo-wt', 'Open in Zed')
+      await pick('/home/dev/repo-wt', 'Copy path')
+
+      // The ssh host and alias the header's Open in Zed builds for this profile.
+      expect(openInZed).toHaveBeenCalledExactlyOnceWith({ ...remote, path: '/home/dev/repo-wt', line: undefined, column: undefined })
+      expect(writeClipboard).toHaveBeenCalledExactlyOnceWith('/home/dev/repo-wt')
+    })
+
+    it('gives Zed a code reference line and copies the path without it', async () => {
+      render(<MarkdownContent text="Entry [main.ts](</home/dev/repo wt/src/main.ts#L42>)" sessionId="chat-7" />)
+
+      await pick('main.ts', 'Open in Zed')
+      await pick('main.ts', 'Copy path')
+
+      expect(openInZed).toHaveBeenCalledExactlyOnceWith({ ...remote, path: '/home/dev/repo wt/src/main.ts', line: 42, column: undefined })
+      expect(writeClipboard).toHaveBeenCalledExactlyOnceWith('/home/dev/repo wt/src/main.ts')
+    })
+
+    it('leaves relative links to the native menu and keeps left click', async () => {
+      render(<MarkdownContent text="[/home/dev/repo-wt](/home/dev/repo-wt) and [notes](docs/notes.md)" sessionId="chat-7" />)
+
+      fireEvent.contextMenu(screen.getByRole('link', { name: 'notes' }))
+      expect(screen.queryByRole('menu')).toBeNull()
+      fireEvent.click(screen.getByRole('link', { name: '/home/dev/repo-wt' }))
+
+      await waitFor(() => expect(openLinked).toHaveBeenCalledExactlyOnceWith('chat-7', '/home/dev/repo-wt'))
+      expect(openInZed).not.toHaveBeenCalled()
+    })
+  })
+
+  it('shows an Open in Zed failure from a path link in the app error surface', async () => {
+    activateProfile(DEFAULT_SERVER_URL)
+    openInZed.mockRejectedValue(new Error('Zed CLI not found. Install Zed and run "Install CLI" from its Zed menu.'))
+    render(<MarkdownContent text="[/tmp/wt](/tmp/wt)" sessionId="chat-7" />)
+
+    fireEvent.contextMenu(screen.getByRole('link', { name: '/tmp/wt' }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Open in Zed' }))
+
+    await waitFor(() => expect(useAppStore.getState().error).toBe('Zed CLI not found. Install Zed and run "Install CLI" from its Zed menu.'))
   })
 
   it('keeps registered artifacts and web links ahead of local path handling', () => {

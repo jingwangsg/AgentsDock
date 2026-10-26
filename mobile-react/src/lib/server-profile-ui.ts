@@ -1,3 +1,4 @@
+import type { Health } from '../types'
 import { normalizeServerURL } from './format'
 import { defaultProfileName, hubProxyRemoteId, isLoopbackServerURL } from './server-profiles'
 
@@ -137,8 +138,32 @@ export function connectionStateLabel(state: ServerProfileConnectionState): strin
   return 'Cached'
 }
 
+const AUTHENTICATION_ERROR = /\b(?:401|403|unauthori[sz]ed|forbidden|authentication|access token|bad token|invalid token)\b/i
+
+/**
+ * Store selector: the notice to show in place of an "Update AgentsServer" message while the active
+ * server has no health report (before its first check answers, or after it stops answering). A missing
+ * report says nothing about the server's version. Null once a report exists, and for a server the app
+ * refused as too old ("Server upgrade required", raised by the store's health checks): that one does
+ * need an update.
+ */
+export function selectConnectionNotice(state: {
+  health: Health | null
+  activeProfileId: string | null
+  profiles: readonly Pick<ServerProfileListItem, 'id' | 'connectionState' | 'lastConnectionError'>[]
+}): string | null {
+  const profile = state.profiles.find(candidate => candidate.id === state.activeProfileId)
+  const error = profile?.lastConnectionError ?? ''
+  if (state.health || error.startsWith('Server upgrade required')) return null
+  // The server list's wording after a failed check; a server without one has not answered yet.
+  const label = profile?.connectionState !== 'offline' && profile?.connectionState !== 'retrying'
+    ? connectionStateLabel('connecting')
+    : AUTHENTICATION_ERROR.test(error) ? 'Authentication required' : connectionStateLabel(profile.connectionState)
+  return `${label}. Available once this AgentsServer is connected.`
+}
+
 export function profileConnectionLabel(profile: Pick<ServerProfileListItem, 'connectionState' | 'lastConnectionError'>): string {
-  if (profile.lastConnectionError && /\b(?:401|403|unauthori[sz]ed|forbidden|authentication|access token|bad token|invalid token)\b/i.test(profile.lastConnectionError)) {
+  if (profile.lastConnectionError && AUTHENTICATION_ERROR.test(profile.lastConnectionError)) {
     return 'Authentication required'
   }
   const label = connectionStateLabel(profile.connectionState)

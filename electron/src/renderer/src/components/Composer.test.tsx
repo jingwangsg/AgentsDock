@@ -16,6 +16,10 @@ import { ClaudeRuntimeProvider } from './ClaudeRuntimeContext'
 import { CodexRuntimeProvider } from './CodexRuntimeContext'
 import { CodexStatusButton } from './CodexControls'
 
+// The flag is a module constant; this getter lets one test turn it off, as a build without VITE_AGENTSDOCK_TEAM_NETWORK_UI=1 does.
+const teamNetworkUi = vi.hoisted(() => ({ enabled: true }))
+vi.mock('../lib/team-network-ui', () => ({ get TEAM_NETWORK_UI_ENABLED() { return teamNetworkUi.enabled } }))
+
 const secureConnectionId = '09d7bb2e-3b47-4be7-89fc-2cecd90f4434'
 const secureRouteId = '22e7bb2e-3b47-4be7-89fc-2cecd90f4434'
 
@@ -6118,6 +6122,32 @@ describe('Composer', () => {
     const team = screen.getByRole('listbox', { name: 'Team Network destinations' })
     expect(within(team).getByText('Server update required')).toBeInTheDocument()
     expect(within(team).getByText('Structured @@ Team Network hints are unavailable on this AgentsServer.')).toBeInTheDocument()
+  })
+
+  it('leaves @@ as plain text in a build with Team Network hidden, even on a server that supports it', async () => {
+    teamNetworkUi.enabled = false
+    try {
+      const send = vi.fn().mockResolvedValue({ session: { id: 'chat-1', title: 'Chat', backend: 'codex' }, queued: false })
+      Object.defineProperty(window, 'agentsDock', {
+        configurable: true,
+        value: { preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) }, turns: { send } } as unknown as AgentsDockAPI
+      })
+      useAppStore.setState({ health: teamMessagesHealth() })
+      const user = userEvent.setup()
+      render(<Composer />)
+      const editor = screen.getByPlaceholderText('Message')
+
+      await user.type(editor, '@@DPark')
+      await user.click(editor)
+      expect(editor).toHaveValue('@@DPark')
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+      expect(screen.queryByText('Server update required')).not.toBeInTheDocument()
+
+      await user.keyboard('{Enter}')
+      await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'chat-1', prompt: '@@DPark' })))
+    } finally {
+      teamNetworkUi.enabled = true
+    }
   })
 
   it('canonicalizes restored local @ direct and @@ route references to inline @ route hints', async () => {

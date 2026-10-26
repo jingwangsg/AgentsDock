@@ -1733,7 +1733,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     const nextCommandTrigger = commandMatch?.trigger ?? (waitForProviderCommands ? rawCommandTrigger : null)
     const binding = providerCommandBindingRef.current
     if (binding && !draftUsesProviderCommand(nextText, binding)) providerCommandBindingRef.current = null
-    const nextTeamMention = nextCommandTrigger
+    // With Team Network hidden in this build, teamMessagesAvailable() is false too, which would open the
+    // list as "Server update required"; @@ stays plain text, as the build's other Team Network entry points are hidden.
+    const nextTeamMention = nextCommandTrigger || !TEAM_NETWORK_UI_ENABLED
       ? null
       : teamMentionTrigger(nextText, caret, nextReferences.chatReferences, nextReferences.teamReferences)
     const nextMention = nextCommandTrigger || nextTeamMention
@@ -2124,7 +2126,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
               && ['idle', 'loading', 'error'].includes(activeProviderCommandState.status)
             )
             const nextCommandTrigger = commandMatch?.trigger ?? (waitForProviderCommands ? rawCommandTrigger : null)
-            const nextTeamMention = nextCommandTrigger
+            const nextTeamMention = nextCommandTrigger || !TEAM_NETWORK_UI_ENABLED
               ? null
               : teamMentionTrigger(draftRef.current, caret, referencesRef.current, teamReferencesRef.current)
             const nextMention = nextCommandTrigger || nextTeamMention

@@ -126,6 +126,11 @@ test('Cursor admission fails closed unless hardened capability v2 is advertised'
   assert.equal(runtimeSelectionError(cursorHealth(2), cursorCatalog, 'cursor', 'auto'), null)
 })
 
+test('Cursor waits for the connection, not a server update, while the server has not answered', () => {
+  assert.equal(runtimeSelectionError(null, null, 'cursor'), 'Cursor status loads once this AgentsServer is connected.')
+  assert.match(runtimeSelectionError({ ok: true, capabilities: {} }, null, 'cursor') ?? '', /newer AgentsServer/)
+})
+
 test('a new chat may start on Cursor only while the host has a ready Cursor CLI', () => {
   const missingCursor: RuntimeCatalog = {
     ...cursorCatalog,

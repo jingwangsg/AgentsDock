@@ -42,6 +42,7 @@ export function readyChatBackends(health: Health | null | undefined, catalog: Ru
 
 export function cursorBackendUnavailableReason(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): string | null {
   if (cursorBackendAvailable(health, catalog)) return null
+  if (!health) return 'Cursor status loads once this AgentsServer is connected.'
   if (!cursorBackendSupported(health)) return 'Cursor requires the hardened Cursor backend in a newer AgentsServer. Update the server, then reconnect.'
   const diagnostic = runtimeDiagnosticFor(health, catalog, 'cursor')
   const detail = [diagnostic?.message?.trim(), diagnostic?.action?.trim()].filter(Boolean).join(' ')
