@@ -314,10 +314,10 @@ class RemoteServerTests(unittest.TestCase):
         async def main() -> None:
             manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
             manager.servers["abcdef123456"] = make_server()
-            deploys: list[tuple[str | None, bool]] = []
+            deploys: list[str | None] = []
             live_tunnel = mock.Mock(server=manager.servers["abcdef123456"])
             manager.tunnels["abcdef123456"] = live_tunnel
-            with mock.patch.object(manager, "start_deploy", side_effect=lambda request, *, redeploy_id, keep_port: deploys.append((redeploy_id, keep_port)) or rs.DeployJob(job_id="job")):
+            with mock.patch.object(manager, "start_deploy", side_effect=lambda request, *, redeploy_id: deploys.append(redeploy_id) or rs.DeployJob(job_id="job")):
                 renamed, job = manager.update("abcdef123456", rs.RemoteServerUpdate(name=" lab "))
                 assert (renamed.name, job, deploys) == ("lab", None, [])
                 # A rename keeps the live forward instead of restarting it.
@@ -325,8 +325,7 @@ class RemoteServerTests(unittest.TestCase):
 
                 with mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/lustre/me"}):
                     moved, job = manager.update("abcdef123456", rs.RemoteServerUpdate(ssh_host="oci@new_cluster"))
-                # The old port may belong to the previous install's server; the new install picks its own.
-                assert job is not None and deploys == [("abcdef123456", False)]
+                assert job is not None and deploys == ["abcdef123456"]
                 with mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/lustre/me"}), self.assertRaises(HTTPException) as odd:
                     manager.update("abcdef123456", rs.RemoteServerUpdate(ssh_host="oci@a:b"))
                 assert odd.exception.status_code == 422
@@ -1932,10 +1931,44 @@ if sys.argv[-1] == "k8s-cluster":
         assert bootstrap == [pool_dir, "7850", "/mnt/a/u", "restart"], bootstrap
         assert rs.load_registry(manager.path)[0].install_dir == pool_dir
 
+    def test_a_redeploy_after_a_failed_move_takes_the_port_of_the_install_it_finds(self) -> None:
+        # Until a move's deploy finishes, the entry keeps the previous install's port. Given that port, the bootstrap
+        # stops whatever serves it (the previous install's server, when only the directory moved) and writes it into
+        # the env of the install it finds, which then starts a second server on that install's state.
+        self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
+        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/oci/u"}))
+        new_dir = "/mnt/oci/u/.agentsdock-server-new"
+        for index, (move, installs, bootstrap_head) in enumerate((
+            # To another cluster, whose directory in AGENTSDOCK_OCI_HOME holds an install on 7861.
+            (rs.RemoteServerUpdate(ssh_host="oci@new"), {new_dir: 7861}, [new_dir, "7861"]),
+            # To another directory on the same host, which holds none: a free port, not the previous install's 7870.
+            (rs.RemoteServerUpdate(install_dir="/mnt/oci/u/other-install"), {}, ["/mnt/oci/u/other-install", "7850"]),
+        )):
+            with self.subTest(move=move):
+                manager = rs.RemoteServerManager(self.tmp_path / f"state-{index}", source_dir=self.tmp_path, manage_tunnels=False)
+                manager.servers["abcdef123456"] = make_server(ssh_host="oci@old", install_dir="/mnt/oci/u/.agentsdock-server-old", remote_port=7870)
+
+                async def main(start: Callable[[], rs.DeployJob]) -> rs.DeployJob:
+                    job = start()
+                    await job.task
+                    await manager.stop()
+                    return job
+
+                self.fake_host(existing_port=None, bootstrap_failure=["setup failed"], installs=installs)
+                assert asyncio.run(main(lambda: manager.update("abcdef123456", move)[1])).error, "the move's deploy should fail"
+                assert manager.servers["abcdef123456"].remote_port == 7870
+
+                calls = self.fake_host(existing_port=None, installs=installs)
+                job = asyncio.run(main(lambda: manager.start_deploy(None, redeploy_id="abcdef123456")))
+                assert job.error is None, job.log
+                bootstrap = json.loads(calls.read_text().splitlines()[-1])["tail"]
+                assert bootstrap[:2] == bootstrap_head, bootstrap
+                assert rs.load_registry(manager.path)[0].remote_port == int(bootstrap_head[1])
+
     def test_a_redeploy_keeps_the_directory_a_deploy_recorded(self) -> None:
         # An install in the shell's ~ (/h on the scripted host), recorded before AGENTSDOCK_OCI_HOME was set: a Redeploy
         # keeps its directory and port, so its chats are not left behind.
-        calls = self.fake_host(existing_port=7860)
+        calls = self.fake_host(existing_port=7870)
         self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
         self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/oci/u"}))
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
@@ -2087,7 +2120,7 @@ time.sleep(30)
 
         hooks.hub_restart.side_effect = restart
 
-        async def fake_deploy(job, request, redeploy_id, keep_port=True):
+        async def fake_deploy(job, request, redeploy_id):
             order.append(("redeploy", redeploy_id))
             job.progress("upload", "Uploading the server…")
             if redeploy_id == "deaddeaddead":

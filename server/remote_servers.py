@@ -1858,7 +1858,7 @@ class RemoteServerManager:
         moved = "ssh_host" in changes or "install_dir" in changes
         # load-bearing order: start_deploy raises (409 busy, 503 no ssh) before the registry
         # changes, and its task reads the entry only after this synchronous method returns.
-        job = self.start_deploy(None, redeploy_id=remote_id, keep_port=False) if moved else None
+        job = self.start_deploy(None, redeploy_id=remote_id) if moved else None
         self.servers[remote_id] = server
         self._save()
         if "name" in changes and self.ssh_aliases and all(other.name != previous_name for other in self.servers.values()):
@@ -1890,8 +1890,7 @@ class RemoteServerManager:
 
     # -- deploy ---------------------------------------------------------------
 
-    def start_deploy(self, request: RemoteDeployRequest | RemoteAttachRequest | None, *, redeploy_id: str | None = None,
-                     keep_port: bool = True) -> DeployJob:
+    def start_deploy(self, request: RemoteDeployRequest | RemoteAttachRequest | None, *, redeploy_id: str | None = None) -> DeployJob:
         if any(job.task is not None and not job.task.done() for job in self.jobs.values()):
             raise HTTPException(status_code=409, detail="Another remote deployment is already running.")
         if redeploy_id is not None and redeploy_id not in self.servers:
@@ -1912,7 +1911,7 @@ class RemoteServerManager:
         del_ids = [job_id for job_id, old in list(self.jobs.items()) if old.done][:-20]
         for job_id in del_ids:
             self.jobs.pop(job_id, None)
-        job.task = asyncio.create_task(self._deploy(job, request, redeploy_id, keep_port), name=f"remote-deploy:{job.job_id}")
+        job.task = asyncio.create_task(self._deploy(job, request, redeploy_id), name=f"remote-deploy:{job.job_id}")
         return job
 
     def job(self, job_id: str) -> DeployJob | None:
@@ -2029,20 +2028,21 @@ class RemoteServerManager:
         job.task.cancel()
         return True
 
-    async def _deploy(self, job: DeployJob, request: RemoteDeployRequest | RemoteAttachRequest | None, redeploy_id: str | None,
-                      keep_port: bool = True) -> None:
+    async def _deploy(self, job: DeployJob, request: RemoteDeployRequest | RemoteAttachRequest | None, redeploy_id: str | None) -> None:
         ssh_host = ""  # the except reads it; the lookups below can raise first, and "" names no Sky host
         try:
             existing = self.servers[redeploy_id] if redeploy_id else None
             attach = isinstance(request, RemoteAttachRequest)
             if existing is not None:
-                # A moved server takes its new install's own port or a free one: the bootstrap stops
-                # whatever serves the port it is given, which may be the previous install's server.
+                # A registered server takes the port of the install the probe finds in its directory, or a free one,
+                # never the entry's: until a move's deploy finishes, that is the previous install's port. The bootstrap
+                # stops whatever serves the port it is given (the previous install's server, when only the directory
+                # moved) and writes it into the found install's env (a second server on that install's state).
                 # A deploy records the expanded directory it installed to: only a move whose deploy did not finish,
                 # or an entry added through POST ADMIN_PATH, still names the default. A Redeploy of such an entry
-                # deploys as the move would, without the previous host's port.
+                # deploys as the move would.
                 ssh_host, install_dir = existing.ssh_host, existing.install_dir
-                requested_port = existing.remote_port if keep_port and install_dir != DEFAULT_INSTALL_DIR else 0
+                requested_port = 0
             else:
                 assert request is not None
                 ssh_host, install_dir = request.ssh_host, request.install_dir
@@ -2093,7 +2093,7 @@ class RemoteServerManager:
                 existing = next((server for server in self.servers.values()
                                  if server.ssh_host == ssh_host and server.install_dir == install_dir), None)
                 if existing is not None:
-                    requested_port = existing.remote_port
+                    requested_port = 0  # its install's port, as for a Redeploy (see above)
             # The probe takes the install's parent as HOME only once it holds a Claude or Codex
             # login. A fresh cluster home has none yet; the container's own ~ (often /root) would
             # then receive the CLIs and logins, and the next container drops them.
