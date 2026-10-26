@@ -54,14 +54,14 @@ export function BrowserView({ surface }: { surface: Surface }) {
     const directHosts = serverHost && !/^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/i.test(serverHost) ? [serverHost] : []
     tunnel.protocol = tunnel.protocol === 'https:' ? 'wss:' : 'ws:'
     const token = client.authHeaders()['X-ZenithDock-Token'] ?? ''
-    routeBrowserThroughServer(surface.id, tunnel.toString(), token, directHosts, allHosts)
+    routeBrowserThroughServer(webViewProfile, tunnel.toString(), token, directHosts, allHosts)
       .then(routed => { if (current) setRouting(routed ? 'routed' : 'unavailable') })
       .catch(() => { if (current) setRouting('unavailable') })
     return () => {
       current = false
-      void releaseBrowserRouting(surface.id)
+      void releaseBrowserRouting(webViewProfile)
     }
-  }, [surface.id, allHosts])
+  }, [webViewProfile, allHosts])
   const navigated = (state: WebViewNavigation) => {
     setHistory({ canGoBack: state.canGoBack, canGoForward: state.canGoForward })
     if (!state.url || state.url === 'about:blank') return
@@ -116,13 +116,14 @@ export function BrowserView({ surface }: { surface: Surface }) {
           source={{ uri }}
           // Without profile support Android web views share one HTTP cache keyed by URL, so a tab would show, and
           // take the title of, the page another server returned for the same address, such as one localhost port
-          // on two servers.
+          // on two servers. No effect on iOS, where the profile's data store has its own cache.
           cacheEnabled={false}
           onNavigationStateChange={navigated}
           injectedJavaScript={REPORT_PAGE_TITLE}
           onMessage={titled}
           setSupportMultipleWindows={false}
-          allowsBackForwardNavigationGestures
+          // As on Android: an edge swipe does not walk the page history; Back and Forward are the buttons.
+          allowsBackForwardNavigationGestures={false}
           style={styles.web}
         />
       : <View style={styles.empty}>{uri ? null : <Text style={{ color: colors.muted, fontSize: 13 }}>Enter an address above to open a page.</Text>}</View>}

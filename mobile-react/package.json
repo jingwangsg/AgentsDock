@@ -100,6 +100,7 @@
     "test:downloads": "node scripts/run-file-transfer-tests.mjs",
     "test:terminal": "node --test tests/terminal-layout.test.mjs && node scripts/run-history-tests.mjs src/terminal/terminalProtocol.test.ts && node scripts/run-history-tests.mjs src/lib/terminalSettings.test.ts --native-mocks && node scripts/run-history-tests.mjs src/lib/surfaces.test.ts",
     "test:server-setup": "node scripts/run-history-tests.mjs src/lib/server-setup.test.ts",
+    "test:browser-loopback-ios": "cd modules/agentsdock-browser-loopback/ios && swiftc -swift-version 5 -parse-as-library LoopbackSocksProxy.swift WebViewProfileStore.swift Tests/LoopbackSocksProxyTests.swift -o \"${TMPDIR:-/tmp}/agentsdock-browser-loopback-tests\" && \"${TMPDIR:-/tmp}/agentsdock-browser-loopback-tests\"",
     "typecheck": "tsc --noEmit",
     "web": "expo start --web"
   },
