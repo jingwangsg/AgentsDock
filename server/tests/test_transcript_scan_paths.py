@@ -289,26 +289,72 @@ class SubagentFoldCacheTests(unittest.TestCase):
 
 
 class ScanTranscriptTests(unittest.IsolatedAsyncioTestCase):
+    SESSIONS = {
+        "long-chat": {"id": "long-chat", "latest_event_seq": agent_server.LONG_CHAT_MIN_EVENT_SEQ},
+        "short-chat": {"id": "short-chat", "latest_event_seq": 12},
+    }
+
     async def test_scans_stay_within_the_scan_pool(self) -> None:
-        running = 0
-        peak = 0
+        running = {"long-chat": 0, "short-chat": 0}
+        peak = dict(running)
         lock = threading.Lock()
 
-        def scan() -> str:
-            nonlocal running, peak
+        def scan(session_id: str) -> str:
             with lock:
-                running += 1
-                peak = max(peak, running)
+                running[session_id] += 1
+                peak[session_id] = max(peak[session_id], running[session_id])
             time.sleep(0.02)
             with lock:
-                running -= 1
-            return "done"
+                running[session_id] -= 1
+            return session_id
 
-        results = await asyncio.gather(*(agent_server.scan_transcript(scan) for _ in range(8)))
-        self.assertEqual(results, ["done"] * 8)
-        self.assertLessEqual(peak, agent_server.TRANSCRIPT_SCAN_WORKERS)
+        with patch.dict(agent_server.STORE.sessions, self.SESSIONS):
+            results = await asyncio.gather(*(
+                agent_server.scan_transcript(scan, session_id)
+                for session_id in ["long-chat", "short-chat"] * 8
+            ))
+        self.assertEqual(results, ["long-chat", "short-chat"] * 8)
+        self.assertLessEqual(max(peak.values()), agent_server.TRANSCRIPT_SCAN_WORKERS)
         if sys._is_gil_enabled():
-            self.assertEqual(peak, 1)
+            self.assertEqual(peak, {"long-chat": 1, "short-chat": 1})
+
+    async def test_short_chat_scan_does_not_queue_behind_a_long_chat_scan(self) -> None:
+        long_scan_started = threading.Event()
+        release_long_scan = threading.Event()
+
+        def long_scan(session_id: str) -> str:
+            long_scan_started.set()
+            release_long_scan.wait(10)
+            return session_id
+
+        with patch.dict(agent_server.STORE.sessions, self.SESSIONS):
+            long_task = asyncio.create_task(agent_server.scan_transcript(long_scan, "long-chat"))
+            try:
+                self.assertTrue(await asyncio.to_thread(long_scan_started.wait, 5))
+                short = await asyncio.wait_for(
+                    agent_server.scan_transcript(lambda session_id: session_id, "short-chat"),
+                    5,
+                )
+            finally:
+                release_long_scan.set()
+            self.assertEqual(short, "short-chat")
+            self.assertEqual(await long_task, "long-chat")
+
+    def test_no_other_chat_waits_for_a_held_timeline_index_lock(self) -> None:
+        held = agent_server.timeline_index_session_lock("long-chat")
+        with held:
+            self.assertIs(agent_server.timeline_index_session_lock("long-chat"), held)
+            # 256 chats: with the former 64 shared locks, about 98% of runs put
+            # one of them on the held lock.
+            for index in range(256):
+                other = agent_server.timeline_index_session_lock(f"short-chat-{index}")
+                self.assertTrue(other.acquire(blocking=False), f"short-chat-{index}")
+                other.release()
+
+    def test_unreferenced_timeline_index_locks_are_dropped(self) -> None:
+        with agent_server.timeline_index_session_lock("deleted-chat"):
+            self.assertIn("deleted-chat", agent_server.TIMELINE_INDEX_SESSION_LOCKS)
+        self.assertNotIn("deleted-chat", agent_server.TIMELINE_INDEX_SESSION_LOCKS)
 
 
 if __name__ == "__main__":

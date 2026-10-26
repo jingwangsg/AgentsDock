@@ -51,6 +51,56 @@ class TimelineIndexJobTests(unittest.TestCase):
         self.assertEqual(job["job_id"], "job-1")
         self.assertEqual(job["job_timeline_group_id"], "job:job-1")
 
+    def test_late_job_events_fold_split_turn_records_newest_first(self) -> None:
+        session_id = "chat-1"
+        path = agent_server.events_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        steer = {"native_steer": True, "provider_user_authored": True}
+        events = [
+            self.event(1, "job_created", job_id="job-1", job={"id": "job-1", "title": "Status check"}),
+            self.event(2, "turn_started", run_id="job-run", prompt="Check status"),
+            self.event(3, "assistant_text", run_id="job-run", text="Looking"),
+            # The steer splits the run into turn:job-run and turn:job-run:start-4.
+            self.event(4, "turn_steered", run_id="job-run", text="Also check disk", **steer),
+            # turn_finished clears the run's current turn, so job_ran (and the
+            # later job_finished) must look the run's turn record up.
+            self.event(5, "turn_finished", run_id="job-run", result_text="Disk fine"),
+            self.event(6, "job_ran", run_id="job-run", job_id="job-1"),
+        ]
+        later = [
+            self.event(7, "turn_started", run_id="user-run", prompt="What changed?"),
+            self.event(8, "turn_finished", run_id="user-run", result_text="Nothing yet."),
+            self.event(9, "job_finished", run_id="job-run", job_id="job-1"),
+        ]
+        path.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
+
+        revealed = agent_server.build_timeline_index(session_id)
+
+        # The first job event after the run ended folds the newest split.
+        self.assertEqual(
+            [(item["key"], item["start_seq"], item["end_seq"]) for item in revealed["landmarks"]],
+            [("job:job-1", 1, 1), ("turn:job-run", 2, 3), ("job:job-1:segment:4", 4, 6)],
+        )
+
+        with path.open("a", encoding="utf-8") as destination:
+            destination.write("".join(json.dumps(event) + "\n" for event in later))
+
+        appended = agent_server.build_timeline_index(session_id)
+        agent_server.TIMELINE_INDEX_CACHE.clear()
+        rebuilt = agent_server.build_timeline_index(session_id)
+        self.assertEqual(
+            {**appended, "generated_at": None},
+            {**rebuilt, "generated_at": None},
+        )
+
+        # The next one skips the split already folded and takes the original,
+        # whether the index is extended from the cache or built from scratch.
+        for finished in (appended, rebuilt):
+            self.assertEqual(
+                [(item["key"], item["start_seq"], item["end_seq"]) for item in finished["landmarks"]],
+                [("job:job-1", 1, 1), ("job:job-1:segment:4", 2, 9), ("turn:user-run", 7, 8)],
+            )
+
     def test_intervening_chat_splits_same_job_without_moving_late_completion(self) -> None:
         session_id = "chat-1"
         path = agent_server.events_path(session_id)

@@ -5730,15 +5730,20 @@ TIMELINE_PIN_LOCK_STRIPES = tuple(asyncio.Lock() for _ in range(64))
 TIMELINE_INDEX_CACHE_MAX = int(agentsdock_setting("TIMELINE_INDEX_CACHE_MAX", "24"))
 TIMELINE_INDEX_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 TIMELINE_INDEX_PROJECTION_VERSION = 9
-# Retained as a compatibility/testing surface; synchronization uses the fixed
-# stripe pool below so deleted-session churn cannot leak one lock per chat.
+# Retained as a compatibility/testing surface; synchronization uses
+# TIMELINE_INDEX_SESSION_LOCKS below, whose weak values drop a chat's lock once
+# no caller references it, so deleted chats leave no entry.
 TIMELINE_INDEX_LOCKS: dict[str, threading.Lock] = {}
 # Cache membership and the per-session lock registry are shared across every
 # request worker.  Protect them independently from the per-session scan locks:
 # an LRU eviction for chat A must never remove or recreate chat B's lock while
 # chat B is building/reading its index.
 TIMELINE_INDEX_CACHE_LOCK = threading.RLock()
-TIMELINE_INDEX_LOCK_STRIPES = tuple(threading.Lock() for _ in range(64))
+# One lock per chat. A lock lives while any caller references it, so
+# overlapping callers for one chat share it, and no chat waits for another
+# chat's index build (with shared stripes a short chat waited for a long chat's
+# full rebuild).
+TIMELINE_INDEX_SESSION_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
 FORK_INTERNAL_RUN_CACHE_MAX = int(agentsdock_setting("FORK_INTERNAL_RUN_CACHE_MAX", "128"))
 FORK_INTERNAL_RUN_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 FORK_INTERNAL_RUN_LOCKS: dict[str, threading.Lock] = {}
@@ -6180,17 +6185,29 @@ def event_delivery_lock(session_id: str) -> asyncio.Lock:
 
 
 # Transcript scans are CPU-bound Python. Under the GIL a second concurrent scan
-# adds no throughput and only adds event-loop lag, so they get one worker; on a
-# free-threaded build they run in parallel on a few cores. Their own pool also
-# keeps a burst of scans from crowding out the default executor's other work.
+# adds no throughput and only adds event-loop lag, so each pool below gets one
+# worker; on a free-threaded build they run in parallel on a few cores. Their
+# own pools also keep a burst of scans from crowding out the default executor's
+# other work.
 TRANSCRIPT_SCAN_WORKERS = 1 if getattr(sys, "_is_gil_enabled", lambda: True)() else min(4, os.cpu_count() or 1)
 TRANSCRIPT_SCAN_EXECUTOR = ThreadPoolExecutor(TRANSCRIPT_SCAN_WORKERS, thread_name_prefix="transcript-scan")
+# Chats with at least LONG_CHAT_MIN_EVENT_SEQ events scan on a pool of their
+# own: a long chat's first timeline-index build reads its whole transcript
+# (1.5 s for 39k events on a Mac, about 30x that on a throttled host), and a
+# short chat's page must not queue behind it. A 2000-event chat builds in about
+# 0.04 s on a Mac. Under the GIL the two pools run at most two scans at once;
+# measured event-loop lag while both were busy was no higher than with one pool.
+LONG_CHAT_MIN_EVENT_SEQ = 2000
+LONG_CHAT_SCAN_EXECUTOR = ThreadPoolExecutor(TRANSCRIPT_SCAN_WORKERS, thread_name_prefix="long-chat-scan")
 
 
-async def scan_transcript(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
-    # asyncio.to_thread's contract (context propagated), on the scan pool.
-    call = functools.partial(contextvars.copy_context().run, fn, *args, **kwargs)
-    return await asyncio.get_running_loop().run_in_executor(TRANSCRIPT_SCAN_EXECUTOR, call)
+async def scan_transcript(fn: Callable[..., Any], session_id: str, /, *args: Any, **kwargs: Any) -> Any:
+    # asyncio.to_thread's contract (context propagated), on the chat's scan pool.
+    session = STORE.sessions.get(session_id) or {}
+    long_chat = int(session.get("latest_event_seq") or 0) >= LONG_CHAT_MIN_EVENT_SEQ
+    executor = LONG_CHAT_SCAN_EXECUTOR if long_chat else TRANSCRIPT_SCAN_EXECUTOR
+    call = functools.partial(contextvars.copy_context().run, fn, session_id, *args, **kwargs)
+    return await asyncio.get_running_loop().run_in_executor(executor, call)
 
 
 def artifact_publication_lock(
@@ -34399,9 +34416,12 @@ def timeline_index_is_error(event: dict[str, Any]) -> bool:
 
 
 def timeline_index_session_lock(session_id: str) -> threading.Lock:
-    return TIMELINE_INDEX_LOCK_STRIPES[
-        hash(session_id) % len(TIMELINE_INDEX_LOCK_STRIPES)
-    ]
+    with TIMELINE_INDEX_CACHE_LOCK:
+        lock = TIMELINE_INDEX_SESSION_LOCKS.get(session_id)
+        if lock is None:
+            lock = threading.Lock()
+            TIMELINE_INDEX_SESSION_LOCKS[session_id] = lock
+        return lock
 
 
 def timeline_index_cached_entry(
@@ -34723,6 +34743,16 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
     records: list[dict[str, Any]] = cached["records"] if can_append else []
     by_key: dict[str, dict[str, Any]] = (
         cached.get("by_key") or {record["key"]: record for record in records}
+        if can_append
+        else {}
+    )
+    # Every "turn:{run}" / "turn:{run}:start-{seq}" record key ever created,
+    # oldest first, bucketed by the text between "turn:" and the first
+    # ":start-" (the run id itself unless the id contains ":start-"). Keys of
+    # records removed later (merged into a job record) stay listed; lookups
+    # skip keys missing from by_key.
+    turn_keys_by_run: dict[str, list[str]] = (
+        cached.get("turn_keys_by_run") or {}
         if can_append
         else {}
     )
@@ -35079,6 +35109,10 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
             }
             by_key[key] = record
             records.append(record)
+            if key.startswith("turn:"):
+                turn_keys_by_run.setdefault(
+                    key.removeprefix("turn:").split(":start-", 1)[0], []
+                ).append(key)
             if advance_timeline:
                 latest_timeline_landmark_key = key
         record["start_seq"] = min(int(record["start_seq"]), seq)
@@ -35557,12 +35591,23 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                 prior_key = current_turn_by_run.pop(run_id, None) if run_id else None
                 if not prior_key and run_id:
                     base_turn_key = f"turn:{run_id}"
+                    # Newest turn record of this run, the same key a
+                    # newest-first scan of `records` finds: ensure_record adds
+                    # the key to its bucket when it appends the record, and a
+                    # record leaves `records` only together with `by_key`. A run
+                    # id containing ":start-" shares a bucket with a shorter id,
+                    # so the lookup splits the same way and keeps the prefix check.
                     prior_key = next(
                         (
-                            str(candidate.get("key") or "")
-                            for candidate in reversed(records)
-                            if str(candidate.get("key") or "") == base_turn_key
-                            or str(candidate.get("key") or "").startswith(f"{base_turn_key}:start-")
+                            turn_key
+                            for turn_key in reversed(
+                                turn_keys_by_run.get(run_id.split(":start-", 1)[0], [])
+                            )
+                            if turn_key in by_key
+                            and (
+                                turn_key == base_turn_key
+                                or turn_key.startswith(f"{base_turn_key}:start-")
+                            )
                         ),
                         None,
                     )
@@ -35976,6 +36021,7 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
         "payload": payload,
         "records": records,
         "by_key": by_key,
+        "turn_keys_by_run": turn_keys_by_run,
         "landmarks_by_key": landmarks_by_key,
         "landmark_order": landmark_order,
         "active_turn_key": active_turn_key,
@@ -90136,13 +90182,13 @@ async def export_session(session_id: str, format: Literal["markdown", "html", "j
         await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id)
     internal_run_ids = fork_internal_run_ids(session_id)
 
-    def client_events() -> list[dict[str, Any]]:
+    def client_events(session_id: str) -> list[dict[str, Any]]:
         events = (client_safe_event(event) for event in iter_session_events(session_id) if is_client_visible_event(event))
         if format == "jsonl":
             return list(events)
         return [event for event in events if is_visible_timeline_event(event, fork_internal_run_ids=internal_run_ids)]
 
-    events = await scan_transcript(client_events)
+    events = await scan_transcript(client_events, session_id)
     if format == "jsonl":
         body = "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events)
         return Response(body, media_type="application/x-ndjson", headers=headers)
