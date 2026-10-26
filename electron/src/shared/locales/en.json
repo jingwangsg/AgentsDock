@@ -169,6 +169,7 @@
   "serverVisibility.hidden": "Hidden",
   "openInZed.headerTitle": "Open {path} in Zed",
   "openInZed.headerTitleRemote": "Open {path} on {host} in Zed",
+  "pathLink.copyPath": "Copy path",
   "opencode.crossChatUnavailable": "OpenCode cross-chat routes are not supported in this beta. Remove the chat reference before sending.",
   "timeline.event.providerSessionReset": "Provider context reset",
   "opencode.unavailable": "OpenCode is unavailable.",

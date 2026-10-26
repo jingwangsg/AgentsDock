@@ -3,6 +3,7 @@ import { t } from '@shared/i18n'
 import { codexFollowupPrompt, rewriteCodexDirectives } from '../lib/codex-directives'
 import { useLocale, type Locale } from '../lib/i18n'
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import * as ContextMenu from '@radix-ui/react-context-menu'
 import * as Dialog from '@radix-ui/react-dialog'
 import ReactMarkdown, { defaultUrlTransform, type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -16,6 +17,7 @@ import { isEditorTextFile } from '@shared/file-content-type'
 import { internalWorkspaceLinkURL } from '@shared/workspace-link-url'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
+import { openInZedInput } from '@shared/ssh-host-alias'
 import type { AgentFile, ChatReference, TeamReference } from '@shared/types'
 import { chatReferenceDisplayText, liveChatReferenceTitle, parseStoredChatReferences } from '../lib/chat-references'
 import { saveAgentFile } from '../lib/file-actions'
@@ -176,14 +178,21 @@ export const MarkdownContent = memo(function MarkdownContent({
     }
     if (sessionId) void window.agentsDock.files.openLinked(sessionId, href)
   }, [files, sessionId])
-  const link = useCallback((href: string | undefined, children: ReactNode) => isWorkspaceLink(href)
-    ? <a
+  const link = useCallback((href: string | undefined, children: ReactNode) => {
+    if (!isWorkspaceLink(href)) return <a href={href} onClick={event => onLink(event, href)}>{children}</a>
+    const target = decodeLinkTarget(href!)
+    const anchor = <a
       href={internalWorkspaceLinkURL(href!)}
       className="workspace-reference-link"
-      title={`Open ${decodeLinkTarget(href!)}`}
+      title={`Open ${target}`}
       onClick={event => onLink(event, href)}
     >{children}</a>
-    : <a href={href} onClick={event => onLink(event, href)}>{children}</a>, [onLink])
+    // Zed needs a full path on the chat's server, so only an absolute link, such as a worktree the agent
+    // created, gets this menu; a shared-chat guest has no native access. The others keep the native Copy Path.
+    return sessionId && !window.agentsDock.sharedChat && target.startsWith('/')
+      ? <PathLinkMenu sessionId={sessionId} target={target}>{anchor}</PathLinkMenu>
+      : anchor
+  }, [onLink, sessionId])
   // Locale travels through context so updating labels does not replace these
   // React component types and discard selection, scroll or code-block state.
   const components = useMemo<Components>(() => ({
@@ -316,6 +325,31 @@ export const MarkdownContent = memo(function MarkdownContent({
     </div>
   )
 }, markdownContentPropsEqual)
+
+/** Right-click menu of an absolute path link: open it in Zed on the chat's server, or copy it. */
+function PathLinkMenu({ sessionId, target, children }: { sessionId: string; target: string; children: ReactNode }) {
+  const uiLocale = useContext(MarkdownLocaleContext)
+  // A code reference's `#L42` or `:42` places Zed's cursor; the copied path leaves it out.
+  const reference = parseWorkspaceCodeReference(target)
+  const path = reference?.path ?? target
+  const showError = (error: unknown) => useAppStore.getState().setError(error instanceof Error ? error.message : String(error))
+  const openInZed = () => {
+    const state = useAppStore.getState()
+    // openInZedInput reads only the chat id and a directory; giving the link's path as the directory
+    // builds the header button's request (ssh host, alias, tunnel) for that path.
+    const request = openInZedInput({ id: sessionId, cwd: path }, state.profiles.find(profile => profile.id === state.activeProfileId), state.profileGeneration)
+    if (request) window.agentsDock.native.openInZed({ ...request, line: reference?.line, column: reference?.column }).catch(showError)
+  }
+  return <ContextMenu.Root>
+    <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
+    <ContextMenu.Portal>
+      <ContextMenu.Content className="menu-content">
+        <ContextMenu.Item className="menu-item" onSelect={openInZed}><Code size={14} />{t('openInZed.action', undefined, uiLocale)}</ContextMenu.Item>
+        <ContextMenu.Item className="menu-item" onSelect={() => window.agentsDock.native.writeClipboard(path).catch(showError)}><Copy size={14} />{t('pathLink.copyPath', undefined, uiLocale)}</ContextMenu.Item>
+      </ContextMenu.Content>
+    </ContextMenu.Portal>
+  </ContextMenu.Root>
+}
 
 function canonicalSecurePeerInvite(value: string): boolean {
   if (!value.startsWith('agentsdock://')) return false
