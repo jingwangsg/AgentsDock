@@ -1,5 +1,75 @@
 # Public development log
 
+## 2026-10-26 — `@@` stays plain text in desktop builds with Team Network hidden; the Android app says a server is offline instead of asking to update it (desktop, Android)
+
+- Desktop: release builds hide the Team Network entry points (sidebar
+  button, pane, `/mail`), but typing `@@` in the composer still opened the
+  Team Network list, which said "Server update required — Structured @@
+  Team Network hints are unavailable on this AgentsServer." on every
+  server, because the build switch also turns off the capability check.
+  The job dialog's route-hint note likewise ended with "Update AgentsServer
+  to add scheduled @@ Team Network hints." In these builds `@@` is now
+  plain text with no list, and the job dialog does not mention Team
+  Network. Builds that show Team Network are unchanged.
+- Android: the app has no health report from a server right after launch
+  until the first check answers, and drops it after two failed checks.
+  These messages read a missing report as an old server:
+  - a Cursor chat's notice, "Cursor requires the hardened Cursor backend
+    in a newer AgentsServer. Update the server, then reconnect." (the same
+    reason appears in the chat's agent menu, chat details and the job
+    dialog);
+  - the working-directory picker, "Folder browsing needs a newer
+    AgentsServer.";
+  - the job dialog's route-hint note, "Update AgentsServer to add scheduled
+    @Chat route hints.", and its Save message for a job with stored @Chat
+    routes;
+  - the Agent jobs hint in chat details, "Update AgentsServer to set
+    Read-only or Blocked.";
+  - the warning under a drafted @Chat reference, "This server cannot
+    deliver one or more selected actions or target chats.", the same
+    warning in a queued message's editor, and the screen-reader hint of a
+    queued delivery's remove button.
+
+  Without a report they now say "Offline. Available once this AgentsServer
+  is connected." The first word follows the server list: Retrying,
+  Authentication required after a refused token, or Connecting before the
+  first check. Cursor says "Cursor status loads once this AgentsServer is
+  connected." A server that answers without the capability, and a server
+  the app refuses as too old ("Server upgrade required"), still get the
+  update message.
+- Tests that fail on the previous code: desktop `@@` (no list, Enter sends
+  the text) and the job dialog with the Team Network switch off; Android
+  notice text per connection state, the Cursor reason, the rendered
+  picker and Cursor notice, and a source check of the other messages. The
+  existing update-message tests still pass.
+- Real-app check against an isolated, authenticated AgentsServer that
+  advertises Team Network: the desktop app built from this source with the
+  release build configuration (unpackaged, isolated profile) opened the
+  chat list for `@`, showed no list for `@@` and `@@DPark`, and its job
+  dialog note had no Team Network sentence; main built the same way showed
+  "Server update required" for `@@` and the update sentence in the job
+  dialog. On the Android emulator (Pixel Fold image), with the server
+  reached as the Local profile and then stopped, the official build 77
+  showed the update messages for Cursor, the picker, the job note and
+  Agent jobs; build 77 with this source's JavaScript showed the notices
+  above, and the drafted @Chat reference warning read "Offline…". After
+  the server started again, the open chat details showed the Agent jobs
+  hint ("Full access…") and Cursor's actual reason ("Cursor is not
+  installed…"), the reference warning went away, and the picker, when
+  opened, listed the chat's folders.
+- Not verified in the app: opening the Android job dialog or chat details
+  while the server was already offline (on this screen width chat details
+  open only while connected, so both were opened while connected and the
+  server was then stopped); the job dialog's Save message, the queued
+  editor warning, the queued-delivery hint and the Retrying, Connecting
+  and Authentication required wording were checked in tests only; iOS
+  shares the code and was not run. Not changed: an open picker stays empty
+  after the server connects until it is reopened, as before; messages
+  about `@@` references that a build with Team Network shown already
+  created (queued items, scheduled jobs, drafts) still ask for an update in
+  builds where it is hidden. Availability: source only; no server update
+  needed.
+
 ## 2026-10-26 — Agents state each new git worktree's absolute path; absolute path links get Open in Zed and Copy path (server, desktop, Android)
 
 - The instructions AgentsDock gives Claude, Codex (also used for OpenCode)

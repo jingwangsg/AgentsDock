@@ -8,6 +8,10 @@ import { clearSessionHistorySearchCache } from '../lib/session-history-search'
 import { useAppStore } from '../store/app-store'
 import { AppSettingsDialog, DigestDialog, JobDialog, RenameChatDialog, RenameFolderDialog, SearchDialog, ServerOnboardingDialog, SessionDialog } from './Dialogs'
 
+// The flag is a module constant; this getter lets one test turn it off, as a build without VITE_AGENTSDOCK_TEAM_NETWORK_UI=1 does.
+const teamNetworkUi = vi.hoisted(() => ({ enabled: true }))
+vi.mock('../lib/team-network-ui', () => ({ get TEAM_NETWORK_UI_ENABLED() { return teamNetworkUi.enabled } }))
+
 afterEach(() => setLocale('en'))
 
 function durableHandoffCapability(overrides: Partial<CrossChatHandoffsCapability> = {}): CrossChatHandoffsCapability {
@@ -1160,6 +1164,21 @@ describe('JobDialog', () => {
     render(<JobDialog />)
     expect(screen.getAllByText('Available once this AgentsServer is connected.')).toHaveLength(2)
     expect(screen.queryByText(/Update AgentsServer to add/)).not.toBeInTheDocument()
+  })
+
+  it('does not mention @@ Team Network hints in a build with Team Network hidden', () => {
+    teamNetworkUi.enabled = false
+    try {
+      useAppStore.setState({ selectedSessionId: 'chat-1', sessions: [{ id: 'chat-1', title: 'Chat', backend: 'codex' }],
+        health: { ok: true, capabilities: {} }, runtimeCatalog: null, drafts: {}, error: null,
+        modals: { settings: false, newChat: false, resume: false, folder: false, digest: false, job: true, search: false, review: false, importChats: false }
+      })
+      render(<JobDialog />)
+      expect(screen.getByText(/Update AgentsServer to add scheduled @Chat route hints/)).toBeInTheDocument()
+      expect(screen.queryByText(/Team Network/)).not.toBeInTheDocument()
+    } finally {
+      teamNetworkUi.enabled = true
+    }
   })
 
   it.each(['chat', 'standalone'] as const)('keeps custom Codex job admission and labels in %s mode independent of the normal model lock', async contextMode => {

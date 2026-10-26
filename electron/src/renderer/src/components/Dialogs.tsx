@@ -4193,7 +4193,7 @@ function JobPromptEditor({
       {' '}
       {teamSupported
         ? t('teamNetwork.reference.scheduledHint')
-        : health && t('teamNetwork.reference.updateScheduled')}
+        : TEAM_NETWORK_UI_ENABLED && health && t('teamNetwork.reference.updateScheduled')}
     </small>
   </div>
 }

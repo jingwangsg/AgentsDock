@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { ArrowUp, ChevronRight, Folder, FolderOpen, RotateCcw } from 'lucide-react-native'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { fonts } from '../lib/typography'
+import { selectConnectionNotice } from '../lib/server-profile-ui'
 import { parentDirectory } from '../lib/working-directory-path'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
@@ -27,6 +28,7 @@ export function WorkingDirectoryPicker({ sessionId, chipVisible, open, onOpenCha
   const colors = usePalette()
   const cwd = useAppStore(state => state.sessions.find(value => value.id === sessionId)?.cwd?.trim() ?? '')
   const completionAvailable = useAppStore(state => state.health?.capabilities?.working_directory_completion?.available === true)
+  const connectionNotice = useAppStore(selectConnectionNotice)
   const defaultCwd = useAppStore(state => state.health?.default_cwd?.trim() || '')
   const updateSession = useAppStore(state => state.updateSession)
   const [pathDraft, setPathDraft] = useState('')
@@ -140,7 +142,7 @@ export function WorkingDirectoryPicker({ sessionId, chipVisible, open, onOpenCha
           <SheetCloseButton onPress={close} label="Close working directory" testID="working-directory-close" />
         </View>
         {!completionAvailable
-          ? <Text style={[styles.status, { color: colors.muted }]}>Folder browsing needs a newer AgentsServer.</Text>
+          ? <Text style={[styles.status, { color: colors.muted }]}>{connectionNotice ?? 'Folder browsing needs a newer AgentsServer.'}</Text>
           : <>
             <View style={styles.pathRow}>
               <IconButton icon={ArrowUp} disabled={loading || !canGoToParent} onPress={() => void load(parentPath)} label="Go to parent folder" testID="working-directory-parent" />
