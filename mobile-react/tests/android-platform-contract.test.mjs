@@ -106,9 +106,9 @@ test('file and folder text entry no longer depends on iOS-only Alert.prompt', ()
   assert.match(workspace, /useTextPrompt\(\)/)
 })
 
-test('Android PDFs render in the bundled pdf.js page and build metadata has platform-safe fallbacks', () => {
-  // Android's WebView has no PDF renderer; the downloaded file goes to PdfDocumentView instead.
-  assert.match(preview, /if \(kind === 'pdf' && Platform\.OS === 'android'\) \{\n\s*if \(localPreview\) return <PdfDocumentView key=\{localPreview\} uri=\{localPreview\} onError=\{setError\} \/>/)
-  assert.match(preview, /\} else if \(kind === 'pdf' && webSource\) \{/)
+test('PDFs render in the bundled pdf.js page on both platforms and build metadata has platform-safe fallbacks', () => {
+  // Android's WebView has no PDF renderer; iOS shows the same PdfDocumentView page.
+  assert.match(preview, /if \(kind === 'pdf' && localPreview\) return <PdfDocumentView key=\{localPreview\} uri=\{localPreview\} onError=\{setError\} \/>/)
+  assert.doesNotMatch(preview, /testID="file-viewer-pdf"/)
   assert.match(dialogs, /Platform\.OS === 'android' \? appConfig\.expo\.android\.versionCode : appConfig\.expo\.ios\.buildNumber/)
 })
