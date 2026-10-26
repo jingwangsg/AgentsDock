@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import closing
 import json
+import os
 from pathlib import Path
 import socket
 import tempfile
@@ -201,9 +202,11 @@ class MailPipelineTLSAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page["mailbox_coverage"], MailArrival(self.team, self.recipient,
             ordinary["sequence"], ordinary["id"]).as_dict())
         self.assertLess(page["mailbox_coverage"]["through_sequence"], restored["cursor"]["through_sequence"])
-        golden = Path.cwd() / "mail-pipeline-golden.json"
-        golden.write_text(json.dumps({"frames": frames + reopened, "coverage": page["mailbox_coverage"]}, indent=2) + "\n")
-        print("Mail pipeline metadata golden:", golden, flush=True)
+        # The artifact holds fresh random ids, so rewrite the tracked copy only on request.
+        if os.environ.get("AGENTSDOCK_REGENERATE_MAIL_PIPELINE_GOLDEN") == "1":
+            golden = Path.cwd() / "mail-pipeline-golden.json"
+            golden.write_text(json.dumps({"frames": frames + reopened, "coverage": page["mailbox_coverage"]}, indent=2) + "\n")
+            print("Mail pipeline metadata golden:", golden, flush=True)
 
     async def test_actual_tls_pre_header_adapter_denials_preserve_status_and_capacity(self):
         for method in (self.adapter.team_mail_hint_snapshot, self.adapter.subscribe_team_mail_hints):
