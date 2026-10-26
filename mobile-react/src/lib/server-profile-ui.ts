@@ -137,6 +137,23 @@ export function connectionStateLabel(state: ServerProfileConnectionState): strin
   return 'Cached'
 }
 
+/**
+ * Note for a feature that the health report advertises, used as a store selector. Without a report the
+ * active server has not answered, so it reads as offline or connecting rather than too old for the
+ * feature. Null once a report exists, where the caller's own update message applies.
+ */
+export function awaitingConnectionNotice(state: {
+  health: unknown
+  activeProfileId: string | null
+  profiles: readonly Pick<ServerProfileListItem, 'id' | 'connectionState'>[]
+}): string | null {
+  if (state.health) return null
+  const connectionState = state.profiles.find(profile => profile.id === state.activeProfileId)?.connectionState
+  // Offline and Retrying come from a failed check; any other state has not finished one yet.
+  const label = connectionStateLabel(connectionState === 'offline' || connectionState === 'retrying' ? connectionState : 'connecting')
+  return `${label}. Available once this AgentsServer is connected.`
+}
+
 export function profileConnectionLabel(profile: Pick<ServerProfileListItem, 'connectionState' | 'lastConnectionError'>): string {
   if (profile.lastConnectionError && /\b(?:401|403|unauthori[sz]ed|forbidden|authentication|access token|bad token|invalid token)\b/i.test(profile.lastConnectionError)) {
     return 'Authentication required'

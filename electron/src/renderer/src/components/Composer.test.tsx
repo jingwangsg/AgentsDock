@@ -16,6 +16,10 @@ import { ClaudeRuntimeProvider } from './ClaudeRuntimeContext'
 import { CodexRuntimeProvider } from './CodexRuntimeContext'
 import { CodexStatusButton } from './CodexControls'
 
+// Tests see the Team Network UI on by default; a test can turn it off as a build without the flag does.
+const teamNetworkUi = vi.hoisted(() => ({ enabled: true }))
+vi.mock('../lib/team-network-ui', () => ({ get TEAM_NETWORK_UI_ENABLED() { return teamNetworkUi.enabled } }))
+
 const secureConnectionId = '09d7bb2e-3b47-4be7-89fc-2cecd90f4434'
 const secureRouteId = '22e7bb2e-3b47-4be7-89fc-2cecd90f4434'
 
@@ -6118,6 +6122,23 @@ describe('Composer', () => {
     const team = screen.getByRole('listbox', { name: 'Team Network destinations' })
     expect(within(team).getByText('Server update required')).toBeInTheDocument()
     expect(within(team).getByText('Structured @@ Team Network hints are unavailable on this AgentsServer.')).toBeInTheDocument()
+  })
+
+  it('leaves @@ as plain text in a build with Team Network hidden, even on a server that supports it', async () => {
+    teamNetworkUi.enabled = false
+    try {
+      useAppStore.setState({ health: teamMessagesHealth() })
+      const user = userEvent.setup()
+      render(<Composer />)
+      const editor = screen.getByPlaceholderText('Message')
+
+      await user.type(editor, '@@DPark')
+      expect(editor).toHaveValue('@@DPark')
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+      expect(screen.queryByText('Server update required')).not.toBeInTheDocument()
+    } finally {
+      teamNetworkUi.enabled = true
+    }
   })
 
   it('canonicalizes restored local @ direct and @@ route references to inline @ route hints', async () => {

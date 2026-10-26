@@ -10,6 +10,7 @@ import { filesNewestFirst } from '../lib/format'
 import { mobileFileViewerKind } from '../lib/file-viewer'
 import { runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError } from '../lib/runtime-catalog'
 import { PROVIDER_JOBS_ACCESS_MODES, providerJobsAccessDescription, providerJobsAccessLabel, providerJobsAccessState } from '../lib/provider-jobs-access'
+import { awaitingConnectionNotice } from '../lib/server-profile-ui'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { ProviderJobsAccess, RuntimeOption } from '../types'
@@ -61,6 +62,7 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
   const filePaging = useAppStore(state => state.filePaging[sessionId])
   const runtime = useAppStore(state => state.runtime)
   const health = useAppStore(state => state.health)
+  const awaitingConnection = useAppStore(awaitingConnectionNotice)
   const allJobs = useAppStore(state => state.jobs)
   const pendingJobRunIds = useAppStore(state => state.pendingJobRunIds)
   const allPins = useAppStore(state => state.pins)
@@ -213,7 +215,7 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       {session.backend !== 'cursor' ? <Field label="Effort"><ChoiceField value={session.effort ?? ''} options={effortOptions} onChange={effort => { if (scopeIsCurrent()) void update(sessionId, { effort }, profileGeneration) }} /></Field> : null}
       {selectionError ? <Text accessibilityRole="alert" style={[styles.hint, { color: colors.orange }]}>{selectionError}</Text> : null}
       <Field label="Agent jobs"><ChoiceField disabled={!jobsAccess.available} value={jobsAccess.effective} options={jobsAccessOptions} onChange={value => { if (scopeIsCurrent() && jobsAccess.available) void update(sessionId, { provider_jobs_access: value as ProviderJobsAccess }, profileGeneration) }} /></Field>
-      <Text style={[styles.hint, { color: colors.muted }]}>{jobsAccess.available ? `${providerJobsAccessLabel(jobsAccess.effective)}${jobsAccess.inheritedDefault ? ' (server default)' : ''}. ${providerJobsAccessDescription(jobsAccess.effective)}` : 'Update AgentsServer to set Read-only or Blocked. Human job controls remain available.'}</Text>
+      <Text style={[styles.hint, { color: colors.muted }]}>{jobsAccess.available ? `${providerJobsAccessLabel(jobsAccess.effective)}${jobsAccess.inheritedDefault ? ' (server default)' : ''}. ${providerJobsAccessDescription(jobsAccess.effective)}` : awaitingConnection ?? 'Update AgentsServer to set Read-only or Blocked. Human job controls remain available.'}</Text>
       <Field label="System prompt"><TextInput value={systemPrompt} onChangeText={setSystemPrompt} onBlur={() => { const clean = systemPrompt.trim(); if (scopeIsCurrent() && clean !== (session.system_prompt ?? '')) void update(sessionId, { system_prompt: clean || null }, profileGeneration) }} multiline maxLength={12_000} placeholder="Optional per-chat instructions" placeholderTextColor={colors.muted} style={[styles.multilineInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} /></Field>
       <Field label="Folder"><TextInput value={folder} onChangeText={setFolder} onBlur={() => { if (scopeIsCurrent()) void update(sessionId, { folder: folder.trim() || 'General' }, profileGeneration) }} style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} /></Field>
       <Field label="Working directory"><TextInput value={cwd} onChangeText={setCwd} onBlur={() => { if (scopeIsCurrent()) void update(sessionId, { cwd: cwd.trim() }, profileGeneration) }} autoCapitalize="none" autoCorrect={false} style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} /></Field>

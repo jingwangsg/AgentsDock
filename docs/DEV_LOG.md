@@ -1,5 +1,60 @@
 # Public development log
 
+## 2026-10-26 — `@@` stays plain text in desktop builds with Team Network hidden; the Android app says a server is offline instead of asking to update it (desktop, Android)
+
+- Desktop: release builds hide the Team Network entry points (sidebar
+  button, pane, `/mail`), but typing `@@` in the composer still opened the
+  Team Network list, which said "Server update required — Structured @@
+  Team Network hints are unavailable on this AgentsServer." on every
+  server, because the build switch also turns off the capability check.
+  The job dialog's route-hint note likewise ended with "Update AgentsServer
+  to add scheduled @@ Team Network hints." In these builds `@@` is now
+  plain text with no list, and the job dialog does not mention Team
+  Network. Builds that show Team Network are unchanged.
+- Android: the app has no health report from a server right after launch
+  until the first check answers, and drops it after two failed checks.
+  Four places read a missing report as an old server: a Cursor chat's
+  notice ("Cursor requires the hardened Cursor backend in a newer
+  AgentsServer. Update the server, then reconnect.", also shown in the
+  chat's agent menu, chat details and the job dialog), the
+  working-directory picker ("Folder browsing needs a newer AgentsServer."),
+  the job dialog's route-hint note ("Update AgentsServer to add scheduled
+  @Chat route hints.") and the Agent jobs hint in chat details ("Update
+  AgentsServer to set Read-only or Blocked."); the screen-reader hint of a
+  queued delivery's remove button did the same. Without a report they now
+  say "Offline. Available once this AgentsServer is connected." (Retrying
+  or Connecting in place of Offline, as in the server list), and Cursor
+  says "Cursor status loads once this AgentsServer is connected." A server
+  that answers without the capability still gets the update message. An
+  open working-directory picker now lists folders when the server
+  connects; before, it stayed empty until reopened.
+- Tests that fail on the previous code: desktop `@@` and job dialog with
+  the Team Network switch off; Android notice text per connection state,
+  the Cursor reason, the rendered picker (offline, connecting, connecting
+  while open) and Cursor notice, and a source check of the job note,
+  Agent jobs hint and queued-delivery hint. The existing update-message
+  tests still pass.
+- Real-app check against an isolated, authenticated AgentsServer that
+  advertises Team Network: the desktop app built from this source with the
+  release build configuration (unpackaged, isolated profile) opened the
+  chat list for `@`, showed no list for `@@` and `@@DPark`, and its job
+  dialog note had no Team Network sentence; main built the same way showed
+  "Server update required" for `@@` and the update sentence in the job
+  dialog. On the Android emulator (Pixel Fold image), with the server
+  reached as the Local profile and then stopped, the official build 77
+  showed the four update messages; build 77 with this source's JavaScript
+  showed the notices above. After the server started again, the open chat
+  details showed "Full access…" and Cursor's actual reason ("Cursor is
+  not installed…"), and an open picker listed the chat's folders.
+- Not verified: the Android job dialog and chat details were opened while
+  connected and then the server was stopped, because on this screen width
+  chat details open only from a live connection; the queued-delivery hint
+  and the Connecting and Retrying wording were checked in tests only; iOS
+  shares the code and was not run. Not changed: messages about `@@`
+  references that a build with Team Network shown already created (queued
+  items, scheduled jobs, drafts) still ask for an update in builds where
+  it is hidden. Availability: source only; no server update needed.
+
 ## 2026-10-25 — Chat links to images and PDFs outside the working directory open in the desktop viewers (desktop, server)
 
 - The desktop read a file outside the chat's working directory as text

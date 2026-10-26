@@ -78,6 +78,7 @@ import {
 } from '../lib/chat-references'
 import { liveChatTitle } from '../lib/live-chat-title'
 import { liveChatReferenceTitle } from '../lib/timeline-inline-references'
+import { awaitingConnectionNotice } from '../lib/server-profile-ui'
 import { rankMentionRows } from '../lib/session-order'
 import {
   COMPOSER_CARD_MAX_HEIGHT,
@@ -2024,6 +2025,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
   const allTurns = useAppStore(state => state.snapshots[sessionId]?.queuedTurns) ?? EMPTY_QUEUE
   const turns = useMemo(() => allTurns.filter(isVisibleQueuedTurn), [allTurns])
   const health = useAppStore(state => state.health)
+  const awaitingConnection = useAppStore(awaitingConnectionNotice)
   const sourceBackend = useAppStore(state => state.sessions.find(session => session.id === sessionId)?.backend)
   const queuedTargetIds = useMemo(() => new Set(turns.flatMap(turn => (turn.chat_references ?? []).map(reference => reference.session_id))), [turns])
   useAppStore(state => queuedTargetIds.size ? [...queuedTargetIds].map(targetId => {
@@ -2263,7 +2265,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
             warning={!rowReferences.every(referenceSupported) ? 'Change this action or target before saving.' : null}
             testID={`queued-chat-references-${turn.queued_id}`}
           /> : null}
-          {crossChatDelivery ? <View style={styles.queueActions}><View style={styles.toolbarSpacer} /><Pressable testID={`queued-skip-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel={`Remove queued message from ${sender}`} accessibilityHint={!canSkip ? 'Update AgentsServer to safely remove this delivery.' : undefined} accessibilityState={{ disabled: networkDisabled || queueBusy || !canSkip, busy }} disabled={networkDisabled || queueBusy || !canSkip} onPress={() => void act(turn.queued_id, () => skipDelivery(sessionId, turn.queued_id, profileGeneration))} style={({ pressed }) => [styles.routeRevoke, { opacity: networkDisabled || queueBusy || !canSkip || pressed ? 0.45 : 1 }]}>{busy ? <ActivityIndicator size="small" color={colors.red} /> : <Trash2 size={16} color={colors.red} />}</Pressable></View> : editing === turn.queued_id ? <View style={styles.queueEditActions}>
+          {crossChatDelivery ? <View style={styles.queueActions}><View style={styles.toolbarSpacer} /><Pressable testID={`queued-skip-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel={`Remove queued message from ${sender}`} accessibilityHint={!canSkip ? awaitingConnection ?? 'Update AgentsServer to safely remove this delivery.' : undefined} accessibilityState={{ disabled: networkDisabled || queueBusy || !canSkip, busy }} disabled={networkDisabled || queueBusy || !canSkip} onPress={() => void act(turn.queued_id, () => skipDelivery(sessionId, turn.queued_id, profileGeneration))} style={({ pressed }) => [styles.routeRevoke, { opacity: networkDisabled || queueBusy || !canSkip || pressed ? 0.45 : 1 }]}>{busy ? <ActivityIndicator size="small" color={colors.red} /> : <Trash2 size={16} color={colors.red} />}</Pressable></View> : editing === turn.queued_id ? <View style={styles.queueEditActions}>
             <Pressable accessibilityRole="button" accessibilityLabel="Cancel queued message edit" disabled={Boolean(busyTurn)} onPress={cancelEdit} style={({ pressed }) => [styles.queueEditButton, { backgroundColor: colors.raised, opacity: busyTurn || pressed ? 0.5 : 1 }]}><Text style={[styles.queueEditButtonText, { color: colors.text }]}>Cancel</Text></Pressable>
             <Pressable testID={`queued-save-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel="Save queued message" accessibilityState={{ disabled: networkDisabled || busy || !editText.trim() || !validEditReferences, busy }} disabled={networkDisabled || busy || !editText.trim() || !validEditReferences} onPress={() => void commitEdit(turn)} style={({ pressed }) => [styles.queueEditButton, { backgroundColor: colors.blue, opacity: networkDisabled || busy || !editText.trim() || !validEditReferences || pressed ? 0.45 : 1 }]}>{busy ? <ActivityIndicator size="small" color={colors.textOnAccent} /> : <><Check size={14} color={colors.textOnAccent} /><Text style={[styles.queueEditButtonText, { color: colors.textOnAccent }]}>Save</Text></>}</Pressable>
           </View> : <View style={styles.queueActions}>

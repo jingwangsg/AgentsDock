@@ -1,4 +1,5 @@
 import {
+  awaitingConnectionNotice,
   buildUpdateServerProfileInput,
   editServerProfileDraft,
   findProfileByIdentity,
@@ -91,5 +92,12 @@ assert(serverProfileHost('http://nvmac.tail46daa8.ts.net:7850') === 'nvmac.tail4
 assert(unreadCountLabel(100) === '99+', 'unread badge must stay compact')
 assert(requiresIdentityResetConfirmation({ ...alpha, lastConnectionError: 'Server identity changed from server-alpha to server-new.' }), 'identity changes must require confirmation')
 assert(requiresIdentityResetConfirmation({ ...alpha, lastConnectionError: 'Server identity mismatch: expected server-alpha, received server-new.' }), 'identity mismatches must allow an explicit reset')
+
+const noHealth = (connectionState: ServerProfileListItem['connectionState']) => awaitingConnectionNotice({ health: null, activeProfileId: 'alpha', profiles: [{ ...alpha, connectionState }, { ...beta, connectionState: 'online' }] })
+assertEqual(noHealth('offline'), 'Offline. Available once this AgentsServer is connected.', 'an offline server without health is named offline')
+assertEqual(noHealth('retrying'), 'Retrying. Available once this AgentsServer is connected.', 'a retrying server without health is named retrying')
+assertEqual(noHealth('connecting'), 'Connecting. Available once this AgentsServer is connected.', 'a connecting server without health is named connecting')
+assertEqual(noHealth('cached'), 'Connecting. Available once this AgentsServer is connected.', 'a cached server without health has not finished its first check')
+assertEqual(awaitingConnectionNotice({ health: { ok: true }, activeProfileId: 'alpha', profiles: [alpha] }), null, 'a server that answered gets the caller’s own message')
 
 console.log('server profile UI regressions passed')
