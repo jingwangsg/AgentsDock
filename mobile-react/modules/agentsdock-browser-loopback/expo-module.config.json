@@ -1,6 +1,9 @@
 {
-  "platforms": ["android"],
+  "platforms": ["android", "apple"],
   "android": {
     "modules": ["com.zhengyiluo.agentsdock.browserloopback.AgentsDockBrowserLoopbackModule"]
+  },
+  "apple": {
+    "modules": ["AgentsDockBrowserLoopbackModule"]
   }
 }

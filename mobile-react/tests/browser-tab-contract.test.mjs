@@ -33,3 +33,22 @@ test('each browser tab keeps its own web storage, keyed by server profile and ta
   assert.match(webViewPatch, /\+\s+cookieManager\.flush\(\);/)
   assert.match(webViewPatch, /\+\s+val cookie = webView\.profileCookieManager\.getCookie\(baseUrl\)/)
 })
+
+test('an iOS browser tab uses the data store its profile names, and the tab routes that store', async () => {
+  const module = await readFile(resolve('modules/agentsdock-browser-loopback/ios/AgentsDockBrowserLoopbackModule.swift'), 'utf8')
+  const storeName = await readFile(resolve('modules/agentsdock-browser-loopback/ios/WebViewProfileStore.swift'), 'utf8')
+  // The module sets the proxy on the store the profile names, so the tab routes by its profile, not its id.
+  assert.match(view, /routeBrowserThroughServer\(webViewProfile, /)
+  assert.match(view, /releaseBrowserRouting\(webViewProfile\)/)
+  assert.match(module, /WKWebsiteDataStore\(forIdentifier: profileStoreIdentifier\(profile\)\)/)
+  assert.match(webViewPatch, /\+\s+REMAP_WEBVIEW_STRING_PROP\(webViewProfile\)/)
+  assert.match(webViewPatch, /\+\s+wkWebViewConfig\.websiteDataStore = \[WKWebsiteDataStore dataStoreForIdentifier:RNCWebViewProfileIdentifier\(_webViewProfile\)\];/)
+  // Both sides derive one UUID: SHA-256 of the name, first 16 bytes, RFC 9562 version 8 and variant bits.
+  // The Swift side is checked against the vector by `pnpm run test:browser-loopback-ios`.
+  assert.match(webViewPatch, /\+\s+CC_SHA256\(name\.bytes, \(CC_LONG\)name\.length, digest\);\n\+\s+digest\[6\] = \(digest\[6\] & 0x0F\) \| 0x80;.*\n\+\s+digest\[8\] = \(digest\[8\] & 0x3F\) \| 0x80;/)
+  assert.match(storeName, /SHA256\.hash\(data: Data\(profile\.utf8\)\)\.prefix\(16\)\)\n\s+b\[6\] = \(b\[6\] & 0x0F\) \| 0x80.*\n\s+b\[8\] = \(b\[8\] & 0x3F\) \| 0x80/)
+})
+
+test('an edge swipe does not walk a browser tab history, as on Android', () => {
+  assert.match(view, /allowsBackForwardNavigationGestures=\{false\}/)
+})
