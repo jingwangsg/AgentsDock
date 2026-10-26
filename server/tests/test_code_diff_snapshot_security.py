@@ -543,6 +543,36 @@ class CodeDiffSnapshotTests(CodeDiffStateMixin, unittest.TestCase):
                     [],
                 )
 
+    def test_budget_spent_before_the_next_git_command_skips_the_snapshot(self) -> None:
+        # Under load the toplevel probe can return after the whole budget;
+        # the next Git command must then time out, not raise TypeError.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = self.repository(root)
+            original_probe = agent_server._git_stream_stdout
+
+            def probe_outlasting_the_budget(*args: object, **kwargs: object):
+                kwargs["deadline"] = time.monotonic() + 30
+                return original_probe(*args, **kwargs)
+
+            with self.isolated_state(root), patch.object(
+                agent_server,
+                "_git_stream_stdout",
+                side_effect=probe_outlasting_the_budget,
+            ):
+                result = agent_server._capture_git_tree(
+                    "chat",
+                    "spent-budget",
+                    str(repo),
+                    deadline=time.monotonic(),
+                )
+
+                self.assertIsNone(result)
+                self.assertEqual(
+                    list(agent_server.code_diffs_dir("chat").glob(".snapshot-*")),
+                    [],
+                )
+
 
 class CodeDiffCancellationTests(CodeDiffStateMixin, unittest.IsolatedAsyncioTestCase):
     async def test_repeated_cancel_before_baseline_adoption_cleans_owned_objects(self) -> None:

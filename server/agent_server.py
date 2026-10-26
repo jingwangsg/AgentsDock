@@ -4613,7 +4613,7 @@ def _git_command(
 ) -> subprocess.CompletedProcess[str]:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise subprocess.TimeoutExpired(args=["git", *args], timeout=0)
+        raise subprocess.TimeoutExpired(cmd=["git", *args], timeout=0)
     return subprocess.run(
         [
             "git",
