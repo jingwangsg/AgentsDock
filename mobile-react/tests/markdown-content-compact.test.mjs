@@ -18,8 +18,8 @@ const mocks = {
   '../lib/math-markdown': `export const installMathMarkdown = value => value;`,
   '../lib/tex-svg': `export const texToSvg = () => null;`,
   '../lib/canvas-links': `export const openCanvasLink = () => false;`,
-  '../lib/action-menu': `export const showActionMenu = () => {};`,
-  'expo-clipboard': `export const setStringAsync = async () => true;`,
+  '../lib/action-menu': `export const showActionMenu = (...args) => { globalThis.actionMenus?.push(args) };`,
+  'expo-clipboard': `export const setStringAsync = async text => { globalThis.clipboardWrites?.push(text); return true };`,
   // MarkdownContent calls useAppStore as a hook for chip titles and getState for drafts; the mock must be both.
   '../store/useAppStore': `const state = { drafts: {}, setSessionDraft() {} }; export const useAppStore = selector => selector(state); useAppStore.getState = () => state;`,
   './CopyTextButton': `export const CopyTextButton = 'CopyTextButton';`,
@@ -82,4 +82,31 @@ test('a server-local image is a link that opens it; a loadable one stays an imag
     assert.equal(image('../tmp/loss.png', '', [{ type: 'blocklink' }]).props.onPress, undefined)
     assert.deepEqual(image('https://example.com/a.png', ''), { libraryImage: 'https://example.com/a.png' })
   } finally { await act(async () => renderer.unmount()) }
+})
+
+test('long-pressing an absolute path link offers Copy path; web links keep their menu', async () => {
+  globalThis.actionMenus = []
+  globalThis.clipboardWrites = []
+  let renderer
+  await act(async () => { renderer = TestRenderer.create(React.createElement(MarkdownContent, { value: 'Worktree' })) })
+  try {
+    const { rules } = renderer.root.findByType('Markdown').props
+    const link = href => rules.link({ key: 'link', attributes: { href } }, [], [], { link: {} })
+    // markdown-it percent-encodes the href; the menu shows and copies the path itself.
+    link('/home/dev/repo%20wt').props.onLongPress()
+    const [[title, actions]] = globalThis.actionMenus
+    assert.equal(title, '/home/dev/repo wt')
+    assert.deepEqual(actions.map(action => action.text), ['Copy path'])
+    actions[0].onPress()
+    assert.deepEqual(globalThis.clipboardWrites, ['/home/dev/repo wt'])
+    link('/home/dev/repo/src/main.ts#L42').props.onLongPress()
+    assert.equal(globalThis.actionMenus[1][0], '/home/dev/repo/src/main.ts')
+    assert.equal(link('docs/notes.md').props.onLongPress, undefined)
+    link('https://example.com/docs').props.onLongPress()
+    assert.deepEqual(globalThis.actionMenus[2][1].map(action => action.text), ['Copy link', 'Open in browser'])
+  } finally {
+    await act(async () => renderer.unmount())
+    delete globalThis.actionMenus
+    delete globalThis.clipboardWrites
+  }
 })

@@ -111,6 +111,10 @@ export function MarkdownContent({
     { text: 'Copy link', onPress: () => { void Clipboard.setStringAsync(url).catch(() => undefined) } },
     { text: 'Open in browser', onPress: () => { void Linking.openURL(url).catch(() => undefined) } },
   ]), [])
+  // The mobile app cannot reach Zed, so the menu only copies the path.
+  const pathMenu = useCallback((path: string) => showActionMenu(path, [
+    { text: 'Copy path', onPress: () => { void Clipboard.setStringAsync(path).catch(() => undefined) } },
+  ]), [])
   // Cells render before their table, so cell and table rules share one lookup
   // instead of re-walking the table for every cell.
   const tableColumnWidths = useMemo(() => {
@@ -152,11 +156,16 @@ export function MarkdownContent({
     ),
     link: (node, children, _parents, styles) => {
       const href = String(node.attributes.href ?? '')
+      // markdown-it percent-encodes hrefs; as on desktop, Copy path leaves out a `#L42` line.
+      let path = href
+      try { path = decodeURIComponent(href) } catch { /* keep the encoded text */ }
+      path = path.replace(/#L\d+(?:C\d+)?$/i, '')
+      // An absolute path, such as a worktree the agent created, can be copied.
       return <SelectableText
         key={node.key}
         style={styles.link}
         onPress={() => openLink(href)}
-        onLongPress={isWebLink(href) ? () => linkMenu(href) : undefined}
+        onLongPress={isWebLink(href) ? () => linkMenu(href) : path.startsWith('/') ? () => pathMenu(path) : undefined}
       >
         {children}
       </SelectableText>

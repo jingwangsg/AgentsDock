@@ -1,5 +1,52 @@
 # Public development log
 
+## 2026-10-26 — Agents state each new git worktree's absolute path; absolute path links get Open in Zed and Copy path (server, desktop, Android)
+
+- The instructions AgentsDock gives Claude, Codex (also used for OpenCode)
+  and Cursor chats now say: after creating a git worktree, tell the user
+  its absolute path as a Markdown link, `[/abs/path](/abs/path)`. The
+  static Claude prompt has a 13,000-character budget checked by a test, so
+  two clauses that the same prompt already states elsewhere (deliver files
+  through the AgentsDock tool; say "attached" only after a receipt) were
+  removed from the Claude-only lines; its length is unchanged.
+- Desktop: right-clicking a link to an absolute path in a chat message (a
+  file or a folder, such as a worktree) shows "Open in Zed" and "Copy
+  path". Open in Zed builds the same request as the chat header's Open in
+  Zed button, so for a chat on a remote server Zed opens the path over
+  ssh; a code reference's line (`#L42`) places the cursor. Copy path
+  copies the path as written (`%20` back to a space), without that line.
+  Left click is unchanged, and relative path links keep the native menu's
+  "Copy Path".
+- Android (iOS shares the code, not run): long-pressing a link to an
+  absolute path shows "Copy path", in the same dialog as the existing
+  long-press menu for web links. It also leaves out a `#L42` line.
+- Not added: detecting worktree creation from tool calls. A `git worktree
+  add` command often has no absolute path (it can be relative to the
+  shell's current directory, come from a variable, or run inside a
+  script), and git prints only the branch, not the path.
+- Tests that fail on the previous code cover the prompt text for all three
+  instruction sets, the desktop menu (both actions, a remote chat's ssh
+  host, a code reference's line, the error shown when Zed is missing) and
+  the Android long press. The same tests check that relative links get no
+  new menu and left click is unchanged.
+- Real-app check against an isolated AgentsServer from this source: a
+  real Claude chat and a real Codex chat, each asked to create a worktree,
+  answered with the absolute path as a link (on the previous server code
+  the same request gave the path in inline code for Claude and a relative
+  link for Codex). In the desktop app built from this source (unpackaged,
+  isolated profile), right-clicking the link showed Open in Zed and Copy
+  path and no native menu; Open in Zed opened that folder (Zed's open
+  workspace was exactly that path) and Copy path put the exact path on
+  the clipboard, in both chats. On the Android emulator (this source's
+  JavaScript in the build 77 package), long-press showed "Copy path" and
+  the pasted text was the exact path.
+- Not covered: Open in Zed for a chat on a remote server was tested only
+  in unit tests; Cursor and OpenCode chats were not run; iOS was not run.
+  The menu closes if the message text changes while it is open (a reply
+  still streaming). Availability: source only. Agents follow the new
+  instruction after the server update; the menus need the desktop and
+  Android updates.
+
 ## 2026-10-25 — Chat links to images and PDFs outside the working directory open in the desktop viewers (desktop, server)
 
 - The desktop read a file outside the chat's working directory as text
