@@ -1,5 +1,55 @@
 # Public development log
 
+## 2026-10-26 — A long chat's first history load no longer delays other chats, and builds faster (server)
+
+- After a server restart, the first page or timeline index of a chat builds
+  that chat's timeline index from its whole transcript. On a 107 MB,
+  40k-event Codex chat this took 2.4 s on a Mac and about 90 s on a host
+  whose CPU was throttled. All transcript reads ran on one worker, so every
+  other chat's page waited until the build finished; on that host a new
+  chat's requests timed out at 30 s for about two minutes.
+- The build found the turn record of each scheduled-job event by scanning
+  all records, so its cost grew with job events times records. It now keeps
+  the turn record keys per run and returns the same record. Cold build,
+  median of 3, Mac, on copies of local chats with scheduled runs mixed in:
+  70 MB / 39k events 2.01 s → 1.35 s, 101 MB / 57k events 2.59 s → 1.85 s.
+  Five unmodified long chats with few scheduled runs are unchanged within
+  noise. The index output is byte-identical to the previous code on all
+  seven chats, also with Codex history proofs active.
+- Chats with at least 2000 events now read their transcripts on a separate
+  worker (a 2000-event chat builds in about 0.04 s), and each chat has its
+  own timeline-index lock instead of one of 64 shared locks: a short chat
+  whose lock was shared with the long chat waited for the whole build and
+  kept the short-chat worker busy while it waited. Isolated server, median
+  of 11 interleaved rounds: with the long chat's first page and index
+  requested at t=0 and two short chats' first pages at 0.3 s and 0.6 s, the
+  short pages took 2.24 s and 1.92 s before and 0.09 s and 0.12 s now; the
+  long page 2.54 s before and 1.64 s now. With one client requesting a short
+  chat's page back to back during the build, 40 pages (p50 30 ms) were
+  served instead of 3; with four clients 111 (p50 60 ms) instead of 8 (p50
+  2.9 s). An event-loop probe (a 404 every 10 ms) measured p50 28 ms / max
+  87 ms with one client and 49 / 96 ms with four, against 42 / 176 ms and
+  62 / 272 ms before. Response bodies are identical apart from the index's
+  `generated_at`.
+- Real-app check: the desktop app built from this source (unpackaged,
+  isolated profile) against an isolated server holding copies of the chats,
+  3 rounds per side. Clicking the 70 MB chat and, 0.3 s later, a short chat
+  not opened before: the short chat's timeline appeared 2.5–2.8 s after its
+  click before and 0.39–0.40 s now; the long chat's 3.2–3.6 s after its
+  click before and 2.2–2.5 s now.
+- Verified with tests that fail on the previous code: a short chat's scan
+  completes while a long chat's scan is blocked, and no other chat waits on
+  a chat's held index lock. A new job-index test pins which turn record a
+  late job event folds (the newest, skipping one already folded), in a full
+  build and when extending the cached index.
+- Not covered: the 107 MB chat itself and a throttled host. Still shared
+  between chats: a Codex chat's first history proof after a restart takes a
+  lock common to all chats (0.12 s for 20k events and 0.24 s for 39k events
+  on a Mac; a short Codex chat then waited 0.15 s instead of 0.64 s). Two
+  long chats still load one after the other, and run-trace and
+  scheduled-run history reads use the default thread pool. Availability:
+  source only; needs the server update.
+
 ## 2026-10-26 — Agents state each new git worktree's absolute path; absolute path links get Open in Zed and Copy path (server, desktop, Android)
 
 - The instructions AgentsDock gives Claude, Codex (also used for OpenCode)
