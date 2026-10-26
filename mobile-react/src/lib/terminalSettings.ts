@@ -3,7 +3,7 @@ import { useSyncExternalStore } from 'react'
 import { clampTerminalFontSize, type TerminalCursorStyle } from '../terminal/terminalPage'
 
 // Port of electron/src/renderer/src/lib/terminal-settings.ts. The desktop's font family and Option as Meta
-// have no Android counterpart: the web view has the system monospace font, and Android keyboards have no Option.
+// have no mobile counterpart: the web view has Android's monospace font, and an iPad's Option key is always Alt.
 export interface TerminalSettings {
   /** Before the app text size, which scales it like the rest of the app. */
   fontSize: number

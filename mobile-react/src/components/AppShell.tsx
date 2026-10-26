@@ -132,13 +132,13 @@ function AppShellContent() {
   const chatLayout = chatWorkspaceLayout(width, height)
   const compact = chatLayout.compact
   const onScreenSessionId = compact && !mobileChatOpen ? null : (selectedSurface ? null : selected?.id ?? null)
-  // Android keeps each terminal tab opened in this app run mounted and connected while another tab or chat is in
+  // Each terminal tab opened in this app run stays mounted and connected while another tab or chat is in
   // front, as the desktop does, so a hidden shell still rings its bell and posts notifications. A tab never opened
-  // does not connect. iOS shows one native terminal at a time.
+  // does not connect.
   const surfaces = useAppStore(state => state.surfaces)
   const { scrollback } = useTerminalSettings()
   const keptTerminalTabs = Math.max(1, Math.min(KEPT_TERMINAL_TABS, Math.floor(KEPT_TERMINAL_SCROLLBACK_LINES / scrollback)))
-  const terminalInFront = Platform.OS === 'android' && selectedSurface?.kind === 'terminal' && (!compact || mobileChatOpen) ? selectedSurface.id : null
+  const terminalInFront = selectedSurface?.kind === 'terminal' && (!compact || mobileChatOpen) ? selectedSurface.id : null
   const [openedTerminals, setOpenedTerminals] = useState<{ scope: string; ids: string[] }>({ scope: connectionKey, ids: [] })
   const openedTerminalIds = openedTerminals.scope === connectionKey ? openedTerminals.ids : []
   useEffect(() => {

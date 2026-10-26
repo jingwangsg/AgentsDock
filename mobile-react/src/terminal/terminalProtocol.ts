@@ -1,4 +1,4 @@
-// The Android terminal page's rules for its WebSocket, the server's replay and hardware-keyboard chords.
+// The mobile terminal page's rules for its WebSocket, the server's replay and hardware-keyboard chords.
 // Ports of the desktop's, kept identical so both clients treat a terminal the same way:
 // - trailingSequencesStart: electron/src/renderer/src/lib/terminal-replay.ts
 // - TerminalReplay and the REPLAYED_* query lists in scripts/terminal-page-entry.ts: the replay handling in

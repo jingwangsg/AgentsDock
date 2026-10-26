@@ -1,5 +1,5 @@
-// The contract between the Android terminal web view (scripts/terminal-page-entry.ts) and its React Native
-// host (src/components/terminal/TerminalViewport.android.tsx).
+// The contract between the mobile terminal web view (scripts/terminal-page-entry.ts) and its React Native
+// host (src/components/terminal/TerminalViewport.native.tsx).
 import type { TerminalCommand } from './terminalProtocol'
 
 export type TerminalCursorStyle = 'bar' | 'block' | 'underline'

@@ -1,5 +1,5 @@
-// The Android terminal web view: xterm.js, its addons and the terminal's WebSocket. Bundled by
-// scripts/embed-xterm.mjs; the host is src/components/terminal/TerminalViewport.android.tsx. The desktop
+// The mobile terminal web view: xterm.js, its addons and the terminal's WebSocket. Bundled by
+// scripts/embed-xterm.mjs; the host is src/components/terminal/TerminalViewport.native.tsx. The desktop
 // counterpart is electron/src/renderer/src/components/TerminalSurface.tsx, whose rules this follows.
 import { Terminal, type IFunctionIdentifier, type IMarker, type ITerminalOptions } from '@xterm/xterm'
 import { ClipboardAddon } from '@xterm/addon-clipboard'
@@ -191,6 +191,15 @@ const runCommand = (command: TerminalCommand) => {
   }
 }
 term.attachCustomKeyEventHandler(event => {
+  // WebKit on iOS gives a hardware Control-C the keyCode of Return (13), which xterm.js sends as CR. Android and
+  // the desktop send ETX, with Alt after ESC. By `key`, so a Dvorak or Colemak C counts too.
+  if (event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'c' && event.keyCode === 13) {
+    if (event.type === 'keydown') {
+      event.preventDefault()
+      term.input(event.altKey ? '\x1b\x03' : '\x03')
+    }
+    return false
+  }
   const command = terminalKeyAction(event)
   if (!command) return true
   if (event.type === 'keydown') {

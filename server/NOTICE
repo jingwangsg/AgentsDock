@@ -14,6 +14,9 @@ licenses, and attribution notices. In particular:
   their package metadata.
 - SwiftTerm retains its MIT license in
   mobile-react/modules/agentsdock-native-terminal/ios/Vendor/SwiftTerm/LICENSE.
+- mobile-react/src/terminal/terminalFont.ios.ts embeds the Droid Sans Mono
+  font (DroidSansMono.ttf) with modified line metrics, Copyright (c) 2005-2008,
+  The Android Open Source Project, licensed under the Apache License, Version 2.0.
 - The desktop color themes in
   electron/src/renderer/src/lib/color-themes.data.ts transcribe the palettes
   of third-party Zed, VS Code and Neovim themes (MIT, and Apache-2.0 for
