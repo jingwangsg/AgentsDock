@@ -1,10 +1,10 @@
 import { useRef } from 'react'
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { Check } from 'lucide-react-native'
 import { usePalette } from '../theme'
 import type { RuntimeOption } from '../types'
 import { Text } from './AppText'
+import { ModalSafeArea } from './ModalSafeArea'
 import { SheetCloseButton } from './ui'
 
 /**
@@ -27,8 +27,8 @@ export function ComposerRuntimeSheet({ section, models, efforts, model, effort, 
   const scroll = useRef<ScrollView>(null)
   if (!section) return null
   const hasEfforts = efforts.some(option => Boolean(option.value))
-  return <Modal visible animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={onClose}>
-    <SafeAreaView testID="composer-runtime-sheet" style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+  return <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+    <ModalSafeArea testID="composer-runtime-sheet" style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Text style={[styles.title, { color: colors.text }]}>Model and reasoning</Text>
         <SheetCloseButton testID="composer-runtime-sheet-close" label="Close model and reasoning" onPress={onClose} />
@@ -44,7 +44,7 @@ export function ComposerRuntimeSheet({ section, models, efforts, model, effort, 
           {efforts.map(option => <OptionRow key={option.value || 'default'} testID={`composer-runtime-effort-${option.value || 'default'}`} option={option} selected={option.value === (effort ?? '')} onPress={() => onPickEffort(option.value)} />)}
         </View> : null}
       </ScrollView>
-    </SafeAreaView>
+    </ModalSafeArea>
   </Modal>
 }
 

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import {
   Check,
   ChevronRight,
@@ -33,6 +32,7 @@ import { fonts } from '../lib/typography'
 import type { JsonValue, ProviderPendingInteraction } from '../types'
 import { Text, TextInput } from './AppText'
 import { useCodexRuntime } from './CodexRuntimeContext'
+import { ModalSafeArea } from './ModalSafeArea'
 import { SheetCloseButton } from './ui'
 
 export interface ProviderInteractionCardProps {
@@ -139,8 +139,8 @@ export function ProviderInteractionShelf({
         </Text>
         {busy ? <ActivityIndicator size="small" color={colors.orange} /> : <ChevronRight size={17} color={colors.orange} />}
       </Pressable> : null}
-      {open ? <Modal visible animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={close}>
-        <SafeAreaView style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+      {open ? <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={close}>
+        <ModalSafeArea style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
           <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
             <View style={{ flex: 1 }}>
               <Text style={[styles.sheetTitle, { color: colors.text }]}>{providerName} needs your input</Text>
@@ -181,7 +181,7 @@ export function ProviderInteractionShelf({
               />
             )) : null}
           </ScrollView>
-        </SafeAreaView>
+        </ModalSafeArea>
       </Modal> : null}
     </>
   )

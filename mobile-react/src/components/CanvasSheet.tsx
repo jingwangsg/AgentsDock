@@ -1,10 +1,9 @@
 // Page sheet that shows one chat's Canvas reports: port of the Electron CanvasPane, with
 // element comments (persistent threads) and an editable source on servers that offer them.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Alert, Linking, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import WebView, { type WebViewMessageEvent } from 'react-native-webview'
 import { ChevronDown, ChevronUp, MessageSquare, MessageSquarePlus, RefreshCw, Search, TableOfContents, X } from 'lucide-react-native'
 import { MobileCodeEditor, type MobileCodeEditorController } from '../editor/MobileCodeEditor'
@@ -27,6 +26,7 @@ import { useAppColorScheme, usePalette } from '../theme'
 import type { CanvasCommentMode, CanvasCommentThread, CanvasRecord, CanvasSummary, Event } from '../types'
 import { Text, TextInput } from './AppText'
 import { CanvasCommentSubmit, CanvasCommentThreads, canvasAnchorLabel } from './CanvasCommentThreads'
+import { ModalSafeArea } from './ModalSafeArea'
 import { IconButton, Loading, SheetCloseButton } from './ui'
 
 const STATE_SAVE_DELAY_MS = 400
@@ -61,12 +61,12 @@ function lastRewindSeq(events: readonly Event[]): number | null {
 
 export function CanvasSheet({ sessionId, name, onClose }: { sessionId: string; name: string | null; onClose: () => void }) {
   const colors = usePalette()
-  return <Modal visible={name !== null} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={onClose}>
-    <SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]} edges={['bottom']}>
+  return <Modal visible={name !== null} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+    <ModalSafeArea style={[styles.fill, { backgroundColor: colors.background }]} edges={['bottom']}>
       <View style={styles.grabber} />
       {/* Keyed on the requested name: a link to another canvas replaces the body, and unmounting flushes its pending state. */}
       {name !== null ? <CanvasSheetBody key={name} sessionId={sessionId} initialName={name} onClose={onClose} /> : null}
-    </SafeAreaView>
+    </ModalSafeArea>
   </Modal>
 }
 

@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { AlertTriangle, ChevronRight, Columns2, Copy, Folder, Rows3, WrapText } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
@@ -17,6 +16,7 @@ import { usePalette } from '../theme'
 import { fonts } from '../lib/typography'
 import { Text } from './AppText'
 import { MonacoDiffView } from './MonacoDiffView'
+import { ModalSafeArea } from './ModalSafeArea'
 import { IconButton, Loading, SheetCloseButton } from './ui'
 
 // Until the user picks a layout: two panes need room once the file tree has
@@ -52,11 +52,11 @@ export function CodeReview(props: CodeReviewProps) {
   const connectionReady = connected && !connecting && !switchingProfileId && connection.isValidated
   const hasLocalFallback = Boolean(props.runId && codeReviewFallback(profileGeneration, props.sessionId, props.runId)?.source.trim())
   if (props.runId && !connectionReady && !hasLocalFallback) {
-    return <Modal key={connectionKey} visible animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={props.onClose}>
-      <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+    return <Modal key={connectionKey} visible animationType="slide" presentationStyle="fullScreen" onRequestClose={props.onClose}>
+      <ModalSafeArea style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
         <View style={[styles.header, { borderColor: colors.border }]}><Text style={[styles.title, { color: colors.text }]}>Review</Text><View style={{ flex: 1 }} /><SheetCloseButton onPress={props.onClose} label="Close review" testID="review-unavailable-close" /></View>
         <View style={styles.unavailable}><Text style={[styles.unavailableText, { color: colors.muted }]}>{connecting || switchingProfileId ? 'Verifying server identity…' : 'Reconnect this server to load the review.'}</Text></View>
-      </SafeAreaView>
+      </ModalSafeArea>
     </Modal>
   }
   return <ScopedCodeReview
@@ -140,8 +140,8 @@ function ScopedCodeReview({ sessionId, runId, onClose, connection, connectionKey
     setLayout(current => ({ ...current, wordWrap }))
     void writeReviewLayout({ wordWrap })
   }
-  return <Modal key={connectionKey} visible={Boolean(runId)} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={onClose}>
-    <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+  return <Modal key={connectionKey} visible={Boolean(runId)} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+    <ModalSafeArea style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
       <View style={[styles.header, { borderColor: colors.border }]}>
         <Text style={[styles.title, { color: colors.text }]}>Review</Text>
         <Text style={{ color: colors.green }}>+{additions}</Text>
@@ -162,7 +162,7 @@ function ScopedCodeReview({ sessionId, runId, onClose, connection, connectionKey
           {file ? <MonacoDiffView file={file} path={file.path} sideBySide={sideBySide} wordWrap={layout.wordWrap} gapLabel={gapLabel} /> : null}
         </View>
       </View>}
-    </SafeAreaView>
+    </ModalSafeArea>
   </Modal>
 }
 

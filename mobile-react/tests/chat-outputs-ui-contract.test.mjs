@@ -26,8 +26,8 @@ test('the header exposes an Outputs & sources toggle beside the Files button', (
   assert.match(chatScreen, /\{!welcome \? <ChatOutputsPanel sessionId=\{sessionId\} visible=\{outputsOpen\} onClose=\{\(\) => setOutputsOpen\(false\)\} onReview=\{onReview\} onChanges=\{onChanges\} onOpenCanvas=\{setCanvasName\} \/> : null\}/)
 })
 
-test('the panel is a page sheet like Chat details and follows the desktop copy', () => {
-  assert.match(panel, /<Modal visible=\{visible\} animationType="slide" presentationStyle=\{Platform\.OS === 'ios' \? 'pageSheet' : 'fullScreen'\} allowSwipeDismissal onRequestClose=\{onClose\} onDismiss=\{finishDismissal\}>/)
+test('the panel is a full-screen sheet like Chat details and follows the desktop copy', () => {
+  assert.match(panel, /<Modal visible=\{visible\} animationType="slide" presentationStyle="fullScreen" onRequestClose=\{onClose\} onDismiss=\{finishDismissal\}>/)
   assert.match(panel, /<SheetCloseButton onPress=\{onClose\} label="Close outputs and sources" testID="chat-outputs-close" \/>/)
   for (const copy of ['Outputs & sources', '>Outputs<', '>Sources<', 'No outputs yet', 'No sources yet', "'Generated image'", '`${extension.toUpperCase()} file`', 'label="Local preview"', 'label="Web search"', 'label="Web pages"', 'secondary="Skill"', 'secondary="Referenced chat"', 'secondary="Attached to this chat"', '`View all (${sources.length})`', "'Show less'"]) {
     assert.ok(panel.includes(copy), `panel must render ${copy}`)

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, Alert, AppState, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { ChevronDown, Goal, Pause, Pencil, Play, Trash2 } from 'lucide-react-native'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { buildCodexGoalInput, formatGoalBudget, goalElapsedSeconds, goalStatusLabel, goalViewState } from '../lib/codex-goals'
@@ -9,6 +8,7 @@ import { usePalette } from '../theme'
 import type { CodexGoal, CodexGoalSnapshot, CodexGoalStatus } from '../types'
 import { Text, TextInput } from './AppText'
 import { useCodexRuntime } from './CodexRuntimeContext'
+import { ModalSafeArea } from './ModalSafeArea'
 import { SheetCloseButton } from './ui'
 import { errorMessage } from '../lib/format'
 
@@ -122,8 +122,8 @@ export function CodexGoalEditorSheet({ visible, onClose }: { visible: boolean; o
   const colors = usePalette()
   const { scopeKey } = useCodexRuntime()
   if (!visible) return null
-  return <Modal visible animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={onClose}>
-    <SafeAreaView style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+  return <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+    <ModalSafeArea style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
       <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
         <Goal size={21} color={colors.blue} />
         <Text style={[styles.title, styles.grow, { color: colors.text }]}>Persistent goal</Text>
@@ -132,7 +132,7 @@ export function CodexGoalEditorSheet({ visible, onClose }: { visible: boolean; o
       <ScrollView contentContainerStyle={styles.sheetContent} keyboardShouldPersistTaps="always">
         <CodexGoalEditor key={scopeKey} />
       </ScrollView>
-    </SafeAreaView>
+    </ModalSafeArea>
   </Modal>
 }
 

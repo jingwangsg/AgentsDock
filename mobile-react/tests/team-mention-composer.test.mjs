@@ -120,7 +120,7 @@ const click=async(renderer,id)=>act(async()=>byID(renderer,id)[0].props.onPress(
 const recipient=renderer=>renderer.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel==='Reference Mac Studio in My team')
 async function renderPicker(overrides={}){
   let renderer
-  const props={visible:true,width:390,query:'',sourceSessionId:'chat',referenceLimitReached:false,onQueryChange(){},onSelect(value){fixture.selected=value;return true},onClose(){},onDidDismiss(){},...overrides}
+  const props={visible:true,query:'',sourceSessionId:'chat',referenceLimitReached:false,onQueryChange(){},onSelect(value){fixture.selected=value;return true},onClose(){},onDidDismiss(){},...overrides}
   await act(async()=>{renderer=TestRenderer.create(React.createElement(TeamTargetPicker,props))})
   return {renderer,props}
 }

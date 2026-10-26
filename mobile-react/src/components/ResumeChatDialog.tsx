@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { Check, ChevronDown, ChevronRight, CircleAlert, FolderOpen, Import, KeyRound, Search, Square, SquareCheck } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
@@ -14,6 +13,7 @@ import { usePalette } from '../theme'
 import type { Backend, BulkImportSessionItem, BulkImportSessionResult, LocalSessionCandidate, Session } from '../types'
 import { Text, TextInput } from './AppText'
 import { BackendMark } from './BackendMark'
+import { ModalSafeArea } from './ModalSafeArea'
 import { SheetCloseButton } from './ui'
 
 interface ResumeChatDialogProps {
@@ -357,8 +357,8 @@ function ScopedResumeChatDialog({ visible, onClose, onOpened, connection, active
     ? 'Continue Claude Code, Codex or Cursor CLI chats from this server. Cursor imports a text snapshot.'
     : 'Continue Claude Code or Codex CLI chats from this server.'
 
-  return <Modal visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={close}>
-    <SafeAreaView testID="resume-chat-dialog" accessibilityViewIsModal onAccessibilityEscape={close} style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+  return <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={close}>
+    <ModalSafeArea testID="resume-chat-dialog" accessibilityViewIsModal onAccessibilityEscape={close} style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <View style={styles.headerCopy}>
           <Text accessibilityRole="header" style={[styles.title, { color: colors.text }]}>Resume chat</Text>
@@ -544,7 +544,7 @@ function ScopedResumeChatDialog({ visible, onClose, onOpened, connection, active
           >{importing ? <ActivityIndicator size="small" color={colors.textOnAccent} /> : null}<Text style={[styles.primaryText, { color: colors.textOnAccent }]}>{importing ? 'Importing…' : selected.size ? `Import ${selected.size}` : 'Import'}</Text></Pressable>
         </View>
       </>}
-    </SafeAreaView>
+    </ModalSafeArea>
   </Modal>
 }
 
