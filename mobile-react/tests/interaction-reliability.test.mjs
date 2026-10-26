@@ -687,9 +687,9 @@ test('compact back navigation cannot leave an animated pane over the selector', 
 
 test('separate controls offer guarded attachments and Mac-parity quick messages', () => {
   assert.match(composer, /from 'expo-image-picker'/)
-  assert.match(composer, /from '@expo\/ui\/community\/menu'/)
+  assert.match(composer, /import \{ MenuView, type MenuAction \} from '\.\/material\/MenuView'/)
   assert.match(composer, /const QUICK_MESSAGES = \['Status report', 'Keep going\.', 'Verify the result carefully\.'\] as const/)
-  assert.match(composer, /const options = \['Reference another chat', 'Photo Library', 'Files', 'Reference a server \(@@\)', 'Cancel'\]/)
+  assert.match(composer, /Alert\.alert\('Add', undefined, \[\s*\{ text: 'Reference another chat'[^\n]*\n\s*\{ text: 'Photo Library'[^\n]*\n\s*\{ text: 'Files'[^\n]*\n\s*\{ text: 'Reference a server \(@@\)'[^\n]*\n\s*\{ text: 'Cancel', style: 'cancel' \},\s*\]\)/)
   assert.match(composer, /const QUICK_MESSAGE_ACTIONS: MenuAction\[\] = QUICK_MESSAGES\.map\(\(title, index\) => \(\{[\s\S]*?id: `quick-message:\$\{index\}`,[\s\S]*?title,/)
   assert.match(composer, /actions=\{QUICK_MESSAGE_ACTIONS\}/)
   assert.match(composer, /event\.nativeEvent\.event\.startsWith\(prefix\)/)

@@ -2,7 +2,6 @@ import { useEvent } from 'expo'
 import { VideoView, useVideoPlayer } from 'expo-video'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   AppState as NativeAppState,
   PanResponder,
   Platform,
@@ -11,6 +10,7 @@ import {
   View,
   type GestureResponderEvent,
 } from 'react-native'
+import { ActivityIndicator } from '../material/ActivityIndicator'
 import { Download, Pause, Play, RefreshCw, X, ZoomIn, ZoomOut } from 'lucide-react-native'
 import { adaptiveViewerDismissAllowed } from '../../lib/adaptive-file-viewer-state'
 import type { MobileFileViewerLayout } from '../../lib/file-viewer'

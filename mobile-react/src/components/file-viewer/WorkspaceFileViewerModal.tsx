@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FlashList } from '@shopify/flash-list'
 import * as Clipboard from 'expo-clipboard'
 import * as FileSystem from 'expo-file-system/legacy'
-import { ActionSheetIOS, ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
+import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator } from '../material/ActivityIndicator'
+import { Alert } from '../../lib/alert'
 import { AlertCircle, ChevronLeft, ChevronRight, Download, File, FileDiff, FilePlus, Folder, FolderPlus, Link, MoreHorizontal, Pencil, RefreshCw, Search, Share2, Trash2, X } from 'lucide-react-native'
 import type { AgentServerClient } from '../../api/AgentServerClient'
 import {
@@ -522,49 +524,23 @@ function ScopedWorkspaceFileViewer({ request, connection, modalPadding, connecti
   }, [latestWorkspaceMutationEntry, mutationControlsDisabled, mutationsAvailable, protectAffectedEditor, removeWorkspaceEntry])
   const showEntryWorkspaceActions = useCallback((entry: WorkspaceEntry) => {
     if (mutationControlsDisabled || !mutationsAvailable) return
-    if (Platform.OS !== 'ios') {
-      Alert.alert(`Actions for ${entry.name}`, undefined, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Rename', onPress: () => requestRenameWorkspaceEntry(entry) },
-        { text: 'Delete', style: 'destructive', onPress: () => requestDeleteWorkspaceEntry(entry) },
-      ])
-      return
-    }
-    ActionSheetIOS.showActionSheetWithOptions({
-      title: entry.name,
-      options: ['Rename', 'Delete', 'Cancel'],
-      destructiveButtonIndex: 1,
-      cancelButtonIndex: 2,
-    }, index => {
-      if (index === 0) requestRenameWorkspaceEntry(entry)
-      if (index === 1) requestDeleteWorkspaceEntry(entry)
-    })
+    Alert.alert(`Actions for ${entry.name}`, undefined, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Rename', onPress: () => requestRenameWorkspaceEntry(entry) },
+      { text: 'Delete', style: 'destructive', onPress: () => requestDeleteWorkspaceEntry(entry) },
+    ])
   }, [mutationControlsDisabled, mutationsAvailable, requestDeleteWorkspaceEntry, requestRenameWorkspaceEntry])
   const showPhoneWorkspaceActions = useCallback(() => {
     if (mutationControlsDisabled || !mutationsAvailable) return
     const target = selectedRef.current
-    const options = ['New File', 'New Folder', ...(target ? ['Rename', 'Delete'] : []), 'Cancel']
-    const cancelButtonIndex = options.length - 1
-    if (Platform.OS !== 'ios') {
-      Alert.alert('Workspace actions', undefined, [
-        { text: 'New File', onPress: () => requestCreateWorkspaceEntry('file') },
-        { text: 'New Folder', onPress: () => requestCreateWorkspaceEntry('directory') },
-        ...(target ? [{ text: `More for ${target.name}`, onPress: () => showEntryWorkspaceActions(target) }] : []),
-      ])
-      return
-    }
-    ActionSheetIOS.showActionSheetWithOptions({
-      title: target?.name ?? (directoryRef.current || 'Workspace'),
-      options,
-      destructiveButtonIndex: target ? 3 : undefined,
-      cancelButtonIndex,
-    }, index => {
-      if (index === 0) requestCreateWorkspaceEntry('file')
-      if (index === 1) requestCreateWorkspaceEntry('directory')
-      if (target && index === 2) requestRenameWorkspaceEntry(target)
-      if (target && index === 3) requestDeleteWorkspaceEntry(target)
-    })
-  }, [mutationControlsDisabled, mutationsAvailable, requestCreateWorkspaceEntry, requestDeleteWorkspaceEntry, requestRenameWorkspaceEntry, showEntryWorkspaceActions])
+    // Android shows no Cancel here and cannot be dismissed without choosing; iOS adds one.
+    Alert.alert('Workspace actions', undefined, [
+      ...(Platform.OS === 'ios' ? [{ text: 'Cancel', style: 'cancel' as const }] : []),
+      { text: 'New File', onPress: () => requestCreateWorkspaceEntry('file') },
+      { text: 'New Folder', onPress: () => requestCreateWorkspaceEntry('directory') },
+      ...(target ? [{ text: `More for ${target.name}`, onPress: () => showEntryWorkspaceActions(target) }] : []),
+    ])
+  }, [mutationControlsDisabled, mutationsAvailable, requestCreateWorkspaceEntry, showEntryWorkspaceActions])
 
   const openEntry = useCallback((entry: WorkspaceEntry) => {
     dismissAppKeyboard()

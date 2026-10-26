@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { ChevronDown, CircleGauge, RefreshCw } from 'lucide-react-native'
 import {
   clampPercent,

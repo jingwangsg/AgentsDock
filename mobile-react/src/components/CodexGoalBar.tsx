@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, Alert, AppState, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { AppState, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
+import { Alert } from '../lib/alert'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { ChevronDown, Goal, Pause, Pencil, Play, Trash2 } from 'lucide-react-native'
 import { dismissAppKeyboard } from '../lib/app-keyboard'

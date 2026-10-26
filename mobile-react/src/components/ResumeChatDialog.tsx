@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Check, ChevronDown, ChevronRight, CircleAlert, FolderOpen, Import, KeyRound, Search, Square, SquareCheck } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'

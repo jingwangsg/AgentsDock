@@ -5,7 +5,8 @@ import {
 } from 'agentsdock-native-video'
 import { Download, RefreshCw, X } from 'lucide-react-native'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, View, type NativeSyntheticEvent } from 'react-native'
+import { Pressable, StyleSheet, View, type NativeSyntheticEvent } from 'react-native'
+import { ActivityIndicator } from '../material/ActivityIndicator'
 import { Text } from '../AppText'
 
 const IOS_NATIVE_VIDEO_LOAD_TIMEOUT_MS = 15_000

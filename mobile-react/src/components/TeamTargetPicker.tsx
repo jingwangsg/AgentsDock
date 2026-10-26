@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, FlatList, Modal, Platform, Pressable, StyleSheet, View } from 'react-native'
+import { FlatList, Modal, Platform, Pressable, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Mail, Search } from 'lucide-react-native'
 import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'

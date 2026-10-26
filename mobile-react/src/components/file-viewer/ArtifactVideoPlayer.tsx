@@ -1,13 +1,13 @@
 import * as FileSystem from 'expo-file-system/legacy'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   AppState as NativeAppState,
   Platform,
   Pressable,
   StyleSheet,
   View,
 } from 'react-native'
+import { ActivityIndicator } from '../material/ActivityIndicator'
 import { Download, RefreshCw, X } from 'lucide-react-native'
 import type { AgentServerClient } from '../../api/AgentServerClient'
 import {

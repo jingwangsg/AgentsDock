@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
-  ActionSheetIOS,
-  ActivityIndicator,
-  Alert,
   FlatList,
   Modal,
   Platform,
@@ -14,12 +11,14 @@ import {
   type NativeSyntheticEvent,
   type TextInputSelectionChangeEventData,
 } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
+import { Alert } from '../lib/alert'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Image } from 'expo-image'
 import * as DocumentPicker from 'expo-document-picker'
 import * as ImagePicker from 'expo-image-picker'
 import { useShallow } from 'zustand/react/shallow'
-import { MenuView, type MenuAction } from '@expo/ui/community/menu'
+import { MenuView, type MenuAction } from './material/MenuView'
 import { AlertCircle, ArrowDown, ArrowUp, Check, ChevronDown, CornerDownRight, File as FileIcon, Mail, MessageCircleMore, MessageSquarePlus, MessageSquareShare, Paperclip, Pencil, Search, Send, Square, Trash2, X } from 'lucide-react-native'
 import { client, useAppStore } from '../store/useAppStore'
 import {
@@ -702,8 +701,6 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const changeReferenceAction = useCallback((reference: ChatReference) => {
     const title = liveChatReferenceTitle(reference, useAppStore.getState(), sessionId)
     showReferenceActionPicker({
-      width,
-      reference,
       title,
       actions: availableChatReferenceActions(supportedChatActions, requestReplySupportedForSource),
       onSelect: action => {
@@ -717,7 +714,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         storeReferences(currentReferences.map(candidate => sameChatReference(candidate, selected) ? chatReferenceWithAction(candidate, action) : candidate))
       },
     })
-  }, [requestReplySupportedForSource, storeReferences, supportedChatActions, width])
+  }, [requestReplySupportedForSource, storeReferences, supportedChatActions])
 
   const revokeReference = useCallback((reference: ChatReference) => {
     storeReferences(referencesRef.current.filter(candidate => !sameChatReference(candidate, reference)))
@@ -1036,15 +1033,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       else if (index === 2) void pickFiles()
       else if (index === 3) openTargetPicker({ kind: '@@', start: Math.min(selectionRef.current.start, selectionRef.current.end), end: Math.max(selectionRef.current.start, selectionRef.current.end), query: '' })
     }
-    if (Platform.OS === 'ios' && width < 720) {
-      const options = ['Reference another chat', 'Photo Library', 'Files', 'Reference a server (@@)', 'Cancel']
-      ActionSheetIOS.showActionSheetWithOptions({
-        title: 'Add',
-        options,
-        cancelButtonIndex: options.length - 1,
-      }, choose)
-      return
-    }
+    // Android's Alert shows only the first three buttons; iOS draws the same dialog with all of them.
     Alert.alert('Add', undefined, [
       { text: 'Reference another chat', onPress: () => choose(0) },
       { text: 'Photo Library', onPress: () => choose(1) },
@@ -1857,9 +1846,7 @@ function sameChatReference(left: ChatReference, right: ChatReference): boolean {
     && left.source_text_end === right.source_text_end
 }
 
-function showReferenceActionPicker({ width, reference, title, actions, onSelect }: {
-  width: number
-  reference: ChatReference
+function showReferenceActionPicker({ title, actions, onSelect }: {
   /** The chip's current title, as the shelf shows it. */
   title: string
   actions: readonly ChatReferenceAction[]
@@ -1868,19 +1855,6 @@ function showReferenceActionPicker({ width, reference, title, actions, onSelect 
   const ordered = (['route', 'direct_message', 'request_reply', 'instruction', 'final_result'] as const).filter(action => actions.includes(action))
   if (!ordered.length) {
     Alert.alert('Chat handoffs unavailable', 'This server did not advertise any compatible actions.')
-    return
-  }
-  const labels = ordered.map(chatReferenceActionMenuLabel)
-  if (Platform.OS === 'ios' && width < 720) {
-    const options = [...labels, 'Cancel']
-    ActionSheetIOS.showActionSheetWithOptions({
-      title: `@${title} · ${chatReferenceLabel(reference.action)}`,
-      options,
-      cancelButtonIndex: options.length - 1,
-    }, index => {
-      const action = ordered[index]
-      if (action) onSelect(action)
-    })
     return
   }
   Alert.alert(`@${title}`, 'Choose how this chat should receive the message.', [
@@ -2022,7 +1996,6 @@ function QueuedAttachment({ sessionId, fileId, onPreview }: { sessionId: string;
 
 export function QueueShelf({ sessionId, profileId, profileGeneration, networkDisabled, onSent, onPreview }: { sessionId: string; profileId: string | null; profileGeneration: number; networkDisabled: boolean; onSent: () => void; onPreview: (name: string, source: AttachmentImageSource) => void }) {
   const colors = usePalette()
-  const { width } = useWindowDimensions()
   const allTurns = useAppStore(state => state.snapshots[sessionId]?.queuedTurns) ?? EMPTY_QUEUE
   const turns = useMemo(() => allTurns.filter(isVisibleQueuedTurn), [allTurns])
   const health = useAppStore(state => state.health)
@@ -2160,8 +2133,6 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
     }
     const title = liveChatReferenceTitle(reference, useAppStore.getState(), sessionId)
     showReferenceActionPicker({
-      width,
-      reference,
       title,
       actions: availableChatReferenceActions(supportedChatActions, requestReplySupportedForSource),
       onSelect: action => {

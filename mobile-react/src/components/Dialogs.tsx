@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View, useWindowDimensions } from 'react-native'
+import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
+import { Switch } from './material/Switch'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { DateTimePicker } from '@expo/ui/community/datetime-picker'
 import * as Clipboard from 'expo-clipboard'

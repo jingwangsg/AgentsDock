@@ -27,8 +27,7 @@ const mocks = {
     export const Linking = { openURL: async url => { globalThis.__asyncChatMessageFixture.links.push(url); } };
     export const useColorScheme = () => globalThis.__asyncChatMessageFixture.theme;
     export const AccessibilityInfo = { announceForAccessibility() {} };
-    export const Alert = { alert() {} };
-    export const ActionSheetIOS = { showActionSheetWithOptions() {} };`,
+    export const Alert = { alert() {} };`,
   '@shopify/flash-list': `import { useEffect, useState } from 'react'; export function useRecyclingState(initial, deps) { const [value, setValue] = useState(initial); useEffect(() => setValue(initial), deps); return [value, setValue]; }`,
   'lucide-react-native': `export const AlertTriangle='AlertTriangle', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', Clock3='Clock3', Code2='Code2', Copy='Copy', FileText='FileText', History='History', Pencil='Pencil', Pin='Pin', RotateCcw='RotateCcw', Siren='Siren', Sparkles='Sparkles', Wrench='Wrench', MessageSquareShare='MessageSquareShare', X='X', Maximize2='Maximize2';`,
   'react-native-svg': `export default 'Svg'; export const SvgXml='SvgXml', Defs='Defs', LinearGradient='LinearGradient', Rect='Rect', Stop='Stop';`,

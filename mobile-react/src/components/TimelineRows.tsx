@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AccessibilityInfo, ActivityIndicator, Alert, Pressable, StyleSheet, View } from 'react-native'
+import { AccessibilityInfo, Pressable, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
+import { Alert } from '../lib/alert'
 import { useRecyclingState } from '@shopify/flash-list'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'

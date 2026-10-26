@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { ArrowUp, FilePen, Globe, MessageCircleQuestion, MessageSquare, Square, Terminal, Trash2, Wrench } from 'lucide-react-native'

@@ -16,7 +16,8 @@ test('web links in a chat open in the app browser tab; long press offers Copy li
   assert.match(read('src/components/TeamNetwork.tsx'), /<MarkdownContent webLinks="system"/)
   // One action-menu helper serves chat links and the Outputs panel.
   assert.match(markdown, /showActionMenu\(url, \[\n\s+\{ text: 'Copy link'[\s\S]{0,160}\{ text: 'Open in browser'/)
-  assert.match(read('src/lib/action-menu.ts'), /options: \[\.\.\.actions\.map\(action => action\.text\), 'Cancel'\]/)
+  assert.match(read('src/lib/action-menu.ts'), /Alert\.alert\(title, undefined, \[\{ text: 'Cancel', style: 'cancel' \}, \.\.\.actions\]\)/)
+  assert.match(read('src/lib/action-menu.ts'), /import \{ Alert \} from '\.\/alert'/)
   assert.match(read('src/components/ChatOutputsPanel.tsx'), /import \{ showActionMenu \} from '\.\.\/lib\/action-menu'/)
   assert.match(markdown, /onLongPress=\{isWebLink\(href\) \? \(\) => linkMenu\(href\) :/)
   const store = read('src/store/useAppStore.ts')

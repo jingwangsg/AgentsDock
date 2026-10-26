@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
+import { Alert } from '../lib/alert'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import type { BackgroundActivityItem } from '../lib/background-activity'
 import { fonts } from '../lib/typography'

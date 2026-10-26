@@ -1,7 +1,8 @@
 // Workspace Changes sheet: Git status of the chat's working directory with
 // stage/unstage/discard and per-file diffs. Port of the Electron WorkspaceChanges tab.
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native'
+import { Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native'
+import { Alert } from '../lib/alert'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { AlertTriangle, ArrowLeft, ChevronRight, Columns2, Folder, Minus, Plus, RefreshCw, Rows3, Undo2, WrapText, X, type LucideIcon } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'

@@ -65,9 +65,11 @@ test('server management controls retain touch-safe minimum dimensions', () => {
   assert.match(source, /secondaryButton: \{ minHeight: 44/)
 })
 
-test('row actions open an Alert (MenuView does not open inside a Modal on Android), with Cancel on iOS', () => {
+test('row actions open an Alert (MenuView does not open inside a Modal on Android), with Cancel first on iOS', () => {
   assert.match(source, /icon=\{MoreHorizontal\}[^\n]*Alert\.alert\(profile\.name, undefined, alertButtons/)
-  assert.match(source, /Platform\.OS === 'ios' \? \[\.\.\.rowActions, \{ text: 'Cancel', style: 'cancel' as const \}\] : rowActions/)
+  assert.match(source, /Platform\.OS === 'ios' \? \[\{ text: 'Cancel', style: 'cancel' as const \}, \.\.\.rowActions\] : rowActions/)
+  // iOS draws the Android dialog (lib/alert.ios.ts), which also opens above this sheet's Modal.
+  assert.match(source, /import \{ Alert \} from '\.\.\/lib\/alert'/)
 })
 
 test('remotes are reconciled from the hub registry; deploy works from any server through the hub; the remote\'s own token is never exposed', () => {

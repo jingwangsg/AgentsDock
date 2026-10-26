@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -9,6 +8,7 @@ import {
   StyleSheet,
   View,
 } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { ArrowLeft, Bot, BookOpen, Inbox, RadioTower, RefreshCw, Send, Server, Users, X } from 'lucide-react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { AgentServerClient } from '../api/AgentServerClient'
