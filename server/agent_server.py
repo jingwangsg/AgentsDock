@@ -17330,12 +17330,13 @@ async def wait_for_session_tasks(
     session_id: str,
     *,
     timeout: float = CODEX_SESSION_CLEANUP_TIMEOUT_SECONDS,
+    exclude: asyncio.Task[Any] | None = None,
 ) -> bool:
     current = asyncio.current_task()
     tasks = [
         task
         for task in tuple(registry.get(session_id) or ())
-        if task is not current and not task.done()
+        if task is not current and task is not exclude and not task.done()
     ]
     if not tasks:
         return True
@@ -93740,9 +93741,14 @@ async def delete_session(session_id: str) -> dict[str, Any]:
                 elif proc:
                     await terminate_process_tree(proc)
 
+            # Every turn that ends schedules a queue promotion, which registers
+            # here and then waits for this chat's lifecycle lock, held by this
+            # delete: waiting for it only ran out the timeout (409). It runs
+            # after the delete releases the lock and finds the chat gone.
             turns_finished = await wait_for_session_tasks(
                 SESSION_TURN_TASKS,
                 session_id,
+                exclude=QUEUE_START_TASKS.get(session_id),
             )
             if not turns_finished:
                 async with ACTIVE_LOCK:
@@ -93786,6 +93792,7 @@ async def delete_session(session_id: str) -> dict[str, Any]:
                             SESSION_TURN_TASKS,
                             session_id,
                             timeout=0.01,
+                            exclude=QUEUE_START_TASKS.get(session_id),
                         )
             if not turns_finished:
                 raise HTTPException(
