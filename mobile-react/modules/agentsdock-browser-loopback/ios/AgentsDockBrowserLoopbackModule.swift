@@ -10,11 +10,11 @@ import WebKit
 public final class AgentsDockBrowserLoopbackModule: Module {
   private final class Route {
     let proxy = LoopbackSocksProxy()
-    let store: AnyObject // WKWebsiteDataStore; held so the proxy setting outlives a store no web view holds yet
+    let store: WKWebsiteDataStore // held so the proxy setting outlives a store no web view holds yet
     let directHosts: [String]
     let allHosts: Bool
     var appliedPort: UInt16?
-    init(store: AnyObject, directHosts: [String], allHosts: Bool) {
+    init(store: WKWebsiteDataStore, directHosts: [String], allHosts: Bool) {
       self.store = store
       self.directHosts = directHosts
       self.allHosts = allHosts
@@ -62,7 +62,9 @@ public final class AgentsDockBrowserLoopbackModule: Module {
   /// Binds the route's listener, on the profile's previous port when it is free, and points the
   /// tab's data store at it. Main queue.
   private func listen(_ profile: String, _ route: Route, done: @escaping (Bool) -> Void) {
-    guard #available(iOS 17.0, *), let store = route.store as? WKWebsiteDataStore else { done(false); return }
+    // Routes exist only on iOS 17, where routeAsync creates them.
+    guard #available(iOS 17.0, *) else { done(false); return }
+    let store = route.store
     let bound: (UInt16?) -> Void = { [weak self] port in
       DispatchQueue.main.async {
         guard let self, self.routes[profile] === route else { done(false); return }
