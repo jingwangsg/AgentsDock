@@ -45,7 +45,7 @@ type InspectorAction = {
 }
 
 const IOS_INSPECTOR_HANDOFF_FALLBACK_MS = 1_000
-// Terminal tabs kept connected while hidden (Android): the most recently shown ones, at most eight and 80,000
+// Terminal tabs kept connected while hidden: the most recently shown ones, at most eight and 80,000
 // lines of scrollback between them. They share one web view process; on the emulator (2026-10-12) each added
 // about 14 MB of PSS and no measurable idle CPU, and a full 50,000-line scrollback about 50 MB more (190 MB
 // while it was written), so eight such tabs could get that process killed. A tab let go reattaches, with a
@@ -546,7 +546,7 @@ function AppShellContent() {
   </View>
 }
 
-// Closed, the pane stays mounted off screen only while it holds hidden terminal tabs (Android).
+// Closed, the pane stays mounted off screen only while it holds hidden terminal tabs.
 function MobileChatPane({ children, open, width, backgroundColor, onClose }: { children: ReactNode; open: boolean; width: number; backgroundColor: string; onClose: () => void }) {
   const translateX = useSharedValue(open ? 0 : width)
   useEffect(() => {

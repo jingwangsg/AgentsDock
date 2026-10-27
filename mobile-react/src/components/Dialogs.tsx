@@ -179,7 +179,7 @@ function TerminalSettings() {
     <View style={styles.modeRow}>{(['bar', 'block', 'underline'] as const).map(value => <ModeButton key={value} testID={`settings-terminal-cursor-${value}`} label={value === 'bar' ? 'Bar' : value === 'block' ? 'Block' : 'Underline'} selected={settings.cursorStyle === value} onPress={() => updateTerminalSettings({ cursorStyle: value })} />)}</View>
     {toggle('cursorBlink', 'Blinking cursor', 'The cursor blinks while the terminal has the keyboard.')}
     {toggle('copyOnSelect', 'Copy on select', 'Text selected with a mouse or a double tap goes to the clipboard.')}
-    {toggle('screenReader', 'Screen reader support', 'Lets TalkBack read the terminal; it costs some speed with fast output.')}
+    {toggle('screenReader', 'Screen reader support', `Lets ${Platform.OS === 'ios' ? 'VoiceOver' : 'TalkBack'} read the terminal; it costs some speed with fast output.`)}
     <Label text="Terminal scrollback" />
     <View style={styles.modeRow}>{TERMINAL_SCROLLBACK_OPTIONS.map(lines => <ModeButton key={lines} testID={`settings-terminal-scrollback-${lines}`} label={`${lines.toLocaleString('en-US')} lines`} selected={settings.scrollback === lines} onPress={() => updateTerminalSettings({ scrollback: lines })} />)}</View>
     <Text style={[styles.help, { color: colors.muted }]}>Hidden terminal tabs stay connected, up to eight with 10,000 lines or less, three with 25,000 and only the tab in front with 50,000.</Text>

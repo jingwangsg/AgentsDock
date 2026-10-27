@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
-import { Alert, Linking, Platform, StyleSheet, type NativeSyntheticEvent } from 'react-native'
+import { Linking, Platform, StyleSheet, type NativeSyntheticEvent } from 'react-native'
+import { Alert } from '../../lib/alert'
 import * as Clipboard from 'expo-clipboard'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { TextInput } from '../AppText'
