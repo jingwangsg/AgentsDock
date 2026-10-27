@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, type GestureResponderEvent } from 'react-native'
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions, type GestureResponderEvent } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import Svg, { Path } from 'react-native-svg'
 import type { DateTimePickerProps } from '@expo/ui/community/datetime-picker'
 import { showMaterialOverlay, useKeyboardHeight } from './MaterialOverlay'
@@ -48,15 +49,26 @@ function Icon({ path, color, rotate }: { path: string; color: string; rotate?: b
   return <Svg width={24} height={24} viewBox="0 0 24 24" style={rotate ? { transform: [{ rotate: '180deg' }] } : undefined}><Path d={path} fill={color} /></Svg>
 }
 
-/** The dialog window: 60% scrim that dismisses on tap, the card centered on screen above the keyboard. */
+/**
+ * The dialog window: 60% scrim that dismisses on tap, the card centered on screen above the keyboard.
+ * Where the card is taller than the space between the system bars and the keyboard (an iPad app
+ * window resized short), it is drawn smaller to fit, so Set and Cancel stay on screen. An iPhone
+ * stays in portrait here: the only caller is the Schedule job sheet, a portrait-only Modal.
+ */
 function DialogFrame({ width, height, onDismiss, children }: { width: number; height: number; onDismiss: () => void; children: ReactNode }) {
   const palette = useMaterialPalette()
   const keyboard = useKeyboardHeight()
+  const screen = useWindowDimensions()
+  const insets = useSafeAreaInsets()
+  // The card is centered in the space above the keyboard and must clear the bars on both sides.
+  const middle = (screen.height - keyboard) / 2
+  const room = 2 * Math.min(middle - insets.top, screen.height - Math.max(insets.bottom, keyboard) - middle)
+  const scale = Math.min(1, room / height)
   return <View style={StyleSheet.absoluteFill}>
     <Pressable accessible={false} style={[StyleSheet.absoluteFill, { backgroundColor: palette.alert.scrim }]} onPress={onDismiss} />
     <View pointerEvents="box-none" style={[styles.center, { bottom: keyboard }]}>
       {/* VoiceOver's escape dismisses, as a tap outside does. */}
-      <View accessibilityViewIsModal onAccessibilityEscape={onDismiss} style={[styles.card, { width, height, backgroundColor: palette.picker.container }]}>{children}</View>
+      <View accessibilityViewIsModal onAccessibilityEscape={onDismiss} style={[styles.card, { width, height, backgroundColor: palette.picker.container }, scale < 1 && { transform: [{ scale }] }]}>{children}</View>
     </View>
   </View>
 }

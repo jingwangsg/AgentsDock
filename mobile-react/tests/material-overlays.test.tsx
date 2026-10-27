@@ -6,6 +6,7 @@ import { showAlertDialog } from '../src/components/material/AlertDialog'
 import { DateTimePicker } from '../src/components/material/DateTimePickerDialog.ios'
 import { showDropdownMenu } from '../src/components/material/DropdownMenu'
 import { MaterialOverlayHost } from '../src/components/material/MaterialOverlay'
+import { __setWindowSize } from './component-mocks/react-native'
 
 // The iOS app-drawn menus and dialogs, rendered through the overlay host as the app mounts them.
 let tree: ReturnType<typeof create> | null = null
@@ -110,4 +111,33 @@ test('alert buttons scroll in their own panel that gives up height before the me
   assert.equal(buttons.minHeight, 5 + 54 + 10 + 16)
   await act(async () => { tree!.root.findByProps({ accessibilityLabel: 'Cancel' }).props.onPress() })
   assert.equal(overlayShown(), false)
+})
+
+test('the date and time dialogs are drawn smaller to fit a window shorter than the card, and unchanged otherwise', async () => {
+  const visibleCard = async (mode: 'date' | 'time', window: { width: number; height: number }) => {
+    __setWindowSize(window)
+    await renderHost(<DateTimePicker value={new Date(Date.UTC(2026, 9, 27))} mode={mode} accentColor="#74ade8" positiveButton={{ label: 'Set' }} negativeButton={{ label: 'Cancel' }} />)
+    const card = Object.assign({}, ...[modals()[0].props.style].flat(3).filter(Boolean)) as { height: number; transform?: Array<{ scale: number }> }
+    const scale = card.transform?.[0].scale ?? 1
+    await act(async () => { tree!.root.findByProps({ accessibilityLabel: 'Cancel' }).props.onPress() })
+    await act(async () => { tree!.unmount() })
+    tree = null
+    return { scale, height: card.height * scale }
+  }
+  try {
+    for (const mode of ['date', 'time'] as const) {
+      // An iPad app window resized to 788 × 486 pt (iPadOS windowed apps), and a phone in landscape.
+      for (const window of [{ width: 788, height: 486 }, { width: 874, height: 402 }]) {
+        const shown = await visibleCard(mode, window)
+        assert.ok(shown.scale < 1, `${mode} ${window.height}`)
+        assert.ok(shown.height <= window.height, `${mode} card, with Set and Cancel at its bottom, fits ${window.height} pt`)
+      }
+      // Portrait phone and full-screen iPad: drawn as before, with no transform.
+      for (const window of [{ width: 402, height: 874 }, { width: 1032, height: 1376 }]) {
+        assert.deepEqual(await visibleCard(mode, window), { scale: 1, height: mode === 'date' ? 568 : 516 })
+      }
+    }
+  } finally {
+    __setWindowSize({ width: 390, height: 844 })
+  }
 })
