@@ -338,6 +338,36 @@ class ClaudeHistoryRepairTests(unittest.TestCase):
                     quick.join(3)
         self.assertNotIn("chat-2", self.cache._proofs, "forget must cancel a pending proof swap")
 
+    def test_chats_prove_in_parallel_and_forget_cancels_only_its_own_proof(self):
+        self.fixture()
+        entered = {"long-chat": threading.Event(), "chat-1": threading.Event()}
+        release = threading.Event()
+        real_prove = repair._prove
+
+        def held_until_released(session_id, *args):
+            entered[session_id].set()
+            release.wait(5)
+            return real_prove(session_id, *args)
+
+        with patch.object(repair, "_prove", side_effect=held_until_released):
+            long_chat = threading.Thread(target=lambda: self.cache.prepare(
+                "long-chat", "provider-1", self.events, self.root, self.normalize))
+            other_chat = threading.Thread(target=self.prepare)
+            long_chat.start()
+            try:
+                self.assertTrue(entered["long-chat"].wait(5))
+                other_chat.start()
+                self.assertTrue(entered["chat-1"].wait(2), "a chat's proof waited for another chat's")
+                # Both proofs are running: forgetting one must not cancel the other.
+                self.cache.forget("long-chat")
+            finally:
+                release.set()
+                long_chat.join(5)
+                if other_chat.is_alive():
+                    other_chat.join(5)
+        self.assertTrue(self.cache.is_hidden("chat-1", self.wrapper))
+        self.assertNotIn("long-chat", self.cache._proofs)
+
     def test_server_projection_preserves_empty_boundary_answers_and_source(self):
         self.fixture()
         self.prepare()
