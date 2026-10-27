@@ -232,7 +232,7 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
       {notGit ? <Notice text={NOT_GIT_MESSAGE} testID="changes-not-git" />
         : loading && !status ? <Loading label="Loading repository status" />
           : <View style={styles.workspace} onLayout={event => setWorkspaceWidth(event.nativeEvent.layout.width)}>
-            {split || !selection ? <RefreshScrollView style={[styles.files, split ? [styles.filesColumn, { borderColor: colors.border }] : null]} contentContainerStyle={styles.filesContent} keyboardShouldPersistTaps="always" refreshing={loading} onRefresh={() => void refresh()} tintColor={colors.muted}>
+            {split || !selection ? <RefreshScrollView style={[styles.files, split ? [styles.filesColumn, { borderColor: colors.border }] : null]} contentContainerStyle={styles.filesContent} keyboardShouldPersistTaps="always" refreshing={loading} onRefresh={() => void refresh()}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={styles.filters}>
                 {CHANGES_FILTERS.filter(group => group === 'all' || group === filter || counts[group] > 0).map(group => <Pressable key={group} accessibilityRole="button" accessibilityLabel={`${FILTER_LABELS[group]}, ${counts[group]}`} accessibilityState={{ selected: filter === group }} testID={`changes-filter-${group}`} onPress={() => setFilter(group)} style={[styles.filterChip, { backgroundColor: filter === group ? colors.selected : colors.raised }]}>
                   <Text style={[styles.filterLabel, { color: colors.text }]}>{FILTER_LABELS[group]}</Text><Text style={[styles.filterCount, { color: colors.muted }]}>{counts[group]}</Text>

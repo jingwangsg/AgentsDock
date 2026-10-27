@@ -533,7 +533,8 @@ function ScopedWorkspaceFileViewer({ request, connection, modalPadding, connecti
   const showPhoneWorkspaceActions = useCallback(() => {
     if (mutationControlsDisabled || !mutationsAvailable) return
     const target = selectedRef.current
-    // Android shows no Cancel here and cannot be dismissed without choosing; iOS adds one.
+    // Android shows no Cancel here, so its dialog closes only by choosing an action; iOS adds
+    // Cancel rather than copy that.
     Alert.alert('Workspace actions', undefined, [
       ...(Platform.OS === 'ios' ? [{ text: 'Cancel', style: 'cancel' as const }] : []),
       { text: 'New File', onPress: () => requestCreateWorkspaceEntry('file') },

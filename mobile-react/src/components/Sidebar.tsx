@@ -792,7 +792,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   // The chat identity is always a plain native Pressable. Wrapping the entire
   // Android row in Compose MenuView + ReanimatedSwipeable lets their gesture
   // hosts retain the touch after returning from a chat, making every row look
-  // dead. The Android menu is anchored to a zero-width sibling at the row's
+  // dead. The menu is anchored to a zero-width sibling at the row's
   // trailing edge and opened from the row's own long press instead.
   if (welcome) return pressableRow
   return <View style={styles.sessionShell}>{pressableRow}<MenuView ref={menu} testID={`chat-actions-${session.id}`} title={session.title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>

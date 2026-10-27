@@ -884,8 +884,8 @@ function ServerManagementRow({ profile, active, switching, disabled, removable, 
   const address = hubProxyRemoteId(profile.serverUrl) !== null ? profile.sshHost : profile.serverUrl
   const details = [profile.serverIdentity ? `Identity: ${profile.serverIdentity}` : '', profile.serverVersion ? `AgentsServer ${profile.serverVersion}` : ''].filter(Boolean).join(' · ')
   // An Alert, not MenuView: MenuView does not open inside this sheet's Modal on Android, and the
-  // row has at most three actions, Android's Alert limit (tapping outside cancels there). iOS
-  // also shows a Cancel button, first so it sits left of the actions.
+  // row has at most three actions, Android's Alert limit. Android's dialog has no Cancel (only a
+  // tap outside closes it); iOS adds one rather than copy that, first so it sits left of the actions.
   const rowActions = removable ? [{ text: 'Remove', style: 'destructive' as const, onPress: onRemove }] : []
   const alertButtons = Platform.OS === 'ios' ? [{ text: 'Cancel', style: 'cancel' as const }, ...rowActions] : rowActions
   return <View style={[styles.profileRow, { borderColor: colors.border, backgroundColor: active ? `${colors.blue}10` : colors.surface }]}>

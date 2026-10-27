@@ -11,7 +11,7 @@ const THUMB = 20
 const THUMB_OFF_X = 13.5 - THUMB / 2
 const THUMB_ON_X = 33 - THUMB / 2
 
-export function Switch({ value = false, onValueChange, disabled, style, testID, accessibilityLabel, ...props }: SwitchProps) {
+export function Switch({ value = false, onValueChange, disabled, style, ...props }: SwitchProps) {
   const palette = useMaterialPalette().switch
   const position = useRef(new Animated.Value(value ? 1 : 0)).current
   useEffect(() => {
@@ -21,9 +21,7 @@ export function Switch({ value = false, onValueChange, disabled, style, testID, 
   const trackColor = disabled ? palette.trackDisabled : position.interpolate({ inputRange: [0, 1], outputRange: [palette.trackOff, palette.trackOn] })
   return <Pressable
     {...props}
-    testID={testID}
     accessibilityRole="switch"
-    accessibilityLabel={accessibilityLabel}
     accessibilityState={{ checked: value, disabled: Boolean(disabled) }}
     disabled={disabled}
     onPress={() => onValueChange?.(!value)}

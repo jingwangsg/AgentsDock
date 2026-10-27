@@ -5,10 +5,6 @@ import test from 'node:test'
 
 const dialogs = fs.readFileSync(path.resolve('src/components/Dialogs.tsx'), 'utf8')
 
-function count(source, pattern) {
-  return [...source.matchAll(pattern)].length
-}
-
 function sourceBetween(startToken, endToken, from = 0) {
   const start = dialogs.indexOf(startToken, from)
   assert.notEqual(start, -1, `missing scheduler source token: ${startToken}`)
@@ -28,7 +24,7 @@ test('both platforms show Android\'s date and time buttons, each opening a Mater
   assert.match(dialogs, /import \{ DateTimePicker \} from '\.\/material\/DateTimePickerDialog'/)
   assert.match(dialogs, /\{androidStartPicker \? <DateTimePicker/)
   assert.match(dialogs, /mode=\{androidStartPicker\}[^]*?presentation="dialog"[^]*?display="default"/)
-  assert.match(dialogs, /applyPickerValue\(part, value, part === 'date'\)[^]*?setAndroidStartPicker\(null\)/)
+  assert.match(dialogs, /mergeScheduleWallTimePickerValue\(startRef\.current, value, part, part === 'date'\)[^]*?setAndroidStartPicker\(null\)/)
   assert.match(dialogs, /onDismiss=\{\(\) => setAndroidStartPicker\(null\)\}/)
 })
 

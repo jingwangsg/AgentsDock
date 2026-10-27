@@ -617,7 +617,7 @@ test('scheduled-job native pickers preserve and synchronously submit the chosen 
   assert.match(dialogs, /testID="job-start-date-button"/)
   assert.match(dialogs, /testID="job-start-time-button"/)
   assert.match(dialogs, /androidStartPicker === 'date' \? scheduleWallTimeAndroidDatePickerDate/)
-  assert.match(dialogs, /applyPickerValue\(part, value, part === 'date'\)[\s\S]*?setAndroidStartPicker\(null\)/)
+  assert.match(dialogs, /mergeScheduleWallTimePickerValue\(startRef\.current, value, part, part === 'date'\)[\s\S]*?setAndroidStartPicker\(null\)/)
   assert.match(dialogs, /onDismiss=\{\(\) => setAndroidStartPicker\(null\)\}/)
   assert.match(dialogs, /mode=\{androidStartPicker\}/)
   const updateStart = dialogs.slice(dialogs.indexOf('  const updateStart ='), dialogs.indexOf('  const selectStartMode ='))
