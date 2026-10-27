@@ -563,7 +563,9 @@ test('a chat on another server becomes a tagged chip that is paired through the 
   }finally{await act(async()=>renderer.unmount())}
 })
 
-const select=async(renderer,caret)=>act(async()=>byID(renderer,'chat-composer-input')[0].props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}}))
+// iOS (this fixture's platform) moves the caret out of a chip one frame later: wait for that frame.
+const nextFrame=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()))
+const select=async(renderer,caret)=>act(async()=>{byID(renderer,'chat-composer-input')[0].props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}});await nextFrame()})
 const inputText=node=>node.children.map(child=>typeof child==='string'?child:inputText(child)).join('')
 test('a picked chat is one block inside the input and Backspace at its end removes it with its pill',async()=>{
   resetRoutes()
@@ -592,6 +594,29 @@ test('a picked chat is one block inside the input and Backspace at its end remov
     await select(renderer,3)
     assert.deepEqual(fixture.selections,[[4,4]],'The caret lands where the chip began')
   }finally{await act(async()=>renderer.unmount())}
+})
+
+test('on iOS the caret leaves a chip one frame after the tap, once TextInput holds the latest event count',async()=>{
+  // A tap that ends an autocorrect session sends a same-text change with the selection; a selection
+  // command issued in that batch carries the old event count and iOS ignores it (seen on the iPad simulator).
+  const reference={session_id:'target',display_title_snapshot:'Chat target',source_text_start:4,source_text_end:16,action:'route',grant_intent:true}
+  resetRoutes({drafts:{chat:'Ask @Chat target now'},chatReferencesBySession:{chat:[reference]}})
+  const renderer=await render()
+  const realFrame=globalThis.requestAnimationFrame
+  const frames=[]
+  try{
+    globalThis.requestAnimationFrame=callback=>frames.push(callback)
+    await act(async()=>{
+      byID(renderer,'chat-composer-input')[0].props.onChangeText('Ask @Chat target now')
+      byID(renderer,'chat-composer-input')[0].props.onSelectionChange({nativeEvent:{selection:{start:8,end:8}}})
+    })
+    assert.deepEqual(fixture.selections,[],'No selection command in the batch of the text event')
+    await act(async()=>{for(const callback of frames.splice(0))callback(Date.now())})
+    assert.deepEqual(fixture.selections,[[4,4]])
+    globalThis.requestAnimationFrame=realFrame
+    await type(renderer,'Ask x@Chat target now')
+    assert.deepEqual(store.getState().chatReferencesBySession.chat,[{...reference,source_text_start:5,source_text_end:17}])
+  }finally{globalThis.requestAnimationFrame=realFrame;await act(async()=>renderer.unmount())}
 })
 
 test('the caret never rests inside a chip, so typing beside it keeps the chip',async()=>{
@@ -759,7 +784,7 @@ function chipQueue(turn={prompt:'Ask @Chat target now',chat_references:[{session
   return {prompt:turn.prompt,updates}
 }
 const editQueued=async renderer=>act(async()=>renderer.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel==='Edit queued message').props.onPress())
-const queuedSelect=async(renderer,caret)=>act(async()=>renderer.root.findByType('TextInput').props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}}))
+const queuedSelect=async(renderer,caret)=>act(async()=>{renderer.root.findByType('TextInput').props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}});await nextFrame()})
 
 test('the queued-message editor draws a chip as one block, keeps the caret out of it and deletes it whole',async()=>{
   const {prompt,updates}=chipQueue()

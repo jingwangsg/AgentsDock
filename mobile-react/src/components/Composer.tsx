@@ -1506,7 +1506,16 @@ function useChipTextField(inputRef: RefObject<TextInput | null>, initialCaret: n
       const caret = caretOutsideComposerReferences(native.start, [...chatReferences, ...teamReferences], selectionRef.current.start)
       if (caret !== native.start) {
         selection = { start: caret, end: caret }
-        inputRef.current?.setSelection(caret, caret)
+        // iOS ignores a selection command whose event count is older than the field's. A tap that ends an
+        // autocorrect session sends a text event in the same batch, and TextInput holds the new count
+        // only after its next render, so iOS moves the caret a frame later.
+        if (Platform.OS === 'ios') {
+          requestAnimationFrame(() => {
+            if (selectionRef.current.start === caret && selectionRef.current.end === caret) inputRef.current?.setSelection(caret, caret)
+          })
+        } else {
+          inputRef.current?.setSelection(caret, caret)
+        }
       }
     }
     selectionRef.current = selection
