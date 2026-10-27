@@ -610,11 +610,10 @@ test('scheduled-job interval presets keep 10m and 30m taps out of nested scroll 
 })
 
 test('scheduled-job native pickers preserve and synchronously submit the chosen wall time', () => {
-  assert.match(dialogs, /from '@expo\/ui\/community\/datetime-picker'/)
+  assert.match(dialogs, /import \{ DateTimePicker \} from '\.\/material\/DateTimePickerDialog'/)
   assert.match(dialogs, /testID="job-start-mode-time"/)
   assert.match(dialogs, /testID="job-start-picker"/)
-  assert.match(dialogs, /testID="job-start-date-picker"/)
-  assert.match(dialogs, /testID="job-start-time-picker"/)
+  assert.match(dialogs, /testID=\{`job-start-\$\{androidStartPicker\}-picker`\}/)
   assert.match(dialogs, /testID="job-start-date-button"/)
   assert.match(dialogs, /testID="job-start-time-button"/)
   assert.match(dialogs, /androidStartPicker === 'date' \? scheduleWallTimeAndroidDatePickerDate/)
