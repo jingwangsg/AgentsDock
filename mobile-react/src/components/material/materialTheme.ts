@@ -30,6 +30,8 @@ export function useMaterialPalette(): typeof palettes.light | typeof palettes.da
 
 // Android draws these controls in Roboto (system font) and the menu check mark in Noto
 // Sans Symbols. The fonts load once at startup; until then text falls back to the system font.
+// The controls use React Native's Text, not AppText: Android's native dialogs and menus follow the
+// system font size, not the in-app text size.
 const fontSources = {
   'Roboto-Regular': require('../../../assets/fonts/roboto/Roboto-Regular.ttf'),
   'Roboto-Medium': require('../../../assets/fonts/roboto/Roboto-Medium.ttf'),
