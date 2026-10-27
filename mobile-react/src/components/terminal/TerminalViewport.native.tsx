@@ -14,6 +14,9 @@ export type { TerminalConnectionStatus, TerminalViewportHandle, TerminalViewport
 // load-bearing: WebKit blocks a ws:// connection from an https: page and has no mixed-content switch, so the
 // iOS page is http:. Nothing in the page needs a secure context. Android keeps the https: page with mixedContentMode.
 const PAGE_URL = Platform.OS === 'ios' ? 'http://agentsdock.invalid/' : 'https://agentsdock.invalid/'
+// load-bearing: on iOS any focus in the page raises the soft keyboard (keyboardDisplayRequiresUserAction), on
+// Android an injected one does not. A key-row key or Paste must not bring back a keyboard the user put away.
+const FOCUS_ON_INPUT = Platform.OS !== 'ios'
 
 type CopyRequest = {
   id: number
@@ -87,7 +90,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   const paste = async () => {
     const text = await Clipboard.getStringAsync()
     if (!text) return false
-    return call('paste', text)
+    return call('paste', text, FOCUS_ON_INPUT)
   }
   useImperativeHandle(ref, () => ({
     focus: async () => {
@@ -102,7 +105,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
     },
     blur: async () => call('blur'),
     paste,
-    sendKey: async name => call('key', name),
+    sendKey: async name => call('key', name, FOCUS_ON_INPUT),
     setModifier: async (name, active) => call('modifier', name, active),
     find: async (query, findOptions, direction, incremental) => call('find', query, findOptions, direction, incremental),
     clearFind: async () => call('clearFind'),

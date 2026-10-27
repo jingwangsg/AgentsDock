@@ -144,3 +144,13 @@ test('a hardware Control-C sends ETX on iOS, where WebKit reports it with the ke
   assert.match(terminalPage, /event\.ctrlKey && !event\.metaKey && !event\.shiftKey && event\.key\.toLowerCase\(\) === 'c' && event\.keyCode === 13/)
   assert.match(terminalPage, /term\.input\(event\.altKey \? '\\x1b\\x03' : '\\x03'\)/)
 })
+
+test('on iOS a key-row key or Paste does not raise a keyboard the user put away', () => {
+  // WebKit raises the soft keyboard for any focus in the page (keyboardDisplayRequiresUserAction false);
+  // Android's web view does not for an injected one, and keeps focusing so typed keys reach the terminal.
+  assert.match(nativeTerminal, /const FOCUS_ON_INPUT = Platform\.OS !== 'ios'/)
+  assert.match(nativeTerminal, /call\('paste', text, FOCUS_ON_INPUT\)/)
+  assert.match(nativeTerminal, /sendKey: async name => call\('key', name, FOCUS_ON_INPUT\)/)
+  assert.match(terminalPage, /paste: \(text, focusTerminal = true\) => \{\s*if \(focusTerminal\) focus\(\)/)
+  assert.match(terminalPage, /key: \(name, focusTerminal = true\) => \{\s*if \(focusTerminal\) focus\(\)/)
+})

@@ -437,8 +437,8 @@ const claimSize = (wasOutOfSight: boolean) => {
 window.__agentsDockTerminal = {
   focus,
   blur: () => term.blur(),
-  paste: text => {
-    focus()
+  paste: (text, focusTerminal = true) => {
+    if (focusTerminal) focus()
     term.paste(String(text ?? ''))
   },
   copy: requestId => {
@@ -451,8 +451,8 @@ window.__agentsDockTerminal = {
     }
     post({ type: 'copy', requestId, text: term.getSelection() || lines.join('\n').trimEnd() })
   },
-  key: name => {
-    focus()
+  key: (name, focusTerminal = true) => {
+    if (focusTerminal) focus()
     const sequence = keySequence(name)
     if (sequence) link.write(sequence)
   },

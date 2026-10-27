@@ -79,9 +79,10 @@ export type TerminalPageMessage =
 export interface TerminalPageApi {
   focus(): void
   blur(): void
-  paste(text: string): void
+  /** focusTerminal (default true) also moves the focus to the terminal. */
+  paste(text: string, focusTerminal?: boolean): void
   copy(requestId: number): void
-  key(name: TerminalKeyName): void
+  key(name: TerminalKeyName, focusTerminal?: boolean): void
   modifier(name: 'ctrl' | 'alt', active: boolean): void
   configure(options: TerminalPageOptions): void
   find(query: string, options: TerminalFindOptions, direction: 1 | -1, incremental: boolean): void
