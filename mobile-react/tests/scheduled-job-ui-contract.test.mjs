@@ -5,10 +5,6 @@ import test from 'node:test'
 
 const dialogs = fs.readFileSync(path.resolve('src/components/Dialogs.tsx'), 'utf8')
 
-function count(source, pattern) {
-  return [...source.matchAll(pattern)].length
-}
-
 function sourceBetween(startToken, endToken, from = 0) {
   const start = dialogs.indexOf(startToken, from)
   assert.notEqual(start, -1, `missing scheduler source token: ${startToken}`)
@@ -19,52 +15,16 @@ function sourceBetween(startToken, endToken, from = 0) {
 
 const picker = sourceBetween('testID="job-start-picker"', 'testID="job-start-value"')
 
-test('iPhone exact-time controls stack full-width native pickers below separate labels', () => {
-  assert.match(dialogs, /const \{ width \} = useWindowDimensions\(\)/)
-  assert.match(dialogs, /const compactIOSPicker = Platform\.OS === 'ios' && width < 600/)
-  assert.match(picker, /Platform\.OS === 'ios' \? compactIOSPicker \? <>/)
-  assert.equal(count(picker, /styles\.jobStartPickerControlPhone/g), 2)
-  assert.equal(count(picker, /styles\.jobStartPickerHeading/g), 2)
-  assert.equal(count(picker, /style=\{styles\.jobStartPickerNativePhone\}/g), 2)
-  assert.match(
-    dialogs,
-    /jobStartPickerControlPhone: \{[^}]*width: '100%'[^}]*flexDirection: 'column'[^}]*alignItems: 'stretch'/,
-  )
-  assert.match(
-    dialogs,
-    /jobStartPickerNativePhone: \{[^}]*width: '100%'[^}]*minHeight: 44[^}]*alignSelf: 'stretch'/,
-  )
-  assert.match(
-    picker,
-    /jobStartPickerHeading[^]*?>Date<\/Text><\/View>\s*<DateTimePicker style=\{styles\.jobStartPickerNativePhone\}/,
-    'the Date label must close before the full-width native control begins',
-  )
-  assert.match(
-    picker,
-    /jobStartPickerHeading[^]*?>Time<\/Text><\/View>\s*<DateTimePicker style=\{styles\.jobStartPickerNativePhone\}/,
-    'the Time label must close before the full-width native control begins',
-  )
-})
-
-test('iPad retains the two compact same-line picker controls', () => {
-  assert.match(
-    picker,
-    /<View style=\{styles\.jobStartPickerControl\}><Calendar[^]*?>Date<\/Text><DateTimePicker testID="job-start-date-picker"[^]*?display="compact"/,
-  )
-  assert.match(
-    picker,
-    /<View style=\{styles\.jobStartPickerControl\}><Clock[^]*?>Time<\/Text><DateTimePicker testID="job-start-time-picker"[^]*?display="compact"/,
-  )
-  assert.equal(count(picker, /testID="job-start-date-picker"/g), 2, 'phone and tablet must each own one Date picker')
-  assert.equal(count(picker, /testID="job-start-time-picker"/g), 2, 'phone and tablet must each own one Time picker')
-})
-
-test('Android keeps explicit date/time buttons and dialog picker behavior', () => {
+test('both platforms show Android\'s date and time buttons, each opening a Material dialog', () => {
   assert.match(picker, /testID="job-start-date-button"[^]*?setAndroidStartPicker\('date'\)/)
   assert.match(picker, /testID="job-start-time-button"[^]*?setAndroidStartPicker\('time'\)/)
-  assert.match(dialogs, /Platform\.OS === 'android' && androidStartPicker \? <DateTimePicker/)
+  // No inline SwiftUI pickers on iOS: the dialogs come from material/DateTimePickerDialog, which is
+  // @expo/ui's Compose dialog on Android and the app-drawn copy on iOS.
+  assert.doesNotMatch(dialogs, /compactIOSPicker|display="compact"|@expo\/ui\/community\/datetime-picker/)
+  assert.match(dialogs, /import \{ DateTimePicker \} from '\.\/material\/DateTimePickerDialog'/)
+  assert.match(dialogs, /\{androidStartPicker \? <DateTimePicker/)
   assert.match(dialogs, /mode=\{androidStartPicker\}[^]*?presentation="dialog"[^]*?display="default"/)
-  assert.match(dialogs, /applyPickerValue\(part, value, part === 'date'\)[^]*?setAndroidStartPicker\(null\)/)
+  assert.match(dialogs, /mergeScheduleWallTimePickerValue\(startRef\.current, value, part, part === 'date'\)[^]*?setAndroidStartPicker\(null\)/)
   assert.match(dialogs, /onDismiss=\{\(\) => setAndroidStartPicker\(null\)\}/)
 })
 
@@ -86,7 +46,5 @@ test('all scheduled-job modes, picker updates, and save remain wired', () => {
   assert.match(dialogs, /const startError = validateJobNextRun\(Boolean\(job\), startMode, start, scheduleKind, enabled\)/)
   assert.match(dialogs, /if \(startError\) \{ setStatus\(startError\); return \}/)
   assert.match(dialogs, /Object\.assign\(patch, jobNextRunUpdatePatch\(\{/)
-  assert.equal(count(picker, /onValueChange=\{\(_event, value\) => applyPickerValue\('date', value\)\}/g), 2)
-  assert.equal(count(picker, /onValueChange=\{\(_event, value\) => applyPickerValue\('time', value\)\}/g), 2)
   assert.match(dialogs, /testID="job-save"[^>]*disabled=\{saving \|\| !title\.trim\(\) \|\| !prompt\.trim\(\) \|\| Boolean\(scheduleError\) \|\| Boolean\(startError\)\}[^>]*onPress=\{\(\) => void submit\(\)\}/)
 })

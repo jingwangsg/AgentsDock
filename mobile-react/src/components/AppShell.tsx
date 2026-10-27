@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AccessibilityInfo, ActivityIndicator, BackHandler, Linking, Modal, Platform, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
+import { AccessibilityInfo, BackHandler, Linking, Modal, Platform, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import * as Notifications from 'expo-notifications'
 import { useShallow } from 'zustand/react/shallow'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'

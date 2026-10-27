@@ -6,7 +6,8 @@ import test from 'node:test'
 const composer = fs.readFileSync(path.resolve('src/components/Composer.tsx'), 'utf8')
 
 test('touch-first composer offers a searchable adaptive target-chat picker', () => {
-  assert.match(composer, /const options = \['Reference another chat', 'Photo Library', 'Files', 'Reference a server \(@@\)', 'Cancel'\]/)
+  assert.match(composer, /Alert\.alert\('Add', undefined, \[\s*\{ text: 'Reference another chat'[^\n]*\n\s*\{ text: 'Photo Library'[^\n]*\n\s*\{ text: 'Files'[^\n]*\n\s*\{ text: 'Reference a server \(@@\)'[^\n]*\n\s*\{ text: 'Cancel', style: 'cancel' \},\s*\]\)/)
+  assert.doesNotMatch(composer, /ActionSheetIOS/)
   assert.match(composer, /chatMentionTrigger\(draftRef\.current, selection\.start, referencesRef\.current\)/)
   assert.doesNotMatch(composer, /trigger\.kind === '@' && !trigger\.query\.trim\(\)/)
   assert.match(composer, /presentationStyle=\{Platform\.OS === 'ios' \? tablet \? 'formSheet' : 'pageSheet' : 'fullScreen'\}/)

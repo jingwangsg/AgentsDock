@@ -1,7 +1,8 @@
 // Page sheet that shows one chat's Canvas reports: port of the Electron CanvasPane, with
 // element comments (persistent threads) and an editable source on servers that offer them.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Alert } from '../lib/alert'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller'
 import { SafeAreaView } from 'react-native-safe-area-context'

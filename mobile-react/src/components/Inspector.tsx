@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AccessibilityInfo, ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { AccessibilityInfo, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
+import { Alert } from '../lib/alert'
 import * as Clipboard from 'expo-clipboard'
 import { useShallow } from 'zustand/react/shallow'
 import { Archive, Check, ChevronDown, Copy, Download, FileDiff, FileText, GitFork, Pause, Pencil, Pin, Play, Plus, RefreshCw, Search, SquareTerminal, Trash2, X } from 'lucide-react-native'
@@ -104,8 +106,10 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
     if (!session || !scopeIsCurrent()) return
     const start = (format: ConversationExportFormat) => void conversationTransfer.start(conversationTransferRequest(session, client, format, () => scopeIsCurrent() && useAppStore.getState().connected))
     // Android shows at most three buttons (neutral, negative, positive), so three formats leave no
-    // room for Cancel: tapping outside or Back dismisses. (MenuView does not open inside the Chat details Modal.)
+    // room for Cancel: tapping outside or Back dismisses. iOS shows every button and adds Cancel.
+    // (MenuView does not open inside the Chat details Modal on Android.)
     Alert.alert('Download conversation', 'Choose a format, then pick where to keep it in the share sheet.', [
+      ...(Platform.OS === 'ios' ? [{ text: 'Cancel', style: 'cancel' as const }] : []),
       { text: 'Event log (.jsonl)', onPress: () => start('jsonl') },
       { text: 'HTML (.html)', onPress: () => start('html') },
       { text: 'Markdown (.md)', onPress: () => start('markdown') },

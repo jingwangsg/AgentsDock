@@ -1,7 +1,9 @@
 // Workspace Changes sheet: Git status of the chat's working directory with
 // stage/unstage/discard and per-file diffs. Port of the Electron WorkspaceChanges tab.
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native'
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { RefreshScrollView } from './material/RefreshScrollView'
+import { Alert } from '../lib/alert'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { AlertTriangle, ArrowLeft, ChevronRight, Columns2, Folder, Minus, Plus, RefreshCw, Rows3, Undo2, WrapText, X, type LucideIcon } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
@@ -230,7 +232,7 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
       {notGit ? <Notice text={NOT_GIT_MESSAGE} testID="changes-not-git" />
         : loading && !status ? <Loading label="Loading repository status" />
           : <View style={styles.workspace} onLayout={event => setWorkspaceWidth(event.nativeEvent.layout.width)}>
-            {split || !selection ? <ScrollView style={[styles.files, split ? [styles.filesColumn, { borderColor: colors.border }] : null]} contentContainerStyle={styles.filesContent} keyboardShouldPersistTaps="always" refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void refresh()} tintColor={colors.muted} />}>
+            {split || !selection ? <RefreshScrollView style={[styles.files, split ? [styles.filesColumn, { borderColor: colors.border }] : null]} contentContainerStyle={styles.filesContent} keyboardShouldPersistTaps="always" refreshing={loading} onRefresh={() => void refresh()}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={styles.filters}>
                 {CHANGES_FILTERS.filter(group => group === 'all' || group === filter || counts[group] > 0).map(group => <Pressable key={group} accessibilityRole="button" accessibilityLabel={`${FILTER_LABELS[group]}, ${counts[group]}`} accessibilityState={{ selected: filter === group }} testID={`changes-filter-${group}`} onPress={() => setFilter(group)} style={[styles.filterChip, { backgroundColor: filter === group ? colors.selected : colors.raised }]}>
                   <Text style={[styles.filterLabel, { color: colors.text }]}>{FILTER_LABELS[group]}</Text><Text style={[styles.filterCount, { color: colors.muted }]}>{counts[group]}</Text>
@@ -244,7 +246,7 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
               </View>
               {files.length ? <ChangesTree nodes={tree} depth={0} files={files} selectedPath={selection?.path ?? null} blocked={blocked} collapsed={collapsed} onToggle={path => setCollapsed(current => { const next = new Set(current); if (!next.delete(path)) next.add(path); return next })} onSelect={select} onStage={path => void run('stage', [path])} onUnstage={path => void run('unstage', [path])} onDiscard={path => confirmDiscard([path])} />
                 : <Text style={[styles.empty, { color: colors.muted }]}>{counts.all ? 'No changed files match.' : status ? 'The working tree is clean.' : ''}</Text>}
-            </ScrollView> : null}
+            </RefreshScrollView> : null}
             {split || selection ? <View style={styles.detail}>
               {selection && selectedFile ? <View style={[styles.detailHeader, { borderColor: colors.border }]}>
                 <Text style={[styles.detailPath, { color: colors.text }]} numberOfLines={1}>{selection.path}</Text>

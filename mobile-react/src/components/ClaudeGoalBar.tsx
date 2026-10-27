@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Alert, Pressable, StyleSheet, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
+import { Alert } from '../lib/alert'
 import { Goal, Pencil, Trash2 } from 'lucide-react-native'
 import { usePalette } from '../theme'
 import { Text } from './AppText'

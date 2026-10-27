@@ -14,8 +14,8 @@ test('sidebar list explicitly invalidates recycled rows when selection changes',
 test('chat taps on both platforms stay on a plain native press target', () => {
   const rowPress = source.match(/const pressableRow = \(([\s\S]*?)\n  \)\n  \/\/ The chat identity/)?.[1] ?? ''
   assert.match(rowPress, /if \(!sessionScopeIsCurrent\(profileScope, session\.id\)\) return[\s\S]*?onPress\(\)/)
-  assert.match(source, /onLongPress=\{welcome \? undefined : \(\) => onLift\(Platform\.OS === 'ios' \? openActionSheet : \(\) => menu\.current\?\.show\(\)\)\}/)
-  assert.match(source, /if \(welcome \|\| Platform\.OS === 'ios'\) return pressableRow/)
+  assert.match(source, /onLongPress=\{welcome \? undefined : \(\) => onLift\(\(\) => menu\.current\?\.show\(\)\)\}/)
+  assert.match(source, /if \(welcome\) return pressableRow/)
   assert.doesNotMatch(source, /from 'react-native-gesture-handler\/ReanimatedSwipeable'|<ReanimatedSwipeable|SwipeableMethods/)
   assert.doesNotMatch(source, /<MenuView[^>]*>\{pressableRow\}<\/MenuView>/)
 })
@@ -29,10 +29,13 @@ test('folder headers show their chats\' status dots between the title and the co
   assert.match(source, /\}, \[collapsed, folderOrder, query, searchResults, sessions, surfaces, selected\]\)/)
 })
 
-test('Android chat and folder actions open from a long press on a collapsed sibling anchor', () => {
+test('chat and folder actions open from a long press on a collapsed sibling anchor, on both platforms', () => {
+  // iOS draws the same Compose-style menu (material/MenuView.ios.tsx) instead of an action sheet.
+  assert.match(source, /import \{ MenuView, type MenuAction, type MenuComponentRef \} from '\.\/material\/MenuView'/)
+  assert.doesNotMatch(source, /ActionSheetIOS|openActionSheet|Platform\.OS === 'ios' \? openActionSheet/)
   assert.match(source, /<View style=\{styles\.sessionShell\}>\{pressableRow\}<MenuView ref=\{menu\} testID=\{`chat-actions-\$\{session\.id\}`\}/)
   assert.match(source, /<View style=\{styles\.folderHeaderShell\}>\{header\}<MenuView ref=\{menu\} testID=\{`folder-actions-\$\{item\.folder\}`\}/)
-  assert.match(source, /onLongPress=\{!hasMenu \? undefined : \(\) => onLift\(Platform\.OS === 'ios' \? openActionSheet : \(\) => menu\.current\?\.show\(\)\)\}/)
+  assert.match(source, /onLongPress=\{!hasMenu \? undefined : \(\) => onLift\(\(\) => menu\.current\?\.show\(\)\)\}/)
   assert.match(source, /menuAnchor: \{ width: 0, justifyContent: 'flex-end', pointerEvents: 'none' \}/)
   // Compose only tracks a drawn (non-zero) anchor, so the trigger keeps a 1pt child.
   assert.match(source, /menuAnchorContent: \{ width: 1, height: 1 \}/)
@@ -51,8 +54,8 @@ test('folder menus offer a new chat per backend that can start on this host, in 
 })
 
 test('every folder, General included, shows the same menu on both platforms', () => {
-  // The iOS sheet is derived from the Android action list, so the two cannot drift.
-  assert.match(source, /options: \[\.\.\.actions\.map\(action => action\.title\), 'Cancel'\],\s*cancelButtonIndex: actions\.length,\s*destructiveButtonIndex: actions\.findIndex\(action => action\.attributes\?\.destructive\),/)
+  // Both platforms render the one action list through MenuView, so the two cannot drift.
+  assert.match(source, /if \(!hasMenu\) return header\n  return <View style=\{styles\.folderHeaderShell\}>\{header\}<MenuView ref=\{menu\}[^\n]*actions=\{actions\}/)
   assert.match(source, /\{ id: 'rename', title: 'Rename Folder', image: 'pencil' \},\s*\.\.\.\(canMoveUp \? \[\{ id: 'move-up', title: 'Move Folder Up', image: 'arrow\.up' \} satisfies MenuAction\] : \[\]\),\s*\.\.\.\(canMoveDown \? \[\{ id: 'move-down', title: 'Move Folder Down', image: 'arrow\.down' \} satisfies MenuAction\] : \[\]\),\s*\{ id: 'delete', title: 'Delete Folder', image: 'trash', attributes: \{ destructive: true \} \},\s*\]/)
   // Only the virtual sections go without a menu; General is an ordinary folder.
   assert.match(source, /const hasMenu = !\['Pinned', 'Archived'\]\.includes\(item\.folder\)/)
@@ -113,7 +116,6 @@ test('renaming a chat is offered on both platforms and shares one prompt/update 
   assert.match(source, /const requestRename = \(\) => \{[\s\S]*?promptText\(\{[\s\S]*?title: 'Rename Chat',[\s\S]*?initialValue: session\.title,[\s\S]*?confirmLabel: 'Rename',[\s\S]*?\}\)\.then\(value => \{[\s\S]*?if \(!sessionScopeIsCurrent\(scope, session\.id\)\) return[\s\S]*?const name = value\?\.trim\(\)[\s\S]*?if \(name && name !== session\.title\) void update\(session\.id, \{ title: name \}, scope\.profileGeneration\)/)
   assert.match(source, /else if \(id === 'rename'\) requestRename\(\)/)
   assert.match(source, /\{ id: 'rename', title: 'Rename Chat', image: 'pencil' \}/)
-  assert.match(source, /\{ id: 'rename', title: 'Rename Chat' \}/)
   assert.match(source, /promptText: \(options: TextPromptOptions\) => Promise<string \| null>/)
 })
 
@@ -128,7 +130,7 @@ test('Archived starts collapsed on every launch and its expansion is not persist
 test('a long press lifts a chat or folder for dragging and still opens its menu when let go in place', () => {
   assert.equal(source.match(/onLift=\{openMenu => lift\(openMenu, drag\)\}/g)?.length, 3)
   // Tab rows lift like chats, and every row offers a grip that lifts it at once.
-  assert.match(source, /onLongPress=\{\(\) => onLift\(Platform\.OS === 'ios' \? openActionSheet : \(\) => menu\.current\?\.show\(\)\)\}/)
+  assert.match(source, /onLongPress=\{\(\) => onLift\(\(\) => menu\.current\?\.show\(\)\)\}/)
   assert.equal(source.match(/<DragHandle onDragStart=\{onDragStart\} \/>/g)?.length, 2)
   assert.match(source, /onPressIn=\{onDragStart\}/)
   assert.match(source, /if \(from === to\) \{ openMenu\?\.\(\); return \}/)

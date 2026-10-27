@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ActivityIndicator, StyleSheet, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from '../material/ActivityIndicator'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { trackEvent } from '../../lib/analytics'
 import { importWithDeadline } from '../../lib/deferred-import'

@@ -70,7 +70,9 @@ test('the list offers filters with counts, search, bulk and per-file staging, an
   assert.match(sheet, /<BulkButton icon=\{Plus\} label="Stage all" disabled=\{blocked \|\| !stageable\.length\} onPress=\{\(\) => void run\('stage', stageable\)\}/)
   assert.match(sheet, /<BulkButton icon=\{Minus\} label="Unstage all" disabled=\{blocked \|\| !unstageable\.length\} onPress=\{\(\) => void run\('unstage', unstageable\)\}/)
   assert.match(sheet, /const blocked = busy \|\| loading/)
-  assert.match(sheet, /refreshControl=\{<RefreshControl refreshing=\{loading\} onRefresh=\{\(\) => void refresh\(\)\}/)
+  // Pull to refresh: Android's SwipeRefreshLayout (RefreshControl), drawn by the app on iOS.
+  assert.match(sheet, /<RefreshScrollView [^\n]*refreshing=\{loading\} onRefresh=\{\(\) => void refresh\(\)\}/)
+  assert.match(sheet, /import \{ RefreshScrollView \} from '\.\/material\/RefreshScrollView'/)
   // Tree rows: directories toggle with a count; file rows show the leaf name, status letters and stage/unstage buttons.
   assert.match(sheet, /import \{ buildFileTree, [^}]*\} from '\.\.\/lib\/file-tree'/)
   assert.match(sheet, /accessibilityState=\{\{ expanded \}\} onPress=\{\(\) => onToggle\(node\.path\)\}/)
@@ -93,7 +95,7 @@ test('the diff pane renders through Monaco with the shared layout preference, an
   assert.match(sheet, /<IconButton icon=\{WrapText\} selected=\{layout\.wordWrap\} onPress=\{toggleWordWrap\} label="Wrap long lines" testID="changes-word-wrap" \/>/)
   // Phones swap the list for the diff and offer a back button; tablets keep both.
   assert.match(sheet, /\{!split && selection \? <IconButton icon=\{ArrowLeft\} onPress=\{\(\) => setSelection\(null\)\} label="Back to changed files" testID="changes-back" \/> : null\}/)
-  assert.match(sheet, /\{split \|\| !selection \? <ScrollView/)
+  assert.match(sheet, /\{split \|\| !selection \? <RefreshScrollView/)
   assert.match(sheet, /\{split \|\| selection \? <View style=\{styles\.detail\}>/)
   // Staged/Unstaged switch only when the file has both sides.
   assert.match(sheet, /fileHasView\(selectedFile, 'staged'\) && fileHasView\(selectedFile, 'unstaged'\) \? <View style=\{\[styles\.segmented/)

@@ -1,5 +1,6 @@
 import { useRef, type ReactNode } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import type { LucideIcon } from 'lucide-react-native'
 import { X } from 'lucide-react-native'
 import { usePalette } from '../theme'

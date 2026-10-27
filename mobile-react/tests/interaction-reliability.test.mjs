@@ -602,15 +602,14 @@ test('scheduled-job interval presets keep 10m and 30m taps out of nested scroll 
 })
 
 test('scheduled-job native pickers preserve and synchronously submit the chosen wall time', () => {
-  assert.match(dialogs, /from '@expo\/ui\/community\/datetime-picker'/)
+  assert.match(dialogs, /import \{ DateTimePicker \} from '\.\/material\/DateTimePickerDialog'/)
   assert.match(dialogs, /testID="job-start-mode-time"/)
   assert.match(dialogs, /testID="job-start-picker"/)
-  assert.match(dialogs, /testID="job-start-date-picker"/)
-  assert.match(dialogs, /testID="job-start-time-picker"/)
+  assert.match(dialogs, /testID=\{`job-start-\$\{androidStartPicker\}-picker`\}/)
   assert.match(dialogs, /testID="job-start-date-button"/)
   assert.match(dialogs, /testID="job-start-time-button"/)
   assert.match(dialogs, /androidStartPicker === 'date' \? scheduleWallTimeAndroidDatePickerDate/)
-  assert.match(dialogs, /applyPickerValue\(part, value, part === 'date'\)[\s\S]*?setAndroidStartPicker\(null\)/)
+  assert.match(dialogs, /mergeScheduleWallTimePickerValue\(startRef\.current, value, part, part === 'date'\)[\s\S]*?setAndroidStartPicker\(null\)/)
   assert.match(dialogs, /onDismiss=\{\(\) => setAndroidStartPicker\(null\)\}/)
   assert.match(dialogs, /mode=\{androidStartPicker\}/)
   const updateStart = dialogs.slice(dialogs.indexOf('  const updateStart ='), dialogs.indexOf('  const selectStartMode ='))
@@ -679,9 +678,9 @@ test('compact back navigation cannot leave an animated pane over the selector', 
 
 test('separate controls offer guarded attachments and Mac-parity quick messages', () => {
   assert.match(composer, /from 'expo-image-picker'/)
-  assert.match(composer, /from '@expo\/ui\/community\/menu'/)
+  assert.match(composer, /import \{ MenuView, type MenuAction \} from '\.\/material\/MenuView'/)
   assert.match(composer, /const QUICK_MESSAGES = \['Status report', 'Keep going\.', 'Verify the result carefully\.'\] as const/)
-  assert.match(composer, /const options = \['Reference another chat', 'Photo Library', 'Files', 'Reference a server \(@@\)', 'Cancel'\]/)
+  assert.match(composer, /Alert\.alert\('Add', undefined, \[\s*\{ text: 'Reference another chat'[^\n]*\n\s*\{ text: 'Photo Library'[^\n]*\n\s*\{ text: 'Files'[^\n]*\n\s*\{ text: 'Reference a server \(@@\)'[^\n]*\n\s*\{ text: 'Cancel', style: 'cancel' \},\s*\]\)/)
   assert.match(composer, /const QUICK_MESSAGE_ACTIONS: MenuAction\[\] = QUICK_MESSAGES\.map\(\(title, index\) => \(\{[\s\S]*?id: `quick-message:\$\{index\}`,[\s\S]*?title,/)
   assert.match(composer, /actions=\{QUICK_MESSAGE_ACTIONS\}/)
   assert.match(composer, /event\.nativeEvent\.event\.startsWith\(prefix\)/)

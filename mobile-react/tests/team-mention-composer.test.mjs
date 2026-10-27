@@ -23,7 +23,7 @@ const mocks = {
     export const StyleSheet={create:value=>value,hairlineWidth:0.5,absoluteFill:{},flatten:value=>Object.assign({},...[value].flat(Infinity).filter(Boolean))};
     export const Platform={OS:'ios',select:choices=>choices.ios??choices.default};
     export const useColorScheme=()=>fixture.scheme; export const useWindowDimensions=()=>({width:fixture.width,height:844,scale:3,fontScale:1});
-    export const Alert={alert:(...args)=>fixture.alerts.push(args)}; export const ActionSheetIOS={showActionSheetWithOptions:(options,callback)=>fixture.actionSheet={options,callback}};`,
+    export const Alert={alert:(...args)=>fixture.alerts.push(args)};`,
   'react-native-safe-area-context': `export const SafeAreaView='SafeAreaView'; export const useSafeAreaInsets=()=>({top:0,bottom:0,left:0,right:0});`,
   'expo-image': `export const Image='Image';`,
   'expo-document-picker': `export async function getDocumentAsync(){return {canceled:true}}`,
@@ -335,9 +335,11 @@ test('Add menu exposes a direct server recipient picker without requiring typed 
   const renderer=await render()
   try{
     await click(renderer,'chat-attach')
-    const index=fixture.actionSheet.options.options.indexOf('Reference a server (@@)')
-    assert.ok(index>=0)
-    await act(async()=>fixture.actionSheet.callback(index))
+    // One Add dialog on both platforms; iOS draws all of its buttons.
+    const add=fixture.alerts.find(([title])=>title==='Add')
+    const button=add?.[2]?.find(entry=>entry.text==='Reference a server (@@)')
+    assert.ok(button)
+    await act(async()=>button.onPress())
     assert.ok(recipient(renderer))
     await act(async()=>recipient(renderer).props.onPress())
     assert.equal(store.getState().drafts.chat,'@@Mac Studio ')

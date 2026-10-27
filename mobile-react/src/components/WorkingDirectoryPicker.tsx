@@ -2,7 +2,8 @@
 // desktop WorkingDirectoryPopover: tapping a folder opens it, the open folder is
 // the selection, and "Choose" saves it as the chat's cwd.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { ArrowUp, ChevronRight, Folder, FolderOpen, RotateCcw } from 'lucide-react-native'
 import { dismissAppKeyboard } from '../lib/app-keyboard'

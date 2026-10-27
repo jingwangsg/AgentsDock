@@ -2,7 +2,6 @@ import { FlashList } from '@shopify/flash-list'
 import * as FileSystem from 'expo-file-system/legacy'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   Modal,
   Platform,
   Pressable,
@@ -10,6 +9,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native'
+import { ActivityIndicator } from '../material/ActivityIndicator'
 import {
   ChevronLeft,
   ChevronRight,
