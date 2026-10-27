@@ -52,15 +52,19 @@ export const Text = forwardRef<Text, TextProps>(function AppText({ children, sty
   // Fabric's iOS `Text selectable` offers only a whole-text Copy. UITextView
   // gives the range handles Android's selectable Text has (as in MarkdownContent).
   const insideTextView = useContext(InsideTextViewContext)
-  const textView = insideTextView || (Platform.OS === 'ios' && parentSize === null && Boolean(props.selectable))
+  const renderAsTextView = insideTextView || (Platform.OS === 'ios' && parentSize === null && Boolean(props.selectable))
+  // The UITextView branch takes no ref: no caller holds a ref to a Text.
   return <InheritedTextSizeContext.Provider value={currentSize}>
-    {textView
+    {renderAsTextView
       ? <InsideTextViewContext.Provider value><UITextView uiTextView style={resolvedStyle} {...props}>{children}</UITextView></InsideTextViewContext.Provider>
       : <NativeText ref={ref} style={resolvedStyle} {...props}>{children}</NativeText>}
   </InheritedTextSizeContext.Provider>
 })
 
-/** The focused TextInput's host view, or null; NativeTextInput.State without importing it elsewhere. */
+/**
+ * The focused TextInput's host view, or null. Lives here because tests/app-typography.test.mjs forbids
+ * components from importing TextInput (and so NativeTextInput.State) from react-native.
+ */
 export function focusedTextInput() {
   return NativeTextInput.State.currentlyFocusedInput()
 }

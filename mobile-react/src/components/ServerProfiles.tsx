@@ -1,13 +1,12 @@
 import { useMemo, useRef, useState } from 'react'
 import {
   Modal,
-  Platform,
   Pressable,
   StyleSheet,
   View,
 } from 'react-native'
 import { ActivityIndicator } from './material/ActivityIndicator'
-import { Alert } from '../lib/alert'
+import { Alert, IOS_ONLY_CANCEL } from '../lib/alert'
 import { Switch } from './material/Switch'
 import { MenuView, type MenuAction } from './material/MenuView'
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist'
@@ -882,10 +881,10 @@ function ServerManagementRow({ profile, active, switching, disabled, removable, 
   const address = hubProxyRemoteId(profile.serverUrl) !== null ? profile.sshHost : profile.serverUrl
   const details = [profile.serverIdentity ? `Identity: ${profile.serverIdentity}` : '', profile.serverVersion ? `AgentsServer ${profile.serverVersion}` : ''].filter(Boolean).join(' · ')
   // An Alert, not MenuView: MenuView does not open inside this sheet's Modal on Android, and the
-  // row has at most three actions, Android's Alert limit. Android's dialog has no Cancel (only a
-  // tap outside closes it); iOS adds one rather than copy that, first so it sits left of the actions.
+  // row has at most three actions, Android's Alert limit. Android's dialog has no Cancel (Back or
+  // a tap outside closes it).
   const rowActions = removable ? [{ text: 'Remove', style: 'destructive' as const, onPress: onRemove }] : []
-  const alertButtons = Platform.OS === 'ios' ? [{ text: 'Cancel', style: 'cancel' as const }, ...rowActions] : rowActions
+  const alertButtons = [...IOS_ONLY_CANCEL, ...rowActions]
   return <View style={[styles.profileRow, { borderColor: colors.border, backgroundColor: active ? `${colors.blue}10` : colors.surface }]}>
     {onDrag
       ? <Pressable accessibilityRole="button" accessibilityLabel={`Drag ${profile.name} to reorder`} disabled={disabled} onPressIn={onDrag} hitSlop={8} style={styles.grip}><GripVertical size={16} color={colors.muted} /></Pressable>

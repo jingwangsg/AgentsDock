@@ -1,3 +1,5 @@
+// iOS only: imported from the iOS files in this folder. No .ios suffix because tsc (no moduleSuffixes) could not resolve the import then.
+// Android must not import it: its require()s would put the Roboto and Noto fonts in the Android bundle.
 import { useEffect, useState } from 'react'
 import * as Font from 'expo-font'
 import { useAppColorScheme } from '../../theme'
@@ -28,6 +30,20 @@ export function useMaterialPalette(): typeof palettes.light | typeof palettes.da
 
 // Android draws these controls in Roboto (system font) and the menu check mark in Noto
 // Sans Symbols. The fonts load once at startup; until then text falls back to the system font.
+// The controls use React Native's Text, not AppText: Android's native dialogs and menus follow the
+// system font size, not the in-app text size.
+// Sources: Android 15's fonts, AOSP android15-release (byte-identical to the Android 15 emulator's /system/fonts
+// copies the fonts were first cut from), cut with fontTools 4.67.0. Licenses: next to each font and in NOTICE.
+// - roboto/: external/roboto-fonts Roboto-Regular.ttf, the roboto-classic v3.005 variable font, Apache 2.0,
+//   sha256 9ca9debb09459bf4e3e7f826f5cd0f35f253902b85684921fce2ba3f28dd0f50. For w = 400 (Regular) and 500 (Medium):
+//     fonttools varLib.instancer -q --update-name-table Roboto-Regular.ttf wght=$w wdth=100 ital=0 -o Roboto-$w.ttf
+//     pyftsubset Roboto-$w.ttf --unicodes="U+0000-024F,U+02B0-036F,U+0370-03FF,U+0400-04FF,U+1E00-1EFF,U+2000-206F,U+20A0-20CF,U+2100-214F,U+2190-21FF,U+2200-22FF,U+FEFF,U+FFFD" --layout-features='*' --no-hinting --desubroutinize --output-file=Roboto-$w-sub.ttf
+//   Results: Regular sha256 1ccf00dbcd248bbca29939aedb66d24ee22d94de8bc1de9f75adfcd95b3dc79d, Medium sha256
+//   282b9e568a5b36ad1b891c586f5ac5d80c6f260aa7c9fa2a056bd42015c34b59; a rerun differs only in head.modified.
+// - noto-sans-symbols/: external/noto-fonts notosanssymbols/NotoSansSymbols-Regular-Subsetted.ttf, OFL 1.1,
+//   sha256 e47300d639a32c08610384baf325f021859da84a7ca129599af5130212dfea43:
+//     pyftsubset NotoSansSymbols-Regular-Subsetted.ttf --unicodes=U+2713 --no-hinting --output-file=NotoSansSymbols-Check.ttf
+//   Result: sha256 96fe9e68abbd89e1a92255e91e9685625aaf8e8a9397b3315655088ec2678647 (a rerun is byte-identical).
 const fontSources = {
   'Roboto-Regular': require('../../../assets/fonts/roboto/Roboto-Regular.ttf'),
   'Roboto-Medium': require('../../../assets/fonts/roboto/Roboto-Medium.ttf'),

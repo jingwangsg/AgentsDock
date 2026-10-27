@@ -1,4 +1,4 @@
-// Page sheet that shows one chat's Canvas reports: port of the Electron CanvasPane, with
+// Full-screen sheet that shows one chat's Canvas reports: port of the Electron CanvasPane, with
 // element comments (persistent threads) and an editable source on servers that offer them.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Linking, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'

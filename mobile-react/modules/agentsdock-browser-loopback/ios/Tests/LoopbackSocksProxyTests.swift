@@ -167,6 +167,22 @@ private func startProxy(_ server: FakeServer, allHosts: Bool, token: String = "s
   return (proxy, port!)
 }
 
+/// AgentsDockBrowserLoopbackModule.listen's binding: the previous port, or any port when that one
+/// cannot be bound.
+private func listenLikeModule(_ proxy: LoopbackSocksProxy, previous: UInt16, done: @escaping (UInt16?) -> Void) {
+  proxy.start(port: previous) { port in
+    if port == nil, previous != 0 { proxy.start(port: 0, ready: done) } else { done(port) }
+  }
+}
+
+/// Whether something accepts TCP connections on 127.0.0.1:`port`.
+private func accepts(_ port: UInt16) -> Bool {
+  let fd = socket(AF_INET, SOCK_STREAM, 0)
+  defer { Darwin.close(fd) }
+  var address = loopback(port)
+  return withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } } == 0
+}
+
 /// Sends a no-authentication greeting and a CONNECT host:port at once; the proxy answers both with
 /// `granted` or `refused`.
 private func requestConnect(_ client: Socket, host: String, port: UInt16) {
@@ -286,6 +302,39 @@ struct LoopbackSocksProxyTests {
       ready.wait()
       check(again == port, "rebound \(String(describing: again)) on \(port)")
       proxy.close()
+    }
+
+    run("stop() during a bind binds nothing; the next start() answers the waiting caller") { server in
+      let (first, previous) = startProxy(server, allHosts: true)
+      first.close()
+      let proxy = LoopbackSocksProxy()
+      let answered = DispatchSemaphore(value: 0)
+      var ports: [UInt16?] = []
+      listenLikeModule(proxy, previous: previous) { ports.append($0); answered.signal() }
+      proxy.stop() // the app went to the background before the listener was ready
+      check(answered.wait(timeout: .now() + 1) == .timedOut, "answered after stop(): \(ports)")
+      check(!accepts(previous), "no listener on \(previous)")
+      proxy.start(port: previous) { _ in } // the app came back
+      check(answered.wait(timeout: .now() + 5) == .success && ports == [previous], "answered with \(ports), not [\(previous)]")
+      proxy.close()
+    }
+
+    run("close() during a bind answers nil and binds nothing") { server in
+      let (first, previous) = startProxy(server, allHosts: true)
+      first.close()
+      let proxy = LoopbackSocksProxy()
+      let answered = DispatchSemaphore(value: 0)
+      var ports: [UInt16?] = []
+      listenLikeModule(proxy, previous: previous) { ports.append($0); answered.signal() }
+      proxy.close() // the tab was released or re-routed before the listener was ready
+      check(answered.wait(timeout: .now() + 5) == .success && ports == [nil], "answered with \(ports)")
+      Thread.sleep(forTimeInterval: 0.3)
+      check(!accepts(previous), "no listener on \(previous)")
+      var late: UInt16? = 1
+      let done = DispatchSemaphore(value: 0)
+      proxy.start(port: 0) { late = $0; done.signal() }
+      done.wait()
+      check(late == nil, "a closed proxy started again on \(String(describing: late))")
     }
 
     run("everything the server sends before it closes reaches the client") { server in

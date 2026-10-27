@@ -6,6 +6,9 @@ const MARKER = '# agentsdock: raise pod deployment targets'
  * Xcode 27 rejects any target below iOS 15. A few pods still declare older targets for their
  * resource bundles (RNCAsyncStorage 13.4, RNSVGFilters 12.4), which fails the whole build.
  * Raise those targets to the app's own deployment target after React Native's post_install.
+ * Delete this plugin once every pod declares iOS 15 or later (the `s.platforms` ios value in
+ * @react-native-async-storage/async-storage's and react-native-svg's podspecs), or once Xcode
+ * builds older targets again.
  */
 module.exports = function withIosPodDeploymentTarget(config) {
   return withPodfile(config, next => {

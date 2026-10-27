@@ -621,17 +621,17 @@ test('scheduled-job interval presets keep 10m and 30m taps out of nested scroll 
   assert.match(dialogs, /preset: \{ minWidth: 52, minHeight: 44, flexBasis: '22%', flexGrow: 1/)
 })
 
-test('scheduled-job native pickers preserve and synchronously submit the chosen wall time', () => {
+test('scheduled-job date and time pickers preserve and synchronously submit the chosen wall time', () => {
   assert.match(dialogs, /import \{ DateTimePicker \} from '\.\/material\/DateTimePickerDialog'/)
   assert.match(dialogs, /testID="job-start-mode-time"/)
   assert.match(dialogs, /testID="job-start-picker"/)
-  assert.match(dialogs, /testID=\{`job-start-\$\{androidStartPicker\}-picker`\}/)
+  assert.match(dialogs, /testID=\{`job-start-\$\{startPicker\}-picker`\}/)
   assert.match(dialogs, /testID="job-start-date-button"/)
   assert.match(dialogs, /testID="job-start-time-button"/)
-  assert.match(dialogs, /androidStartPicker === 'date' \? scheduleWallTimeAndroidDatePickerDate/)
-  assert.match(dialogs, /mergeScheduleWallTimePickerValue\(startRef\.current, value, part, part === 'date'\)[\s\S]*?setAndroidStartPicker\(null\)/)
-  assert.match(dialogs, /onDismiss=\{\(\) => setAndroidStartPicker\(null\)\}/)
-  assert.match(dialogs, /mode=\{androidStartPicker\}/)
+  assert.match(dialogs, /startPicker === 'date' \? scheduleWallTimeUtcDay/)
+  assert.match(dialogs, /mergeScheduleWallTimePickerValue\(startRef\.current, value, startPicker\)[\s\S]*?setStartPicker\(null\)/)
+  assert.match(dialogs, /onDismiss=\{\(\) => setStartPicker\(null\)\}/)
+  assert.match(dialogs, /mode=\{startPicker\}/)
   const updateStart = dialogs.slice(dialogs.indexOf('  const updateStart ='), dialogs.indexOf('  const selectStartMode ='))
   assert.ok(updateStart.indexOf('startRef.current = value') < updateStart.indexOf('setStart(value)'), 'picker callbacks must update the submission ref before React state')
   const selectStartMode = dialogs.slice(dialogs.indexOf('  const selectStartMode ='), dialogs.indexOf('  const pickerDate ='))
@@ -986,7 +986,7 @@ test('foregrounding and hidden views cannot resurrect a phantom keyboard', () =>
   // A terminal tab out of sight, or one going away, gives up the keyboard. The page never focuses on its own:
   // on iOS (keyboardDisplayRequiresUserAction false) any focus in the page raises the keyboard.
   assert.match(terminalView, /if \(!active\) \{\s*void viewport\.current\?\.blur\(\)\.catch/)
-  assert.match(terminalView, /nativeTerminal\.blur\(\)\.catch/)
+  assert.match(terminalView, /terminalViewport\.blur\(\)\.catch/)
   const readyHandler = terminalViewport.match(/case 'ready':([\s\S]*?)return\n/)?.[1]
   assert.ok(readyHandler)
   assert.doesNotMatch(readyHandler, /focus/)

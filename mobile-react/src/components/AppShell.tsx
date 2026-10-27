@@ -47,10 +47,10 @@ type InspectorAction = {
 
 const IOS_INSPECTOR_HANDOFF_FALLBACK_MS = 1_000
 // Terminal tabs kept connected while hidden: the most recently shown ones, at most eight and 80,000
-// lines of scrollback between them. They share one web view process; on the emulator (2026-10-12) each added
-// about 14 MB of PSS and no measurable idle CPU, and a full 50,000-line scrollback about 50 MB more (190 MB
-// while it was written), so eight such tabs could get that process killed. A tab let go reattaches, with a
-// clean replay, when it is shown again.
+// lines of scrollback between them. They share one web view process; on the Android emulator (2026-10-12) each
+// added about 14 MB of PSS and no measurable idle CPU, and a full 50,000-line scrollback about 50 MB more (190 MB
+// while it was written), so eight such tabs could get that process killed. iOS uses the same limits, not measured
+// there. A tab let go reattaches, with a clean replay, when it is shown again.
 const KEPT_TERMINAL_TABS = 8
 const KEPT_TERMINAL_SCROLLBACK_LINES = 80_000
 
@@ -250,9 +250,10 @@ function AppShellContent() {
     requestAnimationFrame(dismissAppKeyboard)
   }, [])
   const openSearch = useCallback(() => {
-    // Preserve the existing keyboard while the page sheet is published. Its
-    // onShow handler transfers focus directly to the search field, avoiding a
-    // hide/show race that can make UIKit drop or mis-size the presentation.
+    // Keep the existing keyboard up while the search dialog's Modal is presented:
+    // its onShow handler moves focus straight to the search field, so the keyboard
+    // does not hide and show again. That race could drop or mis-size the former iOS
+    // page sheet; it was not re-checked for the current transparent Modal.
     setSearch(true)
     trackEvent('search_opened')
   }, [])
@@ -297,7 +298,7 @@ function AppShellContent() {
       requestAnimationFrame(finishOptionsDismissal)
       return
     }
-    // UIKit normally acknowledges the page-sheet dismissal through onDismiss.
+    // UIKit normally acknowledges the modal's dismissal through onDismiss.
     // Keep an exactly-once fallback for interrupted native transitions so a
     // queued inspector action cannot remain inert forever.
     pendingInspectorFallback.current = setTimeout(() => {

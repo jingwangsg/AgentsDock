@@ -27,7 +27,7 @@ export function IconButton({ icon: Icon, onPress, disabled, selected, size = 18,
   )
 }
 
-/** A protected close target kept below the native page-sheet drag recognizer. */
+/** The close target in sheet headers; a press survives 20 pt of finger drift (pressRetentionOffset). */
 export function SheetCloseButton({ onPress, disabled, label = 'Close', testID, activateOnPressIn = false }: { onPress: () => void; disabled?: boolean; label?: string; testID?: string; activateOnPressIn?: boolean }) {
   const colors = usePalette()
   const press = usePressActivation(onPress, activateOnPressIn)
