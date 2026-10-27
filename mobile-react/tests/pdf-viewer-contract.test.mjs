@@ -59,3 +59,9 @@ test('the WebView is locked down and keeps the text layer on the glyphs', () => 
   assert.match(view, /textZoom=\{100\}/)
   assert.match(html, /maximum-scale=6,user-scalable=yes/)
 })
+
+test('a dead web content process reports an error with Retry on both platforms', () => {
+  assert.match(view, /onRenderProcessGone=\{processGone\}/)
+  assert.match(view, /onContentProcessDidTerminate=\{processGone\}/)
+  assert.match(view, /const processGone = \(\) => onErrorRef\.current\(/)
+})

@@ -1,0 +1,59 @@
+diff --git a/ios/RNUITextView.mm b/ios/RNUITextView.mm
+index 6f25c37e0b0001a858f4dc21b2be183f6e1efd09..ae6026e0e2d3db3030695dea87bfea7bbcac6e4a 100644
+--- a/ios/RNUITextView.mm
++++ b/ios/RNUITextView.mm
+@@ -3,6 +3,7 @@
+ #import "RNUITextViewComponentDescriptor.h"
+ #import "RNUITextViewChild.h"
+ #import <React/RCTConversions.h>
++#import <React/RCTUtils.h>
+ 
+ #import <react/renderer/textlayoutmanager/RCTAttributedTextUtils.h>
+ #import <react/renderer/components/RNUITextViewSpec/EventEmitters.h>
+@@ -221,6 +222,18 @@ - (void)prepareForRecycle
+   _textView.attributedText = nil;
+ }
+ 
++// Yoga lays out in float, so a frame can come out a hair (about 1e-4 pt) under the size the text was measured
++// at. TextKit then has no room for the last line: it drops it and truncates the line before with an ellipsis.
++// The text view gets the frame rounded up to whole pixels when it is that close to the next pixel.
++- (CGRect)textViewFrame
++{
++  const CGFloat scale = RCTScreenScale();
++  CGRect frame = _view.frame;
++  frame.size.width = ceil(frame.size.width * scale - 0.01) / scale;
++  frame.size.height = ceil(frame.size.height * scale - 0.01) / scale;
++  return frame;
++}
++
+ - (void)layoutSubviews
+ {
+   [super layoutSubviews];
+@@ -228,7 +241,7 @@ - (void)layoutSubviews
+   // state changes. Trigger a redraw whenever the host frame moves out from
+   // under it (rotation, parent relayout) so the text view resizes and
+   // onTextLayout re-fires with the new line wrapping.
+-  if (!CGRectEqualToRect(_textView.frame, _view.frame)) {
++  if (!CGRectEqualToRect(_textView.frame, [self textViewFrame])) {
+     [self setNeedsDisplay];
+   }
+ }
+@@ -249,7 +262,8 @@ - (void)drawRect:(CGRect)rect
+   // entirely when nothing actually changed so a JS-side state update made in
+   // response to onSelectionChange doesn't deselect what the user is selecting.
+   const BOOL textChanged = ![_textView.attributedText isEqualToAttributedString:convertedAttrString];
+-  const BOOL frameChanged = !CGRectEqualToRect(_textView.frame, _view.frame);
++  const CGRect textViewFrame = [self textViewFrame];
++  const BOOL frameChanged = !CGRectEqualToRect(_textView.frame, textViewFrame);
+   if (!textChanged && !frameChanged) {
+     return;
+   }
+@@ -267,7 +281,7 @@ - (void)drawRect:(CGRect)rect
+     _suppressSelectionChange = NO;
+   }
+   if (frameChanged) {
+-    _textView.frame = _view.frame;
++    _textView.frame = textViewFrame;
+   }
+ 
+   if (_activeHighlightGroup != nil) {

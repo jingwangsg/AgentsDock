@@ -12,6 +12,7 @@ import { TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, clampTerminalFontSize, 
 import { useAppColorScheme, usePalette } from '../theme'
 import type { TerminalWindow } from '../types'
 import { Text, TextInput } from './AppText'
+import { TerminalKeyLabel } from './terminal/TerminalKeyLabel'
 import { TerminalViewport, type TerminalViewportHandle } from './terminal/TerminalViewport'
 import type { TerminalKeyName, TerminalModifierState, TerminalPageEvent } from './terminal/TerminalViewport.types'
 import { IconButton } from './ui'
@@ -361,7 +362,7 @@ function ScopedTerminalView({ terminal, tmux, active, onClose, connection, conne
             onPress={() => pressKey(key.name)}
             style={[styles.key, { borderColor: colors.border, backgroundColor: active ? colors.blue : colors.surface }]}
           >
-            <Text style={[styles.keyLabel, { color: active ? colors.background : colors.text }]}>{key.label}</Text>
+            <TerminalKeyLabel label={key.label} style={[styles.keyLabel, { color: active ? colors.background : colors.text }]} />
           </Pressable>
         })}
       </ScrollView>

@@ -48,6 +48,13 @@ const fontSources = {
   'Roboto-Regular': require('../../../assets/fonts/roboto/Roboto-Regular.ttf'),
   'Roboto-Medium': require('../../../assets/fonts/roboto/Roboto-Medium.ttf'),
   'NotoSansSymbols-Check': require('../../../assets/fonts/noto-sans-symbols/NotoSansSymbols-Check.ttf'),
+  // ⇧, ⤒ and ⤓ of the terminal key row, which Android draws from its Noto Sans Symbols fallback. Cut from
+  // NotoSansSymbols-Regular-Subsetted.ttf, sha256 e47300d639a32c08610384baf325f021859da84a7ca129599af5130212dfea43,
+  // with fontTools 4.67.0, and renamed: expo-font aliases a font by its PostScript name, which the check mark subset
+  // already uses. A rerun is byte-identical (sha256 9ac590918a3c718046b82ccc4025af85a74e425e16a8d058068c4d0fac10c657):
+  //   pyftsubset NotoSansSymbols-Regular-Subsetted.ttf --unicodes=U+21E7,U+2912,U+2913 --no-hinting --output-file=NotoSansSymbols-Keys.ttf
+  //   python -c "from fontTools.ttLib import TTFont; f = TTFont('NotoSansSymbols-Keys.ttf', recalcTimestamp=False); [f['name'].setName(v, i, 3, 1, 0x409) for i, v in ((1, 'Noto Sans Symbols Keys'), (3, 'Monotype Imaging - Noto Sans Symbols Keys'), (4, 'Noto Sans Symbols Keys'), (6, 'NotoSansSymbols-Keys'))]; f.save('NotoSansSymbols-Keys.ttf')"
+  'NotoSansSymbols-Keys': require('../../../assets/fonts/noto-sans-symbols/NotoSansSymbols-Keys.ttf'),
 }
 type MaterialFont = keyof typeof fontSources
 let fontsLoaded = false

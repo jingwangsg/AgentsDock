@@ -238,12 +238,13 @@ function StagedIOSArtifactVideo({ file, connection, remoteSource, registerPause,
     />
   }
 
-  // Drawn like Android's stream loading and error views; the download
-  // percentage is only announced to VoiceOver.
+  // Android's loading and error views. While the whole file downloads before playing, the
+  // loading view also shows the download percent; once the file is here, the player is opening.
+  const downloadPercent = localURI || progress == null ? null : Math.round(progress * 100)
   return <View testID="artifact-video-staging" style={styles.stage}>
     {stageProblem
       ? <VideoLoadProblem message={stageProblem} onRetry={restage} onDownload={onDownload} onClose={close} />
-      : <VideoLoadingStatus percent={localURI ? 100 : progress == null ? null : Math.round(progress * 100)} />}
+      : <VideoLoadingStatus percent={downloadPercent} />}
   </View>
 }
 

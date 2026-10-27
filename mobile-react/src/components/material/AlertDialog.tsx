@@ -46,6 +46,8 @@ function AlertDialog({ title, message, buttons, options, close }: { title: strin
     if (ready) Animated.timing(opacity, { toValue: 1, duration: 150, useNativeDriver: true }).start()
   }, [opacity, ready])
   const press = (button: AlertButton) => { close(); button.onPress?.() }
+  // A tap outside, or VoiceOver's escape, dismisses only a cancelable alert, as on Android.
+  const cancel = options?.cancelable ? () => { close(); options.onDismiss?.() } : undefined
   const renderButton = (button: AlertButton, key: string | number, onWidth?: (width: number) => void) => <Pressable
     key={key}
     accessibilityRole="button"
@@ -59,31 +61,33 @@ function AlertDialog({ title, message, buttons, options, close }: { title: strin
     return button ? renderButton(button, role, value => setButtonWidths(current => ({ ...current, [role]: value }))) : null
   }
   return <Animated.View style={[StyleSheet.absoluteFill, { opacity }]}>
-    <Pressable
-      accessible={false}
-      style={[StyleSheet.absoluteFill, { backgroundColor: palette.scrim }]}
-      onPress={() => {
-        if (!options?.cancelable) return
-        close()
-        options.onDismiss?.()
-      }}
-    />
+    <Pressable accessible={false} style={[StyleSheet.absoluteFill, { backgroundColor: palette.scrim }]} onPress={cancel} />
     {/* Centered between the system bars, like the Android dialog window. */}
     <View pointerEvents="box-none" style={[styles.center, { top: insets.top, bottom }]}>
-      <View accessibilityViewIsModal style={[styles.card, { width, maxHeight: screen.height - insets.top - bottom - 32, backgroundColor: palette.card }]}>
+      <View accessibilityViewIsModal onAccessibilityEscape={cancel} style={[styles.card, { width, maxHeight: screen.height - insets.top - bottom - 32, backgroundColor: palette.card }]}>
         <Text accessibilityRole="header" numberOfLines={2} style={[styles.title, { color: palette.text, fontFamily: medium }]}>{title}</Text>
         <ScrollView keyboardShouldPersistTaps="always" style={styles.content} contentContainerStyle={styles.contentInner} bounces={false}>
           <Text style={[styles.message, { color: palette.text, fontFamily: regular }]}>{message ?? ''}</Text>
         </ScrollView>
-        {stacked
-          ? <View style={styles.buttonsStacked}>{layout.stacked.map((button, index) => renderButton(button, index))}</View>
-          : <View style={styles.buttonsRow}>
-              {/* AppCompat's button bar: neutral, a flexible space, negative, positive. */}
-              {rowButton('neutral')}
-              <View style={styles.spacer} />
-              {rowButton('negative')}
-              {rowButton('positive')}
-            </View>}
+        {/* AppCompat's buttonPanel scrolls too. When the card is taller than the window, the buttons
+            give up height first, down to ButtonBarLayout's minimum, then the message does. The
+            minimum is a whole row; stacked, the first button and the next one's 10 pt top padding
+            plus a 16 pt peek, so part of its label shows. */}
+        <ScrollView
+          keyboardShouldPersistTaps="always"
+          bounces={false}
+          style={[styles.buttonPanel, { minHeight: styles.buttonsRow.paddingTop + styles.button.height + (stacked ? 10 + 16 : styles.buttonsRow.paddingBottom) }]}
+        >
+          {stacked
+            ? <View style={styles.buttonsStacked}>{layout.stacked.map((button, index) => renderButton(button, index))}</View>
+            : <View style={styles.buttonsRow}>
+                {/* AppCompat's button bar: neutral, a flexible space, negative, positive. */}
+                {rowButton('neutral')}
+                <View style={styles.spacer} />
+                {rowButton('negative')}
+                {rowButton('positive')}
+              </View>}
+        </ScrollView>
       </View>
     </View>
   </Animated.View>
@@ -105,6 +109,7 @@ const styles = StyleSheet.create({
   content: { flexGrow: 0, flexShrink: 1, marginTop: 8 },
   contentInner: { minHeight: 48 },
   message: { paddingTop: 2.72, paddingBottom: 0.43, paddingHorizontal: 24, fontSize: 16, lineHeight: 18.67 },
+  buttonPanel: { flexGrow: 0, flexShrink: 1000 },
   buttonsRow: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingTop: 5, paddingBottom: 4 },
   buttonsStacked: { alignItems: 'flex-end', paddingHorizontal: 12, paddingTop: 5, paddingBottom: 4 },
   spacer: { flex: 1 },
