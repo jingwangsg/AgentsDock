@@ -1,5 +1,5 @@
-Noto Sans Symbols (subset to U+2713 CHECK MARK, the glyph Android draws for a checked menu item).
-Source file, sha256 and the commands that made it: mobile-react/src/components/material/materialTheme.ts.
+Noto Sans Symbols (subsets: U+2713 CHECK MARK for checked menu items; U+21E7, U+2912, U+2913 for the terminal key row).
+Source file, sha256 and the commands that made them: mobile-react/src/components/material/materialTheme.ts.
 Copyright 2013 Google Inc. All Rights Reserved. "Noto" is a trademark of Google Inc.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
