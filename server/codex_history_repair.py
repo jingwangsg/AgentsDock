@@ -16,6 +16,7 @@ import re
 import threading
 import time
 from typing import Callable, NamedTuple
+import weakref
 from datetime import datetime
 
 from claude_history_repair import (
@@ -405,10 +406,22 @@ def _prove_source(provider_id: str, source: Path, root: Path,
 class CodexGoalHistoryRepairCache:
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._prepare_lock = threading.Lock()
+        # One lock per chat: a long chat's first proof must not delay another
+        # chat's first page. Weak values: a chat's lock exists only while a
+        # thread holds or waits on it.
+        self._prepare_locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
         self._proofs: OrderedDict[str, _Proof] = OrderedDict()
-        self._preparing: str | None = None
-        self._cancelled = False
+        # Chat id -> Event for the proof running now; forget() sets it so that
+        # proof's result is dropped (a native proof also stops reading).
+        self._preparing: dict[str, threading.Event] = {}
+
+    def _session_prepare_lock(self, session_id: str) -> threading.Lock:
+        with self._lock:
+            lock = self._prepare_locks.get(session_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._prepare_locks[session_id] = lock
+            return lock
 
     def is_prepared(self, session_id: str, provider_id: str) -> bool:
         with self._lock:
@@ -419,21 +432,21 @@ class CodexGoalHistoryRepairCache:
                 source_path: Path | None, root: Path,
                 normalize_user: Callable[[dict], str | None],
                 classify_user: Callable[[dict], str | None]) -> bool:
-        with self._prepare_lock:
+        with self._session_prepare_lock(session_id):
             with self._lock:
                 previous = self._proofs.get(session_id)
                 if previous and previous.provider_id == provider_id:
                     self._proofs.move_to_end(session_id)
                     return False
-                self._preparing, self._cancelled = session_id, False
+                forgotten = self._preparing[session_id] = threading.Event()
             try:
                 proof = _prove(session_id, provider_id, events_path, source_path, root,
                                normalize_user, classify_user)
             except (OSError, ValueError, TypeError, KeyError, RuntimeError):
                 proof = _Proof(provider_id)
             with self._lock:
-                self._preparing = None
-                if self._cancelled:
+                del self._preparing[session_id]
+                if forgotten.is_set():
                     return bool(previous and previous.targets)
                 if previous and previous.provider_id != provider_id:
                     # Proven immutable ledger positions stay proven when this
@@ -456,8 +469,8 @@ class CodexGoalHistoryRepairCache:
     def forget(self, session_id: str) -> None:
         with self._lock:
             self._proofs.pop(session_id, None)
-            if self._preparing == session_id:
-                self._cancelled = True
+            if session_id in self._preparing:
+                self._preparing[session_id].set()
 
     def is_hidden(self, session_id: str, event: dict) -> bool:
         if event.get("session_id") not in (None, "", session_id):
@@ -1011,7 +1024,7 @@ class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
     def prepare(self, session_id: str, provider_id: str, events_path: Path, source_path: Path | None,
                 root: Path, parse_item: Callable[[dict], dict | None], *,
                 cancelled: Callable[[], bool] | None = None, deadline: float | None = None) -> bool:
-        with self._prepare_lock:
+        with self._session_prepare_lock(session_id):
             with self._lock:
                 previous = self._proofs.get(session_id)
                 if previous and previous.provider_id == provider_id:
@@ -1030,8 +1043,8 @@ class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
                     and stopped.line.still_present()):
                 raise CodexNativeHistoryProofUnavailable("Codex history still holds the malformed line that stopped its proof")
             with self._lock:
-                self._preparing, self._cancelled = session_id, False
-            budget = _NativeReadBudget(lambda: self._cancelled or bool(cancelled and cancelled()), deadline)
+                forgotten = self._preparing[session_id] = threading.Event()
+            budget = _NativeReadBudget(lambda: forgotten.is_set() or bool(cancelled and cancelled()), deadline)
             try:
                 proof = _prove_native_replays(
                     session_id, provider_id, events_path, source_path, root, parse_item,
@@ -1045,10 +1058,10 @@ class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
                         if isinstance(exc, MalformedRecord) and ledger_stamp is not None
                         and _stamp_or_none(events_path) == ledger_stamp else None)
                 with self._lock:
-                    self._preparing = None
+                    del self._preparing[session_id]
                     # load-bearing: not after a forget() during this attempt (an import or a
                     # rewind); the stop it would record predates that change.
-                    if stop is not None and not self._cancelled:
+                    if stop is not None and not forgotten.is_set():
                         self._malformed[session_id] = stop
                         self._malformed.move_to_end(session_id)
                         while len(self._malformed) > MAX_SESSIONS:
@@ -1060,7 +1073,7 @@ class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
                 # a malformed line that is still present (checked above).
                 raise CodexNativeHistoryProofUnavailable("Codex native history proof is incomplete") from exc
             with self._lock:
-                self._preparing = None
+                del self._preparing[session_id]
                 self._malformed.pop(session_id, None)
                 budget.check()
                 self._proofs[session_id] = proof

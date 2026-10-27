@@ -5,9 +5,11 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
+import codex_history_repair
 from codex_history_repair import CodexGoalHistoryRepairCache
 
 
@@ -70,6 +72,36 @@ class CodexHistoryRepairTests(unittest.TestCase):
     def prepare(self, source=None):
         return self.cache.prepare("chat", PROVIDER, self.events,
             self.source if source is None else source, self.root, normalize, classify)
+
+    def test_chats_prove_in_parallel_and_forget_cancels_only_its_own_proof(self):
+        self.fixture()
+        entered = {"long-chat": threading.Event(), "chat": threading.Event()}
+        release = threading.Event()
+        real_prove = codex_history_repair._prove
+
+        def held_until_released(session_id, *args):
+            entered[session_id].set()
+            release.wait(5)
+            return real_prove(session_id, *args)
+
+        with patch.object(codex_history_repair, "_prove", side_effect=held_until_released):
+            long_chat = threading.Thread(target=lambda: self.cache.prepare(
+                "long-chat", PROVIDER, self.events, self.source, self.root, normalize, classify))
+            other_chat = threading.Thread(target=self.prepare)
+            long_chat.start()
+            try:
+                self.assertTrue(entered["long-chat"].wait(5))
+                other_chat.start()
+                self.assertTrue(entered["chat"].wait(2), "a chat's proof waited for another chat's")
+                # Both proofs are running: forgetting one must not cancel the other.
+                self.cache.forget("long-chat")
+            finally:
+                release.set()
+                long_chat.join(5)
+                if other_chat.is_alive():
+                    other_chat.join(5)
+        self.assertTrue(self.cache.is_prepared("chat", PROVIDER))
+        self.assertFalse(self.cache.is_prepared("long-chat", PROVIDER))
 
     def histories(self, entries):
         """Several exact checkpoint sources in one temporary chat ledger."""

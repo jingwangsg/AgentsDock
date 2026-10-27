@@ -34697,6 +34697,18 @@ def build_timeline_index(session_id: str) -> dict[str, Any]:
     return payload
 
 
+async def build_cold_timeline_index_on_scan_pool(session_id: str) -> None:
+    # read_indexed_run_trace and read_scheduled_job_runs build the index
+    # themselves on the default executor when it is not cached. A build reads
+    # the whole transcript, so it runs here on the chat's scan pool, which
+    # limits concurrent scans. The read stays on the default executor: with a
+    # cached index it reads only appended events, and on the scan pool it would
+    # queue behind another chat's build. A cached entry that cannot be appended
+    # to still rebuilds there.
+    if timeline_index_cached_entry(session_id) is None:
+        await scan_transcript(build_timeline_index, session_id)
+
+
 def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
     prepare_provider_history_metadata_repair(session_id)
     claude_metadata_signature = CLAUDE_METADATA_REPAIR_CACHE.signature(session_id)
@@ -86872,10 +86884,12 @@ async def control_interactive_chat(session_id: str, action: str, payload: dict[s
             value = await scan_transcript(build_timeline_index, session_id)
             value = {**value, "landmarks": [row for row in value.get("landmarks", []) if row.get("kind") != "media"]}
         elif action == "timeline.trace":
+            await build_cold_timeline_index_on_scan_pool(session_id)
             value = await asyncio.to_thread(read_indexed_run_trace, session_id, payload.get("run_id") or "",
                 anchor_seq=payload.get("anchor_seq"), after_seq=payload.get("after") or 0, limit=limit)
             value["events"] = await asyncio.to_thread(shared_chat_attachment_events, value.get("events", []), session_id)
         elif action == "jobs.runs":
+            await build_cold_timeline_index_on_scan_pool(session_id)
             value = await asyncio.to_thread(read_scheduled_job_runs, session_id, payload.get("id") or "",
                 before_seq=payload.get("before_seq"), timeline_group_id=payload.get("timeline_group_id"), limit=limit)
             value["runs"] = await asyncio.to_thread(shared_chat_attachment_events, value.get("runs", []), session_id)
@@ -100492,6 +100506,7 @@ async def get_session_job_runs(
     if session_id not in STORE.sessions:
         raise HTTPException(status_code=404, detail="session not found")
     try:
+        await build_cold_timeline_index_on_scan_pool(session_id)
         return await asyncio.to_thread(
             read_scheduled_job_runs,
             session_id,
@@ -100551,6 +100566,7 @@ async def get_session_run_trace(
     if session_id not in STORE.sessions:
         raise HTTPException(status_code=404, detail="session not found")
     try:
+        await build_cold_timeline_index_on_scan_pool(session_id)
         return await asyncio.to_thread(
             read_indexed_run_trace,
             session_id,

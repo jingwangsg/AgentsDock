@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import threading
 import unittest
 from unittest import mock
 import codex_history_repair as repair
@@ -702,25 +703,93 @@ class CodexNativeHistoryRepairTests(unittest.TestCase):
 
     def test_expiry_acquiring_final_cache_lock_cannot_admit_completed_proof(self):
         clock = {"now": 0.0}
+        real_prove = repair._prove_native_replays
+        proved = []
+
+        def prove_then_mark(*args):
+            proof = real_prove(*args)
+            proved.append(True)
+            return proof
 
         class ExpiringLock:
-            acquisitions = 0
-
             def __enter__(lock):
-                lock.acquisitions += 1
-                if lock.acquisitions == 2:
+                # The first lock entered after the proof finished is the admission lock.
+                if proved:
                     clock["now"] = 6.0
 
             def __exit__(lock, *_args):
                 return False
 
         with mock.patch.object(self.cache, "_lock", ExpiringLock()), \
+                mock.patch.object(repair, "_prove_native_replays", side_effect=prove_then_mark), \
                 mock.patch.object(repair.time, "monotonic", side_effect=lambda: clock["now"]):
             with self.assertRaises(CodexNativeHistoryProofUnavailable):
                 self.cache.prepare("chat", PROVIDER, self.events, self.source, self.root, self.parse, deadline=5.0)
         self.assertFalse(self.cache.is_prepared("chat", PROVIDER))
-        self.assertIsNone(self.cache._preparing)
+        self.assertEqual(self.cache._preparing, {})
         self.prepare()
+        self.assertEqual(len(self.cache.signature("chat")), 4)
+
+    def test_chats_prove_in_parallel_and_forget_cancels_only_its_own_proof(self):
+        entered = {"long-chat": threading.Event(), "chat": threading.Event()}
+        release = threading.Event()
+        real_prove = repair._prove_native_replays
+        long_chat_outcome = []
+
+        def held_until_released(session_id, *args):
+            entered[session_id].set()
+            release.wait(5)
+            return real_prove(session_id, *args)
+
+        def prepare_long_chat():
+            try:
+                self.cache.prepare("long-chat", PROVIDER, self.events, self.source, self.root, self.parse)
+            except CodexNativeHistoryProofUnavailable:
+                long_chat_outcome.append("unavailable")
+
+        with mock.patch.object(repair, "_prove_native_replays", side_effect=held_until_released):
+            long_chat = threading.Thread(target=prepare_long_chat)
+            other_chat = threading.Thread(target=self.prepare)
+            long_chat.start()
+            try:
+                self.assertTrue(entered["long-chat"].wait(5))
+                other_chat.start()
+                self.assertTrue(entered["chat"].wait(2), "a chat's proof waited for another chat's")
+                # Both proofs are running: forgetting one must not cancel the other.
+                self.cache.forget("long-chat")
+            finally:
+                release.set()
+                long_chat.join(5)
+                if other_chat.is_alive():
+                    other_chat.join(5)
+        self.assertEqual(len(self.cache.signature("chat")), 4)
+        self.assertEqual(long_chat_outcome, ["unavailable"])
+        self.assertFalse(self.cache.is_prepared("long-chat", PROVIDER))
+
+    def test_a_chats_second_prepare_waits_for_its_running_proof_and_reuses_it(self):
+        entered, release = threading.Event(), threading.Event()
+        real_prove = repair._prove_native_replays
+        proved_chats = []
+
+        def held_until_released(session_id, *args):
+            proved_chats.append(session_id)
+            entered.set()
+            release.wait(5)
+            return real_prove(session_id, *args)
+
+        with mock.patch.object(repair, "_prove_native_replays", side_effect=held_until_released):
+            first, second = threading.Thread(target=self.prepare), threading.Thread(target=self.prepare)
+            first.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                second.start()
+                second.join(0.5)
+                self.assertEqual(proved_chats, ["chat"], "a chat ran two proofs at once")
+            finally:
+                release.set()
+                first.join(5)
+                second.join(5)
+        self.assertEqual(proved_chats, ["chat"])
         self.assertEqual(len(self.cache.signature("chat")), 4)
 
 
