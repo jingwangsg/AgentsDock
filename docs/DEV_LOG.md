@@ -1,5 +1,69 @@
 # Public development log
 
+## 2026-10-28 — A delete or Send no longer waits behind an agent's job-run read; reconnect bursts lag less; a cold run trace checks history once (server)
+
+- An agent reading its own chat's job runs held the chat's lifecycle lock
+  while the read waited for the chat's scan worker. A delete or Send of that
+  chat takes the same lock, so with another long chat's index building it
+  waited 49.3 s on a remote host with a throttled CPU. The agent's read now
+  runs after authorization releases the lock: the delete or Send waited 0.0 s.
+- A run-trace or job-run read of a chat whose timeline index was not cached
+  checked the chat's history twice, once on the scan worker and once on the
+  default thread pool. It now checks once, with the whole read on the chat's
+  scan worker; a cached index that can no longer be extended is rebuilt
+  there too. For a 117 MB chat whose Codex history check stays incomplete
+  (retried at every read), a cold run trace took 87.5 s instead of
+  105.7-108.8 s and a job-run read 97.8-98.0 s instead of 115.1-119.2 s.
+- The previous change let every chat's history check run at once. When four
+  chats' event streams reconnected while the 117 MB chat loaded, that raised
+  the event-loop lag peak. A long chat's check now waits for a slot per
+  history cache, one long chat at a time; a short chat's check and a chat
+  already checked never wait. Medians of 3 rounds on two private copies of
+  the chats: lag peak 538 and 543 ms, against 735 and 751 ms on main and
+  about 469 ms before per-chat checks. The short chat's first event came
+  after 2.6-3.1 s (3.6-4.0 s on main, 36-46 s before per-chat checks), the
+  117 MB chat's after 31.5-35.1 s (40.3-41.4 s). The other two long chats
+  now load one after the other: 32-59 s instead of 26-38 s, depending on
+  which one gets the slot first.
+- No lock of a chat is held while its check waits for that slot: page,
+  trace and job-run reads check before taking the chat's index lock, and the
+  event catch-up and the export check before taking its delivery lock and
+  check again under it only if the chat's log or a cached check changed. A
+  Codex check holds its slot only while it reads files, its 30 s work budget
+  starts after the wait, and callers that waited for a Codex check that
+  failed on its inputs use that result instead of reading the same files
+  again.
+- Options measured and not kept: one worker for long chats' checks (peak
+  532 ms), one slot shared by the three history caches (peak 542 ms, other
+  long chats' first events 58-59 s), starting the default thread pool's
+  threads at startup (peak 520 ms), sharing every running Codex check (peak
+  588 ms against 763 ms on main, other long chats 50-53 s), and checking
+  unconditionally both before and under the delivery lock (the 117 MB chat's
+  first event after 81-83 s when its check stayed incomplete).
+- Investigated, no change: the 117 MB chat's first page measured 55-57 s
+  live against 43 s in-process. The gap came from the measurement itself: a
+  request every 50 ms competing for the GIL on the throttled CPU. Without it
+  the page took 36-38 s, on main and on this change alike.
+- Index, first-page, run-trace and job-run output is byte-identical to main
+  for three chats on both copies (3,419,714 bytes). Tests that fail on the
+  previous code cover the agent read outside the lifecycle lock, the single
+  history check of a cold read, the rebuild on the scan worker, the slot
+  rules, the catch-up and export checks around the delivery lock, the work
+  budget after the wait, and the shared failed Codex check. A Codex
+  app-server test now collects garbage before its 1 s waits: a full
+  collection of a whole test shard pauses for about 3 s.
+- Real-app check: the desktop app built from this source (unpackaged,
+  isolated profile) against an isolated server on that host holding the
+  first copy, over an ssh port forward, two rounds each. Opening the small
+  chat took 2.8 and 3.3 s (main 2.6 and 2.7 s), returning to the 117 MB chat
+  47.0 and 48.3 s (main 47.0 and 47.3 s), and expanding its latest run trace
+  18.5 and 19.0 s (main 28.8 and 29.1 s).
+- Not changed: a history check evicted from its 24-chat cache, or dropped by
+  an import, while the chat's index stays cached is redone on the default
+  thread pool. A running chat whose Codex check stays incomplete is still
+  checked twice per event catch-up. The lag peak stays above the level
+  before per-chat checks. Availability: source only; needs the server update.
+
 ## 2026-10-27 — The iOS app shows Android's screens and features on iPhone and iPad (mobile)
 
 - The iOS app had not been built since build 171 (2026-09-10) while Android
