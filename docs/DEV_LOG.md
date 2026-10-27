@@ -1,5 +1,42 @@
 # Public development log
 
+## 2026-10-27 — The iOS app shows Android's screens and features on iPhone and iPad (mobile)
+
+- The iOS app had not been built since build 171 (2026-09-10) while Android
+  moved to build 78. iOS now matches build 78: menus, alert dialogs, the
+  spinner, switches, job date and time pickers and pull-to-refresh are drawn
+  in Android's Material style; sheets open full screen and dialogs as
+  Android's centered card; the terminal is Android's xterm.js view with its
+  toolbar, key row, find bar, settings and hidden tabs (SwiftTerm removed);
+  browser tabs load pages through the server and keep per-tab cookies and
+  storage; video tiles show frame thumbnails and the viewer has Android's
+  zoom buttons; PDFs use the pdf.js viewer; selectable text has range
+  handles; the launch screen uses Android's colors. Details and the list of
+  what was deliberately not copied are in `docs/MOBILE_PARITY.md`.
+- iOS shows every button of an alert (Android's dialog shows at most three)
+  and a Cancel where Android relies on Back or an outside tap.
+- With Xcode 27 the app no longer built (pods targeting iOS 12.4 and 13.4)
+  and the iOS 27 SDK stopped it at launch (no scene life cycle). Two config
+  plugins fix both; the scene one is a backport of Expo 58's scene delegate.
+- Fixed on the way: with the keyboard up, the first tap on a menu item only
+  closed the keyboard; a tap inside a chat chip let the next letter break the
+  chip; the context ring stayed dotted; Markdown bullets used a different
+  glyph; a browser proxy could bind again after its tab stopped it.
+- Verified on iOS 27.0 simulators (iPhone 17 Pro, iPad Pro 13-inch), light
+  and dark, against isolated servers with real Claude turns, side by side
+  with build 78 on an Android emulator. The Android build of the same
+  JavaScript was compared pixel by pixel with build 78 on a 56-screen phone
+  tour and a 16-screen tablet tour; the only difference, two terminal status
+  texts, was restored. Typecheck, the node contract tests, component tests,
+  file-transfer, terminal and proxy tests pass.
+- Not covered (needs a device): the paste permission prompt, pinch zoom,
+  rotation and Split View, haptics, memory with eight kept terminal tabs, a
+  terminal after a long suspension, typed `127.0.0.1` browser addresses (WebKit
+  sends literal loopback addresses around any proxy), and iOS versions before
+  27. A full-screen Resume chat sheet was seen once to stop taking taps on an
+  iPad simulator and was not reproduced in about 35 later attempts.
+  Availability: source only; needs a new iOS build; no server update needed.
+
 ## 2026-10-26 — A long chat's first history load no longer delays other chats, and builds faster (server)
 
 - After a server restart, the first page or timeline index of a chat builds

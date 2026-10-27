@@ -16,7 +16,7 @@ desktop client.
 | Capability | Status | iPhone and iPad behavior |
 |---|---|---|
 | Chat lifecycle | Working | Create, resume by provider ID, fork, rename, archive, delete, pin, move between folders, and stable move-up/down ordering. |
-| Chat action menu | Working | Native long-press menu plus swipe actions for pin/archive/delete; read/unread and folder moves are included. |
+| Chat action menu | Working | Android's long-press dropdown menu (drawn by the app on iOS) plus swipe actions for pin/archive/delete; read/unread and folder moves are included. |
 | Folder management | Working | Create folders from the sidebar, fold sections, and long-press a folder header to move it up or down. |
 | Runtime selection | Working | Server-populated Claude/Codex models and effort levels; backend locks after a provider session starts. |
 | Queue | Working | Edit, reorder, remove, run-now/steer, stop, and attachment retention on send failure. |
@@ -36,7 +36,8 @@ desktop client.
 
 ## Platform Rules
 
-- iPhone uses full-screen sheets for review, terminal, media, and chat details.
+- iPhone and iPad open sheets full screen and dialogs as a centered card, as
+  Android does (since the October 27, 2026 pass below).
 - iPad uses split panes where the extra width materially improves operation.
 - TestFlight remains the updater for iOS/iPadOS; Electron self-update is a
   desktop-only capability, not a missing mobile feature.
@@ -99,3 +100,42 @@ claim that every item in the older rewrite audit is now complete.
   macOS removable-volume privacy denied CoreSimulatorService access to the
   external device set. No internal-disk device set, privacy-setting change, or
   interaction with the user's installed Mac app was used as a workaround.
+
+## October 27, 2026 Android parity pass
+
+The iOS app (iPhone and iPad) was brought to Android build 78's screens and
+features. Android's rendering and behavior did not change.
+
+- Menus, alert dialogs, the spinner, switches, the job date and time pickers
+  and pull-to-refresh are drawn by the app on iOS in Android's Material style
+  (`src/components/material/`, `src/lib/alert*.ts`). iOS shows every alert
+  button (Android's dialog drops buttons after three) and adds a Cancel where
+  an Android dialog relies on Back or an outside tap. A test keeps new code on
+  these shims.
+- Sheets open full screen and the Settings, Connect, Search, digest, job,
+  process and tmux dialogs open as Android's centered card. Search fields have
+  no clear button, the timeline keeps the keyboard while dragged, PDFs use the
+  bundled pdf.js viewer, and selectable text has range selection handles.
+- The terminal is Android's xterm.js web view, with the same toolbar, key row,
+  find bar, settings, hidden-tab behavior and attach/ack/replay rules. iOS draws
+  it with Android's Droid Sans Mono. The SwiftTerm view was removed.
+- Browser tabs load pages through the server's per-tab port tunnel (a SOCKS5
+  listener per tab on iOS 17+) and keep their own cookies and storage
+  (`WKWebsiteDataStore(forIdentifier:)`). WebKit sends literal `127.0.0.1` and
+  `[::1]` URLs around any proxy, so those addresses reach the phone itself.
+- Video tiles show a frame thumbnail read without a player, and the viewer has
+  Android's zoom buttons and loading and error views. iOS keeps its download
+  before playback and AVKit's transport controls.
+- The launch screen uses Android's background and app mark.
+- Not copied: the Android sideload updater (TestFlight updates iOS), Android
+  usage analytics (removed from iOS for its privacy manifest), Android's
+  keyboard resizing mechanics, the Android-only non-selectable math and image
+  paragraphs, and overscroll physics. System UI stays native.
+
+Verification: iOS 27.0 simulators (iPhone 17 Pro, iPad Pro 13-inch), light and
+dark, against isolated servers, side by side with build 78 on an Android
+emulator; a 56-screen phone tour and a 16-screen tablet tour of the Android
+build of the same JavaScript compared pixel by pixel with build 78. Needs a
+real device: the paste permission prompt, pinch zoom, rotation and Split View,
+haptics, memory with eight kept terminal tabs, a terminal after a long
+suspension, typed `127.0.0.1` browser addresses, and iOS versions before 27.
