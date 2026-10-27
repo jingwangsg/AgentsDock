@@ -150,6 +150,11 @@
             "backgroundColor": "#2f343e",
             "image": "./assets/android-icon-foreground.png",
             "imageWidth": 200
+          },
+          "ios": {
+            "backgroundColor": "#2f343e",
+            "image": "./assets/android-icon-foreground.png",
+            "imageWidth": 200
           }
         }
       ]
