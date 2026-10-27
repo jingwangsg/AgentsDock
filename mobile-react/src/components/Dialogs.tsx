@@ -3,7 +3,7 @@ import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View, useW
 import { ActivityIndicator } from './material/ActivityIndicator'
 import { Switch } from './material/Switch'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { DateTimePicker } from '@expo/ui/community/datetime-picker'
+import { DateTimePicker } from './material/DateTimePickerDialog'
 import * as Clipboard from 'expo-clipboard'
 import { Calendar, Check, ChevronDown, Clock, Copy, ExternalLink, KeyRound, Minus, Network, Plus, Search, Server, SquareTerminal, type LucideIcon } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
@@ -441,7 +441,6 @@ function ScopedDigestDialog({ visible, source, onClose, connection, connectionKe
 
 export function JobDialog({ visible, session, jobId, onClose }: { visible: boolean; session: Session | null; jobId: string | null; onClose: () => void }) {
   const colors = usePalette()
-  const { width } = useWindowDimensions()
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const jobs = useAppStore(state => state.jobs)
@@ -556,7 +555,6 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
   }
   const pickerDate = scheduleWallTimePickerDate(start)
   const androidPickerDate = androidStartPicker === 'date' ? scheduleWallTimeAndroidDatePickerDate(start, pickerDate) : pickerDate
-  const compactIOSPicker = Platform.OS === 'ios' && width < 600
   const applyPickerValue = (part: 'date' | 'time', value: Date, androidUtcDate = false) => {
     updateStart(mergeScheduleWallTimePickerValue(startRef.current, value, part, androidUtcDate))
   }
@@ -727,25 +725,12 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
     <View style={styles.modeRow}>{job ? <ModeButton testID="job-start-mode-keep" label="Keep" selected={startMode === 'keep'} onPress={() => selectStartMode('keep')} /> : null}<ModeButton testID="job-start-mode-immediate" label="Now" selected={startMode === 'immediate'} onPress={() => selectStartMode('immediate')} /><ModeButton testID="job-start-mode-interval" label={scheduleKind === 'interval' ? 'After interval' : 'Next match'} selected={startMode === 'interval'} onPress={() => selectStartMode('interval')} /><ModeButton testID="job-start-mode-time" label={scheduleKind === 'interval' ? 'At a time' : 'At a time, then schedule'} selected={startMode === 'time'} onPress={() => selectStartMode('time')} /></View>
     {startMode === 'time' ? <>
       <View testID="job-start-picker" onTouchStart={dismissAppKeyboard} style={[styles.jobStartPicker, { backgroundColor: colors.raised, borderColor: colors.border }]}>
-        {Platform.OS === 'ios' ? compactIOSPicker ? <>
-          <View style={[styles.jobStartPickerControl, styles.jobStartPickerControlPhone]}>
-            <View style={styles.jobStartPickerHeading}><Calendar size={16} color={colors.muted} /><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Date</Text></View>
-            <DateTimePicker style={styles.jobStartPickerNativePhone} testID="job-start-date-picker" value={pickerDate} mode="date" display="compact" accentColor={colors.blue} onValueChange={(_event, value) => applyPickerValue('date', value)} />
-          </View>
-          <View style={[styles.jobStartPickerControl, styles.jobStartPickerControlPhone]}>
-            <View style={styles.jobStartPickerHeading}><Clock size={16} color={colors.muted} /><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Time</Text></View>
-            <DateTimePicker style={styles.jobStartPickerNativePhone} testID="job-start-time-picker" value={pickerDate} mode="time" display="compact" accentColor={colors.blue} onValueChange={(_event, value) => applyPickerValue('time', value)} />
-          </View>
-        </> : <>
-          <View style={styles.jobStartPickerControl}><Calendar size={16} color={colors.muted} /><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Date</Text><DateTimePicker testID="job-start-date-picker" value={pickerDate} mode="date" display="compact" accentColor={colors.blue} onValueChange={(_event, value) => applyPickerValue('date', value)} /></View>
-          <View style={styles.jobStartPickerControl}><Clock size={16} color={colors.muted} /><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Time</Text><DateTimePicker testID="job-start-time-picker" value={pickerDate} mode="time" display="compact" accentColor={colors.blue} onValueChange={(_event, value) => applyPickerValue('time', value)} /></View>
-        </> : <>
-          <Pressable testID="job-start-date-button" accessibilityRole="button" accessibilityLabel="Choose job start date" onPress={() => { dismissAppKeyboard(); setAndroidStartPicker('date') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Calendar size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Date</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleDateString([], { dateStyle: 'medium' })}</Text></View></Pressable>
-          <Pressable testID="job-start-time-button" accessibilityRole="button" accessibilityLabel="Choose job start time" onPress={() => { dismissAppKeyboard(); setAndroidStartPicker('time') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Clock size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Time</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Text></View></Pressable>
-        </>}
+        {/* Each button opens a Material date or time dialog (drawn by the app on iOS). */}
+        <Pressable testID="job-start-date-button" accessibilityRole="button" accessibilityLabel="Choose job start date" onPress={() => { dismissAppKeyboard(); setAndroidStartPicker('date') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Calendar size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Date</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleDateString([], { dateStyle: 'medium' })}</Text></View></Pressable>
+        <Pressable testID="job-start-time-button" accessibilityRole="button" accessibilityLabel="Choose job start time" onPress={() => { dismissAppKeyboard(); setAndroidStartPicker('time') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Clock size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Time</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Text></View></Pressable>
       </View>
       <Text testID="job-start-value" style={[styles.help, { color: startError ? colors.red : colors.muted }]}>{startError ?? `${start}${scheduleKind === 'interval' ? '' : ` · ${timezone.trim() || 'selected timezone'}`}`}</Text>
-      {Platform.OS === 'android' && androidStartPicker ? <DateTimePicker
+      {androidStartPicker ? <DateTimePicker
         key={`job-start-${androidStartPicker}`}
         testID={`job-start-${androidStartPicker}-picker`}
         value={androidPickerDate}
@@ -970,7 +955,7 @@ const styles = StyleSheet.create({
   searchBox: { minHeight: 42, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 8 }, searchFailure: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 }, searchFailureText: { flex: 1, fontSize: 11.5, lineHeight: 15 }, searchFailureRetry: { minWidth: 64, minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10 }, result: { minHeight: 58, padding: 10, borderBottomWidth: StyleSheet.hairlineWidth }, empty: { padding: 24, textAlign: 'center' },
   connectionUnavailable: { minHeight: 180, alignItems: 'center', justifyContent: 'center', padding: 24 }, connectionUnavailableText: { maxWidth: 320, textAlign: 'center', fontSize: 12, lineHeight: 18 },
   digestSource: { minHeight: 56, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 9 }, preview: { maxHeight: 280, borderRadius: 6, padding: 10 }, presetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 }, preset: { minWidth: 52, minHeight: 44, flexBasis: '22%', flexGrow: 1, borderRadius: 5, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 9 }, modeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 }, modeButton: { minHeight: 44, minWidth: 88, flexGrow: 1, borderRadius: 6, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' }, toggle: { minHeight: 44, flexDirection: 'row', alignItems: 'center' },
-  jobStartPicker: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, gap: 2 }, jobStartPickerControl: { minHeight: 50, flexDirection: 'row', alignItems: 'center', gap: 8 }, jobStartPickerControlPhone: { minHeight: 74, width: '100%', flexDirection: 'column', alignItems: 'stretch', justifyContent: 'center', gap: 3, paddingVertical: 5 }, jobStartPickerHeading: { minHeight: 22, flexDirection: 'row', alignItems: 'center', gap: 8 }, jobStartPickerNativePhone: { width: '100%', minHeight: 44, alignSelf: 'stretch' }, jobStartPickerLabel: { fontSize: 10, fontWeight: '800', textTransform: 'uppercase' }, jobStartPickerValue: { marginTop: 2, fontSize: 13, fontWeight: '700' }, jobStartPickerButton: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  jobStartPicker: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, gap: 2 }, jobStartPickerLabel: { fontSize: 10, fontWeight: '800', textTransform: 'uppercase' }, jobStartPickerValue: { marginTop: 2, fontSize: 13, fontWeight: '700' }, jobStartPickerButton: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 10 },
   jobReferenceChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 }, jobReferenceChip: { minHeight: 34, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 6 }, jobMentionPicker: { maxHeight: 260, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, padding: 6, gap: 2 }, jobMentionOption: { minHeight: 46, borderRadius: 5, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 8 },
   process: { minHeight: 58, borderRadius: 6, padding: 9, marginBottom: 6, flexDirection: 'row', gap: 8 }, processDot: { width: 7, height: 7, borderRadius: 4, marginTop: 5 }, log: { padding: 10, borderRadius: 6, fontFamily: fonts.mono, fontSize: 11, lineHeight: 16 },
   outputHeader: { minHeight: 34, flexDirection: 'row', alignItems: 'center' }, outputTitle: { flex: 1, fontSize: 10, fontWeight: '800', textTransform: 'uppercase' },
