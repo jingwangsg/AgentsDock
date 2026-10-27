@@ -1108,7 +1108,9 @@ test('iOS video opening stages locally and uses an app-owned AVPlayer view inste
   assert.match(artifactVideoPlayer, /setTimeout\(\(\) => setMountPlayer\(true\), IOS_VIDEO_STAGE_PLAYER_DELAY_MS\)/)
   // The staged download draws Android's loading and error views.
   assert.match(artifactVideoPlayer, /<VideoLoadProblem message=\{stageProblem\} onRetry=\{restage\} onDownload=\{onDownload\} onClose=\{close\} \/>/)
-  assert.match(artifactVideoPlayer, /<VideoLoadingStatus percent=/)
+  assert.match(artifactVideoPlayer, /<VideoLoadingStatus percent=\{downloadPercent\} \/>/)
+  // The percent shows only while the download runs, never "100%" while the player opens.
+  assert.match(artifactVideoPlayer, /const downloadPercent = localURI \|\| progress == null \? null : Math\.round\(progress \* 100\)/)
   assert.match(videoStatusViews, /accessibilityRole="progressbar"/)
   assert.match(artifactIOSSystemVideoPlayer, /useMemo\(requireAgentsDockNativeVideo, \[\]\)/)
   assert.match(artifactIOSSystemVideoPlayer, /const IOS_NATIVE_VIDEO_LOAD_TIMEOUT_MS = 15_000/)
