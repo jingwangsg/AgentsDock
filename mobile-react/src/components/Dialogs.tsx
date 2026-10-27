@@ -7,7 +7,7 @@ import { DateTimePicker } from './material/DateTimePickerDialog'
 import * as Clipboard from 'expo-clipboard'
 import { Calendar, Check, ChevronDown, Clock, Copy, ExternalLink, KeyRound, Minus, Network, Plus, Search, Server, SquareTerminal, type LucideIcon } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
-import { defaultScheduleWallTime, effectiveScheduleKind, formatScheduleWallTime, JOB_INTERVAL_PRESETS_SECONDS, jobLoopsForever, jobNextRunUpdatePatch, jobScheduleFields, jobScheduleUpdatePatch, mergeScheduleWallTimePickerValue, parseScheduleWallTime, scheduleWallTimeAndroidDatePickerDate, scheduleWallTimePickerDate, type JobStartMode, validateJobNextRun, validateJobSchedule } from '../lib/job-schedule'
+import { defaultScheduleWallTime, effectiveScheduleKind, formatScheduleWallTime, JOB_INTERVAL_PRESETS_SECONDS, jobLoopsForever, jobNextRunUpdatePatch, jobScheduleFields, jobScheduleUpdatePatch, mergeScheduleWallTimePickerValue, parseScheduleWallTime, scheduleWallTimeUtcDay, scheduleWallTimePickerDate, type JobStartMode, validateJobNextRun, validateJobSchedule } from '../lib/job-schedule'
 import { AGENTS_SERVER_REPOSITORY_URL } from '../lib/server-setup'
 import { trackEvent } from '../lib/analytics'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
@@ -472,7 +472,7 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
   const [jobMention, setJobMention] = useState<ChatMentionTrigger | null>(null)
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
-  const [androidStartPicker, setAndroidStartPicker] = useState<'date' | 'time' | null>(null)
+  const [startPicker, setStartPicker] = useState<'date' | 'time' | null>(null)
   const savingRef = useRef(false)
   const saveEpoch = useRef(0)
   const startRef = useRef('')
@@ -480,7 +480,7 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
   useEffect(() => {
     saveEpoch.current += 1
     savingRef.current = false
-    setAndroidStartPicker(null)
+    setStartPicker(null)
     if (!visible) return
     setTitle(job?.title ?? 'Status check')
     setPrompt(job?.prompt ?? 'Check the current status and report meaningful changes.')
@@ -545,7 +545,7 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
   const selectStartMode = (value: JobStartMode) => {
     startModeRef.current = value
     setStartMode(value)
-    setAndroidStartPicker(null)
+    setStartPicker(null)
     setStatus('')
     if (value === 'time' && !parseScheduleWallTime(startRef.current, scheduleKind)) {
       updateStart(defaultScheduleWallTime(new Date(), scheduleKind, timezone))
@@ -554,7 +554,7 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
     dismissAppKeyboard()
   }
   const pickerDate = scheduleWallTimePickerDate(start)
-  const androidPickerDate = androidStartPicker === 'date' ? scheduleWallTimeAndroidDatePickerDate(start, pickerDate) : pickerDate
+  const startPickerDate = startPicker === 'date' ? scheduleWallTimeUtcDay(start, pickerDate) : pickerDate
   const startError = validateJobNextRun(Boolean(job), startMode, start, scheduleKind, enabled)
   const updateJobPrompt = (value: string) => {
     const nextReferences = reconcileChatReferences(prompt, value, chatReferences)
@@ -722,16 +722,15 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
     <View style={styles.modeRow}>{job ? <ModeButton testID="job-start-mode-keep" label="Keep" selected={startMode === 'keep'} onPress={() => selectStartMode('keep')} /> : null}<ModeButton testID="job-start-mode-immediate" label="Now" selected={startMode === 'immediate'} onPress={() => selectStartMode('immediate')} /><ModeButton testID="job-start-mode-interval" label={scheduleKind === 'interval' ? 'After interval' : 'Next match'} selected={startMode === 'interval'} onPress={() => selectStartMode('interval')} /><ModeButton testID="job-start-mode-time" label={scheduleKind === 'interval' ? 'At a time' : 'At a time, then schedule'} selected={startMode === 'time'} onPress={() => selectStartMode('time')} /></View>
     {startMode === 'time' ? <>
       <View testID="job-start-picker" onTouchStart={dismissAppKeyboard} style={[styles.jobStartPicker, { backgroundColor: colors.raised, borderColor: colors.border }]}>
-        {/* The Android picker flow on both platforms; on iOS the dialogs are app-drawn copies. */}
-        <Pressable testID="job-start-date-button" accessibilityRole="button" accessibilityLabel="Choose job start date" onPress={() => { dismissAppKeyboard(); setAndroidStartPicker('date') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Calendar size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Date</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleDateString([], { dateStyle: 'medium' })}</Text></View></Pressable>
-        <Pressable testID="job-start-time-button" accessibilityRole="button" accessibilityLabel="Choose job start time" onPress={() => { dismissAppKeyboard(); setAndroidStartPicker('time') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Clock size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Time</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Text></View></Pressable>
+        <Pressable testID="job-start-date-button" accessibilityRole="button" accessibilityLabel="Choose job start date" onPress={() => { dismissAppKeyboard(); setStartPicker('date') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Calendar size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Date</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleDateString([], { dateStyle: 'medium' })}</Text></View></Pressable>
+        <Pressable testID="job-start-time-button" accessibilityRole="button" accessibilityLabel="Choose job start time" onPress={() => { dismissAppKeyboard(); setStartPicker('time') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Clock size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Time</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Text></View></Pressable>
       </View>
       <Text testID="job-start-value" style={[styles.help, { color: startError ? colors.red : colors.muted }]}>{startError ?? `${start}${scheduleKind === 'interval' ? '' : ` · ${timezone.trim() || 'selected timezone'}`}`}</Text>
-      {androidStartPicker ? <DateTimePicker
-        key={`job-start-${androidStartPicker}`}
-        testID={`job-start-${androidStartPicker}-picker`}
-        value={androidPickerDate}
-        mode={androidStartPicker}
+      {startPicker ? <DateTimePicker
+        key={`job-start-${startPicker}`}
+        testID={`job-start-${startPicker}-picker`}
+        value={startPickerDate}
+        mode={startPicker}
         presentation="dialog"
         display="default"
         is24Hour={false}
@@ -739,11 +738,10 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
         positiveButton={{ label: 'Set' }}
         negativeButton={{ label: 'Cancel' }}
         onValueChange={(_event, value) => {
-          const part = androidStartPicker
-          updateStart(mergeScheduleWallTimePickerValue(startRef.current, value, part, part === 'date'))
-          setAndroidStartPicker(null)
+          updateStart(mergeScheduleWallTimePickerValue(startRef.current, value, startPicker))
+          setStartPicker(null)
         }}
-        onDismiss={() => setAndroidStartPicker(null)}
+        onDismiss={() => setStartPicker(null)}
       /> : null}
     </> : <Text style={[styles.help, { color: colors.muted }]}>{startMode === 'keep' ? `Keeps ${job?.next_run_at_iso ? new Date(job.next_run_at_iso).toLocaleString() : 'the current schedule'}.` : startMode === 'immediate' ? 'Runs once as soon as the scheduler can launch it, then follows the schedule.' : scheduleKind === 'interval' ? `${job ? 'Resets the next run and cadence anchor to' : 'First run is'} one interval from now.` : job ? 'Discards any one-time override and uses the next matching recurrence.' : 'The first run uses the next matching recurrence.'}</Text>}
     <Label text="Mode" /><View style={styles.modeRow}><ModeButton label={scheduleKind === 'interval' ? 'Run fixed times' : 'Limit total runs'} selected={!loop} onPress={() => setLoop(false)} /><ModeButton label={scheduleKind === 'interval' ? 'Loop forever' : 'No extra run limit'} selected={loop} onPress={() => setLoop(true)} /></View>

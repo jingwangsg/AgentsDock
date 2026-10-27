@@ -16,16 +16,16 @@ function sourceBetween(startToken, endToken, from = 0) {
 const picker = sourceBetween('testID="job-start-picker"', 'testID="job-start-value"')
 
 test('both platforms show Android\'s date and time buttons, each opening a Material dialog', () => {
-  assert.match(picker, /testID="job-start-date-button"[^]*?setAndroidStartPicker\('date'\)/)
-  assert.match(picker, /testID="job-start-time-button"[^]*?setAndroidStartPicker\('time'\)/)
+  assert.match(picker, /testID="job-start-date-button"[^]*?setStartPicker\('date'\)/)
+  assert.match(picker, /testID="job-start-time-button"[^]*?setStartPicker\('time'\)/)
   // No inline SwiftUI pickers on iOS: the dialogs come from material/DateTimePickerDialog, which is
   // @expo/ui's Compose dialog on Android and the app-drawn copy on iOS.
   assert.doesNotMatch(dialogs, /compactIOSPicker|display="compact"|@expo\/ui\/community\/datetime-picker/)
   assert.match(dialogs, /import \{ DateTimePicker \} from '\.\/material\/DateTimePickerDialog'/)
-  assert.match(dialogs, /\{androidStartPicker \? <DateTimePicker/)
-  assert.match(dialogs, /mode=\{androidStartPicker\}[^]*?presentation="dialog"[^]*?display="default"/)
-  assert.match(dialogs, /mergeScheduleWallTimePickerValue\(startRef\.current, value, part, part === 'date'\)[^]*?setAndroidStartPicker\(null\)/)
-  assert.match(dialogs, /onDismiss=\{\(\) => setAndroidStartPicker\(null\)\}/)
+  assert.match(dialogs, /\{startPicker \? <DateTimePicker/)
+  assert.match(dialogs, /mode=\{startPicker\}[^]*?presentation="dialog"[^]*?display="default"/)
+  assert.match(dialogs, /mergeScheduleWallTimePickerValue\(startRef\.current, value, startPicker\)[^]*?setStartPicker\(null\)/)
+  assert.match(dialogs, /onDismiss=\{\(\) => setStartPicker\(null\)\}/)
 })
 
 test('all scheduled-job modes, picker updates, and save remain wired', () => {
