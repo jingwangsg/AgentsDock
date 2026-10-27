@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
-  ActionSheetIOS,
-  ActivityIndicator,
-  Alert,
   FlatList,
   Modal,
   Platform,
@@ -14,12 +11,14 @@ import {
   type NativeSyntheticEvent,
   type TextInputSelectionChangeEventData,
 } from 'react-native'
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
+import { ActivityIndicator } from './material/ActivityIndicator'
+import { Alert } from '../lib/alert'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Image } from 'expo-image'
 import * as DocumentPicker from 'expo-document-picker'
 import * as ImagePicker from 'expo-image-picker'
 import { useShallow } from 'zustand/react/shallow'
-import { MenuView, type MenuAction } from '@expo/ui/community/menu'
+import { MenuView, type MenuAction } from './material/MenuView'
 import { AlertCircle, ArrowDown, ArrowUp, Check, ChevronDown, CornerDownRight, File as FileIcon, Mail, MessageCircleMore, MessageSquarePlus, MessageSquareShare, Paperclip, Pencil, Search, Send, Square, Trash2, X } from 'lucide-react-native'
 import { client, useAppStore } from '../store/useAppStore'
 import {
@@ -110,6 +109,7 @@ import { CodexGoalBar, CodexGoalEditorSheet } from './CodexGoalBar'
 import { WorkingDirectoryPicker } from './WorkingDirectoryPicker'
 import { SideChatButton, SideChatSheet } from './SideChatSheet'
 import { useClaudeRuntime } from './ClaudeRuntimeContext'
+import { ModalSafeArea } from './ModalSafeArea'
 import { IconButton, SheetCloseButton } from './ui'
 import { FullscreenViewerCloseButton, SwipeDismissImage } from './FullscreenImageViewer'
 import { TeamTargetPicker } from './TeamTargetPicker'
@@ -702,8 +702,6 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const changeReferenceAction = useCallback((reference: ChatReference) => {
     const title = liveChatReferenceTitle(reference, useAppStore.getState(), sessionId)
     showReferenceActionPicker({
-      width,
-      reference,
       title,
       actions: availableChatReferenceActions(supportedChatActions, requestReplySupportedForSource),
       onSelect: action => {
@@ -717,7 +715,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         storeReferences(currentReferences.map(candidate => sameChatReference(candidate, selected) ? chatReferenceWithAction(candidate, action) : candidate))
       },
     })
-  }, [requestReplySupportedForSource, storeReferences, supportedChatActions, width])
+  }, [requestReplySupportedForSource, storeReferences, supportedChatActions])
 
   const revokeReference = useCallback((reference: ChatReference) => {
     storeReferences(referencesRef.current.filter(candidate => !sameChatReference(candidate, reference)))
@@ -1036,15 +1034,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       else if (index === 2) void pickFiles()
       else if (index === 3) openTargetPicker({ kind: '@@', start: Math.min(selectionRef.current.start, selectionRef.current.end), end: Math.max(selectionRef.current.start, selectionRef.current.end), query: '' })
     }
-    if (Platform.OS === 'ios' && width < 720) {
-      const options = ['Reference another chat', 'Photo Library', 'Files', 'Reference a server (@@)', 'Cancel']
-      ActionSheetIOS.showActionSheetWithOptions({
-        title: 'Add',
-        options,
-        cancelButtonIndex: options.length - 1,
-      }, choose)
-      return
-    }
+    // Android's Alert shows only the first three buttons; iOS draws the same dialog with all of them.
     Alert.alert('Add', undefined, [
       { text: 'Reference another chat', onPress: () => choose(0) },
       { text: 'Photo Library', onPress: () => choose(1) },
@@ -1412,7 +1402,6 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       />
       <TeamTargetPicker
         visible={TEAM_NETWORK_UI_ENABLED && !welcome && pickerTrigger?.kind === '@@'}
-        width={width}
         query={pickerQuery}
         sourceSessionId={sessionId}
         referenceLimitReached={teamReferences.length >= MAX_TEAM_REFERENCES}
@@ -1506,7 +1495,16 @@ function useChipTextField(inputRef: RefObject<TextInput | null>, initialCaret: n
       const caret = caretOutsideComposerReferences(native.start, [...chatReferences, ...teamReferences], selectionRef.current.start)
       if (caret !== native.start) {
         selection = { start: caret, end: caret }
-        inputRef.current?.setSelection(caret, caret)
+        // iOS ignores a selection command whose event count is older than the field's. A tap that ends an
+        // autocorrect session sends a text event in the same batch, and TextInput holds the new count
+        // only after its next render, so iOS moves the caret a frame later.
+        if (Platform.OS === 'ios') {
+          requestAnimationFrame(() => {
+            if (selectionRef.current.start === caret && selectionRef.current.end === caret) inputRef.current?.setSelection(caret, caret)
+          })
+        } else {
+          inputRef.current?.setSelection(caret, caret)
+        }
       }
     }
     selectionRef.current = selection
@@ -1710,13 +1708,12 @@ export function ChatTargetPicker({ visible, crossServer, width, query, sourceSes
   return <Modal
     visible={visible}
     animationType="slide"
-    presentationStyle={Platform.OS === 'ios' ? tablet ? 'formSheet' : 'pageSheet' : 'fullScreen'}
-    allowSwipeDismissal
+    presentationStyle="fullScreen"
     onShow={() => searchInputRef.current?.focus()}
     onRequestClose={onClose}
     onDismiss={onDidDismiss}
   >
-    {visible ? <SafeAreaView edges={Platform.OS === 'ios' ? ['bottom'] : ['top', 'bottom']} onAccessibilityEscape={onClose} style={[styles.targetPickerSafe, { backgroundColor: colors.background }]}>
+    {visible ? <ModalSafeArea edges={['top', 'bottom']} onAccessibilityEscape={onClose} style={[styles.targetPickerSafe, { backgroundColor: colors.background }]}>
       <View style={[styles.targetPickerGrabber, { backgroundColor: colors.border }]} />
       <View style={[styles.targetPickerPanel, tablet && styles.targetPickerPanelTablet]}>
         <View style={[styles.targetPickerHeader, { borderColor: colors.border }]}>
@@ -1737,7 +1734,6 @@ export function ChatTargetPicker({ visible, crossServer, width, query, sourceSes
             returnKeyType="search"
             submitBehavior="blurAndSubmit"
             onSubmitEditing={dismissAppKeyboard}
-            clearButtonMode="while-editing"
             placeholder="Search chats"
             placeholderTextColor={colors.muted}
             style={[styles.targetSearchInput, { color: colors.text }]}
@@ -1826,7 +1822,7 @@ export function ChatTargetPicker({ visible, crossServer, width, query, sourceSes
           }}
         />
       </View>
-    </SafeAreaView> : null}
+    </ModalSafeArea> : null}
   </Modal>
 }
 
@@ -1857,9 +1853,7 @@ function sameChatReference(left: ChatReference, right: ChatReference): boolean {
     && left.source_text_end === right.source_text_end
 }
 
-function showReferenceActionPicker({ width, reference, title, actions, onSelect }: {
-  width: number
-  reference: ChatReference
+function showReferenceActionPicker({ title, actions, onSelect }: {
   /** The chip's current title, as the shelf shows it. */
   title: string
   actions: readonly ChatReferenceAction[]
@@ -1868,19 +1862,6 @@ function showReferenceActionPicker({ width, reference, title, actions, onSelect 
   const ordered = (['route', 'direct_message', 'request_reply', 'instruction', 'final_result'] as const).filter(action => actions.includes(action))
   if (!ordered.length) {
     Alert.alert('Chat handoffs unavailable', 'This server did not advertise any compatible actions.')
-    return
-  }
-  const labels = ordered.map(chatReferenceActionMenuLabel)
-  if (Platform.OS === 'ios' && width < 720) {
-    const options = [...labels, 'Cancel']
-    ActionSheetIOS.showActionSheetWithOptions({
-      title: `@${title} · ${chatReferenceLabel(reference.action)}`,
-      options,
-      cancelButtonIndex: options.length - 1,
-    }, index => {
-      const action = ordered[index]
-      if (action) onSelect(action)
-    })
     return
   }
   Alert.alert(`@${title}`, 'Choose how this chat should receive the message.', [
@@ -2022,7 +2003,6 @@ function QueuedAttachment({ sessionId, fileId, onPreview }: { sessionId: string;
 
 export function QueueShelf({ sessionId, profileId, profileGeneration, networkDisabled, onSent, onPreview }: { sessionId: string; profileId: string | null; profileGeneration: number; networkDisabled: boolean; onSent: () => void; onPreview: (name: string, source: AttachmentImageSource) => void }) {
   const colors = usePalette()
-  const { width } = useWindowDimensions()
   const allTurns = useAppStore(state => state.snapshots[sessionId]?.queuedTurns) ?? EMPTY_QUEUE
   const turns = useMemo(() => allTurns.filter(isVisibleQueuedTurn), [allTurns])
   const health = useAppStore(state => state.health)
@@ -2160,8 +2140,6 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
     }
     const title = liveChatReferenceTitle(reference, useAppStore.getState(), sessionId)
     showReferenceActionPicker({
-      width,
-      reference,
       title,
       actions: availableChatReferenceActions(supportedChatActions, requestReplySupportedForSource),
       onSelect: action => {

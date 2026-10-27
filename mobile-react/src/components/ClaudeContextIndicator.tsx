@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import Svg, { Circle } from 'react-native-svg'
 import { Bot, RefreshCw } from 'lucide-react-native'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
@@ -13,6 +13,7 @@ import { usePalette } from '../theme'
 import { Text } from './AppText'
 import { useClaudeRuntime } from './ClaudeRuntimeContext'
 import { ProviderUsageSection } from './ProviderUsagePanel'
+import { ModalSafeArea } from './ModalSafeArea'
 import { IconButton, SheetCloseButton } from './ui'
 
 export function ClaudeContextIndicator() {
@@ -90,7 +91,8 @@ export function ClaudeContextIndicator() {
       style={({ pressed }) => [styles.indicator, { opacity: pressed ? 0.62 : 1 }]}
     >
       {refreshing && !runtime ? <ActivityIndicator size="small" color={colors.muted} /> : <Svg width={22} height={22} viewBox="0 0 22 22">
-        <Circle cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
+        {/* load-bearing key: iOS react-native-svg keeps a dash array that is later removed, so the dotted track remounts once the usage is known. */}
+        <Circle key={percent == null ? 'unknown' : 'known'} cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
         {percent == null ? null : <Circle
           cx={11}
           cy={11}
@@ -106,8 +108,8 @@ export function ClaudeContextIndicator() {
         />}
       </Svg>}
     </Pressable>
-    {open ? <Modal visible animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={close}>
-      <SafeAreaView accessibilityViewIsModal onAccessibilityEscape={close} style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+    {open ? <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={close}>
+      <ModalSafeArea accessibilityViewIsModal onAccessibilityEscape={close} style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <View style={[styles.headerMark, { backgroundColor: colors.raised }]}><Bot size={19} color={colors.blue} /></View>
           <View style={styles.headerCopy}>
@@ -120,7 +122,8 @@ export function ClaudeContextIndicator() {
         <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.content}>
           <View style={[styles.meter, { borderColor: colors.border, backgroundColor: colors.surface }]}>
             <Svg width={88} height={88} viewBox="0 0 22 22">
-              <Circle cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
+              {/* load-bearing key: iOS react-native-svg keeps a dash array that is later removed, so the dotted track remounts once the usage is known. */}
+              <Circle key={percent == null ? 'unknown' : 'known'} cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
               {percent == null ? null : <Circle
                 cx={11}
                 cy={11}
@@ -161,7 +164,7 @@ export function ClaudeContextIndicator() {
           {compactNotice ? <Text accessibilityLiveRegion="polite" style={[styles.note, { color: compactNotice.tone === 'error' ? colors.red : colors.green }]}>{compactNotice.text}</Text> : null}
           <View style={styles.usage}><ProviderUsageSection session={session} /></View>
         </ScrollView>
-      </SafeAreaView>
+      </ModalSafeArea>
     </Modal> : null}
   </>
 }

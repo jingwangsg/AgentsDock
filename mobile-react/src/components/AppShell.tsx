@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AccessibilityInfo, ActivityIndicator, BackHandler, Linking, Modal, Platform, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
+import { AccessibilityInfo, BackHandler, Linking, Modal, Platform, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import * as Notifications from 'expo-notifications'
 import { useShallow } from 'zustand/react/shallow'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
@@ -31,6 +32,7 @@ import { SurfaceScreen } from './SurfaceScreen'
 import { ServerProfilesSheet, type ServerProfileListItem } from './ServerProfiles'
 import { TerminalView } from './TerminalView'
 import { TeamNetwork } from './TeamNetwork'
+import { ModalSafeArea } from './ModalSafeArea'
 import { EmptyState, IconButton, Loading, SheetCloseButton } from './ui'
 import { WaitingForYouBanner } from './WaitingForYouBanner'
 import { isWelcomeSession, welcomeWorkspacePatch } from '../lib/welcome-session'
@@ -44,11 +46,11 @@ type InspectorAction = {
 }
 
 const IOS_INSPECTOR_HANDOFF_FALLBACK_MS = 1_000
-// Terminal tabs kept connected while hidden (Android): the most recently shown ones, at most eight and 80,000
-// lines of scrollback between them. They share one web view process; on the emulator (2026-10-12) each added
-// about 14 MB of PSS and no measurable idle CPU, and a full 50,000-line scrollback about 50 MB more (190 MB
-// while it was written), so eight such tabs could get that process killed. A tab let go reattaches, with a
-// clean replay, when it is shown again.
+// Terminal tabs kept connected while hidden: the most recently shown ones, at most eight and 80,000
+// lines of scrollback between them. They share one web view process; on the Android emulator (2026-10-12) each
+// added about 14 MB of PSS and no measurable idle CPU, and a full 50,000-line scrollback about 50 MB more (190 MB
+// while it was written), so eight such tabs could get that process killed. iOS uses the same limits, not measured
+// there. A tab let go reattaches, with a clean replay, when it is shown again.
 const KEPT_TERMINAL_TABS = 8
 const KEPT_TERMINAL_SCROLLBACK_LINES = 80_000
 
@@ -132,13 +134,13 @@ function AppShellContent() {
   const chatLayout = chatWorkspaceLayout(width, height)
   const compact = chatLayout.compact
   const onScreenSessionId = compact && !mobileChatOpen ? null : (selectedSurface ? null : selected?.id ?? null)
-  // Android keeps each terminal tab opened in this app run mounted and connected while another tab or chat is in
+  // Each terminal tab opened in this app run stays mounted and connected while another tab or chat is in
   // front, as the desktop does, so a hidden shell still rings its bell and posts notifications. A tab never opened
-  // does not connect. iOS shows one native terminal at a time.
+  // does not connect.
   const surfaces = useAppStore(state => state.surfaces)
   const { scrollback } = useTerminalSettings()
   const keptTerminalTabs = Math.max(1, Math.min(KEPT_TERMINAL_TABS, Math.floor(KEPT_TERMINAL_SCROLLBACK_LINES / scrollback)))
-  const terminalInFront = Platform.OS === 'android' && selectedSurface?.kind === 'terminal' && (!compact || mobileChatOpen) ? selectedSurface.id : null
+  const terminalInFront = selectedSurface?.kind === 'terminal' && (!compact || mobileChatOpen) ? selectedSurface.id : null
   const [openedTerminals, setOpenedTerminals] = useState<{ scope: string; ids: string[] }>({ scope: connectionKey, ids: [] })
   const openedTerminalIds = openedTerminals.scope === connectionKey ? openedTerminals.ids : []
   useEffect(() => {
@@ -248,9 +250,10 @@ function AppShellContent() {
     requestAnimationFrame(dismissAppKeyboard)
   }, [])
   const openSearch = useCallback(() => {
-    // Preserve the existing keyboard while the page sheet is published. Its
-    // onShow handler transfers focus directly to the search field, avoiding a
-    // hide/show race that can make UIKit drop or mis-size the presentation.
+    // Keep the existing keyboard up while the search dialog's Modal is presented:
+    // its onShow handler moves focus straight to the search field, so the keyboard
+    // does not hide and show again. That race could drop or mis-size the former iOS
+    // page sheet; it was not re-checked for the current transparent Modal.
     setSearch(true)
     trackEvent('search_opened')
   }, [])
@@ -295,7 +298,7 @@ function AppShellContent() {
       requestAnimationFrame(finishOptionsDismissal)
       return
     }
-    // UIKit normally acknowledges the page-sheet dismissal through onDismiss.
+    // UIKit normally acknowledges the modal's dismissal through onDismiss.
     // Keep an exactly-once fallback for interrupted native transitions so a
     // queued inspector action cannot remain inert forever.
     pendingInspectorFallback.current = setTimeout(() => {
@@ -530,7 +533,7 @@ function AppShellContent() {
     <TmuxDialog visible={modalScopeCurrent && tmux} sessionId={selected?.id ?? null} onClose={() => setTmux(false)} />
     <CodeReview sessionId={selected?.id ?? ''} runId={modalScopeCurrent ? reviewRun : null} onClose={closeReview} />
     <WorkspaceChanges sessionId={selected?.id ?? ''} visible={modalScopeCurrent && changes && Boolean(selected) && !isWelcomeSession(selected?.id)} onClose={closeChanges} />
-    <Modal visible={modalScopeCurrent && options && Boolean(selected) && !isWelcomeSession(selected?.id)} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={closeOptions} onDismiss={finishOptionsDismissal}>{selected && !isWelcomeSession(selected.id) ? <SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]} edges={['bottom']}><View style={[styles.modalGrabber, { backgroundColor: colors.selected }]} /><View style={styles.modalTop}><Text style={[styles.modalTitle, { color: colors.text }]}>Chat details</Text><SheetCloseButton onPress={closeOptions} label="Close chat details" testID="chat-details-close" /></View><Inspector key={`options-inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => queueInspectorAction('digest')} onJob={jobId => queueInspectorAction('job', jobId)} onTerminal={() => queueInspectorAction('terminal')} onProcesses={() => queueInspectorAction('processes')} onTmux={() => queueInspectorAction('tmux')} onChanges={() => queueInspectorAction('changes')} onFileViewerRequested={closeOptions} /></SafeAreaView> : null}</Modal>
+    <Modal visible={modalScopeCurrent && options && Boolean(selected) && !isWelcomeSession(selected?.id)} animationType="slide" presentationStyle="fullScreen" onRequestClose={closeOptions} onDismiss={finishOptionsDismissal}>{selected && !isWelcomeSession(selected.id) ? <ModalSafeArea style={[styles.fill, { backgroundColor: colors.background }]} edges={['bottom']}><View style={[styles.modalGrabber, { backgroundColor: colors.selected }]} /><View style={styles.modalTop}><Text style={[styles.modalTitle, { color: colors.text }]}>Chat details</Text><SheetCloseButton onPress={closeOptions} label="Close chat details" testID="chat-details-close" /></View><Inspector key={`options-inspector:${connectionKey}:${selected.id}`} sessionId={selected.id} onDigest={() => queueInspectorAction('digest')} onJob={jobId => queueInspectorAction('job', jobId)} onTerminal={() => queueInspectorAction('terminal')} onProcesses={() => queueInspectorAction('processes')} onTmux={() => queueInspectorAction('tmux')} onChanges={() => queueInspectorAction('changes')} onFileViewerRequested={closeOptions} /></ModalSafeArea> : null}</Modal>
     {modalScopeCurrent && terminal && selected && !isWelcomeSession(selected.id) ? <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={closeTerminal}><SafeAreaView
       testID="terminal-modal"
       style={[styles.fill, {
@@ -545,7 +548,7 @@ function AppShellContent() {
   </View>
 }
 
-// Closed, the pane stays mounted off screen only while it holds hidden terminal tabs (Android).
+// Closed, the pane stays mounted off screen only while it holds hidden terminal tabs.
 function MobileChatPane({ children, open, width, backgroundColor, onClose }: { children: ReactNode; open: boolean; width: number; backgroundColor: string; onClose: () => void }) {
   const translateX = useSharedValue(open ? 0 : width)
   useEffect(() => {

@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   View,
 } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import { ActivityIndicator } from './material/ActivityIndicator'
+import { Switch } from './material/Switch'
 import {
   AlertTriangle,
   CircleCheck,
@@ -28,6 +26,7 @@ import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAp
 import { usePalette, type Palette } from '../theme'
 import type { ClaudeMcpActionType, ClaudeMcpServer, ClaudeMcpSnapshot } from '../types'
 import { Text } from './AppText'
+import { ModalSafeArea } from './ModalSafeArea'
 import { SheetCloseButton } from './ui'
 
 interface ClaudeMcpDialogProps {
@@ -276,11 +275,10 @@ export function ClaudeMcpDialog({ visible, sessionId, onClose }: ClaudeMcpDialog
   return <Modal
     visible={visible}
     animationType="slide"
-    presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'}
-    allowSwipeDismissal
+    presentationStyle="fullScreen"
     onRequestClose={close}
   >
-    <SafeAreaView
+    <ModalSafeArea
       testID="claude-mcp-dialog"
       accessibilityViewIsModal
       onAccessibilityEscape={close}
@@ -405,7 +403,7 @@ export function ClaudeMcpDialog({ visible, sessionId, onClose }: ClaudeMcpDialog
           />}
         </> : null}
       </ScrollView>
-    </SafeAreaView>
+    </ModalSafeArea>
   </Modal>
 }
 

@@ -4,7 +4,7 @@ import type { TerminalCursorStyle, TerminalFindOptions, TerminalKeyName, Termina
 export type { TerminalKeyName } from '../../terminal/terminalPage'
 
 export type TerminalConnectionStatus = {
-  /** Exited: the shell ended (Android web view terminal only). */
+  /** Exited: the shell ended. */
   status: 'Connecting' | 'Connected' | 'Reconnecting' | 'Error' | 'Disconnected' | 'Exited'
   name?: string
   message?: string
@@ -12,7 +12,7 @@ export type TerminalConnectionStatus = {
 
 export type TerminalModifierState = { ctrl: boolean; alt: boolean }
 
-/** What the Android terminal reports about its shell and its own controls. */
+/** What the terminal page reports about its shell and its own controls. */
 export type TerminalPageEvent = Extract<TerminalPageMessage, { type: 'title' | 'cwd' | 'bell' | 'notify' | 'find-results' | 'font-size' | 'command' }>
 
 export type TerminalViewportHandle = {
@@ -20,7 +20,7 @@ export type TerminalViewportHandle = {
   blur(): Promise<boolean>
   copy(): Promise<boolean>
   paste(): Promise<boolean>
-  /** Only the Android web view terminal implements these; others leave them undefined. */
+  /** The web view terminal implements these; the web fallback leaves them undefined. */
   sendKey?(name: TerminalKeyName): Promise<boolean>
   setModifier?(name: keyof TerminalModifierState, active: boolean): Promise<boolean>
   find?(query: string, options: TerminalFindOptions, direction: 1 | -1, incremental: boolean): Promise<boolean>
@@ -39,7 +39,7 @@ export type TerminalViewportProps = ViewProps & {
   fontSize?: number
   onStatus?: (event: NativeSyntheticEvent<TerminalConnectionStatus>) => void
   onModifiers?: (state: TerminalModifierState) => void
-  /** Android web view terminal only, from here on. A terminal tab, which acknowledges output; not a chat's tmux session. */
+  /** A terminal tab, which acknowledges output; not a chat's tmux session. */
   standalone?: boolean
   /** False while a kept terminal tab is hidden behind another tab or chat. */
   visible?: boolean

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { cloneElement, useCallback, useMemo, useState, type ReactElement, type ReactNode } from 'react'
 import { UITextView as SelectableText } from '@bsky.app/react-native-uitextview'
 import * as Clipboard from 'expo-clipboard'
 import { Linking, Platform, ScrollView, StyleSheet, Text as NativeText, View, type TextStyle } from 'react-native'
@@ -183,6 +183,13 @@ export function MarkdownContent({
           {alt || src}
         </SelectableText>
       )
+    },
+    // The library draws a bullet as a middle dot (U+00B7) on iOS; Android's is U+2022.
+    list_item: (node, children, parents, styles, inheritedStyles) => {
+      const item = renderRules.list_item!(node, children, parents, styles, inheritedStyles) as ReactElement<{ children: [ReactElement, ReactNode] }>
+      if (Platform.OS !== 'ios' || !parents.some(parent => parent.type === 'bullet_list')) return item
+      const [icon, content] = item.props.children
+      return cloneElement(item, undefined, cloneElement(icon, undefined, '\u2022'), content)
     },
     code_inline: (node, _children, _parents, styles, inheritedStyles) => (
       <SelectableText key={node.key} style={[inheritedStyles, styles.code_inline]}>

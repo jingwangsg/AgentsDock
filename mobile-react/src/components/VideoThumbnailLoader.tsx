@@ -1,6 +1,7 @@
 import { useEvent } from 'expo'
 import { useEffect, useMemo } from 'react'
-import { ActivityIndicator, StyleSheet, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { useVideoPlayer, type VideoThumbnail } from 'expo-video'
 import type { AgentServerClient } from '../api/AgentServerClient'
 import { usePalette } from '../theme'

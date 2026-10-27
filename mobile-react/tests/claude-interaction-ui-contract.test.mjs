@@ -34,7 +34,7 @@ test('Claude reuses the provider-scoped interaction shelf and response bridge', 
 
 test('provider request sheets keep pending failures reachable above the keyboard', () => {
   assert.match(providerShelf, /automaticallyAdjustKeyboardInsets=\{Platform\.OS === 'ios'\}/)
-  assert.match(providerShelf, /keyboardDismissMode=\{Platform\.OS === 'ios' \? 'interactive' : 'on-drag'\}/)
+  assert.match(providerShelf, /keyboardDismissMode="on-drag"/)
   assert.match(providerShelf, /const visibleCount = Math\.max\(interactions\.length, pendingInteractionCount\)/)
   assert.match(providerShelf, /Retry loading request/)
   assert.match(claudeShelf, /session\?\.claude_pending_interaction_count/)

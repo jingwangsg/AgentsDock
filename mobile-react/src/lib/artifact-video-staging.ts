@@ -42,10 +42,6 @@ export function artifactVideoStageProgress(
   return Math.max(0, Math.min(1, bytesWritten / expected))
 }
 
-export function shouldGenerateAutomaticVideoThumbnail(platform: string, viewerActive: boolean): boolean {
-  return platform !== 'ios' && !viewerActive
-}
-
 export function artifactVideoStageCacheKey(value: string): string {
   let first = 0x811c9dc5
   let second = 0x9e3779b9

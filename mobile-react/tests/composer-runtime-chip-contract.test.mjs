@@ -25,8 +25,8 @@ test('the toolbar shows one Model · Reasoning chip right of the provider contro
   assert.doesNotMatch(composer, /set-model|set-effort|choiceActions|ComposerOptionPicker|runtimeLabel/)
 })
 
-test('the chip opens a page sheet with Model and Reasoning sections like the desktop menu', () => {
-  assert.match(sheet, /<Modal visible animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose=\{onClose\}>/)
+test('the chip opens a full-screen sheet with Model and Reasoning sections like the desktop menu', () => {
+  assert.match(sheet, /<Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose=\{onClose\}>/)
   assert.match(sheet, /<SheetCloseButton testID="composer-runtime-sheet-close" label="Close model and reasoning" onPress=\{onClose\} \/>/)
   assert.match(sheet, />Model<\/Text>/)
   assert.match(sheet, />Reasoning<\/Text>/)

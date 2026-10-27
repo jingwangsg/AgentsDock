@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View, useWindowDimensions } from 'react-native'
+import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions, KeyboardAvoidingView, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
+import { Switch } from './material/Switch'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { DateTimePicker } from '@expo/ui/community/datetime-picker'
+import { DateTimePicker } from './material/DateTimePickerDialog'
 import * as Clipboard from 'expo-clipboard'
 import { Calendar, Check, ChevronDown, Clock, Copy, ExternalLink, KeyRound, Minus, Network, Plus, Search, Server, SquareTerminal, type LucideIcon } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
-import { defaultScheduleWallTime, effectiveScheduleKind, formatScheduleWallTime, JOB_INTERVAL_PRESETS_SECONDS, jobLoopsForever, jobNextRunUpdatePatch, jobScheduleFields, jobScheduleUpdatePatch, mergeScheduleWallTimePickerValue, parseScheduleWallTime, scheduleWallTimeAndroidDatePickerDate, scheduleWallTimePickerDate, type JobStartMode, validateJobNextRun, validateJobSchedule } from '../lib/job-schedule'
+import { defaultScheduleWallTime, effectiveScheduleKind, formatScheduleWallTime, JOB_INTERVAL_PRESETS_SECONDS, jobLoopsForever, jobNextRunUpdatePatch, jobScheduleFields, jobScheduleUpdatePatch, mergeScheduleWallTimePickerValue, parseScheduleWallTime, scheduleWallTimeUtcDay, scheduleWallTimePickerDate, type JobStartMode, validateJobNextRun, validateJobSchedule } from '../lib/job-schedule'
 import { AGENTS_SERVER_REPOSITORY_URL } from '../lib/server-setup'
 import { trackEvent } from '../lib/analytics'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
@@ -23,7 +25,7 @@ import { liveChatReferenceTitle } from '../lib/timeline-inline-references'
 import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { AppearanceMode, Backend, ChatReference, CreateJobInput, JobContextMode, JobScheduleKind, RuntimeOption, Session, TimelineSearchResult, UpdateJobInput } from '../types'
-import { Text, TextInput } from './AppText'
+import { focusedTextInput, Text, TextInput } from './AppText'
 import { BackendMark } from './BackendMark'
 import { IconButton, SheetCloseButton } from './ui'
 import { RuntimeHealthPanel } from './RuntimeHealth'
@@ -46,7 +48,7 @@ export function ServerSetupDialog({
   onDidDismiss?: () => void
 }) {
   const colors = usePalette()
-  return <Sheet visible={visible} title="Connect AgentsDock" onClose={onClose} onDidDismiss={onDidDismiss} form>
+  return <Sheet visible={visible} title="Connect AgentsDock" onClose={onClose} onDidDismiss={onDidDismiss}>
     <View style={styles.setupIntro}>
       <View style={[styles.setupIcon, { backgroundColor: colors.raised }]}><Server size={24} color={colors.blue} /></View>
       <View style={styles.setupCopy}>
@@ -129,7 +131,7 @@ export function SettingsDialog({ visible, onClose }: { visible: boolean; onClose
       <IconButton icon={Plus} disabled={fontScale >= APP_FONT_SCALE_MAX} label="Increase app text size" onPress={() => setFontScale(fontScale + APP_FONT_SCALE_STEP)} />
     </View>
     <Text style={[styles.help, { color: colors.muted }]}>Applies to chats, navigation, settings, server management, and terminal text.</Text>
-    {Platform.OS === 'android' ? <TerminalSettings /> : null}
+    <TerminalSettings />
     <Label text="New chat defaults" />
     <View style={styles.segment}>{chatDefaultBackendOptions.map(value => { const unavailable = value === 'cursor' && Boolean(runtimeSelectionError(health, runtime, value)); return <Pressable key={value} accessibilityRole="button" accessibilityLabel={`${backendLabel(value)}${unavailable ? ', unavailable' : ''}`} accessibilityState={{ selected: chatDefaults.backend === value, disabled: unavailable }} disabled={unavailable} onPress={() => setChatDefaults({ backend: value, model: '', effort: '' })} style={[styles.segmentButton, { backgroundColor: chatDefaults.backend === value ? colors.blue : colors.raised, opacity: unavailable ? 0.4 : 1 }]}><BackendMark backend={value} size={20} /><Text style={{ color: chatDefaults.backend === value ? colors.textOnAccent : colors.text, fontWeight: '700' }}>{backendLabel(value)}</Text></Pressable> })}</View>
     <Label text="Model" /><Select testID="settings-default-model" title="Choose model" value={chatDefaults.model} options={chatDefaultModelOptions} onChange={next => setChatDefaults({ model: next, effort: runtimeEffortAfterModelChange(runtime, chatDefaults.backend, next, chatDefaults.effort) ?? '' })} />
@@ -177,7 +179,7 @@ function TerminalSettings() {
     <View style={styles.modeRow}>{(['bar', 'block', 'underline'] as const).map(value => <ModeButton key={value} testID={`settings-terminal-cursor-${value}`} label={value === 'bar' ? 'Bar' : value === 'block' ? 'Block' : 'Underline'} selected={settings.cursorStyle === value} onPress={() => updateTerminalSettings({ cursorStyle: value })} />)}</View>
     {toggle('cursorBlink', 'Blinking cursor', 'The cursor blinks while the terminal has the keyboard.')}
     {toggle('copyOnSelect', 'Copy on select', 'Text selected with a mouse or a double tap goes to the clipboard.')}
-    {toggle('screenReader', 'Screen reader support', 'Lets TalkBack read the terminal; it costs some speed with fast output.')}
+    {toggle('screenReader', 'Screen reader support', `Lets ${Platform.OS === 'ios' ? 'VoiceOver' : 'TalkBack'} read the terminal; it costs some speed with fast output.`)}
     <Label text="Terminal scrollback" />
     <View style={styles.modeRow}>{TERMINAL_SCROLLBACK_OPTIONS.map(lines => <ModeButton key={lines} testID={`settings-terminal-scrollback-${lines}`} label={`${lines.toLocaleString('en-US')} lines`} selected={settings.scrollback === lines} onPress={() => updateTerminalSettings({ scrollback: lines })} />)}</View>
     <Text style={[styles.help, { color: colors.muted }]}>Hidden terminal tabs stay connected, up to eight with 10,000 lines or less, three with 25,000 and only the tab in front with 50,000.</Text>
@@ -310,7 +312,7 @@ function ScopedSearchDialog({ visible, sessionId, onClose, connection, connectio
   }
   return <Sheet key={connectionKey} visible={visible} title={sessionId ? 'Find in chat' : 'Search'} onClose={closeSearch} onShow={() => searchInput.current?.focus()} wide>
     {connectionReady ? <>
-      <View style={[styles.searchBox, { backgroundColor: colors.raised, borderColor: colors.border }]}><Search size={16} color={colors.muted} /><TextInput ref={searchInput} value={query} onChangeText={value => { setResults([]); setBusy(false); setSearchError(null); setQuery(value) }} accessibilityLabel="Search names and complete chat history" placeholder="Search names and complete chat history" placeholderTextColor={colors.muted} returnKeyType="search" submitBehavior="blurAndSubmit" onSubmitEditing={dismissAppKeyboard} clearButtonMode={Platform.OS === 'ios' ? 'while-editing' : 'never'} style={{ flex: 1, color: colors.text, fontSize: 14 }} />{busy || openingResultId ? <ActivityIndicator size="small" color={colors.blue} /> : null}</View>
+      <View style={[styles.searchBox, { backgroundColor: colors.raised, borderColor: colors.border }]}><Search size={16} color={colors.muted} /><TextInput ref={searchInput} value={query} onChangeText={value => { setResults([]); setBusy(false); setSearchError(null); setQuery(value) }} accessibilityLabel="Search names and complete chat history" placeholder="Search names and complete chat history" placeholderTextColor={colors.muted} returnKeyType="search" submitBehavior="blurAndSubmit" onSubmitEditing={dismissAppKeyboard} style={{ flex: 1, color: colors.text, fontSize: 14 }} />{busy || openingResultId ? <ActivityIndicator size="small" color={colors.blue} /> : null}</View>
       {searchError ? <View accessibilityRole="alert" style={styles.searchFailure}>
         <Text style={[styles.searchFailureText, { color: colors.red }]} numberOfLines={2}>History search failed. {searchError}</Text>
         <Pressable
@@ -439,7 +441,6 @@ function ScopedDigestDialog({ visible, source, onClose, connection, connectionKe
 
 export function JobDialog({ visible, session, jobId, onClose }: { visible: boolean; session: Session | null; jobId: string | null; onClose: () => void }) {
   const colors = usePalette()
-  const { width } = useWindowDimensions()
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const jobs = useAppStore(state => state.jobs)
@@ -471,7 +472,7 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
   const [jobMention, setJobMention] = useState<ChatMentionTrigger | null>(null)
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
-  const [androidStartPicker, setAndroidStartPicker] = useState<'date' | 'time' | null>(null)
+  const [startPicker, setStartPicker] = useState<'date' | 'time' | null>(null)
   const savingRef = useRef(false)
   const saveEpoch = useRef(0)
   const startRef = useRef('')
@@ -479,7 +480,7 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
   useEffect(() => {
     saveEpoch.current += 1
     savingRef.current = false
-    setAndroidStartPicker(null)
+    setStartPicker(null)
     if (!visible) return
     setTitle(job?.title ?? 'Status check')
     setPrompt(job?.prompt ?? 'Check the current status and report meaningful changes.')
@@ -544,7 +545,7 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
   const selectStartMode = (value: JobStartMode) => {
     startModeRef.current = value
     setStartMode(value)
-    setAndroidStartPicker(null)
+    setStartPicker(null)
     setStatus('')
     if (value === 'time' && !parseScheduleWallTime(startRef.current, scheduleKind)) {
       updateStart(defaultScheduleWallTime(new Date(), scheduleKind, timezone))
@@ -553,11 +554,7 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
     dismissAppKeyboard()
   }
   const pickerDate = scheduleWallTimePickerDate(start)
-  const androidPickerDate = androidStartPicker === 'date' ? scheduleWallTimeAndroidDatePickerDate(start, pickerDate) : pickerDate
-  const compactIOSPicker = Platform.OS === 'ios' && width < 600
-  const applyPickerValue = (part: 'date' | 'time', value: Date, androidUtcDate = false) => {
-    updateStart(mergeScheduleWallTimePickerValue(startRef.current, value, part, androidUtcDate))
-  }
+  const startPickerDate = startPicker === 'date' ? scheduleWallTimeUtcDay(start, pickerDate) : pickerDate
   const startError = validateJobNextRun(Boolean(job), startMode, start, scheduleKind, enabled)
   const updateJobPrompt = (value: string) => {
     const nextReferences = reconcileChatReferences(prompt, value, chatReferences)
@@ -725,29 +722,15 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
     <View style={styles.modeRow}>{job ? <ModeButton testID="job-start-mode-keep" label="Keep" selected={startMode === 'keep'} onPress={() => selectStartMode('keep')} /> : null}<ModeButton testID="job-start-mode-immediate" label="Now" selected={startMode === 'immediate'} onPress={() => selectStartMode('immediate')} /><ModeButton testID="job-start-mode-interval" label={scheduleKind === 'interval' ? 'After interval' : 'Next match'} selected={startMode === 'interval'} onPress={() => selectStartMode('interval')} /><ModeButton testID="job-start-mode-time" label={scheduleKind === 'interval' ? 'At a time' : 'At a time, then schedule'} selected={startMode === 'time'} onPress={() => selectStartMode('time')} /></View>
     {startMode === 'time' ? <>
       <View testID="job-start-picker" onTouchStart={dismissAppKeyboard} style={[styles.jobStartPicker, { backgroundColor: colors.raised, borderColor: colors.border }]}>
-        {Platform.OS === 'ios' ? compactIOSPicker ? <>
-          <View style={[styles.jobStartPickerControl, styles.jobStartPickerControlPhone]}>
-            <View style={styles.jobStartPickerHeading}><Calendar size={16} color={colors.muted} /><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Date</Text></View>
-            <DateTimePicker style={styles.jobStartPickerNativePhone} testID="job-start-date-picker" value={pickerDate} mode="date" display="compact" accentColor={colors.blue} onValueChange={(_event, value) => applyPickerValue('date', value)} />
-          </View>
-          <View style={[styles.jobStartPickerControl, styles.jobStartPickerControlPhone]}>
-            <View style={styles.jobStartPickerHeading}><Clock size={16} color={colors.muted} /><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Time</Text></View>
-            <DateTimePicker style={styles.jobStartPickerNativePhone} testID="job-start-time-picker" value={pickerDate} mode="time" display="compact" accentColor={colors.blue} onValueChange={(_event, value) => applyPickerValue('time', value)} />
-          </View>
-        </> : <>
-          <View style={styles.jobStartPickerControl}><Calendar size={16} color={colors.muted} /><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Date</Text><DateTimePicker testID="job-start-date-picker" value={pickerDate} mode="date" display="compact" accentColor={colors.blue} onValueChange={(_event, value) => applyPickerValue('date', value)} /></View>
-          <View style={styles.jobStartPickerControl}><Clock size={16} color={colors.muted} /><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Time</Text><DateTimePicker testID="job-start-time-picker" value={pickerDate} mode="time" display="compact" accentColor={colors.blue} onValueChange={(_event, value) => applyPickerValue('time', value)} /></View>
-        </> : <>
-          <Pressable testID="job-start-date-button" accessibilityRole="button" accessibilityLabel="Choose job start date" onPress={() => { dismissAppKeyboard(); setAndroidStartPicker('date') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Calendar size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Date</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleDateString([], { dateStyle: 'medium' })}</Text></View></Pressable>
-          <Pressable testID="job-start-time-button" accessibilityRole="button" accessibilityLabel="Choose job start time" onPress={() => { dismissAppKeyboard(); setAndroidStartPicker('time') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Clock size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Time</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Text></View></Pressable>
-        </>}
+        <Pressable testID="job-start-date-button" accessibilityRole="button" accessibilityLabel="Choose job start date" onPress={() => { dismissAppKeyboard(); setStartPicker('date') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Calendar size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Date</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleDateString([], { dateStyle: 'medium' })}</Text></View></Pressable>
+        <Pressable testID="job-start-time-button" accessibilityRole="button" accessibilityLabel="Choose job start time" onPress={() => { dismissAppKeyboard(); setStartPicker('time') }} style={({ pressed }) => [styles.jobStartPickerButton, { opacity: pressed ? 0.65 : 1 }]}><Clock size={17} color={colors.blue} /><View style={{ flex: 1 }}><Text style={[styles.jobStartPickerLabel, { color: colors.muted }]}>Time</Text><Text style={[styles.jobStartPickerValue, { color: colors.text }]}>{pickerDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Text></View></Pressable>
       </View>
       <Text testID="job-start-value" style={[styles.help, { color: startError ? colors.red : colors.muted }]}>{startError ?? `${start}${scheduleKind === 'interval' ? '' : ` · ${timezone.trim() || 'selected timezone'}`}`}</Text>
-      {Platform.OS === 'android' && androidStartPicker ? <DateTimePicker
-        key={`job-start-${androidStartPicker}`}
-        testID={`job-start-${androidStartPicker}-picker`}
-        value={androidPickerDate}
-        mode={androidStartPicker}
+      {startPicker ? <DateTimePicker
+        key={`job-start-${startPicker}`}
+        testID={`job-start-${startPicker}-picker`}
+        value={startPickerDate}
+        mode={startPicker}
         presentation="dialog"
         display="default"
         is24Hour={false}
@@ -755,11 +738,10 @@ export function JobDialog({ visible, session, jobId, onClose }: { visible: boole
         positiveButton={{ label: 'Set' }}
         negativeButton={{ label: 'Cancel' }}
         onValueChange={(_event, value) => {
-          const part = androidStartPicker
-          applyPickerValue(part, value, part === 'date')
-          setAndroidStartPicker(null)
+          updateStart(mergeScheduleWallTimePickerValue(startRef.current, value, startPicker))
+          setStartPicker(null)
         }}
-        onDismiss={() => setAndroidStartPicker(null)}
+        onDismiss={() => setStartPicker(null)}
       /> : null}
     </> : <Text style={[styles.help, { color: colors.muted }]}>{startMode === 'keep' ? `Keeps ${job?.next_run_at_iso ? new Date(job.next_run_at_iso).toLocaleString() : 'the current schedule'}.` : startMode === 'immediate' ? 'Runs once as soon as the scheduler can launch it, then follows the schedule.' : scheduleKind === 'interval' ? `${job ? 'Resets the next run and cadence anchor to' : 'First run is'} one interval from now.` : job ? 'Discards any one-time override and uses the next matching recurrence.' : 'The first run uses the next matching recurrence.'}</Text>}
     <Label text="Mode" /><View style={styles.modeRow}><ModeButton label={scheduleKind === 'interval' ? 'Run fixed times' : 'Limit total runs'} selected={!loop} onPress={() => setLoop(false)} /><ModeButton label={scheduleKind === 'interval' ? 'Loop forever' : 'No extra run limit'} selected={loop} onPress={() => setLoop(true)} /></View>
@@ -886,7 +868,7 @@ function ScopedTmuxDialog({ visible, sessionId, onClose, connection, connectionK
   </Sheet>
 }
 
-function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, form, dismissable = true, keyboardShouldPersistTaps = 'handled' }: { visible: boolean; title: string; onClose: () => void; onShow?: () => void; onDidDismiss?: () => void; children: React.ReactNode; wide?: boolean; form?: boolean; dismissable?: boolean; keyboardShouldPersistTaps?: 'always' | 'handled' | 'never' }) {
+function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, dismissable = true, keyboardShouldPersistTaps = 'handled' }: { visible: boolean; title: string; onClose: () => void; onShow?: () => void; onDidDismiss?: () => void; children: React.ReactNode; wide?: boolean; dismissable?: boolean; keyboardShouldPersistTaps?: 'always' | 'handled' | 'never' }) {
   const colors = usePalette()
   const titleKey = title.toLowerCase().replaceAll(' ', '-')
   const closing = useRef(false)
@@ -904,25 +886,42 @@ function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, 
     dismissAppKeyboard()
     onDidDismiss?.()
   }
+  const scrollRef = useRef<ScrollView>(null)
+  const contentRef = useRef<View>(null)
+  const scrollOffset = useRef(0)
+  // When the card shrinks above the keyboard, Android's ScrollView scrolls the
+  // focused field back into view; an iOS ScrollView does not for a multiline one.
+  const revealFocusedField = (event: LayoutChangeEvent) => {
+    const viewport = event.nativeEvent.layout.height
+    const field = focusedTextInput()
+    if (!field || !contentRef.current) return
+    field.measureLayout(contentRef.current, (_x, top, _width, height) => {
+      const bottom = Math.min(top + height, top + viewport)
+      if (top < scrollOffset.current) scrollRef.current?.scrollTo({ y: top })
+      else if (bottom > scrollOffset.current + viewport) scrollRef.current?.scrollTo({ y: bottom - viewport })
+    })
+  }
   const panel = <View
     testID={`sheet-${titleKey}`}
-    style={[styles.sheetPage, Platform.OS !== 'ios' && styles.sheet, wide && Platform.OS !== 'ios' && styles.sheetWide, { backgroundColor: colors.background, borderColor: colors.border }]}
+    style={[styles.sheet, wide && styles.sheetWide, { backgroundColor: colors.background, borderColor: colors.border }]}
   >
     <SafeAreaView style={styles.sheetSafeArea} edges={['bottom']}>
       <View style={[styles.sheetGrabber, { backgroundColor: colors.selected }]} />
       <View style={styles.sheetHeader}><Text style={[styles.sheetTitle, { color: colors.text }]}>{title}</Text>{dismissable ? <SheetCloseButton onPress={close} label={`Close ${title}`} testID={`sheet-close-${titleKey}`} /> : null}</View>
       <ScrollView
+        ref={scrollRef}
+        innerViewRef={contentRef as React.RefObject<View>}
         contentContainerStyle={styles.sheetBody}
-        automaticallyAdjustKeyboardInsets
-        keyboardDismissMode="interactive"
         keyboardShouldPersistTaps={keyboardShouldPersistTaps}
+        onLayout={Platform.OS === 'ios' ? revealFocusedField : undefined}
+        onScroll={Platform.OS === 'ios' ? (event: NativeSyntheticEvent<NativeScrollEvent>) => { scrollOffset.current = event.nativeEvent.contentOffset.y } : undefined}
+        scrollEventThrottle={Platform.OS === 'ios' ? 16 : undefined}
       >{children}</ScrollView>
     </SafeAreaView>
   </View>
-  if (Platform.OS === 'ios') {
-    return <Modal visible={visible} animationType="slide" presentationStyle={form ? 'formSheet' : 'pageSheet'} allowSwipeDismissal={dismissable} onShow={onShow} onRequestClose={close} onDismiss={didDismiss}>{panel}</Modal>
-  }
-  return <Modal visible={visible} transparent animationType="fade" onShow={onShow} onRequestClose={close} onDismiss={didDismiss}><View style={styles.backdrop}>{dismissable ? <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" style={StyleSheet.absoluteFill} onPress={close} /> : <View style={StyleSheet.absoluteFill} />}{panel}</View></Modal>
+  const backdrop = <>{dismissable ? <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" style={StyleSheet.absoluteFill} onPress={close} /> : <View style={StyleSheet.absoluteFill} />}{panel}</>
+  // Android's window shrinks above the keyboard; an iOS transparent Modal keeps its size, so the backdrop pads itself.
+  return <Modal visible={visible} transparent animationType="fade" onShow={onShow} onRequestClose={close} onDismiss={didDismiss}>{Platform.OS === 'ios' ? <KeyboardAvoidingView behavior="padding" style={styles.backdrop}>{backdrop}</KeyboardAvoidingView> : <View style={styles.backdrop}>{backdrop}</View>}</Modal>
 }
 function Label({ text, children }: { text: string; children?: React.ReactNode }) { const colors = usePalette(); return <View style={styles.labelRow}><Text style={[styles.label, { color: colors.muted }]}>{text}</Text>{children}</View> }
 function PrimaryButton({ label, onPress, disabled, testID }: { label: string; onPress: () => void; disabled?: boolean; testID?: string }) { const colors = usePalette(); return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.primary, { backgroundColor: colors.blue, opacity: disabled ? 0.35 : pressed ? 0.65 : 1 }]}><Text style={[styles.primaryText, { color: colors.textOnAccent }]}>{label}</Text></Pressable> }
@@ -958,7 +957,7 @@ function Select({ title = 'Choose option', value, options, onChange, testID }: {
 function dialogError(error: unknown): string { return error instanceof Error ? error.message : String(error) }
 function intervalLabel(seconds: number): string { if (seconds % 604800 === 0) return `${seconds / 604800}w`; if (seconds % 86400 === 0) return `${seconds / 86400}d`; if (seconds % 3600 === 0) return `${seconds / 3600}h`; return `${seconds / 60}m` }
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: '#00000088', alignItems: 'center', justifyContent: 'center', padding: 18 }, sheetPage: { flex: 1 }, sheetSafeArea: { flex: 1 }, sheet: { width: '100%', maxWidth: 520, maxHeight: '88%', borderRadius: 9, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' }, sheetWide: { maxWidth: 760 }, sheetGrabber: { alignSelf: 'center', width: 36, height: 5, marginTop: 7, marginBottom: 1, borderRadius: 3 },
+  backdrop: { flex: 1, backgroundColor: '#00000088', alignItems: 'center', justifyContent: 'center', padding: 18 }, sheetSafeArea: { flex: 1 }, sheet: { flex: 1, width: '100%', maxWidth: 520, maxHeight: '88%', borderRadius: 9, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' }, sheetWide: { maxWidth: 760 }, sheetGrabber: { alignSelf: 'center', width: 36, height: 5, marginTop: 7, marginBottom: 1, borderRadius: 3 },
   sheetHeader: { minHeight: 64, paddingHorizontal: 14, paddingTop: 8, paddingBottom: 4, flexDirection: 'row', alignItems: 'center' }, sheetTitle: { flex: 1, fontSize: 16, fontWeight: '800' }, sheetBody: { paddingHorizontal: 16, paddingBottom: 18, gap: 8 },
   labelRow: { minHeight: 20, flexDirection: 'row', alignItems: 'center', gap: 8 }, label: { fontSize: 11, fontWeight: '700' }, help: { fontSize: 11, lineHeight: 16 }, build: { paddingTop: 4, fontSize: 10, textAlign: 'center' },
   input: { minHeight: 42, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 8, fontSize: 14 }, textarea: { minHeight: 110, maxHeight: 240, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, padding: 10, fontSize: 14, textAlignVertical: 'top' },
@@ -968,7 +967,7 @@ const styles = StyleSheet.create({
   searchBox: { minHeight: 42, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 8 }, searchFailure: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 }, searchFailureText: { flex: 1, fontSize: 11.5, lineHeight: 15 }, searchFailureRetry: { minWidth: 64, minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10 }, result: { minHeight: 58, padding: 10, borderBottomWidth: StyleSheet.hairlineWidth }, empty: { padding: 24, textAlign: 'center' },
   connectionUnavailable: { minHeight: 180, alignItems: 'center', justifyContent: 'center', padding: 24 }, connectionUnavailableText: { maxWidth: 320, textAlign: 'center', fontSize: 12, lineHeight: 18 },
   digestSource: { minHeight: 56, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 9 }, preview: { maxHeight: 280, borderRadius: 6, padding: 10 }, presetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 }, preset: { minWidth: 52, minHeight: 44, flexBasis: '22%', flexGrow: 1, borderRadius: 5, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 9 }, modeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 }, modeButton: { minHeight: 44, minWidth: 88, flexGrow: 1, borderRadius: 6, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' }, toggle: { minHeight: 44, flexDirection: 'row', alignItems: 'center' },
-  jobStartPicker: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, gap: 2 }, jobStartPickerControl: { minHeight: 50, flexDirection: 'row', alignItems: 'center', gap: 8 }, jobStartPickerControlPhone: { minHeight: 74, width: '100%', flexDirection: 'column', alignItems: 'stretch', justifyContent: 'center', gap: 3, paddingVertical: 5 }, jobStartPickerHeading: { minHeight: 22, flexDirection: 'row', alignItems: 'center', gap: 8 }, jobStartPickerNativePhone: { width: '100%', minHeight: 44, alignSelf: 'stretch' }, jobStartPickerLabel: { fontSize: 10, fontWeight: '800', textTransform: 'uppercase' }, jobStartPickerValue: { marginTop: 2, fontSize: 13, fontWeight: '700' }, jobStartPickerButton: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  jobStartPicker: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, gap: 2 }, jobStartPickerLabel: { fontSize: 10, fontWeight: '800', textTransform: 'uppercase' }, jobStartPickerValue: { marginTop: 2, fontSize: 13, fontWeight: '700' }, jobStartPickerButton: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 10 },
   jobReferenceChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 }, jobReferenceChip: { minHeight: 34, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 6 }, jobMentionPicker: { maxHeight: 260, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, padding: 6, gap: 2 }, jobMentionOption: { minHeight: 46, borderRadius: 5, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 8 },
   process: { minHeight: 58, borderRadius: 6, padding: 9, marginBottom: 6, flexDirection: 'row', gap: 8 }, processDot: { width: 7, height: 7, borderRadius: 4, marginTop: 5 }, log: { padding: 10, borderRadius: 6, fontFamily: fonts.mono, fontSize: 11, lineHeight: 16 },
   outputHeader: { minHeight: 34, flexDirection: 'row', alignItems: 'center' }, outputTitle: { flex: 1, fontSize: 10, fontWeight: '800', textTransform: 'uppercase' },

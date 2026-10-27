@@ -23,6 +23,19 @@ test('timeline Markdown uses a pinned native UITextView range-selection surface'
   assert.match(markdown, /code_inline:[\s\S]*?<SelectableText/)
 })
 
+test('a selectable paragraph keeps its last line when its float frame is a hair under the measured height', async () => {
+  // A 3-line bullet laid out 68.9998779 pt tall for 69 pt of text lost its third line and ended in "…".
+  const workspace = await readFile(resolve('pnpm-workspace.yaml'), 'utf8')
+  const patch = await readFile(resolve('patches/@bsky.app__react-native-uitextview@2.7.0.patch'), 'utf8')
+  assert.match(workspace, /'@bsky\.app\/react-native-uitextview@2\.7\.0': patches\/@bsky\.app__react-native-uitextview@2\.7\.0\.patch/)
+  assert.match(patch, /\+  frame\.size\.height = ceil\(frame\.size\.height \* scale - 0\.01\) \/ scale;/)
+  assert.match(patch, /\+  frame\.size\.width = ceil\(frame\.size\.width \* scale - 0\.01\) \/ scale;/)
+  assert.match(patch, /\+    _textView\.frame = textViewFrame;/)
+  // The redraw check compares against the same rounded frame, or every redraw would reassign it and clear a selection.
+  assert.match(patch, /\+  const BOOL frameChanged = !CGRectEqualToRect\(_textView\.frame, textViewFrame\);/)
+  assert.match(patch, /\+  if \(!CGRectEqualToRect\(_textView\.frame, \[self textViewFrame\]\)\) \{/)
+})
+
 test('indented Markdown keeps selectable text inside the measured list slot', () => {
   assert.match(markdownStyle, /list_item: \{[^}]*minWidth: 0[^}]*width: '100%'/)
   assert.match(markdownStyle, /ordered_list_content: \{[^}]*flex: 1[^}]*flexShrink: 1[^}]*minWidth: 0/)

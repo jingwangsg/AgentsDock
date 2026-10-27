@@ -3,7 +3,6 @@ import {
   artifactVideoStageProgress,
   completedArtifactVideoDownload,
   reusableArtifactVideoCache,
-  shouldGenerateAutomaticVideoThumbnail,
 } from './artifact-video-staging'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -21,10 +20,6 @@ assert(artifactVideoStageProgress(25, 100, null) === 0.25, 'response length shou
 assert(artifactVideoStageProgress(25, -1, 50) === 0.5, 'metadata should backstop an absent response length')
 assert(artifactVideoStageProgress(125, 100, null) === 1, 'progress should clamp above one')
 assert(artifactVideoStageProgress(10, -1, null) === null, 'unknown length should remain indeterminate')
-
-assert(!shouldGenerateAutomaticVideoThumbnail('ios', false), 'iOS must not create timeline AVPlayers')
-assert(!shouldGenerateAutomaticVideoThumbnail('android', true), 'an open viewer suspends Android thumbnails')
-assert(shouldGenerateAutomaticVideoThumbnail('android', false), 'Android can keep bounded thumbnail generation')
 
 assert(artifactVideoStageCacheKey('server\u0000chat\u0000file') === artifactVideoStageCacheKey('server\u0000chat\u0000file'), 'cache key should be stable')
 assert(artifactVideoStageCacheKey('server\u0000chat\u0000file') !== artifactVideoStageCacheKey('other\u0000chat\u0000file'), 'cache key should be server scoped')

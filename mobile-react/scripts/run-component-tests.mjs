@@ -15,9 +15,14 @@ const outfile = join(directory, 'test.mjs')
 const aliases = new Map(Object.entries({
   'react-native': 'tests/component-mocks/react-native.ts',
   'react-native-safe-area-context': 'tests/component-mocks/native-wrappers.ts',
+  '@bsky.app/react-native-uitextview': 'tests/component-mocks/native-wrappers.ts',
   'react-native-svg': 'tests/component-mocks/native-wrappers.ts',
   'react-native-keyboard-controller': 'tests/component-mocks/native-wrappers.ts',
   'react-native-draggable-flatlist': 'tests/component-mocks/draggable-flatlist.ts',
+  'react-native-screens': 'tests/component-mocks/native-wrappers.ts',
+  'expo-font': 'tests/component-mocks/native-wrappers.ts',
+  'react-native-webview': 'tests/component-mocks/browser-tab.ts',
+  'agentsdock-browser-loopback': 'tests/component-mocks/browser-tab.ts',
   'lucide-react-native': 'tests/component-mocks/icons.ts',
   'expo-clipboard': 'tests/mocks/expo-clipboard.ts',
   'expo-file-system': 'tests/mocks/expo-file-system.ts',
@@ -32,8 +37,8 @@ try {
     format: 'esm',
     platform: 'node',
     jsx: 'automatic',
-    // Image is a host-string mock, so a required PNG (BackendMark) needs no content.
-    loader: { '.png': 'empty' },
+    // Image is a host-string mock, so a required PNG (BackendMark) needs no content; nor do the material fonts.
+    loader: { '.png': 'empty', '.ttf': 'empty' },
     logLevel: 'silent',
     banner: {
       js: `import { createRequire } from 'node:module'; const require = createRequire(${JSON.stringify(import.meta.url)});\n`

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useState } from 'react'
-import { Alert, AppState, DeviceEventEmitter, Keyboard, Platform, StyleSheet, View } from 'react-native'
+import { AppState, DeviceEventEmitter, Keyboard, Platform, StyleSheet, View } from 'react-native'
+import { Alert } from '../lib/alert'
 import { KeyboardAvoidingView, KeyboardController, useGenericKeyboardHandler } from 'react-native-keyboard-controller'
 import { runOnJS } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'

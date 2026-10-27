@@ -7,6 +7,7 @@ import { KeyboardProvider } from 'react-native-keyboard-controller'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import { AppTypographyProvider } from './src/components/AppText'
 import { AppShell } from './src/components/AppShell'
+import { MaterialOverlayHost } from './src/components/material/MaterialOverlayHost'
 import { trackEvent } from './src/lib/analytics'
 import { useAppStore } from './src/store/useAppStore'
 import { ColorSchemeProvider, dark, light } from './src/theme'
@@ -33,6 +34,7 @@ export default function App() {
                 <AppShell />
               </SafeAreaView>
               <StatusBar style={scheme === 'light' ? 'dark' : 'light'} />
+              <MaterialOverlayHost />
             </SafeAreaProvider>
           </AppTypographyProvider>
         </KeyboardProvider>

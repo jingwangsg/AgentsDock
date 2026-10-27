@@ -4,7 +4,7 @@ import type { TerminalViewportHandle, TerminalViewportProps } from './TerminalVi
 
 export type { TerminalConnectionStatus, TerminalViewportHandle, TerminalViewportProps } from './TerminalViewport.types'
 
-/** Web fallback. Metro selects TerminalViewport.ios/android for device builds. */
+/** Web fallback. Metro selects TerminalViewport.native for device builds. */
 export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewportProps>(function TerminalViewport(props, ref) {
   useImperativeHandle(ref, () => ({
     focus: async () => false,

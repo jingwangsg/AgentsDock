@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Keyboard, NativeScrollEvent, NativeSyntheticEvent, Platform, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native'
+import { NativeScrollEvent, NativeSyntheticEvent, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native'
 import { FlashList, type FlashListRef } from '@shopify/flash-list'
 import { ArrowDown, ArrowUp, RefreshCw } from 'lucide-react-native'
 import { codexLifecycleSemanticKey, isHandoffDigestEvent, isTimelineError, projectPresentableHistory, projectTimeline, type TimelineRow } from '../lib/timeline'
-import { shouldFinishTimelineKeyboardDismissal } from '../lib/keyboard-gesture'
 import { liveTimelineAdvanced, shouldShowTimelineLatest, timelineMaintainVisiblePosition, timelineTargetRowIndex } from '../lib/timeline-history-navigation'
 import { mergeHistoryWithLiveSnapshot } from '../lib/timeline-memory'
 import { reuseStableTimelineRows } from '../lib/timeline-row-reuse'
@@ -84,7 +83,6 @@ export function Timeline({ sessionId, scrollRequest, keyboardVisible, keyboardSe
   const lastKeyboardVisible = useRef(keyboardVisible)
   const keyboardBottomAnchor = useRef(false)
   const keyboardAnchorToken = useRef(0)
-  const dragStartedWithKeyboard = useRef(false)
   const userScrolling = useRef(false)
   const topLoadArmed = useRef(false)
   const pendingAutomaticOlder = useRef(false)
@@ -128,7 +126,6 @@ export function Timeline({ sessionId, scrollRequest, keyboardVisible, keyboardSe
       }
       keyboardAnchorToken.current += 1
       keyboardBottomAnchor.current = false
-      dragStartedWithKeyboard.current = false
       userScrolling.current = false
       lastObservedLiveSeq.current = latestLiveSeq
       consumedSeekRevision.current = null
@@ -306,7 +303,6 @@ export function Timeline({ sessionId, scrollRequest, keyboardVisible, keyboardSe
     keyboardBottomAnchor.current = false
     cancelSeekAlignment()
     setSearchTargetAlignmentLocked(false)
-    dragStartedWithKeyboard.current = keyboardVisible
     if (scrollSettleFrame.current != null) {
       cancelAnimationFrame(scrollSettleFrame.current)
       scrollSettleFrame.current = null
@@ -321,12 +317,8 @@ export function Timeline({ sessionId, scrollRequest, keyboardVisible, keyboardSe
     if (offset <= TOP_LOAD_TRIGGER && topLoadArmed.current && canLoadOlder && !loadingOlder) {
       pendingAutomaticOlder.current = true
     }
-  }, [canLoadOlder, cancelSeekAlignment, keyboardVisible, loadingOlder])
-  const handleScrollEndDrag = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const finishKeyboardDismissal = Platform.OS === 'ios'
-      && shouldFinishTimelineKeyboardDismissal(dragStartedWithKeyboard.current, event.nativeEvent.velocity?.y)
-    dragStartedWithKeyboard.current = false
-    if (finishKeyboardDismissal) Keyboard.dismiss()
+  }, [canLoadOlder, cancelSeekAlignment, loadingOlder])
+  const handleScrollEndDrag = useCallback(() => {
     const interactionToken = scrollInteractionToken.current
     if (scrollSettleFrame.current != null) cancelAnimationFrame(scrollSettleFrame.current)
     // Momentum begins after drag-end on iOS. Keep the user lock for one
@@ -393,7 +385,6 @@ export function Timeline({ sessionId, scrollRequest, keyboardVisible, keyboardSe
         extraData={`${fontScale}:${viewportWidth}`}
         ItemSeparatorComponent={Separator}
         contentContainerStyle={contentContainerStyle}
-        keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="always"
         onScrollBeginDrag={handleScrollBeginDrag}
         onScrollEndDrag={handleScrollEndDrag}

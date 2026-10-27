@@ -12,10 +12,6 @@ public final class AgentsDockNativeVideoView: ExpoView, UIScrollViewDelegate {
   private let timelineSlider = UISlider()
   private let currentTimeLabel = UILabel()
   private let durationLabel = UILabel()
-  private let zoomControlsView = UIView()
-  private let zoomOutButton = UIButton(type: .system)
-  private let zoomResetButton = UIButton(type: .system)
-  private let zoomInButton = UIButton(type: .system)
   private let onStatus = EventDispatcher()
   private var itemStatusObservation: NSKeyValueObservation?
   private var timeControlObservation: NSKeyValueObservation?
@@ -32,15 +28,15 @@ public final class AgentsDockNativeVideoView: ExpoView, UIScrollViewDelegate {
   private var scrubbing = false
   private var resumeAfterScrub = false
   private var videoViewportSize = CGSize.zero
-  private let zoomSteps: [CGFloat] = [1, 1.5, 2, 3, 4]
 
   public required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
 
-    backgroundColor = .black
+    // Letterbox areas show the viewer's own background, as on Android.
+    backgroundColor = .clear
     clipsToBounds = true
 
-    videoScrollView.backgroundColor = .black
+    videoScrollView.backgroundColor = .clear
     videoScrollView.minimumZoomScale = 1
     videoScrollView.maximumZoomScale = 4
     videoScrollView.bounces = false
@@ -56,10 +52,10 @@ public final class AgentsDockNativeVideoView: ExpoView, UIScrollViewDelegate {
     videoScrollView.accessibilityIdentifier = "agentsdock-video-zoom-surface"
     addSubview(videoScrollView)
 
-    videoContentView.backgroundColor = .black
+    videoContentView.backgroundColor = .clear
     videoContentView.isUserInteractionEnabled = false
     videoScrollView.addSubview(videoContentView)
-    playerLayer.backgroundColor = UIColor.black.cgColor
+    playerLayer.backgroundColor = UIColor.clear.cgColor
     playerLayer.videoGravity = .resizeAspect
     videoContentView.layer.addSublayer(playerLayer)
 
@@ -94,37 +90,6 @@ public final class AgentsDockNativeVideoView: ExpoView, UIScrollViewDelegate {
     controlsView.addSubview(durationLabel)
     updatePlaybackButton(isPlaying: false)
 
-    zoomControlsView.backgroundColor = UIColor.black.withAlphaComponent(0.78)
-    zoomControlsView.layer.cornerRadius = 13
-    zoomControlsView.layer.cornerCurve = .continuous
-    zoomControlsView.clipsToBounds = true
-    addSubview(zoomControlsView)
-
-    configureZoomButton(
-      zoomOutButton,
-      symbolName: "minus.magnifyingglass",
-      accessibilityLabel: "Zoom video out",
-      accessibilityIdentifier: "agentsdock-video-zoom-out",
-      action: #selector(zoomOut)
-    )
-    configureZoomButton(
-      zoomInButton,
-      symbolName: "plus.magnifyingglass",
-      accessibilityLabel: "Zoom video in",
-      accessibilityIdentifier: "agentsdock-video-zoom-in",
-      action: #selector(zoomIn)
-    )
-    zoomResetButton.tintColor = .white
-    zoomResetButton.setTitleColor(.white, for: .normal)
-    zoomResetButton.titleLabel?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .bold)
-    zoomResetButton.accessibilityLabel = "Reset video zoom"
-    zoomResetButton.accessibilityIdentifier = "agentsdock-video-zoom-reset"
-    zoomResetButton.addTarget(self, action: #selector(resetZoomFromControl), for: .touchUpInside)
-    zoomControlsView.addSubview(zoomOutButton)
-    zoomControlsView.addSubview(zoomResetButton)
-    zoomControlsView.addSubview(zoomInButton)
-    updateZoomControls(scale: 1)
-
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(applicationWillResignActive),
@@ -149,10 +114,9 @@ public final class AgentsDockNativeVideoView: ExpoView, UIScrollViewDelegate {
     videoScrollView.frame = bounds
     if videoViewportSize != bounds.size {
       videoViewportSize = bounds.size
-      resetZoom(animated: false)
+      resetZoom()
       videoContentView.frame = CGRect(origin: .zero, size: bounds.size)
       videoScrollView.contentSize = bounds.size
-      updateZoomControls(scale: 1)
     }
     playerLayer.frame = videoContentView.bounds
 
@@ -182,26 +146,12 @@ public final class AgentsDockNativeVideoView: ExpoView, UIScrollViewDelegate {
       width: max(0, durationLabel.frame.minX - gap - sliderX),
       height: 44
     )
-
-    let zoomButtonWidth: CGFloat = 42
-    let zoomResetWidth: CGFloat = 48
-    let zoomWidth = zoomButtonWidth * 2 + zoomResetWidth
-    zoomControlsView.isHidden = bounds.width < zoomWidth + 28
-    zoomControlsView.frame = CGRect(
-      x: max(14, bounds.width - zoomWidth - 14),
-      y: 14,
-      width: min(zoomWidth, max(0, bounds.width - 28)),
-      height: 44
-    )
-    zoomOutButton.frame = CGRect(x: 0, y: 0, width: zoomButtonWidth, height: 44)
-    zoomResetButton.frame = CGRect(x: zoomButtonWidth, y: 0, width: zoomResetWidth, height: 44)
-    zoomInButton.frame = CGRect(x: zoomButtonWidth + zoomResetWidth, y: 0, width: zoomButtonWidth, height: 44)
   }
 
   public override func didMoveToWindow() {
     super.didMoveToWindow()
     if window == nil {
-      resetZoom(animated: false)
+      resetZoom()
       _ = pause()
     } else if autoplay && ready {
       _ = play()
@@ -215,12 +165,25 @@ public final class AgentsDockNativeVideoView: ExpoView, UIScrollViewDelegate {
     }
   }
 
+  /// The app-drawn Zoom out / Zoom in buttons switch between fitting and
+  /// filling the viewer, like Android's contentFit. A pinch zoom is reset so
+  /// the buttons always show the whole fitted or filled frame.
+  public func setContentFit(_ value: String) {
+    let gravity: AVLayerVideoGravity = value == "cover" ? .resizeAspectFill : .resizeAspect
+    guard playerLayer.videoGravity != gravity else { return }
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    playerLayer.videoGravity = gravity
+    CATransaction.commit()
+    resetZoom()
+  }
+
   public func setSourceURI(_ value: String) {
     guard value != sourceURI else { return }
     sourceURI = value
     generation += 1
     let currentGeneration = generation
-    resetZoom(animated: false)
+    resetZoom()
     clearPlayer()
     ready = false
     emittedStatus = nil
@@ -352,25 +315,6 @@ public final class AgentsDockNativeVideoView: ExpoView, UIScrollViewDelegate {
     scrollView === videoScrollView ? videoContentView : nil
   }
 
-  public func scrollViewDidEndZooming(
-    _ scrollView: UIScrollView,
-    with view: UIView?,
-    atScale scale: CGFloat
-  ) {
-    guard scrollView === videoScrollView else { return }
-    updateZoomControls(scale: scale)
-  }
-
-  public func scrollViewDidZoom(_ scrollView: UIScrollView) {
-    guard scrollView === videoScrollView else { return }
-    updateZoomControls(scale: scrollView.zoomScale)
-  }
-
-  public func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
-    guard scrollView === videoScrollView else { return }
-    updateZoomControls(scale: scrollView.zoomScale)
-  }
-
   @objc private func togglePlayback() {
     guard let player = playerLayer.player else { return }
     if player.timeControlStatus == .playing {
@@ -378,18 +322,6 @@ public final class AgentsDockNativeVideoView: ExpoView, UIScrollViewDelegate {
     } else {
       _ = play()
     }
-  }
-
-  @objc private func zoomOut() {
-    setZoomScale(adjacentZoomScale(direction: -1), animated: true)
-  }
-
-  @objc private func zoomIn() {
-    setZoomScale(adjacentZoomScale(direction: 1), animated: true)
-  }
-
-  @objc private func resetZoomFromControl() {
-    resetZoom(animated: true)
   }
 
   @objc private func beginScrubbing() {
@@ -448,69 +380,21 @@ public final class AgentsDockNativeVideoView: ExpoView, UIScrollViewDelegate {
     label.isAccessibilityElement = false
   }
 
-  private func configureZoomButton(
-    _ button: UIButton,
-    symbolName: String,
-    accessibilityLabel: String,
-    accessibilityIdentifier: String,
-    action: Selector
-  ) {
-    let configuration = UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
-    button.setImage(UIImage(systemName: symbolName, withConfiguration: configuration), for: .normal)
-    button.tintColor = .white
-    button.accessibilityLabel = accessibilityLabel
-    button.accessibilityIdentifier = accessibilityIdentifier
-    button.addTarget(self, action: action, for: .touchUpInside)
-  }
-
-  private func adjacentZoomScale(direction: Int) -> CGFloat {
-    let current = videoScrollView.zoomScale
-    if direction > 0 {
-      return zoomSteps.first(where: { $0 > current + 0.02 }) ?? videoScrollView.maximumZoomScale
+  private func resetZoom() {
+    // Source changes and rotation can arrive while a pinch is active. End
+    // UIKit's recognizers before replacing player content so no stale
+    // deceleration or transform callback can target the outgoing surface.
+    videoScrollView.panGestureRecognizer.isEnabled = false
+    videoScrollView.panGestureRecognizer.isEnabled = true
+    videoScrollView.pinchGestureRecognizer?.isEnabled = false
+    videoScrollView.pinchGestureRecognizer?.isEnabled = true
+    videoScrollView.layer.removeAllAnimations()
+    videoContentView.layer.removeAllAnimations()
+    if videoScrollView.bounds.width > 0, videoScrollView.bounds.height > 0 {
+      videoScrollView.setZoomScale(videoScrollView.minimumZoomScale, animated: false)
     }
-    return zoomSteps.reversed().first(where: { $0 < current - 0.02 }) ?? videoScrollView.minimumZoomScale
-  }
-
-  private func setZoomScale(_ value: CGFloat, animated: Bool) {
-    guard videoScrollView.bounds.width > 0, videoScrollView.bounds.height > 0 else { return }
-    let bounded = min(videoScrollView.maximumZoomScale, max(videoScrollView.minimumZoomScale, value))
-    videoScrollView.setZoomScale(bounded, animated: animated)
-    updateZoomControls(scale: bounded)
-  }
-
-  private func resetZoom(animated: Bool) {
-    if !animated {
-      // Source changes and rotation can arrive while a pinch is active. End
-      // UIKit's recognizers before replacing player content so no stale
-      // deceleration or transform callback can target the outgoing surface.
-      videoScrollView.panGestureRecognizer.isEnabled = false
-      videoScrollView.panGestureRecognizer.isEnabled = true
-      videoScrollView.pinchGestureRecognizer?.isEnabled = false
-      videoScrollView.pinchGestureRecognizer?.isEnabled = true
-      videoScrollView.layer.removeAllAnimations()
-      videoContentView.layer.removeAllAnimations()
-    }
-    setZoomScale(videoScrollView.minimumZoomScale, animated: animated)
-    if !animated {
-      videoScrollView.contentOffset = .zero
-      videoScrollView.contentInset = .zero
-    }
-  }
-
-  private func updateZoomControls(scale: CGFloat) {
-    let bounded = min(videoScrollView.maximumZoomScale, max(videoScrollView.minimumZoomScale, scale))
-    zoomOutButton.isEnabled = bounded > videoScrollView.minimumZoomScale + 0.02
-    zoomInButton.isEnabled = bounded < videoScrollView.maximumZoomScale - 0.02
-    zoomOutButton.alpha = zoomOutButton.isEnabled ? 1 : 0.34
-    zoomInButton.alpha = zoomInButton.isEnabled ? 1 : 0.34
-    let rounded = (bounded * 10).rounded() / 10
-    let title = abs(rounded - rounded.rounded()) < 0.01
-      ? "\(Int(rounded))×"
-      : String(format: "%.1f×", rounded)
-    if zoomResetButton.title(for: .normal) != title {
-      zoomResetButton.setTitle(title, for: .normal)
-    }
-    zoomResetButton.accessibilityValue = title
+    videoScrollView.contentOffset = .zero
+    videoScrollView.contentInset = .zero
   }
 
   private func updatePlaybackButton(isPlaying: Bool) {
