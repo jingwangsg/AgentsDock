@@ -1,4 +1,4 @@
-import { useCallback, useImperativeHandle, useRef, type Ref } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useRef, type Ref } from 'react'
 import { Pressable, View } from 'react-native'
 import type { MenuComponentProps, MenuComponentRef } from '@expo/ui/community/menu'
 import { showDropdownMenu } from './DropdownMenu'
@@ -12,9 +12,12 @@ export type { MenuAction, MenuComponentRef } from '@expo/ui/community/menu'
  */
 export function MenuView({ ref, actions, onPressAction, onOpenMenu, onCloseMenu, shouldOpenOnLongPress, style, testID, children }: MenuComponentProps & { ref?: Ref<MenuComponentRef> }) {
   const trigger = useRef<View>(null)
+  const closeMenu = useRef<(() => void) | null>(null)
+  // The Compose menu leaves with its MenuView; an open menu must not outlive its trigger.
+  useEffect(() => () => closeMenu.current?.(), [])
   const open = useCallback(() => {
     onOpenMenu?.()
-    showDropdownMenu({
+    closeMenu.current = showDropdownMenu({
       measureAnchor: callback => trigger.current?.measureInWindow((x, y, width, height) => callback({ x, y, width, height })),
       actions,
       onAction: id => onPressAction?.({ nativeEvent: { event: id } }),

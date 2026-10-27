@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Animated, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type AlertButton, type AlertOptions } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { showMaterialOverlay } from './MaterialOverlay'
+import { showMaterialOverlay, useKeyboardHeight } from './MaterialOverlay'
 import { useMaterialFont, useMaterialPalette } from './materialTheme'
 import { alertButtonLayout } from '../../lib/material-layout'
 
@@ -30,6 +30,8 @@ function AlertDialog({ title, message, buttons, options, close }: { title: strin
   const medium = useMaterialFont('Roboto-Medium')
   const screen = useWindowDimensions()
   const insets = useSafeAreaInsets()
+  const keyboard = useKeyboardHeight()
+  const bottom = Math.max(insets.bottom, keyboard)
   const width = cardWidth(screen.width, screen.height)
   const layout = alertButtonLayout(buttons)
   const roles = (['neutral', 'negative', 'positive'] as const).filter(role => layout.row?.[role])
@@ -66,8 +68,8 @@ function AlertDialog({ title, message, buttons, options, close }: { title: strin
       }}
     />
     {/* Centered between the system bars, like the Android dialog window. */}
-    <View pointerEvents="box-none" style={[styles.center, { top: insets.top, bottom: insets.bottom }]}>
-      <View accessibilityViewIsModal style={[styles.card, { width, maxHeight: screen.height - insets.top - insets.bottom - 32, backgroundColor: palette.card }]}>
+    <View pointerEvents="box-none" style={[styles.center, { top: insets.top, bottom }]}>
+      <View accessibilityViewIsModal style={[styles.card, { width, maxHeight: screen.height - insets.top - bottom - 32, backgroundColor: palette.card }]}>
         <Text accessibilityRole="header" numberOfLines={2} style={[styles.title, { color: palette.text, fontFamily: medium }]}>{title}</Text>
         <ScrollView style={styles.content} contentContainerStyle={styles.contentInner} bounces={false}>
           <Text style={[styles.message, { color: palette.text, fontFamily: regular }]}>{message ?? ''}</Text>

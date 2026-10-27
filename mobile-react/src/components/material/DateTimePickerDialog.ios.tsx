@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, type GestureResponderEvent } from 'react-native'
 import Svg, { Path } from 'react-native-svg'
 import type { DateTimePickerProps } from '@expo/ui/community/datetime-picker'
-import { showMaterialOverlay } from './MaterialOverlay'
+import { showMaterialOverlay, useKeyboardHeight } from './MaterialOverlay'
 import { useMaterialFont, useMaterialPalette } from './materialTheme'
 
 /**
@@ -10,19 +10,21 @@ import { useMaterialFont, useMaterialPalette } from './materialTheme'
  * "dialog"), drawn by the app on iOS. Mounting the component opens the dialog; Set reports the
  * value like Android does (the date dialog as the chosen day at UTC midnight, the time dialog as
  * `value` with its local hour and minute replaced), Cancel or a tap outside calls onDismiss.
+ * The time dialog is the 12-hour dial: the app's one caller passes is24Hour false.
  */
 export function DateTimePicker(props: DateTimePickerProps) {
   const latest = useRef(props)
   latest.current = props
   useEffect(() => showMaterialOverlay(close => {
-    const { value, mode, accentColor, positiveButton, negativeButton, is24Hour } = latest.current
+    const { value, mode, accentColor, positiveButton, negativeButton } = latest.current
     const finish = (date: Date) => {
       close()
       latest.current.onValueChange?.({ nativeEvent: { timestamp: date.getTime(), utcOffset: -date.getTimezoneOffset() } }, date)
     }
     const dismiss = () => { close(); latest.current.onDismiss?.() }
-    const shared = { value, accent: String(accentColor ?? '#74ade8'), confirmLabel: positiveButton?.label ?? 'OK', dismissLabel: negativeButton?.label ?? 'Cancel', onConfirm: finish, onDismiss: dismiss }
-    return mode === 'time' ? <TimePickerDialog {...shared} is24Hour={Boolean(is24Hour)} /> : <DatePickerDialog {...shared} />
+    // The app's caller always passes the accent and both labels.
+    const shared = { value, accent: accentColor!, confirmLabel: positiveButton!.label!, dismissLabel: negativeButton!.label!, onConfirm: finish, onDismiss: dismiss }
+    return mode === 'time' ? <TimePickerDialog {...shared} /> : <DatePickerDialog {...shared} />
   }), [])
   return null
 }
@@ -46,18 +48,22 @@ function Icon({ path, color, rotate }: { path: string; color: string; rotate?: b
   return <Svg width={24} height={24} viewBox="0 0 24 24" style={rotate ? { transform: [{ rotate: '180deg' }] } : undefined}><Path d={path} fill={color} /></Svg>
 }
 
-/** The dialog window: 60% scrim that dismisses on tap, the card centered on screen. */
+/** The dialog window: 60% scrim that dismisses on tap, the card centered on screen above the keyboard. */
 function DialogFrame({ width, height, onDismiss, children }: { width: number; height: number; onDismiss: () => void; children: ReactNode }) {
   const palette = useMaterialPalette()
+  const keyboard = useKeyboardHeight()
   return <View style={StyleSheet.absoluteFill}>
     <Pressable accessible={false} style={[StyleSheet.absoluteFill, { backgroundColor: palette.alert.scrim }]} onPress={onDismiss} />
-    <View pointerEvents="box-none" style={styles.center}>
+    <View pointerEvents="box-none" style={[styles.center, { bottom: keyboard }]}>
       <View accessibilityViewIsModal style={[styles.card, { width, height, backgroundColor: palette.picker.container }]}>{children}</View>
     </View>
   </View>
 }
 
-/** M3 TextButtons at Android's measured text positions (cap top and left edge of each label). */
+/**
+ * M3 TextButtons at Android's measured text positions (cap top and left edge of each label). The
+ * left edges were measured with the labels "Cancel" and "Set".
+ */
 function DialogButtons({ top, items }: { top: number; items: Array<{ label: string; left: number; onPress: () => void }> }) {
   const palette = useMaterialPalette().picker
   const medium = useMaterialFont('Roboto-Medium')
@@ -85,7 +91,19 @@ function firstWeekday(): number {
 }
 
 // DatePickerDialog (360 × 568 pt, 28 pt corners): a 120 pt header (title, headline, mode toggle),
-// a divider, a 56 pt month row and a 7 × 7 grid of 48 pt cells inset 12 pt.
+// a divider, a 56 pt month row and a 7 × 7 grid of 48 pt cells inset 12 pt. In text input mode
+// Compose collapses the dialog to its content: header, text field and buttons. That height is
+// from Material 3's dimensions (10 + 8 pt above the 56 pt field, 20 pt of supporting text below),
+// not from an Android screenshot.
+const DATE_DIALOG_HEIGHT = 568
+const DATE_INPUT_DIALOG_HEIGHT = 120 + 10 + 8 + 56 + 20 + 56
+const DATE_BUTTONS_TOP = 530.3
+// Compose's default year range, a 3-column grid of 52 pt rows.
+const FIRST_YEAR = 1900
+const LAST_YEAR = 2100
+const YEARS_PER_ROW = 3
+const YEAR_ROW = 52
+
 function DatePickerDialog({ value, accent, confirmLabel, dismissLabel, onConfirm, onDismiss }: DialogProps) {
   const palette = useMaterialPalette().picker
   const regular = useMaterialFont('Roboto-Regular')
@@ -115,12 +133,12 @@ function DatePickerDialog({ value, accent, confirmLabel, dismissLabel, onConfirm
     ><Icon path={mode === 'input' ? ICON.calendar : ICON.edit} color={accent} /></Pressable>
     <View style={[styles.divider, { top: 119, backgroundColor: palette.divider }]} />
   </>
-  const buttons = <DialogButtons top={530.3} items={[
+  const buttons = (dialogHeight: number) => <DialogButtons top={DATE_BUTTONS_TOP - DATE_DIALOG_HEIGHT + dialogHeight} items={[
     { label: dismissLabel, left: 233.1, onPress: onDismiss },
     { label: confirmLabel, left: 315, onPress: () => onConfirm(selected) },
   ]} />
   if (mode === 'input') {
-    return <DialogFrame width={360} height={568} onDismiss={onDismiss}>
+    return <DialogFrame width={360} height={DATE_INPUT_DIALOG_HEIGHT} onDismiss={onDismiss}>
       {header}
       <TextInput
         accessibilityLabel="Date"
@@ -134,15 +152,18 @@ function DatePickerDialog({ value, accent, confirmLabel, dismissLabel, onConfirm
           const next = [digits.slice(0, 2), digits.slice(2, 4), digits.slice(4)].filter(Boolean).join('/')
           setTyped(next)
           const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(next)
-          const date = match ? utcDay(Number(match[3]), Number(match[1]) - 1, Number(match[2])) : null
-          if (date && date.getUTCMonth() === Number(match![1]) - 1) setSelected(date)
+          if (!match) return
+          const [year, monthIndex, day] = [Number(match[3]), Number(match[1]) - 1, Number(match[2])]
+          const date = utcDay(year, monthIndex, day)
+          // Like Compose, accept only real dates inside the year range.
+          if (year >= FIRST_YEAR && year <= LAST_YEAR && date.getUTCMonth() === monthIndex) setSelected(date)
         }}
         style={[styles.dateInput, { color: palette.text, borderColor: accent, fontFamily: regular }]}
       />
-      {buttons}
+      {buttons(DATE_INPUT_DIALOG_HEIGHT)}
     </DialogFrame>
   }
-  return <DialogFrame width={360} height={568} onDismiss={onDismiss}>
+  return <DialogFrame width={360} height={DATE_DIALOG_HEIGHT} onDismiss={onDismiss}>
     {header}
     <Pressable
       accessibilityRole="button"
@@ -154,8 +175,8 @@ function DatePickerDialog({ value, accent, confirmLabel, dismissLabel, onConfirm
       <View style={styles.dropDown}><Icon path={ICON.dropDown} color={palette.muted} rotate={mode === 'years'} /></View>
     </Pressable>
     {mode === 'years'
-      ? <ScrollView style={styles.years} contentContainerStyle={styles.yearsContent} contentOffset={{ x: 0, y: Math.max(0, Math.floor((month.year - 1900) / 3) * 52 - 104) }}>
-          {Array.from({ length: 201 }, (_, index) => 1900 + index).map(year => {
+      ? <ScrollView style={styles.years} contentContainerStyle={styles.yearsContent} contentOffset={{ x: 0, y: Math.max(0, (Math.floor((month.year - FIRST_YEAR) / YEARS_PER_ROW) - 2) * YEAR_ROW) }}>
+          {Array.from({ length: LAST_YEAR - FIRST_YEAR + 1 }, (_, index) => FIRST_YEAR + index).map(year => {
             const current = year === month.year
             return <Pressable key={year} accessibilityRole="button" accessibilityLabel={String(year)} accessibilityState={{ selected: current }} onPress={() => { setMonth(value => ({ ...value, year })); setMode('calendar') }} style={styles.yearCell}>
               <View style={[styles.yearPill, current && { backgroundColor: accent }, !current && year === today.getUTCFullYear() && { borderWidth: 1, borderColor: accent }]}>
@@ -188,7 +209,7 @@ function DatePickerDialog({ value, accent, confirmLabel, dismissLabel, onConfirm
             </Pressable>
           })}
         </>}
-    {buttons}
+    {buttons(DATE_DIALOG_HEIGHT)}
   </DialogFrame>
 }
 
@@ -204,7 +225,7 @@ const DIAL_TOP = 140.2
 const DIAL_RADIUS = 128
 const LABEL_RADIUS = 101
 
-function TimePickerDialog({ value, accent, confirmLabel, dismissLabel, onConfirm, onDismiss, is24Hour }: DialogProps & { is24Hour: boolean }) {
+function TimePickerDialog({ value, accent, confirmLabel, dismissLabel, onConfirm, onDismiss }: DialogProps) {
   const palette = useMaterialPalette().picker
   const regular = useMaterialFont('Roboto-Regular')
   const medium = useMaterialFont('Roboto-Medium')
@@ -213,7 +234,7 @@ function TimePickerDialog({ value, accent, confirmLabel, dismissLabel, onConfirm
   const [selecting, setSelecting] = useState<'hour' | 'minute'>('hour')
   const pm = hour >= 12
   const pad = (number: number) => String(number).padStart(2, '0')
-  const shownHour = is24Hour ? hour : hour % 12 || 12
+  const shownHour = hour % 12 || 12
   const labels = selecting === 'hour'
     ? Array.from({ length: 12 }, (_, index) => ({ value: index === 0 ? 12 : index, text: String(index === 0 ? 12 : index) }))
     : Array.from({ length: 12 }, (_, index) => ({ value: index * 5, text: pad(index * 5) }))
@@ -255,11 +276,11 @@ function TimePickerDialog({ value, accent, confirmLabel, dismissLabel, onConfirm
     {field('hour', pad(shownHour), 24)}
     <Text style={[styles.timeDigits, styles.absolute, { left: 120, width: 24, top: 24, lineHeight: 80, color: palette.text, fontFamily: regular }]}>:</Text>
     {field('minute', pad(minute), 144)}
-    {is24Hour ? null : <View style={[styles.periodBox, { borderColor: palette.outline }]}>
+    <View style={[styles.periodBox, { borderColor: palette.outline }]}>
       {period('AM', 0)}
       <View style={[styles.periodDivider, { backgroundColor: palette.outline }]} />
       {period('PM', 40)}
-    </View>}
+    </View>
     <View
       style={[styles.dial, { backgroundColor: `${accent}4d` }]}
       onStartShouldSetResponder={() => true}
@@ -308,7 +329,7 @@ const styles = StyleSheet.create({
   dayCircle: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   years: { position: 'absolute', left: 12, right: 12, top: 176, height: 336 },
   yearsContent: { flexDirection: 'row', flexWrap: 'wrap', paddingVertical: 16 },
-  yearCell: { width: 112, height: 52, alignItems: 'center', justifyContent: 'center' },
+  yearCell: { width: 112, height: YEAR_ROW, alignItems: 'center', justifyContent: 'center' },
   yearPill: { width: 72, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   dateInput: { position: 'absolute', left: 24, right: 24, top: 136, height: 56, borderWidth: 2, borderRadius: 4, paddingHorizontal: 16, fontSize: 16 },
   timeField: { position: 'absolute', top: 24, width: 96, height: 80, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },

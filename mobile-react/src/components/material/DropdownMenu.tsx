@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Animated, Easing, Keyboard, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native'
+import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { MenuAction } from '@expo/ui/community/menu'
-import { showMaterialOverlay } from './MaterialOverlay'
+import { showMaterialOverlay, useKeyboardHeight } from './MaterialOverlay'
 import { useMaterialFont, useMaterialPalette } from './materialTheme'
 import { dropdownMenuPosition, type Rect, type Size } from '../../lib/material-layout'
 
@@ -28,9 +28,9 @@ type MenuRequest = {
   onClose?: () => void
 }
 
-/** Opens an Android-style dropdown anchored to the view `measureAnchor` reports. */
-export function showDropdownMenu(request: MenuRequest): void {
-  showMaterialOverlay(dismiss => <DropdownMenuLayer {...request} dismiss={dismiss} />)
+/** Opens an Android-style dropdown anchored to the view `measureAnchor` reports; returns its close. */
+export function showDropdownMenu(request: MenuRequest): () => void {
+  return showMaterialOverlay(dismiss => <DropdownMenuLayer {...request} dismiss={dismiss} />)
 }
 
 // A Compose popup follows its anchor. A sidebar row is still scaling back from its long-press
@@ -44,7 +44,9 @@ function DropdownMenuLayer({ measureAnchor, actions, onAction, onClose, dismiss 
     const until = Date.now() + FOLLOW_ANCHOR_MS
     let frame = 0
     const measure = () => {
-      measureAnchor(next => setAnchor(current => current && sameRect(current, next) ? current : next))
+      measureAnchor(next => setAnchor(current => current
+        && Math.abs(current.x - next.x) < 0.5 && Math.abs(current.y - next.y) < 0.5
+        && Math.abs(current.width - next.width) < 0.5 && Math.abs(current.height - next.height) < 0.5 ? current : next))
       if (Date.now() < until) frame = requestAnimationFrame(measure)
     }
     measure()
@@ -64,10 +66,6 @@ function DropdownMenuLayer({ measureAnchor, actions, onAction, onClose, dismiss 
   </>
 }
 
-function sameRect(a: Rect, b: Rect): boolean {
-  return Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.width - b.width) < 0.5 && Math.abs(a.height - b.height) < 0.5
-}
-
 function MenuSurface({ anchor, actions, onChoose, onOpenSubmenu }: {
   anchor: Rect
   actions: MenuAction[]
@@ -80,8 +78,9 @@ function MenuSurface({ anchor, actions, onChoose, onOpenSubmenu }: {
   const [size, setSize] = useState<Size | null>(null)
   const scale = useRef(new Animated.Value(0.8)).current
   const opacity = useRef(new Animated.Value(0)).current
-  const keyboardHeight = Keyboard.isVisible() ? Keyboard.metrics()?.height ?? 0 : 0
-  const window = { width: screen.width, height: screen.height - insets.top - Math.max(insets.bottom, keyboardHeight) }
+  const scrollY = useRef(0)
+  const keyboard = useKeyboardHeight()
+  const window = { width: screen.width, height: screen.height - insets.top - Math.max(insets.bottom, keyboard) }
   const position = size ? dropdownMenuPosition(anchor, window, size) : null
   useEffect(() => {
     if (!position) return
@@ -104,10 +103,13 @@ function MenuSurface({ anchor, actions, onChoose, onOpenSubmenu }: {
       transformOrigin: position && size ? transformOrigin(anchor, { ...position, ...size }) : undefined,
     }]}
   >
-    <ScrollView bounces={false} showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+    <ScrollView bounces={false} showsVerticalScrollIndicator={false} contentContainerStyle={styles.content} scrollEventThrottle={16} onScroll={event => { scrollY.current = event.nativeEvent.contentOffset.y }}>
       {rows.map((row, index) => row === 'divider'
         ? <View key={`divider-${index}`} style={[styles.divider, { backgroundColor: palette.divider }]} />
-        : <MenuItem key={row.id ?? row.title} action={row} menuOrigin={position} onChoose={onChoose} onOpenSubmenu={onOpenSubmenu} />)}
+        : <MenuItem key={row.id ?? row.title} action={row} onChoose={onChoose} onOpenSubmenu={(item, subactions) => {
+            // Compose anchors a submenu to its trigger item, in window coordinates.
+            if (position) onOpenSubmenu({ x: position.x, y: position.y + item.y - scrollY.current, width: item.width, height: item.height }, subactions)
+          }} />)}
     </ScrollView>
   </Animated.View>
 }
@@ -121,11 +123,11 @@ function flattenActions(actions: MenuAction[]): Array<MenuAction | 'divider'> {
   })
 }
 
-function MenuItem({ action, menuOrigin, onChoose, onOpenSubmenu }: {
+function MenuItem({ action, onChoose, onOpenSubmenu }: {
   action: MenuAction
-  menuOrigin: { x: number; y: number } | null
   onChoose: (id: string) => void
-  onOpenSubmenu: (anchor: Rect, actions: MenuAction[]) => void
+  /** `item` is the item's frame inside the menu's scroll content. */
+  onOpenSubmenu: (item: { y: number; width: number; height: number }, actions: MenuAction[]) => void
 }) {
   const palette = useMaterialPalette().menu
   const regular = useMaterialFont('Roboto-Regular')
@@ -143,10 +145,7 @@ function MenuItem({ action, menuOrigin, onChoose, onOpenSubmenu }: {
     onLayout={event => { frame.current = event.nativeEvent.layout }}
     onPress={() => {
       if (!hasSubmenu) { onChoose(action.id ?? action.title); return }
-      const item = frame.current
-      if (!item || !menuOrigin) return
-      // Compose anchors a submenu to its trigger item, in window coordinates.
-      onOpenSubmenu({ x: menuOrigin.x, y: menuOrigin.y + item.y, width: item.width, height: item.height }, action.subactions!)
+      if (frame.current) onOpenSubmenu(frame.current, action.subactions!)
     }}
     style={({ pressed }) => [styles.item, pressed && { backgroundColor: palette.pressed }]}
   >

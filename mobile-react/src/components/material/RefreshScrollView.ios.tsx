@@ -3,7 +3,7 @@ import { StyleSheet, View } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import Animated, { Easing, cancelAnimation, runOnJS, useAnimatedProps, useAnimatedScrollHandler, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated'
 import Svg, { Path } from 'react-native-svg'
-import { arcPath, indeterminateArc } from './materialArc'
+import { PROGRESS_ROTATION_MS, PROGRESS_TRIM_MS, arcPath, indeterminateArc } from './materialArc'
 import type { RefreshScrollViewProps } from './RefreshScrollView'
 
 const AnimatedPath = Animated.createAnimatedComponent(Path)
@@ -19,7 +19,7 @@ const CENTER = CIRCLE / 2
 const RING = 7.5
 const STROKE = 2.5
 
-export function RefreshScrollView({ refreshing, onRefresh, tintColor: _tintColor, style, children, ...props }: RefreshScrollViewProps) {
+export function RefreshScrollView({ refreshing, onRefresh, style, children, ...props }: RefreshScrollViewProps) {
   const scrollY = useSharedValue(0)
   const pull = useSharedValue(refreshing ? TARGET : 0)
   const pulling = useSharedValue(false)
@@ -35,10 +35,12 @@ export function RefreshScrollView({ refreshing, onRefresh, tintColor: _tintColor
         spinning.value = true
         pull.value = TARGET
         scale.value = 0
-        scale.value = withTiming(1, { duration: 150 })
       }
-      trim.value = withRepeat(withTiming(1, { duration: 1333, easing: Easing.linear }), -1)
-      rotation.value = withRepeat(withTiming(720, { duration: 4444, easing: Easing.linear }), -1)
+      // Also replaces a scale-down still running from a refresh that just ended; its end callback
+      // then sees finished false and leaves the spinner in place.
+      scale.value = withTiming(1, { duration: 150 })
+      trim.value = withRepeat(withTiming(1, { duration: PROGRESS_TRIM_MS, easing: Easing.linear }), -1)
+      rotation.value = withRepeat(withTiming(720, { duration: PROGRESS_ROTATION_MS, easing: Easing.linear }), -1)
       return
     }
     if (!spinning.value) return
@@ -71,10 +73,14 @@ export function RefreshScrollView({ refreshing, onRefresh, tintColor: _tintColor
   const gesture = Gesture.Simultaneous(Gesture.Native(), pan)
 
   // SwipeRefreshLayout.moveSpinner: position, arc length, rotation and arrow size for a pull.
-  const circleStyle = useAnimatedStyle(() => {
+  const pullProgress = () => {
+    'worklet'
     const dragPercent = Math.min(1, pull.value / TARGET)
     const tension = Math.max(0, Math.min(pull.value - TARGET, TARGET * 2) / TARGET)
-    const tensionPercent = (tension / 4 - (tension / 4) ** 2) * 2
+    return { dragPercent, tensionPercent: (tension / 4 - (tension / 4) ** 2) * 2 }
+  }
+  const circleStyle = useAnimatedStyle(() => {
+    const { dragPercent, tensionPercent } = pullProgress()
     return {
       opacity: pull.value > 0 || spinning.value ? 1 : 0,
       transform: [{ translateY: -CIRCLE + TARGET * dragPercent + TARGET * tensionPercent * 2 }, { scale: scale.value }],
@@ -82,10 +88,8 @@ export function RefreshScrollView({ refreshing, onRefresh, tintColor: _tintColor
   })
   const pullTurns = () => {
     'worklet'
-    const dragPercent = Math.min(1, pull.value / TARGET)
+    const { dragPercent, tensionPercent } = pullProgress()
     const adjusted = Math.max(dragPercent - 0.4, 0) * 5 / 3
-    const tension = Math.max(0, Math.min(pull.value - TARGET, TARGET * 2) / TARGET)
-    const tensionPercent = (tension / 4 - (tension / 4) ** 2) * 2
     // Turns from 12 o'clock; Android's progress rotation counts from 3 o'clock.
     const start = (-0.25 + 0.4 * adjusted + tensionPercent * 2) * 0.5 + 0.25
     return { start, end: start + Math.min(0.8, adjusted * 0.8), arrow: Math.min(1, adjusted) }

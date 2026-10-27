@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useSyncExternalStore, type ReactElement } from 'react'
-import { StyleSheet, View } from 'react-native'
+import { Fragment, useEffect, useState, useSyncExternalStore, type ReactElement } from 'react'
+import { Keyboard, StyleSheet, View } from 'react-native'
 import { FullWindowOverlay } from 'react-native-screens'
 import { loadMaterialFonts } from './materialTheme'
 
@@ -22,6 +22,20 @@ export function showMaterialOverlay(render: (close: () => void) => ReactElement)
   const close = () => { if (entries.some(entry => entry.key === key)) update(entries.filter(entry => entry.key !== key)) }
   update([...entries, { key, element: render(close) }])
   return close
+}
+
+/**
+ * The keyboard's current height, 0 while it is hidden. The iOS keyboard draws in its own window
+ * above this overlay, so menus and dialogs place themselves in the space above it.
+ */
+export function useKeyboardHeight(): number {
+  const [height, setHeight] = useState(() => Keyboard.isVisible() ? Keyboard.metrics()?.height ?? 0 : 0)
+  useEffect(() => {
+    const shown = Keyboard.addListener('keyboardWillShow', event => setHeight(event.endCoordinates.height))
+    const hidden = Keyboard.addListener('keyboardWillHide', () => setHeight(0))
+    return () => { shown.remove(); hidden.remove() }
+  }, [])
+  return height
 }
 
 /** Mounted once at the app root on iOS. Renders nothing (and no window overlay) while idle. */

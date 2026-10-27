@@ -1,3 +1,7 @@
+/** Android's indeterminate progress: the arc's trim cycle and the group's 720° turn. */
+export const PROGRESS_TRIM_MS = 1333
+export const PROGRESS_ROTATION_MS = 4444
+
 /** cubic-bezier(0.4, 0, 0.2, 1), the curve Android's progress trim interpolators are built from. */
 function fastOutSlowIn(x: number): number {
   'worklet'
