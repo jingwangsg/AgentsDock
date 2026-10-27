@@ -71,8 +71,8 @@ class SessionExportTests(unittest.TestCase):
 
         with patch.object(server, "prepare_provider_history_metadata_repair", side_effect=prove):
             self.assertEqual(self.get("markdown").status_code, 200)
-        # (delivery lock held, waits for a slot): only the proof before the lock waits.
-        self.assertEqual(proofs, [(False, True), (True, False)])
+        # (delivery lock held, waits for a slot): nothing changed, so one proof.
+        self.assertEqual(proofs, [(False, True)])
 
     def test_html_is_a_standalone_page_that_renders_markdown_and_escapes_markup(self):
         response = self.get("html")

@@ -34133,6 +34133,48 @@ def prepare_provider_history_metadata_repair(session_id: str, *, wait_for_slot: 
     prepare_codex_native_history_repair(session_id, wait_for_slot=wait_for_slot)
 
 
+@asynccontextmanager
+async def event_delivery_lock_with_history_proofs(session_id: str) -> AsyncIterator[None]:
+    """Hold the chat's delivery lock with its provider-history proofs prepared.
+
+    The proofs run before the lock is taken: a long chat's proof can wait for
+    other chats' proofs (history_proof_slot), and appends to this chat wait for
+    this lock. Under the lock they run again, without waiting for a slot, only
+    if the chat's ledger or a cached proof changed meanwhile, as when an import
+    appended rows and forgot the Codex proof. A proof that stays unavailable is
+    not cached; proving it a second time every time doubled such a long chat's
+    catch-up on a slow host (40 s to 82 s).
+    """
+    def ledger() -> tuple[int, ...] | None:
+        try:
+            stat = events_path(session_id).stat()
+        except OSError:
+            return None
+        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+    def cached_proofs() -> tuple[bool, ...]:
+        session = STORE.sessions.get(session_id) or {}
+        provider_id = provider_session_identifier(session_provider_id(session))
+        caches = (CLAUDE_METADATA_REPAIR_CACHE, CODEX_GOAL_HISTORY_REPAIR_CACHE, CODEX_NATIVE_HISTORY_REPAIR_CACHE)
+        return tuple(cache.is_prepared(session_id, provider_id) for cache in caches)
+
+    def prove() -> tuple[bool, ...]:
+        prepare_provider_history_metadata_repair(session_id)
+        # Read after proving, so this proof's own caching is not a change.
+        return cached_proofs()
+
+    async with event_delivery_lock(session_id):
+        # An import or a rewind changes the ledger under this lock and forgets
+        # proofs before a waiter gets the lock, so both fall on one side of
+        # this read.
+        ledger_before = await asyncio.to_thread(ledger)
+    proven = await asyncio.to_thread(prove)
+    async with event_delivery_lock(session_id):
+        if await asyncio.to_thread(lambda: (ledger(), cached_proofs())) != (ledger_before, proven):
+            await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id, wait_for_slot=False)
+        yield
+
+
 def prepare_codex_native_history_repair(session_id: str, *, wait_for_slot: bool = True) -> None:
     session = STORE.sessions.get(session_id)
     provider_id = provider_session_identifier(session_provider_id(session)) if isinstance(session, dict) else None
@@ -90271,10 +90313,9 @@ async def export_session(session_id: str, format: Literal["markdown", "html", "j
     )}
     # Same filters as every client read: file ownership, client visibility and redaction; the
     # timeline projection that Markdown mirrors needs the provider-history repair cache.
-    # Proved before taking the delivery lock and again under it, as in session_events.
-    await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id)
-    async with event_delivery_lock(session_id):
-        await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id, wait_for_slot=False)
+    # The lock waits for an import in progress to publish its proof.
+    async with event_delivery_lock_with_history_proofs(session_id):
+        pass
     internal_run_ids = fork_internal_run_ids(session_id)
 
     def client_events(session_id: str) -> list[dict[str, Any]]:
@@ -101290,18 +101331,10 @@ async def session_events(
         # sequence-bound catch-up; the old single 500-row read silently skipped
         # the rest of a long offline gap.
         catchup_visible = visible is True
-        # A long chat's proof can wait for other chats' proofs
-        # (history_proof_slot), and appends to this chat wait for its delivery
-        # lock, so the proof runs before taking the lock.
-        await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id)
         # A durable import holds this lock until its source-proven projection
         # is ready. Reading its fsynced rows earlier can replay raw scheduled
         # inputs before this socket is registered for the repaired broadcast.
-        async with event_delivery_lock(session_id):
-            # load-bearing: re-proves a Codex chat whose import finished
-            # meanwhile (the import forgets the proof); for a proven chat it
-            # reads no files. It never waits for another chat's proof here.
-            await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id, wait_for_slot=False)
+        async with event_delivery_lock_with_history_proofs(session_id):
             boundary = await asyncio.to_thread(
                 last_event_seq_from_file,
                 events_path(session_id),

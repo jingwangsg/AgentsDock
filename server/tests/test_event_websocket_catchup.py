@@ -5,7 +5,8 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import agent_server
 
@@ -201,8 +202,65 @@ class EventWebSocketCatchupTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 release.set()
                 await asyncio.wait_for(catchup, 5)
-        # (delivery lock held, waits for a slot): only the proof before the lock waits.
+        # (delivery lock held, waits for a slot): nothing changed, so one proof.
+        self.assertEqual(proofs, [(False, True)])
+
+    async def run_catchup_with_recorded_proofs(self, session_id: str, ledger: Path, on_proof=lambda: None) -> list:
+        """Run one events catch-up; return (delivery lock held, waits for a slot) per proof."""
+        proofs = []
+
+        def prove(_session_id: str, *, wait_for_slot: bool = True) -> None:
+            proofs.append((agent_server.event_delivery_lock(session_id).locked(), wait_for_slot))
+            on_proof()
+
+        with (
+            patch.dict(agent_server.STORE.sessions, {session_id: {"id": session_id}}, clear=True),
+            patch.object(agent_server, "events_path", return_value=ledger),
+            patch.object(agent_server, "prepare_provider_history_metadata_repair", side_effect=prove),
+            patch.object(agent_server, "fork_internal_run_ids", return_value=set()),
+            patch.object(agent_server, "websocket_authorized", return_value=True),
+        ):
+            await asyncio.wait_for(agent_server.session_events(session_id, FakeWebSocket(), visible=True), 5)
+        return proofs
+
+    async def test_a_catchup_proves_again_under_the_delivery_lock_after_the_ledger_changed(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            ledger = Path(root) / "events.jsonl"
+            ledger.write_text("")
+
+            def import_rows() -> None:  # An import appends while the first proof runs.
+                with ledger.open("a") as stream:
+                    stream.write(json.dumps({"seq": 1, "id": "evt_1", "session_id": "proof-change-chat",
+                                             "type": "session_created", "ts": "2026-10-28T00:00:00Z"}) + "\n")
+
+            proofs = await self.run_catchup_with_recorded_proofs("proof-change-chat", ledger, import_rows)
+        # The second proof holds the delivery lock, so it waits for no slot.
         self.assertEqual(proofs, [(False, True), (True, False)])
+
+    async def test_a_catchup_proves_again_under_the_delivery_lock_after_a_proof_was_dropped(self) -> None:
+        # The proof is cached after the first call and gone under the lock (evicted, or its chat changed provider).
+        native_cache = SimpleNamespace(is_prepared=Mock(side_effect=[True, False]))
+        with tempfile.TemporaryDirectory() as root, \
+                patch.object(agent_server, "CODEX_NATIVE_HISTORY_REPAIR_CACHE", native_cache):
+            proofs = await self.run_catchup_with_recorded_proofs("proof-drop-chat", Path(root) / "events.jsonl")
+        self.assertEqual(proofs, [(False, True), (True, False)])
+
+    async def test_a_catchup_proves_only_after_an_import_releases_the_delivery_lock(self) -> None:
+        # An import appends under the lock and forgets the Codex proof as it
+        # releases it; the catch-up's ledger snapshot must not fall in between.
+        session_id = "proof-import-chat"
+        delivery_lock = agent_server.event_delivery_lock(session_id)
+        proved = threading.Event()
+        with tempfile.TemporaryDirectory() as root:
+            await delivery_lock.acquire()
+            catchup = asyncio.create_task(
+                self.run_catchup_with_recorded_proofs(session_id, Path(root) / "events.jsonl", proved.set)
+            )
+            await asyncio.sleep(0.2)
+            self.assertFalse(proved.is_set(), "the catch-up proved while an import held the delivery lock")
+            delivery_lock.release()
+            proofs = await catchup
+        self.assertEqual(proofs, [(False, True)])
 
     async def test_token_only_client_gets_its_authenticated_protocol_selected(self) -> None:
         encoded = agent_server.base64.urlsafe_b64encode(
