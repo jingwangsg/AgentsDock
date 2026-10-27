@@ -19,6 +19,7 @@ import re
 import threading
 from types import MappingProxyType
 from typing import Callable
+import weakref
 
 from claude_history_provenance import ClaudeInterruptionTracker, ClaudeCommandHistoryNormalizer
 from claude_goals import is_claude_synthetic_no_response
@@ -1383,13 +1384,24 @@ def _project_proof_event(session_id: str, event: dict, proof: _Proof | None) -> 
 class ClaudeMetadataRepairCache:
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        # Serialize explicit preparation without blocking per-event lookups
-        # (which can execute on the event loop) behind any filesystem work.
-        self._prepare_lock = threading.Lock()
+        # Separate from _lock so per-event lookups (which can execute on the
+        # event loop) never wait behind filesystem work. One lock per chat: a
+        # long chat's first proof must not delay another chat's first page. Weak
+        # values: a chat's lock exists only while a thread holds or waits on it.
+        self._prepare_locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
         self._proofs: OrderedDict[str, _Proof] = OrderedDict()
         self._windows: OrderedDict[tuple, ClaudeMetadataRepairWindow] = OrderedDict()
-        self._preparing_session: str | None = None
-        self._preparation_cancelled = False
+        # Chat id -> Event for the proof running now; forget() sets it so that
+        # proof's result is dropped.
+        self._preparing: dict[str, threading.Event] = {}
+
+    def _session_prepare_lock(self, session_id: str) -> threading.Lock:
+        with self._lock:
+            lock = self._prepare_locks.get(session_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._prepare_locks[session_id] = lock
+            return lock
 
     def prepare_window(self, session_id: str, provider_id: str, events: Path, root: Path,
                        normalize_user: Callable[[dict], str | None], *, event_window_end: int,
@@ -1430,13 +1442,12 @@ class ClaudeMetadataRepairCache:
         cached = cached_window()
         if cached is not None:
             return cached
-        with self._prepare_lock:
+        with self._session_prepare_lock(session_id):
             cached = cached_window()
             if cached is not None:
                 return cached
             with self._lock:
-                self._preparing_session = session_id
-                self._preparation_cancelled = False
+                forgotten = self._preparing[session_id] = threading.Event()
             try:
                 proof = _prove_recent_scheduled(session_id, provider_id, events, root,
                                                 normalize_user, stamp, normalize_full_user,
@@ -1446,9 +1457,8 @@ class ClaudeMetadataRepairCache:
             except (OSError, ValueError, TypeError, KeyError, RuntimeError):
                 window = empty
             with self._lock:
-                cancelled = self._preparation_cancelled
-                self._preparing_session = None
-                if cancelled:
+                del self._preparing[session_id]
+                if forgotten.is_set():
                     return empty
                 self._windows[key] = window
                 self._windows.move_to_end(key)
@@ -1467,7 +1477,7 @@ class ClaudeMetadataRepairCache:
             if previous and previous.provider_id == provider_id and not refresh:
                 self._proofs.move_to_end(session_id)
                 return False
-        with self._prepare_lock:
+        with self._session_prepare_lock(session_id):
             with self._lock:
                 previous = self._proofs.get(session_id)
                 if previous and previous.provider_id == provider_id and not refresh:
@@ -1477,8 +1487,7 @@ class ClaudeMetadataRepairCache:
                     # metadata; negative admissions are cached as well.
                     self._proofs.move_to_end(session_id)
                     return False
-                self._preparing_session = session_id
-                self._preparation_cancelled = False
+                forgotten = self._preparing[session_id] = threading.Event()
             try:
                 try:
                     stamp = _stamp(events)
@@ -1541,9 +1550,8 @@ class ClaudeMetadataRepairCache:
                                frozenset(key for _, _, kind, key in retained if kind == "assistant"),
                                tuple((key, rewrites[key]) for _, _, kind, key in retained if kind == "command_rewrite"))
             with self._lock:
-                cancelled = self._preparation_cancelled
-                self._preparing_session = None
-                if not cancelled:
+                del self._preparing[session_id]
+                if not forgotten.is_set():
                     self._proofs[session_id] = proof
                     self._proofs.move_to_end(session_id)
                     while len(self._proofs) > MAX_SESSIONS:
@@ -1564,8 +1572,8 @@ class ClaudeMetadataRepairCache:
             for key in tuple(self._windows):
                 if key[0] == session_id:
                     self._windows.pop(key, None)
-            if self._preparing_session == session_id:
-                self._preparation_cancelled = True
+            if session_id in self._preparing:
+                self._preparing[session_id].set()
 
     def is_hidden(self, session_id: str, event: dict) -> bool:
         """Memory-only per-event lookup; missing or evicted proof stays visible."""

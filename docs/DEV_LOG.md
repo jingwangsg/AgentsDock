@@ -37,6 +37,97 @@
   iPad simulator and was not reproduced in about 35 later attempts.
   Availability: source only; needs a new iOS build; no server update needed.
 
+## 2026-10-27 — A long chat's first history check, run trace or job history no longer delays other chats (server)
+
+- After a restart, the first read of a Codex or Claude chat checks its
+  history against the provider's own transcript. Every chat's check took one
+  shared lock, so a long chat's check (7.4 s for a 117 MB Codex chat on a
+  remote host with a throttled CPU) made every other chat's first page wait
+  for it. Each chat now has its own lock: chats are checked in parallel, one
+  chat is still checked once at a time, and forgetting a chat (delete, import,
+  rewind) cancels only that chat's check. The same change applies to Claude
+  chats.
+- A run trace or job-run history read of a chat whose timeline index is not
+  cached (after a restart or an eviction, or an agent reading job runs of a
+  chat nobody opened) built that index outside the bounded transcript-scan
+  workers. That build now runs on the chat's scan worker first; reads of a
+  cached index are unchanged and do not wait behind other chats' builds.
+- Measured on that host with copies of its chats on an isolated server (not
+  the deployed one), main vs this change, medians of 3 rounds: a second
+  chat's first page sent 1 s after the 117 MB chat's request took 13.2 s
+  before and 2.3 s now (phone request pattern), and 12.6 s before and 2.4 s
+  now (desktop pattern); the 117 MB chat's own times were unchanged within
+  1 s. When four chats' event streams reconnected at once, the first events
+  arrived after 61.8-78.0 s before and 3.9-54.9 s now (median of 2). A cold
+  run-trace and job-run read of the 117 MB chat next to a 56 MB chat's first
+  page made that page 97.7-103.2 s before and 45.9-46.3 s now, the same as
+  with no such read (44.0-44.6 s).
+- Two long chats opened together still load one after the other on one
+  worker. A second long-chat worker was measured and made every number
+  worse (the 56 MB chat's first page 109.3 s with one worker, 118.2 s with
+  two; event-loop lag p50 114 vs 128 ms), so it was not added.
+- Index and first-page output are byte-identical to the previous code for
+  seven chats on a Mac and three on that host with the history checks active.
+  Tests that fail on the previous code: two chats' Codex (goal and native)
+  and Claude checks run at the same time and forgetting one does not cancel
+  the other; a trace read without a cached index builds it on the scan
+  worker and later reads do not.
+- Real-app check: the desktop app built from this source (unpackaged,
+  isolated profile) against an isolated server on that host holding copies of
+  the 117 MB chat and a small chat, over an ssh port forward. With the long
+  chat opening at launch, the small chat clicked 1 s later appeared after
+  8.8 s and 9.4 s before and 3.2 s and 3.0 s now; the long chat after
+  51.7-52.9 s before and 49.8-50.9 s now.
+- Not changed: when several chats' event streams reconnect at once, their
+  checks now run in parallel, and the event-loop lag peak in that case rose
+  (514 ms before, 897 ms now, median of 2 on that host; the p50 fell from
+  146 to 122 ms). Running those checks on the scan workers instead made a
+  long chat's event stream wait up to 104 s behind another long chat's index
+  build, so they stay where they were. Availability: source only; needs the
+  server update.
+
+## 2026-10-26 — A message or Send now that arrives while a chat is being deleted no longer holds up the delete (server)
+
+- Deleting a chat that is running a command stops the turn and then waits up
+  to 15 s for the chat's remaining turn work. A message sent to the chat
+  during the delete (from another device, an agent, a scheduled job or a
+  mail delivery) was counted as that work, but it was waiting for the delete
+  to finish. The delete answered after about 16 s with "The active agent
+  turn has not acknowledged interruption yet; the session was not deleted.
+  Retry shortly.", and the message then started a new turn in the chat. A
+  Send now on a queued message that cannot join the running turn waited the
+  same way: the delete succeeded after about 16 s and Send now failed with
+  HTTP 500.
+- A message or Send now that would wait for a delete is now refused at once
+  with "session is being deleted", from the moment the delete is requested,
+  even if that delete then fails. A message that reached the chat before
+  the delete is handled as before.
+- Verified with server tests for each case and for a delete that waits
+  behind another operation on the chat (each fails on the previous code).
+  On an isolated server, with a Claude chat running a 300 s foreground
+  command:
+  - A message sent 0.3 s after the delete: before, the delete answered 409
+    after 16.1 s and the message started a turn; now the chat was deleted
+    in 1.2 s and the message was refused.
+  - Send now, with its first step slowed by 3 s for this measurement only
+    so that the delete started during it: before, the delete took 16.0 s
+    and Send now failed with 500; now Send now was refused and the delete
+    took 2.5 s (the rest of the 3 s step, which the delete still waits for).
+  - Desktop app (unpackaged, isolated profile) against that server: a
+    message sent from the composer during Delete Chat was refused and the
+    chat was gone 0.9 s after the click (before: the delete failed after
+    about 16 s and the message ran). Send now followed by Delete Chat, with
+    the 3 s delay: 2.4 s (before: 16.7 s, and Send now failed with 500).
+  - An agent deleting a running chat behind its route with `chats delete`
+    while that chat received a message every 0.1 s: the agent got
+    `"deleted": true` and the later messages were refused (before: the
+    agent got the 409 after about 17 s and the messages then ran).
+- Not covered: Codex chats, Android, and messages from a scheduled job or
+  mail delivery. The Delete dialog stays open during the request, so the
+  desktop check focused the composer by script; in real use such a message
+  comes from another device or an agent. Availability: source only; takes
+  effect when each server is updated.
+
 ## 2026-10-26 — A long chat's first history load no longer delays other chats, and builds faster (server)
 
 - After a server restart, the first page or timeline index of a chat builds
