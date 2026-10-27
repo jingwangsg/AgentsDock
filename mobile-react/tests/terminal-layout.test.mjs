@@ -154,3 +154,11 @@ test('on iOS a key-row key or Paste does not raise a keyboard the user put away'
   assert.match(terminalPage, /paste: \(text, focusTerminal = true\) => \{\s*if \(focusTerminal\) focus\(\)/)
   assert.match(terminalPage, /key: \(name, focusTerminal = true\) => \{\s*if \(focusTerminal\) focus\(\)/)
 })
+
+test('Android keeps the terminal status wording of build 78', () => {
+  // The renderer restart and load failure notices said "Android terminal" before iOS shared this file.
+  assert.match(nativeTerminal, /LOAD_FAILED = Platform\.OS === 'android' \? 'Android terminal failed to load\.' : 'Terminal failed to load\.'/)
+  assert.match(nativeTerminal, /RESTARTING_RENDERER = Platform\.OS === 'android' \? 'Restarting Android terminal renderer…' : 'Restarting terminal renderer…'/)
+  assert.match(nativeTerminal, /message: event\.nativeEvent\.description \|\| LOAD_FAILED/)
+  assert.match(nativeTerminal, /message: RESTARTING_RENDERER/)
+})

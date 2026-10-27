@@ -18,6 +18,9 @@ const PAGE_URL = Platform.OS === 'ios' ? 'http://agentsdock.invalid/' : 'https:/
 // load-bearing: on iOS any focus in the page raises the soft keyboard (keyboardDisplayRequiresUserAction), on
 // Android an injected one does not. A key-row key or Paste must not bring back a keyboard the user put away.
 const FOCUS_ON_INPUT = Platform.OS !== 'ios'
+// Android keeps the status wording it shipped with (build 78); iOS drops "Android".
+const LOAD_FAILED = Platform.OS === 'android' ? 'Android terminal failed to load.' : 'Terminal failed to load.'
+const RESTARTING_RENDERER = Platform.OS === 'android' ? 'Restarting Android terminal renderer…' : 'Restarting terminal renderer…'
 
 type CopyRequest = {
   id: number
@@ -197,7 +200,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   }
 
   const restartRenderer = () => {
-    emitStatus({ status: 'Reconnecting', message: 'Restarting terminal renderer…' })
+    emitStatus({ status: 'Reconnecting', message: RESTARTING_RENDERER })
     setWebViewKey(value => value + 1)
     return true
   }
@@ -228,7 +231,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
     bounces={false}
     webviewDebuggingEnabled={__DEV__}
     onMessage={handleMessage}
-    onError={event => emitStatus({ status: 'Error', message: event.nativeEvent.description || 'Terminal failed to load.' })}
+    onError={event => emitStatus({ status: 'Error', message: event.nativeEvent.description || LOAD_FAILED })}
     onRenderProcessGone={restartRenderer}
     onContentProcessDidTerminate={restartRenderer}
   />
