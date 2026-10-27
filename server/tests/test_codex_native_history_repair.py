@@ -1,5 +1,6 @@
 """Checkpoint/native ownership proof using temporary files and AST public parsers only."""
 import ast
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 import codex_history_repair as repair
@@ -596,6 +598,35 @@ class CodexNativeHistoryRepairTests(unittest.TestCase):
         self.assertEqual(self.count_reads(parse=append_once_while_reading_source), 2)
         self.assertEqual(self.count_reads(), 2)
         self.assertEqual(self.count_reads(), 0)
+
+    def test_a_retry_that_stops_at_the_recorded_malformed_line_takes_no_proof_slot(self):
+        # The caller's slot limits concurrent proofs of long chats; a retry that
+        # reads nothing must not wait for another chat's proof.
+        self.put_nul_line_in_source()
+        slot_entries = 0
+
+        @contextmanager
+        def proof_slot():
+            nonlocal slot_entries
+            slot_entries += 1
+            yield
+
+        for _ in range(2):
+            with self.assertRaises(CodexNativeHistoryProofUnavailable):
+                self.cache.prepare("chat", PROVIDER, self.events, self.source, self.root, self.parse,
+                                   proof_slot=proof_slot())
+        self.assertEqual(slot_entries, 1)
+
+    def test_the_wait_for_the_proof_slot_does_not_count_against_the_work_budget(self):
+        @contextmanager
+        def proof_slot_held_by_another_chat():
+            time.sleep(0.3)
+            yield
+
+        with mock.patch.object(repair, "NATIVE_PROOF_SECONDS", 0.2):
+            self.cache.prepare("chat", PROVIDER, self.events, self.source, self.root, self.parse,
+                               proof_slot=proof_slot_held_by_another_chat())
+        self.assertEqual(len(self.cache.signature("chat")), 4)
 
     def test_cancelled_or_expired_proof_is_not_cached_or_returned_as_raw_import(self):
         for arguments in ({"cancelled": lambda: True}, {"deadline": 0.0}):

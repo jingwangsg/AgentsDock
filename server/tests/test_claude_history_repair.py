@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
@@ -43,6 +44,7 @@ def load_server_repair(cache):
         "strip_all_legacy_agentsdock_provider_authority_suffixes": lambda text, **kwargs: text,
         "HISTORY_SEARCH_REPAIR_DIRTY": set(),
         "HISTORY_SEARCH_DIRTY": set(),
+        "history_proof_slot": lambda _session_id, _cache: nullcontext(),
     })
     exec(compile(module, str(source), "exec"), namespace)
     return namespace

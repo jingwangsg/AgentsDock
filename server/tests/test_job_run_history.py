@@ -1225,19 +1225,19 @@ class JobRunHistoryTests(unittest.IsolatedAsyncioTestCase):
             self.event(5, "turn_finished", run_id="job-run", job_id="job-1", result_text="Report"),
         ])
 
-    async def test_a_read_without_a_cached_index_runs_on_the_scan_pool_and_checks_history_once(self) -> None:
+    async def test_a_read_without_a_cached_index_runs_on_the_scan_pool_and_proves_history_once(self) -> None:
         self.write_trace_and_job_events()
         session = {"id": self.session_id, "title": "Trace and jobs", "backend": "codex"}
         offload = AsyncMock(side_effect=agent_server.scan_transcript)
-        history_check = Mock(wraps=agent_server.prepare_provider_history_metadata_repair)
+        prove = Mock(wraps=agent_server.prepare_provider_history_metadata_repair)
         with patch.dict(agent_server.STORE.sessions, {self.session_id: session}, clear=True), \
                 patch.object(agent_server, "scan_transcript", new=offload), \
-                patch.object(agent_server, "prepare_provider_history_metadata_repair", new=history_check):
+                patch.object(agent_server, "prepare_provider_history_metadata_repair", new=prove):
             trace = await agent_server.get_session_run_trace(
                 self.session_id, "ordinary", anchor_seq=1, after_seq=0, limit=20,
             )
-            # One history check, not one for the build and another for the read.
-            history_check.assert_called_once_with(self.session_id)
+            # The read proves the chat's history itself; no separate build step proves it again.
+            prove.assert_called_once_with(self.session_id)
             runs = await agent_server.get_session_job_runs(
                 self.session_id, "job-1", timeline_group_id=None, before_seq=None, limit=20,
             )

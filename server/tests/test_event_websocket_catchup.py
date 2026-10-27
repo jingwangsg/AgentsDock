@@ -113,9 +113,10 @@ class EventWebSocketCatchupTests(unittest.IsolatedAsyncioTestCase):
 
         delivery_lock = ObservedLock()
 
-        def refresh(_session_id: str, *, refresh: bool = False) -> None:
+        def refresh(_session_id: str, *, refresh: bool = False, wait_for_slot: bool = True) -> None:
             nonlocal proof_ready
             self.assertTrue(refresh)
+            self.assertFalse(wait_for_slot)  # It runs under the chat's delivery lock.
             loop.call_soon_threadsafe(refresh_started.set)
             if not release_refresh.wait(timeout=5):
                 raise TimeoutError("test did not release import proof")
@@ -170,6 +171,38 @@ class EventWebSocketCatchupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(imported), 1)
         self.assertEqual(imported[0].get("provider_history_repair"), "source_proven_import")
         self.assertEqual(imported[0]["prompt"], "")
+
+    async def test_a_catchup_waiting_for_a_history_proof_does_not_hold_the_delivery_lock(self) -> None:
+        # A long chat's proof can wait for other chats' proofs (history_proof_slot);
+        # appends to the chat take its delivery lock meanwhile.
+        session_id = "proof-wait-chat"
+        proving, release = threading.Event(), threading.Event()
+        proofs = []
+
+        def prove(_session_id: str, *, wait_for_slot: bool = True) -> None:
+            proofs.append((agent_server.event_delivery_lock(session_id).locked(), wait_for_slot))
+            proving.set()
+            release.wait(5)
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.dict(agent_server.STORE.sessions, {session_id: {"id": session_id}}, clear=True),
+            patch.object(agent_server, "events_path", return_value=Path(root) / "events.jsonl"),
+            patch.object(agent_server, "prepare_provider_history_metadata_repair", side_effect=prove),
+            patch.object(agent_server, "fork_internal_run_ids", return_value=set()),
+            patch.object(agent_server, "websocket_authorized", return_value=True),
+        ):
+            catchup = asyncio.create_task(agent_server.session_events(session_id, FakeWebSocket(), visible=True))
+            try:
+                self.assertTrue(await asyncio.to_thread(proving.wait, 3))
+                delivery_lock = agent_server.event_delivery_lock(session_id)
+                await asyncio.wait_for(delivery_lock.acquire(), 1)
+                delivery_lock.release()
+            finally:
+                release.set()
+                await asyncio.wait_for(catchup, 5)
+        # (delivery lock held, waits for a slot): only the proof before the lock waits.
+        self.assertEqual(proofs, [(False, True), (True, False)])
 
     async def test_token_only_client_gets_its_authenticated_protocol_selected(self) -> None:
         encoded = agent_server.base64.urlsafe_b64encode(

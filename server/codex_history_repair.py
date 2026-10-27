@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections import Counter, OrderedDict
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 import hashlib
 import hmac
@@ -1023,7 +1024,8 @@ class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
 
     def prepare(self, session_id: str, provider_id: str, events_path: Path, source_path: Path | None,
                 root: Path, parse_item: Callable[[dict], dict | None], *,
-                cancelled: Callable[[], bool] | None = None, deadline: float | None = None) -> bool:
+                cancelled: Callable[[], bool] | None = None, deadline: float | None = None,
+                proof_slot: AbstractContextManager[object] = nullcontext()) -> bool:
         with self._session_prepare_lock(session_id):
             with self._lock:
                 previous = self._proofs.get(session_id)
@@ -1044,12 +1046,17 @@ class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
                 raise CodexNativeHistoryProofUnavailable("Codex history still holds the malformed line that stopped its proof")
             with self._lock:
                 forgotten = self._preparing[session_id] = threading.Event()
-            budget = _NativeReadBudget(lambda: forgotten.is_set() or bool(cancelled and cancelled()), deadline)
             try:
-                proof = _prove_native_replays(
-                    session_id, provider_id, events_path, source_path, root, parse_item,
-                    budget,
-                )
+                # The slot is taken here, not by the caller: a retry that stops at the
+                # recorded malformed line fails above without reading, so it must not
+                # wait for another chat's proof.
+                with proof_slot:
+                    # Waiting for another chat's proof does not count against this proof's work budget.
+                    budget = _NativeReadBudget(lambda: forgotten.is_set() or bool(cancelled and cancelled()), deadline)
+                    proof = _prove_native_replays(
+                        session_id, provider_id, events_path, source_path, root, parse_item,
+                        budget,
+                    )
                 budget.check()
             except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
                 # Only a ledger unchanged during the attempt names the bytes the proof read: an

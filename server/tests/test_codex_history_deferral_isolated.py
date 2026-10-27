@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
 import re
@@ -35,7 +36,8 @@ def load_deferral_glue():
     assert {node.name for node in nodes} == FUNCTIONS
     future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
     namespace = dict(asyncio=asyncio, threading=threading, re=re, uuid=uuid, Path=Path,
-                     CodexNativeHistoryProofUnavailable=CodexNativeHistoryProofUnavailable)
+                     CodexNativeHistoryProofUnavailable=CodexNativeHistoryProofUnavailable,
+                     history_proof_slot=lambda _session_id, _cache: nullcontext())
     exec(compile(ast.fix_missing_locations(ast.Module(body=[future, *nodes], type_ignores=[])),
                  "<isolated-codex-history-deferral>", "exec"), namespace)
     return namespace

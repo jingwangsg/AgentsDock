@@ -57,7 +57,7 @@ import uuid
 import weakref
 from collections import Counter, OrderedDict, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager, nullcontext, suppress
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -6199,13 +6199,28 @@ TRANSCRIPT_SCAN_EXECUTOR = ThreadPoolExecutor(TRANSCRIPT_SCAN_WORKERS, thread_na
 # measured event-loop lag while both were busy was no higher than with one pool.
 LONG_CHAT_MIN_EVENT_SEQ = 2000
 LONG_CHAT_SCAN_EXECUTOR = ThreadPoolExecutor(TRANSCRIPT_SCAN_WORKERS, thread_name_prefix="long-chat-scan")
+# A long chat's history proof reads its whole transcript and provider log.
+# With four chats reconnecting at once on a slow host, the event-loop lag peak
+# was about 730 ms with their proofs side by side and about 600 ms with one
+# long chat's proof at a time per repair cache, so a long chat's proof waits
+# for its cache's slot. One slot per cache: a single slot shared by the three
+# caches made other long chats' reconnects wait about twice as long. A short
+# chat's proof and a chat already proven take no slot.
+LONG_CHAT_HISTORY_PROOF_SLOTS = {"claude": threading.Lock(), "codex_goal": threading.Lock(), "codex_native": threading.Lock()}
+
+
+def is_long_chat(session_id: str) -> bool:
+    session = STORE.sessions.get(session_id) or {}
+    return int(session.get("latest_event_seq") or 0) >= LONG_CHAT_MIN_EVENT_SEQ
+
+
+def history_proof_slot(session_id: str, cache_name: str) -> AbstractContextManager[Any]:
+    return LONG_CHAT_HISTORY_PROOF_SLOTS[cache_name] if is_long_chat(session_id) else nullcontext()
 
 
 async def scan_transcript(fn: Callable[..., Any], session_id: str, /, *args: Any, **kwargs: Any) -> Any:
     # asyncio.to_thread's contract (context propagated), on the chat's scan pool.
-    session = STORE.sessions.get(session_id) or {}
-    long_chat = int(session.get("latest_event_seq") or 0) >= LONG_CHAT_MIN_EVENT_SEQ
-    executor = LONG_CHAT_SCAN_EXECUTOR if long_chat else TRANSCRIPT_SCAN_EXECUTOR
+    executor = LONG_CHAT_SCAN_EXECUTOR if is_long_chat(session_id) else TRANSCRIPT_SCAN_EXECUTOR
     call = functools.partial(contextvars.copy_context().run, fn, session_id, *args, **kwargs)
     return await asyncio.get_running_loop().run_in_executor(executor, call)
 
@@ -17824,7 +17839,8 @@ async def append_durable_event_batch_locked(
             # The complete immutable batch is now fsynced. Refresh once before
             # its public projection; ordinary event delivery performs no reads.
             try:
-                await asyncio.to_thread(prepare_claude_history_metadata_repair, session_id, refresh=True)
+                await asyncio.to_thread(prepare_claude_history_metadata_repair, session_id, refresh=True,
+                                        wait_for_slot=False)  # Under this chat's delivery lock.
             except Exception as exc:
                 logger.warning("history repair refresh failed (%s); committed events remain visible", type(exc).__name__)
         # A provider-history import appends messages with their original
@@ -34105,14 +34121,19 @@ CODEX_GOAL_HISTORY_REPAIR_CACHE = CodexGoalHistoryRepairCache()
 CODEX_NATIVE_HISTORY_REPAIR_CACHE = CodexNativeHistoryRepairCache()
 
 
-def prepare_provider_history_metadata_repair(session_id: str) -> None:
-    """Prepare bounded source proofs only at explicit history-read boundaries."""
-    prepare_claude_history_metadata_repair(session_id)
-    prepare_codex_goal_history_repair(session_id)
-    prepare_codex_native_history_repair(session_id)
+def prepare_provider_history_metadata_repair(session_id: str, *, wait_for_slot: bool = True) -> None:
+    """Prepare bounded source proofs only at explicit history-read boundaries.
+
+    A caller that holds one of this chat's locks passes wait_for_slot=False:
+    the lock must not be held while waiting for another chat's proof
+    (history_proof_slot).
+    """
+    prepare_claude_history_metadata_repair(session_id, wait_for_slot=wait_for_slot)
+    prepare_codex_goal_history_repair(session_id, wait_for_slot=wait_for_slot)
+    prepare_codex_native_history_repair(session_id, wait_for_slot=wait_for_slot)
 
 
-def prepare_codex_native_history_repair(session_id: str) -> None:
+def prepare_codex_native_history_repair(session_id: str, *, wait_for_slot: bool = True) -> None:
     session = STORE.sessions.get(session_id)
     provider_id = provider_session_identifier(session_provider_id(session)) if isinstance(session, dict) else None
     if not provider_id or session.get("backend") != BACKEND_CODEX or session.get("_deleting") is True:
@@ -34126,6 +34147,7 @@ def prepare_codex_native_history_repair(session_id: str) -> None:
         changed = CODEX_NATIVE_HISTORY_REPAIR_CACHE.prepare(
             session_id, provider_id, events_path(session_id), source, CODEX_SESSIONS_ROOT,
             lambda event: codex_history_event_item(event, expected_session_id=session_id),
+            proof_slot=history_proof_slot(session_id, "codex_native") if wait_for_slot else nullcontext(),
         )
     except CodexNativeHistoryProofUnavailable:
         # Incomplete evidence is retryable at a later explicit read boundary,
@@ -34137,7 +34159,7 @@ def prepare_codex_native_history_repair(session_id: str) -> None:
         HISTORY_SEARCH_DIRTY.add(session_id)
 
 
-def prepare_codex_goal_history_repair(session_id: str) -> None:
+def prepare_codex_goal_history_repair(session_id: str, *, wait_for_slot: bool = True) -> None:
     session = STORE.sessions.get(session_id)
     if (
         not isinstance(session, dict)
@@ -34174,10 +34196,11 @@ def prepare_codex_goal_history_repair(session_id: str) -> None:
             return "goal"
         return "human" if codex_user_item_has_human_provenance(payload) else "unknown"
 
-    changed = CODEX_GOAL_HISTORY_REPAIR_CACHE.prepare(
-        session_id, provider_id, events_path(session_id), source_path,
-        CODEX_SESSIONS_ROOT, normalize_legacy_user, classify_user,
-    )
+    with history_proof_slot(session_id, "codex_goal") if wait_for_slot else nullcontext():
+        changed = CODEX_GOAL_HISTORY_REPAIR_CACHE.prepare(
+            session_id, provider_id, events_path(session_id), source_path,
+            CODEX_SESSIONS_ROOT, normalize_legacy_user, classify_user,
+        )
     if changed and CODEX_GOAL_HISTORY_REPAIR_CACHE.signature(session_id):
         # A background FTS scan may predate this requested source proof. Its
         # cached rows must be rebuilt even when the durable ledger is unchanged.
@@ -34186,7 +34209,7 @@ def prepare_codex_goal_history_repair(session_id: str) -> None:
 
 
 def prepare_claude_history_metadata_repair(
-    session_id: str, *, refresh: bool = False, event_window_end: int | None = None,
+    session_id: str, *, refresh: bool = False, event_window_end: int | None = None, wait_for_slot: bool = True,
 ):
     """Prove old metadata only for a requested chat, never during event egress.
 
@@ -34235,13 +34258,18 @@ def prepare_claude_history_metadata_repair(
             normalize_assistant=clean_assistant_text,
         )
 
-    changed = CLAUDE_METADATA_REPAIR_CACHE.prepare(
-        session_id, provider_id, events_path(session_id), CLAUDE_PROJECTS_ROOT,
-        normalize_legacy_user,
-        normalize_full_user=normalize_full_user,
-        normalize_assistant=clean_assistant_text,
-        refresh=refresh,
-    )
+    # Only a call that reads files waits for the slot.
+    # load-bearing: a proven chat still calls prepare(), which reads no files
+    # but moves its proof to the end of the cache's LRU.
+    proving = refresh or not CLAUDE_METADATA_REPAIR_CACHE.is_prepared(session_id, provider_id)
+    with history_proof_slot(session_id, "claude") if wait_for_slot and proving else nullcontext():
+        changed = CLAUDE_METADATA_REPAIR_CACHE.prepare(
+            session_id, provider_id, events_path(session_id), CLAUDE_PROJECTS_ROOT,
+            normalize_legacy_user,
+            normalize_full_user=normalize_full_user,
+            normalize_assistant=clean_assistant_text,
+            refresh=refresh,
+        )
     if changed and CLAUDE_METADATA_REPAIR_CACHE.signature(session_id):
         HISTORY_SEARCH_REPAIR_DIRTY.add(session_id)
         HISTORY_SEARCH_DIRTY.add(session_id)
@@ -34689,6 +34717,7 @@ def scheduled_job_history_response_event(
 
 
 def build_timeline_index(session_id: str) -> dict[str, Any]:
+    prepare_provider_history_metadata_repair(session_id)
     lock = timeline_index_session_lock(session_id)
     with lock:
         payload = _build_timeline_index_locked(session_id)
@@ -34703,12 +34732,14 @@ class TimelineIndexNeedsFullBuild(Exception):
 
 
 async def read_with_timeline_index(read: Callable[..., Any], session_id: str, /, *args: Any, **kwargs: Any) -> Any:
-    # `read` is read_indexed_run_trace or read_scheduled_job_runs; both run the
-    # history check and extend the chat's timeline index before reading. With a
-    # cached index this reads only appended events, so it runs on the default
-    # executor and never queues behind another chat's scan. A full build reads
-    # the whole transcript (no cached index, or TimelineIndexNeedsFullBuild), so
-    # that read runs on the chat's scan pool, which limits concurrent scans.
+    # `read` is read_indexed_run_trace or read_scheduled_job_runs; both prove the
+    # chat's provider history and extend its timeline index before reading.
+    # With a cached index this reads only appended events, so it runs on the
+    # default executor and never queues behind another chat's scan; a proof
+    # that is not cached (an import forgot it, or it was evicted) is read
+    # there too. A full build reads the whole transcript (no cached index, or
+    # TimelineIndexNeedsFullBuild), so that read runs on the chat's scan pool,
+    # which limits concurrent scans.
     if timeline_index_cached_entry(session_id) is not None:
         try:
             return await asyncio.to_thread(read, session_id, *args, allow_full_build=False, **kwargs)
@@ -34718,7 +34749,9 @@ async def read_with_timeline_index(read: Callable[..., Any], session_id: str, /,
 
 
 def _build_timeline_index_locked(session_id: str, *, allow_full_build: bool = True) -> dict[str, Any]:
-    prepare_provider_history_metadata_repair(session_id)
+    # Callers run prepare_provider_history_metadata_repair before taking the
+    # chat's index lock: a long chat's proof can wait for another chat's proof
+    # (history_proof_slot), and a delete of this chat takes the index lock.
     claude_metadata_signature = CLAUDE_METADATA_REPAIR_CACHE.signature(session_id)
     codex_goal_history_signature = (
         CODEX_GOAL_HISTORY_REPAIR_CACHE.signature(session_id),
@@ -36200,6 +36233,7 @@ def read_scheduled_job_runs(
         if before_seq is not None
         else None
     )
+    prepare_provider_history_metadata_repair(session_id)
     lock = timeline_index_session_lock(session_id)
     with lock:
         _build_timeline_index_locked(session_id, allow_full_build=allow_full_build)
@@ -36315,6 +36349,7 @@ def read_indexed_run_trace(
         raise KeyError("run trace not found")
     normalized_after = max(0, int(after_seq or 0))
     bounded_limit = max(1, min(int(limit or 160), 1_000))
+    prepare_provider_history_metadata_repair(session_id)
     lock = timeline_index_session_lock(session_id)
     with lock:
         _build_timeline_index_locked(session_id, allow_full_build=allow_full_build)
@@ -37533,6 +37568,7 @@ def read_semantic_timeline_page(
     tail: bool = True,
 ) -> dict[str, Any]:
     limit = max(1, min(int(limit or 500), MAX_EVENT_RESPONSE_LIMIT))
+    prepare_provider_history_metadata_repair(session_id)
     lock = timeline_index_session_lock(session_id)
     with lock:
         index = _build_timeline_index_locked(session_id)
@@ -90235,8 +90271,10 @@ async def export_session(session_id: str, format: Literal["markdown", "html", "j
     )}
     # Same filters as every client read: file ownership, client visibility and redaction; the
     # timeline projection that Markdown mirrors needs the provider-history repair cache.
+    # Proved before taking the delivery lock and again under it, as in session_events.
+    await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id)
     async with event_delivery_lock(session_id):
-        await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id)
+        await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id, wait_for_slot=False)
     internal_run_ids = fork_internal_run_ids(session_id)
 
     def client_events(session_id: str) -> list[dict[str, Any]]:
@@ -100547,9 +100585,10 @@ async def get_agent_session_job_runs(
             session_id=session_id,
             operation="read",
         )
-    # Read after releasing the chat's lifecycle lock, as the desktop's job-run
-    # read does: a full index build waits for the chat's scan pool, and a
-    # delete or Send of this chat must not wait behind it.
+    # Read after releasing the lifecycle lock: the read can queue behind other
+    # chats' scans on the scan pool, and a delete or Send of this chat must not
+    # wait for it. The desktop route (get_session_job_runs) already reads
+    # without this lock.
     response = await get_session_job_runs(
         session_id,
         job_id,
@@ -101251,11 +101290,18 @@ async def session_events(
         # sequence-bound catch-up; the old single 500-row read silently skipped
         # the rest of a long offline gap.
         catchup_visible = visible is True
+        # A long chat's proof can wait for other chats' proofs
+        # (history_proof_slot), and appends to this chat wait for its delivery
+        # lock, so the proof runs before taking the lock.
+        await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id)
         # A durable import holds this lock until its source-proven projection
         # is ready. Reading its fsynced rows earlier can replay raw scheduled
         # inputs before this socket is registered for the repaired broadcast.
         async with event_delivery_lock(session_id):
-            await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id)
+            # load-bearing: re-proves a Codex chat whose import finished
+            # meanwhile (the import forgets the proof); for a proven chat it
+            # reads no files. It never waits for another chat's proof here.
+            await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id, wait_for_slot=False)
             boundary = await asyncio.to_thread(
                 last_event_seq_from_file,
                 events_path(session_id),

@@ -61,6 +61,19 @@ class SessionExportTests(unittest.TestCase):
         self.assertNotIn("private reasoning", text)
         self.assertLess(text.index("找附近"), text.index("Which is closest?"))
 
+    def test_the_history_proof_runs_before_the_delivery_lock_is_taken(self):
+        # A long chat's proof can wait for other chats' proofs (history_proof_slot);
+        # appends to the chat take its delivery lock meanwhile.
+        proofs = []
+
+        def prove(session_id, *, wait_for_slot=True):
+            proofs.append((server.event_delivery_lock(session_id).locked(), wait_for_slot))
+
+        with patch.object(server, "prepare_provider_history_metadata_repair", side_effect=prove):
+            self.assertEqual(self.get("markdown").status_code, 200)
+        # (delivery lock held, waits for a slot): only the proof before the lock waits.
+        self.assertEqual(proofs, [(False, True), (True, False)])
+
     def test_html_is_a_standalone_page_that_renders_markdown_and_escapes_markup(self):
         response = self.get("html")
 
