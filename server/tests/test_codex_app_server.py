@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import json
 import signal
 import tempfile
@@ -2515,6 +2516,9 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
         await pending_turn.close()
 
     async def test_default_server_request_handler_declines_without_wedging(self) -> None:
+        # In a whole test shard (about 9 million objects) a full collection pauses
+        # for about 3 s, longer than this test's 1 s waits; collect before them.
+        gc.collect()
         factory = FakeProcessFactory()
         process = factory.process
         client = self.make_client(factory)
