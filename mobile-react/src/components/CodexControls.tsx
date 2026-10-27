@@ -126,7 +126,8 @@ export function CodexContextIndicator() {
       style={({ pressed }) => [styles.contextIndicator, { opacity: pressed ? 0.62 : 1 }]}
     >
       <Svg width={22} height={22} viewBox="0 0 22 22">
-        <Circle cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
+        {/* load-bearing key: iOS react-native-svg keeps a dash array that is later removed, so the dotted track remounts once the usage is known. */}
+        <Circle key={percent == null ? 'unknown' : 'known'} cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
         {percent == null ? null : <Circle
           cx={11}
           cy={11}

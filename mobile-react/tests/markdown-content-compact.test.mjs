@@ -14,7 +14,7 @@ const mocks = {
   'lucide-react-native': `export const Maximize2 = 'Maximize2';`,
   '@bsky.app/react-native-uitextview': `export const UITextView = 'SelectableText';`,
   'react-native-svg': `export const SvgXml = 'SvgXml';`,
-  'react-native-markdown-display': `export default 'Markdown'; export class MarkdownIt { core = { ruler: { push() {} } }; linkify = { set() {} }; use() { return this } } export const renderRules = { image: node => ({ libraryImage: node.attributes.src }) };`,
+  'react-native-markdown-display': `import React from 'react'; export default 'Markdown'; export class MarkdownIt { core = { ruler: { push() {} } }; linkify = { set() {} }; use() { return this } } export const renderRules = { image: node => ({ libraryImage: node.attributes.src }), list_item: (node, children) => React.createElement('View', { key: node.key }, React.createElement('Text', null, '\\u00B7'), React.createElement('View', null, children)) };`,
   '../lib/math-markdown': `export const installMathMarkdown = value => value;`,
   '../lib/tex-svg': `export const texToSvg = () => null;`,
   '../lib/canvas-links': `export const openCanvasLink = () => false;`,
@@ -38,7 +38,7 @@ await build({
   bundle: true, format: 'esm', platform: 'node', packages: 'external', jsx: 'automatic', logLevel: 'silent',
   plugins: [{ name: 'markdown-native-hosts', setup(context) {
     context.onResolve({ filter: /.*/ }, args => mocks[args.path] ? { path: args.path, namespace: 'markdown-mock' } : undefined)
-    context.onLoad({ filter: /.*/, namespace: 'markdown-mock' }, args => ({ contents: mocks[args.path], loader: 'js' }))
+    context.onLoad({ filter: /.*/, namespace: 'markdown-mock' }, args => ({ contents: mocks[args.path], loader: 'js', resolveDir: process.cwd() }))
   } }],
 })
 after(async () => { await unlink(outfile) })
@@ -110,4 +110,18 @@ test('long-pressing an absolute path link offers Copy path; web links keep their
     delete globalThis.actionMenus
     delete globalThis.clipboardWrites
   }
+})
+
+test('iOS draws list bullets with the Android glyph', async () => {
+  let renderer
+  await act(async () => { renderer = TestRenderer.create(React.createElement(MarkdownContent, { value: '- item' })) })
+  try {
+    const { rules } = renderer.root.findByType('Markdown').props
+    const bullet = rules.list_item({ key: 'li' }, ['item'], [{ type: 'bullet_list' }], {}, {})
+    assert.equal(bullet.key, 'li')
+    assert.equal(bullet.props.children[0].props.children, '\u2022')
+    assert.deepEqual(bullet.props.children[1].props.children, ['item'])
+    const numbered = rules.list_item({ key: 'li' }, ['item'], [{ type: 'ordered_list' }], {}, {})
+    assert.equal(numbered.props.children[0].props.children, '\u00B7', 'other lists keep the library item')
+  } finally { await act(async () => renderer.unmount()) }
 })

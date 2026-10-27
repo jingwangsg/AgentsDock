@@ -91,7 +91,8 @@ export function ClaudeContextIndicator() {
       style={({ pressed }) => [styles.indicator, { opacity: pressed ? 0.62 : 1 }]}
     >
       {refreshing && !runtime ? <ActivityIndicator size="small" color={colors.muted} /> : <Svg width={22} height={22} viewBox="0 0 22 22">
-        <Circle cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
+        {/* load-bearing key: iOS react-native-svg keeps a dash array that is later removed, so the dotted track remounts once the usage is known. */}
+        <Circle key={percent == null ? 'unknown' : 'known'} cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
         {percent == null ? null : <Circle
           cx={11}
           cy={11}
@@ -121,7 +122,8 @@ export function ClaudeContextIndicator() {
         <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.content}>
           <View style={[styles.meter, { borderColor: colors.border, backgroundColor: colors.surface }]}>
             <Svg width={88} height={88} viewBox="0 0 22 22">
-              <Circle cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
+              {/* load-bearing key: iOS react-native-svg keeps a dash array that is later removed, so the dotted track remounts once the usage is known. */}
+              <Circle key={percent == null ? 'unknown' : 'known'} cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
               {percent == null ? null : <Circle
                 cx={11}
                 cy={11}

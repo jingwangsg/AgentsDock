@@ -281,3 +281,13 @@ test('mobile exposes the full native Codex control endpoint surface', () => {
   }
   assert.match(api, /\/codex\/interactions\/\$\{encodeURIComponent\(interactionId\)\}\/resolve/)
 })
+
+test('a context ring drops its dotted track once the usage is known', () => {
+  // iOS react-native-svg keeps a strokeDasharray that is later removed; only a remount clears it.
+  const claude = fs.readFileSync(path.resolve('src/components/ClaudeContextIndicator.tsx'), 'utf8')
+  for (const source of [controls, claude]) {
+    const tracks = source.match(/<Circle [^>]*strokeDasharray=\{percent == null \? \[2, 3\] : undefined\}[^>]*\/>/g) ?? []
+    assert.ok(tracks.length > 0)
+    for (const track of tracks) assert.match(track, /key=\{percent == null \? 'unknown' : 'known'\}/)
+  }
+})

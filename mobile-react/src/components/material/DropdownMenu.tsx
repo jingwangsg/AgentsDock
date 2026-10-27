@@ -103,7 +103,8 @@ function MenuSurface({ anchor, actions, onChoose, onOpenSubmenu }: {
       transformOrigin: position && size ? transformOrigin(anchor, { ...position, ...size }) : undefined,
     }]}
   >
-    <ScrollView bounces={false} showsVerticalScrollIndicator={false} contentContainerStyle={styles.content} scrollEventThrottle={16} onScroll={event => { scrollY.current = event.nativeEvent.contentOffset.y }}>
+    {/* With the keyboard up, the first tap on an item must choose it, not only dismiss the keyboard. */}
+    <ScrollView keyboardShouldPersistTaps="always" bounces={false} showsVerticalScrollIndicator={false} contentContainerStyle={styles.content} scrollEventThrottle={16} onScroll={event => { scrollY.current = event.nativeEvent.contentOffset.y }}>
       {rows.map((row, index) => row === 'divider'
         ? <View key={`divider-${index}`} style={[styles.divider, { backgroundColor: palette.divider }]} />
         : <MenuItem key={row.id ?? row.title} action={row} onChoose={onChoose} onOpenSubmenu={(item, subactions) => {
