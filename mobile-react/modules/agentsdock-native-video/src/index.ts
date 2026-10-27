@@ -1,6 +1,6 @@
 import type { ComponentType, RefAttributes } from 'react'
 import type { NativeSyntheticEvent, ViewProps } from 'react-native'
-import { requireNativeViewManager } from 'expo-modules-core'
+import { requireNativeModule, requireNativeViewManager } from 'expo-modules-core'
 
 export type AgentsDockNativeVideoStatus = {
   status: 'Loading' | 'Ready' | 'Playing' | 'Paused' | 'Error'
@@ -36,4 +36,32 @@ export function requireAgentsDockNativeVideo(): NativeVideoComponent {
     ) as NativeVideoComponent
   }
   return cachedView
+}
+
+type NativeVideoModule = {
+  generateThumbnailAsync(requestId: string, uri: string, headers: Record<string, string>): Promise<string>
+  cancelThumbnail(requestId: string): void
+}
+
+let cachedModule: NativeVideoModule | null = null
+let thumbnailRequestCount = 0
+
+/**
+ * Read one frame of a remote video as a JPEG data URI without creating a
+ * player. `cancel` stops the request's network reads; the promise then rejects.
+ */
+export function generateAgentsDockVideoThumbnail(uri: string, headers: Record<string, string>): {
+  result: Promise<string>
+  cancel: () => void
+} {
+  cachedModule ??= requireNativeModule<NativeVideoModule>('AgentsDockNativeVideo')
+  const module = cachedModule
+  const requestId = `thumbnail-${++thumbnailRequestCount}`
+  let settled = false
+  const result = module.generateThumbnailAsync(requestId, uri, headers)
+    .finally(() => { settled = true })
+  return {
+    result,
+    cancel: () => { if (!settled) module.cancelThumbnail(requestId) },
+  }
 }

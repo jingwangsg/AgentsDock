@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { AppState as NativeAppState, Platform, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native'
+import { AppState as NativeAppState, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native'
 import { Image } from 'expo-image'
 import type { VideoThumbnail } from 'expo-video'
 import { Download, File, Images, Maximize2, Pin, Play } from 'lucide-react-native'
@@ -11,7 +11,6 @@ import { DeferredLoadBoundary } from './DeferredLoadBoundary'
 import type { AgentFile } from '../types'
 import { agentFileAbsolutePath, filesNewestFirst, formatBytes, isImage, isMedia, isVideo } from '../lib/format'
 import { boundedMediaClaimsForOwner, nextBoundedVisibleCount } from '../lib/media-viewer-state'
-import { shouldGenerateAutomaticVideoThumbnail } from '../lib/artifact-video-staging'
 import { importWithDeadline } from '../lib/deferred-import'
 import { SerialWorkQueue } from '../lib/serial-work-queue'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
@@ -46,6 +45,8 @@ interface AutomaticVideoThumbnailScope {
   listeners: Set<() => void>
 }
 const automaticVideoThumbnailScopes = new Map<string, AutomaticVideoThumbnailScope>()
+// Android hands back expo-video's frame; iOS a data URI read without a player.
+type VideoThumbnailImage = VideoThumbnail | { uri: string }
 interface MediaConnectionScope {
   readonly client: AgentServerClient
   readonly key: string
@@ -131,9 +132,7 @@ function ScopedMediaGrid({ files, sessionId, compact, onViewerRequested, thumbna
   const automaticVideoThumbnailIds = useAutomaticVideoThumbnailClaims(
     `${connectionKey}:${sessionId}`,
     thumbnailOwnerKey,
-    shouldGenerateAutomaticVideoThumbnail(Platform.OS, viewerActive)
-      ? media.filter(isVideo).map(file => file.id)
-      : [],
+    viewerActive ? [] : media.filter(isVideo).map(file => file.id),
   )
   const visibleMedia = media.slice(0, visibleMediaCount)
   const visibleDocuments = documents.slice(0, visibleFileCount)
@@ -308,17 +307,17 @@ function RemoteImagePreview({ file, connection }: { file: AgentFile; connection:
 
 function VideoThumbnailPreview({ file, connection, enabled }: { file: AgentFile; connection: MediaConnectionScope; enabled: boolean }) {
   const colors = usePalette()
-  const [thumbnail, setThumbnail] = useState<VideoThumbnail | null>(null)
+  const [thumbnail, setThumbnail] = useState<VideoThumbnailImage | null>(null)
   const [failed, setFailed] = useState(false)
-  const acceptThumbnail = useCallback((value: VideoThumbnail) => setThumbnail(value), [])
+  const acceptThumbnail = useCallback((value: VideoThumbnailImage) => setThumbnail(value), [])
   const rejectThumbnail = useCallback(() => setFailed(true), [])
 
   if (thumbnail) return <Image source={thumbnail} contentFit="contain" style={StyleSheet.absoluteFill} transition={100} />
-  if (Platform.OS === 'ios' || !enabled || failed) return <View style={[styles.center, { backgroundColor: colors.surface }]}><File size={22} color={colors.muted} /></View>
+  if (!enabled || failed) return <View style={[styles.center, { backgroundColor: colors.surface }]}><File size={22} color={colors.muted} /></View>
   return <QueuedVideoThumbnailLoader file={file} connection={connection} onThumbnail={acceptThumbnail} onFailure={rejectThumbnail} />
 }
 
-function QueuedVideoThumbnailLoader({ file, connection, onThumbnail, onFailure }: { file: AgentFile; connection: MediaConnectionScope; onThumbnail: (value: VideoThumbnail) => void; onFailure: () => void }) {
+function QueuedVideoThumbnailLoader({ file, connection, onThumbnail, onFailure }: { file: AgentFile; connection: MediaConnectionScope; onThumbnail: (value: VideoThumbnailImage) => void; onFailure: () => void }) {
   const colors = usePalette()
   const [granted, setGranted] = useState(false)
   const [appActive, setAppActive] = useState(NativeAppState.currentState === 'active')
@@ -349,7 +348,7 @@ function QueuedVideoThumbnailLoader({ file, connection, onThumbnail, onFailure }
     complete?.()
     setGranted(false)
   }, [])
-  const acceptThumbnail = useCallback((value: VideoThumbnail) => {
+  const acceptThumbnail = useCallback((value: VideoThumbnailImage) => {
     finish()
     onThumbnail(value)
   }, [finish, onThumbnail])
