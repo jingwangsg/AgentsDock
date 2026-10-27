@@ -7203,6 +7203,8 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(raised.exception.status_code, 409)
             self.assertIn("Stop cleanup", str(raised.exception.detail))
             self.assertNotIn("chat-claude", agent_server.DELETING_SESSIONS)
+            # A refused delete must not keep refusing the chat's messages.
+            self.assertNotIn("chat-claude", agent_server.DELETE_REQUESTS)
         finally:
             stop_operation.cancel()
             await asyncio.gather(stop_operation, return_exceptions=True)
@@ -7350,6 +7352,167 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("chat-claude", agent_server.STORE.sessions)
         self.assertNotIn("chat-claude", agent_server.ACTIVE)
         self.assertNotIn("chat-claude", agent_server.SESSION_TURN_TASKS)
+
+    async def test_delete_of_a_busy_chat_does_not_wait_for_a_message_sent_during_it(self) -> None:
+        # 2026-10-26: a message sent while a busy chat was being deleted registered in SESSION_TURN_TASKS and then
+        # waited for the lifecycle lock the delete holds. The delete answered 409 after 16 s, and the message then
+        # started a new turn in the chat the user had deleted.
+        sends: list[asyncio.Task[dict[str, Any]]] = []
+        reached_lock: list[bool] = []
+
+        class MessageArrivesDuringInterrupt(FakeClaudeRun):
+            async def interrupt(self, *, keep_follow_up: bool = False) -> bool:
+                self.interrupt_calls += 1
+                # The interrupted turn ends.
+                agent_server.ACTIVE.pop("chat-claude", None)
+                agent_server.BUSY_SESSIONS.discard("chat-claude")
+                send = asyncio.create_task(agent_server.start_turn("chat-claude", agent_server.TurnRequest(prompt="hello")))
+                sends.append(send)
+                # Let the message be refused, or wait for the lifecycle lock, before the delete waits for turn tasks
+                # (the order seen on a live server). The delete ignores exceptions raised here, so record the outcome.
+                for _ in range(1000):
+                    if send.done() or send in agent_server.SESSION_TURN_TASKS.get("chat-claude", ()):
+                        reached_lock.append(True)
+                        break
+                    await asyncio.sleep(0)
+                return True
+
+        handle = MessageArrivesDuringInterrupt()
+        manager = FakeClaudeManager(handle)
+        manager.active_run_id = "run-claude"
+        agent_server.CLAUDE_SDK_MANAGER = manager
+        agent_server.ACTIVE = {
+            "chat-claude": {
+                "run_id": "run-claude",
+                "backend": agent_server.BACKEND_CLAUDE,
+                "transport": agent_server.CLAUDE_TRANSPORT_AGENT_SDK,
+                "claude_sdk_run": handle,
+                "interactive_agent_sdk": True,
+                "stop_requested": False,
+                "claude_sdk_owner_token": manager.owner_token,
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            (state_dir / "sessions" / "chat-claude").mkdir(parents=True)
+            with patch.object(agent_server, "STATE_DIR", state_dir), patch.object(
+                agent_server, "SESSIONS_FILE", state_dir / "sessions.json",
+            ), patch.object(agent_server, "ensure_dirs"), patch.object(
+                agent_server.JOBS, "delete_for_session", AsyncMock(return_value=0),
+            ), patch.object(agent_server, "kill_terminal_session"):
+                try:
+                    # 5 s bound: a delete that waits for the message takes CODEX_SESSION_CLEANUP_TIMEOUT_SECONDS (15 s).
+                    result = await asyncio.wait_for(agent_server.delete_session("chat-claude"), 5)
+                    # The message is refused instead of starting a turn in the deleted chat.
+                    with self.assertRaises(HTTPException) as refused:
+                        await asyncio.wait_for(sends[0], 5)
+                finally:
+                    agent_server.DELETED_SESSION_TOMBSTONES.discard("chat-claude")
+
+        self.assertTrue(reached_lock, "the message was neither refused nor waiting for the lifecycle lock")
+        self.assertTrue(result["deleted"])
+        self.assertEqual((refused.exception.status_code, refused.exception.detail), (409, "session is being deleted"))
+        self.assertEqual(manager.start_calls, [])
+        self.assertNotIn("chat-claude", agent_server.STORE.sessions)
+
+    async def test_a_message_sent_while_a_delete_waits_for_the_lock_is_refused(self) -> None:
+        # Another lifecycle operation holds the lock, so the delete waits for it before it marks the chat as being
+        # deleted. A message arriving then would wait for the lock behind the delete, and the delete would wait 15 s
+        # for it. A message that was already waiting for the lock ahead of the delete still runs.
+        lock = agent_server.session_lifecycle_lock("chat-claude")
+        await lock.acquire()
+
+        async def until_refused_or_waiting_for_lock(send: asyncio.Task[dict[str, Any]]) -> None:
+            for _ in range(1000):
+                if send.done() or send in agent_server.SESSION_TURN_TASKS.get("chat-claude", ()):
+                    return
+                await asyncio.sleep(0)
+            self.fail("the message was neither refused nor waiting for the lifecycle lock")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            (state_dir / "sessions" / "chat-claude").mkdir(parents=True)
+            with patch.object(agent_server, "STATE_DIR", state_dir), patch.object(
+                agent_server, "SESSIONS_FILE", state_dir / "sessions.json",
+            ), patch.object(agent_server, "ensure_dirs"), patch.object(
+                agent_server.JOBS, "delete_for_session", AsyncMock(return_value=0),
+            ), patch.object(agent_server, "kill_terminal_session"):
+                try:
+                    earlier = asyncio.create_task(agent_server.start_turn("chat-claude", agent_server.TurnRequest(prompt="before")))
+                    await until_refused_or_waiting_for_lock(earlier)
+                    delete = asyncio.create_task(agent_server.delete_session("chat-claude"))
+                    await asyncio.sleep(0)
+                    self.assertFalse(delete.done())
+                    send = asyncio.create_task(agent_server.start_turn("chat-claude", agent_server.TurnRequest(prompt="hello")))
+                    await until_refused_or_waiting_for_lock(send)
+                    lock.release()
+                    result = await asyncio.wait_for(delete, 5)
+                    with self.assertRaises(HTTPException) as refused:
+                        await asyncio.wait_for(send, 5)
+                finally:
+                    agent_server.DELETED_SESSION_TOMBSTONES.discard("chat-claude")
+
+        # The chat was busy, so the earlier message was queued (the delete then discarded the queue).
+        self.assertTrue(earlier.result()["queued"])
+        self.assertTrue(result["deleted"])
+        self.assertEqual((refused.exception.status_code, refused.exception.detail), (409, "session is being deleted"))
+        self.assertNotIn("chat-claude", agent_server.DELETE_REQUESTS)
+
+    async def test_delete_does_not_wait_for_a_force_send_that_needs_the_lifecycle_lock(self) -> None:
+        # 2026-10-26: a Force Send that cannot join the running turn probes for that first, then waits for the
+        # lifecycle lock to stop the turn and start its message. When a delete took the lock during the probe, the
+        # delete waited 15 s for the Force Send, cancelled it (HTTP 500 for the Force Send), and then deleted.
+        probe_may_end = asyncio.Event()
+        probe_ended = asyncio.Event()
+        run_once = agent_server._run_queued_turn_now_once
+
+        async def probe_then_real_run(session_id: str, queued_id: str, *, require_native: bool = False, **kwargs: Any) -> dict[str, Any]:
+            if require_native:
+                await probe_may_end.wait()
+                # No await between this raise and the caller's lock call, so the Force Send reaches the lock before
+                # the delete resumes.
+                probe_ended.set()
+                raise agent_server.NonNativeForceSendRequiresLifecycleLock
+            return await run_once(session_id, queued_id, require_native=require_native, **kwargs)
+
+        cancel_native_actions = agent_server.cancel_codex_native_actions
+
+        async def probe_ends_while_delete_holds_the_lock(session_id: str) -> None:
+            # delete_session calls this while it holds the lifecycle lock, after it captured the Force Send task and
+            # before it waits for it.
+            probe_may_end.set()
+            await probe_ended.wait()
+            await cancel_native_actions(session_id)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            (state_dir / "sessions" / "chat-claude").mkdir(parents=True)
+            with patch.object(agent_server, "STATE_DIR", state_dir), patch.object(
+                agent_server, "SESSIONS_FILE", state_dir / "sessions.json",
+            ), patch.object(agent_server, "ensure_dirs"), patch.object(
+                agent_server, "_run_queued_turn_now_once", probe_then_real_run,
+            ), patch.object(
+                agent_server, "cancel_codex_native_actions", probe_ends_while_delete_holds_the_lock,
+            ), patch.object(
+                agent_server.JOBS, "delete_for_session", AsyncMock(return_value=0),
+            ), patch.object(agent_server, "kill_terminal_session"):
+                force_send = asyncio.create_task(agent_server._run_queued_turn_now_and_release("chat-claude", "queued-1"))
+                # What run_queued_turn_now registers; the delete finds this task and waits for it.
+                agent_server.RUN_NOW_REQUESTS["chat-claude"] = ("queued-1", force_send)
+                try:
+                    # 5 s bound: a delete that waits for the Force Send takes CODEX_SESSION_CLEANUP_TIMEOUT_SECONDS (15 s).
+                    result = await asyncio.wait_for(agent_server.delete_session("chat-claude"), 5)
+                    with self.assertRaises(HTTPException) as refused:
+                        await asyncio.wait_for(force_send, 5)
+                finally:
+                    agent_server.DELETED_SESSION_TOMBSTONES.discard("chat-claude")
+
+        self.assertTrue(probe_ended.is_set())
+        self.assertTrue(result["deleted"])
+        self.assertEqual((refused.exception.status_code, refused.exception.detail), (409, "session is being deleted"))
+        self.assertNotIn("chat-claude", agent_server.RUN_NOW_REQUESTS)
+        self.assertNotIn("chat-claude", agent_server.STORE.sessions)
 
     async def test_delete_bounds_cancellation_hostile_run_now_then_retries(self) -> None:
         cancellation_observed = asyncio.Event()
