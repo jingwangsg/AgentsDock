@@ -1,9 +1,11 @@
+import asyncio
 import json
+import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import agent_server
 
@@ -1214,7 +1216,7 @@ class JobRunHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response["has_more"])
         self.assertEqual(response["next_after"], 3)
 
-    async def test_only_a_read_without_a_cached_index_builds_it_on_the_scan_pool(self) -> None:
+    def write_trace_and_job_events(self) -> None:
         self.write_events([
             self.event(1, "turn_started", run_id="ordinary", prompt="Question"),
             self.event(2, "reasoning_summary", run_id="ordinary", text="Ordinary trace"),
@@ -1222,13 +1224,20 @@ class JobRunHistoryTests(unittest.IsolatedAsyncioTestCase):
             self.event(4, "turn_started", run_id="job-run", purpose="scheduled_job", job_id="job-1"),
             self.event(5, "turn_finished", run_id="job-run", job_id="job-1", result_text="Report"),
         ])
+
+    async def test_a_read_without_a_cached_index_runs_on_the_scan_pool_and_checks_history_once(self) -> None:
+        self.write_trace_and_job_events()
         session = {"id": self.session_id, "title": "Trace and jobs", "backend": "codex"}
         offload = AsyncMock(side_effect=agent_server.scan_transcript)
+        history_check = Mock(wraps=agent_server.prepare_provider_history_metadata_repair)
         with patch.dict(agent_server.STORE.sessions, {self.session_id: session}, clear=True), \
-                patch.object(agent_server, "scan_transcript", new=offload):
+                patch.object(agent_server, "scan_transcript", new=offload), \
+                patch.object(agent_server, "prepare_provider_history_metadata_repair", new=history_check):
             trace = await agent_server.get_session_run_trace(
                 self.session_id, "ordinary", anchor_seq=1, after_seq=0, limit=20,
             )
+            # One history check, not one for the build and another for the read.
+            history_check.assert_called_once_with(self.session_id)
             runs = await agent_server.get_session_job_runs(
                 self.session_id, "job-1", timeline_group_id=None, before_seq=None, limit=20,
             )
@@ -1237,13 +1246,59 @@ class JobRunHistoryTests(unittest.IsolatedAsyncioTestCase):
             )
 
         # Only the first read found no cached index; the job-run read and the
-        # second trace read used the cached one.
+        # second trace read used the cached one on the default executor.
         self.assertEqual(
-            [call.args for call in offload.await_args_list],
-            [(agent_server.build_timeline_index, self.session_id)],
+            [call.args[:2] for call in offload.await_args_list],
+            [(agent_server.read_indexed_run_trace, self.session_id)],
         )
         self.assertEqual([event["text"] for event in trace["events"]], ["Ordinary trace"])
         self.assertEqual(runs["total"], 1)
+
+    async def test_a_cached_index_that_cannot_be_extended_is_rebuilt_on_the_scan_pool(self) -> None:
+        self.write_trace_and_job_events()
+        session = {"id": self.session_id, "title": "Trace and jobs", "backend": "codex"}
+        agent_server.build_timeline_index(self.session_id)
+        # A rewritten log (an import or a rewind) gets a new inode, so the
+        # cached index cannot be extended.
+        path = agent_server.events_path(self.session_id)
+        rewritten = path.with_name("events.rewritten")
+        rewritten.write_bytes(path.read_bytes())
+        os.replace(rewritten, path)
+        self.assertIsNotNone(agent_server.timeline_index_cached_entry(self.session_id))
+        offload = AsyncMock(side_effect=agent_server.scan_transcript)
+        with patch.dict(agent_server.STORE.sessions, {self.session_id: session}, clear=True), \
+                patch.object(agent_server, "scan_transcript", new=offload):
+            trace = await agent_server.get_session_run_trace(
+                self.session_id, "ordinary", anchor_seq=1, after_seq=0, limit=20,
+            )
+
+        self.assertEqual(
+            [call.args[:2] for call in offload.await_args_list],
+            [(agent_server.read_indexed_run_trace, self.session_id)],
+        )
+        self.assertEqual([event["text"] for event in trace["events"]], ["Ordinary trace"])
+
+    async def test_agent_job_run_read_runs_after_releasing_the_chat_lifecycle_lock(self) -> None:
+        reading, release = asyncio.Event(), asyncio.Event()
+
+        async def waiting_read(*_args: object, **_kwargs: object) -> dict[str, object]:
+            reading.set()
+            await release.wait()
+            return {"runs": [], "total": 0}
+
+        with patch.object(agent_server, "authorize_provider_jobs_operation", AsyncMock(return_value={})), \
+                patch.object(agent_server, "get_session_job_runs", new=waiting_read):
+            request = asyncio.create_task(agent_server.get_agent_session_job_runs(
+                None, self.session_id, "job-1", timeline_group_id=None, before_seq=None, limit=20,
+            ))
+            try:
+                await asyncio.wait_for(reading.wait(), 5)
+                # A delete or Send of the chat takes this lock.
+                self.assertFalse(agent_server.session_lifecycle_lock(self.session_id).locked())
+            finally:
+                release.set()
+                response = await request
+        self.assertEqual(response["runs"], [])
 
     async def test_forget_clears_cache_without_growing_a_lock_registry(self) -> None:
         agent_server.build_timeline_index(self.session_id)

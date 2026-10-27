@@ -34697,19 +34697,27 @@ def build_timeline_index(session_id: str) -> dict[str, Any]:
     return payload
 
 
-async def build_cold_timeline_index_on_scan_pool(session_id: str) -> None:
-    # read_indexed_run_trace and read_scheduled_job_runs build the index
-    # themselves on the default executor when it is not cached. A build reads
-    # the whole transcript, so it runs here on the chat's scan pool, which
-    # limits concurrent scans. The read stays on the default executor: with a
-    # cached index it reads only appended events, and on the scan pool it would
-    # queue behind another chat's build. A cached entry that cannot be appended
-    # to still rebuilds there.
-    if timeline_index_cached_entry(session_id) is None:
-        await scan_transcript(build_timeline_index, session_id)
+class TimelineIndexNeedsFullBuild(Exception):
+    """Raised instead of a full rebuild when allow_full_build=False;
+    read_with_timeline_index retries the read on the chat's scan pool."""
 
 
-def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
+async def read_with_timeline_index(read: Callable[..., Any], session_id: str, /, *args: Any, **kwargs: Any) -> Any:
+    # `read` is read_indexed_run_trace or read_scheduled_job_runs; both run the
+    # history check and extend the chat's timeline index before reading. With a
+    # cached index this reads only appended events, so it runs on the default
+    # executor and never queues behind another chat's scan. A full build reads
+    # the whole transcript (no cached index, or TimelineIndexNeedsFullBuild), so
+    # that read runs on the chat's scan pool, which limits concurrent scans.
+    if timeline_index_cached_entry(session_id) is not None:
+        try:
+            return await asyncio.to_thread(read, session_id, *args, allow_full_build=False, **kwargs)
+        except TimelineIndexNeedsFullBuild:
+            pass
+    return await scan_transcript(read, session_id, *args, **kwargs)
+
+
+def _build_timeline_index_locked(session_id: str, *, allow_full_build: bool = True) -> dict[str, Any]:
     prepare_provider_history_metadata_repair(session_id)
     claude_metadata_signature = CLAUDE_METADATA_REPAIR_CACHE.signature(session_id)
     codex_goal_history_signature = (
@@ -34782,6 +34790,8 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
         "internal_status_run_ids" in cached and
         0 <= int(cached.get("offset") or 0) < stat.st_size
     )
+    if not can_append and not allow_full_build:
+        raise TimelineIndexNeedsFullBuild(session_id)
     records: list[dict[str, Any]] = cached["records"] if can_append else []
     by_key: dict[str, dict[str, Any]] = (
         cached.get("by_key") or {record["key"]: record for record in records}
@@ -36168,6 +36178,7 @@ def read_scheduled_job_runs(
     timeline_group_id: str | None = None,
     before_seq: int | None = None,
     limit: int = 20,
+    allow_full_build: bool = True,
 ) -> dict[str, Any]:
     """Return one useful representative per scheduled run, newest first.
 
@@ -36191,7 +36202,7 @@ def read_scheduled_job_runs(
     )
     lock = timeline_index_session_lock(session_id)
     with lock:
-        _build_timeline_index_locked(session_id)
+        _build_timeline_index_locked(session_id, allow_full_build=allow_full_build)
         timeline_cache = timeline_index_cached_entry(session_id, touch=True) or {}
         job_landmark_exists = any(
             candidate.get("kind") == "job"
@@ -36296,6 +36307,7 @@ def read_indexed_run_trace(
     anchor_seq: int | None = None,
     after_seq: int = 0,
     limit: int = 160,
+    allow_full_build: bool = True,
 ) -> dict[str, Any]:
     """Read trace detail only within byte bounds recorded by the main index."""
     clean_run_id = str(run_id or "").strip()
@@ -36305,7 +36317,7 @@ def read_indexed_run_trace(
     bounded_limit = max(1, min(int(limit or 160), 1_000))
     lock = timeline_index_session_lock(session_id)
     with lock:
-        _build_timeline_index_locked(session_id)
+        _build_timeline_index_locked(session_id, allow_full_build=allow_full_build)
         timeline_cache = timeline_index_cached_entry(session_id, touch=True) or {}
         run_records = timeline_cache.get("run_history_records") or {}
         candidate_keys = list(
@@ -86884,13 +86896,11 @@ async def control_interactive_chat(session_id: str, action: str, payload: dict[s
             value = await scan_transcript(build_timeline_index, session_id)
             value = {**value, "landmarks": [row for row in value.get("landmarks", []) if row.get("kind") != "media"]}
         elif action == "timeline.trace":
-            await build_cold_timeline_index_on_scan_pool(session_id)
-            value = await asyncio.to_thread(read_indexed_run_trace, session_id, payload.get("run_id") or "",
+            value = await read_with_timeline_index(read_indexed_run_trace, session_id, payload.get("run_id") or "",
                 anchor_seq=payload.get("anchor_seq"), after_seq=payload.get("after") or 0, limit=limit)
             value["events"] = await asyncio.to_thread(shared_chat_attachment_events, value.get("events", []), session_id)
         elif action == "jobs.runs":
-            await build_cold_timeline_index_on_scan_pool(session_id)
-            value = await asyncio.to_thread(read_scheduled_job_runs, session_id, payload.get("id") or "",
+            value = await read_with_timeline_index(read_scheduled_job_runs, session_id, payload.get("id") or "",
                 before_seq=payload.get("before_seq"), timeline_group_id=payload.get("timeline_group_id"), limit=limit)
             value["runs"] = await asyncio.to_thread(shared_chat_attachment_events, value.get("runs", []), session_id)
             value["supported"] = True
@@ -100506,8 +100516,7 @@ async def get_session_job_runs(
     if session_id not in STORE.sessions:
         raise HTTPException(status_code=404, detail="session not found")
     try:
-        await build_cold_timeline_index_on_scan_pool(session_id)
-        return await asyncio.to_thread(
+        return await read_with_timeline_index(
             read_scheduled_job_runs,
             session_id,
             job_id,
@@ -100538,21 +100547,24 @@ async def get_agent_session_job_runs(
             session_id=session_id,
             operation="read",
         )
-        response = await get_session_job_runs(
-            session_id,
-            job_id,
-            timeline_group_id=timeline_group_id,
-            before_seq=before_seq,
-            limit=limit,
-        )
-        return {
-            **response,
-            "runs": [
-                provider_public_job_run(run)
-                for run in response.get("runs") or []
-                if isinstance(run, dict)
-            ],
-        }
+    # Read after releasing the chat's lifecycle lock, as the desktop's job-run
+    # read does: a full index build waits for the chat's scan pool, and a
+    # delete or Send of this chat must not wait behind it.
+    response = await get_session_job_runs(
+        session_id,
+        job_id,
+        timeline_group_id=timeline_group_id,
+        before_seq=before_seq,
+        limit=limit,
+    )
+    return {
+        **response,
+        "runs": [
+            provider_public_job_run(run)
+            for run in response.get("runs") or []
+            if isinstance(run, dict)
+        ],
+    }
 
 
 @app.get("/api/sessions/{session_id}/runs/{run_id}/trace")
@@ -100566,8 +100578,7 @@ async def get_session_run_trace(
     if session_id not in STORE.sessions:
         raise HTTPException(status_code=404, detail="session not found")
     try:
-        await build_cold_timeline_index_on_scan_pool(session_id)
-        return await asyncio.to_thread(
+        return await read_with_timeline_index(
             read_indexed_run_trace,
             session_id,
             run_id,
