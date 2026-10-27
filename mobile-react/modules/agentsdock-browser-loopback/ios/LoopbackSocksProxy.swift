@@ -25,6 +25,7 @@ final class LoopbackSocksProxy: NSObject, URLSessionWebSocketDelegate {
   var route: TunnelRoute?
   private var listener: NWListener?
   private var waiting: [(UInt16?) -> Void] = [] // start() callers while the listener binds
+  private var closed = false
   private var bridges: [Int: TunnelBridge] = [:] // by URLSessionTask.taskIdentifier
   private var pending: [ObjectIdentifier: NWConnection] = [:] // accepted, CONNECT not read yet
   private lazy var session: URLSession = {
@@ -40,9 +41,12 @@ final class LoopbackSocksProxy: NSObject, URLSessionWebSocketDelegate {
   }()
 
   /// Listens on 127.0.0.1:`port` (0 = any) unless already listening; `ready` gets the bound port,
-  /// or nil when binding failed or stop() came first.
+  /// or nil when binding failed or close() came first. A stop() before the bind finishes leaves the
+  /// caller waiting for the next start(): nil would read as a failed bind, and a caller retrying on
+  /// another port would then listen while the app is in the background.
   func start(port: UInt16, ready: @escaping (UInt16?) -> Void) {
     queue.async { [self] in
+      if closed { ready(nil); return }
       if let listener, listener.state == .ready { ready(listener.port?.rawValue); return }
       waiting.append(ready)
       if listener != nil { return }
@@ -75,7 +79,6 @@ final class LoopbackSocksProxy: NSObject, URLSessionWebSocketDelegate {
     queue.async { [self] in
       listener?.cancel()
       listener = nil
-      report(nil)
       for client in pending.values { client.cancel() }
       pending.removeAll()
       // A destination such as Ray's dashboard never ends an idle tunnel itself, and the server
@@ -88,7 +91,11 @@ final class LoopbackSocksProxy: NSObject, URLSessionWebSocketDelegate {
   /// stop() for good: the URLSession holds this proxy as its delegate until it is invalidated.
   func close() {
     stop()
-    queue.async { [self] in session.invalidateAndCancel() }
+    queue.async { [self] in
+      closed = true
+      report(nil)
+      session.invalidateAndCancel()
+    }
   }
 
   private func report(_ port: UInt16?) {
