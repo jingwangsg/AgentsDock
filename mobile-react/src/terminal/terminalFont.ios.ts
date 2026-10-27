@@ -5,7 +5,7 @@
 // Modified: hhea ascender 1900 -> 1858 and descender -500 -> -450. WebKit rounds each up to a whole pixel, Chrome
 // keeps the fractions, and xterm.js makes the line height their sum: with the original values a 13 px line is 17 px
 // on iOS and 15.3 px on Android, with these 15 px (8-32 px: mean difference 0.3 px instead of 0.8 px).
-// The source is also AOSP frameworks/base data/fonts/DroidSansMono.ttf (android15-release, same sha256).
+// The same file is AOSP frameworks/base data/fonts/DroidSansMono.ttf (android15-release, same sha256).
 // Regenerate (fontTools 4.67.0; result sha256 95723b928c7952e68f29e16effef7e75ad2c671be9d9e6ac7d7fa28330af62e8):
 //   python3 -c "from fontTools.ttLib import TTFont; f = TTFont('DroidSansMono.ttf', recalcTimestamp=False, recalcBBoxes=False); f['hhea'].ascent = 1858; f['hhea'].descent = -450; f.save('patched.ttf')"
 //   base64 -i patched.ttf | tr -d '\n'

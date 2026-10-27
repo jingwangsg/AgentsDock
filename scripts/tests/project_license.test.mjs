@@ -46,7 +46,7 @@ test('the iOS terminal font keeps its Android Open Source Project attribution', 
 test('the iOS Material fonts keep their notices and are the files their recorded commands made', () => {
   const notice = read('NOTICE')
   assert.match(notice, /Roboto Regular and Medium[\s\S]*?Copyright 2011 Google Inc\.,\s+licensed under the Apache License, Version 2\.0/)
-  assert.match(notice, /one-glyph subset \(U\+2713\) of Noto Sans Symbols, Copyright 2013 Google Inc\.,\s+licensed under the SIL Open Font License, Version 1\.1/)
+  assert.match(notice, /subsets of the Android 15\s+Noto Sans Symbols font[\s\S]*?Copyright 2013 Google Inc\., licensed under the SIL Open Font License,\s+Version 1\.1/)
   assert.match(read('mobile-react/assets/fonts/roboto/LICENSE.txt'), /Licensed under the Apache License, Version 2\.0[\s\S]*END OF TERMS AND CONDITIONS/)
   assert.match(read('mobile-react/assets/fonts/noto-sans-symbols/OFL.txt'), /licensed under the SIL Open Font License, Version 1\.1[\s\S]*SIL OPEN FONT LICENSE Version 1\.1/)
   const provenance = read('mobile-react/src/components/material/materialTheme.ts')

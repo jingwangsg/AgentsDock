@@ -32,8 +32,8 @@ export function useMaterialPalette(): typeof palettes.light | typeof palettes.da
 // Sans Symbols. The fonts load once at startup; until then text falls back to the system font.
 // The controls use React Native's Text, not AppText: Android's native dialogs and menus follow the
 // system font size, not the in-app text size.
-// Sources: Android 15's fonts (AOSP android15-release; the copies first used came from the emulator's
-// /system/fonts and have the same size), cut with fontTools 4.67.0. Licenses: next to each font and in NOTICE.
+// Sources: Android 15's fonts, AOSP android15-release (byte-identical to the Android 15 emulator's /system/fonts
+// copies the fonts were first cut from), cut with fontTools 4.67.0. Licenses: next to each font and in NOTICE.
 // - roboto/: external/roboto-fonts Roboto-Regular.ttf, the roboto-classic v3.005 variable font, Apache 2.0,
 //   sha256 9ca9debb09459bf4e3e7f826f5cd0f35f253902b85684921fce2ba3f28dd0f50. For w = 400 (Regular) and 500 (Medium):
 //     fonttools varLib.instancer -q --update-name-table Roboto-Regular.ttf wght=$w wdth=100 ital=0 -o Roboto-$w.ttf

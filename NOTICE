@@ -18,9 +18,10 @@ licenses, and attribution notices. In particular:
 - mobile-react/assets/fonts/roboto/ bundles Roboto Regular and Medium, static
   subsets of the Android 15 Roboto variable font, Copyright 2011 Google Inc.,
   licensed under the Apache License, Version 2.0 (LICENSE.txt there).
-- mobile-react/assets/fonts/noto-sans-symbols/NotoSansSymbols-Check.ttf is a
-  one-glyph subset (U+2713) of Noto Sans Symbols, Copyright 2013 Google Inc.,
-  licensed under the SIL Open Font License, Version 1.1 (OFL.txt there).
+- mobile-react/assets/fonts/noto-sans-symbols/ bundles subsets of the Android 15
+  Noto Sans Symbols font (glyphs Android draws from it, such as the menu check
+  mark), Copyright 2013 Google Inc., licensed under the SIL Open Font License,
+  Version 1.1 (OFL.txt there).
 - The desktop color themes in
   electron/src/renderer/src/lib/color-themes.data.ts transcribe the palettes
   of third-party Zed, VS Code and Neovim themes (MIT, and Apache-2.0 for
