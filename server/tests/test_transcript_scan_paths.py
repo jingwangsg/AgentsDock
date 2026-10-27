@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import agent_server
@@ -339,6 +340,96 @@ class ScanTranscriptTests(unittest.IsolatedAsyncioTestCase):
                 release_long_scan.set()
             self.assertEqual(short, "short-chat")
             self.assertEqual(await long_task, "long-chat")
+
+    def history_sessions(self, backend: str, id_field: str) -> dict[str, dict[str, object]]:
+        long_events = agent_server.LONG_CHAT_MIN_EVENT_SEQ
+        sizes = {"long-chat": long_events, "proven-long-chat": long_events, "short-chat": 12}
+        return {
+            session_id: {
+                "id": session_id, "backend": backend, "latest_event_seq": events,
+                id_field: f"01a00000-0000-7000-8000-00000000000{index}",
+            }
+            for index, (session_id, events) in enumerate(sizes.items())
+        }
+
+    def native_cache(self, prove=lambda _session_id: False) -> SimpleNamespace:
+        def prepare(session_id: str, *_args: object, proof_slot) -> bool:
+            with proof_slot:
+                return prove(session_id)
+
+        return SimpleNamespace(is_prepared=lambda _session_id, _provider_id: False, prepare=prepare,
+                               signature=lambda _session_id: frozenset())
+
+    def test_a_long_chat_proof_waits_for_the_slot_and_a_short_chat_proof_does_not(self) -> None:
+        proving = {"long-chat": threading.Event(), "short-chat": threading.Event()}
+        cache = self.native_cache(lambda session_id: proving[session_id].set())
+        with patch.dict(agent_server.STORE.sessions, self.history_sessions(agent_server.BACKEND_CODEX, "codex_thread_id")), \
+                patch.object(agent_server, "CODEX_NATIVE_HISTORY_REPAIR_CACHE", cache), \
+                patch.object(agent_server, "find_codex_history", return_value=None):
+            proofs = {
+                session_id: threading.Thread(target=agent_server.prepare_codex_native_history_repair, args=(session_id,))
+                for session_id in proving
+            }
+            # Another long chat's proof holds the slot.
+            with agent_server.LONG_CHAT_HISTORY_PROOF_SLOTS["codex_native"]:
+                for proof in proofs.values():
+                    proof.start()
+                self.assertTrue(proving["short-chat"].wait(2), "a short chat waited for the slot")
+                self.assertFalse(proving["long-chat"].wait(0.3), "two long chats proved at once")
+            for proof in proofs.values():
+                proof.join(5)
+        self.assertTrue(proving["long-chat"].is_set())
+
+    def test_neither_a_proven_long_claude_chat_nor_a_proof_under_its_lock_waits_for_the_slot(self) -> None:
+        prepared = []
+        cache = SimpleNamespace(
+            is_prepared=lambda session_id, _provider_id: session_id == "proven-long-chat",
+            prepare=lambda session_id, *_args, **_kwargs: prepared.append(session_id) or False,
+        )
+        # wait_for_slot=False: the caller holds one of the chat's locks (an import's refresh).
+        calls = [("proven-long-chat", {}), ("long-chat", {"refresh": True, "wait_for_slot": False})]
+        with patch.dict(agent_server.STORE.sessions, self.history_sessions(agent_server.BACKEND_CLAUDE, "claude_session_id")), \
+                patch.object(agent_server, "CLAUDE_METADATA_REPAIR_CACHE", cache):
+            with agent_server.LONG_CHAT_HISTORY_PROOF_SLOTS["claude"]:
+                for session_id, kwargs in calls:
+                    proof = threading.Thread(target=agent_server.prepare_claude_history_metadata_repair,
+                                             args=(session_id,), kwargs=kwargs)
+                    proof.start()
+                    proof.join(2)
+                    self.assertFalse(proof.is_alive(), f"{session_id} {kwargs} waited for the slot")
+        # prepare() still ran for the proven chat: it keeps the proof's LRU place.
+        self.assertEqual(prepared, ["proven-long-chat", "long-chat"])
+
+    def test_a_codex_proof_under_the_chat_lock_does_not_wait_for_the_slots(self) -> None:
+        goal_cache = SimpleNamespace(is_prepared=lambda _session_id, _provider_id: False, prepare=lambda *_args: False)
+        with patch.dict(agent_server.STORE.sessions, self.history_sessions(agent_server.BACKEND_CODEX, "codex_thread_id")), \
+                patch.object(agent_server, "CODEX_GOAL_HISTORY_REPAIR_CACHE", goal_cache), \
+                patch.object(agent_server, "CODEX_NATIVE_HISTORY_REPAIR_CACHE", self.native_cache()), \
+                patch.object(agent_server, "find_codex_history", return_value=None):
+            # Other long chats' proofs hold both slots.
+            with agent_server.LONG_CHAT_HISTORY_PROOF_SLOTS["codex_goal"], \
+                    agent_server.LONG_CHAT_HISTORY_PROOF_SLOTS["codex_native"]:
+                proof = threading.Thread(target=agent_server.prepare_provider_history_metadata_repair,
+                                         args=("long-chat",), kwargs={"wait_for_slot": False})
+                proof.start()
+                proof.join(2)
+                self.assertFalse(proof.is_alive(), "a proof under the chat's lock waited for a slot")
+
+    def test_a_build_waiting_for_a_proof_slot_does_not_hold_the_chat_index_lock(self) -> None:
+        cache = self.native_cache()
+        with patch.dict(agent_server.STORE.sessions, self.history_sessions(agent_server.BACKEND_CODEX, "codex_thread_id")), \
+                patch.object(agent_server, "CODEX_NATIVE_HISTORY_REPAIR_CACHE", cache), \
+                patch.object(agent_server, "find_codex_history", return_value=None):
+            build = threading.Thread(target=agent_server.build_timeline_index, args=("long-chat",))
+            with agent_server.LONG_CHAT_HISTORY_PROOF_SLOTS["codex_native"]:
+                build.start()
+                build.join(0.3)
+                self.assertTrue(build.is_alive())
+                # A delete of the chat takes this lock to drop its cached index.
+                index_lock = agent_server.timeline_index_session_lock("long-chat")
+                self.assertTrue(index_lock.acquire(blocking=False))
+                index_lock.release()
+            build.join(5)
 
     def test_no_other_chat_waits_for_a_held_timeline_index_lock(self) -> None:
         held = agent_server.timeline_index_session_lock("long-chat")

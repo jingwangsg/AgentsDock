@@ -1395,6 +1395,11 @@ class ClaudeMetadataRepairCache:
         # proof's result is dropped.
         self._preparing: dict[str, threading.Event] = {}
 
+    def is_prepared(self, session_id: str, provider_id: str) -> bool:
+        with self._lock:
+            proof = self._proofs.get(session_id)
+            return proof is not None and proof.provider_id == provider_id
+
     def _session_prepare_lock(self, session_id: str) -> threading.Lock:
         with self._lock:
             lock = self._prepare_locks.get(session_id)

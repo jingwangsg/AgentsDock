@@ -1,5 +1,6 @@
 """Checkpoint/native ownership proof using temporary files and AST public parsers only."""
 import ast
+from contextlib import contextmanager, suppress
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 import codex_history_repair as repair
@@ -596,6 +598,80 @@ class CodexNativeHistoryRepairTests(unittest.TestCase):
         self.assertEqual(self.count_reads(parse=append_once_while_reading_source), 2)
         self.assertEqual(self.count_reads(), 2)
         self.assertEqual(self.count_reads(), 0)
+
+    def test_a_retry_that_stops_at_the_recorded_malformed_line_takes_no_proof_slot(self):
+        # The caller's slot limits concurrent proofs of long chats; a retry that
+        # reads nothing must not wait for another chat's proof.
+        self.put_nul_line_in_source()
+        slot_entries = 0
+
+        @contextmanager
+        def proof_slot():
+            nonlocal slot_entries
+            slot_entries += 1
+            yield
+
+        for _ in range(2):
+            with self.assertRaises(CodexNativeHistoryProofUnavailable):
+                self.cache.prepare("chat", PROVIDER, self.events, self.source, self.root, self.parse,
+                                   proof_slot=proof_slot())
+        self.assertEqual(slot_entries, 1)
+
+    def test_the_wait_for_the_proof_slot_does_not_count_against_the_work_budget(self):
+        @contextmanager
+        def proof_slot_held_by_another_chat():
+            time.sleep(0.3)
+            yield
+
+        with mock.patch.object(repair, "NATIVE_PROOF_SECONDS", 0.2):
+            self.cache.prepare("chat", PROVIDER, self.events, self.source, self.root, self.parse,
+                               proof_slot=proof_slot_held_by_another_chat())
+        self.assertEqual(len(self.cache.signature("chat")), 4)
+
+    def run_two_callers_while_a_proof_fails(self, between=lambda: None, *, error=None, second_provider=PROVIDER) -> int:
+        """A second caller waits while the first caller's proof fails; return the proof attempts."""
+        attempts, proving, release = [], threading.Event(), threading.Event()
+
+        def failing_proof(*_args):
+            attempts.append(len(attempts))
+            if len(attempts) == 1:
+                proving.set()
+                release.wait(5)
+            raise error or ValueError("incomplete evidence")
+
+        def caller(provider):
+            with suppress(CodexNativeHistoryProofUnavailable):
+                self.cache.prepare("chat", provider, self.events, self.source, self.root, self.parse)
+
+        with mock.patch.object(repair, "_prove_native_replays", side_effect=failing_proof):
+            first = threading.Thread(target=caller, args=(PROVIDER,))
+            second = threading.Thread(target=caller, args=(second_provider,))
+            first.start()
+            self.assertTrue(proving.wait(5))
+            second.start()
+            time.sleep(0.2)  # The second caller now waits for the first one's proof.
+            between()
+            release.set()
+            first.join(5)
+            second.join(5)
+            return len(attempts)
+
+    def test_a_caller_that_waited_for_a_failing_proof_fails_with_it(self):
+        self.assertEqual(self.run_two_callers_while_a_proof_fails(), 1)
+        # A later read proves again.
+        with mock.patch.object(repair, "_prove_native_replays", side_effect=ValueError("incomplete evidence")) as prove, \
+                self.assertRaises(CodexNativeHistoryProofUnavailable):
+            self.prepare()
+        self.assertEqual(prove.call_count, 1)
+
+    def test_a_caller_that_waited_for_a_proof_cancelled_by_forget_proves_again(self):
+        # An import or a rewind changed the ledger during the first proof.
+        self.assertEqual(self.run_two_callers_while_a_proof_fails(lambda: self.cache.forget("chat")), 2)
+
+    def test_a_caller_proves_again_after_a_budget_failure_or_for_another_provider(self):
+        budget_failure = CodexNativeHistoryProofUnavailable("Codex history proof exceeded its work budget")
+        self.assertEqual(self.run_two_callers_while_a_proof_fails(error=budget_failure), 2)
+        self.assertEqual(self.run_two_callers_while_a_proof_fails(second_provider="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), 2)
 
     def test_cancelled_or_expired_proof_is_not_cached_or_returned_as_raw_import(self):
         for arguments in ({"cancelled": lambda: True}, {"deadline": 0.0}):

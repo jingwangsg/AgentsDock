@@ -4,7 +4,7 @@ from __future__ import annotations
 import ast
 import asyncio
 from collections import deque
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from datetime import datetime
 import hashlib
 import hmac
@@ -113,6 +113,7 @@ def load_projection():
         "strip_agentsdock_generated_user_text": lambda text, **kwargs: text,
         "strip_all_legacy_agentsdock_provider_authority_suffixes": lambda text, **kwargs: text,
         "session_provider_id": lambda session: session.get("codex_thread_id"),
+        "history_proof_slot": lambda _session_id, _cache: nullcontext(),
         "logger": Mock(), "now_iso": lambda: "2026-09-10T00:00:00Z",
         "broadcast_session_summary": AsyncMock(),
     }
