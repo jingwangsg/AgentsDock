@@ -1,4 +1,4 @@
-// "Outputs & sources" page sheet for one chat: port of the Electron ChatOutputsPanel.
+// "Outputs & sources" full-screen sheet for one chat: port of the Electron ChatOutputsPanel.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AccessibilityInfo, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { showActionMenu } from '../lib/action-menu'
@@ -22,7 +22,7 @@ import { useFileTransfer } from './file-viewer/useFileTransfer'
 
 const COLLAPSED_SOURCE_ROWS = 6
 const REFRESH_DEBOUNCE_MS = 1_000
-// UIKit acknowledges a page-sheet dismissal through onDismiss; the fallback
+// UIKit acknowledges a modal's dismissal through onDismiss; the fallback
 // covers an interrupted transition (same as AppShell's inspector handoff).
 const IOS_DISMISS_FALLBACK_MS = 1_000
 const EMPTY_EVENTS: Event[] = []

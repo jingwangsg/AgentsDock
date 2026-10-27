@@ -8,7 +8,7 @@ import { ModalSafeArea } from './ModalSafeArea'
 import { SheetCloseButton } from './ui'
 
 /**
- * Page-sheet port of the desktop runtime menu: a "Model" list and a "Reasoning"
+ * Full-screen sheet port of the desktop runtime menu: a "Model" list and a "Reasoning"
  * list whose rows show the catalog description under the label. Opened from the
  * toolbar chip and from the `/model` and `/reasoning` commands.
  */

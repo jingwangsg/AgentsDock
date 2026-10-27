@@ -1,4 +1,4 @@
-// Page sheet for one expanded chat table; the caller renders the table itself.
+// Full-screen sheet for one expanded chat table; the caller renders the table itself.
 import type { ReactNode } from 'react'
 import { Modal, ScrollView, StyleSheet, View } from 'react-native'
 import { usePalette } from '../theme'

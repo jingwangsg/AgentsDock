@@ -119,7 +119,7 @@ export function CodexGoalBar() {
   </>
 }
 
-/** Page sheet around the editor; opened from the goal bar and from the composer's `/goal` command. */
+/** Full-screen sheet around the editor; opened from the goal bar and from the composer's `/goal` command. */
 export function CodexGoalEditorSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const colors = usePalette()
   const { scopeKey } = useCodexRuntime()

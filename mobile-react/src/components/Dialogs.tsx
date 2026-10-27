@@ -903,7 +903,7 @@ function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, 
   }
   const panel = <View
     testID={`sheet-${titleKey}`}
-    style={[styles.sheetPage, styles.sheet, wide && styles.sheetWide, { backgroundColor: colors.background, borderColor: colors.border }]}
+    style={[styles.sheet, wide && styles.sheetWide, { backgroundColor: colors.background, borderColor: colors.border }]}
   >
     <SafeAreaView style={styles.sheetSafeArea} edges={['bottom']}>
       <View style={[styles.sheetGrabber, { backgroundColor: colors.selected }]} />
@@ -956,7 +956,7 @@ function Select({ title = 'Choose option', value, options, onChange, testID }: {
 function dialogError(error: unknown): string { return error instanceof Error ? error.message : String(error) }
 function intervalLabel(seconds: number): string { if (seconds % 604800 === 0) return `${seconds / 604800}w`; if (seconds % 86400 === 0) return `${seconds / 86400}d`; if (seconds % 3600 === 0) return `${seconds / 3600}h`; return `${seconds / 60}m` }
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: '#00000088', alignItems: 'center', justifyContent: 'center', padding: 18 }, sheetPage: { flex: 1 }, sheetSafeArea: { flex: 1 }, sheet: { width: '100%', maxWidth: 520, maxHeight: '88%', borderRadius: 9, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' }, sheetWide: { maxWidth: 760 }, sheetGrabber: { alignSelf: 'center', width: 36, height: 5, marginTop: 7, marginBottom: 1, borderRadius: 3 },
+  backdrop: { flex: 1, backgroundColor: '#00000088', alignItems: 'center', justifyContent: 'center', padding: 18 }, sheetSafeArea: { flex: 1 }, sheet: { flex: 1, width: '100%', maxWidth: 520, maxHeight: '88%', borderRadius: 9, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' }, sheetWide: { maxWidth: 760 }, sheetGrabber: { alignSelf: 'center', width: 36, height: 5, marginTop: 7, marginBottom: 1, borderRadius: 3 },
   sheetHeader: { minHeight: 64, paddingHorizontal: 14, paddingTop: 8, paddingBottom: 4, flexDirection: 'row', alignItems: 'center' }, sheetTitle: { flex: 1, fontSize: 16, fontWeight: '800' }, sheetBody: { paddingHorizontal: 16, paddingBottom: 18, gap: 8 },
   labelRow: { minHeight: 20, flexDirection: 'row', alignItems: 'center', gap: 8 }, label: { fontSize: 11, fontWeight: '700' }, help: { fontSize: 11, lineHeight: 16 }, build: { paddingTop: 4, fontSize: 10, textAlign: 'center' },
   input: { minHeight: 42, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 8, fontSize: 14 }, textarea: { minHeight: 110, maxHeight: 240, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, padding: 10, fontSize: 14, textAlignVertical: 'top' },

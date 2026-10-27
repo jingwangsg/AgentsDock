@@ -32,7 +32,7 @@ test('the app shell owns the sheet and routes both entry points through the insp
   assert.match(appShell, /else if \(kind === 'changes'\) setChanges\(true\)/)
   assert.match(appShell, /const closeChanges = useCallback\(\(\) => \{\s+setChanges\(false\)\s+requestAnimationFrame\(dismissAppKeyboard\)/)
   assert.match(appShell, /onReview=\{openReview\} onChanges=\{\(\) => openInspectorAction\('changes'\)\}/)
-  // The inline inspector opens directly; the Chat details page sheet must dismiss first (same as terminal/tmux).
+  // The inline inspector opens directly; the Chat details sheet must dismiss first (same as terminal/tmux).
   assert.match(appShell, /onTmux=\{\(\) => openInspectorAction\('tmux'\)\} onChanges=\{\(\) => openInspectorAction\('changes'\)\}/)
   assert.match(appShell, /onTmux=\{\(\) => queueInspectorAction\('tmux'\)\} onChanges=\{\(\) => queueInspectorAction\('changes'\)\}/)
   assert.match(appShell, /<WorkspaceChanges sessionId=\{selected\?\.id \?\? ''\} visible=\{modalScopeCurrent && changes && Boolean\(selected\) && !isWelcomeSession\(selected\?\.id\)\} onClose=\{closeChanges\} \/>/)

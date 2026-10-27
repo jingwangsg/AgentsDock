@@ -17,7 +17,7 @@ test('every chat table carries an Expand table overlay in its top-right corner',
   assert.doesNotMatch(table, /<Modal\b|MarkdownTableSheet/, 'one sheet per MarkdownContent, not one per table')
 })
 
-test('the expanded table is a page sheet that re-renders the same table through MarkdownContent', () => {
+test('the expanded table is a full-screen sheet that re-renders the same table through MarkdownContent', () => {
   assert.match(markdown, /const chatMarkdown = installMarkdownTableSource\(installMathMarkdown\(new MarkdownIt/)
   assert.match(markdown, /const \[expandedTable, setExpandedTable\] = useState<string \| null>\(null\)/)
   assert.match(markdown, /expandableTables = true,/)

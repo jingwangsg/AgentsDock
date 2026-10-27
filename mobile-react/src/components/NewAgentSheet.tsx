@@ -20,7 +20,7 @@ export interface NewAgentHosts {
 /**
  * Where, on which agent and with which runtime "Create new agent" makes its chat on send;
  * the current chat's values are the defaults, except the working directory, which starts empty.
- * Page-sheet port of the desktop dialog.
+ * Full-screen sheet port of the desktop dialog.
  */
 export function NewAgentSheet({ hosts, backends, backend, model, effort, folder, defaultCwd, runtime, onCancel, onConfirm, onDidDismiss }: {
   hosts: NewAgentHosts | null

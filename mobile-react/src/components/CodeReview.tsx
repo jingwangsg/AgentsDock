@@ -21,8 +21,8 @@ import { IconButton, Loading, SheetCloseButton } from './ui'
 
 // Until the user picks a layout: two panes need room once the file tree has
 // taken its share, so phones in portrait start inline and tablets and
-// landscape phones side by side. Measured on the workspace, not the window,
-// because iPad page sheets are narrower than the screen.
+// landscape phones side by side. Measured on the workspace view, which is the
+// width the panes share.
 const SIDE_BY_SIDE_MIN_WIDTH = 700
 const gapLabel = (unchanged: number | null) => unchanged == null ? '⋯' : `⋯ ${unchanged} unchanged line${unchanged === 1 ? '' : 's'}`
 
