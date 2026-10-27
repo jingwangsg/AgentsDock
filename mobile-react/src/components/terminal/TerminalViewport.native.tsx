@@ -17,7 +17,7 @@ export type { TerminalConnectionStatus, TerminalViewportHandle, TerminalViewport
 const PAGE_URL = Platform.OS === 'ios' ? 'http://agentsdock.invalid/' : 'https://agentsdock.invalid/'
 // load-bearing: on iOS any focus in the page raises the soft keyboard (keyboardDisplayRequiresUserAction), on
 // Android an injected one does not. A key-row key or Paste must not bring back a keyboard the user put away.
-const FOCUS_ON_INPUT = Platform.OS !== 'ios'
+const FOCUS_TERMINAL = Platform.OS !== 'ios'
 // Android keeps the status wording it shipped with (build 78); iOS drops "Android".
 const LOAD_FAILED = Platform.OS === 'android' ? 'Android terminal failed to load.' : 'Terminal failed to load.'
 const RESTARTING_RENDERER = Platform.OS === 'android' ? 'Restarting Android terminal renderer…' : 'Restarting terminal renderer…'
@@ -94,7 +94,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
   const paste = async () => {
     const text = await Clipboard.getStringAsync()
     if (!text) return false
-    return call('paste', text, FOCUS_ON_INPUT)
+    return call('paste', text, FOCUS_TERMINAL)
   }
   useImperativeHandle(ref, () => ({
     focus: async () => {
@@ -109,7 +109,7 @@ export const TerminalViewport = forwardRef<TerminalViewportHandle, TerminalViewp
     },
     blur: async () => call('blur'),
     paste,
-    sendKey: async name => call('key', name, FOCUS_ON_INPUT),
+    sendKey: async name => call('key', name, FOCUS_TERMINAL),
     setModifier: async (name, active) => call('modifier', name, active),
     find: async (query, findOptions, direction, incremental) => call('find', query, findOptions, direction, incremental),
     clearFind: async () => call('clearFind'),

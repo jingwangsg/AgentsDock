@@ -153,8 +153,8 @@ function ScopedTerminalView({ terminal, tmux, active, onClose, connection, conne
     setNotice('')
     if (tmux) void refresh()
     return () => {
-      const nativeTerminal = viewport.current
-      if (nativeTerminal) void nativeTerminal.blur().catch(() => undefined)
+      const terminalViewport = viewport.current
+      if (terminalViewport) void terminalViewport.blur().catch(() => undefined)
       if (noticeTimer.current) clearTimeout(noticeTimer.current)
       noticeTimer.current = null
     }
@@ -213,8 +213,8 @@ function ScopedTerminalView({ terminal, tmux, active, onClose, connection, conne
     void handle.sendKey(name)
   }
   const close = () => {
-    const nativeTerminal = viewport.current
-    if (nativeTerminal) void nativeTerminal.blur().catch(() => undefined)
+    const terminalViewport = viewport.current
+    if (terminalViewport) void terminalViewport.blur().catch(() => undefined)
     onClose?.()
   }
   const pageEvent = (event: TerminalPageEvent) => {

@@ -986,7 +986,7 @@ test('foregrounding and hidden views cannot resurrect a phantom keyboard', () =>
   // A terminal tab out of sight, or one going away, gives up the keyboard. The page never focuses on its own:
   // on iOS (keyboardDisplayRequiresUserAction false) any focus in the page raises the keyboard.
   assert.match(terminalView, /if \(!active\) \{\s*void viewport\.current\?\.blur\(\)\.catch/)
-  assert.match(terminalView, /nativeTerminal\.blur\(\)\.catch/)
+  assert.match(terminalView, /terminalViewport\.blur\(\)\.catch/)
   const readyHandler = terminalViewport.match(/case 'ready':([\s\S]*?)return\n/)?.[1]
   assert.ok(readyHandler)
   assert.doesNotMatch(readyHandler, /focus/)
