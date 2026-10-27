@@ -52487,6 +52487,8 @@ async def append_imported_history(
     if len(committed) != len(imported_events):
         raise RuntimeError("history event batch was not fully persisted")
     if backend == BACKEND_CODEX:
+        # load-bearing: no await between the append releasing the delivery lock
+        # and this forget (event_delivery_lock_with_history_proofs).
         CODEX_NATIVE_HISTORY_REPAIR_CACHE.forget(session_id)
     return {
         "imported": len(items),
@@ -52599,6 +52601,8 @@ async def append_staged_imported_history(
     if written != len(imported_events):
         raise RuntimeError("history event batch was not fully persisted")
     if backend == BACKEND_CODEX:
+        # load-bearing: no await between the append releasing the delivery lock
+        # and this forget (event_delivery_lock_with_history_proofs).
         CODEX_NATIVE_HISTORY_REPAIR_CACHE.forget(session_id)
     return {
         "imported": len(items),
@@ -90313,7 +90317,7 @@ async def export_session(session_id: str, format: Literal["markdown", "html", "j
     )}
     # Same filters as every client read: file ownership, client visibility and redaction; the
     # timeline projection that Markdown mirrors needs the provider-history repair cache.
-    # The lock waits for an import in progress to publish its proof.
+    # The lock waits for an import in progress to finish.
     async with event_delivery_lock_with_history_proofs(session_id):
         pass
     internal_run_ids = fork_internal_run_ids(session_id)

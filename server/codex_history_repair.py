@@ -1021,17 +1021,27 @@ class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
         super().__init__()
         # Per session, kept only while its latest proof attempt stopped at a malformed line.
         self._malformed: OrderedDict[str, _MalformedStop] = OrderedDict()
+        # Per session, (provider id, source path, marker) of its latest attempt that failed on
+        # its inputs, not on the work budget, an OSError or a forget(). Callers that waited for
+        # that attempt fail with it: proving again one after another, each behind a long chat's
+        # proof slot, made a 117 MB chat's first event wait 85 s instead of 28 s on a slow host.
+        self._failed: OrderedDict[str, tuple[str, Path | None, object]] = OrderedDict()
 
     def prepare(self, session_id: str, provider_id: str, events_path: Path, source_path: Path | None,
                 root: Path, parse_item: Callable[[dict], dict | None], *,
                 cancelled: Callable[[], bool] | None = None, deadline: float | None = None,
                 proof_slot: AbstractContextManager[object] = nullcontext()) -> bool:
+        with self._lock:
+            failed_before = self._failed.get(session_id)
         with self._session_prepare_lock(session_id):
             with self._lock:
                 previous = self._proofs.get(session_id)
                 if previous and previous.provider_id == provider_id:
                     return False
                 stopped = self._malformed.get(session_id)
+                failed = self._failed.get(session_id)
+            if failed is not None and failed is not failed_before and failed[:2] == (provider_id, source_path):
+                raise CodexNativeHistoryProofUnavailable("Codex native history proof failed while this caller waited for it")
             ledger_stamp = _stamp_or_none(events_path)
             # A retry would re-read the whole ledger and source and stop at the same line: it
             # reads the same prefixes while the provider id and source path are unchanged, the
@@ -1075,13 +1085,22 @@ class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
                             self._malformed.popitem(last=False)
                     else:
                         self._malformed.pop(session_id, None)
+                    if forgotten.is_set() or isinstance(exc, (OSError, CodexNativeHistoryProofUnavailable)):
+                        self._failed.pop(session_id, None)
+                    else:
+                        self._failed[session_id] = (provider_id, source_path, object())
+                        self._failed.move_to_end(session_id)
+                        while len(self._failed) > MAX_SESSIONS:
+                            self._failed.popitem(last=False)
                 # Unavailable proof is neither a negative answer nor a prepared
                 # cache entry. The next prepare retries it, unless it stopped at
-                # a malformed line that is still present (checked above).
+                # a malformed line that is still present or it waited for this
+                # attempt (both checked above).
                 raise CodexNativeHistoryProofUnavailable("Codex native history proof is incomplete") from exc
             with self._lock:
                 del self._preparing[session_id]
                 self._malformed.pop(session_id, None)
+                self._failed.pop(session_id, None)
                 budget.check()
                 self._proofs[session_id] = proof
                 self._proofs.move_to_end(session_id)
@@ -1092,6 +1111,7 @@ class CodexNativeHistoryRepairCache(CodexGoalHistoryRepairCache):
     def forget(self, session_id: str) -> None:
         with self._lock:
             self._malformed.pop(session_id, None)
+            self._failed.pop(session_id, None)
             super().forget(session_id)
 
     def signature(self, session_id: str) -> frozenset:
