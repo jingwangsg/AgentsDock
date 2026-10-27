@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { ActivityIndicator } from './material/ActivityIndicator'
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { ArrowUp, FilePen, Globe, MessageCircleQuestion, MessageSquare, Square, Terminal, Trash2, Wrench } from 'lucide-react-native'
 import { sideChatAvailable, sideChatErrorMessage, sideChatLimit, subscribeSideChatChanged, type SideChatStep, type SyncedSideChat } from '../lib/side-chat'
 import { fonts } from '../lib/typography'
@@ -10,6 +9,7 @@ import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { Text, TextInput } from './AppText'
 import { MarkdownContent } from './MarkdownContent'
+import { ModalSafeArea } from './ModalSafeArea'
 import { IconButton, SheetCloseButton } from './ui'
 
 // A draft outlives the sheet, as on the desktop.
@@ -121,8 +121,8 @@ export function SideChatSheet({ sessionId, onClose }: { sessionId: string; onClo
   const status = (text: string, color = colors.muted) => <Text style={[styles.status, { color }]}>{text}</Text>
   // A push-triggered read can list the question before its POST returns.
   const pendingBubble = sending && !chat?.exchanges.some(exchange => exchange.request_id === sending.requestId)
-  return <Modal visible animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={onClose}>
-    <SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+  return <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+    <ModalSafeArea style={[styles.fill, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
       {/* keyboard-controller follows the IME inside a Modal's own window, as in the canvas sheet. */}
       <KeyboardAvoidingView behavior="padding" style={styles.fill}>
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -167,7 +167,7 @@ export function SideChatSheet({ sessionId, onClose }: { sessionId: string; onClo
           {status('Only in this side chat · not sent to the main agent')}
         </View>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </ModalSafeArea>
   </Modal>
 }
 

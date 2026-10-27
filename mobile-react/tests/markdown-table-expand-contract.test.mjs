@@ -27,7 +27,7 @@ test('the expanded table is a page sheet that re-renders the same table through 
   assert.equal((markdown.match(/new MarkdownIt\(/g) ?? []).length, 1, 'the sheet reuses the chat parser')
   assert.equal((markdown.match(/<Markdown /g) ?? []).length, 1, 'one renderer: the sheet mounts MarkdownContent itself')
 
-  assert.match(sheet, /<Modal visible animationType="slide" presentationStyle=\{Platform\.OS === 'ios' \? 'pageSheet' : 'fullScreen'\} allowSwipeDismissal onRequestClose=\{onClose\}>/)
+  assert.match(sheet, /<Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose=\{onClose\}>/)
   assert.match(sheet, /import \{ Text \} from '\.\/AppText'/)
   assert.match(sheet, /<Text style=\{\[styles\.title, \{ color: colors\.text \}\]\}>Table<\/Text>/)
   assert.match(sheet, /<SheetCloseButton onPress=\{onClose\} label="Close table" testID="markdown-table-close" \/>/)

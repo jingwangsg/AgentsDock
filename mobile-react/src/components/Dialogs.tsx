@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native'
+import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions, KeyboardAvoidingView, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import { ActivityIndicator } from './material/ActivityIndicator'
 import { Switch } from './material/Switch'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -25,7 +25,7 @@ import { liveChatReferenceTitle } from '../lib/timeline-inline-references'
 import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { AppearanceMode, Backend, ChatReference, CreateJobInput, JobContextMode, JobScheduleKind, RuntimeOption, Session, TimelineSearchResult, UpdateJobInput } from '../types'
-import { Text, TextInput } from './AppText'
+import { focusedTextInput, Text, TextInput } from './AppText'
 import { BackendMark } from './BackendMark'
 import { IconButton, SheetCloseButton } from './ui'
 import { RuntimeHealthPanel } from './RuntimeHealth'
@@ -48,7 +48,7 @@ export function ServerSetupDialog({
   onDidDismiss?: () => void
 }) {
   const colors = usePalette()
-  return <Sheet visible={visible} title="Connect AgentsDock" onClose={onClose} onDidDismiss={onDidDismiss} form>
+  return <Sheet visible={visible} title="Connect AgentsDock" onClose={onClose} onDidDismiss={onDidDismiss}>
     <View style={styles.setupIntro}>
       <View style={[styles.setupIcon, { backgroundColor: colors.raised }]}><Server size={24} color={colors.blue} /></View>
       <View style={styles.setupCopy}>
@@ -312,7 +312,7 @@ function ScopedSearchDialog({ visible, sessionId, onClose, connection, connectio
   }
   return <Sheet key={connectionKey} visible={visible} title={sessionId ? 'Find in chat' : 'Search'} onClose={closeSearch} onShow={() => searchInput.current?.focus()} wide>
     {connectionReady ? <>
-      <View style={[styles.searchBox, { backgroundColor: colors.raised, borderColor: colors.border }]}><Search size={16} color={colors.muted} /><TextInput ref={searchInput} value={query} onChangeText={value => { setResults([]); setBusy(false); setSearchError(null); setQuery(value) }} accessibilityLabel="Search names and complete chat history" placeholder="Search names and complete chat history" placeholderTextColor={colors.muted} returnKeyType="search" submitBehavior="blurAndSubmit" onSubmitEditing={dismissAppKeyboard} clearButtonMode={Platform.OS === 'ios' ? 'while-editing' : 'never'} style={{ flex: 1, color: colors.text, fontSize: 14 }} />{busy || openingResultId ? <ActivityIndicator size="small" color={colors.blue} /> : null}</View>
+      <View style={[styles.searchBox, { backgroundColor: colors.raised, borderColor: colors.border }]}><Search size={16} color={colors.muted} /><TextInput ref={searchInput} value={query} onChangeText={value => { setResults([]); setBusy(false); setSearchError(null); setQuery(value) }} accessibilityLabel="Search names and complete chat history" placeholder="Search names and complete chat history" placeholderTextColor={colors.muted} returnKeyType="search" submitBehavior="blurAndSubmit" onSubmitEditing={dismissAppKeyboard} style={{ flex: 1, color: colors.text, fontSize: 14 }} />{busy || openingResultId ? <ActivityIndicator size="small" color={colors.blue} /> : null}</View>
       {searchError ? <View accessibilityRole="alert" style={styles.searchFailure}>
         <Text style={[styles.searchFailureText, { color: colors.red }]} numberOfLines={2}>History search failed. {searchError}</Text>
         <Pressable
@@ -870,7 +870,7 @@ function ScopedTmuxDialog({ visible, sessionId, onClose, connection, connectionK
   </Sheet>
 }
 
-function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, form, dismissable = true, keyboardShouldPersistTaps = 'handled' }: { visible: boolean; title: string; onClose: () => void; onShow?: () => void; onDidDismiss?: () => void; children: React.ReactNode; wide?: boolean; form?: boolean; dismissable?: boolean; keyboardShouldPersistTaps?: 'always' | 'handled' | 'never' }) {
+function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, dismissable = true, keyboardShouldPersistTaps = 'handled' }: { visible: boolean; title: string; onClose: () => void; onShow?: () => void; onDidDismiss?: () => void; children: React.ReactNode; wide?: boolean; dismissable?: boolean; keyboardShouldPersistTaps?: 'always' | 'handled' | 'never' }) {
   const colors = usePalette()
   const titleKey = title.toLowerCase().replaceAll(' ', '-')
   const closing = useRef(false)
@@ -888,25 +888,41 @@ function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, 
     dismissAppKeyboard()
     onDidDismiss?.()
   }
+  const scrollRef = useRef<ScrollView>(null)
+  const contentRef = useRef<View>(null)
+  const scrollOffset = useRef(0)
+  // When the card shrinks above the keyboard, Android's ScrollView scrolls the
+  // focused field back into view; an iOS ScrollView does not for a multiline one.
+  const revealFocusedField = (event: LayoutChangeEvent) => {
+    const viewport = event.nativeEvent.layout.height
+    const field = focusedTextInput()
+    if (!field || !contentRef.current) return
+    field.measureLayout(contentRef.current, (_x, top, _width, height) => {
+      const bottom = Math.min(top + height, top + viewport)
+      if (top < scrollOffset.current) scrollRef.current?.scrollTo({ y: top })
+      else if (bottom > scrollOffset.current + viewport) scrollRef.current?.scrollTo({ y: bottom - viewport })
+    })
+  }
   const panel = <View
     testID={`sheet-${titleKey}`}
-    style={[styles.sheetPage, Platform.OS !== 'ios' && styles.sheet, wide && Platform.OS !== 'ios' && styles.sheetWide, { backgroundColor: colors.background, borderColor: colors.border }]}
+    style={[styles.sheetPage, styles.sheet, wide && styles.sheetWide, { backgroundColor: colors.background, borderColor: colors.border }]}
   >
     <SafeAreaView style={styles.sheetSafeArea} edges={['bottom']}>
       <View style={[styles.sheetGrabber, { backgroundColor: colors.selected }]} />
       <View style={styles.sheetHeader}><Text style={[styles.sheetTitle, { color: colors.text }]}>{title}</Text>{dismissable ? <SheetCloseButton onPress={close} label={`Close ${title}`} testID={`sheet-close-${titleKey}`} /> : null}</View>
       <ScrollView
+        ref={scrollRef}
+        innerViewRef={contentRef as React.RefObject<View>}
         contentContainerStyle={styles.sheetBody}
-        automaticallyAdjustKeyboardInsets
-        keyboardDismissMode="interactive"
         keyboardShouldPersistTaps={keyboardShouldPersistTaps}
+        onLayout={Platform.OS === 'ios' ? revealFocusedField : undefined}
+        onScroll={Platform.OS === 'ios' ? (event: NativeSyntheticEvent<NativeScrollEvent>) => { scrollOffset.current = event.nativeEvent.contentOffset.y } : undefined}
+        scrollEventThrottle={Platform.OS === 'ios' ? 16 : undefined}
       >{children}</ScrollView>
     </SafeAreaView>
   </View>
-  if (Platform.OS === 'ios') {
-    return <Modal visible={visible} animationType="slide" presentationStyle={form ? 'formSheet' : 'pageSheet'} allowSwipeDismissal={dismissable} onShow={onShow} onRequestClose={close} onDismiss={didDismiss}>{panel}</Modal>
-  }
-  return <Modal visible={visible} transparent animationType="fade" onShow={onShow} onRequestClose={close} onDismiss={didDismiss}><View style={styles.backdrop}>{dismissable ? <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" style={StyleSheet.absoluteFill} onPress={close} /> : <View style={StyleSheet.absoluteFill} />}{panel}</View></Modal>
+  // Android's window shrinks above the keyboard; an iOS transparent Modal keeps its size, so the backdrop pads itself.
+  return <Modal visible={visible} transparent animationType="fade" onShow={onShow} onRequestClose={close} onDismiss={didDismiss}><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.backdrop}>{dismissable ? <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" style={StyleSheet.absoluteFill} onPress={close} /> : <View style={StyleSheet.absoluteFill} />}{panel}</KeyboardAvoidingView></Modal>
 }
 function Label({ text, children }: { text: string; children?: React.ReactNode }) { const colors = usePalette(); return <View style={styles.labelRow}><Text style={[styles.label, { color: colors.muted }]}>{text}</Text>{children}</View> }
 function PrimaryButton({ label, onPress, disabled, testID }: { label: string; onPress: () => void; disabled?: boolean; testID?: string }) { const colors = usePalette(); return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.primary, { backgroundColor: colors.blue, opacity: disabled ? 0.35 : pressed ? 0.65 : 1 }]}><Text style={[styles.primaryText, { color: colors.textOnAccent }]}>{label}</Text></Pressable> }

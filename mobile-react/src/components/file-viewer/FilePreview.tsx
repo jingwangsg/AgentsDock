@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { UITextView as SelectableText } from '@bsky.app/react-native-uitextview'
 import { Image } from 'expo-image'
-import { Linking, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { ActivityIndicator } from '../material/ActivityIndicator'
 import { Alert } from '../../lib/alert'
 import { WebView } from 'react-native-webview'
@@ -415,11 +415,6 @@ export function FilePreview({ name, path, contentType, size, layout, previewURL,
   const effectiveMarkdownMode = workspaceMarkdownModeForLayout(markdownMode, layout)
   const markdownPanes = workspaceMarkdownPaneVisibility(effectiveMarkdownMode)
 
-  const webSource = useMemo(() => {
-    const uri = localPreview ?? previewURL
-    return uri ? { uri, headers: localPreview ? undefined : headers } : null
-  }, [headers, localPreview, previewURL])
-
   if (loading) return <View style={styles.center}><ActivityIndicator color={colors.blue} /><Text style={{ color: colors.muted }}>Opening {name}…</Text></View>
   if (error) return <PreviewProblem title="Could not open file" message={error} onRetry={() => setRevision(value => value + 1)} onDownload={onDownload} />
   if (tooLargeForText) return <PreviewProblem title="Preview is memory bounded" message={`${name} is larger than the ${formatLimit(effectiveTextLimit)} ${layout === 'pad' ? 'iPad' : 'iPhone'} text preview limit.`} onDownload={onDownload} />
@@ -438,29 +433,8 @@ export function FilePreview({ name, path, contentType, size, layout, previewURL,
       }} style={StyleSheet.absoluteFill} />
     </SwipeDismissImage>
   }
-  // Android's WebView has no PDF renderer, so the downloaded file goes to the bundled pdf.js page.
-  if (kind === 'pdf' && Platform.OS === 'android') {
-    if (localPreview) return <PdfDocumentView key={localPreview} uri={localPreview} onError={setError} />
-  } else if (kind === 'pdf' && webSource) {
-    return <WebView
-      testID="file-viewer-pdf"
-      source={webSource}
-      originWhitelist={['file://*', 'http://*', 'https://*', 'about:*']}
-      javaScriptEnabled={false}
-      cacheEnabled={false}
-      incognito
-      setSupportMultipleWindows={false}
-      allowsBackForwardNavigationGestures={false}
-      onShouldStartLoadWithRequest={request => {
-        const allowed = request.url === webSource.uri || request.url === 'about:blank'
-        if (!allowed && request.navigationType === 'click' && /^https?:/i.test(request.url)) void Linking.openURL(request.url).catch(() => undefined)
-        return allowed
-      }}
-      onHttpError={event => setError(`PDF request failed with HTTP ${event.nativeEvent.statusCode}.`)}
-      onError={event => setError(event.nativeEvent.description || 'The PDF viewer failed to load.')}
-      style={{ backgroundColor: colors.background }}
-    />
-  }
+  // The downloaded file goes to the bundled pdf.js page: Android's WebView has no PDF renderer, and iOS shows the same page.
+  if (kind === 'pdf' && localPreview) return <PdfDocumentView key={localPreview} uri={localPreview} onError={setError} />
   if ((kind === 'markdown' || kind === 'text') && text) {
     const plainTextEditor = <TextInput
       key={`${fallbackRevision}:plain`}

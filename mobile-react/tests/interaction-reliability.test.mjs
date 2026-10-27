@@ -15,7 +15,6 @@ const appDelegateSubscriber = fs.readFileSync(path.resolve('modules/agentsdock-n
 const terminalModuleConfig = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/expo-module.config.json'), 'utf8')
 const appShell = fs.readFileSync(path.resolve('src/components/AppShell.tsx'), 'utf8')
 const appKeyboard = fs.readFileSync(path.resolve('src/lib/app-keyboard.ts'), 'utf8')
-const keyboardGesture = fs.readFileSync(path.resolve('src/lib/keyboard-gesture.ts'), 'utf8')
 const keyboardLifecycle = fs.readFileSync(path.resolve('src/lib/keyboard-lifecycle.ts'), 'utf8')
 const keyboardControllerPatch = fs.readFileSync(path.resolve('patches/react-native-keyboard-controller@1.21.9.patch'), 'utf8')
 const chatScreen = fs.readFileSync(path.resolve('src/components/ChatScreen.tsx'), 'utf8')
@@ -454,8 +453,16 @@ test('paged history stays continuous with the live bottom under one native ancho
   assert.match(store, /!currentWindow && !projectPresentableHistory\(collected, filesFromEvents\(collected\)\)/)
 })
 
+test('the iOS dialog card sits above the keyboard and keeps the focused field visible', () => {
+  assert.match(dialogs, /<KeyboardAvoidingView behavior=\{Platform\.OS === 'ios' \? 'padding' : undefined\} style=\{styles\.backdrop\}>/)
+  assert.match(dialogs, /onLayout=\{Platform\.OS === 'ios' \? revealFocusedField : undefined\}/)
+  assert.match(dialogs, /const field = focusedTextInput\(\)[\s\S]*?field\.measureLayout\(contentRef\.current/)
+  // A card moving above the keyboard leaves a stale native keyboard inset behind.
+  assert.doesNotMatch(dialogs, /automaticallyAdjustKeyboardInsets/)
+})
+
 test('transparent modal backdrops are siblings instead of responder-wrapping controls', () => {
-  assert.match(dialogs, /<View style=\{styles\.backdrop\}>\{dismissable \? <Pressable[\s\S]*?StyleSheet\.absoluteFill[\s\S]*?: <View style=\{StyleSheet\.absoluteFill\} \/>\}\{panel\}<\/View>/)
+  assert.match(dialogs, /<KeyboardAvoidingView behavior=\{Platform\.OS === 'ios' \? 'padding' : undefined\} style=\{styles\.backdrop\}>\{dismissable \? <Pressable[\s\S]*?StyleSheet\.absoluteFill[\s\S]*?: <View style=\{StyleSheet\.absoluteFill\} \/>\}\{panel\}<\/KeyboardAvoidingView>/)
   assert.doesNotMatch(dialogs, /<Pressable style=\{styles\.backdrop\}[\s\S]{0,220}?\{panel\}/)
   assert.match(inspector, /<View style=\{styles\.modalBackdrop\}><Pressable[\s\S]*?StyleSheet\.absoluteFill/)
 })
@@ -1019,23 +1026,16 @@ test('foregrounding and hidden views cannot resurrect a phantom keyboard', () =>
   assert.doesNotMatch(dialogs, /<TextInput autoFocus value=\{query\}/)
 })
 
-test('timeline preserves ordinary interaction and completes a quick keyboard pull-down', () => {
-  assert.match(timeline, /keyboardDismissMode="interactive"/)
+test('timeline preserves ordinary interaction and keeps the keyboard while dragging, as on Android', () => {
+  assert.doesNotMatch(timeline, /keyboardDismissMode=/)
+  assert.doesNotMatch(timeline, /Keyboard\.dismiss\(\)/)
   assert.match(timeline, /keyboardShouldPersistTaps="always"/)
-  assert.match(keyboardGesture, /TIMELINE_KEYBOARD_DISMISS_VELOCITY = 0\.2/)
-  assert.match(keyboardGesture, /keyboardWasVisible[\s\S]*?velocityY <= -TIMELINE_KEYBOARD_DISMISS_VELOCITY/)
   assert.match(timeline, /keyboardBottomAnchor\.current = !userScrolling\.current && nearBottomRef\.current/)
   const beginDrag = timeline.slice(
     timeline.indexOf('const handleScrollBeginDrag = useCallback'),
     timeline.indexOf('const handleScrollEndDrag = useCallback'),
   )
-  assert.match(beginDrag, /event\.nativeEvent\.contentOffset\.y[\s\S]*?keyboardAnchorToken\.current \+= 1[\s\S]*?dragStartedWithKeyboard\.current = keyboardVisible[\s\S]*?userScrolling\.current = true[\s\S]*?topLoadArmed\.current = !loadingOlder/)
-  assert.doesNotMatch(beginDrag, /Keyboard\.dismiss\(\)/)
-  const endDrag = timeline.slice(
-    timeline.indexOf('const handleScrollEndDrag = useCallback'),
-    timeline.indexOf('const handleMomentumScrollBegin = useCallback'),
-  )
-  assert.match(endDrag, /Platform\.OS === 'ios'[\s\S]*?shouldFinishTimelineKeyboardDismissal\(dragStartedWithKeyboard\.current, event\.nativeEvent\.velocity\?\.y\)[\s\S]*?Keyboard\.dismiss\(\)/)
+  assert.match(beginDrag, /event\.nativeEvent\.contentOffset\.y[\s\S]*?keyboardAnchorToken\.current \+= 1[\s\S]*?userScrolling\.current = true[\s\S]*?topLoadArmed\.current = !loadingOlder/)
   assert.match(timeline, /onScrollBeginDrag=\{handleScrollBeginDrag\}/)
   assert.match(timeline, /onScrollEndDrag=\{handleScrollEndDrag\}/)
   assert.match(timeline, /\[activeHistoryWindow\?\.detached, keyboardSettleRequest\]/)

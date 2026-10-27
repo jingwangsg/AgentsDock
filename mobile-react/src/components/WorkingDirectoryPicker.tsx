@@ -2,9 +2,8 @@
 // desktop WorkingDirectoryPopover: tapping a folder opens it, the open folder is
 // the selection, and "Choose" saves it as the chat's cwd.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { ActivityIndicator } from './material/ActivityIndicator'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { ArrowUp, ChevronRight, Folder, FolderOpen, RotateCcw } from 'lucide-react-native'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { fonts } from '../lib/typography'
@@ -14,6 +13,7 @@ import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import type { WorkingDirectoryCompletion } from '../types'
 import { Text, TextInput } from './AppText'
+import { ModalSafeArea } from './ModalSafeArea'
 import { IconButton, SheetCloseButton } from './ui'
 
 const TYPED_PATH_LOOKUP_DELAY_MS = 120
@@ -133,8 +133,8 @@ export function WorkingDirectoryPicker({ sessionId, chipVisible, open, onOpenCha
       <FolderOpen size={13} color={colors.muted} />
       <Text style={[styles.chipText, { color: colors.muted }]} numberOfLines={1}>{folderLabel(cwd)}</Text>
     </Pressable>{trailing}</View> : null}
-    <Modal visible={open} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={close}>
-      <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+    <Modal visible={open} animationType="slide" presentationStyle="fullScreen" onRequestClose={close}>
+      <ModalSafeArea style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
         <View style={[styles.header, { borderColor: colors.border }]}>
           <View style={styles.headerText}>
             <Text style={[styles.title, { color: colors.text }]}>Working directory</Text>
@@ -205,7 +205,7 @@ export function WorkingDirectoryPicker({ sessionId, chipVisible, open, onOpenCha
               ><Text style={[styles.chooseText, { color: colors.textOnAccent }]}>{saving ? 'Saving…' : 'Choose'}</Text></Pressable>
             </View>
           </>}
-      </SafeAreaView>
+      </ModalSafeArea>
     </Modal>
   </>
 }

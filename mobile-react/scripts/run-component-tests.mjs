@@ -15,6 +15,7 @@ const outfile = join(directory, 'test.mjs')
 const aliases = new Map(Object.entries({
   'react-native': 'tests/component-mocks/react-native.ts',
   'react-native-safe-area-context': 'tests/component-mocks/native-wrappers.ts',
+  '@bsky.app/react-native-uitextview': 'tests/component-mocks/native-wrappers.ts',
   'react-native-svg': 'tests/component-mocks/native-wrappers.ts',
   'react-native-keyboard-controller': 'tests/component-mocks/native-wrappers.ts',
   'react-native-draggable-flatlist': 'tests/component-mocks/draggable-flatlist.ts',

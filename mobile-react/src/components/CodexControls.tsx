@@ -8,7 +8,6 @@ import {
 } from 'react-native'
 import { ActivityIndicator } from './material/ActivityIndicator'
 import { Switch } from './material/Switch'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import Svg, { Circle } from 'react-native-svg'
 import {
   ArchiveRestore,
@@ -49,6 +48,7 @@ import { CodexInteractionCard } from './CodexInteractionShelf'
 import { CodexGoalEditor } from './CodexGoalBar'
 import { codexStatusLabel, useCodexRuntime } from './CodexRuntimeContext'
 import { ProviderUsageSection } from './ProviderUsagePanel'
+import { ModalSafeArea } from './ModalSafeArea'
 import { IconButton, SheetCloseButton } from './ui'
 
 type NoticeTone = 'success' | 'warning'
@@ -226,8 +226,8 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
   )
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={onClose}>
-      <SafeAreaView style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+    <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+      <ModalSafeArea style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
         <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
           <View style={[styles.sheetMark, { backgroundColor: colors.raised }]}><Bot size={20} color={colors.blue} /></View>
           <View style={{ flex: 1 }}>
@@ -373,7 +373,7 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
             />
           ) : null}
         </ScrollView>
-      </SafeAreaView>
+      </ModalSafeArea>
     </Modal>
   )
 }

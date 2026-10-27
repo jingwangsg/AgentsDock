@@ -939,7 +939,8 @@ const styles = StyleSheet.create({
   connectionNoticeText: { flex: 1, minWidth: 0, fontSize: 11, lineHeight: 15, fontWeight: '700' },
   mutationNotice: { minHeight: 48, flexShrink: 0, borderBottomWidth: StyleSheet.hairlineWidth, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   mutationNoticeText: { flex: 1, minWidth: 0, fontSize: 11, lineHeight: 15, fontWeight: '700' },
-  header: { minHeight: 64, flexShrink: 0, position: 'relative', zIndex: 20, elevation: 20, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  // shadow*: iOS draws the shadow Android casts for elevation 20 (measured on Android build 78).
+  header: { minHeight: 64, flexShrink: 0, position: 'relative', zIndex: 20, elevation: 20, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.13, shadowRadius: 14, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 6 },
   headerIdentity: { flex: 1, minWidth: 0 },
   headerTitle: { flex: 1, fontSize: 15, fontWeight: '800' },
   headerSubtitle: { fontSize: 10, marginTop: 2 },

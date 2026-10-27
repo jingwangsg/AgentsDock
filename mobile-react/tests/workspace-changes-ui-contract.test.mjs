@@ -39,8 +39,8 @@ test('the app shell owns the sheet and routes both entry points through the insp
 })
 
 test('the sheet uses the Review chrome and the same connection scoping', () => {
-  assert.match(sheet, /<Modal key=\{connectionKey\} visible=\{visible\} animationType="slide" presentationStyle=\{Platform\.OS === 'ios' \? 'pageSheet' : 'fullScreen'\} allowSwipeDismissal onRequestClose=\{onClose\}>/)
-  assert.match(sheet, /<SafeAreaView style=\{\[styles\.root, \{ backgroundColor: colors\.background \}\]\} edges=\{\['top', 'bottom'\]\}>/)
+  assert.match(sheet, /<Modal key=\{connectionKey\} visible=\{visible\} animationType="slide" presentationStyle="fullScreen" onRequestClose=\{onClose\}>/)
+  assert.match(sheet, /<ModalSafeArea style=\{\[styles\.root, \{ backgroundColor: colors\.background \}\]\} edges=\{\['top', 'bottom'\]\}>/)
   assert.match(sheet, /header: \{ minHeight: 64/)
   assert.match(sheet, /<SheetCloseButton onPress=\{onClose\} label="Close changes" testID="changes-close" \/>/)
   assert.match(sheet, /const connectionReady = connected && !connecting && !switchingProfileId && connection\.isValidated/)

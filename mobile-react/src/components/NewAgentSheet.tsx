@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { usePalette } from '../theme'
 import { backendLabel } from '../lib/format'
 import { runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions } from '../lib/runtime-catalog'
 import type { Backend, CrossServerChats, NewAgentSettings, RuntimeCatalog } from '../types'
 import { Text, TextInput } from './AppText'
+import { ModalSafeArea } from './ModalSafeArea'
 import { SheetCloseButton } from './ui'
 import { OptionRow } from './ComposerRuntimeSheet'
 
@@ -72,8 +72,8 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
   const serverName = chosenServer?.name ?? ''
   // This server is not in `servers`; its own health names its default directory.
   const chosenDefaultCwd = serverIdentity === null ? defaultCwd : chosenServer?.default_cwd ?? ''
-  return <Modal visible={open} animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={onCancel} onDismiss={onDidDismiss}>
-    {hosts ? <SafeAreaView testID="new-agent-sheet" style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+  return <Modal visible={open} animationType="slide" presentationStyle="fullScreen" onRequestClose={onCancel} onDismiss={onDidDismiss}>
+    {hosts ? <ModalSafeArea testID="new-agent-sheet" style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Text style={[styles.title, { color: colors.text }]}>New agent</Text>
         <SheetCloseButton testID="new-agent-sheet-close" label="Close new agent" onPress={onCancel} />
@@ -129,7 +129,7 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
           <Text style={styles.confirmText}>Add @New agent</Text>
         </Pressable>
       </ScrollView>
-    </SafeAreaView> : null}
+    </ModalSafeArea> : null}
   </Modal>
 }
 

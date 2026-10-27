@@ -1,10 +1,9 @@
 // Workspace Changes sheet: Git status of the chat's working directory with
 // stage/unstage/discard and per-file diffs. Port of the Electron WorkspaceChanges tab.
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { RefreshScrollView } from './material/RefreshScrollView'
 import { Alert } from '../lib/alert'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { AlertTriangle, ArrowLeft, ChevronRight, Columns2, Folder, Minus, Plus, RefreshCw, Rows3, Undo2, WrapText, X, type LucideIcon } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
 import { limitReviewSource, parseReviewableDiff } from '../lib/code-review'
@@ -28,6 +27,7 @@ import { usePalette } from '../theme'
 import type { WorkspaceGitConflict, WorkspaceGitDiff, WorkspaceGitFile, WorkspaceGitStatus } from '../types'
 import { Text, TextInput } from './AppText'
 import { MonacoDiffView } from './MonacoDiffView'
+import { ModalSafeArea } from './ModalSafeArea'
 import { IconButton, Loading, SheetCloseButton } from './ui'
 
 // Review's threshold, reused for two decisions: whether the file list and the
@@ -70,11 +70,11 @@ export function WorkspaceChanges(props: WorkspaceChangesProps) {
   const connectionKey = `${activeProfileId ?? 'none'}:${profileGeneration}`
   const connectionReady = connected && !connecting && !switchingProfileId && connection.isValidated
   if (!connectionReady) {
-    return <Modal key={connectionKey} visible={props.visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={props.onClose}>
-      <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+    return <Modal key={connectionKey} visible={props.visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={props.onClose}>
+      <ModalSafeArea style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
         <View style={[styles.header, { borderColor: colors.border }]}><Text style={[styles.title, { color: colors.text }]}>Changes</Text><View style={{ flex: 1 }} /><SheetCloseButton onPress={props.onClose} label="Close changes" testID="changes-unavailable-close" /></View>
         <Notice text={connecting || switchingProfileId ? 'Verifying server identity…' : 'Reconnect this server to load workspace changes.'} />
-      </SafeAreaView>
+      </ModalSafeArea>
     </Modal>
   }
   return <ScopedWorkspaceChanges
@@ -211,8 +211,8 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
   const title = status ? `Changes · ${status.branch || 'detached HEAD'}` : 'Changes'
   const subtitle = status ? `${counts.all} changed file${counts.all === 1 ? '' : 's'} · ${counts.staged} staged` : null
 
-  return <Modal key={connectionKey} visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={onClose}>
-    <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+  return <Modal key={connectionKey} visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+    <ModalSafeArea style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
       <View style={[styles.header, { borderColor: colors.border }]}>
         {!split && selection ? <IconButton icon={ArrowLeft} onPress={() => setSelection(null)} label="Back to changed files" testID="changes-back" /> : null}
         <View style={styles.titleWrap}>
@@ -238,7 +238,7 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
                   <Text style={[styles.filterLabel, { color: colors.text }]}>{FILTER_LABELS[group]}</Text><Text style={[styles.filterCount, { color: colors.muted }]}>{counts[group]}</Text>
                 </Pressable>)}
               </ScrollView>
-              <TextInput value={query} onChangeText={setQuery} placeholder="Filter files" placeholderTextColor={colors.muted} autoCapitalize="none" autoCorrect={false} clearButtonMode="while-editing" accessibilityLabel="Filter changed files" testID="changes-search" style={[styles.search, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} />
+              <TextInput value={query} onChangeText={setQuery} placeholder="Filter files" placeholderTextColor={colors.muted} autoCapitalize="none" autoCorrect={false} accessibilityLabel="Filter changed files" testID="changes-search" style={[styles.search, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} />
               <View style={styles.bulk}>
                 <BulkButton icon={Plus} label="Stage all" disabled={blocked || !stageable.length} onPress={() => void run('stage', stageable)} testID="changes-stage-all" />
                 <BulkButton icon={Minus} label="Unstage all" disabled={blocked || !unstageable.length} onPress={() => void run('unstage', unstageable)} testID="changes-unstage-all" />
@@ -266,7 +266,7 @@ function ScopedWorkspaceChanges({ sessionId, visible, onClose, connection, conne
                         : null}
             </View> : null}
           </View>}
-    </SafeAreaView>
+    </ModalSafeArea>
   </Modal>
 }
 

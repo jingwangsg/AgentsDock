@@ -10,7 +10,6 @@ import { ActivityIndicator } from './material/ActivityIndicator'
 import { Alert } from '../lib/alert'
 import { Switch } from './material/Switch'
 import { MenuView, type MenuAction } from './material/MenuView'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist'
 import { Check, ChevronDown, Download, Eye, EyeOff, GripVertical, MoreHorizontal, Pencil, Plus, RotateCw, Server, UploadCloud, Wifi, X } from 'lucide-react-native'
 import {
@@ -39,6 +38,7 @@ import { errorMessage, normalizeServerURL } from '../lib/format'
 import type { ServerRunningChats } from '../types'
 import { usePalette } from '../theme'
 import { Text, TextInput } from './AppText'
+import { ModalSafeArea } from './ModalSafeArea'
 import { IconButton, SheetCloseButton } from './ui'
 
 export type {
@@ -169,12 +169,11 @@ export function ServerProfilesSheet({ visible, onClose, ...props }: ServerProfil
   return <Modal
     visible={visible}
     animationType="slide"
-    presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'}
-    allowSwipeDismissal
+    presentationStyle="fullScreen"
     onRequestClose={onClose}
   >
     <View style={[styles.sheet, { backgroundColor: colors.surface }]}>
-      <SafeAreaView style={styles.sheetSafeArea} edges={['bottom']}>
+      <ModalSafeArea style={styles.sheetSafeArea} edges={['bottom']}>
         <View style={[styles.grabber, { backgroundColor: colors.selected }]} />
         <View style={[styles.sheetHeader, { borderColor: colors.border }]}>
           <View style={styles.sheetHeadingCopy}>
@@ -184,7 +183,7 @@ export function ServerProfilesSheet({ visible, onClose, ...props }: ServerProfil
           <SheetCloseButton onPress={onClose} label="Close server management" testID="server-management-close" />
         </View>
         <ServerProfilesManager key={`${visible}:${props.initialMode ?? 'manage'}`} {...props} />
-      </SafeAreaView>
+      </ModalSafeArea>
     </View>
   </Modal>
 }
@@ -561,7 +560,6 @@ export function ServerProfilesManager({
     style={styles.manager}
     contentContainerStyle={styles.managerContent}
     automaticallyAdjustKeyboardInsets
-    keyboardDismissMode="interactive"
     keyboardShouldPersistTaps="handled"
   >
     <View style={styles.managementHeading}>

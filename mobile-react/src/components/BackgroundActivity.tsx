@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { ActivityIndicator } from './material/ActivityIndicator'
 import { Alert } from '../lib/alert'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import type { BackgroundActivityItem } from '../lib/background-activity'
 import { fonts } from '../lib/typography'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { Text } from './AppText'
+import { ModalSafeArea } from './ModalSafeArea'
 import { SheetCloseButton } from './ui'
 
 // Codex has no push when a background terminal exits, and a Claude task starts mid-turn without one; listed items, and a running Claude turn, are re-checked on this interval.
@@ -69,8 +69,8 @@ export function BackgroundActivityButton({ sessionId }: { sessionId: string }) {
       <ActivityIndicator size="small" color={colors.blue} />
       <Text style={[styles.chipText, { color: colors.text }]}>{items.length}</Text>
     </Pressable>
-    <Modal visible={open} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} onRequestClose={() => setOpen(false)}>
-      <SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+    <Modal visible={open} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => setOpen(false)}>
+      <ModalSafeArea style={[styles.fill, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <Text style={[styles.title, { color: colors.text }]}>{title}</Text>
           <SheetCloseButton label={`Close ${title.toLowerCase()}`} onPress={() => setOpen(false)} />
@@ -84,7 +84,7 @@ export function BackgroundActivityButton({ sessionId }: { sessionId: string }) {
             </Pressable>}
           </View>)}
         </ScrollView>
-      </SafeAreaView>
+      </ModalSafeArea>
     </Modal>
   </>
 }

@@ -1,5 +1,5 @@
-// Android PDF preview: the offline pdf.js page from scripts/pdf-viewer-entry.ts
-// in a locked-down WebView. iOS keeps its WebView's native PDF rendering.
+// PDF preview: the offline pdf.js page from scripts/pdf-viewer-entry.ts in a
+// locked-down WebView, on both platforms.
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 import * as FileSystem from 'expo-file-system/legacy'

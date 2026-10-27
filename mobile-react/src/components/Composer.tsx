@@ -13,7 +13,7 @@ import {
 } from 'react-native'
 import { ActivityIndicator } from './material/ActivityIndicator'
 import { Alert } from '../lib/alert'
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Image } from 'expo-image'
 import * as DocumentPicker from 'expo-document-picker'
 import * as ImagePicker from 'expo-image-picker'
@@ -109,6 +109,7 @@ import { CodexGoalBar, CodexGoalEditorSheet } from './CodexGoalBar'
 import { WorkingDirectoryPicker } from './WorkingDirectoryPicker'
 import { SideChatButton, SideChatSheet } from './SideChatSheet'
 import { useClaudeRuntime } from './ClaudeRuntimeContext'
+import { ModalSafeArea } from './ModalSafeArea'
 import { IconButton, SheetCloseButton } from './ui'
 import { FullscreenViewerCloseButton, SwipeDismissImage } from './FullscreenImageViewer'
 import { TeamTargetPicker } from './TeamTargetPicker'
@@ -1401,7 +1402,6 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       />
       <TeamTargetPicker
         visible={TEAM_NETWORK_UI_ENABLED && !welcome && pickerTrigger?.kind === '@@'}
-        width={width}
         query={pickerQuery}
         sourceSessionId={sessionId}
         referenceLimitReached={teamReferences.length >= MAX_TEAM_REFERENCES}
@@ -1495,7 +1495,16 @@ function useChipTextField(inputRef: RefObject<TextInput | null>, initialCaret: n
       const caret = caretOutsideComposerReferences(native.start, [...chatReferences, ...teamReferences], selectionRef.current.start)
       if (caret !== native.start) {
         selection = { start: caret, end: caret }
-        inputRef.current?.setSelection(caret, caret)
+        // iOS ignores a selection command whose event count is older than the field's. A tap that ends an
+        // autocorrect session sends a text event in the same batch, and TextInput holds the new count
+        // only after its next render, so iOS moves the caret a frame later.
+        if (Platform.OS === 'ios') {
+          requestAnimationFrame(() => {
+            if (selectionRef.current.start === caret && selectionRef.current.end === caret) inputRef.current?.setSelection(caret, caret)
+          })
+        } else {
+          inputRef.current?.setSelection(caret, caret)
+        }
       }
     }
     selectionRef.current = selection
@@ -1699,13 +1708,12 @@ export function ChatTargetPicker({ visible, crossServer, width, query, sourceSes
   return <Modal
     visible={visible}
     animationType="slide"
-    presentationStyle={Platform.OS === 'ios' ? tablet ? 'formSheet' : 'pageSheet' : 'fullScreen'}
-    allowSwipeDismissal
+    presentationStyle="fullScreen"
     onShow={() => searchInputRef.current?.focus()}
     onRequestClose={onClose}
     onDismiss={onDidDismiss}
   >
-    {visible ? <SafeAreaView edges={Platform.OS === 'ios' ? ['bottom'] : ['top', 'bottom']} onAccessibilityEscape={onClose} style={[styles.targetPickerSafe, { backgroundColor: colors.background }]}>
+    {visible ? <ModalSafeArea edges={['top', 'bottom']} onAccessibilityEscape={onClose} style={[styles.targetPickerSafe, { backgroundColor: colors.background }]}>
       <View style={[styles.targetPickerGrabber, { backgroundColor: colors.border }]} />
       <View style={[styles.targetPickerPanel, tablet && styles.targetPickerPanelTablet]}>
         <View style={[styles.targetPickerHeader, { borderColor: colors.border }]}>
@@ -1726,7 +1734,6 @@ export function ChatTargetPicker({ visible, crossServer, width, query, sourceSes
             returnKeyType="search"
             submitBehavior="blurAndSubmit"
             onSubmitEditing={dismissAppKeyboard}
-            clearButtonMode="while-editing"
             placeholder="Search chats"
             placeholderTextColor={colors.muted}
             style={[styles.targetSearchInput, { color: colors.text }]}
@@ -1815,7 +1822,7 @@ export function ChatTargetPicker({ visible, crossServer, width, query, sourceSes
           }}
         />
       </View>
-    </SafeAreaView> : null}
+    </ModalSafeArea> : null}
   </Modal>
 }
 

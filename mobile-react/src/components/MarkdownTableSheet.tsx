@@ -1,17 +1,17 @@
 // Page sheet for one expanded chat table; the caller renders the table itself.
 import type { ReactNode } from 'react'
-import { Modal, Platform, ScrollView, StyleSheet, View } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import { Modal, ScrollView, StyleSheet, View } from 'react-native'
 import { usePalette } from '../theme'
 import { Text } from './AppText'
 import { CopyTextButton } from './CopyTextButton'
+import { ModalSafeArea } from './ModalSafeArea'
 import { SheetCloseButton } from './ui'
 
 export function MarkdownTableSheet({ children, markdown, onClose }: { children: ReactNode; markdown: string; onClose: () => void }) {
   const colors = usePalette()
   return (
-    <Modal visible animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={onClose}>
-      <SafeAreaView style={[styles.sheet, { backgroundColor: colors.background }]} edges={['bottom']}>
+    <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+      <ModalSafeArea style={[styles.sheet, { backgroundColor: colors.background }]} edges={['bottom']}>
         <View style={styles.grabber} />
         <View style={styles.top}>
           <Text style={[styles.title, { color: colors.text }]}>Table</Text>
@@ -20,7 +20,7 @@ export function MarkdownTableSheet({ children, markdown, onClose }: { children: 
         </View>
         {/* maximumZoomScale is UIScrollView pinch-to-zoom; Android has no zoom here and relies on the table's own horizontal scroll. */}
         <ScrollView maximumZoomScale={3} contentContainerStyle={styles.content}>{children}</ScrollView>
-      </SafeAreaView>
+      </ModalSafeArea>
     </Modal>
   )
 }

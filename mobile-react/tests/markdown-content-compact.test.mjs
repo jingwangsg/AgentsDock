@@ -29,6 +29,7 @@ const mocks = {
   './AppText': `export const Text = 'Text';`,
   './MermaidDiagram': `export const MermaidDiagram = 'MermaidDiagram';`,
   './ui': `export const IconButton = 'IconButton', SheetCloseButton = 'SheetCloseButton';`,
+  './ModalSafeArea': `export const ModalSafeArea = 'ModalSafeArea';`,
 }
 const outfile = path.resolve('build/tmp', `markdown-content-compact-${process.pid}.mjs`)
 await mkdir(path.dirname(outfile), { recursive: true })
