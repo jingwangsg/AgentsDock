@@ -69,6 +69,9 @@ export function PdfDocumentView({ uri, onError }: { uri: string; onError: (messa
     else if (message.type === 'error') onErrorRef.current(typeof message.message === 'string' && message.message ? message.message : 'The PDF viewer failed.')
   }
 
+  // Android's renderer or iOS's web content process died, e.g. killed for memory by a large file.
+  const processGone = () => onErrorRef.current('The PDF viewer stopped unexpectedly; the file may be too large to render.')
+
   return <View style={[styles.root, { backgroundColor: colors.background }]}>
     <WebView
       ref={webViewRef}
@@ -92,7 +95,8 @@ export function PdfDocumentView({ uri, onError }: { uri: string; onError: (messa
       onMessage={receive}
       onShouldStartLoadWithRequest={navigation => navigation.url === 'about:blank' || navigation.url.startsWith(PDF_VIEWER_BASE_URL)}
       onError={event => onErrorRef.current(event.nativeEvent.description || 'The PDF viewer page failed to load.')}
-      onRenderProcessGone={() => onErrorRef.current('The PDF viewer stopped unexpectedly; the file may be too large to render.')}
+      onRenderProcessGone={processGone}
+      onContentProcessDidTerminate={processGone}
     />
     {!position ? <View style={[styles.overlay, { backgroundColor: colors.background }]}><Loading label="Rendering PDF" /></View> : null}
     {position && position.pages > 1 ? <View pointerEvents="none" style={[styles.pageBadge, { backgroundColor: colors.raised, borderColor: colors.border }]}>
