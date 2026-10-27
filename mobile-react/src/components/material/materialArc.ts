@@ -1,3 +1,4 @@
+// iOS only: imported from ActivityIndicator.ios.tsx and RefreshScrollView.ios.tsx. No .ios suffix because tsc (no moduleSuffixes) could not resolve the import then.
 /** Android's indeterminate progress: the arc's trim cycle and the group's 720° turn. */
 export const PROGRESS_TRIM_MS = 1333
 export const PROGRESS_ROTATION_MS = 4444

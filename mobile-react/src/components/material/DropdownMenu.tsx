@@ -1,3 +1,4 @@
+// iOS only: imported from MenuView.ios.tsx. No .ios suffix because tsc (no moduleSuffixes) could not resolve the import then.
 import { useEffect, useRef, useState } from 'react'
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'

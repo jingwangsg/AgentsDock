@@ -1,3 +1,4 @@
+// iOS only: imported from lib/alert.ios.ts. No .ios suffix because tsc (no moduleSuffixes) could not resolve the import then.
 import { useEffect, useRef, useState } from 'react'
 import { Animated, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type AlertButton, type AlertOptions } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'

@@ -1,3 +1,4 @@
+// iOS only: imported from the iOS files in this folder. No .ios suffix because tsc (no moduleSuffixes) could not resolve the import then.
 import { Fragment, useEffect, useState, useSyncExternalStore, type ReactElement } from 'react'
 import { Keyboard, StyleSheet, View } from 'react-native'
 import { FullWindowOverlay } from 'react-native-screens'

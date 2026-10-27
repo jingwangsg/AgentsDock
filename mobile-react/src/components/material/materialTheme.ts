@@ -1,3 +1,5 @@
+// iOS only: imported from the iOS files in this folder. No .ios suffix because tsc (no moduleSuffixes) could not resolve the import then.
+// Android must not import it: its require()s would put the Roboto and Noto fonts in the Android bundle.
 import { useEffect, useState } from 'react'
 import * as Font from 'expo-font'
 import { useAppColorScheme } from '../../theme'
