@@ -8,10 +8,9 @@ const store = fs.readFileSync(path.resolve('src/store/useAppStore.ts'), 'utf8')
 const cache = fs.readFileSync(path.resolve('src/storage/cache.ts'), 'utf8')
 const dialogs = fs.readFileSync(path.resolve('src/components/Dialogs.tsx'), 'utf8')
 const inspector = fs.readFileSync(path.resolve('src/components/Inspector.tsx'), 'utf8')
-const terminal = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/ios/AgentsDockTerminalView.swift'), 'utf8')
-const terminalModule = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/ios/AgentsDockNativeTerminalModule.swift'), 'utf8')
-const terminalTypes = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/src/index.ts'), 'utf8')
 const terminalView = fs.readFileSync(path.resolve('src/components/TerminalView.tsx'), 'utf8')
+const terminalViewport = fs.readFileSync(path.resolve('src/components/terminal/TerminalViewport.native.tsx'), 'utf8')
+const terminalPage = fs.readFileSync(path.resolve('scripts/terminal-page-entry.ts'), 'utf8')
 const appDelegateSubscriber = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/ios/AgentsDockKeyboardAppDelegateSubscriber.swift'), 'utf8')
 const terminalModuleConfig = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/expo-module.config.json'), 'utf8')
 const appShell = fs.readFileSync(path.resolve('src/components/AppShell.tsx'), 'utf8')
@@ -390,13 +389,6 @@ test('battery-critical work is foreground-bound, coalesced, and released', () =>
   assert.match(thumbnailLoader, /setTimeout\(onFailure, 8_000\)/)
 
   assert.match(appShell, /\{modalScopeCurrent && terminal && selected && !isWelcomeSession\(selected\.id\) \? <Modal visible/)
-  assert.match(terminal, /UIApplication\.didBecomeActiveNotification/)
-  assert.match(terminal, /applicationWillResignActive[\s\S]*?suspendSocket\(\)/)
-  assert.match(terminal, /private func suspendSocket\(\)[\s\S]*?reconnectWorkItem\?\.cancel\(\)[\s\S]*?socket = nil[\s\S]*?cancel\(with: \.goingAway/)
-  assert.match(terminal, /public func setSocketURL[\s\S]*?let activeSocket = socket[\s\S]*?socket = nil[\s\S]*?activeSocket\?\.cancel\(with: \.goingAway[\s\S]*?resumeSocketIfPossible\(\)/)
-  assert.match(terminal, /socket\.send\(message\)[\s\S]*?guard let self, self\.socket === socket else \{ return \}[\s\S]*?self\.handleSocketFailure\(error\)/)
-  assert.match(terminal, /let delay = min\(30, 1\.2 \* pow\(2, Double\(min\(reconnectAttempt, 5\)\)\)\)/)
-  assert.match(terminal, /UIApplication\.shared\.applicationState == \.active/)
 })
 
 test('paged history stays continuous with the live bottom under one native anchor', () => {
@@ -970,23 +962,15 @@ test('two-pane sidebar toggle lives in the chat header and persists across resta
   assert.equal(chatHeader.match(/styles\.root, \{ backgroundColor: colors\.background, borderColor: colors\.border \}\]\}>\n\s*\{sidebarButton\}\n/g)?.length, 2)
 })
 
-test('native terminal relies on SwiftTerm tap handling without a competing recognizer', () => {
-  assert.doesNotMatch(terminal, /UITapGestureRecognizer/)
-  assert.doesNotMatch(terminal, /focusFromTap/)
-})
-
 test('foregrounding and hidden views cannot resurrect a phantom keyboard', () => {
-  const readyHandler = terminal.match(/case "ready":([\s\S]*?)case "error":/)?.[1]
-  assert.ok(readyHandler)
-  assert.doesNotMatch(readyHandler, /focusTerminal|becomeFirstResponder/)
-  assert.match(terminal, /public override func willMove\(toWindow newWindow: UIWindow\?\)[\s\S]*?newWindow == nil[\s\S]*?blurTerminal/)
-  assert.match(terminal, /UIApplication\.willResignActiveNotification/)
-  assert.match(terminal, /public func focusTerminal\(\) -> Bool \{[\s\S]*?applicationState == \.active/)
-  assert.match(terminal, /public func blurTerminal\(\) -> Bool/)
-  assert.match(terminalModule, /AsyncFunction\("blur"\)/)
-  assert.equal((terminalModule.match(/\.runOnQueue\(\.main\)/g) ?? []).length, 4)
-  assert.match(terminalTypes, /blur\(\): Promise<boolean>/)
+  // A terminal tab out of sight, or one going away, gives up the keyboard. The page never focuses on its own:
+  // on iOS (keyboardDisplayRequiresUserAction false) any focus in the page raises the keyboard.
+  assert.match(terminalView, /if \(!active\) \{\s*void viewport\.current\?\.blur\(\)\.catch/)
   assert.match(terminalView, /nativeTerminal\.blur\(\)\.catch/)
+  const readyHandler = terminalViewport.match(/case 'ready':([\s\S]*?)return\n/)?.[1]
+  assert.ok(readyHandler)
+  assert.doesNotMatch(readyHandler, /focus/)
+  assert.doesNotMatch(terminalPage.slice(terminalPage.lastIndexOf('setDisplay()')), /focus/)
 
   assert.match(appDelegateSubscriber, /applicationWillResignActive[\s\S]*?connectedScenes[\s\S]*?endEditing\(true\)/)
   assert.match(appDelegateSubscriber, /var windows = application\.windows/)

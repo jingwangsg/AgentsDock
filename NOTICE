@@ -12,8 +12,6 @@ licenses, and attribution notices. In particular:
 - The agentsdock-native-video, agentsdock-native-terminal, and
   agentsdock-android-updater modules retain the MIT license declared in
   their package metadata.
-- SwiftTerm retains its MIT license in
-  mobile-react/modules/agentsdock-native-terminal/ios/Vendor/SwiftTerm/LICENSE.
 - mobile-react/src/terminal/terminalFont.ios.ts embeds the Droid Sans Mono
   font (DroidSansMono.ttf) with modified line metrics, Copyright (c) 2005-2008,
   The Android Open Source Project, licensed under the Apache License, Version 2.0.

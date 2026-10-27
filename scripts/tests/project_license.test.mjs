@@ -42,10 +42,6 @@ test('the iOS terminal font keeps its Android Open Source Project attribution', 
 test('separately licensed mobile components retain their MIT notices', () => {
   assert.match(read('mobile-react/LICENSE'), /650 Industries, Inc\. \(aka Expo\)/)
   assert.match(read('mobile-react/LICENSE'), /Permission is hereby granted, free of charge/)
-  assert.match(
-    read('mobile-react/modules/agentsdock-native-terminal/ios/Vendor/SwiftTerm/LICENSE'),
-    /Permission is hereby granted, free of charge/
-  )
   for (const module of ['agentsdock-native-video', 'agentsdock-native-terminal', 'agentsdock-android-updater']) {
     assert.equal(json(`mobile-react/modules/${module}/package.json`).license, 'MIT')
     assert.ok(read('NOTICE').includes(module))
