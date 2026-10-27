@@ -2,7 +2,6 @@ import { useEvent } from 'expo'
 import { VideoView, useVideoPlayer } from 'expo-video'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   AppState as NativeAppState,
   PanResponder,
   Platform,
@@ -11,14 +10,16 @@ import {
   View,
   type GestureResponderEvent,
 } from 'react-native'
-import { Download, Pause, Play, RefreshCw, X, ZoomIn, ZoomOut } from 'lucide-react-native'
+import { Pause, Play } from 'lucide-react-native'
 import { adaptiveViewerDismissAllowed } from '../../lib/adaptive-file-viewer-state'
 import type { MobileFileViewerLayout } from '../../lib/file-viewer'
 import { clampVideoTime, formatVideoTime, validVideoDuration, videoProgress, videoTimeAtPosition } from '../../lib/video-playback'
-import { isVideoFilled, type VideoContentFitMode } from '../../lib/video-fit'
+import type { VideoContentFitMode } from '../../lib/video-fit'
 import { usePalette } from '../../theme'
 import { Text } from '../AppText'
 import { SwipeDismissVideoSurface } from '../FullscreenImageViewer'
+import { VideoLoadingStatus, VideoLoadProblem } from './VideoStatusViews'
+import { VideoZoomControls } from './VideoZoomControls'
 
 export interface ArtifactNativeVideoSource {
   readonly uri: string
@@ -65,7 +66,6 @@ export function ArtifactNativeVideoPlayer({ source, layout, registerPause, onDow
   const [loadProblem, setLoadProblem] = useState<string | null>(null)
   const [videoFit, setVideoFit] = useState<VideoContentFitMode>('contain')
   const customControls = Platform.OS === 'ios' && layout === 'phone'
-  const videoFilled = isVideoFilled(videoFit)
   const duration = validVideoDuration(sourceLoad?.duration ?? 0) || validVideoDuration(player.duration)
   const dismissible = customControls && adaptiveViewerDismissAllowed(layout, { source: 'content', kind: 'video', scrubbing })
   const pause = useCallback(() => {
@@ -155,16 +155,8 @@ export function ArtifactNativeVideoPlayer({ source, layout, registerPause, onDow
       style={StyleSheet.absoluteFill}
     />
     {dismissible ? <SwipeDismissVideoSurface onDismiss={close} testID="artifact-video-dismiss-surface" gestureTestID="artifact-video-dismiss-gesture" style={StyleSheet.absoluteFill} /> : null}
-    {!ready && !loadProblem ? <View accessible accessibilityRole="progressbar" accessibilityLabel="Loading video" pointerEvents="none" style={styles.videoStatus}><ActivityIndicator color="white" /><Text style={styles.videoLoadingText}>Loading video…</Text></View> : null}
-    {loadProblem ? <View accessibilityRole="alert" testID="artifact-video-problem" style={styles.videoProblem}>
-      <Text style={styles.videoProblemTitle}>Video could not be opened</Text>
-      <Text style={styles.videoProblemBody} numberOfLines={4}>{loadProblem}</Text>
-      <View style={styles.videoProblemActions}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Retry opening video" testID="artifact-video-retry" onPress={retry} style={({ pressed }) => [styles.videoProblemButton, { opacity: pressed ? 0.68 : 1 }]}><RefreshCw size={16} color="white" /><Text style={styles.videoProblemButtonText}>Retry</Text></Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel="Download video" testID="artifact-video-download" onPress={onDownload} style={({ pressed }) => [styles.videoProblemButton, { opacity: pressed ? 0.68 : 1 }]}><Download size={16} color="white" /><Text style={styles.videoProblemButtonText}>Download</Text></Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel="Close video viewer" testID="artifact-video-problem-close" onPress={close} style={({ pressed }) => [styles.videoProblemButton, { opacity: pressed ? 0.68 : 1 }]}><X size={16} color="white" /><Text style={styles.videoProblemButtonText}>Close</Text></Pressable>
-      </View>
-    </View> : null}
+    {!ready && !loadProblem ? <VideoLoadingStatus /> : null}
+    {loadProblem ? <VideoLoadProblem message={loadProblem} onRetry={retry} onDownload={onDownload} onClose={close} /> : null}
     {customControls && ready ? <>
       <ArtifactVideoTimeline
         currentTime={timeUpdate.currentTime}
@@ -187,32 +179,7 @@ export function ArtifactNativeVideoPlayer({ source, layout, registerPause, onDow
         {isPlaying ? <Pause size={24} color="white" fill="white" /> : <Play size={24} color="white" fill="white" />}
       </Pressable>
     </> : null}
-    {!customControls && ready ? <View pointerEvents="box-none" testID="artifact-video-zoom-controls" style={styles.videoZoomControls}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Zoom video out"
-        accessibilityHint="Fits the entire video inside the viewer"
-        accessibilityState={{ disabled: !videoFilled }}
-        testID="artifact-video-zoom-out"
-        disabled={!videoFilled}
-        onPress={() => setVideoFit('contain')}
-        style={({ pressed }) => [styles.videoZoomButton, { opacity: !videoFilled ? 0.34 : pressed ? 0.65 : 1 }]}
-      >
-        <ZoomOut size={19} color="white" />
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Zoom video in"
-        accessibilityHint="Fills the viewer and may crop the video edges"
-        accessibilityState={{ disabled: videoFilled }}
-        testID="artifact-video-zoom-in"
-        disabled={videoFilled}
-        onPress={() => setVideoFit('cover')}
-        style={({ pressed }) => [styles.videoZoomButton, { opacity: videoFilled ? 0.34 : pressed ? 0.65 : 1 }]}
-      >
-        <ZoomIn size={19} color="white" />
-      </Pressable>
-    </View> : null}
+    {!customControls && ready ? <VideoZoomControls fit={videoFit} onChange={setVideoFit} /> : null}
   </View>
 }
 
@@ -301,14 +268,6 @@ function ArtifactVideoTimeline({ currentTime, bufferedPosition, duration, isPlay
 
 const styles = StyleSheet.create({
   videoViewport: { flex: 1, minHeight: 0, overflow: 'hidden', backgroundColor: '#050506' },
-  videoStatus: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, alignItems: 'center', justifyContent: 'center', gap: 9 },
-  videoLoadingText: { color: '#d6d8dc', fontSize: 12, lineHeight: 17, fontWeight: '700' },
-  videoProblem: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 4, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 7, backgroundColor: '#050506e8' },
-  videoProblemTitle: { color: 'white', fontSize: 16, fontWeight: '800', textAlign: 'center' },
-  videoProblemBody: { color: '#b7bbc2', fontSize: 12, textAlign: 'center' },
-  videoProblemActions: { marginTop: 8, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  videoProblemButton: { minWidth: 96, minHeight: 44, borderRadius: 10, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: '#23262b' },
-  videoProblemButtonText: { color: 'white', fontSize: 12, lineHeight: 16, fontWeight: '800' },
   videoTimeline: { position: 'absolute', left: 14, right: 14, bottom: 78, zIndex: 3, minHeight: 52, borderRadius: 12, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#000000dc' },
   videoTime: { minWidth: 36, color: 'white', fontSize: 10, lineHeight: 14, fontVariant: ['tabular-nums'], textAlign: 'center' },
   videoTimelineTrack: { flex: 1, height: 48, justifyContent: 'center' },
@@ -317,6 +276,4 @@ const styles = StyleSheet.create({
   videoPlayed: { position: 'absolute', left: 0, top: 0, height: 4, borderRadius: 2, backgroundColor: '#ffffff' },
   videoThumb: { position: 'absolute', top: -5, width: 14, height: 14, borderRadius: 7, backgroundColor: 'white' },
   videoPlay: { position: 'absolute', left: '50%', bottom: 14, zIndex: 3, width: 54, height: 54, marginLeft: -27, borderRadius: 27, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
-  videoZoomControls: { position: 'absolute', top: 10, right: 10, zIndex: 3, height: 44, borderRadius: 22, flexDirection: 'row', alignItems: 'center', overflow: 'hidden', backgroundColor: '#000000c9' },
-  videoZoomButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
 })

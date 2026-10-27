@@ -1,14 +1,11 @@
 import * as FileSystem from 'expo-file-system/legacy'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   AppState as NativeAppState,
   Platform,
-  Pressable,
   StyleSheet,
   View,
 } from 'react-native'
-import { Download, RefreshCw, X } from 'lucide-react-native'
 import type { AgentServerClient } from '../../api/AgentServerClient'
 import {
   artifactVideoStageCacheKey,
@@ -20,9 +17,9 @@ import {
 } from '../../lib/artifact-video-staging'
 import type { MobileFileViewerLayout } from '../../lib/file-viewer'
 import type { AgentFile } from '../../types'
-import { Text } from '../AppText'
 import { ArtifactIOSSystemVideoPlayer } from './ArtifactIOSSystemVideoPlayer'
 import { ArtifactPlatformVideoPlayer, type ArtifactPlatformVideoSource } from './ArtifactPlatformVideoPlayer'
+import { VideoLoadingStatus, VideoLoadProblem } from './VideoStatusViews'
 
 interface ArtifactVideoConnection {
   readonly client: AgentServerClient
@@ -241,49 +238,13 @@ function StagedIOSArtifactVideo({ file, connection, remoteSource, registerPause,
     />
   }
 
-  const progressPercent = progress == null ? null : Math.round(progress * 100)
+  // Drawn like Android's stream loading and error views; the download
+  // percentage is only announced to VoiceOver.
   return <View testID="artifact-video-staging" style={styles.stage}>
-    {stageProblem ? <View accessibilityRole="alert" testID="artifact-video-stage-problem" style={styles.problem}>
-      <Text style={styles.problemTitle}>Video could not be prepared</Text>
-      <Text style={styles.problemBody} numberOfLines={5}>{stageProblem}</Text>
-      <View style={styles.actions}>
-        <StageButton icon={RefreshCw} label="Retry" testID="artifact-video-stage-retry" onPress={restage} />
-        <StageButton icon={Download} label="Download" testID="artifact-video-stage-download" onPress={onDownload} />
-        <StageButton icon={X} label="Close" testID="artifact-video-stage-close" onPress={close} />
-      </View>
-    </View> : <View style={styles.loading}>
-      <View
-        accessible
-        accessibilityRole="progressbar"
-        accessibilityLabel="Preparing video"
-        accessibilityValue={progressPercent == null ? undefined : { min: 0, max: 100, now: progressPercent }}
-        style={styles.loadingStatus}
-      >
-        <ActivityIndicator color="white" />
-        <Text style={styles.loadingTitle}>{localURI ? 'Opening video…' : progressPercent == null ? 'Preparing video…' : `Downloading video… ${progressPercent}%`}</Text>
-        {progressPercent != null && !localURI ? <View style={styles.progressRail}><View style={[styles.progressFill, { width: `${progressPercent}%` }]} /></View> : null}
-      </View>
-      <StageButton icon={X} label="Close" testID="artifact-video-stage-close" onPress={close} />
-    </View>}
+    {stageProblem
+      ? <VideoLoadProblem message={stageProblem} onRetry={restage} onDownload={onDownload} onClose={close} />
+      : <VideoLoadingStatus percent={localURI ? 100 : progress == null ? null : Math.round(progress * 100)} />}
   </View>
-}
-
-function StageButton({ icon: Icon, label, testID, onPress }: {
-  icon: typeof X
-  label: string
-  testID: string
-  onPress: () => void
-}) {
-  return <Pressable
-    accessibilityRole="button"
-    accessibilityLabel={label}
-    testID={testID}
-    onPress={onPress}
-    style={({ pressed }) => [styles.button, { opacity: pressed ? 0.68 : 1 }]}
-  >
-    <Icon size={16} color="white" />
-    <Text style={styles.buttonText}>{label}</Text>
-  </Pressable>
 }
 
 function safeVideoCacheName(value: string, contentType: string | null | undefined): string {
@@ -296,15 +257,4 @@ function safeVideoCacheName(value: string, contentType: string | null | undefine
 
 const styles = StyleSheet.create({
   stage: { flex: 1, minHeight: 0, backgroundColor: '#050506' },
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 11, padding: 24 },
-  loadingStatus: { width: '100%', alignItems: 'center', justifyContent: 'center', gap: 11 },
-  loadingTitle: { color: '#d6d8dc', fontSize: 12, lineHeight: 17, fontWeight: '700', textAlign: 'center' },
-  progressRail: { width: '72%', maxWidth: 420, height: 5, overflow: 'hidden', borderRadius: 3, backgroundColor: '#ffffff2c' },
-  progressFill: { height: 5, borderRadius: 3, backgroundColor: 'white' },
-  problem: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, padding: 24, backgroundColor: '#050506' },
-  problemTitle: { color: 'white', fontSize: 16, fontWeight: '800', textAlign: 'center' },
-  problemBody: { color: '#b7bbc2', fontSize: 12, lineHeight: 17, textAlign: 'center' },
-  actions: { marginTop: 8, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  button: { minWidth: 96, minHeight: 44, borderRadius: 10, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: '#23262b' },
-  buttonText: { color: 'white', fontSize: 12, lineHeight: 16, fontWeight: '800' },
 })

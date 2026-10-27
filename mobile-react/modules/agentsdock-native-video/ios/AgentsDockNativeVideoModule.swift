@@ -51,6 +51,10 @@ public final class AgentsDockNativeVideoModule: Module {
         view.setAutoplay(autoplay ?? true)
       }
 
+      Prop("contentFit") { (view: AgentsDockNativeVideoView, contentFit: String?) in
+        view.setContentFit(contentFit ?? "contain")
+      }
+
       AsyncFunction("play") { (view: AgentsDockNativeVideoView) in
         view.play()
       }.runOnQueue(.main)

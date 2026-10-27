@@ -16,6 +16,7 @@ export type AgentsDockNativeVideoHandle = {
 export type AgentsDockNativeVideoProps = ViewProps & {
   sourceURI: string
   autoplay?: boolean
+  contentFit?: 'contain' | 'cover'
   onStatus?: (event: NativeSyntheticEvent<AgentsDockNativeVideoStatus>) => void
 }
 
