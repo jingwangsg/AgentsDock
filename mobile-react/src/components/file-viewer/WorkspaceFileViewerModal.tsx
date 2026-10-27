@@ -4,7 +4,7 @@ import * as Clipboard from 'expo-clipboard'
 import * as FileSystem from 'expo-file-system/legacy'
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
 import { ActivityIndicator } from '../material/ActivityIndicator'
-import { Alert } from '../../lib/alert'
+import { Alert, IOS_ONLY_CANCEL } from '../../lib/alert'
 import { AlertCircle, ChevronLeft, ChevronRight, Download, File, FileDiff, FilePlus, Folder, FolderPlus, Link, MoreHorizontal, Pencil, RefreshCw, Search, Share2, Trash2, X } from 'lucide-react-native'
 import type { AgentServerClient } from '../../api/AgentServerClient'
 import {
@@ -533,10 +533,9 @@ function ScopedWorkspaceFileViewer({ request, connection, modalPadding, connecti
   const showPhoneWorkspaceActions = useCallback(() => {
     if (mutationControlsDisabled || !mutationsAvailable) return
     const target = selectedRef.current
-    // Android shows no Cancel here, so its dialog closes only by choosing an action; iOS adds
-    // Cancel rather than copy that.
+    // Android shows no Cancel here, so its dialog closes only by choosing an action.
     Alert.alert('Workspace actions', undefined, [
-      ...(Platform.OS === 'ios' ? [{ text: 'Cancel', style: 'cancel' as const }] : []),
+      ...IOS_ONLY_CANCEL,
       { text: 'New File', onPress: () => requestCreateWorkspaceEntry('file') },
       { text: 'New Folder', onPress: () => requestCreateWorkspaceEntry('directory') },
       ...(target ? [{ text: `More for ${target.name}`, onPress: () => showEntryWorkspaceActions(target) }] : []),
