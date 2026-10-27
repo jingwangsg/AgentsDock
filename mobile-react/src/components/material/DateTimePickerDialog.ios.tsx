@@ -175,7 +175,7 @@ function DatePickerDialog({ value, accent, confirmLabel, dismissLabel, onConfirm
       <View style={styles.dropDown}><Icon path={ICON.dropDown} color={palette.muted} rotate={mode === 'years'} /></View>
     </Pressable>
     {mode === 'years'
-      ? <ScrollView style={styles.years} contentContainerStyle={styles.yearsContent} contentOffset={{ x: 0, y: Math.max(0, (Math.floor((month.year - FIRST_YEAR) / YEARS_PER_ROW) - 2) * YEAR_ROW) }}>
+      ? <ScrollView keyboardShouldPersistTaps="always" style={styles.years} contentContainerStyle={styles.yearsContent} contentOffset={{ x: 0, y: Math.max(0, (Math.floor((month.year - FIRST_YEAR) / YEARS_PER_ROW) - 2) * YEAR_ROW) }}>
           {Array.from({ length: LAST_YEAR - FIRST_YEAR + 1 }, (_, index) => FIRST_YEAR + index).map(year => {
             const current = year === month.year
             return <Pressable key={year} accessibilityRole="button" accessibilityLabel={String(year)} accessibilityState={{ selected: current }} onPress={() => { setMonth(value => ({ ...value, year })); setMode('calendar') }} style={styles.yearCell}>

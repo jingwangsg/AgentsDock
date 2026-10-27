@@ -1186,3 +1186,13 @@ test('cold file-viewer import graph defers editor and video evaluation behind re
   assert.doesNotMatch(embedCodeEditor, /export const CODE_EDITOR_SCRIPT/)
   assert.match(embedCodeEditor, /JSON\.stringify\(`\$\{htmlPrefix\}\$\{script\}\$\{htmlSuffix\}`\)/)
 })
+
+test('iOS menus and dialogs take the first tap while the keyboard is up', () => {
+  // A ScrollView left at keyboardShouldPersistTaps "never" spends that tap dismissing the keyboard.
+  for (const file of ['DropdownMenu.tsx', 'AlertDialog.tsx', 'DateTimePickerDialog.ios.tsx']) {
+    const source = fs.readFileSync(path.resolve('src/components/material', file), 'utf8')
+    const scrollViews = source.match(/<ScrollView\b[^>]*>/g) ?? []
+    assert.ok(scrollViews.length > 0, file)
+    for (const tag of scrollViews) assert.match(tag, /keyboardShouldPersistTaps="always"/, file)
+  }
+})

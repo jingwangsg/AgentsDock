@@ -71,7 +71,7 @@ function AlertDialog({ title, message, buttons, options, close }: { title: strin
     <View pointerEvents="box-none" style={[styles.center, { top: insets.top, bottom }]}>
       <View accessibilityViewIsModal style={[styles.card, { width, maxHeight: screen.height - insets.top - bottom - 32, backgroundColor: palette.card }]}>
         <Text accessibilityRole="header" numberOfLines={2} style={[styles.title, { color: palette.text, fontFamily: medium }]}>{title}</Text>
-        <ScrollView style={styles.content} contentContainerStyle={styles.contentInner} bounces={false}>
+        <ScrollView keyboardShouldPersistTaps="always" style={styles.content} contentContainerStyle={styles.contentInner} bounces={false}>
           <Text style={[styles.message, { color: palette.text, fontFamily: regular }]}>{message ?? ''}</Text>
         </ScrollView>
         {stacked
