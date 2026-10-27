@@ -31,8 +31,21 @@ export const StyleSheet = {
   absoluteFillObject: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
 }
 export const useColorScheme = () => 'dark'
-export const useWindowDimensions = () => ({ width: 390, height: 844, scale: 3, fontScale: 1 })
-export const Keyboard = { dismiss() {} }
+let windowSize = { width: 390, height: 844 }
+export const useWindowDimensions = () => ({ ...windowSize, scale: 3, fontScale: 1 })
+/** Tests that size content to the window (a phone in landscape) set it before rendering. */
+export function __setWindowSize(size: { width: number; height: number }) { windowSize = size }
+export const Keyboard = {
+  dismiss() {},
+  isVisible: () => false,
+  metrics: () => undefined,
+  addListener(_event: string, _callback: unknown) { return { remove() {} } },
+}
+// Animations finish at once; Animated.View is a host like View.
+class AnimatedValue { constructor(public value: number) {} }
+const finished = { start(callback?: (result: { finished: boolean }) => void) { callback?.({ finished: true }) } }
+export const Animated = { Value: AnimatedValue, View: 'Animated.View', timing: () => finished, parallel: () => finished }
+export const Easing = { linear: (t: number) => t, bezier: () => (t: number) => t }
 export const Linking = { async openURL(_url: string) {} }
 
 type AlertButton = { text?: string; style?: string; onPress?: () => void }

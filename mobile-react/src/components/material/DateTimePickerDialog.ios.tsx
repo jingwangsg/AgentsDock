@@ -55,7 +55,8 @@ function DialogFrame({ width, height, onDismiss, children }: { width: number; he
   return <View style={StyleSheet.absoluteFill}>
     <Pressable accessible={false} style={[StyleSheet.absoluteFill, { backgroundColor: palette.alert.scrim }]} onPress={onDismiss} />
     <View pointerEvents="box-none" style={[styles.center, { bottom: keyboard }]}>
-      <View accessibilityViewIsModal style={[styles.card, { width, height, backgroundColor: palette.picker.container }]}>{children}</View>
+      {/* VoiceOver's escape dismisses, as a tap outside does. */}
+      <View accessibilityViewIsModal onAccessibilityEscape={onDismiss} style={[styles.card, { width, height, backgroundColor: palette.picker.container }]}>{children}</View>
     </View>
   </View>
 }

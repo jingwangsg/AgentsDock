@@ -45,6 +45,8 @@ function AlertDialog({ title, message, buttons, options, close }: { title: strin
     if (ready) Animated.timing(opacity, { toValue: 1, duration: 150, useNativeDriver: true }).start()
   }, [opacity, ready])
   const press = (button: AlertButton) => { close(); button.onPress?.() }
+  // A tap outside, or VoiceOver's escape, dismisses only a cancelable alert, as on Android.
+  const cancel = options?.cancelable ? () => { close(); options.onDismiss?.() } : undefined
   const renderButton = (button: AlertButton, key: string | number, onWidth?: (width: number) => void) => <Pressable
     key={key}
     accessibilityRole="button"
@@ -58,18 +60,10 @@ function AlertDialog({ title, message, buttons, options, close }: { title: strin
     return button ? renderButton(button, role, value => setButtonWidths(current => ({ ...current, [role]: value }))) : null
   }
   return <Animated.View style={[StyleSheet.absoluteFill, { opacity }]}>
-    <Pressable
-      accessible={false}
-      style={[StyleSheet.absoluteFill, { backgroundColor: palette.scrim }]}
-      onPress={() => {
-        if (!options?.cancelable) return
-        close()
-        options.onDismiss?.()
-      }}
-    />
+    <Pressable accessible={false} style={[StyleSheet.absoluteFill, { backgroundColor: palette.scrim }]} onPress={cancel} />
     {/* Centered between the system bars, like the Android dialog window. */}
     <View pointerEvents="box-none" style={[styles.center, { top: insets.top, bottom }]}>
-      <View accessibilityViewIsModal style={[styles.card, { width, maxHeight: screen.height - insets.top - bottom - 32, backgroundColor: palette.card }]}>
+      <View accessibilityViewIsModal onAccessibilityEscape={cancel} style={[styles.card, { width, maxHeight: screen.height - insets.top - bottom - 32, backgroundColor: palette.card }]}>
         <Text accessibilityRole="header" numberOfLines={2} style={[styles.title, { color: palette.text, fontFamily: medium }]}>{title}</Text>
         <ScrollView keyboardShouldPersistTaps="always" style={styles.content} contentContainerStyle={styles.contentInner} bounces={false}>
           <Text style={[styles.message, { color: palette.text, fontFamily: regular }]}>{message ?? ''}</Text>

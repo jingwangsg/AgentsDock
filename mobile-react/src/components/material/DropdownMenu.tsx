@@ -58,19 +58,21 @@ function DropdownMenuLayer({ measureAnchor, actions, onAction, onClose, dismiss 
   return <>
     {/* A tap outside dismisses only the topmost menu and is consumed, as Compose popups do. */}
     <Pressable accessible={false} style={StyleSheet.absoluteFill} onPress={closeAll} />
-    <MenuSurface anchor={anchor} actions={actions} onChoose={choose} onOpenSubmenu={(itemAnchor, subactions) => setSubmenu({ anchor: itemAnchor, actions: subactions })} />
+    <MenuSurface anchor={anchor} actions={actions} onChoose={choose} onOpenSubmenu={(itemAnchor, subactions) => setSubmenu({ anchor: itemAnchor, actions: subactions })} onEscape={closeAll} />
     {submenu ? <>
       <Pressable accessible={false} style={StyleSheet.absoluteFill} onPress={() => setSubmenu(null)} />
-      <MenuSurface anchor={submenu.anchor} actions={submenu.actions} onChoose={choose} onOpenSubmenu={() => undefined} />
+      <MenuSurface anchor={submenu.anchor} actions={submenu.actions} onChoose={choose} onOpenSubmenu={() => undefined} onEscape={() => setSubmenu(null)} />
     </> : null}
   </>
 }
 
-function MenuSurface({ anchor, actions, onChoose, onOpenSubmenu }: {
+function MenuSurface({ anchor, actions, onChoose, onOpenSubmenu, onEscape }: {
   anchor: Rect
   actions: MenuAction[]
   onChoose: (id: string) => void
   onOpenSubmenu: (anchor: Rect, actions: MenuAction[]) => void
+  /** VoiceOver's escape (two-finger Z) does what a tap outside does; the scrim is not reachable with it. */
+  onEscape: () => void
 }) {
   const palette = useMaterialPalette().menu
   const screen = useWindowDimensions()
@@ -92,6 +94,7 @@ function MenuSurface({ anchor, actions, onChoose, onOpenSubmenu }: {
   const rows = flattenActions(actions)
   return <Animated.View
     accessibilityViewIsModal
+    onAccessibilityEscape={onEscape}
     onLayout={event => { if (!size) setSize({ width: event.nativeEvent.layout.width, height: event.nativeEvent.layout.height }) }}
     style={[styles.surface, {
       left: position?.x ?? 0,

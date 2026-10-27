@@ -12,3 +12,7 @@ export const Polyline = 'Polyline'
 export const Polygon = 'Polygon'
 export const G = 'G'
 export const KeyboardController = { async dismiss(_options?: unknown) {} }
+// react-native-screens: the material overlay host draws through it.
+export const FullWindowOverlay = 'FullWindowOverlay'
+// expo-font: the material fonts load at once.
+export async function loadAsync(_fonts: unknown) {}
