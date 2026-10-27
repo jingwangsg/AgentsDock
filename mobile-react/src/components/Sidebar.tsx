@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActionSheetIOS, Alert, Image, Platform, Pressable, StyleSheet, View } from 'react-native'
+import { Image, Platform, Pressable, StyleSheet, View } from 'react-native'
 import DraggableFlatList, { ScaleDecorator, type DragEndParams } from 'react-native-draggable-flatlist'
-import { MenuView, type MenuAction, type MenuComponentRef } from '@expo/ui/community/menu'
+import { MenuView, type MenuAction, type MenuComponentRef } from './material/MenuView'
 import { Bell, ChevronDown, ChevronRight, FolderPlus, Globe, Network, Plus, RefreshCw, Search, Server, Settings, Terminal, GripVertical, Undo2 } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAppStore } from '../store/useAppStore'
+import { Alert } from '../lib/alert'
 import { radius, usePalette } from '../theme'
 import type { Backend, Session, Surface, SurfaceKind, TimelineSearchResult } from '../types'
 import { backendLabel, formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
@@ -461,7 +462,6 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           returnKeyType="search"
           submitBehavior="blurAndSubmit"
           onSubmitEditing={dismissSearchKeyboard}
-          clearButtonMode={Platform.OS === 'ios' ? 'while-editing' : 'never'}
           style={[styles.searchInput, { color: colors.text }]}
         />
         {!needsServerSetup && searchBusy ? <Text style={{ color: colors.muted }}>…</Text> : null}
@@ -614,8 +614,7 @@ function FolderHeader({ item, status, profileScope, collapsed, backends, canMove
     else if (id === 'move-down') onMove('down')
     else if (id === 'delete') onDelete()
   }
-  // One list feeds the Android menu and the iOS sheet so every folder shows the
-  // same items in the same order; Move is hidden at the edges, not disabled.
+  // Move is hidden at the edges, not disabled.
   const actions: MenuAction[] = [
     ...backends.map(backend => ({ id: `new:${backend}`, title: `New ${backendLabel(backend)} chat`, image: 'plus' } satisfies MenuAction)),
     { id: 'new-terminal', title: 'New Terminal', image: 'terminal' },
@@ -625,34 +624,21 @@ function FolderHeader({ item, status, profileScope, collapsed, backends, canMove
     ...(canMoveDown ? [{ id: 'move-down', title: 'Move Folder Down', image: 'arrow.down' } satisfies MenuAction] : []),
     { id: 'delete', title: 'Delete Folder', image: 'trash', attributes: { destructive: true } },
   ]
-  const openActionSheet = () => {
-    if (!profileScopeIsCurrent(profileScope)) return
-    onDismissKeyboard()
-    ActionSheetIOS.showActionSheetWithOptions({
-      title: item.title,
-      options: [...actions.map(action => action.title), 'Cancel'],
-      cancelButtonIndex: actions.length,
-      destructiveButtonIndex: actions.findIndex(action => action.attributes?.destructive),
-    }, index => {
-      const action = actions[index]
-      if (action?.id) runAction(action.id)
-    })
-  }
   const header = <Pressable
     accessibilityRole="button"
     accessibilityLabel={`${collapsed ? 'Expand' : 'Collapse'} ${item.title}${status.length ? `, ${status.map(kind => FOLDER_STATUS_LABEL[kind]).join(', ')}` : ''}`}
     accessibilityHint={hasMenu ? 'Long press for folder actions.' : undefined}
     onPress={() => { onDismissKeyboard(); onToggle() }}
-    onLongPress={!hasMenu ? undefined : () => onLift(Platform.OS === 'ios' ? openActionSheet : () => menu.current?.show())}
+    onLongPress={!hasMenu ? undefined : () => onLift(() => menu.current?.show())}
     delayLongPress={350}
-    style={[styles.header, hasMenu && Platform.OS !== 'ios' && styles.headerInShell]}
+    style={[styles.header, hasMenu && styles.headerInShell]}
   >
     {collapsed ? <ChevronRight size={13} color={colors.muted} /> : <ChevronDown size={13} color={colors.muted} />}
     <Text style={[styles.headerText, { color: colors.muted }]}>{item.title}</Text>
     {status.map(kind => <View key={kind} style={[styles.headerStatusDot, { backgroundColor: kind === 'waiting' ? colors.orange : kind === 'running' ? colors.green : colors.blue }]} />)}
     <Text style={[styles.count, { color: colors.muted }]}>{item.count}</Text>
   </Pressable>
-  if (!hasMenu || Platform.OS === 'ios') return header
+  if (!hasMenu) return header
   return <View style={styles.folderHeaderShell}>{header}<MenuView ref={menu} testID={`folder-actions-${item.folder}`} title={item.title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>
 }
 
@@ -689,13 +675,8 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   const reloadHistory = useAppStore(state => state.reloadHistory)
   const remove = useAppStore(state => state.deleteSession)
   const reloadable = session.backend === 'claude' || session.backend === 'codex'
-  const folderSheetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const menu = useRef<MenuComponentRef>(null)
 
-  useEffect(() => () => {
-    if (folderSheetTimer.current) clearTimeout(folderSheetTimer.current)
-    folderSheetTimer.current = null
-  }, [profileScope.activeProfileId, profileScope.profileGeneration, session.id])
   const requestRename = () => {
     const scope = profileScope
     if (!sessionScopeIsCurrent(scope, session.id)) return
@@ -767,64 +748,6 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
     { id: 'archive', title: session.archived ? 'Unarchive Chat' : 'Archive Chat', image: 'archivebox' },
     { id: 'delete', title: 'Delete Chat', image: 'trash', attributes: { destructive: true } },
   ]
-  const openFolderSheet = () => {
-    const scope = profileScope
-    if (!sessionScopeIsCurrent(scope, session.id)) return
-    onDismissKeyboard()
-    const cancelButtonIndex = folders.length
-    const currentFolder = session.folder?.trim() || 'General'
-    ActionSheetIOS.showActionSheetWithOptions({
-      title: 'Move to Folder',
-      message: session.title,
-      options: [...folders.map(folder => folder === currentFolder && !session.pinned ? `✓ ${folder}` : folder), 'Cancel'],
-      cancelButtonIndex,
-    }, index => {
-      if (!sessionScopeIsCurrent(scope, session.id)) return
-      const folder = folders[index]
-      if (folder) void update(session.id, { folder, pinned: false }, scope.profileGeneration)
-    })
-  }
-  const openActionSheet = () => {
-    const scope = profileScope
-    if (!sessionScopeIsCurrent(scope, session.id)) return
-    onDismissKeyboard()
-    const sheetActions: Array<{ id: string; title: string; destructive?: boolean }> = [
-      { id: 'read-state', title: unread ? 'Mark as Read' : 'Mark as Unread' },
-      { id: 'rename', title: 'Rename Chat' },
-      { id: 'fork', title: 'Fork Chat' },
-      ...(reloadable ? [{ id: 'reload-history', title: 'Reload History…' }] : []),
-      ...(canMoveUp ? [{ id: 'move-up', title: 'Move Up' }] : []),
-      ...(canMoveDown ? [{ id: 'move-down', title: 'Move Down' }] : []),
-      ...(session.archived ? [] : [
-        { id: 'pin', title: session.pinned ? 'Unpin Chat' : 'Pin Chat' },
-        { id: 'move-folder', title: 'Move to Folder…' },
-      ]),
-      { id: 'archive', title: session.archived ? 'Unarchive Chat' : 'Archive Chat' },
-      { id: 'delete', title: 'Delete Chat', destructive: true },
-    ]
-    const cancelButtonIndex = sheetActions.length
-    const destructiveButtonIndex = sheetActions.findIndex(action => action.destructive)
-    ActionSheetIOS.showActionSheetWithOptions({
-      title: session.title,
-      options: [...sheetActions.map(action => action.title), 'Cancel'],
-      cancelButtonIndex,
-      destructiveButtonIndex: destructiveButtonIndex >= 0 ? destructiveButtonIndex : undefined,
-    }, index => {
-      if (!sessionScopeIsCurrent(scope, session.id)) return
-      const action = sheetActions[index]
-      if (!action) return
-      if (action.id === 'move-folder') {
-        if (folderSheetTimer.current) clearTimeout(folderSheetTimer.current)
-        folderSheetTimer.current = setTimeout(() => {
-          folderSheetTimer.current = null
-          if (!sessionScopeIsCurrent(scope, session.id)) return
-          openFolderSheet()
-        }, 180)
-        return
-      }
-      runAction(action.id)
-    })
-  }
   const pressableRow = (
     <Pressable
       testID={`chat-row-${session.id}`}
@@ -834,12 +757,12 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
       accessibilityState={{ selected, disabled: opening }}
       disabled={opening}
       delayLongPress={350}
-      onLongPress={welcome ? undefined : () => onLift(Platform.OS === 'ios' ? openActionSheet : () => menu.current?.show())}
+      onLongPress={welcome ? undefined : () => onLift(() => menu.current?.show())}
       onPress={() => {
         if (!sessionScopeIsCurrent(profileScope, session.id)) return
         onPress()
       }}
-      style={({ pressed }) => [styles.session, Platform.OS !== 'ios' && styles.sessionInShell, {
+      style={({ pressed }) => [styles.session, styles.sessionInShell, {
         backgroundColor: selected ? colors.selected : pressed ? colors.raised : colors.background,
         borderColor: 'transparent',
       }]}
@@ -868,9 +791,9 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   // The chat identity is always a plain native Pressable. Wrapping the entire
   // Android row in Compose MenuView + ReanimatedSwipeable lets their gesture
   // hosts retain the touch after returning from a chat, making every row look
-  // dead. The Android menu is anchored to a zero-width sibling at the row's
+  // dead. The menu is anchored to a zero-width sibling at the row's
   // trailing edge and opened from the row's own long press instead.
-  if (welcome || Platform.OS === 'ios') return pressableRow
+  if (welcome) return pressableRow
   return <View style={styles.sessionShell}>{pressableRow}<MenuView ref={menu} testID={`chat-actions-${session.id}`} title={session.title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>
 }
 
@@ -907,19 +830,6 @@ function SurfaceRow({ surface, profileScope, selected, onDismissKeyboard, onLift
     if (id === 'rename') rename()
     else if (id === 'close') void removeSurface(surface.id, profileScope.profileGeneration)
   }
-  const openActionSheet = () => {
-    if (!profileScopeIsCurrent(profileScope)) return
-    onDismissKeyboard()
-    ActionSheetIOS.showActionSheetWithOptions({
-      title,
-      options: [...actions.map(action => action.title), 'Cancel'],
-      cancelButtonIndex: actions.length,
-      destructiveButtonIndex: actions.findIndex(action => action.attributes?.destructive),
-    }, index => {
-      const action = actions[index]
-      if (action?.id) runAction(action.id)
-    })
-  }
   const Icon = surface.kind === 'terminal' ? Terminal : Globe
   const row = <Pressable
     testID={`tab-row-${surface.id}`}
@@ -928,9 +838,9 @@ function SurfaceRow({ surface, profileScope, selected, onDismissKeyboard, onLift
     accessibilityHint="Tap to open. Long press for tab actions."
     accessibilityState={{ selected }}
     delayLongPress={350}
-    onLongPress={() => onLift(Platform.OS === 'ios' ? openActionSheet : () => menu.current?.show())}
+    onLongPress={() => onLift(() => menu.current?.show())}
     onPress={() => { if (profileScopeIsCurrent(profileScope)) onPress() }}
-    style={({ pressed }) => [styles.session, Platform.OS !== 'ios' && styles.sessionInShell, {
+    style={({ pressed }) => [styles.session, styles.sessionInShell, {
       backgroundColor: selected ? colors.selected : pressed ? colors.raised : colors.background,
       borderColor: 'transparent',
     }]}
@@ -944,7 +854,6 @@ function SurfaceRow({ surface, profileScope, selected, onDismissKeyboard, onLift
     {status.bell ? <Bell size={14} color={colors.orange} accessibilityLabel="Bell" testID={`tab-bell-${surface.id}`} /> : null}
     <DragHandle onDragStart={onDragStart} />
   </Pressable>
-  if (Platform.OS === 'ios') return row
   return <View style={styles.sessionShell}>{row}<MenuView ref={menu} testID={`tab-actions-${surface.id}`} title={title} actions={actions} onPressAction={event => runAction(event.nativeEvent.event)} style={styles.menuAnchor}><View style={styles.menuAnchorContent} /></MenuView></View>
 }
 

@@ -115,30 +115,26 @@ export function scheduleWallTimePickerDate(value: string, fallback = new Date())
   return new Date(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0, 0)
 }
 
-/** Android Material's calendar dialog consumes the selected day in UTC. */
-export function scheduleWallTimeAndroidDatePickerDate(value: string, fallback = new Date()): Date {
+/** The Material date dialog (Android's, and the app-drawn iOS copy) takes and reports the day as UTC midnight. */
+export function scheduleWallTimeUtcDay(value: string, fallback = new Date()): Date {
   const local = scheduleWallTimePickerDate(value, fallback)
   return new Date(Date.UTC(local.getFullYear(), local.getMonth(), local.getDate()))
 }
 
 /**
- * Merges one native picker result into a wall-time string without allowing the
- * date picker to silently overwrite the time (or vice versa). Android's
- * Material date dialog reports the chosen calendar day as UTC midnight, so its
- * date components must be read in UTC.
+ * Merges one picker result into a wall-time string without allowing the date
+ * picker to silently overwrite the time (or vice versa). The Material date
+ * dialog reports the chosen calendar day as UTC midnight, so its date
+ * components are read in UTC.
  */
 export function mergeScheduleWallTimePickerValue(
   currentValue: string,
   selected: Date,
   part: ScheduleWallTimePart,
-  androidUtcDate = false,
 ): string {
   const base = scheduleWallTimePickerDate(currentValue, selected)
   if (part === 'date') {
-    const year = androidUtcDate ? selected.getUTCFullYear() : selected.getFullYear()
-    const month = androidUtcDate ? selected.getUTCMonth() : selected.getMonth()
-    const day = androidUtcDate ? selected.getUTCDate() : selected.getDate()
-    base.setFullYear(year, month, day)
+    base.setFullYear(selected.getUTCFullYear(), selected.getUTCMonth(), selected.getUTCDate())
   } else {
     base.setHours(selected.getHours(), selected.getMinutes(), 0, 0)
   }

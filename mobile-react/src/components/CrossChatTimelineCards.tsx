@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { useRecyclingState } from '@shopify/flash-list'
 import { useShallow } from 'zustand/react/shallow'
 import { AlertTriangle, ChevronDown, ChevronRight, MessageSquareShare } from 'lucide-react-native'

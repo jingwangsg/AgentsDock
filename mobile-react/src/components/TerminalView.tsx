@@ -12,13 +12,14 @@ import { TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, clampTerminalFontSize, 
 import { useAppColorScheme, usePalette } from '../theme'
 import type { TerminalWindow } from '../types'
 import { Text, TextInput } from './AppText'
+import { TerminalKeyLabel } from './terminal/TerminalKeyLabel'
 import { TerminalViewport, type TerminalViewportHandle } from './terminal/TerminalViewport'
 import type { TerminalKeyName, TerminalModifierState, TerminalPageEvent } from './terminal/TerminalViewport.types'
 import { IconButton } from './ui'
 
 type TerminalRowKey = TerminalKeyName | 'ctrl' | 'alt' | 'prompt-previous' | 'prompt-next'
 
-/** Keys a soft keyboard lacks; Ctrl and Alt stay pressed for the next key. Android only: the web view terminal sends them. */
+/** Keys a soft keyboard lacks; Ctrl and Alt stay pressed for the next key. */
 const TERMINAL_KEYS: { name: TerminalRowKey; label: string; description?: string }[] = [
   { name: 'escape', label: 'Esc' }, { name: 'tab', label: 'Tab' }, { name: 'backtab', label: '⇧Tab', description: 'Shift Tab' }, { name: 'enter', label: 'Enter' },
   { name: 'ctrl', label: 'Ctrl' }, { name: 'alt', label: 'Alt' },
@@ -106,22 +107,22 @@ function ScopedTerminalView({ terminal, tmux, active, onClose, connection, conne
   const lastNotice = useRef(0)
   // A terminal tab, not a chat's tmux session.
   const standalone = !tmux
-  const android = Platform.OS === 'android'
   const baseFontSize = scaleAppFont(settings.fontSize, fontScale)
   const fontSize = clampTerminalFontSize(baseFontSize + fontZoom)
   const rootRef = useRef<View>(null)
   const [keyboardOverlap, setKeyboardOverlap] = useState(0)
   useEffect(() => {
-    if (Platform.OS !== 'android') return
     // The key row has to stay above the soft keyboard. The compact layout shows the terminal
-    // in a full-screen Modal whose window does not shrink for the keyboard, so measure how far
-    // the keyboard reaches into this view; a window that did shrink measures zero overlap.
-    const shown = Keyboard.addListener('keyboardDidShow', event => {
+    // in a full-screen Modal whose window does not shrink for the keyboard, and an iOS window
+    // never does, so measure how far the keyboard reaches into this view; a window that did
+    // shrink measures zero overlap. iOS: the "will" events, so the row moves with the keyboard.
+    const ios = Platform.OS === 'ios'
+    const shown = Keyboard.addListener(ios ? 'keyboardWillShow' : 'keyboardDidShow', event => {
       rootRef.current?.measureInWindow((_x, y, _width, height) => {
         setKeyboardOverlap(Math.max(0, Math.round(y + height - event.endCoordinates.screenY)))
       })
     })
-    const hidden = Keyboard.addListener('keyboardDidHide', () => setKeyboardOverlap(0))
+    const hidden = Keyboard.addListener(ios ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboardOverlap(0))
     return () => { shown.remove(); hidden.remove() }
   }, [])
   useEffect(() => { fontZooms.set(terminal.id, fontZoom) }, [fontZoom, terminal.id])
@@ -153,8 +154,8 @@ function ScopedTerminalView({ terminal, tmux, active, onClose, connection, conne
     setNotice('')
     if (tmux) void refresh()
     return () => {
-      const nativeTerminal = viewport.current
-      if (nativeTerminal) void nativeTerminal.blur().catch(() => undefined)
+      const terminalViewport = viewport.current
+      if (terminalViewport) void terminalViewport.blur().catch(() => undefined)
       if (noticeTimer.current) clearTimeout(noticeTimer.current)
       noticeTimer.current = null
     }
@@ -213,8 +214,8 @@ function ScopedTerminalView({ terminal, tmux, active, onClose, connection, conne
     void handle.sendKey(name)
   }
   const close = () => {
-    const nativeTerminal = viewport.current
-    if (nativeTerminal) void nativeTerminal.blur().catch(() => undefined)
+    const terminalViewport = viewport.current
+    if (terminalViewport) void terminalViewport.blur().catch(() => undefined)
     onClose?.()
   }
   const pageEvent = (event: TerminalPageEvent) => {
@@ -266,7 +267,7 @@ function ScopedTerminalView({ terminal, tmux, active, onClose, connection, conne
       testID="terminal-toolbar"
       style={[styles.tabs, { backgroundColor: colors.background, borderColor: colors.border }]}
     >
-      <View style={styles.status}><View style={[styles.statusDot, { backgroundColor: status === 'Connected' ? colors.green : ended && android ? colors.red : colors.orange }]} /><Text style={{ color: colors.muted, fontSize: 10 }} numberOfLines={1}>{notice || status}</Text></View>
+      <View style={styles.status}><View style={[styles.statusDot, { backgroundColor: status === 'Connected' ? colors.green : ended ? colors.red : colors.orange }]} /><Text style={{ color: colors.muted, fontSize: 10 }} numberOfLines={1}>{notice || status}</Text></View>
       <ScrollView horizontal keyboardShouldPersistTaps="always" showsHorizontalScrollIndicator={false} style={styles.tabScroller} contentContainerStyle={styles.tabContent}>
         {tmux ? <>{windows.map(window => <Pressable key={window.id} accessibilityRole="button" accessibilityLabel={`Terminal window ${window.name}`} accessibilityState={{ selected: window.active }} onPress={() => void action('select-window', String(window.index))} style={[styles.tab, { backgroundColor: window.active ? colors.raised : 'transparent' }]}><Text style={{ color: window.active ? colors.text : colors.muted, fontSize: 11 }} numberOfLines={1}>{window.name}</Text></Pressable>)}
         <IconButton icon={Plus} size={14} label="New window" onPress={() => void action('new-window')} />
@@ -277,17 +278,15 @@ function ScopedTerminalView({ terminal, tmux, active, onClose, connection, conne
         <IconButton icon={Trash2} size={14} label="Close terminal window" onPress={() => void action('kill-window')} /></> : null}
         <IconButton icon={ClipboardCopy} size={14} label="Copy selection or terminal buffer" onPress={() => void copy()} />
         <IconButton icon={ClipboardPaste} size={14} label="Paste" onPress={() => void paste()} />
-        {android ? <>
-          <IconButton icon={TextCursor} size={14} label={selecting ? 'Done selecting text' : 'Select text'} testID="terminal-select-text" selected={selecting} onPress={toggleSelecting} />
-          <IconButton icon={Search} size={14} label="Find" testID="terminal-find" onPress={() => setFindRequest(request => request + 1)} />
-          <IconButton icon={AArrowDown} size={14} label="Smaller text" testID="terminal-zoom-out" disabled={fontSize <= TERMINAL_FONT_SIZE_MIN} onPress={() => zoom(-1)} />
-          <IconButton icon={AArrowUp} size={14} label="Larger text" testID="terminal-zoom-in" disabled={fontSize >= TERMINAL_FONT_SIZE_MAX} onPress={() => zoom(1)} />
-        </> : null}
+        <IconButton icon={TextCursor} size={14} label={selecting ? 'Done selecting text' : 'Select text'} testID="terminal-select-text" selected={selecting} onPress={toggleSelecting} />
+        <IconButton icon={Search} size={14} label="Find" testID="terminal-find" onPress={() => setFindRequest(request => request + 1)} />
+        <IconButton icon={AArrowDown} size={14} label="Smaller text" testID="terminal-zoom-out" disabled={fontSize <= TERMINAL_FONT_SIZE_MIN} onPress={() => zoom(-1)} />
+        <IconButton icon={AArrowUp} size={14} label="Larger text" testID="terminal-zoom-in" disabled={fontSize >= TERMINAL_FONT_SIZE_MAX} onPress={() => zoom(1)} />
       </ScrollView>
       <IconButton icon={KeyboardIcon} size={14} label="Focus terminal keyboard" onPress={() => void viewport.current?.focus()} />
       {onClose ? <IconButton icon={X} size={17} touchSize={44} label="Close terminal" testID="terminal-close" onPress={close} /> : null}
     </View>
-    {findRequest > 0 && android ? <TerminalFindBar
+    {findRequest > 0 ? <TerminalFindBar
       viewport={viewport}
       focusRequest={findRequest}
       results={findResults}
@@ -328,15 +327,15 @@ function ScopedTerminalView({ terminal, tmux, active, onClose, connection, conne
           const value = event.nativeEvent
           setStatus(value.status)
           setStatusMessage(value.message ?? '')
-          // Android: a reconnect's reason is stale once the terminal is back.
-          if (value.message || (android && value.status === 'Connected')) setNotice(value.message ?? '')
+          // A reconnect's reason is stale once the terminal is back.
+          if (value.message || value.status === 'Connected') setNotice(value.message ?? '')
           if (standalone && value.status === 'Exited') exitedTerminals.add(terminal.id)
           if (value.status === 'Connected' && tmux) void refresh()
         }}
         onModifiers={setModifiers}
         onPageEvent={pageEvent}
       />
-      {ended && android ? <View testID="terminal-ended" style={[styles.ended, { backgroundColor: colors.raised, borderColor: colors.border }]}>
+      {ended ? <View testID="terminal-ended" style={[styles.ended, { backgroundColor: colors.raised, borderColor: colors.border }]}>
         <Text style={[styles.endedText, { color: colors.text }]} numberOfLines={3}>{status === 'Exited' ? 'The shell exited.' : statusMessage || 'Terminal connection failed.'}</Text>
         <Pressable
           accessibilityRole="button"
@@ -350,7 +349,7 @@ function ScopedTerminalView({ terminal, tmux, active, onClose, connection, conne
         ><Text style={{ color: colors.blue, fontWeight: '700' }}>{status === 'Exited' ? 'New shell' : 'Retry'}</Text></Pressable>
       </View> : null}
     </View>
-    {android ? <View collapsable={false} testID="terminal-key-row" style={[styles.keyRow, { backgroundColor: colors.background, borderColor: colors.border }]}>
+    <View collapsable={false} testID="terminal-key-row" style={[styles.keyRow, { backgroundColor: colors.background, borderColor: colors.border }]}>
       <ScrollView horizontal keyboardShouldPersistTaps="always" showsHorizontalScrollIndicator={false} contentContainerStyle={styles.keyRowContent}>
         {TERMINAL_KEYS.map(key => {
           const active = key.name === 'ctrl' ? modifiers.ctrl : key.name === 'alt' ? modifiers.alt : false
@@ -363,11 +362,11 @@ function ScopedTerminalView({ terminal, tmux, active, onClose, connection, conne
             onPress={() => pressKey(key.name)}
             style={[styles.key, { borderColor: colors.border, backgroundColor: active ? colors.blue : colors.surface }]}
           >
-            <Text style={[styles.keyLabel, { color: active ? colors.background : colors.text }]}>{key.label}</Text>
+            <TerminalKeyLabel label={key.label} style={[styles.keyLabel, { color: active ? colors.background : colors.text }]} />
           </Pressable>
         })}
       </ScrollView>
-    </View> : null}
+    </View>
   </View>
 }
 

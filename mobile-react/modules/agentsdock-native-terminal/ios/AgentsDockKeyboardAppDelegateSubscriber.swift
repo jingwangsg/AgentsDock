@@ -6,7 +6,7 @@ public final class AgentsDockKeyboardAppDelegateSubscriber: ExpoAppDelegateSubsc
 
   public func applicationWillResignActive(_ application: UIApplication) {
     // Run before scenes become inactive, while every modal/root window is
-    // still discoverable. This covers both React Native inputs and SwiftTerm.
+    // still discoverable. This covers React Native inputs and web views alike.
     needsForegroundCleanup = true
     endEditing(in: application)
   }

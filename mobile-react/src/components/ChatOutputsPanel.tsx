@@ -1,8 +1,7 @@
-// "Outputs & sources" page sheet for one chat: port of the Electron ChatOutputsPanel.
+// "Outputs & sources" full-screen sheet for one chat: port of the Electron ChatOutputsPanel.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AccessibilityInfo, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import { showActionMenu } from '../lib/action-menu'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
 import { FileDiff, FileText, Frame, GitBranch, Globe, Image, MessageSquare, Paperclip, Plug, Search, Sparkles, type LucideIcon } from 'lucide-react-native'
@@ -15,6 +14,7 @@ import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAp
 import { usePalette } from '../theme'
 import type { AgentFile, CanvasSummary, Event } from '../types'
 import { Text } from './AppText'
+import { ModalSafeArea } from './ModalSafeArea'
 import { SheetCloseButton } from './ui'
 import { useFileViewer } from './file-viewer/FileViewerContext'
 import { FileTransferNotice } from './file-viewer/FileTransferNotice'
@@ -22,7 +22,7 @@ import { useFileTransfer } from './file-viewer/useFileTransfer'
 
 const COLLAPSED_SOURCE_ROWS = 6
 const REFRESH_DEBOUNCE_MS = 1_000
-// UIKit acknowledges a page-sheet dismissal through onDismiss; the fallback
+// UIKit acknowledges a modal's dismissal through onDismiss; the fallback
 // covers an interrupted transition (same as AppShell's inspector handoff).
 const IOS_DISMISS_FALLBACK_MS = 1_000
 const EMPTY_EVENTS: Event[] = []
@@ -107,8 +107,8 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
   const sources = summary?.sources ?? []
   const visibleSources = allSources ? sources : sources.slice(0, COLLAPSED_SOURCE_ROWS)
 
-  return <Modal visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal onRequestClose={onClose} onDismiss={finishDismissal}>
-    <SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]} edges={['bottom']}>
+  return <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose} onDismiss={finishDismissal}>
+    <ModalSafeArea style={[styles.fill, { backgroundColor: colors.background }]} edges={['bottom']}>
       <View style={styles.grabber} />
       <View style={styles.top}>
         <Text style={[styles.title, { color: colors.text }]}>Outputs & sources</Text>
@@ -171,7 +171,7 @@ export function ChatOutputsPanel({ sessionId, visible, onClose, onReview, onChan
         </Pressable> : null}
         {hasMore ? <Text testID="chat-outputs-truncated" style={[styles.footer, { color: colors.muted }]}>Based on the {events.length} loaded events{total ? ` of ${total}` : ''}. Older history is not included.</Text> : null}
       </ScrollView>
-    </SafeAreaView>
+    </ModalSafeArea>
   </Modal>
 }
 

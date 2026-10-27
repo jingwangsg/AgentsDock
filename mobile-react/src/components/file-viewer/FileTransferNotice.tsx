@@ -1,4 +1,5 @@
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from '../material/ActivityIndicator'
 import { formatBytes } from '../../lib/format'
 import { isFileTransferBusy, type FileTransferState } from '../../lib/file-transfer'
 import { usePalette } from '../../theme'

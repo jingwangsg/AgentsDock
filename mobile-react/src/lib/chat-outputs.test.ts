@@ -144,7 +144,7 @@ seq = 0
   ]
   assertEqual(collectChatOutputs(events).sources, [
     { kind: 'skill', label: 'review-pr', eventId: 'e2' },
-    { kind: 'chat_reference', label: 'Planning chat', eventId: 'e2' },
+    { kind: 'chat_reference', label: 'Planning chat', sessionId: 'other', eventId: 'e2' },
     { kind: 'attached_file', label: 'spec.md', eventId: 'e2' },
     { kind: 'attached_file', label: 'data.csv', eventId: 'e2' },
   ], 'skills, referenced chats and attached uploads come from turn starts, resolving uploads in either order')

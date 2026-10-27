@@ -28,8 +28,8 @@ test('the client exposes the canvas routes with the desktop record types', () =>
   assert.match(client, /`\/api\/canvas-runtime\/\$\{asset\}`/)
 })
 
-test('the sheet is a page sheet with the canvas name, a switcher, reload and close', () => {
-  assert.match(sheet, /<Modal visible=\{name !== null\} animationType="slide" presentationStyle=\{Platform\.OS === 'ios' \? 'pageSheet' : 'fullScreen'\} allowSwipeDismissal onRequestClose=\{onClose\}>/)
+test('the sheet is a full-screen sheet with the canvas name, a switcher, reload and close', () => {
+  assert.match(sheet, /<Modal visible=\{name !== null\} animationType="slide" presentationStyle="fullScreen" onRequestClose=\{onClose\}>/)
   assert.match(sheet, /Canvas · \{name\}/)
   assert.match(sheet, /\{canvases\.length > 1 \? <ScrollView horizontal/, 'the switcher appears only when the chat has several canvases')
   assert.match(sheet, /<IconButton icon=\{RefreshCw\} size=\{16\} label="Reload canvas" testID="canvas-reload"/)

@@ -6,14 +6,15 @@ import { build } from 'esbuild'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const target = resolve(root, 'src/terminal/xtermAssets.ts')
 const check = process.argv.includes('--check')
-// The Android terminal page: xterm.js, its addons and the page's own code, as one script.
+// The mobile terminal page: xterm.js, its addons and the page's own code, as one script. Targets: Android's
+// web view and iOS's WKWebView at the deployment target.
 const page = await build({
   entryPoints: [resolve(root, 'scripts/terminal-page-entry.ts')],
   bundle: true,
   write: false,
   format: 'iife',
   platform: 'browser',
-  target: ['chrome100'],
+  target: ['chrome100', 'safari16.4'],
   minify: true,
   charset: 'utf8',
   legalComments: 'eof',

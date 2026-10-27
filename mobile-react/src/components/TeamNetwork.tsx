@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -9,6 +8,7 @@ import {
   StyleSheet,
   View,
 } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { ArrowLeft, Bot, BookOpen, Inbox, RadioTower, RefreshCw, Send, Server, Users, X } from 'lucide-react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { AgentServerClient } from '../api/AgentServerClient'
@@ -525,7 +525,7 @@ function ActionButton({ icon: Icon, label, disabled = false, onPress }: { icon: 
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
-  header: { minHeight: 58, paddingHorizontal: 6, paddingVertical: Platform.OS === 'android' ? 5 : 4, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 2 },
+  header: { minHeight: 58, paddingHorizontal: 6, paddingVertical: 5, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 2 },
   headerTitle: { flex: 1, minWidth: 0, gap: 1 }, title: { fontSize: 16, fontWeight: '800' }, subtitleRow: { minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 5 }, statusDot: { width: 6, height: 6, flexShrink: 0, borderRadius: 3 }, subtitle: { flexShrink: 1, fontSize: 10.5 },
   teamPickerScroller: { flexGrow: 0, flexShrink: 0, maxHeight: 54, borderBottomWidth: StyleSheet.hairlineWidth },
   teamPicker: { minHeight: 54, paddingHorizontal: 10, paddingVertical: 5, gap: 6, alignItems: 'center' },

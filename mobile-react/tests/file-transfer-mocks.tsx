@@ -1,7 +1,6 @@
 import { createElement } from 'react'
 export * from './component-mocks/react-native'
 export const KeyboardAvoidingView = 'KeyboardAvoidingView'
-export const ActionSheetIOS = { showActionSheetWithOptions(_options: { title?: string; options: string[] }, _callback: (index: number) => void) {} }
 export const AccessibilityInfo = { announceForAccessibility(_message: string) {} }
 export let testWidth = 390
 export function setTestWidth(width: number) { testWidth = width }

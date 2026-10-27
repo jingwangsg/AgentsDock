@@ -1,5 +1,5 @@
 import type { Job } from '../types'
-import { defaultScheduleWallTime, describeJobSchedule, effectiveScheduleKind, formatScheduleWallTime, JOB_INTERVAL_PRESETS_SECONDS, jobLoopsForever, jobNextRunUpdatePatch, jobScheduleFields, jobScheduleUpdatePatch, mergeScheduleWallTimePickerValue, parseScheduleWallTime, scheduleWallTimeAndroidDatePickerDate, validateJobNextRun, validateJobSchedule } from './job-schedule'
+import { defaultScheduleWallTime, describeJobSchedule, effectiveScheduleKind, formatScheduleWallTime, JOB_INTERVAL_PRESETS_SECONDS, jobLoopsForever, jobNextRunUpdatePatch, jobScheduleFields, jobScheduleUpdatePatch, mergeScheduleWallTimePickerValue, parseScheduleWallTime, scheduleWallTimeUtcDay, validateJobNextRun, validateJobSchedule } from './job-schedule'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -39,11 +39,11 @@ assert(parseScheduleWallTime('2026-07-21 09:00', 'cron') === '2026-07-21T09:00',
 assert(defaultScheduleWallTime(new Date(2026, 7, 25, 10, 2, 30)) === '2026-08-25 10:05', 'the picker should start at the next five-minute boundary')
 assert(defaultScheduleWallTime(new Date('2026-08-25T17:02:30.000Z'), 'cron', 'America/Los_Angeles') === '2026-08-25 10:05', 'cron defaults must use the selected schedule timezone instead of the device timezone')
 assert(defaultScheduleWallTime(new Date('2026-08-25T17:02:30.000Z'), 'rrule', 'UTC') === '2026-08-25 17:05', 'RRULE defaults must preserve the same instant in their selected timezone')
-const androidCalendarValue = scheduleWallTimeAndroidDatePickerDate('2026-08-25 23:55')
-assert(androidCalendarValue.toISOString() === '2026-08-25T00:00:00.000Z', 'Android calendar values should use the intended UTC day in every device timezone')
-const selectedAndroidDay = new Date('2026-08-26T00:00:00.000Z')
-const dateMerged = mergeScheduleWallTimePickerValue('2026-08-25 23:55', selectedAndroidDay, 'date', true)
-assert(dateMerged === '2026-08-26 23:55', 'Android date selection should not shift west of UTC or overwrite the selected time')
+const calendarValue = scheduleWallTimeUtcDay('2026-08-25 23:55')
+assert(calendarValue.toISOString() === '2026-08-25T00:00:00.000Z', 'Material calendar values should use the intended UTC day in every device timezone')
+const selectedDay = new Date('2026-08-26T00:00:00.000Z')
+const dateMerged = mergeScheduleWallTimePickerValue('2026-08-25 23:55', selectedDay, 'date')
+assert(dateMerged === '2026-08-26 23:55', 'Material date selection should not shift west of UTC or overwrite the selected time')
 const timeMerged = mergeScheduleWallTimePickerValue(dateMerged, new Date(2026, 0, 1, 9, 45), 'time')
 assert(timeMerged === '2026-08-26 09:45', 'time selection should preserve the already selected calendar day')
 assert(parseScheduleWallTime(timeMerged, 'cron') === '2026-08-26T09:45', 'cron picker values should remain naive wall times for the selected timezone')

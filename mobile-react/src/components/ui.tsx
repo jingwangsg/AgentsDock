@@ -1,5 +1,6 @@
 import { useRef, type ReactNode } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import type { LucideIcon } from 'lucide-react-native'
 import { X } from 'lucide-react-native'
 import { usePalette } from '../theme'
@@ -26,7 +27,7 @@ export function IconButton({ icon: Icon, onPress, disabled, selected, size = 18,
   )
 }
 
-/** A protected close target kept below the native page-sheet drag recognizer. */
+/** The close target in sheet headers; a press survives 20 pt of finger drift (pressRetentionOffset). */
 export function SheetCloseButton({ onPress, disabled, label = 'Close', testID, activateOnPressIn = false }: { onPress: () => void; disabled?: boolean; label?: string; testID?: string; activateOnPressIn?: boolean }) {
   const colors = usePalette()
   const press = usePressActivation(onPress, activateOnPressIn)

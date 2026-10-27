@@ -1,14 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   View,
 } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import { ActivityIndicator } from './material/ActivityIndicator'
+import { Switch } from './material/Switch'
 import Svg, { Circle } from 'react-native-svg'
 import {
   ArchiveRestore,
@@ -49,6 +48,7 @@ import { CodexInteractionCard } from './CodexInteractionShelf'
 import { CodexGoalEditor } from './CodexGoalBar'
 import { codexStatusLabel, useCodexRuntime } from './CodexRuntimeContext'
 import { ProviderUsageSection } from './ProviderUsagePanel'
+import { ModalSafeArea } from './ModalSafeArea'
 import { IconButton, SheetCloseButton } from './ui'
 
 type NoticeTone = 'success' | 'warning'
@@ -126,7 +126,8 @@ export function CodexContextIndicator() {
       style={({ pressed }) => [styles.contextIndicator, { opacity: pressed ? 0.62 : 1 }]}
     >
       <Svg width={22} height={22} viewBox="0 0 22 22">
-        <Circle cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
+        {/* load-bearing key: iOS react-native-svg keeps a dash array that is later removed, so the dotted track remounts once the usage is known. */}
+        <Circle key={percent == null ? 'unknown' : 'known'} cx={11} cy={11} r={8} fill="none" stroke={colors.border} strokeWidth={2.5} strokeDasharray={percent == null ? [2, 3] : undefined} />
         {percent == null ? null : <Circle
           cx={11}
           cy={11}
@@ -226,8 +227,8 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
   )
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={onClose}>
-      <SafeAreaView style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+    <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+      <ModalSafeArea style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
         <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
           <View style={[styles.sheetMark, { backgroundColor: colors.raised }]}><Bot size={20} color={colors.blue} /></View>
           <View style={{ flex: 1 }}>
@@ -373,7 +374,7 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
             />
           ) : null}
         </ScrollView>
-      </SafeAreaView>
+      </ModalSafeArea>
     </Modal>
   )
 }

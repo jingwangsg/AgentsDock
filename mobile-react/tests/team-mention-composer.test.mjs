@@ -12,7 +12,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 globalThis.requestAnimationFrame ??= callback => setTimeout(() => callback(Date.now()), 0)
 globalThis.cancelAnimationFrame ??= clearTimeout
 const store = create(() => ({}))
-const fixture = { store, alerts: [], reads: [], sends: [], selections: [], routeReads: [], revokes: [], skips: [], width: 390, scheme: 'dark', client: { isValidated: true, validationRevision: 1 } }
+const fixture = { store, os: 'ios', alerts: [], reads: [], sends: [], selections: [], routeReads: [], revokes: [], skips: [], width: 390, scheme: 'dark', client: { isValidated: true, validationRevision: 1 } }
 globalThis.__teamComposerFixture = fixture
 const mocks = {
   'react-native': `import { createElement } from 'react'; const fixture=globalThis.__teamComposerFixture;
@@ -21,9 +21,9 @@ const mocks = {
     export const Modal = ({visible=true,...props}) => visible ? createElement('Modal',props) : null;
     export const FlatList = ({data=[],renderItem,ListEmptyComponent,ListFooterComponent,...props}) => createElement('FlatList',props,data.length ? data.map((item,index) => createElement('ListItem',{key:item.id||index},renderItem({item,index}))) : typeof ListEmptyComponent === 'function' ? createElement(ListEmptyComponent) : ListEmptyComponent, ListFooterComponent);
     export const StyleSheet={create:value=>value,hairlineWidth:0.5,absoluteFill:{},flatten:value=>Object.assign({},...[value].flat(Infinity).filter(Boolean))};
-    export const Platform={OS:'ios',select:choices=>choices.ios??choices.default};
+    export const Platform={get OS(){return fixture.os},select:choices=>choices[fixture.os]??choices.default};
     export const useColorScheme=()=>fixture.scheme; export const useWindowDimensions=()=>({width:fixture.width,height:844,scale:3,fontScale:1});
-    export const Alert={alert:(...args)=>fixture.alerts.push(args)}; export const ActionSheetIOS={showActionSheetWithOptions:(options,callback)=>fixture.actionSheet={options,callback}};`,
+    export const Alert={alert:(...args)=>fixture.alerts.push(args)};`,
   'react-native-safe-area-context': `export const SafeAreaView='SafeAreaView'; export const useSafeAreaInsets=()=>({top:0,bottom:0,left:0,right:0});`,
   'expo-image': `export const Image='Image';`,
   'expo-document-picker': `export async function getDocumentAsync(){return {canceled:true}}`,
@@ -120,7 +120,7 @@ const click=async(renderer,id)=>act(async()=>byID(renderer,id)[0].props.onPress(
 const recipient=renderer=>renderer.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel==='Reference Mac Studio in My team')
 async function renderPicker(overrides={}){
   let renderer
-  const props={visible:true,width:390,query:'',sourceSessionId:'chat',referenceLimitReached:false,onQueryChange(){},onSelect(value){fixture.selected=value;return true},onClose(){},onDidDismiss(){},...overrides}
+  const props={visible:true,query:'',sourceSessionId:'chat',referenceLimitReached:false,onQueryChange(){},onSelect(value){fixture.selected=value;return true},onClose(){},onDidDismiss(){},...overrides}
   await act(async()=>{renderer=TestRenderer.create(React.createElement(TeamTargetPicker,props))})
   return {renderer,props}
 }
@@ -335,9 +335,11 @@ test('Add menu exposes a direct server recipient picker without requiring typed 
   const renderer=await render()
   try{
     await click(renderer,'chat-attach')
-    const index=fixture.actionSheet.options.options.indexOf('Reference a server (@@)')
-    assert.ok(index>=0)
-    await act(async()=>fixture.actionSheet.callback(index))
+    // One Add dialog on both platforms; iOS draws all of its buttons.
+    const add=fixture.alerts.find(([title])=>title==='Add')
+    const button=add?.[2]?.find(entry=>entry.text==='Reference a server (@@)')
+    assert.ok(button)
+    await act(async()=>button.onPress())
     assert.ok(recipient(renderer))
     await act(async()=>recipient(renderer).props.onPress())
     assert.equal(store.getState().drafts.chat,'@@Mac Studio ')
@@ -563,7 +565,9 @@ test('a chat on another server becomes a tagged chip that is paired through the 
   }finally{await act(async()=>renderer.unmount())}
 })
 
-const select=async(renderer,caret)=>act(async()=>byID(renderer,'chat-composer-input')[0].props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}}))
+// iOS (this fixture's platform) moves the caret out of a chip one frame later: wait for that frame.
+const nextFrame=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()))
+const select=async(renderer,caret)=>act(async()=>{byID(renderer,'chat-composer-input')[0].props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}});await nextFrame()})
 const inputText=node=>node.children.map(child=>typeof child==='string'?child:inputText(child)).join('')
 test('a picked chat is one block inside the input and Backspace at its end removes it with its pill',async()=>{
   resetRoutes()
@@ -592,6 +596,49 @@ test('a picked chat is one block inside the input and Backspace at its end remov
     await select(renderer,3)
     assert.deepEqual(fixture.selections,[[4,4]],'The caret lands where the chip began')
   }finally{await act(async()=>renderer.unmount())}
+})
+
+test('on iOS the caret leaves a chip one frame after the tap, once TextInput holds the latest event count',async()=>{
+  // A tap that ends an autocorrect session sends a same-text change with the selection; a selection
+  // command issued in that batch carries the old event count and iOS ignores it (seen on the iPad simulator).
+  const reference={session_id:'target',display_title_snapshot:'Chat target',source_text_start:4,source_text_end:16,action:'route',grant_intent:true}
+  resetRoutes({drafts:{chat:'Ask @Chat target now'},chatReferencesBySession:{chat:[reference]}})
+  const renderer=await render()
+  const realFrame=globalThis.requestAnimationFrame
+  const frames=[]
+  try{
+    globalThis.requestAnimationFrame=callback=>frames.push(callback)
+    await act(async()=>{
+      byID(renderer,'chat-composer-input')[0].props.onChangeText('Ask @Chat target now')
+      byID(renderer,'chat-composer-input')[0].props.onSelectionChange({nativeEvent:{selection:{start:8,end:8}}})
+    })
+    assert.deepEqual(fixture.selections,[],'No selection command in the batch of the text event')
+    await act(async()=>{for(const callback of frames.splice(0))callback(Date.now())})
+    assert.deepEqual(fixture.selections,[[4,4]])
+    globalThis.requestAnimationFrame=realFrame
+    await type(renderer,'Ask x@Chat target now')
+    assert.deepEqual(store.getState().chatReferencesBySession.chat,[{...reference,source_text_start:5,source_text_end:17}])
+  }finally{globalThis.requestAnimationFrame=realFrame;await act(async()=>renderer.unmount())}
+})
+
+test('on Android the caret leaves a chip in the selection event itself, without waiting a frame',async()=>{
+  const reference={session_id:'target',display_title_snapshot:'Chat target',source_text_start:4,source_text_end:16,action:'route',grant_intent:true}
+  resetRoutes({drafts:{chat:'Ask @Chat target now'},chatReferencesBySession:{chat:[reference]}})
+  fixture.os='android'
+  const renderer=await render()
+  const realFrame=globalThis.requestAnimationFrame
+  const frames=[]
+  const selectNow=async caret=>act(async()=>byID(renderer,'chat-composer-input')[0].props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}}))
+  try{
+    globalThis.requestAnimationFrame=callback=>frames.push(callback)
+    await selectNow(8)
+    assert.deepEqual(fixture.selections,[[4,4]],'A tap inside goes to the nearer edge, before any frame')
+    await selectNow(5)
+    assert.deepEqual(fixture.selections,[[4,4],[16,16]],'One step in from the start crosses the chip')
+    globalThis.requestAnimationFrame=realFrame
+    await act(async()=>{for(const callback of frames.splice(0))callback(Date.now())})
+    assert.deepEqual(fixture.selections,[[4,4],[16,16]],'No second, delayed selection command')
+  }finally{fixture.os='ios';globalThis.requestAnimationFrame=realFrame;await act(async()=>renderer.unmount())}
 })
 
 test('the caret never rests inside a chip, so typing beside it keeps the chip',async()=>{
@@ -759,7 +806,7 @@ function chipQueue(turn={prompt:'Ask @Chat target now',chat_references:[{session
   return {prompt:turn.prompt,updates}
 }
 const editQueued=async renderer=>act(async()=>renderer.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel==='Edit queued message').props.onPress())
-const queuedSelect=async(renderer,caret)=>act(async()=>renderer.root.findByType('TextInput').props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}}))
+const queuedSelect=async(renderer,caret)=>act(async()=>{renderer.root.findByType('TextInput').props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}});await nextFrame()})
 
 test('the queued-message editor draws a chip as one block, keeps the caret out of it and deletes it whole',async()=>{
   const {prompt,updates}=chipQueue()

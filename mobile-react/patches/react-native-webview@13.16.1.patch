@@ -136,20 +136,84 @@ index 4709e2822499067cef3a4ce571991b96f844e085..cb9eaea0fdb8b8a1da1fcfc2630c2f63
      /* iOS PROPS - no implemented here */
      @Override
      public void setAllowingReadAccessToURL(RNCWebViewWrapper view, @Nullable String value) {}
+diff --git a/apple/RNCWebView.mm b/apple/RNCWebView.mm
+index c0816b6320820a8586f3735b7971790cac8704fa..d6f0ec6ac5db949cb397cef29f5ab608e5dd1563 100644
+--- a/apple/RNCWebView.mm
++++ b/apple/RNCWebView.mm
+@@ -309,6 +309,7 @@ - (void)updateProps:(Props::Shared const &)props oldProps:(Props::Shared const &
+     REMAP_WEBVIEW_PROP(hideKeyboardAccessoryView)
+     REMAP_WEBVIEW_PROP(allowsBackForwardNavigationGestures)
+     REMAP_WEBVIEW_PROP(incognito)
++    REMAP_WEBVIEW_STRING_PROP(webViewProfile)
+     REMAP_WEBVIEW_PROP(pagingEnabled)
+     REMAP_WEBVIEW_STRING_PROP(applicationNameForUserAgent)
+     REMAP_WEBVIEW_PROP(cacheEnabled)
+diff --git a/apple/RNCWebViewImpl.h b/apple/RNCWebViewImpl.h
+index 1f6bbfd697a4e0b0aef2db344386b786839a1969..77afc31c2de36e9bcd8789ba195968c272e07019 100644
+--- a/apple/RNCWebViewImpl.h
++++ b/apple/RNCWebViewImpl.h
+@@ -95,6 +95,7 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
+ @property (nonatomic, copy) NSString * _Nullable userAgent;
+ @property (nonatomic, copy) NSString * _Nullable applicationNameForUserAgent;
+ @property (nonatomic, assign) BOOL cacheEnabled;
++@property (nonatomic, copy) NSString * _Nullable webViewProfile;
+ @property (nonatomic, assign) BOOL javaScriptEnabled;
+ @property (nonatomic, assign) BOOL javaScriptCanOpenWindowsAutomatically;
+ @property (nonatomic, assign) BOOL allowFileAccessFromFileURLs;
+diff --git a/apple/RNCWebViewImpl.m b/apple/RNCWebViewImpl.m
+index 7f5c24d6e2cfb26eddbc513bf17a81c24a7273e2..ddcc65b5d3e25911959d7ae0880812dc55aecbb6 100644
+--- a/apple/RNCWebViewImpl.m
++++ b/apple/RNCWebViewImpl.m
+@@ -16,6 +16,19 @@
+ #endif // !TARGET_OS_OSX
+ 
+ #import "objc/runtime.h"
++#import <CommonCrypto/CommonDigest.h>
++
++// The persistent data store a web view profile names. load-bearing: the app's AgentsDockBrowserLoopback
++// module derives the same UUID to set this store's proxy; a mismatch leaves the tab unrouted.
++// Vector: "agentsdock-browser-default-browser_1a2b3c" -> C82A50EC-B270-8AAE-B642-7E9F0C459051.
++static NSUUID *RNCWebViewProfileIdentifier(NSString *profile) {
++  NSData *name = [profile dataUsingEncoding:NSUTF8StringEncoding];
++  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
++  CC_SHA256(name.bytes, (CC_LONG)name.length, digest);
++  digest[6] = (digest[6] & 0x0F) | 0x80; // RFC 9562 version 8
++  digest[8] = (digest[8] & 0x3F) | 0x80; // RFC 9562 variant
++  return [[NSUUID alloc] initWithUUIDBytes:digest];
++}
+ 
+ static NSTimer *keyboardTimer;
+ static NSString *const HistoryShimName = @"ReactNativeHistoryShim";
+@@ -464,6 +477,14 @@ - (WKWebViewConfiguration *)setUpWkWebViewConfig
+   } else if (_cacheEnabled) {
+     wkWebViewConfig.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
+   }
++  // The profile's own cookies, storage, cache and service workers, kept across launches. Read once, when
++  // the WKWebView is created; a new profile needs a new view (`key`). Before iOS 17 the view keeps the
++  // shared store.
++  if (_webViewProfile.length > 0) {
++    if (@available(iOS 17.0, macOS 14.0, *)) {
++      wkWebViewConfig.websiteDataStore = [WKWebsiteDataStore dataStoreForIdentifier:RNCWebViewProfileIdentifier(_webViewProfile)];
++    }
++  }
+   if(self.useSharedProcessPool) {
+     wkWebViewConfig.processPool = [[RNCWKProcessPoolManager sharedManager] sharedProcessPool];
+   }
 diff --git a/lib/WebViewTypes.d.ts b/lib/WebViewTypes.d.ts
-index 998cc88f03f3fbcd0a47f227c01f738dbf4c58bf..c35cad7d46283bdf711075717b390819eef39654 100644
+index 998cc88f03f3fbcd0a47f227c01f738dbf4c58bf..a0f0f7fc65dcec756fa13334f165e6f646e39c90 100644
 --- a/lib/WebViewTypes.d.ts
 +++ b/lib/WebViewTypes.d.ts
-@@ -844,6 +844,14 @@ export interface AndroidWebViewProps extends WebViewSharedProps {
+@@ -844,6 +844,15 @@ export interface AndroidWebViewProps extends WebViewSharedProps {
       * @platform android
       */
      setSupportMultipleWindows?: boolean;
 +    /**
-+     * Name of the androidx.webkit Profile this web view uses: its own cookies, web storage, cache and
-+     * service workers, kept across restarts. Applied when the view is created, before its first load,
-+     * where the web view supports MULTI_PROFILE; elsewhere the view uses the app's shared storage.
-+     * Give the WebView a new `key` to change it.
-+     * @platform android
++     * Name of the web view profile this web view uses: its own cookies, web storage, cache and service
++     * workers, kept across restarts. Applied when the view is created, before its first load, where the
++     * web view supports it (Android MULTI_PROFILE: an androidx.webkit Profile; iOS 17: a persistent
++     * WKWebsiteDataStore whose identifier is derived from the name); elsewhere the view uses the app's
++     * shared storage. Give the WebView a new `key` to change it.
++     * @platform android, ios
 +     */
 +    webViewProfile?: string;
      /**
@@ -168,19 +232,20 @@ index 7f4e6c4f73506efa9517314a3ff89f91b097763e..90f02f80e6f8fef323743264f13cfa7b
  
  export interface NativeCommands {
 diff --git a/src/WebViewTypes.ts b/src/WebViewTypes.ts
-index eca81415ab48676da18fc2be13b84e60fe5cb3f5..71f81694f5aacdc4c2291baad5bf0054510850a1 100644
+index eca81415ab48676da18fc2be13b84e60fe5cb3f5..818e1afa432743783619a218608e7ff41945f417 100644
 --- a/src/WebViewTypes.ts
 +++ b/src/WebViewTypes.ts
-@@ -1037,6 +1037,15 @@ export interface AndroidWebViewProps extends WebViewSharedProps {
+@@ -1037,6 +1037,16 @@ export interface AndroidWebViewProps extends WebViewSharedProps {
     */
    setSupportMultipleWindows?: boolean;
  
 +  /**
-+   * Name of the androidx.webkit Profile this web view uses: its own cookies, web storage, cache and
-+   * service workers, kept across restarts. Applied when the view is created, before its first load,
-+   * where the web view supports MULTI_PROFILE; elsewhere the view uses the app's shared storage.
-+   * Give the WebView a new `key` to change it.
-+   * @platform android
++   * Name of the web view profile this web view uses: its own cookies, web storage, cache and service
++   * workers, kept across restarts. Applied when the view is created, before its first load, where the
++   * web view supports it (Android MULTI_PROFILE: an androidx.webkit Profile; iOS 17: a persistent
++   * WKWebsiteDataStore whose identifier is derived from the name); elsewhere the view uses the app's
++   * shared storage. Give the WebView a new `key` to change it.
++   * @platform android, ios
 +   */
 +  webViewProfile?: string;
 +

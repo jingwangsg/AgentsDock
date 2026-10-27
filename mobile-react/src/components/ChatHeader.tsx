@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { Image } from 'expo-image'
 import { ArrowLeft, FolderOpen, Layers, PanelLeftClose, PanelLeftOpen, PanelRight, RefreshCw, Search, Server } from 'lucide-react-native'
 import { useAppStore } from '../store/useAppStore'

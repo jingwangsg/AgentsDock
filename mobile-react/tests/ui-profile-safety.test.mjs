@@ -45,7 +45,6 @@ test('deferred native callbacks remain bound to their originating profile genera
   assert.match(sidebar, /function profileScopeIsCurrent/)
   assert.match(sidebar, /state\.profileGeneration === scope\.profileGeneration/)
   assert.match(sidebar, /sessionScopeIsCurrent\(scope, session\.id\)/)
-  assert.match(sidebar, /clearTimeout\(folderSheetTimer\.current\)/)
   assert.match(sidebar, /remove\(session\.id, scope\.profileGeneration\)/)
   assert.match(sidebar, /workspaceAdopting/)
   assert.match(inspector, /state\.profileGeneration === profileGeneration/)

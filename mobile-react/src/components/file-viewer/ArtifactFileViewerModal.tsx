@@ -2,7 +2,6 @@ import { FlashList } from '@shopify/flash-list'
 import * as FileSystem from 'expo-file-system/legacy'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   Modal,
   Platform,
   Pressable,
@@ -10,6 +9,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native'
+import { ActivityIndicator } from '../material/ActivityIndicator'
 import {
   ChevronLeft,
   ChevronRight,
@@ -711,7 +711,8 @@ function artifactKindIcon(kind: MobileFileViewerKind) {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  header: { minHeight: 64, flexShrink: 0, position: 'relative', zIndex: 20, elevation: 20, flexDirection: 'row', alignItems: 'center', gap: 4, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 8, paddingVertical: 8 },
+  // shadow*: iOS draws the shadow Android casts for elevation 20 (measured on Android build 78).
+  header: { minHeight: 64, flexShrink: 0, position: 'relative', zIndex: 20, elevation: 20, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.13, shadowRadius: 14, flexDirection: 'row', alignItems: 'center', gap: 4, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 8, paddingVertical: 8 },
   headerIdentity: { flex: 1, minWidth: 0, paddingHorizontal: 3 },
   headerTitle: { fontSize: 14, lineHeight: 18, fontWeight: '800' },
   headerSubtitle: { fontSize: 10, lineHeight: 14, marginTop: 1 },

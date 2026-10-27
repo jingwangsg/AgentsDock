@@ -172,12 +172,20 @@ try {
   await flush()
   assert.equal(useAppStore.getState().subagentsBySession[sessionA.id], slice, 'a stale snapshot record keeps the newer state and the reference')
 
-  // The turn's end stops the poll and fetches once more so final statuses land.
+  // child-2 is still running when its turn ends: a background agent outlives its turn, so the poll stays.
   const callsBeforeEnd = subagentCalls.length
   live(event(10, 'turn_finished', { run_id: 'run-1' }))
   await flush()
-  assert.equal(polls().length, 0, 'the poll stops when the chat leaves the active set')
-  assert.equal(subagentCalls.length, callsBeforeEnd + 1, 'turn end fetches the snapshot once')
+  assert.equal(polls().length, 1, 'a running child keeps the poll after its turn ends')
+  assert.equal(subagentCalls.length, callsBeforeEnd, 'the turn end alone does not fetch while the poll continues')
+
+  // The tick that reports the last child finished stops the poll. Its closing fetch joins that tick's request,
+  // which already carries the final statuses, so no second request goes out.
+  subagentRecords = [event(9, 'subagent_state', { run_id: 'run-1', subagent_id: 'child-2', subagent_status: 'completed' })]
+  polls()[0].tick()
+  await flush()
+  assert.equal(polls().length, 0, 'the poll stops once no child runs and the chat left the active set')
+  assert.equal(subagentCalls.length, callsBeforeEnd + 1, 'the last tick is the final fetch')
 
   // A rewind drops the chat's records and refetches.
   subagentRecords = []

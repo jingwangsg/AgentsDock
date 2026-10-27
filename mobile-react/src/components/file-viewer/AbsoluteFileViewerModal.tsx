@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import * as Clipboard from 'expo-clipboard'
 import * as FileSystem from 'expo-file-system/legacy'
-import { ActivityIndicator, Modal, Platform, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
+import { Modal, Platform, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator } from '../material/ActivityIndicator'
 import { Download, Link, RefreshCw, Share2 } from 'lucide-react-native'
 import { fileViewerCacheKey, inferredMobileFileContentType, mobileFileViewerKind, mobileFileViewerLayout, workspacePreviewAllowed } from '../../lib/file-viewer'
 import { absoluteFileTransferRequest, type FileTransferAction } from '../../lib/file-transfer'
@@ -162,7 +163,8 @@ function viewerError(cause: unknown): string {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  header: { minHeight: 64, flexShrink: 0, position: 'relative', zIndex: 20, elevation: 20, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  // shadow*: iOS draws the shadow Android casts for elevation 20 (measured on Android build 78).
+  header: { minHeight: 64, flexShrink: 0, position: 'relative', zIndex: 20, elevation: 20, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.13, shadowRadius: 14, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 6 },
   headerIdentity: { flex: 1, minWidth: 0 },
   headerTitle: { fontSize: 15, fontWeight: '800' },
   headerSubtitle: { fontSize: 10, marginTop: 2 },

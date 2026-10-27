@@ -1,6 +1,8 @@
 // Named host icons keep the controls' production component tree inspectable.
 export const AlertTriangle = 'AlertTriangle'
 export const ArchiveRestore = 'ArchiveRestore'
+export const ArrowLeft = 'ArrowLeft'
+export const ArrowRight = 'ArrowRight'
 export const ArrowUp = 'ArrowUp'
 export const Bot = 'Bot'
 export const Check = 'Check'

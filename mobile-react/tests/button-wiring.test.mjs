@@ -69,7 +69,7 @@ test('every declared mobile tappable has an activation callback', () => {
   assert.deepEqual(missing, [])
 })
 
-test('native page sheets use protected close targets and state-first dismissal', () => {
+test('sheets use protected close targets and state-first dismissal', () => {
   const ui = fs.readFileSync(path.resolve('src/components/ui.tsx'), 'utf8')
   const dialogs = fs.readFileSync(path.resolve('src/components/Dialogs.tsx'), 'utf8')
   const appShell = fs.readFileSync(path.resolve('src/components/AppShell.tsx'), 'utf8')
@@ -93,8 +93,8 @@ test('native page sheets use protected close targets and state-first dismissal',
   assert.match(controls, /testID="codex-controls-close"/)
   assert.match(requests, /closeTestID="codex-requests-close"/)
   assert.match(requests, /testID=\{resolvedCloseTestID\}/)
-  assert.match(controls, /presentationStyle="pageSheet" allowSwipeDismissal/)
-  assert.match(requests, /presentationStyle="pageSheet" allowSwipeDismissal/)
+  assert.match(controls, /presentationStyle="fullScreen"/)
+  assert.match(requests, /presentationStyle="fullScreen"/)
 })
 
 test('successful dialog mutations dismiss before deferred keyboard cleanup', () => {

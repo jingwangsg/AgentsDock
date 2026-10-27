@@ -8,15 +8,13 @@ const store = fs.readFileSync(path.resolve('src/store/useAppStore.ts'), 'utf8')
 const cache = fs.readFileSync(path.resolve('src/storage/cache.ts'), 'utf8')
 const dialogs = fs.readFileSync(path.resolve('src/components/Dialogs.tsx'), 'utf8')
 const inspector = fs.readFileSync(path.resolve('src/components/Inspector.tsx'), 'utf8')
-const terminal = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/ios/AgentsDockTerminalView.swift'), 'utf8')
-const terminalModule = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/ios/AgentsDockNativeTerminalModule.swift'), 'utf8')
-const terminalTypes = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/src/index.ts'), 'utf8')
 const terminalView = fs.readFileSync(path.resolve('src/components/TerminalView.tsx'), 'utf8')
+const terminalViewport = fs.readFileSync(path.resolve('src/components/terminal/TerminalViewport.native.tsx'), 'utf8')
+const terminalPage = fs.readFileSync(path.resolve('scripts/terminal-page-entry.ts'), 'utf8')
 const appDelegateSubscriber = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/ios/AgentsDockKeyboardAppDelegateSubscriber.swift'), 'utf8')
 const terminalModuleConfig = fs.readFileSync(path.resolve('modules/agentsdock-native-terminal/expo-module.config.json'), 'utf8')
 const appShell = fs.readFileSync(path.resolve('src/components/AppShell.tsx'), 'utf8')
 const appKeyboard = fs.readFileSync(path.resolve('src/lib/app-keyboard.ts'), 'utf8')
-const keyboardGesture = fs.readFileSync(path.resolve('src/lib/keyboard-gesture.ts'), 'utf8')
 const keyboardLifecycle = fs.readFileSync(path.resolve('src/lib/keyboard-lifecycle.ts'), 'utf8')
 const keyboardControllerPatch = fs.readFileSync(path.resolve('patches/react-native-keyboard-controller@1.21.9.patch'), 'utf8')
 const chatScreen = fs.readFileSync(path.resolve('src/components/ChatScreen.tsx'), 'utf8')
@@ -26,6 +24,9 @@ const ui = fs.readFileSync(path.resolve('src/components/ui.tsx'), 'utf8')
 const sidebar = fs.readFileSync(path.resolve('src/components/Sidebar.tsx'), 'utf8')
 const mediaGrid = fs.readFileSync(path.resolve('src/components/MediaGrid.tsx'), 'utf8')
 const videoThumbnailLoader = fs.readFileSync(path.resolve('src/components/VideoThumbnailLoader.tsx'), 'utf8')
+const iosVideoThumbnailLoader = fs.readFileSync(path.resolve('src/components/VideoThumbnailLoader.ios.tsx'), 'utf8')
+const videoZoomControls = fs.readFileSync(path.resolve('src/components/file-viewer/VideoZoomControls.tsx'), 'utf8')
+const videoStatusViews = fs.readFileSync(path.resolve('src/components/file-viewer/VideoStatusViews.tsx'), 'utf8')
 const artifactFileViewer = fs.readFileSync(path.resolve('src/components/file-viewer/ArtifactFileViewerModal.tsx'), 'utf8')
 const artifactVideoPlayer = fs.readFileSync(path.resolve('src/components/file-viewer/ArtifactVideoPlayer.tsx'), 'utf8')
 const artifactNativeVideoPlayer = fs.readFileSync(path.resolve('src/components/file-viewer/ArtifactNativeVideoPlayer.tsx'), 'utf8')
@@ -378,7 +379,7 @@ test('battery-critical work is foreground-bound, coalesced, and released', () =>
   const thumbnailLoader = videoThumbnailLoader
   assert.doesNotMatch(thumbnailPreview, /useVideoPlayer/)
   assert.doesNotMatch(thumbnailPreview, /NativeAppState\.addEventListener/)
-  assert.match(thumbnailPreview, /if \(Platform\.OS === 'ios' \|\| !enabled \|\| failed\)/)
+  assert.match(thumbnailPreview, /if \(!enabled \|\| failed\)/)
   assert.match(queuedThumbnailLoader, /NativeAppState\.addEventListener\('change', state => setAppActive\(state === 'active'\)\)/)
   assert.match(queuedThumbnailLoader, /if \(!appActive\)/)
   assert.match(mediaGrid, /const AUTOMATIC_VIDEO_THUMBNAIL_LIMIT = 4/)
@@ -388,15 +389,18 @@ test('battery-critical work is foreground-bound, coalesced, and released', () =>
   assert.match(thumbnailLoader, /maxWidth: 320, maxHeight: 180/)
   assert.match(thumbnailLoader, /preferredForwardBufferDuration: 2/)
   assert.match(thumbnailLoader, /setTimeout\(onFailure, 8_000\)/)
+  // iOS reads the same frame without a player: one AVAssetImageGenerator per request, cancelled on unmount.
+  assert.doesNotMatch(iosVideoThumbnailLoader, /expo-video|useVideoPlayer/)
+  assert.match(iosVideoThumbnailLoader, /generateAgentsDockVideoThumbnail\([\s\S]*?connection\.client\.fileURL\(connection\.sessionId, file\.id\),[\s\S]*?connection\.client\.authHeaders\(\)/)
+  assert.match(iosVideoThumbnailLoader, /return \(\) => \{[\s\S]*?request\.cancel\(\)/)
+  assert.match(iosVideoThumbnailLoader, /setTimeout\(onFailure, 8_000\)/)
+  assert.doesNotMatch(nativeVideoModule, /AVPlayer(?:Item|Layer)?\(/)
+  assert.match(nativeVideoModule, /AVURLAsset\(url: url, options: [\s\S]*?"AVURLAssetHTTPHeaderFieldsKey": headers/)
+  assert.match(nativeVideoModule, /generator\.maximumSize = CGSize\(width: 320, height: 180\)/)
+  assert.match(nativeVideoModule, /min\(0\.5, max\(0, duration\.isFinite \? duration \* 0\.05 : 0\)\)/)
+  assert.match(nativeVideoModule, /func cancel\([\s\S]*?cancelAllCGImageGeneration\(\)[\s\S]*?cancelLoading\(\)/)
 
   assert.match(appShell, /\{modalScopeCurrent && terminal && selected && !isWelcomeSession\(selected\.id\) \? <Modal visible/)
-  assert.match(terminal, /UIApplication\.didBecomeActiveNotification/)
-  assert.match(terminal, /applicationWillResignActive[\s\S]*?suspendSocket\(\)/)
-  assert.match(terminal, /private func suspendSocket\(\)[\s\S]*?reconnectWorkItem\?\.cancel\(\)[\s\S]*?socket = nil[\s\S]*?cancel\(with: \.goingAway/)
-  assert.match(terminal, /public func setSocketURL[\s\S]*?let activeSocket = socket[\s\S]*?socket = nil[\s\S]*?activeSocket\?\.cancel\(with: \.goingAway[\s\S]*?resumeSocketIfPossible\(\)/)
-  assert.match(terminal, /socket\.send\(message\)[\s\S]*?guard let self, self\.socket === socket else \{ return \}[\s\S]*?self\.handleSocketFailure\(error\)/)
-  assert.match(terminal, /let delay = min\(30, 1\.2 \* pow\(2, Double\(min\(reconnectAttempt, 5\)\)\)\)/)
-  assert.match(terminal, /UIApplication\.shared\.applicationState == \.active/)
 })
 
 test('paged history stays continuous with the live bottom under one native anchor', () => {
@@ -449,8 +453,17 @@ test('paged history stays continuous with the live bottom under one native ancho
   assert.match(store, /!currentWindow && !projectPresentableHistory\(collected, filesFromEvents\(collected\)\)/)
 })
 
+test('the iOS dialog card sits above the keyboard and keeps the focused field visible', () => {
+  // Android's window already shrinks above the keyboard: its backdrop stays a plain View.
+  assert.match(dialogs, /\{Platform\.OS === 'ios' \? <KeyboardAvoidingView behavior="padding" style=\{styles\.backdrop\}>\{backdrop\}<\/KeyboardAvoidingView> : <View style=\{styles\.backdrop\}>\{backdrop\}<\/View>\}/)
+  assert.match(dialogs, /onLayout=\{Platform\.OS === 'ios' \? revealFocusedField : undefined\}/)
+  assert.match(dialogs, /const field = focusedTextInput\(\)[\s\S]*?field\.measureLayout\(contentRef\.current/)
+  // A card moving above the keyboard leaves a stale native keyboard inset behind.
+  assert.doesNotMatch(dialogs, /automaticallyAdjustKeyboardInsets/)
+})
+
 test('transparent modal backdrops are siblings instead of responder-wrapping controls', () => {
-  assert.match(dialogs, /<View style=\{styles\.backdrop\}>\{dismissable \? <Pressable[\s\S]*?StyleSheet\.absoluteFill[\s\S]*?: <View style=\{StyleSheet\.absoluteFill\} \/>\}\{panel\}<\/View>/)
+  assert.match(dialogs, /const backdrop = <>\{dismissable \? <Pressable[\s\S]*?StyleSheet\.absoluteFill[\s\S]*?: <View style=\{StyleSheet\.absoluteFill\} \/>\}\{panel\}<\/>/)
   assert.doesNotMatch(dialogs, /<Pressable style=\{styles\.backdrop\}[\s\S]{0,220}?\{panel\}/)
   assert.match(inspector, /<View style=\{styles\.modalBackdrop\}><Pressable[\s\S]*?StyleSheet\.absoluteFill/)
 })
@@ -486,7 +499,7 @@ test('chat details presents compact full-width media newest first', () => {
   assert.match(fileViewerHost, /activeRequest\?\.kind === 'artifacts'[\s\S]*?<ArtifactFileViewerModal/)
   assert.match(mediaGrid, /const thumbnailOwnerInstanceId = useId\(\)/)
   assert.match(mediaGrid, /thumbnailOwnerKey=\{`\$\{compact \? 'compact' : 'timeline'\}:\$\{ownerKey\}:\$\{thumbnailOwnerInstanceId\}`\}/)
-  assert.match(mediaGrid, /useAutomaticVideoThumbnailClaims\([\s\S]*?thumbnailOwnerKey,[\s\S]*?shouldGenerateAutomaticVideoThumbnail\(Platform\.OS, viewerActive\)[\s\S]*?media\.filter\(isVideo\)\.map\(file => file\.id\)[\s\S]*?: \[\]/)
+  assert.match(mediaGrid, /useAutomaticVideoThumbnailClaims\([\s\S]*?thumbnailOwnerKey,[\s\S]*?viewerActive \? \[\] : media\.filter\(isVideo\)\.map\(file => file\.id\)/)
   assert.match(mediaGrid, /key=\{`\$\{connectionKey\}:\$\{sessionId\}:\$\{ownerKey\}:\$\{compact \? 'compact' : 'timeline'\}`\}/)
   assert.equal((timelineRows.match(/<MediaGrid files=\{row\.files\} sessionId=\{sessionId\} ownerKey=\{row\.key\}/g) ?? []).length, 2)
   assert.doesNotMatch(mediaGrid, /hiddenCount|hiddenBadge|hiddenText/)
@@ -609,18 +622,17 @@ test('scheduled-job interval presets keep 10m and 30m taps out of nested scroll 
   assert.match(dialogs, /preset: \{ minWidth: 52, minHeight: 44, flexBasis: '22%', flexGrow: 1/)
 })
 
-test('scheduled-job native pickers preserve and synchronously submit the chosen wall time', () => {
-  assert.match(dialogs, /from '@expo\/ui\/community\/datetime-picker'/)
+test('scheduled-job date and time pickers preserve and synchronously submit the chosen wall time', () => {
+  assert.match(dialogs, /import \{ DateTimePicker \} from '\.\/material\/DateTimePickerDialog'/)
   assert.match(dialogs, /testID="job-start-mode-time"/)
   assert.match(dialogs, /testID="job-start-picker"/)
-  assert.match(dialogs, /testID="job-start-date-picker"/)
-  assert.match(dialogs, /testID="job-start-time-picker"/)
+  assert.match(dialogs, /testID=\{`job-start-\$\{startPicker\}-picker`\}/)
   assert.match(dialogs, /testID="job-start-date-button"/)
   assert.match(dialogs, /testID="job-start-time-button"/)
-  assert.match(dialogs, /androidStartPicker === 'date' \? scheduleWallTimeAndroidDatePickerDate/)
-  assert.match(dialogs, /applyPickerValue\(part, value, part === 'date'\)[\s\S]*?setAndroidStartPicker\(null\)/)
-  assert.match(dialogs, /onDismiss=\{\(\) => setAndroidStartPicker\(null\)\}/)
-  assert.match(dialogs, /mode=\{androidStartPicker\}/)
+  assert.match(dialogs, /startPicker === 'date' \? scheduleWallTimeUtcDay/)
+  assert.match(dialogs, /mergeScheduleWallTimePickerValue\(startRef\.current, value, startPicker\)[\s\S]*?setStartPicker\(null\)/)
+  assert.match(dialogs, /onDismiss=\{\(\) => setStartPicker\(null\)\}/)
+  assert.match(dialogs, /mode=\{startPicker\}/)
   const updateStart = dialogs.slice(dialogs.indexOf('  const updateStart ='), dialogs.indexOf('  const selectStartMode ='))
   assert.ok(updateStart.indexOf('startRef.current = value') < updateStart.indexOf('setStart(value)'), 'picker callbacks must update the submission ref before React state')
   const selectStartMode = dialogs.slice(dialogs.indexOf('  const selectStartMode ='), dialogs.indexOf('  const pickerDate ='))
@@ -687,9 +699,9 @@ test('compact back navigation cannot leave an animated pane over the selector', 
 
 test('separate controls offer guarded attachments and Mac-parity quick messages', () => {
   assert.match(composer, /from 'expo-image-picker'/)
-  assert.match(composer, /from '@expo\/ui\/community\/menu'/)
+  assert.match(composer, /import \{ MenuView, type MenuAction \} from '\.\/material\/MenuView'/)
   assert.match(composer, /const QUICK_MESSAGES = \['Status report', 'Keep going\.', 'Verify the result carefully\.'\] as const/)
-  assert.match(composer, /const options = \['Reference another chat', 'Photo Library', 'Files', 'Reference a server \(@@\)', 'Cancel'\]/)
+  assert.match(composer, /Alert\.alert\('Add', undefined, \[\s*\{ text: 'Reference another chat'[^\n]*\n\s*\{ text: 'Photo Library'[^\n]*\n\s*\{ text: 'Files'[^\n]*\n\s*\{ text: 'Reference a server \(@@\)'[^\n]*\n\s*\{ text: 'Cancel', style: 'cancel' \},\s*\]\)/)
   assert.match(composer, /const QUICK_MESSAGE_ACTIONS: MenuAction\[\] = QUICK_MESSAGES\.map\(\(title, index\) => \(\{[\s\S]*?id: `quick-message:\$\{index\}`,[\s\S]*?title,/)
   assert.match(composer, /actions=\{QUICK_MESSAGE_ACTIONS\}/)
   assert.match(composer, /event\.nativeEvent\.event\.startsWith\(prefix\)/)
@@ -765,8 +777,9 @@ test('fullscreen media viewers keep close outside bounded image zoom and dismiss
   assert.match(artifactFileViewer, /testID: 'artifact-image-dismiss-surface',[\s\S]*?gestureTestID: 'artifact-image-dismiss-gesture'/)
   assert.match(filePreview, /<SwipeDismissImage[\s\S]*?testID=\{imageViewer\?\.testID \?\? 'file-preview-image-zoom-surface'\}[\s\S]*?<Image/)
   assert.match(artifactNativeVideoPlayer, /testID="artifact-video-dismiss-surface" gestureTestID="artifact-video-dismiss-gesture"/)
-  assert.match(artifactNativeVideoPlayer, /loadProblem \? <View accessibilityRole="alert" testID="artifact-video-problem"/)
-  assert.match(artifactNativeVideoPlayer, /testID="artifact-video-problem-close" onPress=\{close\}/)
+  assert.match(artifactNativeVideoPlayer, /loadProblem \? <VideoLoadProblem message=\{loadProblem\} onRetry=\{retry\} onDownload=\{onDownload\} onClose=\{close\} \/>/)
+  assert.match(videoStatusViews, /<View accessibilityRole="alert" testID="artifact-video-problem"/)
+  assert.match(videoStatusViews, /testID="artifact-video-problem-close" onPress=\{onClose\}/)
   assert.match(workspaceFileViewer, /<SheetCloseButton onPress=\{onClose\} label="Close workspace files" testID="workspace-file-viewer-close" activateOnPressIn/)
   assert.match(workspaceFileViewer, /onAccessibilityEscape=\{onClose\}[\s\S]*?modalPadding/)
   assert.match(workspaceFileViewer, /collapsable=\{false\} pointerEvents="auto" style=\{\[styles\.header/)
@@ -970,23 +983,15 @@ test('two-pane sidebar toggle lives in the chat header and persists across resta
   assert.equal(chatHeader.match(/styles\.root, \{ backgroundColor: colors\.background, borderColor: colors\.border \}\]\}>\n\s*\{sidebarButton\}\n/g)?.length, 2)
 })
 
-test('native terminal relies on SwiftTerm tap handling without a competing recognizer', () => {
-  assert.doesNotMatch(terminal, /UITapGestureRecognizer/)
-  assert.doesNotMatch(terminal, /focusFromTap/)
-})
-
 test('foregrounding and hidden views cannot resurrect a phantom keyboard', () => {
-  const readyHandler = terminal.match(/case "ready":([\s\S]*?)case "error":/)?.[1]
+  // A terminal tab out of sight, or one going away, gives up the keyboard. The page never focuses on its own:
+  // on iOS (keyboardDisplayRequiresUserAction false) any focus in the page raises the keyboard.
+  assert.match(terminalView, /if \(!active\) \{\s*void viewport\.current\?\.blur\(\)\.catch/)
+  assert.match(terminalView, /terminalViewport\.blur\(\)\.catch/)
+  const readyHandler = terminalViewport.match(/case 'ready':([\s\S]*?)return\n/)?.[1]
   assert.ok(readyHandler)
-  assert.doesNotMatch(readyHandler, /focusTerminal|becomeFirstResponder/)
-  assert.match(terminal, /public override func willMove\(toWindow newWindow: UIWindow\?\)[\s\S]*?newWindow == nil[\s\S]*?blurTerminal/)
-  assert.match(terminal, /UIApplication\.willResignActiveNotification/)
-  assert.match(terminal, /public func focusTerminal\(\) -> Bool \{[\s\S]*?applicationState == \.active/)
-  assert.match(terminal, /public func blurTerminal\(\) -> Bool/)
-  assert.match(terminalModule, /AsyncFunction\("blur"\)/)
-  assert.equal((terminalModule.match(/\.runOnQueue\(\.main\)/g) ?? []).length, 4)
-  assert.match(terminalTypes, /blur\(\): Promise<boolean>/)
-  assert.match(terminalView, /nativeTerminal\.blur\(\)\.catch/)
+  assert.doesNotMatch(readyHandler, /focus/)
+  assert.doesNotMatch(terminalPage.slice(terminalPage.lastIndexOf('setDisplay()')), /focus/)
 
   assert.match(appDelegateSubscriber, /applicationWillResignActive[\s\S]*?connectedScenes[\s\S]*?endEditing\(true\)/)
   assert.match(appDelegateSubscriber, /var windows = application\.windows/)
@@ -1022,23 +1027,16 @@ test('foregrounding and hidden views cannot resurrect a phantom keyboard', () =>
   assert.doesNotMatch(dialogs, /<TextInput autoFocus value=\{query\}/)
 })
 
-test('timeline preserves ordinary interaction and completes a quick keyboard pull-down', () => {
-  assert.match(timeline, /keyboardDismissMode="interactive"/)
+test('timeline preserves ordinary interaction and keeps the keyboard while dragging, as on Android', () => {
+  assert.doesNotMatch(timeline, /keyboardDismissMode=/)
+  assert.doesNotMatch(timeline, /Keyboard\.dismiss\(\)/)
   assert.match(timeline, /keyboardShouldPersistTaps="always"/)
-  assert.match(keyboardGesture, /TIMELINE_KEYBOARD_DISMISS_VELOCITY = 0\.2/)
-  assert.match(keyboardGesture, /keyboardWasVisible[\s\S]*?velocityY <= -TIMELINE_KEYBOARD_DISMISS_VELOCITY/)
   assert.match(timeline, /keyboardBottomAnchor\.current = !userScrolling\.current && nearBottomRef\.current/)
   const beginDrag = timeline.slice(
     timeline.indexOf('const handleScrollBeginDrag = useCallback'),
     timeline.indexOf('const handleScrollEndDrag = useCallback'),
   )
-  assert.match(beginDrag, /event\.nativeEvent\.contentOffset\.y[\s\S]*?keyboardAnchorToken\.current \+= 1[\s\S]*?dragStartedWithKeyboard\.current = keyboardVisible[\s\S]*?userScrolling\.current = true[\s\S]*?topLoadArmed\.current = !loadingOlder/)
-  assert.doesNotMatch(beginDrag, /Keyboard\.dismiss\(\)/)
-  const endDrag = timeline.slice(
-    timeline.indexOf('const handleScrollEndDrag = useCallback'),
-    timeline.indexOf('const handleMomentumScrollBegin = useCallback'),
-  )
-  assert.match(endDrag, /Platform\.OS === 'ios'[\s\S]*?shouldFinishTimelineKeyboardDismissal\(dragStartedWithKeyboard\.current, event\.nativeEvent\.velocity\?\.y\)[\s\S]*?Keyboard\.dismiss\(\)/)
+  assert.match(beginDrag, /event\.nativeEvent\.contentOffset\.y[\s\S]*?keyboardAnchorToken\.current \+= 1[\s\S]*?userScrolling\.current = true[\s\S]*?topLoadArmed\.current = !loadingOlder/)
   assert.match(timeline, /onScrollBeginDrag=\{handleScrollBeginDrag\}/)
   assert.match(timeline, /onScrollEndDrag=\{handleScrollEndDrag\}/)
   assert.match(timeline, /\[activeHistoryWindow\?\.detached, keyboardSettleRequest\]/)
@@ -1075,8 +1073,9 @@ test('Android video preview retains bounded Expo Video playback controls', () =>
   assert.match(videoPlayer, /contentFit=\{videoFit\}/)
   assert.match(videoPlayer, /setVideoFit\('contain'\)[\s\S]*?player\.replaceAsync\(source\)/)
   assert.match(videoPlayer, /surfaceType=\{Platform\.OS === 'android' \? 'textureView' : undefined\}/)
-  assert.match(videoPlayer, /testID="artifact-video-zoom-out"[\s\S]*?setVideoFit\('contain'\)/)
-  assert.match(videoPlayer, /testID="artifact-video-zoom-in"[\s\S]*?setVideoFit\('cover'\)/)
+  assert.match(videoPlayer, /\{!customControls && ready \? <VideoZoomControls fit=\{videoFit\} onChange=\{setVideoFit\} \/> : null\}/)
+  assert.match(videoZoomControls, /testID="artifact-video-zoom-out"[\s\S]*?onChange\('contain'\)/)
+  assert.match(videoZoomControls, /testID="artifact-video-zoom-in"[\s\S]*?onChange\('cover'\)/)
   assert.match(videoPlayer, /value\.timeUpdateEventInterval = 0/)
   assert.match(videoPlayer, /value\.staysActiveInBackground = false/)
   assert.match(videoPlayer, /value\.bufferOptions = \{ preferredForwardBufferDuration: 8, waitsToMinimizeStalling: true \}/)
@@ -1084,8 +1083,8 @@ test('Android video preview retains bounded Expo Video playback controls', () =>
   assert.match(videoPlayer, /NativeAppState\.addEventListener\('change'[\s\S]*?if \(!active\) pause\(\)/)
   assert.doesNotMatch(videoPlayer, /useEffect\(\(\) => \(\) => \{[\s\S]*?player\.pause\(\)/)
   assert.match(videoPlayer, /const pause = useCallback\(\(\) => \{[\s\S]*?try \{ player\.pause\(\) \}[\s\S]*?return registerPause\(pause\)/)
-  assert.match(videoPlayer, /testID="artifact-video-problem"/)
-  assert.match(videoPlayer, /testID="artifact-video-retry"[\s\S]*?testID="artifact-video-download"[\s\S]*?testID="artifact-video-problem-close"/)
+  assert.match(videoPlayer, /\{!ready && !loadProblem \? <VideoLoadingStatus \/> : null\}/)
+  assert.match(videoStatusViews, /testID="artifact-video-retry"[\s\S]*?testID="artifact-video-download"[\s\S]*?testID="artifact-video-problem-close"/)
   assert.match(artifactFileViewer, /if \(activeVideoPauseRef\.current === pause\) activeVideoPauseRef\.current = null/)
   assert.match(artifactFileViewer, /if \(!nextId \|\| nextId === file\?\.id \|\| navigationInFlightRef\.current\) return[\s\S]*?activeVideoPauseRef\.current\?\.\(\)[\s\S]*?setCurrentId\(nextId\)/)
   assert.match(videoPlayer, /<SwipeDismissVideoSurface[\s\S]*?onDismiss=\{close\}/)
@@ -1108,12 +1107,17 @@ test('iOS video opening stages locally and uses an app-owned AVPlayer view inste
   assert.match(artifactVideoPlayer, /localURI && mountPlayer[\s\S]*?<ArtifactIOSSystemVideoPlayer[\s\S]*?sourceURI=\{localURI\}/)
   assert.doesNotMatch(artifactVideoPlayer, /ArtifactNativeVideoPlayer|from 'expo-video'/)
   assert.match(artifactVideoPlayer, /setTimeout\(\(\) => setMountPlayer\(true\), IOS_VIDEO_STAGE_PLAYER_DELAY_MS\)/)
-  assert.match(artifactVideoPlayer, /testID="artifact-video-stage-close" onPress=\{close\}/)
-  assert.match(artifactVideoPlayer, /accessibilityRole="progressbar"/)
+  // The staged download draws Android's loading and error views.
+  assert.match(artifactVideoPlayer, /<VideoLoadProblem message=\{stageProblem\} onRetry=\{restage\} onDownload=\{onDownload\} onClose=\{close\} \/>/)
+  assert.match(artifactVideoPlayer, /<VideoLoadingStatus percent=\{downloadPercent\} \/>/)
+  // The percent shows only while the download runs, never "100%" while the player opens.
+  assert.match(artifactVideoPlayer, /const downloadPercent = localURI \|\| progress == null \? null : Math\.round\(progress \* 100\)/)
+  assert.match(videoStatusViews, /accessibilityRole="progressbar"/)
   assert.match(artifactIOSSystemVideoPlayer, /useMemo\(requireAgentsDockNativeVideo, \[\]\)/)
   assert.match(artifactIOSSystemVideoPlayer, /const IOS_NATIVE_VIDEO_LOAD_TIMEOUT_MS = 15_000/)
   assert.match(artifactIOSSystemVideoPlayer, /registerPause\(pause\)/)
-  assert.match(artifactIOSSystemVideoPlayer, /testID="artifact-ios-system-video-retry"[\s\S]*?testID="artifact-ios-system-video-download"[\s\S]*?testID="artifact-ios-system-video-close"/)
+  assert.match(artifactIOSSystemVideoPlayer, /\{!ready && !problem \? <VideoLoadingStatus \/> : null\}/)
+  assert.match(artifactIOSSystemVideoPlayer, /<VideoLoadProblem message=\{problem\} onRetry=\{retry\} onDownload=\{onDownload\} onClose=\{close\} \/>/)
   assert.match(nativeVideoTypes, /function requireAgentsDockNativeVideo/)
   assert.match(nativeVideoTypes, /requireNativeViewManager<AgentsDockNativeVideoProps>/)
   assert.match(nativeVideoModule, /Name\("AgentsDockNativeVideo"\)/)
@@ -1126,11 +1130,14 @@ test('iOS video opening stages locally and uses an app-owned AVPlayer view inste
   assert.match(nativeVideoView, /viewForZooming\(in scrollView: UIScrollView\)[\s\S]*?videoContentView/)
   assert.match(nativeVideoView, /videoScrollView\.minimumZoomScale = 1/)
   assert.match(nativeVideoView, /videoScrollView\.maximumZoomScale = 4/)
-  assert.match(nativeVideoView, /accessibilityIdentifier(?::| =) "agentsdock-video-zoom-out"/)
-  assert.match(nativeVideoView, /accessibilityIdentifier = "agentsdock-video-zoom-reset"/)
-  assert.match(nativeVideoView, /accessibilityIdentifier(?::| =) "agentsdock-video-zoom-in"/)
-  assert.match(nativeVideoView, /resetZoom\(animated: false\)[\s\S]*?clearPlayer\(\)/)
-  assert.match(nativeVideoView, /resetZoom\(animated: Bool\)[\s\S]*?panGestureRecognizer\.isEnabled = false[\s\S]*?pinchGestureRecognizer\?\.isEnabled = false/)
+  // The app draws Android's Zoom out / Zoom in buttons; the native view only maps contentFit to videoGravity.
+  assert.doesNotMatch(nativeVideoView, /agentsdock-video-zoom-(?:out|in|reset)/)
+  assert.match(artifactIOSSystemVideoPlayer, /contentFit=\{videoFit\}/)
+  assert.match(artifactIOSSystemVideoPlayer, /\{ready \? <VideoZoomControls fit=\{videoFit\} onChange=\{setVideoFit\} \/> : null\}/)
+  assert.match(nativeVideoModule, /Prop\("contentFit"\)[\s\S]*?view\.setContentFit\(contentFit \?\? "contain"\)/)
+  assert.match(nativeVideoView, /value == "cover" \? \.resizeAspectFill : \.resizeAspect/)
+  assert.match(nativeVideoView, /resetZoom\(\)[\s\S]*?clearPlayer\(\)/)
+  assert.match(nativeVideoView, /private func resetZoom\(\)[\s\S]*?panGestureRecognizer\.isEnabled = false[\s\S]*?pinchGestureRecognizer\?\.isEnabled = false/)
   assert.match(nativeVideoView, /guard let url = URL\(string: value\), url\.isFileURL/)
   assert.match(nativeVideoView, /FileManager\.default\.isReadableFile/)
   assert.match(nativeVideoView, /private let playPauseButton = UIButton\(type: \.system\)/)
@@ -1143,9 +1150,7 @@ test('iOS video opening stages locally and uses an app-owned AVPlayer view inste
   assert.match(nativeVideoView, /AVPlayerItemFailedToPlayToEndTime/)
   assert.match(nativeVideoView, /UIApplication\.willResignActiveNotification/)
   assert.match(nativeVideoView, /playerLayer\.player\?\.replaceCurrentItem\(with: nil\)/)
-  assert.match(mediaGrid, /shouldGenerateAutomaticVideoThumbnail\(Platform\.OS, viewerActive\)/)
-  assert.match(mediaGrid, /if \(Platform\.OS === 'ios' \|\| !enabled \|\| failed\)/)
-  assert.doesNotMatch(mediaGrid, /viewerActive \? \[\] : media\.filter\(isVideo\)/)
+  assert.doesNotMatch(mediaGrid, /Platform\.OS/)
   assert.match(artifactFileViewer, /const closeViewer = useCallback\([\s\S]*?activeVideoPauseRef\.current\?\.\(\)[\s\S]*?onClose\(\)/)
   assert.match(artifactFileViewer, /onAccessibilityEscape=\{closeViewer\}[\s\S]*?<ViewerHeader[\s\S]*?onClose=\{closeViewer\}/)
 })
@@ -1173,7 +1178,7 @@ test('cold file-viewer import graph defers editor and video evaluation behind re
   assert.match(artifactFileViewer, /^import \{ ArtifactVideoPlayer \} from '\.\/ArtifactVideoPlayer'/m)
   assert.doesNotMatch(artifactFileViewer, /lazy\(\(\) => import\('\.\/ArtifactVideoPlayer'\)/)
   assert.match(mediaGrid, /const \{ openArtifacts, viewerActive \} = useFileViewer\(\)/)
-  assert.match(mediaGrid, /shouldGenerateAutomaticVideoThumbnail\(Platform\.OS, viewerActive\)[\s\S]*?media\.filter\(isVideo\)\.map\(file => file\.id\)[\s\S]*?: \[\]/)
+  assert.match(mediaGrid, /viewerActive \? \[\] : media\.filter\(isVideo\)\.map\(file => file\.id\)/)
 
   assert.match(deferredLoadBoundary, /getDerivedStateFromError/)
   assert.match(deferredLoadBoundary, /componentDidCatch\(\)[\s\S]*?this\.props\.onError\?\.\(\)/)
@@ -1183,4 +1188,14 @@ test('cold file-viewer import graph defers editor and video evaluation behind re
   assert.doesNotMatch(codeEditorAssets, /^export const CODE_EDITOR_SCRIPT/m)
   assert.doesNotMatch(embedCodeEditor, /export const CODE_EDITOR_SCRIPT/)
   assert.match(embedCodeEditor, /JSON\.stringify\(`\$\{htmlPrefix\}\$\{script\}\$\{htmlSuffix\}`\)/)
+})
+
+test('iOS menus and dialogs take the first tap while the keyboard is up', () => {
+  // A ScrollView left at keyboardShouldPersistTaps "never" spends that tap dismissing the keyboard.
+  for (const file of ['DropdownMenu.tsx', 'AlertDialog.tsx', 'DateTimePickerDialog.ios.tsx']) {
+    const source = fs.readFileSync(path.resolve('src/components/material', file), 'utf8')
+    const scrollViews = source.match(/<ScrollView\b[^>]*>/g) ?? []
+    assert.ok(scrollViews.length > 0, file)
+    for (const tag of scrollViews) assert.match(tag, /keyboardShouldPersistTaps="always"/, file)
+  }
 })

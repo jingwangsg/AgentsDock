@@ -7,7 +7,7 @@ import { WorkspaceFileViewerModal } from '../src/components/file-viewer/Workspac
 import { FileViewerContext } from '../src/components/file-viewer/FileViewerContext'
 import { useFileTransfer } from '../src/components/file-viewer/useFileTransfer'
 import { FileTransferNotice } from '../src/components/file-viewer/FileTransferNotice'
-import { ActionSheetIOS, Alert, Directory, File, Platform, clipboardWrites, nativeTransfer, setTestWidth } from './file-transfer-mocks'
+import { Alert, Directory, File, Platform, clipboardWrites, nativeTransfer, setTestWidth } from './file-transfer-mocks'
 import { resetComponentStore, setTestClient, useAppStore } from './component-mocks/app-store'
 import type { AgentFile, CanvasSummary, Event, WorkspaceInfo } from '../src/types'
 
@@ -306,19 +306,15 @@ await close()
 console.log('PASS picker cancellation, missing capability, provider collisions, cloud error, separate Share, A→B→A stale guard')
 
 // Outputs & sources: a long-press copies the server path or downloads the artifact without leaving the
-// sheet. iOS uses an action sheet; Android an alert, because MenuView cannot open inside its Modal.
+// sheet, through an alert (MenuView cannot open inside its Modal on Android; iOS draws the same dialog).
+// The runner does not resolve .ios files, so both passes get lib/alert.ts (React Native's Alert, mocked):
+// the 'ios' pass covers the shared code's Platform.OS branches, not the iOS dialog (alert.ios.ts).
 for (const os of ['ios', 'android'] as const) {
   reset()
   Platform.OS = os
   clipboardWrites.length = 0
   ;(Alert as any).__reset()
-  const sheets: Array<{ title?: string; options: string[]; callback: (index: number) => void }> = []
-  ActionSheetIOS.showActionSheetWithOptions = (options, callback) => { sheets.push({ ...options, callback }) }
   const menu = () => {
-    if (os === 'ios') {
-      const sheet = sheets.at(-1)!
-      return { title: sheet.title, choices: sheet.options, choose: (text: string) => sheet.callback(sheet.options.indexOf(text)) }
-    }
     const alert = (Alert as any).__calls.at(-1) as { title: string; buttons: Array<{ text: string; onPress?: () => void }> }
     return { title: alert.title, choices: alert.buttons.map(button => button.text), choose: (text: string) => alert.buttons.find(button => button.text === text)!.onPress!() }
   }
@@ -336,10 +332,10 @@ for (const os of ['ios', 'android'] as const) {
 
   await longPress('report.txt. TXT file')
   assert.equal(menu().title, 'report.txt')
-  assert.deepEqual(menu().choices, os === 'ios' ? ['Copy path', 'Download', 'Cancel'] : ['Cancel', 'Copy path', 'Download'], `${os}: artifact actions`)
+  assert.deepEqual(menu().choices, ['Cancel', 'Copy path', 'Download'], `${os}: artifact actions`)
   await act(async () => menu().choose('Copy path'))
   await longPress('board. Canvas')
-  assert.deepEqual(menu().choices, os === 'ios' ? ['Copy path', 'Cancel'] : ['Cancel', 'Copy path'], `${os}: canvas actions`)
+  assert.deepEqual(menu().choices, ['Cancel', 'Copy path'], `${os}: canvas actions`)
   await act(async () => menu().choose('Copy path'))
   assert.deepEqual(clipboardWrites, ['/server/workspace/out/report.txt', '/server/canvases/board.canvas.tsx'], `${os}: the agent's server path, then the canvas file path`)
 

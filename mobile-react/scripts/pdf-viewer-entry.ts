@@ -1,5 +1,5 @@
-// Offline pdf.js page for Android, whose WebView has no PDF renderer (iOS
-// shows PDFs natively). Pages render lazily near the viewport, pinch zoom is
+// Offline pdf.js page for Android, whose WebView has no PDF renderer, and for
+// iOS, which shows the same page. Pages render lazily near the viewport, pinch zoom is
 // the WebView's own, and visible pages re-render sharp once a zoom settles.
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs'
 import * as pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs'

@@ -2,7 +2,8 @@
 // the desktop's "Worked for …" summary once the turn ends. The turn's subagent
 // rows sit beneath it, as in the Claude Code CLI.
 import { useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, StyleSheet, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { latestRunActivity, runActivityLabel } from '../lib/run-activity'
 import { isSubagentActive, subagentDisplayName, subagentsFromEvents } from '../lib/subagents'
 import { useAppStore } from '../store/useAppStore'

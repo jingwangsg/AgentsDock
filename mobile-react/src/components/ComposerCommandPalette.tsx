@@ -1,4 +1,5 @@
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { COMPOSER_COMMAND_CATEGORIES, groupComposerCommandsByCategory, type ComposerCommand } from '../lib/composer-commands'
 import { usePalette } from '../theme'
 import { fonts } from '../lib/typography'

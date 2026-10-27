@@ -32,15 +32,15 @@ test('the app shell owns the sheet and routes both entry points through the insp
   assert.match(appShell, /else if \(kind === 'changes'\) setChanges\(true\)/)
   assert.match(appShell, /const closeChanges = useCallback\(\(\) => \{\s+setChanges\(false\)\s+requestAnimationFrame\(dismissAppKeyboard\)/)
   assert.match(appShell, /onReview=\{openReview\} onChanges=\{\(\) => openInspectorAction\('changes'\)\}/)
-  // The inline inspector opens directly; the Chat details page sheet must dismiss first (same as terminal/tmux).
+  // The inline inspector opens directly; the Chat details sheet must dismiss first (same as terminal/tmux).
   assert.match(appShell, /onTmux=\{\(\) => openInspectorAction\('tmux'\)\} onChanges=\{\(\) => openInspectorAction\('changes'\)\}/)
   assert.match(appShell, /onTmux=\{\(\) => queueInspectorAction\('tmux'\)\} onChanges=\{\(\) => queueInspectorAction\('changes'\)\}/)
   assert.match(appShell, /<WorkspaceChanges sessionId=\{selected\?\.id \?\? ''\} visible=\{modalScopeCurrent && changes && Boolean\(selected\) && !isWelcomeSession\(selected\?\.id\)\} onClose=\{closeChanges\} \/>/)
 })
 
 test('the sheet uses the Review chrome and the same connection scoping', () => {
-  assert.match(sheet, /<Modal key=\{connectionKey\} visible=\{visible\} animationType="slide" presentationStyle=\{Platform\.OS === 'ios' \? 'pageSheet' : 'fullScreen'\} allowSwipeDismissal onRequestClose=\{onClose\}>/)
-  assert.match(sheet, /<SafeAreaView style=\{\[styles\.root, \{ backgroundColor: colors\.background \}\]\} edges=\{\['top', 'bottom'\]\}>/)
+  assert.match(sheet, /<Modal key=\{connectionKey\} visible=\{visible\} animationType="slide" presentationStyle="fullScreen" onRequestClose=\{onClose\}>/)
+  assert.match(sheet, /<ModalSafeArea style=\{\[styles\.root, \{ backgroundColor: colors\.background \}\]\} edges=\{\['top', 'bottom'\]\}>/)
   assert.match(sheet, /header: \{ minHeight: 64/)
   assert.match(sheet, /<SheetCloseButton onPress=\{onClose\} label="Close changes" testID="changes-close" \/>/)
   assert.match(sheet, /const connectionReady = connected && !connecting && !switchingProfileId && connection\.isValidated/)
@@ -70,7 +70,9 @@ test('the list offers filters with counts, search, bulk and per-file staging, an
   assert.match(sheet, /<BulkButton icon=\{Plus\} label="Stage all" disabled=\{blocked \|\| !stageable\.length\} onPress=\{\(\) => void run\('stage', stageable\)\}/)
   assert.match(sheet, /<BulkButton icon=\{Minus\} label="Unstage all" disabled=\{blocked \|\| !unstageable\.length\} onPress=\{\(\) => void run\('unstage', unstageable\)\}/)
   assert.match(sheet, /const blocked = busy \|\| loading/)
-  assert.match(sheet, /refreshControl=\{<RefreshControl refreshing=\{loading\} onRefresh=\{\(\) => void refresh\(\)\}/)
+  // Pull to refresh: Android's SwipeRefreshLayout (RefreshControl), drawn by the app on iOS.
+  assert.match(sheet, /<RefreshScrollView [^\n]*refreshing=\{loading\} onRefresh=\{\(\) => void refresh\(\)\}/)
+  assert.match(sheet, /import \{ RefreshScrollView \} from '\.\/material\/RefreshScrollView'/)
   // Tree rows: directories toggle with a count; file rows show the leaf name, status letters and stage/unstage buttons.
   assert.match(sheet, /import \{ buildFileTree, [^}]*\} from '\.\.\/lib\/file-tree'/)
   assert.match(sheet, /accessibilityState=\{\{ expanded \}\} onPress=\{\(\) => onToggle\(node\.path\)\}/)
@@ -93,7 +95,7 @@ test('the diff pane renders through Monaco with the shared layout preference, an
   assert.match(sheet, /<IconButton icon=\{WrapText\} selected=\{layout\.wordWrap\} onPress=\{toggleWordWrap\} label="Wrap long lines" testID="changes-word-wrap" \/>/)
   // Phones swap the list for the diff and offer a back button; tablets keep both.
   assert.match(sheet, /\{!split && selection \? <IconButton icon=\{ArrowLeft\} onPress=\{\(\) => setSelection\(null\)\} label="Back to changed files" testID="changes-back" \/> : null\}/)
-  assert.match(sheet, /\{split \|\| !selection \? <ScrollView/)
+  assert.match(sheet, /\{split \|\| !selection \? <RefreshScrollView/)
   assert.match(sheet, /\{split \|\| selection \? <View style=\{styles\.detail\}>/)
   // Staged/Unstaged switch only when the file has both sides.
   assert.match(sheet, /fileHasView\(selectedFile, 'staged'\) && fileHasView\(selectedFile, 'unstaged'\) \? <View style=\{\[styles\.segmented/)

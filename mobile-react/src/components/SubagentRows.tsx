@@ -1,7 +1,8 @@
 // One row per subagent of the turn on screen, in the Claude Code CLI's Task-row
 // style; folds into a one-line count summary once the turn is over.
 import { useEffect, useState } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { Bot, Check, ChevronDown, ChevronRight, Square, X } from 'lucide-react-native'
 import { formatDuration } from '../lib/run-activity'
 import { isSubagentActive, subagentDisplayName, subagentLogText, subagentStatusLabel, type SubagentActivity, type SubagentStatus } from '../lib/subagents'

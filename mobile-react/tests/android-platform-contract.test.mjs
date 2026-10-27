@@ -7,8 +7,7 @@ import assert from 'node:assert/strict'
 const read = relative => fs.readFileSync(path.resolve(relative), 'utf8')
 const config = JSON.parse(read('app.json')).expo
 const terminal = read('src/components/TerminalView.tsx')
-const androidTerminal = read('src/components/terminal/TerminalViewport.android.tsx')
-const iosTerminal = read('src/components/terminal/TerminalViewport.ios.tsx')
+const nativeTerminal = read('src/components/terminal/TerminalViewport.native.tsx')
 const terminalPage = read('scripts/terminal-page-entry.ts')
 const terminalProtocol = read('src/terminal/terminalProtocol.ts')
 const terminalModule = JSON.parse(read('modules/agentsdock-native-terminal/expo-module.config.json'))
@@ -85,17 +84,18 @@ test('Android sideload updater is signer-pinned while the Play flavor has no ins
   assert.match(updaterStore, /installAndroidPackageAsync/)
 })
 
-test('Android uses the bundled xterm WebView while iOS retains SwiftTerm', () => {
+test('Android and iOS both use the bundled xterm WebView', () => {
   assert.deepEqual(terminalModule.platforms, ['apple'])
   assert.match(terminal, /<TerminalViewport/)
-  assert.match(iosTerminal, /AgentsDockNativeTerminal/)
-  assert.match(androidTerminal, /TERMINAL_PAGE_JS/)
+  assert.ok(!fs.existsSync(path.resolve('src/components/terminal/TerminalViewport.ios.tsx')))
+  assert.ok(!fs.existsSync(path.resolve('src/components/terminal/TerminalViewport.android.tsx')))
+  assert.match(nativeTerminal, /TERMINAL_PAGE_JS/)
   assert.match(terminalPage, /url: config\.socketURL/)
   assert.match(terminalProtocol, /new WebSocket\(url\)/)
-  assert.match(androidTerminal, /Content-Security-Policy/)
-  assert.match(androidTerminal, /onShouldStartLoadWithRequest/)
-  assert.match(androidTerminal, /onRenderProcessGone/)
-  assert.match(androidTerminal, /Clipboard\.setStringAsync/)
+  assert.match(nativeTerminal, /Content-Security-Policy/)
+  assert.match(nativeTerminal, /onShouldStartLoadWithRequest/)
+  assert.match(nativeTerminal, /onRenderProcessGone/)
+  assert.match(nativeTerminal, /Clipboard\.setStringAsync/)
   assert.doesNotMatch(terminal, /from 'agentsdock-native-terminal'/)
 })
 
@@ -106,9 +106,9 @@ test('file and folder text entry no longer depends on iOS-only Alert.prompt', ()
   assert.match(workspace, /useTextPrompt\(\)/)
 })
 
-test('Android PDFs render in the bundled pdf.js page and build metadata has platform-safe fallbacks', () => {
-  // Android's WebView has no PDF renderer; the downloaded file goes to PdfDocumentView instead.
-  assert.match(preview, /if \(kind === 'pdf' && Platform\.OS === 'android'\) \{\n\s*if \(localPreview\) return <PdfDocumentView key=\{localPreview\} uri=\{localPreview\} onError=\{setError\} \/>/)
-  assert.match(preview, /\} else if \(kind === 'pdf' && webSource\) \{/)
+test('PDFs render in the bundled pdf.js page on both platforms and build metadata has platform-safe fallbacks', () => {
+  // Android's WebView has no PDF renderer; iOS shows the same PdfDocumentView page.
+  assert.match(preview, /if \(kind === 'pdf' && localPreview\) return <PdfDocumentView key=\{localPreview\} uri=\{localPreview\} onError=\{setError\} \/>/)
+  assert.doesNotMatch(preview, /testID="file-viewer-pdf"/)
   assert.match(dialogs, /Platform\.OS === 'android' \? appConfig\.expo\.android\.versionCode : appConfig\.expo\.ios\.buildNumber/)
 })
