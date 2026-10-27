@@ -307,6 +307,8 @@ console.log('PASS picker cancellation, missing capability, provider collisions, 
 
 // Outputs & sources: a long-press copies the server path or downloads the artifact without leaving the
 // sheet, through an alert (MenuView cannot open inside its Modal on Android; iOS draws the same dialog).
+// The runner does not resolve .ios files, so both passes get lib/alert.ts (React Native's Alert, mocked):
+// the 'ios' pass covers the shared code's Platform.OS branches, not the iOS dialog (alert.ios.ts).
 for (const os of ['ios', 'android'] as const) {
   reset()
   Platform.OS = os

@@ -83,6 +83,11 @@ jobs:
           node scripts/run-history-tests.mjs src/lib/runtime-chip.test.ts
           node --test tests/android-platform-contract.test.mjs
         working-directory: mobile-react
+      - name: Verify the iOS Material layouts, the material-shim imports and the Xcode 27 config plugins
+        run: |
+          node scripts/run-history-tests.mjs src/lib/material-layout.test.ts
+          node --test tests/material-controls-imports.test.mjs tests/ios-xcode27-plugins.test.mjs
+        working-directory: mobile-react
       - name: Verify cross-chat rendering and control interactions
         run: >-
           node --test
