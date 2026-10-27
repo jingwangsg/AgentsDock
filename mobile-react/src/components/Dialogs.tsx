@@ -921,8 +921,9 @@ function Sheet({ visible, title, onClose, onShow, onDidDismiss, children, wide, 
       >{children}</ScrollView>
     </SafeAreaView>
   </View>
+  const backdrop = <>{dismissable ? <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" style={StyleSheet.absoluteFill} onPress={close} /> : <View style={StyleSheet.absoluteFill} />}{panel}</>
   // Android's window shrinks above the keyboard; an iOS transparent Modal keeps its size, so the backdrop pads itself.
-  return <Modal visible={visible} transparent animationType="fade" onShow={onShow} onRequestClose={close} onDismiss={didDismiss}><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.backdrop}>{dismissable ? <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" style={StyleSheet.absoluteFill} onPress={close} /> : <View style={StyleSheet.absoluteFill} />}{panel}</KeyboardAvoidingView></Modal>
+  return <Modal visible={visible} transparent animationType="fade" onShow={onShow} onRequestClose={close} onDismiss={didDismiss}>{Platform.OS === 'ios' ? <KeyboardAvoidingView behavior="padding" style={styles.backdrop}>{backdrop}</KeyboardAvoidingView> : <View style={styles.backdrop}>{backdrop}</View>}</Modal>
 }
 function Label({ text, children }: { text: string; children?: React.ReactNode }) { const colors = usePalette(); return <View style={styles.labelRow}><Text style={[styles.label, { color: colors.muted }]}>{text}</Text>{children}</View> }
 function PrimaryButton({ label, onPress, disabled, testID }: { label: string; onPress: () => void; disabled?: boolean; testID?: string }) { const colors = usePalette(); return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.primary, { backgroundColor: colors.blue, opacity: disabled ? 0.35 : pressed ? 0.65 : 1 }]}><Text style={[styles.primaryText, { color: colors.textOnAccent }]}>{label}</Text></Pressable> }

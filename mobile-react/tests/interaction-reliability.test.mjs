@@ -454,7 +454,8 @@ test('paged history stays continuous with the live bottom under one native ancho
 })
 
 test('the iOS dialog card sits above the keyboard and keeps the focused field visible', () => {
-  assert.match(dialogs, /<KeyboardAvoidingView behavior=\{Platform\.OS === 'ios' \? 'padding' : undefined\} style=\{styles\.backdrop\}>/)
+  // Android's window already shrinks above the keyboard: its backdrop stays a plain View.
+  assert.match(dialogs, /\{Platform\.OS === 'ios' \? <KeyboardAvoidingView behavior="padding" style=\{styles\.backdrop\}>\{backdrop\}<\/KeyboardAvoidingView> : <View style=\{styles\.backdrop\}>\{backdrop\}<\/View>\}/)
   assert.match(dialogs, /onLayout=\{Platform\.OS === 'ios' \? revealFocusedField : undefined\}/)
   assert.match(dialogs, /const field = focusedTextInput\(\)[\s\S]*?field\.measureLayout\(contentRef\.current/)
   // A card moving above the keyboard leaves a stale native keyboard inset behind.
@@ -462,7 +463,7 @@ test('the iOS dialog card sits above the keyboard and keeps the focused field vi
 })
 
 test('transparent modal backdrops are siblings instead of responder-wrapping controls', () => {
-  assert.match(dialogs, /<KeyboardAvoidingView behavior=\{Platform\.OS === 'ios' \? 'padding' : undefined\} style=\{styles\.backdrop\}>\{dismissable \? <Pressable[\s\S]*?StyleSheet\.absoluteFill[\s\S]*?: <View style=\{StyleSheet\.absoluteFill\} \/>\}\{panel\}<\/KeyboardAvoidingView>/)
+  assert.match(dialogs, /const backdrop = <>\{dismissable \? <Pressable[\s\S]*?StyleSheet\.absoluteFill[\s\S]*?: <View style=\{StyleSheet\.absoluteFill\} \/>\}\{panel\}<\/>/)
   assert.doesNotMatch(dialogs, /<Pressable style=\{styles\.backdrop\}[\s\S]{0,220}?\{panel\}/)
   assert.match(inspector, /<View style=\{styles\.modalBackdrop\}><Pressable[\s\S]*?StyleSheet\.absoluteFill/)
 })
