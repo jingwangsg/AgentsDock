@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { StyleSheet, View, type ActivityIndicatorProps } from 'react-native'
 import Animated, { Easing, cancelAnimation, useAnimatedProps, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated'
 import Svg, { Path } from 'react-native-svg'
+import { indeterminateArc } from './materialArc'
 import { useMaterialPalette } from './materialTheme'
 
 const AnimatedPath = Animated.createAnimatedComponent(Path)
@@ -14,23 +15,6 @@ const TRIM_MS = 1333
 const ROTATION_MS = 4444
 const RADIUS = 19
 const STROKE = 4
-
-/** cubic-bezier(0.4, 0, 0.2, 1), the curve both trim interpolators are built from. */
-function fastOutSlowIn(x: number): number {
-  'worklet'
-  if (x <= 0) return 0
-  if (x >= 1) return 1
-  let t = x
-  for (let i = 0; i < 8; i += 1) {
-    const u = 1 - t
-    const bx = 3 * u * u * t * 0.4 + 3 * u * t * t * 0.2 + t * t * t
-    const dx = 3 * u * u * 0.4 + 6 * u * t * (0.2 - 0.4) + 3 * t * t * (1 - 0.2)
-    if (Math.abs(bx - x) < 1e-5 || dx === 0) break
-    t = Math.min(1, Math.max(0, t - (bx - x) / dx))
-  }
-  const u = 1 - t
-  return 3 * u * t * t + t * t * t
-}
 
 export function ActivityIndicator({ animating = true, color, size = 'small', hidesWhenStopped = true, style, ...props }: ActivityIndicatorProps) {
   const accent = useMaterialPalette().switch.accent
@@ -48,19 +32,7 @@ export function ActivityIndicator({ animating = true, color, size = 'small', hid
       rotation.value = 0
     }
   }, [animating, rotation, trim])
-  const animatedProps = useAnimatedProps(() => {
-    const p = trim.value
-    const start = (p < 0.5 ? 0 : fastOutSlowIn((p - 0.5) * 2)) * 0.75 + 0.25 * p
-    const end = (p < 0.5 ? fastOutSlowIn(p * 2) : 1) * 0.75 + 0.25 * p
-    // Android draws nothing for an empty trim; a square-capped empty arc would leave a dot.
-    if (end - start < 0.001) return { d: 'M 24 24' }
-    const angle = (fraction: number) => ((rotation.value + fraction * 360 - 90) * Math.PI) / 180
-    const x0 = 24 + RADIUS * Math.cos(angle(start))
-    const y0 = 24 + RADIUS * Math.sin(angle(start))
-    const x1 = 24 + RADIUS * Math.cos(angle(end))
-    const y1 = 24 + RADIUS * Math.sin(angle(end))
-    return { d: `M ${x0} ${y0} A ${RADIUS} ${RADIUS} 0 ${end - start > 0.5 ? 1 : 0} 1 ${x1} ${y1}` }
-  })
+  const animatedProps = useAnimatedProps(() => ({ d: indeterminateArc(trim.value, rotation.value, 24, 24, RADIUS) }))
   return <View accessibilityRole="progressbar" {...props} style={[styles.container, style]}>
     {animating || !hidesWhenStopped
       ? <Svg width={dimension} height={dimension} viewBox="0 0 48 48">
