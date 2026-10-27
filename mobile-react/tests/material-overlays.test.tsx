@@ -94,3 +94,20 @@ test('VoiceOver escape dismisses the date and time dialogs, as a tap outside doe
     tree = null
   }
 })
+
+test('alert buttons scroll in their own panel that gives up height before the message, as AppCompat does', async () => {
+  await renderHost()
+  await act(async () => {
+    showAlertDialog('Add', undefined, ['Reference a server (@@)', 'Files', 'Photos', 'Reference another chat'].map(text => ({ text })).concat({ text: 'Cancel', style: 'cancel' } as never))
+  })
+  const panels = tree!.root.findAll(node => node.type === 'ScrollView')
+  const flat = (style: unknown) => Object.assign({}, ...[style].flat(3).filter(Boolean)) as Record<string, number>
+  const [message, buttons] = panels.map(panel => flat(panel.props.style))
+  assert.equal(panels.length, 2)
+  assert.ok(panels[1].findAll(node => node.props.accessibilityLabel === 'Cancel').length === 1, 'every button, Cancel included, is inside the scrolling panel')
+  assert.ok(buttons.flexShrink > 100 * message.flexShrink, 'the buttons shrink first')
+  // ButtonBarLayout's minimum when stacked: padding, the first button, the next one's top padding and a 16 pt peek.
+  assert.equal(buttons.minHeight, 5 + 54 + 10 + 16)
+  await act(async () => { tree!.root.findByProps({ accessibilityLabel: 'Cancel' }).props.onPress() })
+  assert.equal(overlayShown(), false)
+})

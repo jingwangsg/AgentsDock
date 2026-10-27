@@ -68,15 +68,25 @@ function AlertDialog({ title, message, buttons, options, close }: { title: strin
         <ScrollView keyboardShouldPersistTaps="always" style={styles.content} contentContainerStyle={styles.contentInner} bounces={false}>
           <Text style={[styles.message, { color: palette.text, fontFamily: regular }]}>{message ?? ''}</Text>
         </ScrollView>
-        {stacked
-          ? <View style={styles.buttonsStacked}>{layout.stacked.map((button, index) => renderButton(button, index))}</View>
-          : <View style={styles.buttonsRow}>
-              {/* AppCompat's button bar: neutral, a flexible space, negative, positive. */}
-              {rowButton('neutral')}
-              <View style={styles.spacer} />
-              {rowButton('negative')}
-              {rowButton('positive')}
-            </View>}
+        {/* AppCompat's buttonPanel scrolls too. When the card is taller than the window, the buttons
+            give up height first, down to ButtonBarLayout's minimum, then the message does. The
+            minimum is a whole row; stacked, the first button and the next one's 10 pt top padding
+            plus a 16 pt peek, so part of its label shows. */}
+        <ScrollView
+          keyboardShouldPersistTaps="always"
+          bounces={false}
+          style={[styles.buttonPanel, { minHeight: styles.buttonsRow.paddingTop + styles.button.height + (stacked ? 10 + 16 : styles.buttonsRow.paddingBottom) }]}
+        >
+          {stacked
+            ? <View style={styles.buttonsStacked}>{layout.stacked.map((button, index) => renderButton(button, index))}</View>
+            : <View style={styles.buttonsRow}>
+                {/* AppCompat's button bar: neutral, a flexible space, negative, positive. */}
+                {rowButton('neutral')}
+                <View style={styles.spacer} />
+                {rowButton('negative')}
+                {rowButton('positive')}
+              </View>}
+        </ScrollView>
       </View>
     </View>
   </Animated.View>
@@ -98,6 +108,7 @@ const styles = StyleSheet.create({
   content: { flexGrow: 0, flexShrink: 1, marginTop: 8 },
   contentInner: { minHeight: 48 },
   message: { paddingTop: 2.72, paddingBottom: 0.43, paddingHorizontal: 24, fontSize: 16, lineHeight: 18.67 },
+  buttonPanel: { flexGrow: 0, flexShrink: 1000 },
   buttonsRow: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingTop: 5, paddingBottom: 4 },
   buttonsStacked: { alignItems: 'flex-end', paddingHorizontal: 12, paddingTop: 5, paddingBottom: 4 },
   spacer: { flex: 1 },
