@@ -1,8 +1,11 @@
 # AgentsDock Native Terminal
 
-Native iOS terminal view for the React Native rewrite. It embeds SwiftTerm 1.14.0
-and owns the authenticated AgentsDock terminal websocket so iOS keyboard input,
-selection, copy, paste, and terminal resize behavior stay native.
+iOS app delegate subscriber that ends text editing in every window when the app
+leaves the foreground, and once more after it returns, so UIKit cannot restore
+a first responder and its keyboard. It covers React Native inputs and web views,
+including the terminal.
 
-SwiftTerm is vendored from <https://github.com/migueldeicaza/SwiftTerm> at tag
-`1.14.0`; its BSD-3-Clause license is included under `ios/Vendor/SwiftTerm`.
+The terminal itself is the shared xterm.js web view
+(`src/components/terminal/TerminalViewport.native.tsx`). The package and pod keep
+the names they had when they also held the SwiftTerm terminal view; the Expo
+config now registers only the app delegate subscriber.

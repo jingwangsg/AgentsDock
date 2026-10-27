@@ -129,7 +129,7 @@ export function SettingsDialog({ visible, onClose }: { visible: boolean; onClose
       <IconButton icon={Plus} disabled={fontScale >= APP_FONT_SCALE_MAX} label="Increase app text size" onPress={() => setFontScale(fontScale + APP_FONT_SCALE_STEP)} />
     </View>
     <Text style={[styles.help, { color: colors.muted }]}>Applies to chats, navigation, settings, server management, and terminal text.</Text>
-    {Platform.OS === 'android' ? <TerminalSettings /> : null}
+    <TerminalSettings />
     <Label text="New chat defaults" />
     <View style={styles.segment}>{chatDefaultBackendOptions.map(value => { const unavailable = value === 'cursor' && Boolean(runtimeSelectionError(health, runtime, value)); return <Pressable key={value} accessibilityRole="button" accessibilityLabel={`${backendLabel(value)}${unavailable ? ', unavailable' : ''}`} accessibilityState={{ selected: chatDefaults.backend === value, disabled: unavailable }} disabled={unavailable} onPress={() => setChatDefaults({ backend: value, model: '', effort: '' })} style={[styles.segmentButton, { backgroundColor: chatDefaults.backend === value ? colors.blue : colors.raised, opacity: unavailable ? 0.4 : 1 }]}><BackendMark backend={value} size={20} /><Text style={{ color: chatDefaults.backend === value ? colors.textOnAccent : colors.text, fontWeight: '700' }}>{backendLabel(value)}</Text></Pressable> })}</View>
     <Label text="Model" /><Select testID="settings-default-model" title="Choose model" value={chatDefaults.model} options={chatDefaultModelOptions} onChange={next => setChatDefaults({ model: next, effort: runtimeEffortAfterModelChange(runtime, chatDefaults.backend, next, chatDefaults.effort) ?? '' })} />

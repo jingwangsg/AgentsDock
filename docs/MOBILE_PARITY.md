@@ -29,7 +29,7 @@ desktop client.
 | Scheduled jobs | Working | Create/edit, fixed or looping runs, first-run time, enable/pause, run now, refresh, and delete. |
 | Live processes | Partial | Process details, command/path copy, snapshot stdout, refresh, and copy stdout work. Selecting arbitrary attached logs for tailing is not wired yet. |
 | Tmux submitters | Working | Chat-linked or machine-wide pane list plus on-demand captured output and copy. |
-| Persistent terminal | Working | Native SwiftTerm view attached to per-chat server tmux, with windows, splits, navigation, close, copy, paste, keyboard focus, and reconnect. |
+| Persistent terminal | Working | The xterm.js web view Android uses, attached to per-chat server tmux and to terminal tabs, with windows, splits, navigation, close, copy, paste, find, zoom, key row, keyboard focus, and reconnect. |
 | Digest handoff | Working | Source-agent preview/generation, detail level, user prompt, archived-target filtering, and send to target chat. |
 | Notifications and badges | Working | Background agent notifications and per-chat unread badge count use server read cursors. |
 | Settings | Partial | Server address/token and automatic system appearance work. Explicit appearance and notification preferences are not wired yet. |
