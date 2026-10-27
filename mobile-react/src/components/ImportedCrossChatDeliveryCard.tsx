@@ -93,7 +93,6 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start', width: '100%', maxWidth: 620, minWidth: 0,
     paddingVertical: 8, paddingHorizontal: 10, borderWidth: 1,
     borderRadius: 12, borderBottomLeftRadius: 4,
-    shadowColor: '#000', shadowOpacity: 0.09, shadowRadius: 9, shadowOffset: { width: 0, height: 3 },
   },
   speaker: { fontSize: 10.5, lineHeight: 15, fontWeight: '800', marginBottom: 4, flexShrink: 1 },
   markdown: { minWidth: 0, maxWidth: '100%' },
