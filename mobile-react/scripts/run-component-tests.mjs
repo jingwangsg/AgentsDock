@@ -21,6 +21,8 @@ const aliases = new Map(Object.entries({
   'react-native-draggable-flatlist': 'tests/component-mocks/draggable-flatlist.ts',
   'react-native-screens': 'tests/component-mocks/native-wrappers.ts',
   'expo-font': 'tests/component-mocks/native-wrappers.ts',
+  'react-native-webview': 'tests/component-mocks/browser-tab.ts',
+  'agentsdock-browser-loopback': 'tests/component-mocks/browser-tab.ts',
   'lucide-react-native': 'tests/component-mocks/icons.ts',
   'expo-clipboard': 'tests/mocks/expo-clipboard.ts',
   'expo-file-system': 'tests/mocks/expo-file-system.ts',

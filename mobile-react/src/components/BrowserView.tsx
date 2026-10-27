@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { StyleSheet, View } from 'react-native'
+import { Platform, StyleSheet, View } from 'react-native'
 import WebView, { type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview'
 import { ArrowLeft, ArrowRight, RotateCw } from 'lucide-react-native'
 import { releaseBrowserRouting, routeBrowserThroughServer } from 'agentsdock-browser-loopback'
@@ -82,7 +82,10 @@ export function BrowserView({ surface }: { surface: Surface }) {
     const next = browserAddressURL(address)
     if (next) setUri(next)
   }
-  const localhostOnPhone = routing === 'unavailable' && /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:|\/|$)/i.test(uri)
+  // An unrouted page loads from the phone, so its localhost is the phone's. On iOS the loopback addresses always
+  // are: WebKit sends 127.x and [::1] past any proxy, and only the name localhost reaches the server.
+  const loopbackHost = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:|\/|$)/i.exec(uri)?.[1]
+  const localhostOnPhone = loopbackHost !== undefined && (routing === 'unavailable' || (Platform.OS === 'ios' && loopbackHost.toLowerCase() !== 'localhost'))
   return <View style={styles.root}>
     <View style={[styles.toolbar, { borderColor: colors.border, backgroundColor: colors.background }]}>
       <IconButton icon={ArrowLeft} size={16} label="Back" disabled={!history.canGoBack} onPress={() => view.current?.goBack()} />
