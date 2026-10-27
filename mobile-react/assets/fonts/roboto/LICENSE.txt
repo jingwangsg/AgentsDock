@@ -1,5 +1,6 @@
 Roboto (Regular and Medium static instances of the Android 15 system variable font,
 subset to Latin, Greek, Cyrillic and common symbols).
+Source file, sha256 and the commands that made it: mobile-react/src/components/material/materialTheme.ts.
 Copyright 2011 Google Inc. All Rights Reserved. "Roboto" is a trademark of Google.
 Licensed under the Apache License, Version 2.0, reproduced below.
 
