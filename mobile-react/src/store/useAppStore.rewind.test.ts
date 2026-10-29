@@ -147,6 +147,20 @@ try {
   await useAppStore.getState().refreshSessions()
   assert.equal(scheduled.length, before + 3, 'an unchanged idle set does not notify again')
 
+  // Job run chats other than the open one, archived or not, do not notify when the health poll drops
+  // them from `active`, unless an emergency alert in one is still active.
+  const run = { job_id: 'job-1', session_id: sessionA.id }
+  const runChat: Session = { ...session('run-chat'), scheduled_job_run: run }
+  const archivedRun: Session = { ...session('run-archived'), scheduled_job_run: run, archived: true }
+  const alertRun: Session = { ...session('run-alert'), scheduled_job_run: run, emergency_alert: { id: 'alert-1', status: 'active', severity: 'critical', message: 'Disk full', raised_at: timestamp } }
+  client.sessions = async () => [sessionA, sessionB, runChat, archivedRun, alertRun]
+  useAppStore.setState(state => ({ activeSessionIds: new Set([...state.activeSessionIds, runChat.id, archivedRun.id, alertRun.id]) }))
+  await useAppStore.getState().refreshSessions()
+  assert.equal(scheduled.length, before + 4, 'of the job run chats, only the one with an active emergency alert notifies')
+  assert.deepEqual(scheduled.at(-1), { title: alertRun.title, body: 'Response finished' })
+  client.sessions = async () => [sessionA, sessionB]
+  await useAppStore.getState().refreshSessions()
+
   // Editing an earlier turn seeds the composer with its text and attachments and restores both on cancel.
   const attachment = (id: string): AgentFile => ({ id, session_id: sessionA.id, kind: 'upload', filename: `${id}.png`, size: 1, content_type: 'image/png', created_at: timestamp } as unknown as AgentFile)
   useAppStore.getState().setSessionDraft(sessionA.id, 'half typed')
