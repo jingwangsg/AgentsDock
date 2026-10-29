@@ -937,7 +937,7 @@ describe('multi-server cache foundations', () => {
     ])
   })
 
-  it('leaves unarchived job run chats out of the unread count, as the sidebar does not list them', () => {
+  it('leaves job run chats out of the unread count, as the sidebar does not list them', () => {
     const value = cache()
     const run = { job_id: 'job-1', session_id: 'parent' }
     value.putSessions('server-a', [

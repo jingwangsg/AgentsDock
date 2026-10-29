@@ -2789,7 +2789,7 @@ describe('SearchDialog keyboard navigation', () => {
         { id: 'local-profile', name: 'Local', serverUrl: 'http://local', hasAccessToken: true, serverSetupComplete: true, connectionState: 'online', cachedUnreadCount: 0 },
         { id: 'remote-profile', name: 'Remote Lab', serverUrl: 'http://remote', serverIdentity: 'remote-server', hasAccessToken: true, serverSetupComplete: true, connectionState: 'cached', cachedUnreadCount: 0 }
       ],
-      sessions: [...searchSessions, runChat('local-run', 'Nightly sweep')]
+      sessions: [...searchSessions, runChat('local-run', 'Nightly sweep'), { ...runChat('local-run-done', 'Nightly archived sweep'), archived: true }]
     })
     const user = userEvent.setup()
     const resultTitles = async () => {

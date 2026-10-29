@@ -5820,7 +5820,7 @@ function requestNotificationPermissionOnce(): void {
 /**
  * One notification per finished turn: a reconnect can redeliver its terminal event. A job run chat
  * other than the open one does not notify, archived or not: it is reached from the job card in the
- * chat that scheduled it, the server archives a successful run as it ends, and a job that runs every
+ * chat that scheduled it, a job can archive each successful run as it ends, and a job that runs every
  * minute would post one notification per run. An active emergency alert in it still notifies, and so
  * do its questions and approvals, since the run waits for the answer.
  */

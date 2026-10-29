@@ -116,12 +116,13 @@ test('dragging a folder header reorders folders and keeps Pinned and Archived ou
   assert.equal(resolveSidebarDrop(dropped(rows, 2, 3), 3, sessions, ['Work', 'General']), null)
 })
 
-test('a standalone job run chat is listed only while it is open or once archived', () => {
+test('a standalone job run chat, archived or not, is listed only while it is open', () => {
   const parent = session('parent', 'Research')
   const running = { ...session('run-live', 'Research'), scheduled_job_run: { job_id: 'job-1', session_id: 'parent' } } as Session
   const finished = { ...session('run-done', 'Research'), archived: true, scheduled_job_run: { job_id: 'job-1', session_id: 'parent' } } as Session
-  assert.deepEqual(sidebarVisibleSessions([parent, running, finished], null).map(value => value.id), ['parent', 'run-done'])
-  assert.deepEqual(sidebarVisibleSessions([parent, running, finished], 'run-live').map(value => value.id), ['parent', 'run-live', 'run-done'])
+  assert.deepEqual(sidebarVisibleSessions([parent, running, finished], null).map(value => value.id), ['parent'])
+  assert.deepEqual(sidebarVisibleSessions([parent, running, finished], 'run-live').map(value => value.id), ['parent', 'run-live'])
+  assert.deepEqual(sidebarVisibleSessions([parent, running, finished], 'run-done').map(value => value.id), ['parent', 'run-done'])
 })
 
 test('the unread count leaves out archived chats and the job run chats the sidebar hides', () => {

@@ -18,12 +18,13 @@ export function sessionSection(session: Session): string {
 }
 
 /**
- * A chat that a standalone scheduled job opened because its own chat was busy. It is reached from
- * the job card in the chat that scheduled it, and archived when the run ends, so the sidebar lists
- * it only while it is the open chat or once archived.
+ * A job run chat is a chat a standalone scheduled job created for one run. The sidebar and its search
+ * list it only while it is the open chat, archived or not: a job that runs every minute would otherwise
+ * fill the list, or the Archived section when the job archives successful runs. The job card in the
+ * chat that scheduled the job opens the latest run's chat, and each entry under Previous runs opens its own.
  */
-export function isHiddenRunChat(session: Pick<Session, 'id' | 'archived' | 'scheduled_job_run'>, selectedSessionId: string | null | undefined): boolean {
-  return Boolean(session.scheduled_job_run) && !session.archived && session.id !== selectedSessionId
+export function isHiddenRunChat(session: Pick<Session, 'id' | 'scheduled_job_run'>, selectedSessionId: string | null | undefined): boolean {
+  return Boolean(session.scheduled_job_run) && session.id !== selectedSessionId
 }
 
 export function sidebarVisibleSessions(sessions: Session[], selectedSessionId: string | null | undefined): Session[] {
