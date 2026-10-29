@@ -556,7 +556,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
         })()}</ScaleDecorator>}
       />
       <View style={[styles.footer, { borderColor: colors.border, minHeight: 34 + insets.bottom, paddingBottom: insets.bottom }]}>
-        <Text style={{ color: colors.muted, fontSize: 10 }}>{chatCount} chats</Text>
+        <Text style={{ color: colors.muted, fontSize: 10 }}>{chatCount} {chatCount === 1 ? 'chat' : 'chats'}</Text>
         <View style={{ flex: 1 }} />
         {waitingSessionCount ? <>
           <View style={[styles.footerDot, { backgroundColor: colors.orange }]} />
