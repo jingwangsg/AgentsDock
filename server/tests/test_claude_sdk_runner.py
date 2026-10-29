@@ -2245,6 +2245,28 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual({**inherited, **child_env}[secret_name], "")
         self.assertEqual(child_env["ANTHROPIC_API_KEY"], "provider-credential")
 
+    async def test_sdk_options_raise_bash_max_timeout_unless_the_server_sets_it(self) -> None:
+        manifest = Path(self.cwd) / ".manifest.json"
+        with patch.object(
+            agent_server, "claude_sdk_cli_path", return_value="/usr/bin/claude",
+        ), patch.object(
+            agent_server, "resolve_claude_resume_provider", return_value=(None, None),
+        ), patch.object(
+            agent_server, "create_claude_agent_options", side_effect=lambda **values: values,
+        ):
+            with patch.dict(os.environ):
+                os.environ.pop("BASH_MAX_TIMEOUT_MS", None)
+                ceiling_options, _, _ = agent_server.build_claude_sdk_options(
+                    "chat-claude", self.session, self.cwd, manifest,
+                )
+            with patch.dict(os.environ, {"BASH_MAX_TIMEOUT_MS": "86400000"}):
+                server_options, _, _ = agent_server.build_claude_sdk_options(
+                    "chat-claude", self.session, self.cwd, manifest,
+                )
+
+        self.assertEqual(ceiling_options["env"]["BASH_MAX_TIMEOUT_MS"], "2147483647")
+        self.assertEqual(server_options["env"]["BASH_MAX_TIMEOUT_MS"], "86400000")
+
     async def test_server_secrets_are_removed_from_process_environment(self) -> None:
         inherited = {
             name: f"server-secret-{index}"
