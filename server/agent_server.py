@@ -34636,7 +34636,10 @@ def scheduled_job_run_status(event: dict[str, Any]) -> str | None:
     if event_type == "job_deferred":
         return "deferred"
     if event_type in {"turn_finished", "job_finished"}:
-        if event.get("exit_code") not in (None, 0):
+        # A provider that never started has no exit code, so its terminal says
+        # status "failed", which the apps' job cards also read. Not is_error:
+        # the apps would show that terminal as a second error row.
+        if event.get("exit_code") not in (None, 0) or event.get("status") == "failed":
             return "failed"
         return "completed"
     if event_type in {"turn_started", "job_started", "job_ran"}:
@@ -47685,6 +47688,7 @@ async def report_standalone_job_run(session_id: str, event: dict[str, Any]) -> N
     ):
         return
     title = str(event.get("job_title") or marker.get("job_id") or "")
+    status = scheduled_job_run_status(event)
     stopped = event.get("type") == "turn_stopped" or event.get("stopped") is True
     payload = {
         "job_id": marker.get("job_id"),
@@ -47694,6 +47698,9 @@ async def report_standalone_job_run(session_id: str, event: dict[str, Any]) -> N
         "job_scheduled_run_at": event.get("job_scheduled_run_at"),
         "exit_code": event.get("exit_code"),
         "is_error": event.get("is_error"),
+        # The apps' job cards read status, not exit_code, from job_finished.
+        # Not is_error: it would also raise a "Latest chat error" notice here.
+        "status": "failed" if status == "failed" else None,
         "stopped": True if stopped else None,
         "result_text": bounded_job_history_text(
             event.get("result_text"), JOB_RUN_HISTORY_TEXT_LIMIT,
@@ -47719,7 +47726,7 @@ async def report_standalone_job_run(session_id: str, event: dict[str, Any]) -> N
     job = JOBS.jobs.get(str(marker.get("job_id") or "")) or {}
     if (
         job.get("archive_successful_runs") is not True
-        or scheduled_job_run_status(event) != "completed"
+        or status != "completed"
         or (STORE.sessions.get(session_id) or {}).get("archived")
     ):
         return
@@ -66084,6 +66091,7 @@ async def run_claude_print(
                     "backend": BACKEND_CLAUDE,
                     "exit_code": None,
                     "result_text": "",
+                    "status": "failed",
                     **run_event_metadata(run_id),
                 })
         finally:
@@ -66871,6 +66879,7 @@ async def finish_claude_sdk_start_failure(
             "transport": CLAUDE_TRANSPORT_AGENT_SDK,
             "exit_code": None,
             "result_text": "",
+            "status": "failed",
             "delivery_unknown": delivery_uncertain,
             **run_event_metadata(run_id),
         })
@@ -69217,6 +69226,7 @@ async def run_codex_exec(
                     "backend": BACKEND_CODEX,
                     "exit_code": None,
                     "result_text": "",
+                    "status": "failed",
                     **run_event_metadata(run_id),
                 })
         finally:
