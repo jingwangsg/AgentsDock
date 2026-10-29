@@ -1,5 +1,15 @@
 # Public development log
 
+## 2026-10-29 — Job run chats no longer notify when a turn ends, unless open or raising an emergency alert (mobile)
+
+- The sidebar lists a standalone job's run chat only while it is open or
+  once it is archived, but each finished turn in it raised a "Response
+  finished" notification, one per run for a job that runs every minute.
+  These turn ends are now silent, also when the server has already archived
+  the run chat. The open run chat still notifies, a run chat with an active
+  emergency alert still notifies, and a question or approval in a run chat
+  still raises "Claude is waiting for you" or "Codex is waiting for you".
+
 ## 2026-10-29 — The unread badges leave out the job run chats the sidebar hides (mobile)
 
 - The sidebar lists a standalone job's run chat only while it is open or

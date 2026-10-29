@@ -5817,9 +5817,17 @@ function requestNotificationPermissionOnce(): void {
   void Notifications.requestPermissionsAsync().catch(() => { /* unavailable in unsigned simulator builds */ })
 }
 
-/** One notification per finished turn: a reconnect can redeliver its terminal event. */
+/**
+ * One notification per finished turn: a reconnect can redeliver its terminal event. A job run chat
+ * other than the open one does not notify, archived or not: it is reached from the job card in the
+ * chat that scheduled it, the server archives a successful run as it ends, and a job that runs every
+ * minute would post one notification per run. An active emergency alert in it still notifies, and so
+ * do its questions and approvals, since the run waits for the answer.
+ */
 async function notifyOnce(scope: ConnectionScope, session: Session, turnKey: string): Promise<void> {
   if (!connectionIsCurrent(scope)) return
+  const backgroundRun = Boolean(session.scheduled_job_run) && session.id !== useAppStore.getState().selectedSessionId
+  if (backgroundRun && session.emergency_alert?.status !== 'active') return
   const key = `${scope.profileId}:${scope.namespace}:${session.id}:${turnKey}`
   if (notifiedEvents.has(key)) return
   notifiedEvents.add(key)
